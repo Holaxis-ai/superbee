@@ -297,16 +297,21 @@ bundle-relative**.
   test or drift-gate result (up-tree module resolution manufactures phantom failures).
 - `examples/sample-bundle` is the interop fixture: externally-shaped (unquoted timestamps,
   relative links, wrapped bullets). If a change breaks its round-trip, the change is wrong.
-- **Plugin version + committed bundle are BOT-OWNED on merge to main — PRs never touch them
+- **Plugin version + committed bundle are BOT-OWNED on merge to main — feature PRs never touch them
   (2026-07-09, retiring the old hand-bump-and-rebase convention).** A CI workflow
-  (`.github/workflows/ci-version-bundle.yml`, logic in `scripts/ci-version-bundle.mjs`) runs on
+  (`.github/workflows/ci-version-bundle.yml`, generator logic in `scripts/ci-version-bundle.mjs`,
+  repository transaction in `scripts/ci-version-bundle-pr.mjs`) runs on
   every push to `main`: it regenerates the skill-target `SKILL.md` and rebuilds the committed
   `plugins/…/scripts/agentstate-lite.mjs`; only if either differs from what's committed does it
   bump the patch version in BOTH `.claude-plugin/marketplace.json` and
-  `plugins/agentstate-lite/.codex-plugin/plugin.json` and commit artifact+manifests together in
-  ONE bot commit (the plugin cache is version-keyed, so they must land atomically). If nothing
+  `plugins/agentstate-lite/.codex-plugin/plugin.json`, commit artifact+manifests together on the
+  fixed automation branch, and open or reconcile an ordinary human-reviewed PR (the plugin cache
+  is version-keyed, so they must land atomically). The App token carries GitHub's coarse Contents
+  and Pull requests write categories, but the bridge's executable mutations are limited to the
+  leased fixed branch and its exact PR create/reconcile/close operations; it never approves,
+  merges, or writes directly to `main`. If nothing
   changed, the run is a no-op — that convergence, not a paths filter or actor check, is what stops
-  the bot's own commit from re-triggering an infinite loop. **A PR must NOT hand-bump either
+  the merged bot PR from re-triggering an infinite loop. **A feature PR must NOT hand-bump either
   manifest or hand-rebuild the committed bundle** — parallel branches no longer collide on the next
   version number, because they no longer touch it at all; the bot picks it up once, on merge. The
   bot's regen-and-diff only covers the two GENERATED artifacts (the skill-target SKILL.md, the
