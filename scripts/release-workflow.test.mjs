@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const staged = readFileSync(path.join(repoRoot, ".github", "workflows", "release-staged.yml"), "utf8");
 const finalize = readFileSync(path.join(repoRoot, ".github", "workflows", "release-finalize.yml"), "utf8");
+const verifyOrdering = readFileSync(path.join(repoRoot, "scripts", "release-verify-ordering.mjs"), "utf8");
 
 // Split a workflow's `jobs:` mapping into { jobName -> rawJobText } using the 2-space job-header
 // indentation. Dependency-free (no yaml package in the published boundary); the format is ours.
@@ -72,11 +73,45 @@ test("staged workflow: each job carries exactly its minimal permissions", () => 
   );
 });
 
-test("finalize workflow: registry-verify is read-only, finalize gets contents:write only", () => {
+test("finalize workflow: ordering gate + registry-verify are read-only, finalize gets contents:write only", () => {
   const jobs = extractJobs(finalize);
-  assert.deepEqual(Object.keys(jobs).sort(), ["finalize", "registry-verify"]);
+  assert.deepEqual(Object.keys(jobs).sort(), ["finalize", "ordering-verified", "registry-verify"]);
+  assert.deepEqual(permissionsOf(jobs["ordering-verified"]), { actions: "read", contents: "read" });
   assert.deepEqual(permissionsOf(jobs["registry-verify"]), { actions: "read", contents: "read" });
   assert.deepEqual(permissionsOf(jobs.finalize), { actions: "read", contents: "write" });
+});
+
+test("the ordering gate runs BEFORE registry mutation and again before publication", () => {
+  const jobs = extractJobs(finalize);
+  // Job chain: ordering-verified -> registry-verify -> finalize.
+  assert.match(jobs["registry-verify"], /needs: ordering-verified/);
+  assert.match(jobs.finalize, /needs: registry-verify/);
+  // The gate replays the state machine over signed receipts in the gate job AND pre-publish.
+  for (const name of ["ordering-verified", "finalize"]) {
+    assert.match(jobs[name], /release-verify-ordering\.mjs assets/, `${name} lists receipt assets via the one naming authority`);
+    assert.match(jobs[name], /release-verify-ordering\.mjs verify/, `${name} verifies signed receipt ordering`);
+    assert.match(jobs[name], /--allowed-signers \.github\/release-allowed-signers/, `${name} pins the committed signer file`);
+  }
+  // The write-capable job plans, normalizes, re-queries, proves the exact set, then publishes.
+  const body = jobs.finalize;
+  const verifyAt = body.indexOf("release-verify-ordering.mjs verify");
+  const planAt = body.indexOf("release-verify-ordering.mjs plan");
+  const applyAt = body.indexOf("release-verify-ordering.mjs apply");
+  const requeryAt = body.indexOf('> final-draft-release.json');
+  const finalAt = body.indexOf("release-verify-ordering.mjs final");
+  const publishAt = body.indexOf("release-run-operations.mjs --op immutable-release");
+  assert.ok([verifyAt, planAt, applyAt, requeryAt, finalAt, publishAt].every((at) => at !== -1));
+  assert.ok(
+    verifyAt < planAt && planAt < applyAt && applyAt < requeryAt && requeryAt < finalAt && finalAt < publishAt,
+    "verify -> plan -> ID-only normalization -> re-query -> exact final proof -> publish",
+  );
+  assert.match(body, /retry-safe status --clobber/);
+  assert.match(verifyOrdering, /releases\/assets\/\$\{item\.id\}/, "cleanup targets exact release-asset IDs");
+  assert.match(verifyOrdering, /"--clobber"/, "status upload is retry-safe");
+  assert.match(verifyOrdering, /normalizeReceiptStatusBody/, "one owned-body normalizer prepares PATCH bytes");
+  assert.match(body, /--mode "\$MODE"/, "dry-run traverses the same apply adapter with a zero-mutation mode");
+  // The environment gate also binds the ordering job.
+  assert.match(jobs["ordering-verified"], /environment: release/);
 });
 
 test("denylist scan (NOT a proof): no KNOWN build/pack token appears outside the candidate job", () => {
@@ -180,7 +215,7 @@ test("the finalizer is separately dispatched and consumes every immutable ID", (
   assert.match(finalize, /run-id: \$\{\{ inputs\.run_id \}\}/);
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.artifact_id \}\}/);
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.stage_receipt_artifact_id \}\}/);
-  assert.ok((finalize.match(/release-verify-chain\.mjs verify-finalizer/g) ?? []).length === 2);
+  assert.ok((finalize.match(/release-verify-chain\.mjs verify-finalizer/g) ?? []).length === 3);
 });
 
 test("the staged workflow triggers on v* tags and on dry-run dispatch", () => {

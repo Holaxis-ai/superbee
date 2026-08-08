@@ -1,12 +1,12 @@
 // Pure parsers and validators for the immutable staged-release receipt chain. Workflows pass
 // untrusted API/input JSON into these functions; every identifier and digest is checked before it
 // can authorize registry or GitHub mutation.
+import { LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 
 const TOKEN = /^[A-Za-z0-9._-]+$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
-const STAGE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 
 function fail(message) {
   throw new Error(`release receipt verification failed: ${message}`);
@@ -51,7 +51,7 @@ export function parseStagePublishJson(text) {
     throw new Error(`npm stage publish JSON must contain exactly one stageId, found ${found.length}`);
   }
   const id = found[0];
-  if (typeof id !== "string" || !STAGE_ID.test(id)) {
+  if (typeof id !== "string" || !LIVE_STAGE_ID.test(id)) {
     throw new Error(`npm stage publish returned an invalid stageId: ${JSON.stringify(id)}`);
   }
   return id;
@@ -60,7 +60,7 @@ export function parseStagePublishJson(text) {
 /** npm stage download chooses this filename; the command has no --out option. */
 export function stageDownloadFilename(version, stageId) {
   string("version", version, SEMVER);
-  string("stage id", stageId, STAGE_ID);
+  string("stage id", stageId, LIVE_STAGE_ID);
   return `holaxis-aslite-${version}-${stageId}.tgz`;
 }
 
@@ -90,7 +90,7 @@ export function buildStageReceipt(fields) {
   const integrity = string("npm integrity", fields.integrity, /^sha512-[A-Za-z0-9+/=]+$/);
   const draftReleaseId = string("draft release id", fields.draftReleaseId);
   const draftAssets = normalizedAssets(fields.draftAssets);
-  const stageId = string("stage id", fields.stageId, fields.stageId === "dry-run-stage" ? TOKEN : STAGE_ID);
+  const stageId = string("stage id", fields.stageId, fields.stageId === "dry-run-stage" ? TOKEN : LIVE_STAGE_ID);
   const stageTag = string("stage tag", fields.policyTag);
 
   const assetByName = new Map(draftAssets.map((asset) => [asset.name, asset]));
@@ -187,7 +187,12 @@ export function verifyFinalizerChain({
   equal("draft release id", release?.id, receipt.draft?.release_id);
   if (release?.draft !== true) fail("GitHub release is not an unpublished draft");
   equal("draft tag", release?.tag_name, prepared.tag);
-  const observedAssets = normalizedAssets(release?.assets);
+  // Operator receipt/status assets (the ordering gate's evidence) are the ONLY extras tolerated
+  // beyond the two recorded core assets; any other extra still fails the exactly-two check.
+  const coreAssets = (Array.isArray(release?.assets) ? release.assets : []).filter((asset) => (
+    !parseAuxiliaryReleaseAssetName(asset?.name, { mode: "finalize", currentStageId: receipt.stage.id })
+  ));
+  const observedAssets = normalizedAssets(coreAssets);
   const recordedAssets = normalizedAssets(receipt.draft?.assets);
   if (JSON.stringify(observedAssets) !== JSON.stringify(recordedAssets)) fail("draft release assets differ from stage receipt");
 
@@ -200,5 +205,6 @@ export function verifyFinalizerChain({
     draft_release_id: receipt.draft.release_id,
     tarball_sha256: prepared.tarball.sha256,
     integrity: prepared.tarball.integrity,
+    core_assets: observedAssets,
   };
 }

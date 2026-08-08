@@ -16,6 +16,7 @@ import {
   promoteOperation,
   registryVerifyOperations,
 } from "./release-operations.mjs";
+import { receiptEmissionCommands } from "./release-ordering.mjs";
 import { buildStageReceipt } from "./release-receipts.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -32,12 +33,13 @@ function arg(argv, flag, required = true) {
 }
 
 export function buildReceipt(fields) {
-  const { stageId, version, policyTag, tarballSha256 } = fields;
+  const { stageId, version, policyTag, tarballSha256, draftReleaseId } = fields;
   const receipt = buildStageReceipt(fields);
   const inspection = inspectionInstructions({ stageId, tarballSha256, version });
   return {
     receipt,
     inspection,
+    receipt_emission: receiptEmissionCommands({ stageId, version, draftReleaseId }),
     operations: {
       reject: rejectOperation({ stageId }),
       approve: approveOperation({ stageId }),
@@ -50,7 +52,7 @@ export function buildReceipt(fields) {
 }
 
 export function renderReceiptMarkdown(built) {
-  const { receipt, inspection, operations } = built;
+  const { receipt, inspection, receipt_emission: emission, operations } = built;
   const lines = [
     "## Staged release receipt",
     "",
@@ -59,6 +61,15 @@ export function renderReceiptMarkdown(built) {
     "```",
     "",
     `### ${inspection.title} (REQUIRED before approval)`,
+    "",
+    "One command downloads the stage, verifies the SHA, and uploads your SIGNED inspection",
+    "receipt (the finalize ordering gate consumes it; stable candidates REQUIRE it):",
+    "",
+    "```sh",
+    emission.inspected,
+    "```",
+    "",
+    "Manual fallback (emits no receipt — run the tool afterwards):",
     "",
     "```sh",
     ...inspection.steps,
@@ -73,6 +84,8 @@ export function renderReceiptMarkdown(built) {
     operations.reject.command,
     `# or approve (requires 2FA):`,
     operations.approve.command,
+    `# then upload the SIGNED approval receipt:`,
+    emission.approved,
     "```",
     "",
     "### Registry verification (read-only, after approval)",

@@ -2,12 +2,16 @@
 // for which transition is legal, which immutable identifiers each state must carry, and whether a
 // proposed receipt CONTRADICTS the identifiers already fixed earlier in the transaction.
 //
-// SCOPE (QA finding #3): this is a VALIDATION / DESIGN artifact and an OPERATOR TOOL (via
-// scripts/release-reconcile.mjs) — it is NOT (yet) wired as the runtime ordering gate inside the
-// release workflows. The workflows enforce BYTE identity mechanically (retained-tarball SHA
-// re-verify) but trust the operator that inspection+approval preceded finalize; wiring THIS graph
-// as the mechanical ordering gate needs persisted operator-signed inspection/approval receipts (a
-// separate trust/storage design, tracked as a follow-up). Nothing here rebuilds or repacks.
+// SCOPE: this graph IS wired as the runtime ordering gate — release-finalize.yml's
+// ordering-verified job (and the finalize job's pre-publish re-check) replays it over signed
+// operator inspection/approval receipts via scripts/release-verify-ordering.mjs, alongside the
+// byte-identity chain (verify-finalizer) and the registry publication proof (which already forces
+// a 2FA stage approval of the exact bytes before live finalize can succeed). Receipts add what
+// those cannot prove: that inspection happened, by which operator, before approval and dispatch.
+// Enforcement is tiered (see release-ordering.mjs): stable candidates require both receipts;
+// prerelease tolerates absence with a permanent public stamp; present-but-invalid evidence is
+// always red. scripts/release-reconcile.mjs stays the operator CLI over the same reconcile().
+// Nothing here rebuilds or repacks.
 //
 // Normative source: .agentstate-lite/designs/version-update-protocols.md §5 (states/owners table
 // and transient tag/failure rules). The `rolled_back` state is derived from §5's transient-tag
@@ -30,6 +34,17 @@ const STATE_RECEIPT_FIELDS = {
   promoted: ["actor", "promoted_at", "before_tags", "after_tags", "promoted_version"],
   final: ["release_id", "release_tag", "assets", "attestation"],
   rolled_back: ["actor", "rolled_back_at", "restored_next", "deprecated_version", "recovery_command"],
+};
+
+// The public receipt vocabulary stays `actor` for every operator-owned transition. Only the
+// accumulated ledger namespaces that identity so different legal steps may have different owners
+// without weakening same-state replay checks.
+const STATE_ACTOR_KEYS = {
+  inspected: "inspected_by",
+  rejected: "rejected_by",
+  approved_public: "approved_by",
+  promoted: "promoted_by",
+  rolled_back: "rolled_back_by",
 };
 
 // Legal forward transitions. Each state's receipt is validated against STATE_RECEIPT_FIELDS; the
@@ -84,20 +99,24 @@ function requireFields(state, receipt) {
  * the proposed receipt contradicts a fixed immutable identifier and we fail closed. Returns
  * { identifiers, changed } — `changed:false` means every key re-asserted an identical value.
  */
-function mergeIdentifiers(existing, receipt) {
+function mergeIdentifiers(state, existing, receipt) {
   const identifiers = { ...existing };
   let changed = false;
   for (const [key, value] of Object.entries(receipt)) {
-    if (key in identifiers) {
-      if (!stableEqual(identifiers[key], value)) {
+    const ledgerKey = key === "actor" ? STATE_ACTOR_KEYS[state] : key;
+    if (!ledgerKey) {
+      throw new ReleaseStateError("unknown_state", `state ${state} has no actor identity mapping`);
+    }
+    if (ledgerKey in identifiers) {
+      if (!stableEqual(identifiers[ledgerKey], value)) {
         throw new ReleaseStateError(
           "identifier_mismatch",
-          `receipt.${key} = ${JSON.stringify(value)} contradicts fixed ${JSON.stringify(identifiers[key])}`,
+          `receipt.${key} = ${JSON.stringify(value)} contradicts fixed ${ledgerKey} ${JSON.stringify(identifiers[ledgerKey])}`,
         );
       }
       continue;
     }
-    identifiers[key] = value;
+    identifiers[ledgerKey] = value;
     changed = true;
   }
   return { identifiers, changed };
@@ -146,7 +165,7 @@ export function reconcile(ledger, event) {
 
   // Idempotent replay of the transition that produced the current state.
   if (to === from) {
-    const merged = mergeIdentifiers(identifiers, receipt); // throws on any contradiction
+    const merged = mergeIdentifiers(to, identifiers, receipt); // throws on any contradiction
     return { ledger: { state: to, identifiers: merged.identifiers }, changed: false };
   }
 
@@ -157,7 +176,7 @@ export function reconcile(ledger, event) {
       `cannot move ${from ?? "null"} -> ${to} (legal: ${legal.join(", ") || "none"})`,
     );
   }
-  const merged = mergeIdentifiers(identifiers, receipt);
+  const merged = mergeIdentifiers(to, identifiers, receipt);
   crossCheck(to, merged.identifiers);
   return { ledger: { state: to, identifiers: merged.identifiers }, changed: true };
 }

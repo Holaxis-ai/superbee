@@ -100,6 +100,10 @@ test("finalizer accepts only a fully matching candidate/artifact/stage/draft cha
   const proof = verifyFinalizerChain(fixture());
   assert.equal(proof.stage_id, STAGE_ID);
   assert.equal(proof.tarball_sha256, TARBALL_SHA);
+  assert.deepEqual(proof.core_assets, [
+    { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
+    { id: "201", name: TARBALL, digest: TARBALL_SHA },
+  ]);
 });
 
 test("stage summary and retained JSON are emitted from the same v2 receipt", () => {
@@ -152,6 +156,25 @@ test("stage summary carries the bounded stable MCP launch migration guidance", (
   assert.match(summary, /does not scan or rewrite host MCP configuration/);
   assert.ok(summary.endsWith(STABLE_MCP_LAUNCH_GUIDANCE), "receipt consumes the shared guidance authority exactly");
   assert.ok(!Object.hasOwn(built.receipt, "guidance"), "immutable receipt schema remains unchanged");
+});
+
+test("finalizer tolerates only strict live-UUID current/sibling auxiliaries; malformed lookalikes stay red", () => {
+  // Valid current/sibling auxiliaries may coexist on the mutable draft; the core two stay exact.
+  const withReceipts = fixture();
+  withReceipts.release.assets = [
+    ...withReceipts.release.assets,
+    { id: "401", name: `receipt-inspected-${STAGE_ID}.json`, digest: "sha256:" + "1".repeat(64) },
+    { id: "402", name: `receipt-approved-${STAGE_ID}.json`, digest: "sha256:" + "2".repeat(64) },
+    { id: "403", name: `receipt-status-${STAGE_ID}.json`, digest: "sha256:" + "3".repeat(64) },
+    { id: "404", name: "receipt-status-223e4567-e89b-42d3-a456-426614174000.json", digest: "sha256:" + "4".repeat(64) },
+  ];
+  assert.equal(verifyFinalizerChain(withReceipts).stage_id, STAGE_ID);
+
+  for (const name of ["extra.tgz", "receipt-status-0000.json", "receipt-approved-dry-run-stage.json", `receipt-forged-${STAGE_ID}.json`]) {
+    const malformed = fixture();
+    malformed.release.assets = [...malformed.release.assets, { id: "405", name, digest: "sha256:" + "5".repeat(64) }];
+    assert.throws(() => verifyFinalizerChain(malformed), /release receipt verification failed/, name);
+  }
 });
 
 test("finalizer rejects ignored/swapped immutable identifiers and assets", () => {

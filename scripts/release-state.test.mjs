@@ -20,7 +20,7 @@ const prepared = {
 const draftPrepared = { draft_release_id: "rel-1", asset_ids: ["a1", "a2"], asset_digest: SHA };
 const staged = { stage_id: "stage-1", stage_tag: "next" };
 const inspected = { actor: "brian", inspected_at: "2026-08-03T00:00:00.000Z", observed_sha256: SHA };
-const approved = { actor: "brian", approved_at: "2026-08-03T01:00:00.000Z", public_version: "0.1.0-pre.4", public_tag: "next" };
+const approved = { actor: "mike", approved_at: "2026-08-03T01:00:00.000Z", public_version: "0.1.0-pre.4", public_tag: "next" };
 const registryVerified = { packument_integrity: "sha512-xxxx", signature: "ok", provenance: "ok", install_smoke_ok: true };
 const promoted = {
   actor: "brian",
@@ -65,6 +65,52 @@ test("the full happy path reconciles prepared -> final", () => {
   // The tarball SHA fixed at `prepared` survives untouched to the end.
   assert.equal(ledger.identifiers.tarball_sha256, SHA);
   assert.equal(ledger.identifiers.stage_id, "stage-1");
+  assert.equal(ledger.identifiers.inspected_by, "brian");
+  assert.equal(ledger.identifiers.approved_by, "mike");
+  assert.equal(ledger.identifiers.promoted_by, "brian");
+  assert.ok(!Object.hasOwn(ledger.identifiers, "actor"));
+});
+
+test("actor remains the public receipt field while each actor-bearing state owns one ledger key", () => {
+  const beforeInspect = replay(happyPath.slice(0, 3));
+  assert.throws(
+    () => reconcile(beforeInspect, { to: "inspected", receipt: { inspected_by: "brian", inspected_at: inspected.inspected_at, observed_sha256: SHA } }),
+    (error) => error.code === "missing_receipt" && /receipt\.actor/.test(error.message),
+  );
+
+  const afterInspect = reconcile(beforeInspect, { to: "inspected", receipt: inspected }).ledger;
+  assert.equal(reconcile(afterInspect, { to: "inspected", receipt: inspected }).changed, false);
+  assert.throws(
+    () => reconcile(afterInspect, { to: "inspected", receipt: { ...inspected, actor: "mike" } }),
+    (error) => error.code === "identifier_mismatch" && /inspected_by/.test(error.message),
+  );
+
+  const afterApproval = reconcile(afterInspect, { to: "approved_public", receipt: approved }).ledger;
+  assert.equal(afterApproval.identifiers.inspected_by, "brian");
+  assert.equal(afterApproval.identifiers.approved_by, "mike");
+
+  const rejected = reconcile(afterInspect, {
+    to: "rejected",
+    receipt: { actor: "mike", rejected_at: "2026-08-03T00:30:00.000Z", reason: "policy" },
+  }).ledger;
+  assert.equal(rejected.identifiers.inspected_by, "brian");
+  assert.equal(rejected.identifiers.rejected_by, "mike");
+
+  const afterRegistry = reconcile(afterApproval, { to: "registry_verified", receipt: registryVerified }).ledger;
+  const afterPromotion = reconcile(afterRegistry, { to: "promoted", receipt: promoted }).ledger;
+  assert.equal(afterPromotion.identifiers.promoted_by, "brian");
+  const rollback = reconcile(afterRegistry, {
+    to: "rolled_back",
+    receipt: {
+      actor: "brian",
+      rolled_back_at: "2026-08-03T02:00:00.000Z",
+      restored_next: "0.1.0-pre.3",
+      deprecated_version: "0.1.0-pre.4",
+      recovery_command: "npm i -g @holaxis/aslite@0.1.0-pre.3",
+    },
+  }).ledger;
+  assert.equal(rollback.identifiers.approved_by, "mike");
+  assert.equal(rollback.identifiers.rolled_back_by, "brian");
 });
 
 test("each state refuses when a required immutable identifier is missing", () => {

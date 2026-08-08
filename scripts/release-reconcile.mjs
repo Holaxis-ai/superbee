@@ -3,9 +3,9 @@
 // illegal transition or contradicted identifier. It performs no build, no pack, no network — it
 // only reconciles the receipt facts a prior step already fixed.
 //
-// NOTE (QA finding #3): this is an operator/validation tool, NOT the workflow's runtime ordering
-// gate. release-finalize.yml does not invoke it to prove inspection+approval occurred (that needs
-// persisted operator-signed receipts — a tracked follow-up); it enforces byte identity instead.
+// NOTE: the workflows' runtime ordering gate consumes the SAME reconcile()/replay() authority
+// through scripts/release-verify-ordering.mjs (signed operator receipts, tiered enforcement);
+// this CLI remains the operator-side way to advance/verify a ledger by hand.
 //
 // Usage: node scripts/release-reconcile.mjs --to <state> --receipt <file|-> [--ledger <file|->]
 import { readFile } from "node:fs/promises";

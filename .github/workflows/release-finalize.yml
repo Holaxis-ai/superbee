@@ -1,9 +1,15 @@
 name: Finalize release (separately dispatched)
 
-# P5A finalizer — separately dispatched after interactive npm stage inspection and approval. Both
-# jobs independently download the original candidate and stage-receipt artifacts by immutable ID,
-# query their Actions API metadata, and compare the candidate bytes, source SHA, stage ID, draft ID,
-# and exact GitHub asset IDs/digests before doing anything live.
+# P5A finalizer — separately dispatched after interactive npm stage inspection and approval. Every
+# job independently downloads the original candidate and stage-receipt artifacts by immutable ID,
+# queries their Actions API metadata, and compares the candidate bytes, source SHA, stage ID, draft
+# ID, and exact GitHub asset IDs/digests before doing anything live. The ordering-verified job (and
+# a pre-publish re-check) additionally verifies SIGNED operator inspection/approval receipts
+# (draft-release assets, ssh-signed against .github/release-allowed-signers) by replaying the
+# release-state machine: stable candidates require both receipts; a prerelease missing receipts
+# publishes with a permanent public receipt-status stamp; invalid evidence is always fatal. The
+# write-capable job then deletes only planned asset IDs, replaces status/body evidence, re-queries
+# the draft, and proves the exact retained id/name/digest inventory before publication.
 #
 # P5S must protect the `release` environment and set ASLITE_RELEASE_LIVE_ENABLED=true there. GitHub
 # auto-creates missing environments without protection, so absence of that explicit variable always
@@ -50,8 +56,96 @@ env:
   RECEIPT_DIR: release-stage-receipt
 
 jobs:
+  ordering-verified:
+    name: approved — signed operator receipt ordering gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download candidate by exact artifact id from the original run
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.ARTIFACT_DIR }}
+          merge-multiple: true
+
+      - name: Download stage receipt by exact artifact id from the original run
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ inputs.stage_receipt_artifact_id }}
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.RECEIPT_DIR }}
+          merge-multiple: true
+
+      - name: Query independent artifact and draft metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_ARTIFACT_ID: ${{ inputs.artifact_id }}
+          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
+          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
+        run: |
+          set -euo pipefail
+          case "$CANDIDATE_ARTIFACT_ID:$RECEIPT_ARTIFACT_ID:$DRAFT_RELEASE_ID" in
+            *[!0-9:]*) echo "::error::artifact and release ids must be decimal integers"; exit 1 ;;
+          esac
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CANDIDATE_ARTIFACT_ID" > candidate-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RECEIPT_ARTIFACT_ID" > receipt-artifact.json
+          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft-release.json
+
+      - name: Verify the complete immutable receipt chain
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT_ID: ${{ inputs.artifact_id }}
+          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
+          RECEIPT_ARTIFACT_DIGEST: ${{ inputs.stage_receipt_artifact_digest }}
+          STAGE_ID: ${{ inputs.stage_id }}
+          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/release-verify-chain.mjs verify-finalizer \
+            --candidate "$ARTIFACT_DIR/candidate.json" --receipt "$RECEIPT_DIR/stage-receipt.json" \
+            --candidate-artifact candidate-artifact.json --receipt-artifact receipt-artifact.json \
+            --release draft-release.json --run-id "$RUN_ID" --artifact-id "$ARTIFACT_ID" \
+            --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
+            --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
+            --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
+            --out verified-chain.json
+
+      - name: Download this candidate's signed operator receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE_ID: ${{ inputs.stage_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at > run-created-at.txt
+          mkdir -p operator-receipts
+          node scripts/release-verify-ordering.mjs assets --release draft-release.json --stage-id "$STAGE_ID" > receipt-assets.txt
+          while read -r ASSET_ID ASSET_NAME; do
+            case "$ASSET_ID" in *[!0-9]*) echo "::error::receipt asset id must be numeric"; exit 1 ;; esac
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" > "operator-receipts/$ASSET_NAME"
+          done < receipt-assets.txt
+
+      - name: Verify signed receipt ordering through the release-state machine
+        run: |
+          set -euo pipefail
+          node scripts/release-verify-ordering.mjs verify \
+            --mode "$MODE" --chain verified-chain.json --receipt "$RECEIPT_DIR/stage-receipt.json" \
+            --release draft-release.json --receipts-dir operator-receipts \
+            --run-created-at "$(cat run-created-at.txt)" \
+            --allowed-signers .github/release-allowed-signers --out ordering-result.json
+
   registry-verify:
     name: registry_verified — integrity/signature/provenance/install proof
+    needs: ordering-verified
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -204,16 +298,61 @@ jobs:
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
             --out verified-chain.json
 
-      - name: Publish the already-prepared draft
+      - name: Re-download this candidate's signed operator receipts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGE_ID: ${{ inputs.stage_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at > run-created-at.txt
+          mkdir -p operator-receipts
+          node scripts/release-verify-ordering.mjs assets --release draft-release.json --stage-id "$STAGE_ID" > receipt-assets.txt
+          while read -r ASSET_ID ASSET_NAME; do
+            case "$ASSET_ID" in *[!0-9]*) echo "::error::receipt asset id must be numeric"; exit 1 ;; esac
+            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" > "operator-receipts/$ASSET_NAME"
+          done < receipt-assets.txt
+
+      - name: Re-verify signed receipt ordering immediately before publication
+        run: |
+          set -euo pipefail
+          node scripts/release-verify-ordering.mjs verify \
+            --mode "$MODE" --chain verified-chain.json --receipt "$RECEIPT_DIR/stage-receipt.json" \
+            --release draft-release.json --receipts-dir operator-receipts \
+            --run-created-at "$(cat run-created-at.txt)" \
+            --allowed-signers .github/release-allowed-signers --out ordering-result.json
+
+      - name: Plan exact publication inventory and workflow-owned receipt status
+        env:
+          FINALIZE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node scripts/release-verify-ordering.mjs plan --result ordering-result.json \
+            --chain verified-chain.json --release draft-release.json --out-dir publication-out \
+            --finalize-run-id "$FINALIZE_RUN_ID" --out publication-plan.json
+
+      - name: Apply ID-only cleanup, retry-safe status --clobber, and owned body normalization
         env:
           GH_TOKEN: ${{ github.token }}
           LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = "live" ]; then
+            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
+          fi
+          node scripts/release-verify-ordering.mjs apply --mode "$MODE" --plan publication-plan.json \
+            --repo "$GITHUB_REPOSITORY" --out-dir publication-out
+
+      - name: Re-query and prove exact final inventory and owned body before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then
-            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
+            gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > final-draft-release.json
+            node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
+              --plan publication-plan.json --out final-publication-proof.json
             node scripts/release-run-operations.mjs --op immutable-release \
               --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --execute
           else
