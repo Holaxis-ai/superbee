@@ -124,6 +124,54 @@ test("queryEdges --text: EXACT match only — a substring never matches", async 
   });
 });
 
+test("queryEdges preserves boundary-space ids and relation text without aliasing an exact id to a prefix", async () => {
+  await withBundle(async (bundle) => {
+    await writeDoc(bundle, {
+      id: " reviews/leading",
+      frontmatter: { type: "Review", timestamp: T },
+      body: "[leading](/targets/one.md)",
+    });
+    await writeDoc(bundle, {
+      id: "reviews/trailing ",
+      frontmatter: { type: "Review", timestamp: T },
+      body: "[trailing](/targets/one.md)",
+    });
+    await writeDoc(bundle, {
+      id: "reviews/plain",
+      frontmatter: { type: "Review", timestamp: T },
+      body: "[ exact relation ](/targets/one.md) and [other](/reviews/other.md)",
+    });
+
+    assert.deepEqual(
+      (await queryEdges(bundle, { from: " reviews/leading" })).map(({ from, to, text }) => ({ from, to, text })),
+      [{ from: " reviews/leading", to: "targets/one", text: "leading" }],
+    );
+    assert.deepEqual(
+      (await queryEdges(bundle, { from: "reviews/trailing " })).map(({ from, to, text }) => ({ from, to, text })),
+      [{ from: "reviews/trailing ", to: "targets/one", text: "trailing" }],
+    );
+    assert.deepEqual(
+      (await queryEdges(bundle, { to: "reviews/ " })).map(({ from, to, text }) => ({ from, to, text })),
+      [],
+      "a boundary-space exact id must not widen to the reviews/ prefix",
+    );
+    assert.deepEqual(
+      (await queryEdges(bundle, { text: " exact relation " })).map(({ from, to, text }) => ({ from, to, text })),
+      [{ from: "reviews/plain", to: "targets/one", text: " exact relation " }],
+    );
+    assert.deepEqual(
+      await queryEdges(bundle, { text: "exact relation" }),
+      [],
+      "relation text is exact, including boundary spaces",
+    );
+    assert.equal(
+      (await queryEdges(bundle, { from: [" reviews/leading", " reviews/leading"] })).length,
+      1,
+      "duplicate selectors do not multiply a literal edge",
+    );
+  });
+});
+
 test("queryEdges: per-literal-link counting — two literal links between the same from/to (different text) are TWO edges", async () => {
   await withBundle(async (bundle) => {
     await writeDoc(bundle, {

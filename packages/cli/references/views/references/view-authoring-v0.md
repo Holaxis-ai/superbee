@@ -97,10 +97,13 @@ means renderer safety limits truncated or collapsed part of the input.
 `edges` is the general graph query — the ONE primitive every edge-shaped question reduces to
 (the same `queryEdges` atom `link list` is a CLI face over). `params`:
 
-- `from` / `to` — each an exact concept id, a bundle-relative `prefix/` (trailing slash), or an
-  array of either (union within the facet; giving both ANDs them). Omit a facet for "no
-  restriction" — an empty/blank value is treated as omitted, not "match nothing".
-- `text` — exact-match on the link's display text (never substring/regex).
+- `from` / `to` — each one exact nonblank concept id, a bundle-relative `prefix/` (trailing
+  slash), or an array of 1–32 such strings (union within the facet; giving both ANDs them). Omit
+  the property for "no restriction". Supplied empty/all-whitespace strings, empty arrays,
+  blank/non-string array entries, and arrays above 32 are invalid. Every string is preserved
+  byte-for-byte and may be at most 1,024 UTF-8 bytes; duplicate entries still count toward 32.
+- `text` — one exact nonblank link-display string (never substring/regex), preserved byte-for-byte
+  and at most 1,024 UTF-8 bytes; an empty/all-whitespace value is invalid.
 
 Backlinks are `edges({ to: docId })`; a container's contents are `edges({ from: itemId, text:
 "contains" })` (or whatever link text a bundle's convention uses) — there is no separate

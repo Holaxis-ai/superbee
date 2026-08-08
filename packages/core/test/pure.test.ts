@@ -59,6 +59,26 @@ test("paths: assertSafeConceptId rejects traversal / absolute", () => {
   assert.doesNotThrow(() => assertSafeConceptId("a/b.md"));
 });
 
+test("paths: safe nonblank concept ids retain their exact boundary bytes", () => {
+  const ids = [
+    "ordinary/id",
+    " internal space/id ",
+    " leading/id",
+    "trailing/id ",
+    'quoted/"id"',
+    "--option-like",
+    "utf8/café-🚀",
+    "line\nbreak",
+  ];
+  for (const id of ids) {
+    assert.doesNotThrow(() => assertSafeConceptId(id), JSON.stringify(id));
+    assert.equal(pathFromConceptId(id), `${id}.md`, JSON.stringify(id));
+  }
+  for (const id of ["", " ", "\t\n"]) {
+    assert.throws(() => assertSafeConceptId(id), InvalidInputError, JSON.stringify(id));
+  }
+});
+
 test("paths: assertSafeReservedDir rejects traversal / absolute but allows the bundle root", () => {
   assert.doesNotThrow(() => assertSafeReservedDir("")); // "" == bundle root, always valid
   assert.doesNotThrow(() => assertSafeReservedDir("a/b/c"));

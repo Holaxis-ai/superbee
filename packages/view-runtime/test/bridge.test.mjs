@@ -11,6 +11,7 @@ import {
 } from "../dist/index.js";
 import {
   MemoryBackend,
+  queryEdges,
   writeDoc,
 } from "@agentstate-lite/core";
 
@@ -83,6 +84,213 @@ test("bridge parser admits only exact bounded requests", () => {
     null,
     "callers cannot inject presentation bytes into a document render",
   );
+});
+
+test("edge selectors preserve exact nonblank UTF-8 bytes and retain transport bounds", () => {
+  const exactValues = [
+    "reviews/ordinary",
+    " reviews/leading",
+    "reviews/trailing ",
+    "reviews/internal space",
+    'reviews/"quoted"',
+    "--option-like",
+    "reviews/café-🚀",
+    "reviews/line\nbreak",
+  ];
+  for (const facet of ["from", "to"]) {
+    for (const value of exactValues) {
+      const parsed = parseBridgeRequest({
+        bridge: "v0",
+        type: "edges",
+        id: `edge-${facet}`,
+        params: { [facet]: value },
+      });
+      assert.equal(parsed?.params[facet], value, `${facet} ${JSON.stringify(value)}`);
+    }
+  }
+  for (const text of exactValues) {
+    const parsed = parseBridgeRequest({
+      bridge: "v0",
+      type: "edges",
+      id: "edge-text",
+      params: { text },
+    });
+    assert.equal(parsed?.params.text, text, JSON.stringify(text));
+  }
+
+  const raw1024 = `${"é".repeat(511)}x `;
+  const raw1025 = `${"é".repeat(511)}xx `;
+  assert.equal(Buffer.byteLength(raw1024, "utf8"), 1024);
+  assert.equal(Buffer.byteLength(raw1025, "utf8"), 1025);
+  for (const facet of ["from", "to", "text"]) {
+    const accepted = parseBridgeRequest({
+      bridge: "v0",
+      type: "edges",
+      id: `bound-${facet}`,
+      params: { [facet]: raw1024 },
+    });
+    assert.equal(accepted?.params[facet], raw1024, `${facet} retains exactly 1,024 raw bytes`);
+    assert.equal(
+      parseBridgeRequest({
+        bridge: "v0",
+        type: "edges",
+        id: `over-${facet}`,
+        params: { [facet]: raw1025 },
+      }),
+      null,
+      `${facet} rejects 1,025 raw bytes even when trimming would fit`,
+    );
+  }
+
+  for (const facet of ["from", "to"]) {
+    const one = [" reviews/one "];
+    const duplicates32 = Array.from({ length: 32 }, () => " reviews/duplicate ");
+    assert.deepEqual(
+      parseBridgeRequest({ bridge: "v0", type: "edges", id: `one-${facet}`, params: { [facet]: one } })?.params[facet],
+      one,
+    );
+    assert.deepEqual(
+      parseBridgeRequest({ bridge: "v0", type: "edges", id: `thirty-two-${facet}`, params: { [facet]: duplicates32 } })?.params[facet],
+      duplicates32,
+      "transport cardinality is measured before semantic matching and preserves duplicates",
+    );
+    assert.equal(
+      parseBridgeRequest({
+        bridge: "v0",
+        type: "edges",
+        id: `thirty-three-${facet}`,
+        params: { [facet]: [...duplicates32, " reviews/duplicate "] },
+      }),
+      null,
+    );
+  }
+
+  const invalidParams = [
+    { from: "" },
+    { from: " \t\n" },
+    { from: [] },
+    { from: ["reviews/one", " "] },
+    { from: ["reviews/one", 2] },
+    { to: "" },
+    { to: [] },
+    { text: " \t\n" },
+  ];
+  for (const params of invalidParams) {
+    assert.equal(
+      parseBridgeRequest({ bridge: "v0", type: "edges", id: "invalid-edge", params }),
+      null,
+      JSON.stringify(params),
+    );
+  }
+});
+
+test("BridgeService edge queries agree with core for exact boundary ids and relation text", async () => {
+  const bundle = { root: "mem://bridge-edge-identity", backend: new MemoryBackend() };
+  await writeDoc(bundle, {
+    id: " reviews/leading",
+    frontmatter: { type: "Review", timestamp: "2026-08-08T00:00:00.000Z" },
+    body: "[leading](/targets/one.md)",
+  });
+  await writeDoc(bundle, {
+    id: "reviews/trailing ",
+    frontmatter: { type: "Review", timestamp: "2026-08-08T00:00:00.000Z" },
+    body: "[trailing](/targets/one.md)",
+  });
+  await writeDoc(bundle, {
+    id: "reviews/plain",
+    frontmatter: { type: "Review", timestamp: "2026-08-08T00:00:00.000Z" },
+    body: "[ exact relation ](/targets/one.md) and [other](/reviews/other.md)",
+  });
+  const bridge = new BridgeService({
+    bundle,
+    launches: {
+      async resolve(launchId) {
+        return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+      },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    allowActionProtocol: false,
+  });
+  const filters = [
+    { from: " reviews/leading" },
+    { from: "reviews/trailing " },
+    { to: "reviews/ " },
+    { text: " exact relation " },
+  ];
+  for (const [index, params] of filters.entries()) {
+    const direct = (await queryEdges(bundle, params)).map(({ from, to, text }) => ({ from, to, text }));
+    const outcome = await bridge.handle("launch", {
+      bridge: "v0",
+      type: "edges",
+      id: `edge-${index}`,
+      params,
+    });
+    assert.deepEqual(outcome.reply?.result?.edges, direct, JSON.stringify(params));
+    assert.equal(outcome.reply?.result?.count, direct.length, JSON.stringify(params));
+  }
+});
+
+test("invalid v0 envelopes correlate only a bounded existing id and perform no launch work", async () => {
+  let launchResolutions = 0;
+  const bridge = new BridgeService({
+    bundle: { root: "mem://invalid-envelope", backend: new MemoryBackend() },
+    launches: {
+      async resolve() {
+        launchResolutions += 1;
+        throw new Error("invalid requests must not resolve a launch");
+      },
+      revoke() {},
+    },
+    config: async () => {
+      throw new Error("invalid requests must not load configuration");
+    },
+    renderDocument: () => {
+      throw new Error("invalid requests must not render bundle data");
+    },
+    allowActionProtocol: false,
+  });
+
+  const id128 = "i".repeat(128);
+  const correlated = [
+    { bridge: "v0", type: "edges", id: "extra", params: {}, extra: true },
+    { bridge: "v0", type: "unknown", id: "unknown" },
+    { bridge: "v0", type: "edges", id: "thirty-three", params: { from: Array.from({ length: 33 }, (_, i) => `reviews/${i}`) } },
+    { bridge: "v0", type: "edges", id: "selector-bytes", params: { to: `x${"y".repeat(1024)}` } },
+    { bridge: "v0", type: "edges", id: id128, params: { from: [] } },
+  ];
+  for (const request of correlated) {
+    const outcome = await bridge.handle("launch", request);
+    assert.deepEqual(outcome.reply, {
+      bridge: "v0",
+      id: request.id,
+      type: "error",
+      error: { code: "USAGE", message: "invalid or unsupported bridge request" },
+    });
+  }
+
+  const uncorrelated = [
+    null,
+    [],
+    {},
+    { bridge: "v0", type: 1, id: "not-string-type" },
+    { bridge: "v0", type: "edges", params: {} },
+    { bridge: "v0", type: "edges", id: 1, params: {} },
+    { bridge: "v0", type: "edges", id: "i".repeat(129), params: {} },
+    { bridge: "v1", type: "unknown", id: "v1-invalid" },
+    { bridge: "v2", type: "edges", id: "wrong-protocol", params: {} },
+  ];
+  for (const request of uncorrelated) {
+    const outcome = await bridge.handle("launch", request);
+    assert.deepEqual(outcome.reply, {
+      bridge: "v0",
+      id: undefined,
+      type: "error",
+      error: { code: "USAGE", message: "invalid or unsupported bridge request" },
+    });
+  }
+  assert.equal(launchResolutions, 0);
 });
 
 test("session authorization keys approval to the complete active-View subject", async () => {

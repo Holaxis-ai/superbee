@@ -149,6 +149,13 @@ function requestId(value: unknown): string | null {
   return boundedString(value, MAX_REQUEST_ID_BYTES);
 }
 
+function invalidV0RequestId(value: unknown): string | undefined {
+  if (!isPlainRecord(value) || value.bridge !== BRIDGE_PROTOCOL || typeof value.type !== "string") {
+    return undefined;
+  }
+  return requestId(value.id) ?? undefined;
+}
+
 function normalizeQueryParams(raw: unknown): QuerySelectionParams | null {
   if (!isPlainRecord(raw)) return null;
   const allowed = new Set(["type", "prefix", "field", "open", "limit"]);
@@ -185,18 +192,16 @@ function normalizeQueryParams(raw: unknown): QuerySelectionParams | null {
 function selector(value: unknown): string | string[] | undefined | null {
   if (value === undefined) return undefined;
   if (typeof value === "string") {
-    const normalized = value.trim();
-    return normalized && Buffer.byteLength(normalized, "utf8") <= MAX_SELECTOR_BYTES ? normalized : null;
+    return value.trim() && Buffer.byteLength(value, "utf8") <= MAX_SELECTOR_BYTES ? value : null;
   }
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SELECTOR_VALUES) return null;
-  const normalized: string[] = [];
+  const selectors: string[] = [];
   for (const entry of value) {
     if (typeof entry !== "string") return null;
-    const trimmed = entry.trim();
-    if (!trimmed || Buffer.byteLength(trimmed, "utf8") > MAX_SELECTOR_BYTES) return null;
-    normalized.push(trimmed);
+    if (!entry.trim() || Buffer.byteLength(entry, "utf8") > MAX_SELECTOR_BYTES) return null;
+    selectors.push(entry);
   }
-  return normalized;
+  return selectors;
 }
 
 function normalizeEdgeParams(raw: unknown): EdgeParams | null {
@@ -210,8 +215,8 @@ function normalizeEdgeParams(raw: unknown): EdgeParams | null {
   if (from !== undefined) out.from = from;
   if (to !== undefined) out.to = to;
   if (raw.text !== undefined) {
-    const text = boundedString(raw.text, 1024)?.trim();
-    if (!text) return null;
+    const text = boundedString(raw.text, MAX_SELECTOR_BYTES);
+    if (!text?.trim()) return null;
     out.text = text;
   }
   return out;
@@ -327,7 +332,16 @@ export class BridgeService {
 
   async handle(launchId: string, rawRequest: unknown): Promise<BridgeOutcome> {
     const request = parseBridgeRequest(rawRequest);
-    if (!request) return { reply: fail(undefined, BRIDGE_PROTOCOL, "USAGE", "invalid or unsupported bridge request") };
+    if (!request) {
+      return {
+        reply: fail(
+          invalidV0RequestId(rawRequest),
+          BRIDGE_PROTOCOL,
+          "USAGE",
+          "invalid or unsupported bridge request",
+        ),
+      };
+    }
     if (request.bridge === ACTION_BRIDGE_PROTOCOL && this.options.allowActionProtocol === false) {
       return {
         reply: fail(
