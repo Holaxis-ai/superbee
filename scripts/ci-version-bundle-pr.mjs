@@ -111,6 +111,23 @@ export function isBotOwnedPath(path) {
   return path.startsWith("plugins/agentstate-lite/skills/agentstate-lite/references/");
 }
 
+export function authorizeGitOperation(args) {
+  if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
+    throw new Error("Git operation argv must be an array of strings");
+  }
+  if (!args.includes("push")) return args;
+  const ref = `refs/heads/${BOT_BRANCH}`;
+  const refspec = new RegExp(`^(${OID_RE.source.slice(1, -1)}):${ref.replaceAll("/", "\\/")}$`);
+  const match = refspec.exec(args[2] ?? "");
+  const leasePrefix = `--force-with-lease=${ref}:`;
+  const expectedOid = args[3]?.startsWith(leasePrefix) ? args[3].slice(leasePrefix.length) : null;
+  const exactLease = expectedOid === "" || OID_RE.test(expectedOid ?? "");
+  if (args.length !== 4 || args[0] !== "push" || args[1] !== "origin" || !match || !exactLease) {
+    throw new Error("Git push is authorized only for the fixed automation branch with an exact force-with-lease");
+  }
+  return args;
+}
+
 export function classifyPullRequests(rows, { repository, refOid }) {
   if (rows.length === 0) return { classification: "none", pull_request: null };
   if (rows.length > 1) return { classification: "ambiguous", pull_request: null };
@@ -501,7 +518,8 @@ export class LocalRepository {
   constructor({ cwd = process.cwd(), run, remoteToken = null } = {}) {
     this.cwd = cwd;
     this.remoteToken = remoteToken;
-    this.run = run ?? ((args, options) => executeGit(this.cwd, args, options));
+    const execute = run ?? ((args, options) => executeGit(this.cwd, args, options));
+    this.run = async (args, options) => execute(authorizeGitOperation(args), options);
   }
 
   #remoteOptions(options = {}) {

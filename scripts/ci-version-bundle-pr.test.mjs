@@ -408,6 +408,29 @@ test("LocalRepository emits only the fixed branch push with exact force-with-lea
   assert.equal(commands.flat().some((arg) => arg === "--force" || arg.includes("refs/heads/main") || arg.includes("refs/tags/")), false);
 });
 
+test("the repository runner kills an exact argv-form direct-main force-push mutant", async () => {
+  const invoked = [];
+  const repository = new LocalRepository({
+    cwd: "/unused",
+    run: async (args) => { invoked.push(args); return ""; },
+  });
+  const exactMutant = ["push", "origin", "HEAD:main", "--force"];
+  const otherForbiddenPushes = [
+    ["push", "origin", `${OID.new}:refs/heads/main`, `--force-with-lease=refs/heads/main:${OID.current}`],
+    ["push", "origin", `${OID.new}:refs/heads/${BOT_BRANCH}`, "--force"],
+    ["-c", "advice.detachedHead=false", "push", "origin", `${OID.new}:refs/heads/${BOT_BRANCH}`],
+    ["push", "upstream", `${OID.new}:refs/heads/${BOT_BRANCH}`, `--force-with-lease=refs/heads/${BOT_BRANCH}:${OID.current}`],
+    ["push", "origin", `${OID.new}:refs/heads/${BOT_BRANCH}`, `--force-with-lease=refs/heads/${BOT_BRANCH}:not-an-oid`],
+  ];
+  for (const mutant of [exactMutant, ...otherForbiddenPushes]) {
+    await assert.rejects(
+      () => repository.run(mutant),
+      /fixed automation branch.*force-with-lease/i,
+    );
+  }
+  assert.deepEqual(invoked, [], "a rejected push must not reach the injected Git executor");
+});
+
 test("the apply credential authenticates Git without persisting or placing the token in argv", async () => {
   const calls = [];
   const repository = new LocalRepository({

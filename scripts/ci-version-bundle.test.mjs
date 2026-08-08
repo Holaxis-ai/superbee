@@ -59,6 +59,7 @@ test("the CI bridge has no direct-main or privileged mutation fallback", async (
   const bridge = await readFile(join(repoRoot, "scripts/ci-version-bundle-pr.mjs"), "utf8");
   const executable = `${workflow}\n${bridge}`;
 
+  assert.doesNotMatch(bridge, /HEAD:main|refs\/heads\/main/);
   assert.doesNotMatch(executable, /git push[^\n]*(?:HEAD:main|refs\/heads\/main)/);
   assert.doesNotMatch(executable, /refs\/tags\/|--delete|--admin|gh pr (?:review|merge)|auto-merge/);
   assert.doesNotMatch(bridge, /repos\/[^"'`]+\/(?:releases|merges|reviews|rulesets|environments)/);
