@@ -111,21 +111,181 @@ export function isBotOwnedPath(path) {
   return path.startsWith("plugins/agentstate-lite/skills/agentstate-lite/references/");
 }
 
-export function authorizeGitOperation(args) {
+export const GIT_OPERATION_NAMES = Object.freeze([
+  "working_tree_diff",
+  "untracked_files",
+  "tree_entry",
+  "hash_worktree_file",
+  "head_oid",
+  "tree_oid",
+  "index_tree",
+  "remote_refs",
+  "commit_diff",
+  "manifest_at_commit",
+  "fetch_object",
+  "commit_parents",
+  "ancestor_check",
+  "commit_message",
+  "stage_plan",
+  "staged_diff",
+  "unstaged_names",
+  "candidate_commit",
+  "automation_push",
+]);
+
+const BOT_COMMIT_MESSAGE_RE = /^ci: plugin \d+\.\d+\.\d+ — regenerate bundle \+ SKILL \(bot\)$/;
+const GIT_AUTHORIZATION_ERROR =
+  "Git operation is not allowlisted; only the fixed automation branch may be pushed with an exact force-with-lease";
+
+function isOid(value) {
+  return OID_RE.test(value ?? "");
+}
+
+function isLiteralBotPathspec(value) {
+  const prefix = ":(literal)";
+  return typeof value === "string" && value.startsWith(prefix) && isBotOwnedPath(value.slice(prefix.length));
+}
+
+function isSortedUnique(values) {
+  return values.every((value, index) => index === 0 || comparePaths(values[index - 1], value) < 0);
+}
+
+export function classifyGitOperation(args) {
   if (!Array.isArray(args) || !args.every((arg) => typeof arg === "string")) {
     throw new Error("Git operation argv must be an array of strings");
   }
-  if (!args.includes("push")) return args;
+  if (equal(args, ["diff", "--name-status", "-z", "--no-renames", "HEAD", "--"])) return "working_tree_diff";
+  if (equal(args, ["ls-files", "--others", "--exclude-standard", "-z", "--"])) return "untracked_files";
+  if (args.length === 5 && equal(args.slice(0, 4), ["ls-tree", "-z", "HEAD", "--"]) && isLiteralBotPathspec(args[4])) {
+    return "tree_entry";
+  }
+  if (args.length === 4 && equal(args.slice(0, 3), ["hash-object", "--no-filters", "--"]) && isBotOwnedPath(args[3])) {
+    return "hash_worktree_file";
+  }
+  if (equal(args, ["rev-parse", "HEAD"])) return "head_oid";
+  if (equal(args, ["rev-parse", "HEAD^{tree}"]) || (args.length === 2 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})\^\{tree\}$/.test(args[1]))) {
+    return "tree_oid";
+  }
+  if (equal(args, ["write-tree"])) return "index_tree";
+  if (equal(args, ["ls-remote", "--refs", "origin", `refs/heads/${BASE_BRANCH}`, `refs/heads/${BOT_BRANCH}`])) {
+    return "remote_refs";
+  }
+  if (
+    args.length === 10 &&
+    equal(args.slice(0, 7), ["diff-tree", "--no-commit-id", "--raw", "--no-abbrev", "-r", "-z", "--no-renames"]) &&
+    isOid(args[7]) &&
+    isOid(args[8]) &&
+    equal(args.slice(9), ["--"])
+  ) {
+    return "commit_diff";
+  }
+  if (args.length === 2 && args[0] === "show") {
+    const separator = args[1].indexOf(":");
+    const oid = args[1].slice(0, separator);
+    const path = args[1].slice(separator + 1);
+    if (separator > 0 && isOid(oid) && [".claude-plugin/marketplace.json", "plugins/agentstate-lite/.codex-plugin/plugin.json"].includes(path)) {
+      return "manifest_at_commit";
+    }
+  }
+  if (args.length === 5 && equal(args.slice(0, 4), ["fetch", "--no-tags", "--quiet", "origin"]) && isOid(args[4])) {
+    return "fetch_object";
+  }
+  if (args.length === 5 && equal(args.slice(0, 4), ["rev-list", "--parents", "-n", "1"]) && isOid(args[4])) {
+    return "commit_parents";
+  }
+  if (args.length === 4 && equal(args.slice(0, 2), ["merge-base", "--is-ancestor"]) && isOid(args[2]) && isOid(args[3])) {
+    return "ancestor_check";
+  }
+  if (args.length === 4 && equal(args.slice(0, 3), ["log", "-1", "--format=%B"]) && isOid(args[3])) {
+    return "commit_message";
+  }
+  if (args.length > 3 && equal(args.slice(0, 3), ["add", "-A", "--"]) && args.slice(3).every(isLiteralBotPathspec) && isSortedUnique(args.slice(3))) {
+    return "stage_plan";
+  }
+  if (equal(args, ["diff", "--cached", "--raw", "--no-abbrev", "-z", "--no-renames", "HEAD", "--"])) {
+    return "staged_diff";
+  }
+  if (equal(args, ["diff", "--name-only", "-z", "--"])) return "unstaged_names";
+  if (
+    args.length === 8 &&
+    equal(args.slice(0, 6), [
+      "-c",
+      "user.name=github-actions[bot]",
+      "-c",
+      "user.email=github-actions[bot]@users.noreply.github.com",
+      "commit",
+      "--no-gpg-sign",
+    ]) &&
+    args[6] === "-m" &&
+    BOT_COMMIT_MESSAGE_RE.test(args[7])
+  ) {
+    return "candidate_commit";
+  }
   const ref = `refs/heads/${BOT_BRANCH}`;
-  const refspec = new RegExp(`^(${OID_RE.source.slice(1, -1)}):${ref.replaceAll("/", "\\/")}$`);
-  const match = refspec.exec(args[2] ?? "");
+  const [candidateOid, destination, extraRefspec] = (args[2] ?? "").split(":");
   const leasePrefix = `--force-with-lease=${ref}:`;
   const expectedOid = args[3]?.startsWith(leasePrefix) ? args[3].slice(leasePrefix.length) : null;
   const exactLease = expectedOid === "" || OID_RE.test(expectedOid ?? "");
-  if (args.length !== 4 || args[0] !== "push" || args[1] !== "origin" || !match || !exactLease) {
-    throw new Error("Git push is authorized only for the fixed automation branch with an exact force-with-lease");
+  if (
+    args.length === 4 &&
+    args[0] === "push" &&
+    args[1] === "origin" &&
+    isOid(candidateOid) &&
+    destination === ref &&
+    extraRefspec === undefined &&
+    exactLease
+  ) {
+    return "automation_push";
   }
-  return args;
+  throw new Error(GIT_AUTHORIZATION_ERROR);
+}
+
+function appendGitConfig(options, key, value) {
+  const gitEnv = { ...(options?.gitEnv ?? {}) };
+  const countText = gitEnv.GIT_CONFIG_COUNT ?? "0";
+  if (!/^\d+$/.test(countText)) throw new Error("Git config environment has an invalid entry count");
+  const count = Number(countText);
+  gitEnv.GIT_CONFIG_COUNT = String(count + 1);
+  gitEnv[`GIT_CONFIG_KEY_${count}`] = key;
+  gitEnv[`GIT_CONFIG_VALUE_${count}`] = value;
+  return { ...options, gitEnv };
+}
+
+function validateGitExecutionOptions(operation, options) {
+  const normalized = options ?? {};
+  if (!normalized || typeof normalized !== "object" || Array.isArray(normalized)) {
+    throw new Error("Git execution options are not allowlisted");
+  }
+  if (Object.keys(normalized).some((key) => !["allowExitCodes", "gitEnv"].includes(key))) {
+    throw new Error("Git execution options are not allowlisted");
+  }
+  if (operation === "ancestor_check") {
+    if (!equal(normalized.allowExitCodes, [1])) throw new Error("Git execution options are not allowlisted");
+  } else if (normalized.allowExitCodes !== undefined) {
+    throw new Error("Git execution options are not allowlisted");
+  }
+  if (normalized.gitEnv === undefined) return normalized;
+  if (!["remote_refs", "fetch_object", "automation_push"].includes(operation)) {
+    throw new Error("Git execution options are not allowlisted");
+  }
+  const keys = Object.keys(normalized.gitEnv).sort();
+  const expectedKeys = ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"];
+  if (
+    !equal(keys, expectedKeys) ||
+    normalized.gitEnv.GIT_CONFIG_COUNT !== "1" ||
+    normalized.gitEnv.GIT_CONFIG_KEY_0 !== "http.https://github.com/.extraheader" ||
+    !/^AUTHORIZATION: basic [A-Za-z0-9+/]+={0,2}$/.test(normalized.gitEnv.GIT_CONFIG_VALUE_0 ?? "")
+  ) {
+    throw new Error("Git execution options are not allowlisted");
+  }
+  return normalized;
+}
+
+function secureGitExecutionOptions(operation, options) {
+  const validated = validateGitExecutionOptions(operation, options);
+  return ["candidate_commit", "automation_push"].includes(operation)
+    ? appendGitConfig(validated, "core.hooksPath", "/dev/null")
+    : validated;
 }
 
 export function classifyPullRequests(rows, { repository, refOid }) {
@@ -440,11 +600,14 @@ export async function applyPlan({ plan, repository, github, repositoryName }) {
 }
 
 async function executeGit(cwd, args, { allowExitCodes = [], gitEnv = {} } = {}) {
+  const childEnv = { ...process.env, ...gitEnv };
+  delete childEnv.GITHUB_TOKEN;
+  delete childEnv.VERSION_BUNDLE_APP_TOKEN;
   try {
     const result = await execFileAsync("git", args, {
       cwd,
       encoding: "utf8",
-      env: { ...process.env, ...gitEnv },
+      env: childEnv,
       maxBuffer: 16 * 1024 * 1024,
     });
     return { stdout: result.stdout, stderr: result.stderr, code: 0 };
@@ -519,7 +682,10 @@ export class LocalRepository {
     this.cwd = cwd;
     this.remoteToken = remoteToken;
     const execute = run ?? ((args, options) => executeGit(this.cwd, args, options));
-    this.run = async (args, options) => execute(authorizeGitOperation(args), options);
+    this.run = async (args, options) => {
+      const operation = classifyGitOperation(args);
+      return execute(args, secureGitExecutionOptions(operation, options));
+    };
   }
 
   #remoteOptions(options = {}) {

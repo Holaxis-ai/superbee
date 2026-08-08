@@ -9,11 +9,13 @@ import {
   ACTIONS,
   BOT_BRANCH,
   BOT_OWNED_PATHS,
+  GIT_OPERATION_NAMES,
   GitHubBridgeClient,
   LocalRepository,
   applyPlan,
   canonicalJson,
   chooseAction,
+  classifyGitOperation,
   classifyPullRequests,
   inspectPlan,
   isBotOwnedPath,
@@ -162,7 +164,57 @@ test("GitHub discovery is base-independent and paginates the complete same-head 
   assert.equal(inventory[0].base.ref, "wrong-base", "wrong-base rows must remain visible to local classification");
 });
 
-test("scratch Git repository binds real bytes/modes and creates one exact leased candidate", async () => {
+test("the default-deny Git classifier owns every complete LocalRepository argv shape", () => {
+  const botRef = `refs/heads/${BOT_BRANCH}`;
+  const samples = [
+    ["diff", "--name-status", "-z", "--no-renames", "HEAD", "--"],
+    ["ls-files", "--others", "--exclude-standard", "-z", "--"],
+    ["ls-tree", "-z", "HEAD", "--", ":(literal).claude-plugin/marketplace.json"],
+    ["hash-object", "--no-filters", "--", ".claude-plugin/marketplace.json"],
+    ["rev-parse", "HEAD"],
+    ["rev-parse", "HEAD^{tree}"],
+    ["rev-parse", `${OID.current}^{tree}`],
+    ["write-tree"],
+    ["ls-remote", "--refs", "origin", "refs/heads/main", botRef],
+    ["diff-tree", "--no-commit-id", "--raw", "--no-abbrev", "-r", "-z", "--no-renames", OID.base, OID.current, "--"],
+    ["show", `${OID.current}:.claude-plugin/marketplace.json`],
+    ["show", `${OID.current}:plugins/agentstate-lite/.codex-plugin/plugin.json`],
+    ["fetch", "--no-tags", "--quiet", "origin", OID.current],
+    ["rev-list", "--parents", "-n", "1", OID.current],
+    ["merge-base", "--is-ancestor", OID.base, OID.current],
+    ["log", "-1", "--format=%B", OID.current],
+    ["add", "-A", "--", ":(literal).claude-plugin/marketplace.json"],
+    ["diff", "--cached", "--raw", "--no-abbrev", "-z", "--no-renames", "HEAD", "--"],
+    ["diff", "--name-only", "-z", "--"],
+    [
+      "-c",
+      "user.name=github-actions[bot]",
+      "-c",
+      "user.email=github-actions[bot]@users.noreply.github.com",
+      "commit",
+      "--no-gpg-sign",
+      "-m",
+      "ci: plugin 1.2.3 — regenerate bundle + SKILL (bot)",
+    ],
+    ["push", "origin", `${OID.new}:${botRef}`, `--force-with-lease=${botRef}:`],
+    ["push", "origin", `${OID.new}:${botRef}`, `--force-with-lease=${botRef}:${OID.current}`],
+  ];
+  const observed = new Set(samples.map(classifyGitOperation));
+  assert.deepEqual([...observed].sort(), [...GIT_OPERATION_NAMES].sort());
+
+  const rejected = [
+    ["status"],
+    ["send-pack", "--force", "/tmp/remote.git", "HEAD:refs/heads/main"],
+    ["ship"],
+    ["-c", "alias.ship=push origin HEAD:main --force", "ship"],
+    ["-c", "user.email=github-actions[bot]@users.noreply.github.com", "-c", "user.name=github-actions[bot]", "commit", "--no-gpg-sign", "-m", "ci: plugin 1.2.3 — regenerate bundle + SKILL (bot)"],
+    ["fetch", "origin", OID.current],
+    ["add", "-A", "--", ":(literal)README.md"],
+  ];
+  for (const argv of rejected) assert.throws(() => classifyGitOperation(argv), /Git operation is not allowlisted/);
+});
+
+test("scratch Git transaction exercises the closed vocabulary and disables commit/push hooks", async () => {
   const root = await mkdtemp(join(tmpdir(), "ci-version-bundle-pr-git-"));
   const remote = join(root, "remote.git");
   const checkout = join(root, "checkout");
@@ -198,7 +250,9 @@ test("scratch Git repository binds real bytes/modes and creates one exact leased
       '{"name":"agentstate-lite","version":"1.0.1"}\n',
     );
 
-    const repository = new LocalRepository({ cwd: checkout });
+    await writeFile(join(checkout, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 91\n", { mode: 0o755 });
+    await writeFile(join(checkout, ".git/hooks/pre-push"), "#!/bin/sh\nexit 92\n", { mode: 0o755 });
+    const repository = new LocalRepository({ cwd: checkout, remoteToken: "scratch-installation-token" });
     const plan = await inspectPlan({
       repository,
       github: fakeGithub(),
@@ -214,6 +268,16 @@ test("scratch Git repository binds real bytes/modes and creates one exact leased
     assert.equal(await repository.readAutomationOid(), candidate);
     const observed = await repository.observeRemote({ baseOid: plan.base.oid, changes: plan.changes });
     assert.equal(observed.automation_ref.classification, "current_candidate");
+
+    git(checkout, ["-c", "core.hooksPath=/dev/null", "push", "origin", `${candidate}:refs/heads/main`]);
+    await writeFile(join(checkout, "fixture.txt"), "main advanced\n");
+    git(checkout, ["add", "fixture.txt"]);
+    git(checkout, ["-c", "core.hooksPath=/dev/null", "commit", "-m", "advance main"]);
+    git(checkout, ["-c", "core.hooksPath=/dev/null", "push", "origin", "HEAD:refs/heads/main"]);
+    const advancedBase = git(checkout, ["rev-parse", "HEAD"]);
+    const prior = await repository.observeRemote({ baseOid: advancedBase, changes: [] });
+    assert.equal(prior.main_oid, advancedBase);
+    assert.equal(prior.automation_ref.classification, "replaceable_prior_proposal");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -428,7 +492,78 @@ test("the repository runner kills an exact argv-form direct-main force-push muta
       /fixed automation branch.*force-with-lease/i,
     );
   }
+  await assert.rejects(
+    () => repository.run(
+      [
+        "push",
+        "origin",
+        `${OID.new}:refs/heads/${BOT_BRANCH}`,
+        `--force-with-lease=refs/heads/${BOT_BRANCH}:${OID.current}`,
+      ],
+      { gitEnv: { GIT_SSH_COMMAND: "untrusted-helper" } },
+    ),
+    /Git execution options are not allowlisted/,
+  );
   assert.deepEqual(invoked, [], "a rejected push must not reach the injected Git executor");
+});
+
+async function makeGitAuthorizationScratch(prefix) {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  const remote = join(root, "remote.git");
+  const checkout = join(root, "checkout");
+  const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  await mkdir(remote);
+  git(remote, ["init", "--bare"]);
+  await mkdir(checkout);
+  git(checkout, ["init", "-b", "main"]);
+  git(checkout, ["config", "user.name", "fixture"]);
+  git(checkout, ["config", "user.email", "fixture@example.invalid"]);
+  await writeFile(join(checkout, "fixture.txt"), "base\n");
+  git(checkout, ["add", "fixture.txt"]);
+  git(checkout, ["commit", "-m", "base"]);
+  git(checkout, ["remote", "add", "origin", remote]);
+  git(checkout, ["push", "-u", "origin", "main"]);
+  const base = git(remote, ["rev-parse", "refs/heads/main"]);
+  await writeFile(join(checkout, "fixture.txt"), "candidate\n");
+  git(checkout, ["add", "fixture.txt"]);
+  git(checkout, ["commit", "-m", "candidate"]);
+  const candidate = git(checkout, ["rev-parse", "HEAD"]);
+  return { root, remote, checkout, git, base, candidate };
+}
+
+test("the repository runner rejects send-pack direct-main before Git executes it", async () => {
+  const fixture = await makeGitAuthorizationScratch("ci-version-bundle-send-pack-");
+  try {
+    const repository = new LocalRepository({ cwd: fixture.checkout });
+    try {
+      await repository.run(["send-pack", "--force", fixture.remote, "HEAD:refs/heads/main"]);
+      const observed = fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]);
+      throw new Error(`SURVIVED send-pack direct-main: ${fixture.base} -> ${observed}`);
+    } catch (error) {
+      assert.match(error.message, /Git operation is not allowlisted/);
+    }
+    assert.equal(fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]), fixture.base);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("the repository runner rejects a configured direct-main Git alias before Git executes it", async () => {
+  const fixture = await makeGitAuthorizationScratch("ci-version-bundle-git-alias-");
+  try {
+    fixture.git(fixture.checkout, ["config", "alias.ship", "push origin HEAD:main --force"]);
+    const repository = new LocalRepository({ cwd: fixture.checkout });
+    try {
+      await repository.run(["ship"]);
+      const observed = fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]);
+      throw new Error(`SURVIVED configured-alias direct-main: ${fixture.base} -> ${observed}`);
+    } catch (error) {
+      assert.match(error.message, /Git operation is not allowlisted/);
+    }
+    assert.equal(fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]), fixture.base);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
 });
 
 test("the apply credential authenticates Git without persisting or placing the token in argv", async () => {
@@ -441,7 +576,9 @@ test("the apply credential authenticates Git without persisting or placing the t
   await repository.pushAutomationRef(OID.new, OID.current);
   assert.equal(calls.length, 1);
   assert.doesNotMatch(calls[0].args.join(" "), /installation-secret/);
-  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_COUNT, "1");
+  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_COUNT, "2");
   assert.equal(calls[0].options.gitEnv.GIT_CONFIG_KEY_0, "http.https://github.com/.extraheader");
   assert.match(calls[0].options.gitEnv.GIT_CONFIG_VALUE_0, /^AUTHORIZATION: basic /);
+  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_KEY_1, "core.hooksPath");
+  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_VALUE_1, "/dev/null");
 });
