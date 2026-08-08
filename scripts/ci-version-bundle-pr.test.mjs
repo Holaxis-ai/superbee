@@ -348,7 +348,7 @@ function fakeRepo({ changed = true, refState = ref(), mainOid = OID.base, localC
   };
 }
 
-function fakeGithub({ pulls = [] } = {}) {
+function fakeGithub({ pulls = [], finalHeadOid = OID.current, mutateGetPullRequest = (pull) => pull } = {}) {
   const calls = [];
   let metadata = { title: null, body: null };
   let closed = false;
@@ -369,14 +369,14 @@ function fakeGithub({ pulls = [] } = {}) {
       closed = true;
     },
     async getPullRequest(_owner, _repo, number) {
-      return {
+      return mutateGetPullRequest({
         number,
         state: closed ? "closed" : "open",
         title: metadata.title,
         body: metadata.body,
         base: { ref: "main" },
-        head: { ref: BOT_BRANCH, sha: OID.current, repo: { full_name: "Holaxis-ai/agentstate-lite" } },
-      };
+        head: { ref: BOT_BRANCH, sha: finalHeadOid, repo: { full_name: "Holaxis-ai/agentstate-lite" } },
+      });
     },
   };
 }
@@ -458,7 +458,7 @@ test("new-ref apply commits once and pushes with an exact expected-absence lease
   const plan = await planned();
   const repository = fakeRepo();
   const postPull = prRow({ number: 9, head_oid: OID.new });
-  const github = fakeGithub();
+  const github = fakeGithub({ finalHeadOid: OID.new });
   let reads = 0;
   github.listSameHeadPullRequests = async () => (++reads <= 2 ? [] : [postPull]);
   await applyPlan({ plan, repository, github, repositoryName: plan.repository });
@@ -478,12 +478,50 @@ test("branch-only interruption recovery reuses the current head without another 
   assert.equal(github.calls[0][0], "create");
 });
 
+test("create apply rejects a closed PR returned by the final GET with canonical metadata", async () => {
+  const plan = await planned();
+  const repository = fakeRepo();
+  const postPull = prRow({ number: 9, head_oid: OID.new });
+  const github = fakeGithub({
+    finalHeadOid: OID.new,
+    mutateGetPullRequest: (pull) => ({ ...pull, state: "closed" }),
+  });
+  let reads = 0;
+  github.listSameHeadPullRequests = async () => (++reads <= 2 ? [] : [postPull]);
+  await assert.rejects(
+    applyPlan({ plan, repository, github, repositoryName: plan.repository }),
+    /open PR postcondition.*exact identity/i,
+  );
+});
+
+test("reconcile apply rejects every identity movement returned by the final GET with canonical metadata", async () => {
+  const current = ref("current_candidate", OID.current);
+  const exact = prRow();
+  const plan = await planned({ refState: current, pulls: [exact] });
+  const mutations = [
+    ["number", (pull) => ({ ...pull, number: 8 })],
+    ["base", (pull) => ({ ...pull, base: { ref: "develop" } })],
+    ["head ref", (pull) => ({ ...pull, head: { ...pull.head, ref: "moved-head" } })],
+    ["head repository", (pull) => ({ ...pull, head: { ...pull.head, repo: { full_name: "foreign/agentstate-lite" } } })],
+    ["head OID", (pull) => ({ ...pull, head: { ...pull.head, sha: OID.prior } })],
+  ];
+  for (const [label, mutateGetPullRequest] of mutations) {
+    const repository = fakeRepo({ refState: current });
+    const github = fakeGithub({ pulls: [exact], mutateGetPullRequest });
+    await assert.rejects(
+      applyPlan({ plan, repository, github, repositoryName: plan.repository }),
+      /open PR postcondition.*exact identity/i,
+      label,
+    );
+  }
+});
+
 test("prior proposal replacement leases the exact observed OID and reconciles only its exact PR", async () => {
   const priorRef = ref("replaceable_prior_proposal", OID.current);
   const oldPr = prRow({ head_oid: OID.current });
   const plan = await planned({ refState: priorRef, pulls: [oldPr] });
   const repository = fakeRepo({ refState: priorRef });
-  const github = fakeGithub({ pulls: [oldPr] });
+  const github = fakeGithub({ pulls: [oldPr], finalHeadOid: OID.new });
   let reads = 0;
   github.listSameHeadPullRequests = async () => (++reads === 1 ? [oldPr] : [prRow({ head_oid: OID.new })]);
   await applyPlan({ plan, repository, github, repositoryName: plan.repository });

@@ -524,6 +524,22 @@ function requireExactPrAtBarrier(rows, repository, candidateOid, expectedNumber)
   }
 }
 
+function requireExactOpenPrPostcondition(pull, { repository, candidateOid, expectedNumber, title, body }) {
+  const identity = pull && typeof pull === "object" ? normalizePullRequests([pull])[0] : null;
+  if (
+    identity?.number !== expectedNumber ||
+    identity.state !== "open" ||
+    identity.base_ref !== BASE_BRANCH ||
+    identity.head_ref !== BOT_BRANCH ||
+    identity.head_repository !== repository ||
+    identity.head_oid !== candidateOid ||
+    pull.title !== title ||
+    pull.body !== body
+  ) {
+    throw new Error("open PR postcondition does not match the exact identity and canonical metadata");
+  }
+}
+
 export async function applyPlan({ plan, repository, github, repositoryName }) {
   validatePlan(plan);
   if (repositoryName !== plan.repository) throw new Error("runtime repository differs from the signed plan");
@@ -590,9 +606,13 @@ export async function applyPlan({ plan, repository, github, repositoryName }) {
   } else {
     requireExactPrAtBarrier(finalPulls, plan.repository, candidateOid, pullNumber);
     const reconciled = await github.getPullRequest(owner, repo, pullNumber);
-    if (reconciled.title !== title || reconciled.body !== body) {
-      throw new Error("PR metadata postcondition does not match the canonical title/body");
-    }
+    requireExactOpenPrPostcondition(reconciled, {
+      repository: plan.repository,
+      candidateOid,
+      expectedNumber: pullNumber,
+      title,
+      body,
+    });
   }
 
   if (typeof repository.readAutomationOid === "function" && (await repository.readAutomationOid()) !== candidateOid) {
