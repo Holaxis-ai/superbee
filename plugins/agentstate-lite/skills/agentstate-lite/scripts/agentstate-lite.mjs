@@ -44,7 +44,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var define_ASLITE_BUILD_IDENTITY_default;
 var init_define_ASLITE_BUILD_IDENTITY = __esm({
   "<define:__ASLITE_BUILD_IDENTITY__>"() {
-    define_ASLITE_BUILD_IDENTITY_default = { schema: "aslite.build-identity.v1", package: { name: "@holaxis/aslite", version: "0.1.0-pre.3" }, source: { commit: "d65af30da7678392aff79356e88916bb9dbd0880", dirty: false }, artifact: { channel: "marketplace-legacy" }, compatibility_contracts: { skill: 1, hook: 1, mcp: 1 } };
+    define_ASLITE_BUILD_IDENTITY_default = { schema: "aslite.build-identity.v1", package: { name: "@holaxis/aslite", version: "0.1.0-pre.3" }, source: { commit: "18d3a85896a82a6104f60aa52e96e1eab01135f4", dirty: false }, artifact: { channel: "marketplace-legacy" }, compatibility_contracts: { skill: 1, hook: 1, mcp: 1 } };
   }
 });
 
@@ -67116,6 +67116,12 @@ function boundedString(value, maxBytes) {
 function requestId(value) {
   return boundedString(value, MAX_REQUEST_ID_BYTES);
 }
+function invalidV0RequestId(value) {
+  if (!isPlainRecord2(value) || value.bridge !== BRIDGE_PROTOCOL || typeof value.type !== "string") {
+    return void 0;
+  }
+  return requestId(value.id) ?? void 0;
+}
 function normalizeQueryParams(raw) {
   if (!isPlainRecord2(raw)) return null;
   const allowed = /* @__PURE__ */ new Set(["type", "prefix", "field", "open", "limit"]);
@@ -67151,18 +67157,16 @@ function normalizeQueryParams(raw) {
 function selector(value) {
   if (value === void 0) return void 0;
   if (typeof value === "string") {
-    const normalized2 = value.trim();
-    return normalized2 && Buffer.byteLength(normalized2, "utf8") <= MAX_SELECTOR_BYTES ? normalized2 : null;
+    return value.trim() && Buffer.byteLength(value, "utf8") <= MAX_SELECTOR_BYTES ? value : null;
   }
   if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SELECTOR_VALUES) return null;
-  const normalized = [];
+  const selectors = [];
   for (const entry of value) {
     if (typeof entry !== "string") return null;
-    const trimmed = entry.trim();
-    if (!trimmed || Buffer.byteLength(trimmed, "utf8") > MAX_SELECTOR_BYTES) return null;
-    normalized.push(trimmed);
+    if (!entry.trim() || Buffer.byteLength(entry, "utf8") > MAX_SELECTOR_BYTES) return null;
+    selectors.push(entry);
   }
-  return normalized;
+  return selectors;
 }
 function normalizeEdgeParams(raw) {
   if (!isPlainRecord2(raw)) return null;
@@ -67175,8 +67179,8 @@ function normalizeEdgeParams(raw) {
   if (from !== void 0) out.from = from;
   if (to !== void 0) out.to = to;
   if (raw.text !== void 0) {
-    const text4 = boundedString(raw.text, 1024)?.trim();
-    if (!text4) return null;
+    const text4 = boundedString(raw.text, MAX_SELECTOR_BYTES);
+    if (!text4?.trim()) return null;
     out.text = text4;
   }
   return out;
@@ -67248,7 +67252,16 @@ var BridgeService = class {
   nextPollGeneration = 0;
   async handle(launchId, rawRequest) {
     const request = parseBridgeRequest(rawRequest);
-    if (!request) return { reply: fail(void 0, BRIDGE_PROTOCOL, "USAGE", "invalid or unsupported bridge request") };
+    if (!request) {
+      return {
+        reply: fail(
+          invalidV0RequestId(rawRequest),
+          BRIDGE_PROTOCOL,
+          "USAGE",
+          "invalid or unsupported bridge request"
+        )
+      };
+    }
     if (request.bridge === ACTION_BRIDGE_PROTOCOL && this.options.allowActionProtocol === false) {
       return {
         reply: fail(
