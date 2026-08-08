@@ -13,7 +13,7 @@ export const STAMP_SCHEMA = "aslite.receipt-status.v1";
 export const SIGN_NAMESPACE = "aslite-release-receipt";
 export const RECEIPT_DECISIONS = ["inspected", "approved"];
 
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+const SEMVER = /^\d+\.\d+\.\d+(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const ACTOR = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // GitHub login shape
@@ -41,8 +41,8 @@ function isoTime(name, value) {
 
 /** prerelease candidates publish to `next`; stable candidates move `latest`. */
 export function releaseTier(version) {
-  field("version", version, SEMVER);
-  return version.includes("-") ? "prerelease" : "stable";
+  const parsed = SEMVER.exec(field("version", version, SEMVER));
+  return parsed[1] === undefined ? "stable" : "prerelease";
 }
 
 export function policyTagFor(version) {
@@ -142,11 +142,22 @@ function bindReceipt(kind, payload, chain) {
   }
 }
 
-function orderedBefore(name, earlier, later, message) {
-  const a = Date.parse(earlier);
-  const b = Date.parse(later);
-  if (Number.isNaN(a) || Number.isNaN(b)) fail(`invalid timestamp on ${name}`);
+function timestampMillis(name, value) {
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) fail(`invalid timestamp on ${name}`);
+  return parsed;
+}
+
+function orderedNoLaterThan(name, earlier, later, message) {
+  const a = timestampMillis(name, earlier);
+  const b = timestampMillis(name, later);
   if (a > b) fail(message);
+}
+
+function orderedStrictlyBefore(name, earlier, later, message) {
+  const a = timestampMillis(name, earlier);
+  const b = timestampMillis(name, later);
+  if (a >= b) fail(message);
 }
 
 function numericAssetId(name, value) {
@@ -238,7 +249,7 @@ export function evaluateOrdering({ mode, chain, stageReceipt, inspected, approve
     if (receipt.uploaderLogin !== receipt.payload.actor) {
       fail(`${kind} receipt uploaded by ${JSON.stringify(receipt.uploaderLogin)} but signed as ${receipt.payload.actor}`);
     }
-    orderedBefore(
+    orderedNoLaterThan(
       `${kind} receipt`,
       receipt.uploadedAt,
       runCreatedAt,
@@ -246,11 +257,11 @@ export function evaluateOrdering({ mode, chain, stageReceipt, inspected, approve
     );
   }
   if (inspected && approved) {
-    orderedBefore(
+    orderedStrictlyBefore(
       "receipt pair",
       inspected.uploadedAt,
       approved.uploadedAt,
-      "approval receipt precedes the inspection receipt — inspection must come first",
+      "inspection receipt upload must be strictly earlier than approval receipt upload",
     );
   }
 

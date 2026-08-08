@@ -61,7 +61,7 @@ function stageReceiptFor(version) {
     version,
     tag: `v${version}`,
     sourceCommit: COMMIT,
-    policyTag: version.includes("-") ? "next" : "latest",
+    policyTag: policyTagFor(version),
     tarballSha256: TARBALL_SHA,
     tarballFilename: tarball,
     integrity: INTEGRITY,
@@ -175,8 +175,11 @@ test("payload shape: canonical, ordered, validated", () => {
 test("tier + naming authorities", () => {
   assert.equal(releaseTier(PRE), "prerelease");
   assert.equal(releaseTier(STABLE), "stable");
+  assert.equal(releaseTier("1.0.0+build-1"), "stable", "a hyphen in build metadata does not make a prerelease");
+  assert.equal(releaseTier("1.0.0-pre.1+build-1"), "prerelease", "prerelease identity survives build metadata");
   assert.equal(policyTagFor(PRE), "next");
   assert.equal(policyTagFor(STABLE), "latest");
+  assert.equal(policyTagFor("1.0.0+build-1"), "latest");
   assert.equal(receiptAssetName("inspected", STAGE_ID), `receipt-inspected-${STAGE_ID}.json`);
   assert.equal(stampAssetName(STAGE_ID), `receipt-status-${STAGE_ID}.json`);
   assert.ok(parseAuxiliaryReleaseAssetName(`receipt-approved-${STAGE_ID}.json`, { mode: "pre-stage" }));
@@ -288,6 +291,26 @@ test("ADVERSARIAL — present-but-invalid evidence is red in every tier and mode
       assert.throws(() => evaluate(PRE, { mode, ...receipts }), /operator receipt verification failed/, `${label} (${mode})`);
     }
   }
+});
+
+test("ORDERING PRECISION — receipt pair is strict while the finalize deadline permits equality", () => {
+  const sameSecond = "2026-08-08T10:31:00Z";
+  for (const mode of ["live", "dry-run"]) {
+    assert.throws(
+      () => evaluate(STABLE, {
+        mode,
+        inspected: receiptFor("inspected", STABLE, {}, { uploadedAt: sameSecond }),
+        approved: receiptFor("approved", STABLE, {}, { uploadedAt: sameSecond }),
+      }),
+      /inspection receipt upload must be strictly earlier than approval receipt upload/,
+      `equal-second receipt uploads cannot prove inspection-before-approval (${mode})`,
+    );
+  }
+
+  const atDispatch = evaluate(STABLE, {
+    approved: receiptFor("approved", STABLE, {}, { uploadedAt: RUN_CREATED_AT }),
+  });
+  assert.equal(atDispatch.state, "approved_public", "receipt upload equal to finalize dispatch remains no-later-than valid");
 });
 
 test("ADVERSARIAL — a forged matching-signature receipt with a wrong observed SHA hits the state machine", () => {
@@ -764,6 +787,59 @@ test("verify/plan/final subcommands bind downloaded bytes through the final publ
   })();
 });
 
+test("inspection refuses a draft/tag mismatch before download, signing, or upload", () => {
+  const harness = mkdtempSync(path.join(tmpdir(), "aslite-inspect-tag-mismatch-test-"));
+  try {
+    const bin = path.join(harness, "bin");
+    const controlledTmp = path.join(harness, "tmp");
+    mkdirSync(bin);
+    mkdirSync(controlledTmp);
+    const ghLog = path.join(harness, "gh.log");
+    const operationsLog = path.join(harness, "operations.log");
+    const ghStub = path.join(bin, "gh");
+    writeFileSync(ghStub, `#!/bin/sh
+printf '%s\\n' "$*" >> "$ASLITE_TEST_GH_LOG"
+case "$*" in
+  *releases/300*) printf '%s\\n' '{"id":300,"draft":true,"tag_name":"v9.9.9","assets":[]}' ;;
+  *) exit 2 ;;
+esac
+`);
+    for (const command of ["npm", "ssh-keygen"]) {
+      const stub = path.join(bin, command);
+      writeFileSync(stub, `#!/bin/sh
+printf '%s %s\\n' '${command}' "$*" >> "$ASLITE_TEST_OPERATIONS_LOG"
+exit 99
+`);
+      chmodSync(stub, 0o755);
+    }
+    chmodSync(ghStub, 0o755);
+    const result = spawnSync(process.execPath, [
+      path.join(repoRoot, "scripts", "release-inspect.mjs"),
+      "--stage-id", STAGE_ID,
+      "--version", PRE,
+      "--draft-release-id", "300",
+      "--key", path.join(harness, "unused-key"),
+      "--repo", "Holaxis-ai/agentstate-lite",
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        TMPDIR: controlledTmp,
+        ASLITE_TEST_GH_LOG: ghLog,
+        ASLITE_TEST_OPERATIONS_LOG: operationsLog,
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /draft release tag v9\.9\.9 does not match expected v0\.1\.0-pre\.4/);
+    assert.doesNotMatch(readFileSync(ghLog, "utf8"), /release upload/, "tag mismatch never uploads a receipt");
+    assert.equal(existsSync(operationsLog), false, "tag mismatch never invokes npm download or ssh signing");
+    assert.deepEqual(readdirSync(controlledTmp), [], "tag mismatch unwinds scratch state");
+  } finally {
+    rmSync(harness, { recursive: true, force: true });
+  }
+});
+
 test("inspection mismatch unwinds batch scratch state, emits no receipt, and prints reject guidance", () => {
   const harness = mkdtempSync(path.join(tmpdir(), "aslite-inspect-mismatch-test-"));
   try {
@@ -789,7 +865,7 @@ test("inspection mismatch unwinds batch scratch state, emits no receipt, and pri
 printf '%s\\n' "$*" >> "$ASLITE_TEST_GH_LOG"
 case "$*" in
   *releases/assets/*) exec /bin/cat "$ASLITE_TEST_MANIFEST" ;;
-  *releases/300*) printf '%s\\n' '{"id":300,"draft":true,"assets":[{"id":22,"name":"candidate.json"}]}' ;;
+  *releases/300*) printf '%s\\n' '{"id":300,"draft":true,"tag_name":"v0.1.0-pre.4","assets":[{"id":22,"name":"candidate.json"}]}' ;;
   'api user --jq .login') printf '%s\\n' 'briand-ai' ;;
   *) exit 2 ;;
 esac

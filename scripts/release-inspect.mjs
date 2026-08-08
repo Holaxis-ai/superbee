@@ -51,6 +51,10 @@ async function emitReceipt({ decision, stageId, version, draftReleaseId, keyPath
   try {
     const release = JSON.parse(gh(["api", `repos/${repo}/releases/${draftReleaseId}`]));
     if (release.draft !== true) throw new Error(`release ${draftReleaseId} is not an unpublished draft`);
+    const expectedTag = `v${version}`;
+    if (release.tag_name !== expectedTag) {
+      throw new Error(`draft release tag ${String(release.tag_name)} does not match expected ${expectedTag}`);
+    }
     const manifestAsset = (release.assets ?? []).find((asset) => asset?.name === "candidate.json");
     if (!manifestAsset) throw new Error("draft release carries no candidate.json asset");
     const manifestBytes = execFileSync(
