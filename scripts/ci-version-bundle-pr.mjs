@@ -34,6 +34,7 @@ const MUTATING_ACTIONS = new Set(Object.values(ACTIONS).filter((action) => actio
 const CHANGE_KEYS = ["path", "change", "old_mode", "new_mode", "old_blob", "new_blob"];
 const PR_KEYS = ["number", "state", "url", "base_ref", "head_ref", "head_repository", "head_oid"];
 const OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const NULL_OID_RE = /^(?:0{40}|0{64})$/;
 const MODE_RE = /^(?:100644|100755)$/;
 
 export function canonicalJson(value) {
@@ -62,7 +63,7 @@ function comparePaths(a, b) {
 }
 
 function requireOid(value, label) {
-  if (!OID_RE.test(value ?? "")) throw new Error(`${label} must be a full Git object ID`);
+  if (!isObjectOid(value)) throw new Error(`${label} must be a full Git object ID (not the null sentinel)`);
 }
 
 function assertExactKeys(value, keys, label) {
@@ -137,8 +138,8 @@ const BOT_COMMIT_MESSAGE_RE = /^ci: plugin \d+\.\d+\.\d+ — regenerate bundle \
 const GIT_AUTHORIZATION_ERROR =
   "Git operation is not allowlisted; only the fixed automation branch may be pushed with an exact force-with-lease";
 
-function isOid(value) {
-  return OID_RE.test(value ?? "");
+function isObjectOid(value) {
+  return OID_RE.test(value ?? "") && !NULL_OID_RE.test(value);
 }
 
 function isLiteralBotPathspec(value) {
@@ -163,7 +164,8 @@ export function classifyGitOperation(args) {
     return "hash_worktree_file";
   }
   if (equal(args, ["rev-parse", "HEAD"])) return "head_oid";
-  if (equal(args, ["rev-parse", "HEAD^{tree}"]) || (args.length === 2 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})\^\{tree\}$/.test(args[1]))) {
+  const treeObject = args.length === 2 && args[1].endsWith("^{tree}") ? args[1].slice(0, -"^{tree}".length) : null;
+  if (equal(args, ["rev-parse", "HEAD^{tree}"]) || (args.length === 2 && isObjectOid(treeObject))) {
     return "tree_oid";
   }
   if (equal(args, ["write-tree"])) return "index_tree";
@@ -173,8 +175,8 @@ export function classifyGitOperation(args) {
   if (
     args.length === 10 &&
     equal(args.slice(0, 7), ["diff-tree", "--no-commit-id", "--raw", "--no-abbrev", "-r", "-z", "--no-renames"]) &&
-    isOid(args[7]) &&
-    isOid(args[8]) &&
+    isObjectOid(args[7]) &&
+    isObjectOid(args[8]) &&
     equal(args.slice(9), ["--"])
   ) {
     return "commit_diff";
@@ -183,20 +185,20 @@ export function classifyGitOperation(args) {
     const separator = args[1].indexOf(":");
     const oid = args[1].slice(0, separator);
     const path = args[1].slice(separator + 1);
-    if (separator > 0 && isOid(oid) && [".claude-plugin/marketplace.json", "plugins/agentstate-lite/.codex-plugin/plugin.json"].includes(path)) {
+    if (separator > 0 && isObjectOid(oid) && [".claude-plugin/marketplace.json", "plugins/agentstate-lite/.codex-plugin/plugin.json"].includes(path)) {
       return "manifest_at_commit";
     }
   }
-  if (args.length === 5 && equal(args.slice(0, 4), ["fetch", "--no-tags", "--quiet", "origin"]) && isOid(args[4])) {
+  if (args.length === 5 && equal(args.slice(0, 4), ["fetch", "--no-tags", "--quiet", "origin"]) && isObjectOid(args[4])) {
     return "fetch_object";
   }
-  if (args.length === 5 && equal(args.slice(0, 4), ["rev-list", "--parents", "-n", "1"]) && isOid(args[4])) {
+  if (args.length === 5 && equal(args.slice(0, 4), ["rev-list", "--parents", "-n", "1"]) && isObjectOid(args[4])) {
     return "commit_parents";
   }
-  if (args.length === 4 && equal(args.slice(0, 2), ["merge-base", "--is-ancestor"]) && isOid(args[2]) && isOid(args[3])) {
+  if (args.length === 4 && equal(args.slice(0, 2), ["merge-base", "--is-ancestor"]) && isObjectOid(args[2]) && isObjectOid(args[3])) {
     return "ancestor_check";
   }
-  if (args.length === 4 && equal(args.slice(0, 3), ["log", "-1", "--format=%B"]) && isOid(args[3])) {
+  if (args.length === 4 && equal(args.slice(0, 3), ["log", "-1", "--format=%B"]) && isObjectOid(args[3])) {
     return "commit_message";
   }
   if (args.length > 3 && equal(args.slice(0, 3), ["add", "-A", "--"]) && args.slice(3).every(isLiteralBotPathspec) && isSortedUnique(args.slice(3))) {
@@ -225,12 +227,12 @@ export function classifyGitOperation(args) {
   const [candidateOid, destination, extraRefspec] = (args[2] ?? "").split(":");
   const leasePrefix = `--force-with-lease=${ref}:`;
   const expectedOid = args[3]?.startsWith(leasePrefix) ? args[3].slice(leasePrefix.length) : null;
-  const exactLease = expectedOid === "" || OID_RE.test(expectedOid ?? "");
+  const exactLease = expectedOid === "" || isObjectOid(expectedOid);
   if (
     args.length === 4 &&
     args[0] === "push" &&
     args[1] === "origin" &&
-    isOid(candidateOid) &&
+    isObjectOid(candidateOid) &&
     destination === ref &&
     extraRefspec === undefined &&
     exactLease
@@ -600,7 +602,8 @@ export async function applyPlan({ plan, repository, github, repositoryName }) {
 }
 
 async function executeGit(cwd, args, { allowExitCodes = [], gitEnv = {} } = {}) {
-  const childEnv = { ...process.env, ...gitEnv };
+  const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
+  Object.assign(childEnv, gitEnv);
   delete childEnv.GITHUB_TOKEN;
   delete childEnv.VERSION_BUNDLE_APP_TOKEN;
   try {
