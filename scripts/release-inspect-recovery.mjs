@@ -26,13 +26,13 @@ function fail(message) {
 }
 
 function exactString(name, value, pattern) {
-  if (typeof value !== "string" || !pattern.test(value)) fail(`invalid ${name}: ${JSON.stringify(value)}`);
+  if (typeof value !== "string" || !pattern.test(value)) fail(`invalid ${name}`);
   return value;
 }
 
 function positiveId(name, value) {
   const parsed = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
-  if (!Number.isSafeInteger(parsed) || parsed <= 0) fail(`invalid ${name}: ${JSON.stringify(value)}`);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) fail(`invalid ${name}`);
   return parsed;
 }
 
@@ -511,6 +511,14 @@ export async function executeRecoveryTransaction({ slot: inputSlot, replacement:
         journalPath: paths.journal, loaded, ownerPath: paths.owner, owner, slot, key, phase: "delete_ready",
         remote: { prior: journal().prior.asset },
       });
+      observation = await adapters.observe(slot);
+      occupied = slotAssets(observation, slot.receipt_name);
+      if (
+        occupied.assets.length !== 1
+        || !sameTriple(occupied.assets[0], journal().prior.asset)
+      ) fail("exact prior receipt changed after credential proof; DELETE is unreachable");
+      await adapters.verifyAsset(occupied.raw[0], { digest: journal().prior.asset.digest, slot });
+      await assertExactOwner(paths.owner, owner);
       try {
         await adapters.deleteAsset(journal().prior.asset.id, token);
       } catch (error) {
@@ -546,6 +554,10 @@ export async function executeRecoveryTransaction({ slot: inputSlot, replacement:
       journalPath: paths.journal, loaded, ownerPath: paths.owner, owner, slot, key, phase: "upload_requested",
       remote: { slot_absent: true },
     });
+    observation = await adapters.observe(slot);
+    occupied = slotAssets(observation, slot.receipt_name);
+    if (occupied.assets.length !== 0) fail("receipt slot changed after credential proof; upload is unreachable");
+    await assertExactOwner(paths.owner, owner);
     await adapters.uploadAsset({
       release: observation.release,
       releaseId: positiveId("draft release id", slot.draft_release_id),

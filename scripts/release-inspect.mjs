@@ -89,14 +89,14 @@ function runDefault(command, args, options = {}) {
 function parseJson(text, label) {
   try {
     return JSON.parse(text);
-  } catch (error) {
-    fail(`${label} is not valid JSON: ${error.message}`);
+  } catch {
+    fail(`${label} is not valid JSON`);
   }
 }
 
 function safeId(name, value) {
   const normalized = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
-  if (!Number.isSafeInteger(normalized) || normalized <= 0) fail(`invalid ${name}: ${JSON.stringify(value)}`);
+  if (!Number.isSafeInteger(normalized) || normalized <= 0) fail(`invalid ${name}`);
   return normalized;
 }
 
@@ -193,11 +193,16 @@ export async function proveGitHubActor({ token, actor, request = fetch }) {
   });
   if (response.status !== 200 || (response.status >= 300 && response.status < 400)) fail(`GitHub /user proof failed with HTTP ${response.status}`);
   const body = await responseJson(response, "GitHub /user proof");
-  if (body?.login !== actor) fail(`pinned GitHub credential belongs to ${JSON.stringify(body?.login)}, not journal actor ${actor}`);
+  if (body?.login !== actor) fail("pinned GitHub credential does not match the journal actor");
 }
 
-function exactReturnedAsset(body, expected) {
-  const triple = normalizeAssetTriple(body, "uploaded asset");
+export function validateUploadedAssetResponse(body, expected) {
+  let triple;
+  try {
+    triple = normalizeAssetTriple(body, "uploaded asset");
+  } catch {
+    fail("GitHub upload response has an invalid asset identity");
+  }
   if (triple.name !== expected.name || triple.digest !== expected.digest) fail("GitHub upload response does not name the exact journaled asset");
   if (body?.uploader?.login !== expected.actor) fail("GitHub upload response uploader does not match the journal actor");
   return { ...body, ...triple };
@@ -248,7 +253,7 @@ function createProductionDependencies(overrides = {}) {
     const release = parseJson(ghText(["api", `repos/${repo}/releases/${releaseId}`]), "draft release response");
     if (safeId("release id", release?.id) !== releaseId) fail("GitHub returned a different release ID");
     if (release.draft !== true) fail(`release ${releaseId} is not an unpublished draft`);
-    if (release.tag_name !== expectedTag) fail(`draft release tag ${String(release.tag_name)} does not match expected ${expectedTag}`);
+    if (release.tag_name !== expectedTag) fail(`draft release tag does not match expected ${expectedTag}`);
     const pages = parseJson(
       ghText(["api", "--paginate", "--slurp", `repos/${repo}/releases/${releaseId}/assets?per_page=100`]),
       "paginated release assets",
@@ -363,7 +368,7 @@ function createProductionDependencies(overrides = {}) {
             }
           }
           const actor = ghText(["api", "user", "--jq", ".login"]).trim();
-          if (!allowedActors.includes(actor)) fail(`active signer ${actor} is not in the allowed-signers file`);
+          if (!allowedActors.includes(actor)) fail("active signer is not in the allowed-signers file");
           const payload = canonicalReceiptPayload({
             decision: slot.decision,
             stage_id: slot.stage_id,
@@ -436,7 +441,7 @@ function createProductionDependencies(overrides = {}) {
             body: bytes,
           });
           if (response.status !== 201 || (response.status >= 300 && response.status < 400)) fail(`exact receipt upload failed with HTTP ${response.status}`);
-          return exactReturnedAsset(await responseJson(response, "GitHub upload"), { name, digest, actor });
+          return validateUploadedAssetResponse(await responseJson(response, "GitHub upload"), { name, digest, actor });
         },
       };
 

@@ -833,7 +833,7 @@ exit 99
       },
     });
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /draft release tag v9\.9\.9 does not match expected v0\.1\.0-pre\.4/);
+    assert.match(result.stderr, /draft release tag does not match expected v0\.1\.0-pre\.4/);
     assert.doesNotMatch(readFileSync(ghLog, "utf8"), /release upload/, "tag mismatch never uploads a receipt");
     assert.equal(existsSync(operationsLog), false, "tag mismatch never invokes npm download or ssh signing");
     assert.deepEqual(readdirSync(controlledTmp), [], "tag mismatch unwinds scratch state");

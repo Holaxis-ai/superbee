@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { acquireSlotOwner, canonicalSlotKey, ensureRecoveryDirectory, normalizeSlot, publishNoReplace } from "./release-inspect-recovery.mjs";
+import { acquireSlotOwner, canonicalSlotKey, ensureRecoveryDirectory, normalizeAssetTriple, normalizeSlot, publishNoReplace } from "./release-inspect-recovery.mjs";
 import { main as inspectMain, parseInspectArgs, proveGitHubActor } from "./release-inspect.mjs";
 import { canonicalPayloadBytes, canonicalReceiptPayload, SIGN_NAMESPACE } from "./release-ordering.mjs";
 
@@ -68,16 +68,21 @@ const load = () => JSON.parse(readFileSync(config.statePath, "utf8"));
 const save = (state) => writeFileSync(config.statePath, JSON.stringify(state) + "\n");
 const sha = (bytes) => "sha256:" + createHash("sha256").update(bytes).digest("hex");
 const proposedText = config.proposedText ?? JSON.stringify({ actor: config.signActor ?? "briand-ai", nonce: config.nonce ?? "one" }) + "\n";
+let proofCount = 0;
 const result = await executeRecoveryTransaction({
   slot: config.slot,
   replacement: config.replacement ?? null,
   recoveryDir: config.recoveryDir,
   dryRun: config.dryRun ?? false,
   adapters: {
-    observe: async () => ({
-      release: { id: 300, draft: true, tag_name: config.slot.tag, upload_url: "https://uploads.github.com/repos/Holaxis-ai/agentstate-lite/releases/300/assets{?name,label}" },
-      slotAssets: load().assets,
-    }),
+    observe: async () => {
+      const state = load();
+      if (state.anchor_error) throw new Error(state.anchor_error);
+      return {
+        release: { id: 300, draft: true, tag_name: config.slot.tag, upload_url: "https://uploads.github.com/repos/Holaxis-ai/agentstate-lite/releases/300/assets{?name,label}" },
+        slotAssets: state.assets,
+      };
+    },
     createProposal: async () => {
       log({ op: "sign", actor: config.signActor ?? "briand-ai", nonce: config.nonce ?? "one" });
       if (config.signDelay) await new Promise((resolve) => setTimeout(resolve, config.signDelay));
@@ -98,8 +103,17 @@ const result = await executeRecoveryTransaction({
       return "canary-secret-token";
     },
     proveActor: async (_token, actor) => {
+      proofCount += 1;
       log({ op: "user", actor, observed: config.tokenActor ?? actor });
       if ((config.tokenActor ?? actor) !== actor) throw new Error("pinned credential actor mismatch");
+      if (config.moveOnProof === proofCount) {
+        const state = load();
+        if (config.proofMovement === "anchor") state.anchor_error = "ANCHOR_MOVED";
+        else if (config.proofMovement === "competitor") {
+          state.assets = [{ id: 777, name: config.slot.receipt_name, digest: "sha256:" + "7".repeat(64), uploader: { login: "other" }, valid: true }];
+        }
+        save(state);
+      }
     },
     deleteAsset: async (id) => {
       if (config.requireJournalBeforeDelete) {
@@ -179,6 +193,46 @@ test("subprocess exact replacement deletes only the pinned old ID then uploads t
     ]);
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
+
+for (const movement of ["anchor", "competitor"]) {
+  test(`M1 DELETE BARRIER — ${movement} movement during /user proof makes DELETE unreachable`, () => {
+    const h = scratch();
+    try {
+      const old = { id: 401, name: NAME, digest: `sha256:${"1".repeat(64)}`, uploader: { login: "briand-ai" }, valid: true };
+      writeFileSync(h.statePath, `${JSON.stringify({ assets: [old], next_id: 900 })}\n`);
+      const result = runChild(h, {
+        replacement: { asset_id: 401, name: NAME, digest: old.digest },
+        moveOnProof: 1,
+        proofMovement: movement,
+      });
+      assert.notEqual(result.status, 0);
+      assert.equal(calls(h).some((call) => call.op === "delete"), false, result.stderr);
+    } finally { rmSync(h.root, { recursive: true, force: true }); }
+  });
+}
+
+for (const transaction of ["absent", "replacement"]) {
+  for (const movement of ["anchor", "competitor"]) {
+    test(`M1 UPLOAD BARRIER — ${transaction} ${movement} movement during final /user proof makes upload unreachable`, () => {
+      const h = scratch();
+      try {
+        let replacement = null;
+        if (transaction === "replacement") {
+          const old = { id: 401, name: NAME, digest: `sha256:${"1".repeat(64)}`, uploader: { login: "briand-ai" }, valid: true };
+          writeFileSync(h.statePath, `${JSON.stringify({ assets: [old], next_id: 900 })}\n`);
+          replacement = { asset_id: 401, name: NAME, digest: old.digest };
+        }
+        const result = runChild(h, {
+          replacement,
+          moveOnProof: transaction === "replacement" ? 2 : 1,
+          proofMovement: movement,
+        });
+        assert.notEqual(result.status, 0);
+        assert.equal(calls(h).some((call) => call.op === "upload"), false, result.stderr);
+      } finally { rmSync(h.root, { recursive: true, force: true }); }
+    });
+  }
+}
 
 test("subprocess absent first emission journals prior absent and never reaches DELETE", () => {
   const h = scratch();
@@ -463,8 +517,63 @@ test("GitHub actor proof is exact, non-redirecting, and never accepts a redirect
       actor: "briand-ai",
       request: async () => new Response(JSON.stringify({ login: "mikec-ai" }), { status: 200 }),
     }),
-    /not journal actor/,
+    /does not match the journal actor/,
   );
+});
+
+test("M2 RESPONSE REDACTION — reflected /user login and invalid uploaded identity never reach diagnostics", async () => {
+  const canary = "canary-secret-token";
+  await assert.rejects(
+    proveGitHubActor({
+      token: canary,
+      actor: "briand-ai",
+      request: async () => new Response(JSON.stringify({ login: canary }), { status: 200 }),
+    }),
+    (error) => !String(error?.message ?? error).includes(canary),
+  );
+
+  for (const body of [
+    { id: canary, name: NAME, digest: SHA, uploader: { login: "briand-ai" } },
+    { id: 900, name: `${canary}/`, digest: SHA, uploader: { login: "briand-ai" } },
+    { id: 900, name: NAME, digest: canary, uploader: { login: "briand-ai" } },
+  ]) {
+    assert.throws(
+      () => normalizeAssetTriple(body, "uploaded asset"),
+      (error) => !String(error?.message ?? error).includes(canary),
+    );
+  }
+
+  const module = await import("./release-inspect.mjs");
+  assert.equal(typeof module.validateUploadedAssetResponse, "function", "upload response has one redacting validator");
+  const expected = { name: NAME, digest: SHA, actor: "briand-ai" };
+  for (const body of [
+    null,
+    { id: canary, name: NAME, digest: SHA, uploader: { login: "briand-ai" } },
+    { id: 900, name: canary, digest: SHA, uploader: { login: "briand-ai" } },
+    { id: 900, name: NAME, digest: canary, uploader: { login: "briand-ai" } },
+    { id: 900, name: NAME, digest: SHA, uploader: { login: canary } },
+  ]) {
+    assert.throws(
+      () => module.validateUploadedAssetResponse(body, expected),
+      (error) => !String(error?.message ?? error).includes(canary),
+    );
+  }
+
+  const child = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    import { proveGitHubActor } from ${JSON.stringify(pathToFileURL(path.join(repoRoot, "scripts", "release-inspect.mjs")).href)};
+    const canary = process.env.ASLITE_REFLECTION_CANARY;
+    try {
+      await proveGitHubActor({ token: canary, actor: "briand-ai", request: async () => new Response(JSON.stringify({ login: canary }), { status: 200 }) });
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    }
+  `], {
+    encoding: "utf8",
+    env: { ...process.env, ASLITE_REFLECTION_CANARY: canary },
+  });
+  assert.equal(child.status, 1);
+  assert.equal(`${child.stdout}\n${child.stderr}`.includes(canary), false, "CLI diagnostics redact reflected token canary");
 });
 
 function makeSigner(root, principal) {
