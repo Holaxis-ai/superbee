@@ -1,32 +1,11 @@
 name: CI version + bundle automation
 
-# Retires the PR-carried "bump both manifests + rebuild the committed skill bundle" tax
-# (see .agentstate-lite/tasks/ci-version-bundle-automation.md and CLAUDE.md's Working-here
-# section). On every push to main, regenerate the committed plugin artifacts and — only if that
-# regeneration actually changed something — bump the plugin version in both manifests, committing
-# artifact+manifests together (the plugin cache is version-keyed, so they must land atomically).
-#
-# LOOP SAFETY: build identity includes the exact checkout SHA, but drift comparison normalizes only
-# source commit/dirty and restores a regenerated artifact when no other bytes changed. A bot commit
-# therefore converges structurally even if a PAT/app actor retriggers this workflow. The
-# `github.actor != 'github-actions[bot]'` guard remains a cheap optimization, not a correctness
-# dependency.
-#
-# RACE SAFETY: `concurrency` serializes THIS WORKFLOW's own runs against each other (never cancels
-# one mid-push) and the checkout below pins `ref: main` (not the triggering commit's fixed sha) so
-# a queued run always operates on the CURRENT tip when it executes — including any bump a prior
-# queued run already pushed. That does NOT cover this repo's board — `.agentstate-lite/` docs are
-# pushed DIRECTLY to main via plain git (CLAUDE.md's bundle-commit convention), completely outside
-# this workflow's concurrency group, and "constantly" per team review. A board push landing during
-# this job's ~1-2 minute checkout-to-push window makes this job's own `git push` a non-fast-forward
-# rejection. The final step below retries that case: fetch + hard-reset to the new tip, RE-RUN the
-# script fresh (safe — see that step's inline comment for why), and retry, a bounded number of
-# times before failing loud (acceptable as the terminal state: the next merge to main re-triggers
-# this workflow and picks up the same regen+bump).
-#
-# NOTE: if branch protection is ever enabled on `main`, this workflow's plain `git push` (using the
-# default GITHUB_TOKEN) will start failing and needs a revisit (e.g. a bot PAT / app token with a
-# bypass rule, or switching this to open an auto-mergeable PR instead of pushing directly).
+# Every main push runs the deterministic generator once. Drift is proposed from the fixed
+# automation branch through an ordinary reviewed PR; convergence is a no-op, including after that
+# PR merges. Inspect has only the normal read token. A repository-scoped App token exists only for
+# a canonical mutation-required plan, and apply revalidates main, local bytes/modes, the branch,
+# and the complete same-head PR inventory before using it. A race fails closed for the next queued
+# main event; there is no reset/rebase, direct-main push, branch deletion, approval, or merge path.
 on:
   push:
     branches: [main]
@@ -36,16 +15,18 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
+  pull-requests: read
 
 jobs:
-  bump-and-regen:
-    if: github.actor != 'github-actions[bot]'
+  propose-version-bundle:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -53,43 +34,29 @@ jobs:
 
       - run: npm ci
 
-      - name: Regenerate, bump if needed, commit, and push (retries if main moved under us)
-        run: |
-          set -e
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Regenerate and bump if needed
+        run: npm run ci:version-bundle
 
-          for attempt in 1 2 3; do
-            echo "::group::regenerate (attempt ${attempt}/3)"
-            npm run ci:version-bundle
-            echo "::endgroup::"
+      - name: Inspect canonical branch and PR plan
+        id: inspect
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-version-bundle-pr.mjs inspect --plan "$RUNNER_TEMP/version-bundle-plan.json"
 
-            if [ -z "$(git status --porcelain)" ]; then
-              echo "no changes — committed plugin artifacts already match a fresh rebuild"
-              exit 0
-            fi
+      - name: Mint repository-scoped version-bundle App token
+        id: app-token
+        if: steps.inspect.outputs.needs_mutation == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1
+        with:
+          app-id: ${{ vars.VERSION_BUNDLE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.VERSION_BUNDLE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+          permission-pull-requests: write
 
-            new_version=$(sed -nE 's/.*"version": *"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' .claude-plugin/marketplace.json | head -1)
-            git add -A
-            git commit -m "ci: plugin ${new_version} — regenerate bundle + SKILL (bot)"
-
-            if git push origin HEAD:main; then
-              echo "pushed plugin ${new_version} on attempt ${attempt}"
-              exit 0
-            fi
-
-            echo "push rejected — main moved (likely a direct board-branch commit landed mid-run); retrying against the new tip"
-            git fetch origin main
-            # SAFE, not a rebase: scripts/ci-version-bundle.mjs is STATE-BASED, not delta-based — it
-            # always regenerates fresh and diffs against WHATEVER is currently committed, never
-            # assuming a delta from a specific prior commit. Resetting straight to the new tip and
-            # re-running the script from scratch is therefore always correct, with no merge step.
-            # Do NOT "simplify" this into a `git rebase` — replaying THIS attempt's commit (which
-            # already contains a version bump computed from the OLD tip) onto the new tip risks a
-            # double bump or a conflict; re-running the script instead recomputes the right version
-            # relative to whatever actually landed on the new tip.
-            git reset --hard origin/main
-          done
-
-          echo "::error::failed to push after 3 attempts — main kept moving under us (likely concurrent board pushes). Not fatal: the next merge to main re-triggers this workflow and will pick up the same regen+bump."
-          exit 1
+      - name: Apply canonical branch and PR plan
+        if: steps.inspect.outputs.needs_mutation == 'true'
+        env:
+          VERSION_BUNDLE_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: node scripts/ci-version-bundle-pr.mjs apply --plan "$RUNNER_TEMP/version-bundle-plan.json"

@@ -1,0 +1,746 @@
+import { test, describe } from "node:test";
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+  ACTIONS,
+  BOT_BRANCH,
+  BOT_OWNED_PATHS,
+  GIT_OPERATION_NAMES,
+  GitHubBridgeClient,
+  LocalRepository,
+  applyPlan,
+  canonicalJson,
+  chooseAction,
+  classifyGitOperation,
+  classifyPullRequests,
+  inspectPlan,
+  isBotOwnedPath,
+  planDigest,
+  validatePlan,
+} from "./ci-version-bundle-pr.mjs";
+
+const OID = {
+  base: "1111111111111111111111111111111111111111",
+  baseTree: "2222222222222222222222222222222222222222",
+  prior: "3333333333333333333333333333333333333333",
+  current: "4444444444444444444444444444444444444444",
+  new: "5555555555555555555555555555555555555555",
+  blobOld: "6666666666666666666666666666666666666666",
+  blobNew: "7777777777777777777777777777777777777777",
+};
+
+const change = Object.freeze({
+  path: ".claude-plugin/marketplace.json",
+  change: "M",
+  old_mode: "100644",
+  new_mode: "100644",
+  old_blob: OID.blobOld,
+  new_blob: OID.blobNew,
+});
+
+function ref(classification = "absent", oid = null) {
+  return {
+    present: oid !== null,
+    oid,
+    classification,
+    parent_oid: classification === "replaceable_prior_proposal" ? OID.prior : classification === "current_candidate" ? OID.base : null,
+    tree_oid: oid === null ? null : OID.baseTree,
+  };
+}
+
+function prRow({ number = 7, base_ref = "main", head_oid = OID.current, head_repository = "Holaxis-ai/agentstate-lite", state = "open" } = {}) {
+  return {
+    number,
+    state,
+    url: `https://github.com/Holaxis-ai/agentstate-lite/pull/${number}`,
+    base_ref,
+    head_ref: BOT_BRANCH,
+    head_repository,
+    head_oid,
+  };
+}
+
+const rows = [
+  [true, "absent", "none", ACTIONS.CREATE_REF_AND_PR],
+  [true, "current_candidate", "none", ACTIONS.REUSE_REF_CREATE_PR],
+  [true, "current_candidate", "exact", ACTIONS.REUSE_REF_RECONCILE_PR],
+  [true, "replaceable_prior_proposal", "none", ACTIONS.REPLACE_REF_CREATE_PR],
+  [true, "replaceable_prior_proposal", "exact", ACTIONS.REPLACE_REF_RECONCILE_PR],
+  [false, "absent", "none", ACTIONS.NOOP],
+  [false, "current_candidate", "none", ACTIONS.NOOP],
+  [false, "replaceable_prior_proposal", "none", ACTIONS.NOOP],
+  [false, "current_candidate", "exact", ACTIONS.CLOSE_STALE_PR],
+  [false, "replaceable_prior_proposal", "exact", ACTIONS.CLOSE_STALE_PR],
+];
+
+describe("normative generator × ref × PR table", () => {
+  for (const [changed, refClass, prClass, expected] of rows) {
+    test(`${changed ? "changed" : "unchanged"} / ${refClass} / ${prClass}`, () => {
+      assert.equal(chooseAction({ changed, refClassification: refClass, prClassification: prClass }), expected);
+    });
+  }
+
+  for (const invalid of [
+    [true, "foreign", "none"],
+    [false, "foreign", "none"],
+    [true, "absent", "foreign"],
+    [true, "current_candidate", "ambiguous"],
+    [false, "absent", "exact"],
+  ]) {
+    test(`blocks ${invalid.join(" / ")}`, () => {
+      assert.throws(
+        () => chooseAction({ changed: invalid[0], refClassification: invalid[1], prClassification: invalid[2] }),
+        /blocked/i,
+      );
+    });
+  }
+});
+
+test("bot-owned paths are one closed allowlist", () => {
+  assert.equal(BOT_BRANCH, "automation/version-bundle");
+  assert.deepEqual(BOT_OWNED_PATHS.slice(0, 4), [
+    ".claude-plugin/marketplace.json",
+    "plugins/agentstate-lite/.codex-plugin/plugin.json",
+    "plugins/agentstate-lite/skills/agentstate-lite/SKILL.md",
+    "plugins/agentstate-lite/skills/agentstate-lite/scripts/agentstate-lite.mjs",
+  ]);
+  assert.equal(isBotOwnedPath("plugins/agentstate-lite/skills/agentstate-lite/references/release.md"), true);
+  assert.equal(isBotOwnedPath("plugins/agentstate-lite/skills/agentstate-lite/references"), false);
+  assert.equal(isBotOwnedPath("scripts/ci-version-bundle-pr.mjs"), false);
+  assert.equal(isBotOwnedPath("plugins/agentstate-lite/skills/agentstate-lite/references/../SKILL.md"), false);
+});
+
+test("PR inventory is classified locally and binds base, repo, ref, and live OID", () => {
+  const expected = { repository: "Holaxis-ai/agentstate-lite", refOid: OID.current };
+  assert.equal(classifyPullRequests([], expected).classification, "none");
+  assert.equal(classifyPullRequests([prRow()], expected).classification, "exact");
+  assert.equal(classifyPullRequests([prRow({ base_ref: "develop" })], expected).classification, "foreign");
+  assert.equal(classifyPullRequests([prRow({ head_oid: OID.prior })], expected).classification, "foreign");
+  assert.equal(classifyPullRequests([prRow({ head_repository: "fork/agentstate-lite" })], expected).classification, "foreign");
+  assert.equal(classifyPullRequests([prRow(), prRow({ number: 8 })], expected).classification, "ambiguous");
+});
+
+test("GitHub discovery is base-independent and paginates the complete same-head inventory", async () => {
+  const calls = [];
+  const firstPage = Array.from({ length: 100 }, (_, index) => ({
+    number: index + 2,
+    state: "open",
+    html_url: `https://example.invalid/${index + 2}`,
+    base: { ref: index === 0 ? "wrong-base" : "main" },
+    head: { ref: BOT_BRANCH, sha: OID.current, repo: { full_name: "Holaxis-ai/agentstate-lite" } },
+  }));
+  const finalRow = {
+        number: 1,
+        state: "open",
+        html_url: "https://example.invalid/1",
+        base: { ref: "main" },
+        head: { ref: BOT_BRANCH, sha: OID.current, repo: { full_name: "Holaxis-ai/agentstate-lite" } },
+      };
+  const github = new GitHubBridgeClient({
+    token: "read-token",
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      const page = new URL(url).searchParams.get("page");
+      return new Response(JSON.stringify(page === "1" ? firstPage : [finalRow]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  const inventory = await github.listSameHeadPullRequests("Holaxis-ai", "agentstate-lite", `${"Holaxis-ai"}:${BOT_BRANCH}`);
+  assert.equal(calls.length, 2);
+  for (const call of calls) {
+    const url = new URL(call.url);
+    assert.equal(url.searchParams.get("head"), `Holaxis-ai:${BOT_BRANCH}`);
+    assert.equal(url.searchParams.get("state"), "open");
+    assert.equal(url.searchParams.has("base"), false, "base filtering would hide hostile/wrong-base same-head PRs");
+    assert.equal(call.options.method, "GET");
+  }
+  assert.equal(inventory.length, 101);
+  assert.equal(inventory[0].base.ref, "wrong-base", "wrong-base rows must remain visible to local classification");
+});
+
+test("the default-deny Git classifier owns every complete LocalRepository argv shape", () => {
+  const botRef = `refs/heads/${BOT_BRANCH}`;
+  const samples = [
+    ["diff", "--name-status", "-z", "--no-renames", "HEAD", "--"],
+    ["ls-files", "--others", "--exclude-standard", "-z", "--"],
+    ["ls-tree", "-z", "HEAD", "--", ":(literal).claude-plugin/marketplace.json"],
+    ["hash-object", "--no-filters", "--", ".claude-plugin/marketplace.json"],
+    ["rev-parse", "HEAD"],
+    ["rev-parse", "HEAD^{tree}"],
+    ["rev-parse", `${OID.current}^{tree}`],
+    ["write-tree"],
+    ["ls-remote", "--refs", "origin", "refs/heads/main", botRef],
+    ["diff-tree", "--no-commit-id", "--raw", "--no-abbrev", "-r", "-z", "--no-renames", OID.base, OID.current, "--"],
+    ["show", `${OID.current}:.claude-plugin/marketplace.json`],
+    ["show", `${OID.current}:plugins/agentstate-lite/.codex-plugin/plugin.json`],
+    ["fetch", "--no-tags", "--quiet", "origin", OID.current],
+    ["rev-list", "--parents", "-n", "1", OID.current],
+    ["merge-base", "--is-ancestor", OID.base, OID.current],
+    ["log", "-1", "--format=%B", OID.current],
+    ["add", "-A", "--", ":(literal).claude-plugin/marketplace.json"],
+    ["diff", "--cached", "--raw", "--no-abbrev", "-z", "--no-renames", "HEAD", "--"],
+    ["diff", "--name-only", "-z", "--"],
+    [
+      "-c",
+      "user.name=github-actions[bot]",
+      "-c",
+      "user.email=github-actions[bot]@users.noreply.github.com",
+      "commit",
+      "--no-gpg-sign",
+      "-m",
+      "ci: plugin 1.2.3 — regenerate bundle + SKILL (bot)",
+    ],
+    ["push", "origin", `${OID.new}:${botRef}`, `--force-with-lease=${botRef}:`],
+    ["push", "origin", `${OID.new}:${botRef}`, `--force-with-lease=${botRef}:${OID.current}`],
+  ];
+  const observed = new Set(samples.map(classifyGitOperation));
+  assert.deepEqual([...observed].sort(), [...GIT_OPERATION_NAMES].sort());
+
+  const rejected = [
+    ["status"],
+    ["send-pack", "--force", "/tmp/remote.git", "HEAD:refs/heads/main"],
+    ["ship"],
+    ["-c", "alias.ship=push origin HEAD:main --force", "ship"],
+    ["-c", "user.email=github-actions[bot]@users.noreply.github.com", "-c", "user.name=github-actions[bot]", "commit", "--no-gpg-sign", "-m", "ci: plugin 1.2.3 — regenerate bundle + SKILL (bot)"],
+    ["fetch", "origin", OID.current],
+    ["add", "-A", "--", ":(literal)README.md"],
+  ];
+  for (const argv of rejected) assert.throws(() => classifyGitOperation(argv), /Git operation is not allowlisted/);
+});
+
+test("scratch Git transaction exercises the closed vocabulary and disables commit/push hooks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "ci-version-bundle-pr-git-"));
+  const remote = join(root, "remote.git");
+  const checkout = join(root, "checkout");
+  const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const inheritedGitConfigParameters = process.env.GIT_CONFIG_PARAMETERS;
+  try {
+    await mkdir(remote);
+    git(remote, ["init", "--bare"]);
+    await mkdir(checkout);
+    git(checkout, ["init", "-b", "main"]);
+    git(checkout, ["config", "user.name", "fixture"]);
+    git(checkout, ["config", "user.email", "fixture@example.invalid"]);
+    await mkdir(join(checkout, ".claude-plugin"), { recursive: true });
+    await mkdir(join(checkout, "plugins/agentstate-lite/.codex-plugin"), { recursive: true });
+    await writeFile(
+      join(checkout, ".claude-plugin/marketplace.json"),
+      '{"plugins":[{"name":"agentstate-lite","version":"1.0.0"}]}\n',
+    );
+    await writeFile(
+      join(checkout, "plugins/agentstate-lite/.codex-plugin/plugin.json"),
+      '{"name":"agentstate-lite","version":"1.0.0"}\n',
+    );
+    git(checkout, ["add", "."]);
+    git(checkout, ["commit", "-m", "base"]);
+    git(checkout, ["remote", "add", "origin", remote]);
+    git(checkout, ["push", "-u", "origin", "main"]);
+
+    await writeFile(
+      join(checkout, ".claude-plugin/marketplace.json"),
+      '{"plugins":[{"name":"agentstate-lite","version":"1.0.1"}]}\n',
+    );
+    await writeFile(
+      join(checkout, "plugins/agentstate-lite/.codex-plugin/plugin.json"),
+      '{"name":"agentstate-lite","version":"1.0.1"}\n',
+    );
+
+    await writeFile(
+      join(checkout, ".git/hooks/pre-commit"),
+      "#!/bin/sh\nprintf 'pre-commit\\n' > .git/pre-commit-invoked\nexit 91\n",
+      { mode: 0o755 },
+    );
+    await writeFile(
+      join(checkout, ".git/hooks/pre-push"),
+      "#!/bin/sh\nprintf 'pre-push\\n' > .git/pre-push-invoked\nexit 92\n",
+      { mode: 0o755 },
+    );
+    const repository = new LocalRepository({ cwd: checkout, remoteToken: "scratch-installation-token" });
+    const plan = await inspectPlan({
+      repository,
+      github: fakeGithub(),
+      repositoryName: "Holaxis-ai/agentstate-lite",
+    });
+    assert.equal(plan.changes.length, 2);
+    assert.ok(plan.changes.every((entry) => entry.change === "M" && entry.old_mode === "100644" && entry.new_mode === "100644"));
+    assert.ok(plan.changes.every((entry) => entry.old_blob !== entry.new_blob));
+
+    process.env.GIT_CONFIG_PARAMETERS = "'core.hooksPath=.git/hooks'";
+    const hookExecutions = [];
+    let candidate;
+    try {
+      try {
+        candidate = await repository.stageAndCommit(plan);
+      } catch (error) {
+        const marker = await readFile(join(checkout, ".git/pre-commit-invoked"), "utf8");
+        hookExecutions.push(`${marker.trim()}: ${error.message}`);
+        git(checkout, [
+          "-c",
+          "core.hooksPath=/dev/null",
+          "-c",
+          "user.name=github-actions[bot]",
+          "-c",
+          "user.email=github-actions[bot]@users.noreply.github.com",
+          "commit",
+          "--no-gpg-sign",
+          "-m",
+          "ci: plugin 1.0.1 — regenerate bundle + SKILL (bot)",
+        ]);
+        candidate = git(checkout, ["rev-parse", "HEAD"]);
+      }
+      try {
+        await repository.pushAutomationRef(candidate, null);
+      } catch (error) {
+        const marker = await readFile(join(checkout, ".git/pre-push-invoked"), "utf8");
+        hookExecutions.push(`${marker.trim()}: ${error.message}`);
+      }
+    } finally {
+      if (inheritedGitConfigParameters === undefined) delete process.env.GIT_CONFIG_PARAMETERS;
+      else process.env.GIT_CONFIG_PARAMETERS = inheritedGitConfigParameters;
+    }
+    assert.deepEqual(hookExecutions, [], `ambient Git config re-enabled hooks:\n${hookExecutions.join("\n")}`);
+    assert.equal(git(checkout, ["rev-parse", `${candidate}^`]), plan.base.oid);
+    assert.equal(await repository.readAutomationOid(), candidate);
+    const observed = await repository.observeRemote({ baseOid: plan.base.oid, changes: plan.changes });
+    assert.equal(observed.automation_ref.classification, "current_candidate");
+
+    git(checkout, ["-c", "core.hooksPath=/dev/null", "push", "origin", `${candidate}:refs/heads/main`]);
+    await writeFile(join(checkout, "fixture.txt"), "main advanced\n");
+    git(checkout, ["add", "fixture.txt"]);
+    git(checkout, ["-c", "core.hooksPath=/dev/null", "commit", "-m", "advance main"]);
+    git(checkout, ["-c", "core.hooksPath=/dev/null", "push", "origin", "HEAD:refs/heads/main"]);
+    const advancedBase = git(checkout, ["rev-parse", "HEAD"]);
+    const prior = await repository.observeRemote({ baseOid: advancedBase, changes: [] });
+    assert.equal(prior.main_oid, advancedBase);
+    assert.equal(prior.automation_ref.classification, "replaceable_prior_proposal");
+  } finally {
+    if (inheritedGitConfigParameters === undefined) delete process.env.GIT_CONFIG_PARAMETERS;
+    else process.env.GIT_CONFIG_PARAMETERS = inheritedGitConfigParameters;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function fakeRepo({ changed = true, refState = ref(), mainOid = OID.base, localChanges = changed ? [change] : [] } = {}) {
+  const calls = [];
+  const local = {
+    head_oid: OID.base,
+    head_tree_oid: OID.baseTree,
+    index_tree_oid: OID.baseTree,
+    changes: localChanges,
+    manifest_version: changed ? "1.0.1" : null,
+  };
+  return {
+    calls,
+    async observeLocal() { return structuredClone(local); },
+    async observeRemote({ baseOid, changes }) {
+      assert.equal(baseOid, OID.base);
+      assert.deepEqual(changes, localChanges);
+      return { main_oid: mainOid, automation_ref: structuredClone(refState) };
+    },
+    async stageAndCommit(plan) { calls.push(["commit", plan.changes]); return OID.new; },
+    async pushAutomationRef(candidateOid, expectedOid) { calls.push(["push", candidateOid, expectedOid]); },
+  };
+}
+
+function fakeGithub({ pulls = [], finalHeadOid = OID.current, mutateGetPullRequest = (pull) => pull } = {}) {
+  const calls = [];
+  let metadata = { title: null, body: null };
+  let closed = false;
+  return {
+    calls,
+    async listSameHeadPullRequests() { return structuredClone(pulls); },
+    async createPullRequest(input) {
+      calls.push(["create", input]);
+      metadata = { title: input.title, body: input.body };
+      return { number: 9 };
+    },
+    async reconcilePullRequest(_owner, _repo, number, title, body) {
+      calls.push(["update", number, { title, body }]);
+      metadata = { title, body };
+    },
+    async closePullRequest(_owner, _repo, number) {
+      calls.push(["update", number, { state: "closed" }]);
+      closed = true;
+    },
+    async getPullRequest(_owner, _repo, number) {
+      return mutateGetPullRequest({
+        number,
+        state: closed ? "closed" : "open",
+        title: metadata.title,
+        body: metadata.body,
+        base: { ref: "main" },
+        head: { ref: BOT_BRANCH, sha: finalHeadOid, repo: { full_name: "Holaxis-ai/agentstate-lite" } },
+      });
+    },
+  };
+}
+
+test("inspect emits canonical byte/mode/blob bindings and a self-verifying digest", async () => {
+  const repository = fakeRepo();
+  const github = fakeGithub();
+  const plan = await inspectPlan({ repository, github, repositoryName: "Holaxis-ai/agentstate-lite" });
+  assert.equal(plan.schema, "aslite.version-bundle-bridge-plan.v1");
+  assert.deepEqual(plan.changes, [change]);
+  assert.equal(plan.generator.changed, true);
+  assert.equal(plan.generator.manifest_version, "1.0.1");
+  assert.equal(plan.action, ACTIONS.CREATE_REF_AND_PR);
+  assert.equal(plan.plan_sha256, planDigest(plan));
+  assert.equal(validatePlan(JSON.parse(canonicalJson(plan))).plan_sha256, plan.plan_sha256);
+
+  const weakened = structuredClone(plan);
+  delete weakened.changes[0].new_mode;
+  weakened.changes_sha256 = plan.changes_sha256;
+  weakened.plan_sha256 = planDigest(weakened);
+  assert.throws(() => validatePlan(weakened), /change entry|changes digest/i);
+});
+
+test("canonical plans reject Git null sentinels wherever an object identity is required", async () => {
+  const absentPlan = await planned();
+  const current = ref("current_candidate", OID.current);
+  const currentPlan = await planned({ refState: current, pulls: [prRow()] });
+  const cases = [
+    [absentPlan, (plan) => { plan.base.oid = "0".repeat(40); }],
+    [absentPlan, (plan) => { plan.base.tree_oid = "0".repeat(64); }],
+    [absentPlan, (plan) => { plan.changes[0].new_blob = "0".repeat(40); }],
+    [currentPlan, (plan) => { plan.automation_ref.oid = "0".repeat(64); }],
+    [currentPlan, (plan) => { plan.same_head_pull_requests[0].head_oid = "0".repeat(40); }],
+  ];
+  for (const [source, mutate] of cases) {
+    const mutant = structuredClone(source);
+    mutate(mutant);
+    mutant.plan_sha256 = planDigest(mutant);
+    assert.throws(() => validatePlan(mutant), /null sentinel/);
+  }
+});
+
+test("inspect rejects path escape before returning a mutation plan", async () => {
+  const repository = fakeRepo({ localChanges: [...[change], { ...change, path: "README.md" }] });
+  await assert.rejects(
+    inspectPlan({ repository, github: fakeGithub(), repositoryName: "Holaxis-ai/agentstate-lite" }),
+    /bot-owned path/i,
+  );
+  assert.deepEqual(repository.calls, []);
+});
+
+async function planned({ changed = true, refState = ref(), pulls = [] } = {}) {
+  return inspectPlan({
+    repository: fakeRepo({ changed, refState }),
+    github: fakeGithub({ pulls }),
+    repositoryName: "Holaxis-ai/agentstate-lite",
+  });
+}
+
+test("apply blocks main movement before any local or external mutation", async () => {
+  const plan = await planned();
+  const repository = fakeRepo({ mainOid: OID.prior });
+  const github = fakeGithub();
+  await assert.rejects(applyPlan({ plan, repository, github, repositoryName: plan.repository }), /remote main moved/i);
+  assert.deepEqual(repository.calls, []);
+  assert.deepEqual(github.calls, []);
+});
+
+test("apply revalidates exact local mode/blob inventory before mutation", async () => {
+  const plan = await planned();
+  const repository = fakeRepo({ localChanges: [{ ...change, new_mode: "100755" }] });
+  const github = fakeGithub();
+  await assert.rejects(applyPlan({ plan, repository, github, repositoryName: plan.repository }), /local.*changed|inventory/i);
+  assert.deepEqual(repository.calls, []);
+  assert.deepEqual(github.calls, []);
+});
+
+test("new-ref apply commits once and pushes with an exact expected-absence lease", async () => {
+  const plan = await planned();
+  const repository = fakeRepo();
+  const postPull = prRow({ number: 9, head_oid: OID.new });
+  const github = fakeGithub({ finalHeadOid: OID.new });
+  let reads = 0;
+  github.listSameHeadPullRequests = async () => (++reads <= 2 ? [] : [postPull]);
+  await applyPlan({ plan, repository, github, repositoryName: plan.repository });
+  assert.deepEqual(repository.calls, [["commit", [change]], ["push", OID.new, null]]);
+  assert.equal(github.calls[0][0], "create");
+});
+
+test("branch-only interruption recovery reuses the current head without another push", async () => {
+  const current = ref("current_candidate", OID.current);
+  const plan = await planned({ refState: current });
+  const repository = fakeRepo({ refState: current });
+  const github = fakeGithub();
+  let reads = 0;
+  github.listSameHeadPullRequests = async () => (++reads <= 2 ? [] : [prRow({ number: 9 })]);
+  await applyPlan({ plan, repository, github, repositoryName: plan.repository });
+  assert.deepEqual(repository.calls, [], "an exact current branch is proof of the already-built candidate");
+  assert.equal(github.calls[0][0], "create");
+});
+
+test("create apply rejects a closed PR returned by the final GET with canonical metadata", async () => {
+  const plan = await planned();
+  const repository = fakeRepo();
+  const postPull = prRow({ number: 9, head_oid: OID.new });
+  const github = fakeGithub({
+    finalHeadOid: OID.new,
+    mutateGetPullRequest: (pull) => ({ ...pull, state: "closed" }),
+  });
+  let reads = 0;
+  github.listSameHeadPullRequests = async () => (++reads <= 2 ? [] : [postPull]);
+  await assert.rejects(
+    applyPlan({ plan, repository, github, repositoryName: plan.repository }),
+    /open PR postcondition.*exact identity/i,
+  );
+});
+
+test("reconcile apply rejects every identity movement returned by the final GET with canonical metadata", async () => {
+  const current = ref("current_candidate", OID.current);
+  const exact = prRow();
+  const plan = await planned({ refState: current, pulls: [exact] });
+  const mutations = [
+    ["number", (pull) => ({ ...pull, number: 8 })],
+    ["base", (pull) => ({ ...pull, base: { ref: "develop" } })],
+    ["head ref", (pull) => ({ ...pull, head: { ...pull.head, ref: "moved-head" } })],
+    ["head repository", (pull) => ({ ...pull, head: { ...pull.head, repo: { full_name: "foreign/agentstate-lite" } } })],
+    ["head OID", (pull) => ({ ...pull, head: { ...pull.head, sha: OID.prior } })],
+  ];
+  for (const [label, mutateGetPullRequest] of mutations) {
+    const repository = fakeRepo({ refState: current });
+    const github = fakeGithub({ pulls: [exact], mutateGetPullRequest });
+    await assert.rejects(
+      applyPlan({ plan, repository, github, repositoryName: plan.repository }),
+      /open PR postcondition.*exact identity/i,
+      label,
+    );
+  }
+});
+
+test("prior proposal replacement leases the exact observed OID and reconciles only its exact PR", async () => {
+  const priorRef = ref("replaceable_prior_proposal", OID.current);
+  const oldPr = prRow({ head_oid: OID.current });
+  const plan = await planned({ refState: priorRef, pulls: [oldPr] });
+  const repository = fakeRepo({ refState: priorRef });
+  const github = fakeGithub({ pulls: [oldPr], finalHeadOid: OID.new });
+  let reads = 0;
+  github.listSameHeadPullRequests = async () => (++reads === 1 ? [oldPr] : [prRow({ head_oid: OID.new })]);
+  await applyPlan({ plan, repository, github, repositoryName: plan.repository });
+  assert.deepEqual(repository.calls.at(-1), ["push", OID.new, OID.current]);
+  assert.deepEqual(github.calls[0].slice(0, 2), ["update", 7]);
+});
+
+test("stale exact PR closes without pushing or deleting the automation ref", async () => {
+  const current = ref("current_candidate", OID.current);
+  const exact = prRow();
+  const plan = await planned({ changed: false, refState: current, pulls: [exact] });
+  const repository = fakeRepo({ changed: false, refState: current });
+  const github = fakeGithub({ pulls: [exact] });
+  let reads = 0;
+  github.listSameHeadPullRequests = async () => (++reads <= 2 ? [exact] : []);
+  await applyPlan({ plan, repository, github, repositoryName: plan.repository });
+  assert.deepEqual(repository.calls, []);
+  assert.deepEqual(github.calls[0], ["update", 7, { state: "closed" }]);
+});
+
+test("wrong PR OID appearing at the PR mutation barrier fails closed", async () => {
+  const current = ref("current_candidate", OID.current);
+  const plan = await planned({ refState: current });
+  const repository = fakeRepo({ refState: current });
+  const github = fakeGithub();
+  let reads = 0;
+  github.listSameHeadPullRequests = async () => (++reads === 1 ? [] : [prRow({ head_oid: OID.prior })]);
+  await assert.rejects(applyPlan({ plan, repository, github, repositoryName: plan.repository }), /PR.*race|inventory/i);
+  assert.deepEqual(repository.calls, []);
+  assert.deepEqual(github.calls, []);
+});
+
+test("LocalRepository emits only the fixed branch push with exact force-with-lease", async () => {
+  const commands = [];
+  const run = async (args) => { commands.push(args); return ""; };
+  const repository = new LocalRepository({ cwd: "/unused", run });
+  await repository.pushAutomationRef(OID.new, null);
+  await repository.pushAutomationRef(OID.new, OID.current);
+  assert.deepEqual(commands, [
+    ["push", "origin", `${OID.new}:refs/heads/automation/version-bundle`, "--force-with-lease=refs/heads/automation/version-bundle:"],
+    [
+      "push",
+      "origin",
+      `${OID.new}:refs/heads/automation/version-bundle`,
+      `--force-with-lease=refs/heads/automation/version-bundle:${OID.current}`,
+    ],
+  ]);
+  assert.equal(commands.flat().some((arg) => arg === "--force" || arg.includes("refs/heads/main") || arg.includes("refs/tags/")), false);
+});
+
+test("the repository runner kills an exact argv-form direct-main force-push mutant", async () => {
+  const invoked = [];
+  const repository = new LocalRepository({
+    cwd: "/unused",
+    run: async (args) => { invoked.push(args); return ""; },
+  });
+  const exactMutant = ["push", "origin", "HEAD:main", "--force"];
+  const otherForbiddenPushes = [
+    ["push", "origin", `${OID.new}:refs/heads/main`, `--force-with-lease=refs/heads/main:${OID.current}`],
+    ["push", "origin", `${OID.new}:refs/heads/${BOT_BRANCH}`, "--force"],
+    ["-c", "advice.detachedHead=false", "push", "origin", `${OID.new}:refs/heads/${BOT_BRANCH}`],
+    ["push", "upstream", `${OID.new}:refs/heads/${BOT_BRANCH}`, `--force-with-lease=refs/heads/${BOT_BRANCH}:${OID.current}`],
+    ["push", "origin", `${OID.new}:refs/heads/${BOT_BRANCH}`, `--force-with-lease=refs/heads/${BOT_BRANCH}:not-an-oid`],
+  ];
+  for (const mutant of [exactMutant, ...otherForbiddenPushes]) {
+    await assert.rejects(
+      () => repository.run(mutant),
+      /fixed automation branch.*force-with-lease/i,
+    );
+  }
+  await assert.rejects(
+    () => repository.run(
+      [
+        "push",
+        "origin",
+        `${OID.new}:refs/heads/${BOT_BRANCH}`,
+        `--force-with-lease=refs/heads/${BOT_BRANCH}:${OID.current}`,
+      ],
+      { gitEnv: { GIT_SSH_COMMAND: "untrusted-helper" } },
+    ),
+    /Git execution options are not allowlisted/,
+  );
+  assert.deepEqual(invoked, [], "a rejected push must not reach the injected Git executor");
+});
+
+async function makeGitAuthorizationScratch(prefix, objectFormat = "sha1") {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  const remote = join(root, "remote.git");
+  const checkout = join(root, "checkout");
+  const git = (cwd, args) => execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  await mkdir(remote);
+  git(remote, ["init", "--bare", `--object-format=${objectFormat}`]);
+  await mkdir(checkout);
+  git(checkout, ["init", "-b", "main", `--object-format=${objectFormat}`]);
+  git(checkout, ["config", "user.name", "fixture"]);
+  git(checkout, ["config", "user.email", "fixture@example.invalid"]);
+  await writeFile(join(checkout, "fixture.txt"), "base\n");
+  git(checkout, ["add", "fixture.txt"]);
+  git(checkout, ["commit", "-m", "base"]);
+  git(checkout, ["remote", "add", "origin", remote]);
+  git(checkout, ["push", "-u", "origin", "main"]);
+  const base = git(remote, ["rev-parse", "refs/heads/main"]);
+  await writeFile(join(checkout, "fixture.txt"), "candidate\n");
+  git(checkout, ["add", "fixture.txt"]);
+  git(checkout, ["commit", "-m", "candidate"]);
+  const candidate = git(checkout, ["rev-parse", "HEAD"]);
+  return { root, remote, checkout, git, base, candidate };
+}
+
+test("the repository runner rejects null candidates and nonempty null leases before its executor", async () => {
+  const invoked = [];
+  const survivors = [];
+  const repository = new LocalRepository({
+    cwd: "/unused",
+    run: async (args) => { invoked.push(args); return ""; },
+  });
+  const botRef = `refs/heads/${BOT_BRANCH}`;
+  for (const width of [40, 64]) {
+    const nullOid = "0".repeat(width);
+    const objectOid = "a".repeat(width);
+    try {
+      await repository.run(["push", "origin", `${nullOid}:${botRef}`, `--force-with-lease=${botRef}:${objectOid}`]);
+      survivors.push(`${width}-hex null candidate reached the executor`);
+    } catch (error) {
+      assert.match(error.message, /Git operation is not allowlisted/);
+    }
+    try {
+      await repository.run(["push", "origin", `${objectOid}:${botRef}`, `--force-with-lease=${botRef}:${nullOid}`]);
+      survivors.push(`${width}-hex nonempty null lease reached the executor`);
+    } catch (error) {
+      assert.match(error.message, /Git operation is not allowlisted/);
+    }
+  }
+  assert.deepEqual(survivors, [], survivors.join("\n"));
+  assert.deepEqual(invoked, [], "null object identities must be rejected before the Git executor");
+});
+
+test("the repository runner cannot use Git null OIDs to delete the automation ref", async () => {
+  const botRef = `refs/heads/${BOT_BRANCH}`;
+  const deletions = [];
+  for (const [objectFormat, width] of [["sha1", 40], ["sha256", 64]]) {
+    const fixture = await makeGitAuthorizationScratch(`ci-version-bundle-null-${objectFormat}-`, objectFormat);
+    try {
+      const repository = new LocalRepository({ cwd: fixture.checkout });
+      await repository.pushAutomationRef(fixture.candidate, null);
+      assert.equal(fixture.git(fixture.remote, ["rev-parse", botRef]), fixture.candidate);
+      let rejected = false;
+      try {
+        await repository.run([
+          "push",
+          "origin",
+          `${"0".repeat(width)}:${botRef}`,
+          `--force-with-lease=${botRef}:${fixture.candidate}`,
+        ]);
+        let observed = "<absent>";
+        try {
+          observed = fixture.git(fixture.remote, ["rev-parse", botRef]);
+        } catch {}
+        deletions.push(`SURVIVED ${objectFormat} null-OID deletion: ${fixture.candidate} -> ${observed}`);
+      } catch (error) {
+        assert.match(error.message, /Git operation is not allowlisted/);
+        rejected = true;
+      }
+      if (rejected) assert.equal(fixture.git(fixture.remote, ["rev-parse", botRef]), fixture.candidate);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+  assert.deepEqual(deletions, [], deletions.join("\n"));
+});
+
+test("the repository runner rejects send-pack direct-main before Git executes it", async () => {
+  const fixture = await makeGitAuthorizationScratch("ci-version-bundle-send-pack-");
+  try {
+    const repository = new LocalRepository({ cwd: fixture.checkout });
+    try {
+      await repository.run(["send-pack", "--force", fixture.remote, "HEAD:refs/heads/main"]);
+      const observed = fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]);
+      throw new Error(`SURVIVED send-pack direct-main: ${fixture.base} -> ${observed}`);
+    } catch (error) {
+      assert.match(error.message, /Git operation is not allowlisted/);
+    }
+    assert.equal(fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]), fixture.base);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("the repository runner rejects a configured direct-main Git alias before Git executes it", async () => {
+  const fixture = await makeGitAuthorizationScratch("ci-version-bundle-git-alias-");
+  try {
+    fixture.git(fixture.checkout, ["config", "alias.ship", "push origin HEAD:main --force"]);
+    const repository = new LocalRepository({ cwd: fixture.checkout });
+    try {
+      await repository.run(["ship"]);
+      const observed = fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]);
+      throw new Error(`SURVIVED configured-alias direct-main: ${fixture.base} -> ${observed}`);
+    } catch (error) {
+      assert.match(error.message, /Git operation is not allowlisted/);
+    }
+    assert.equal(fixture.git(fixture.remote, ["rev-parse", "refs/heads/main"]), fixture.base);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("the apply credential authenticates Git without persisting or placing the token in argv", async () => {
+  const calls = [];
+  const repository = new LocalRepository({
+    cwd: "/unused",
+    remoteToken: "installation-secret",
+    run: async (args, options) => { calls.push({ args, options }); return ""; },
+  });
+  await repository.pushAutomationRef(OID.new, OID.current);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].args.join(" "), /installation-secret/);
+  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_COUNT, "2");
+  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_KEY_0, "http.https://github.com/.extraheader");
+  assert.match(calls[0].options.gitEnv.GIT_CONFIG_VALUE_0, /^AUTHORIZATION: basic /);
+  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_KEY_1, "core.hooksPath");
+  assert.equal(calls[0].options.gitEnv.GIT_CONFIG_VALUE_1, "/dev/null");
+});

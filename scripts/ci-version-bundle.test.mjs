@@ -30,12 +30,40 @@ test("the CI workflow enters regeneration through the npm-owned script", async (
   assert.equal(manifest.scripts["ci:version-bundle"], "node scripts/ci-version-bundle.mjs");
   assert.equal(workflow.match(/npm run ci:version-bundle/g)?.length, 1);
   assert.doesNotMatch(workflow, /^\s*node scripts\/ci-version-bundle\.mjs\s*$/m);
-  assert.match(
-    workflow,
-    /if: github\.actor != 'github-actions\[bot\]'/,
-    "the ordinary bot actor guard remains a cheap redundant-run optimization",
-  );
-  assert.match(workflow, /converges structurally/, "workflow docs must retain the actor-independent loop invariant");
+  assert.doesNotMatch(workflow, /github\.actor/, "convergence, not actor identity, prevents loops");
+  assert.equal(workflow.match(/ci-version-bundle-pr\.mjs inspect/g)?.length, 1);
+  assert.equal(workflow.match(/ci-version-bundle-pr\.mjs apply/g)?.length, 1);
+});
+
+test("the CI workflow keeps write authority conditional and apply-only", async () => {
+  const workflow = await readFile(join(repoRoot, ".github/workflows/ci-version-bundle.yml"), "utf8");
+
+  assert.match(workflow, /permissions:\n  contents: read\n  pull-requests: read/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /actions\/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1/);
+  assert.match(workflow, /owner: \$\{\{ github\.repository_owner \}\}/);
+  assert.match(workflow, /repositories: \$\{\{ github\.event\.repository\.name \}\}/);
+  assert.match(workflow, /permission-contents: write/);
+  assert.match(workflow, /permission-pull-requests: write/);
+  assert.doesNotMatch(workflow, /skip-token-revoke/);
+
+  const tokenStep = workflow.match(/- name: Mint[\s\S]*?(?=\n      - name: Apply)/)?.[0] ?? "";
+  assert.match(tokenStep, /if: steps\.inspect\.outputs\.needs_mutation == 'true'/);
+  const applyStep = workflow.match(/- name: Apply[\s\S]*$/)?.[0] ?? "";
+  assert.match(applyStep, /VERSION_BUNDLE_APP_TOKEN: \$\{\{ steps\.app-token\.outputs\.token \}\}/);
+  assert.doesNotMatch(workflow.slice(0, workflow.indexOf("- name: Apply")), /VERSION_BUNDLE_APP_TOKEN/);
+});
+
+test("the CI bridge has no direct-main or privileged mutation fallback", async () => {
+  const workflow = await readFile(join(repoRoot, ".github/workflows/ci-version-bundle.yml"), "utf8");
+  const bridge = await readFile(join(repoRoot, "scripts/ci-version-bundle-pr.mjs"), "utf8");
+  const executable = `${workflow}\n${bridge}`;
+
+  assert.doesNotMatch(bridge, /HEAD:main|refs\/heads\/main/);
+  assert.doesNotMatch(executable, /git push[^\n]*(?:HEAD:main|refs\/heads\/main)/);
+  assert.doesNotMatch(executable, /refs\/tags\/|--delete|--admin|gh pr (?:review|merge)|auto-merge/);
+  assert.doesNotMatch(bridge, /repos\/[^"'`]+\/(?:releases|merges|reviews|rulesets|environments)/);
+  assert.doesNotMatch(bridge, /export (?:async )?function (?:mutate|requestMutation)/);
 });
 
 test("every CLI bundle producer uses the shared generated-input preparation", async () => {
