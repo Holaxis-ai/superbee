@@ -29,7 +29,9 @@ import { executeRecoveryTransaction, normalizeAssetTriple, normalizeSlot, runRec
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
 const PKG = "@holaxis/aslite";
-const TOKEN_ENV = new Set(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"]);
+const SCRUBBED_GITHUB_ENV = new Set([
+  "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO",
+]);
 const VALUE_FLAGS = new Set([
   "--stage-id", "--version", "--draft-release-id", "--key", "--decision", "--repo", "--batch",
   "--allowed-signers", "--recovery-dir", "--replace-asset-id", "--replace-asset-name", "--replace-asset-digest",
@@ -40,10 +42,10 @@ function fail(message) {
   throw new Error(`release inspect failed: ${message}`);
 }
 
-function scrubGitHubTokens(source = process.env) {
+function scrubGitHubEnvironment(source = process.env) {
   const clean = {};
   for (const [name, value] of Object.entries(source)) {
-    if (!TOKEN_ENV.has(name) && value !== undefined) clean[name] = value;
+    if (!SCRUBBED_GITHUB_ENV.has(name) && value !== undefined) clean[name] = value;
   }
   return clean;
 }
@@ -82,7 +84,7 @@ function runDefault(command, args, options = {}) {
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
     ...options,
-    env: scrubGitHubTokens(options.env ?? process.env),
+    env: scrubGitHubEnvironment(options.env ?? process.env),
   });
 }
 
@@ -238,7 +240,7 @@ function createProductionDependencies(overrides = {}) {
         run(
           "ssh-keygen",
           ["-Y", "verify", "-f", allowedSignersPath, "-I", payload.actor, "-n", SIGN_NAMESPACE, "-s", signaturePath],
-          { input: canonicalPayloadBytes(payload), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], env: scrubGitHubTokens() },
+          { input: canonicalPayloadBytes(payload), encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], env: scrubGitHubEnvironment() },
         );
       } catch {
         fail(`SSH signature verification failed for receipt actor ${payload.actor}`);
@@ -250,12 +252,12 @@ function createProductionDependencies(overrides = {}) {
   }
 
   async function releaseAndAssets(repo, releaseId, expectedTag) {
-    const release = parseJson(ghText(["api", `repos/${repo}/releases/${releaseId}`]), "draft release response");
+    const release = parseJson(ghText(["api", "--hostname", "github.com", `repos/${repo}/releases/${releaseId}`]), "draft release response");
     if (safeId("release id", release?.id) !== releaseId) fail("GitHub returned a different release ID");
     if (release.draft !== true) fail(`release ${releaseId} is not an unpublished draft`);
     if (release.tag_name !== expectedTag) fail(`draft release tag does not match expected ${expectedTag}`);
     const pages = parseJson(
-      ghText(["api", "--paginate", "--slurp", `repos/${repo}/releases/${releaseId}/assets?per_page=100`]),
+      ghText(["api", "--hostname", "github.com", "--paginate", "--slurp", `repos/${repo}/releases/${releaseId}/assets?per_page=100`]),
       "paginated release assets",
     );
     if (!Array.isArray(pages) || !pages.every(Array.isArray)) fail("paginated release asset response is incomplete");
@@ -263,7 +265,7 @@ function createProductionDependencies(overrides = {}) {
   }
 
   async function downloadAsset(repo, assetId) {
-    return Buffer.from(ghBytes(["api", "-H", "Accept: application/octet-stream", `repos/${repo}/releases/assets/${assetId}`]));
+    return Buffer.from(ghBytes(["api", "--hostname", "github.com", "-H", "Accept: application/octet-stream", `repos/${repo}/releases/assets/${assetId}`]));
   }
 
   async function inspectAnchor({ repo, row }) {
@@ -348,7 +350,7 @@ function createProductionDependencies(overrides = {}) {
               cwd: scratch,
               stdio: "inherit",
               encoding: null,
-              env: scrubGitHubTokens(),
+              env: scrubGitHubEnvironment(),
             });
             const tarball = await readFile(path.join(scratch, stageDownloadFilename(slot.version, slot.stage_id)));
             const observed = sha256Bytes(tarball);
@@ -361,13 +363,13 @@ function createProductionDependencies(overrides = {}) {
             console.log(`MATCH: staged tarball ${observed}`);
           } else {
             const dist = parseJson(run("npm", ["view", `${PKG}@${slot.version}`, "dist", "--json"], {
-              encoding: "utf8", stdio: "pipe", env: scrubGitHubTokens(),
+              encoding: "utf8", stdio: "pipe", env: scrubGitHubEnvironment(),
             }), "npm registry dist");
             if (dist?.integrity !== first.candidate.tarball?.integrity) {
               fail(`registry does not show ${PKG}@${slot.version} public with the candidate integrity`);
             }
           }
-          const actor = ghText(["api", "user", "--jq", ".login"]).trim();
+          const actor = ghText(["api", "--hostname", "github.com", "user", "--jq", ".login"]).trim();
           if (!allowedActors.includes(actor)) fail("active signer is not in the allowed-signers file");
           const payload = canonicalReceiptPayload({
             decision: slot.decision,
@@ -382,7 +384,7 @@ function createProductionDependencies(overrides = {}) {
           const messagePath = path.join(scratch, "receipt-payload.json");
           await writeFile(messagePath, canonicalPayloadBytes(payload), { mode: 0o600 });
           run("ssh-keygen", ["-Y", "sign", "-f", options.keyPath, "-n", SIGN_NAMESPACE, messagePath], {
-            encoding: "utf8", stdio: "pipe", env: scrubGitHubTokens(),
+            encoding: "utf8", stdio: "pipe", env: scrubGitHubEnvironment(),
           });
           const signature = await readFile(`${messagePath}.sig`, "utf8");
           const bytes = Buffer.from(`${JSON.stringify({ payload, signature }, null, 2)}\n`);

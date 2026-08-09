@@ -194,6 +194,87 @@ test("subprocess exact replacement deletes only the pinned old ID then uploads t
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
 
+test("QA HOST AUTHORITY — real CLI subprocess pins every observation to github.com and scrubs ambient GH_HOST", () => {
+  const h = scratch();
+  try {
+    const bin = path.join(h.root, "bin");
+    const controlledTmp = path.join(h.root, "tmp");
+    mkdirSync(bin);
+    mkdirSync(controlledTmp);
+    const signer = makeSigner(h.root, "briand-ai");
+    const allowedPath = path.join(h.root, "allowed-signers");
+    writeFileSync(allowedPath, `${signer.allowedLine}\n`);
+    const tarballBytes = Buffer.from("host-pinned retained tarball");
+    const tarballSha = digest(tarballBytes);
+    const candidateText = JSON.stringify({
+      schema: "aslite.release-candidate.v1",
+      tag: "v0.1.0-pre.4",
+      version: "0.1.0-pre.4",
+      tarball: { version: "0.1.0-pre.4", sha256: tarballSha, integrity: "sha512-YWJjZA==" },
+    });
+    const candidatePath = path.join(h.root, "candidate.json");
+    writeFileSync(candidatePath, candidateText);
+    const candidateDigest = digest(candidateText);
+    const ghLog = path.join(h.root, "gh-host.log");
+    const ghStub = path.join(bin, "gh");
+    writeFileSync(ghStub, `#!/bin/sh
+printf 'GH_HOST=%s GH_REPO=%s ARGS=%s\\n' "\${GH_HOST-<unset>}" "\${GH_REPO-<unset>}" "$*" >> "$ASLITE_TEST_GH_HOST_LOG"
+case "$*" in
+  *'repo view --json nameWithOwner --jq .nameWithOwner'*) printf '%s\\n' 'Holaxis-ai/agentstate-lite' ;;
+  *'releases/assets/22'*) exec /bin/cat "$ASLITE_TEST_CANDIDATE" ;;
+  *'releases/300/assets?per_page=100'*) printf '%s\\n' '[[{"id":22,"name":"candidate.json","digest":"${candidateDigest}"}]]' ;;
+  *'repos/Holaxis-ai/agentstate-lite/releases/300'*) printf '%s\\n' '{"id":300,"draft":true,"tag_name":"v0.1.0-pre.4","upload_url":"https://uploads.github.com/repos/Holaxis-ai/agentstate-lite/releases/300/assets{?name,label}"}' ;;
+  *'user --jq .login'*) printf '%s\\n' 'briand-ai' ;;
+  *) exit 91 ;;
+esac
+`);
+    const npmStub = path.join(bin, "npm");
+    writeFileSync(npmStub, `#!/bin/sh
+if [ "$1:$2:$3" = "stage:download:${STAGE_ID}" ]; then
+  printf '%s' 'host-pinned retained tarball' > "$ASLITE_TEST_DOWNLOAD_NAME"
+  exit 0
+fi
+exit 92
+`);
+    chmodSync(ghStub, 0o755);
+    chmodSync(npmStub, 0o755);
+
+    const result = spawnSync(process.execPath, [
+      path.join(repoRoot, "scripts", "release-inspect.mjs"),
+      "--stage-id", STAGE_ID,
+      "--version", "0.1.0-pre.4",
+      "--draft-release-id", "300",
+      "--decision", "inspected",
+      "--key", signer.keyPath,
+      "--allowed-signers", allowedPath,
+      "--recovery-dir", h.recoveryDir,
+      "--dry-run",
+    ], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH}`,
+        TMPDIR: controlledTmp,
+        GH_HOST: "attacker-controlled.example",
+        GH_REPO: "attacker-controlled.example/evil/repository",
+        ASLITE_TEST_GH_HOST_LOG: ghLog,
+        ASLITE_TEST_CANDIDATE: candidatePath,
+        ASLITE_TEST_DOWNLOAD_NAME: `holaxis-aslite-0.1.0-pre.4-${STAGE_ID}.tgz`,
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const transcript = readFileSync(ghLog, "utf8").trim().split("\n");
+    assert.ok(transcript.some((line) => line.includes("ARGS=repo view")), "fixture covers repository discovery");
+    assert.ok(transcript.some((line) => line.includes("releases/300/assets?per_page=100")), "fixture covers complete inventory");
+    assert.ok(transcript.some((line) => line.includes("releases/assets/22")), "fixture covers asset download");
+    assert.ok(transcript.some((line) => line.includes("user --jq .login")), "fixture covers active signer lookup");
+    for (const line of transcript) {
+      assert.match(line, /^GH_HOST=<unset> GH_REPO=<unset> /, `ambient host/repository reached child: ${line}`);
+      if (line.includes("ARGS=api ")) assert.match(line, /--hostname github\.com/, `observation is not host-explicit: ${line}`);
+    }
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
+
 for (const movement of ["anchor", "competitor"]) {
   test(`M1 DELETE BARRIER — ${movement} movement during /user proof makes DELETE unreachable`, () => {
     const h = scratch();
@@ -593,7 +674,7 @@ function signedReceipt(root, signer, payload) {
 test("production CLI adapter performs paginated exact replacement with one scrubbed signer-pinned token", async () => {
   const h = scratch();
   const token = "canary-pinned-token";
-  const priorEnv = Object.fromEntries(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"].map((name) => [name, process.env[name]]));
+  const priorEnv = Object.fromEntries(["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO"].map((name) => [name, process.env[name]]));
   try {
     for (const name of Object.keys(priorEnv)) process.env[name] = `ambient-${name}`;
     const signer = makeSigner(h.root, "briand-ai");
@@ -623,7 +704,7 @@ test("production CLI adapter performs paginated exact replacement with one scrub
       commands.push({ command, args: [...args], env: { ...(options.env ?? {}) } });
       for (const name of Object.keys(priorEnv)) assert.equal(options.env?.[name], undefined, `${command} child inherited ${name}`);
       if (command === "gh" && args[0] === "api" && args.includes("--paginate")) return JSON.stringify([assets]);
-      if (command === "gh" && args[0] === "api" && args[1] === "repos/Holaxis-ai/agentstate-lite/releases/300") {
+      if (command === "gh" && args[0] === "api" && args.includes("repos/Holaxis-ai/agentstate-lite/releases/300")) {
         return JSON.stringify({
           id: 300, draft: true, tag_name: "v0.1.0-pre.4",
           upload_url: "https://uploads.github.com/repos/Holaxis-ai/agentstate-lite/releases/300/assets{?name,label}",
@@ -633,7 +714,7 @@ test("production CLI adapter performs paginated exact replacement with one scrub
         const id = Number(args.at(-1).split("/").at(-1));
         return bytesById.get(id);
       }
-      if (command === "gh" && args.join(" ") === "api user --jq .login") return "briand-ai\n";
+      if (command === "gh" && args.join(" ") === "api --hostname github.com user --jq .login") return "briand-ai\n";
       if (command === "gh" && args[0] === "auth") {
         assert.deepEqual(args, ["auth", "token", "--hostname", "github.com", "--user", "briand-ai"]);
         return `${token}\n`;
@@ -681,6 +762,9 @@ test("production CLI adapter performs paginated exact replacement with one scrub
     assert.equal(requests.filter((item) => item.init.method === "POST").length, 1);
     assert.equal(requests.filter((item) => item.href === "https://api.github.com/user").length, 2, "same token is proved before DELETE and upload");
     assert.ok(commands.some((item) => item.args.includes("--paginate") && item.args.includes("--slurp")));
+    for (const item of commands.filter((entry) => entry.command === "gh" && entry.args[0] === "api")) {
+      assert.deepEqual(item.args.slice(0, 3), ["api", "--hostname", "github.com"]);
+    }
     assert.equal(assets.filter((asset) => asset.name === NAME).length, 1);
     assert.equal(readdirSync(h.recoveryDir).length, 0);
     const commandText = JSON.stringify(commands);
