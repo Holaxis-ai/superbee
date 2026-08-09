@@ -19,9 +19,12 @@ import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { assertLeafArity, type LeafPath } from "./positional-arity.js";
 
-export type ArityDecision =
+const ARITY_DECISION_BRAND: unique symbol = Symbol("agentstate-lite.arity-decision");
+
+export type ArityDecision = (
   | { readonly kind: "leaf"; readonly path: LeafPath }
-  | { readonly kind: "deferred"; readonly reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization" };
+  | { readonly kind: "deferred"; readonly reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization" }
+) & { readonly [ARITY_DECISION_BRAND]: true };
 
 export type SelectorDeferral =
   | "selector:bundle"
@@ -32,8 +35,20 @@ export type SelectorDeferral =
   | "selector:hook"
   | "selector:skill";
 
-export const leafArity = (path: LeafPath): ArityDecision => ({ kind: "leaf", path });
-export const deferArity = (reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization"): ArityDecision => ({ kind: "deferred", reason });
+export const leafArity = (path: LeafPath): ArityDecision =>
+  Object.freeze({ kind: "leaf", path, [ARITY_DECISION_BRAND]: true as const });
+export const deferArity = (reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization"): ArityDecision =>
+  Object.freeze({ kind: "deferred", reason, [ARITY_DECISION_BRAND]: true as const });
+
+function assertOwnedArityDecision(decision: ArityDecision): void {
+  if (
+    typeof decision !== "object" ||
+    decision === null ||
+    (decision as { [ARITY_DECISION_BRAND]?: unknown })[ARITY_DECISION_BRAND] !== true
+  ) {
+    throw new TypeError("invalid arity decision: use leafArity() or deferArity()");
+  }
+}
 
 export type SelectorResolution<P> =
   | { readonly kind: "navigation" }
@@ -105,6 +120,7 @@ export function parseOrUsage<T extends { positionals: readonly string[]; values?
   command: string,
   decision: ArityDecision,
 ): T {
+  assertOwnedArityDecision(decision);
   try {
     const parsed = parse();
     if (Boolean((parsed.values as { help?: unknown } | undefined)?.help)) return parsed;

@@ -23,10 +23,15 @@ import { serve } from "../src/commands/serve.js";
 test("arity primitive accepts every supported contract shape and never mutates input", () => {
   const cases = [
     [exact(0), []],
+    [exact(1), ["a"]],
     [exact(2), ["a", "b"]],
-    [minimum(1), ["a", "b"]],
+    [minimum(1), ["a"]],
+    [minimum(1), ["a", "b", "c"]],
+    [range(1, 3), ["a"]],
     [range(1, 3), ["a", "b"]],
-    [variadic(1, "item"), ["a", "b", "c"]],
+    [range(1, 3), ["a", "b", "c"]],
+    [variadic(1, "item"), ["a"]],
+    [variadic(1, "item"), ["a", "b", "c", "d"]],
   ] as const;
   for (const [contract, values] of cases) {
     const before = [...values];
@@ -85,6 +90,19 @@ test("parser classification owns options, help precedence, and the -- terminator
     "list",
     leafArity("list"),
   ), (error: unknown) => error instanceof CliError && error.code === "USAGE");
+});
+
+test("parseOrUsage rejects forged decisions before invoking the parser", () => {
+  let parserCalls = 0;
+  assert.throws(() => parseOrUsage(
+    () => {
+      parserCalls++;
+      return parseArgs({ args: [], options: {}, allowPositionals: true });
+    },
+    "list",
+    { kind: "deferred", reason: "new:schema" } as never,
+  ), /invalid arity decision/i);
+  assert.equal(parserCalls, 0);
 });
 
 test("built init rejects surplus before creating its target", () => {

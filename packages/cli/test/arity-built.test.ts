@@ -5,59 +5,114 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { decode } from "@toon-format/toon";
 
 import { KNOWN_COMMANDS } from "../src/cli.js";
-import { LEAF_POSITIONAL_ARITY } from "../src/positional-arity.js";
+import { LEAF_POSITIONAL_ARITY, assertLeafArity, type LeafPath } from "../src/positional-arity.js";
 import { COMMAND_GROUPS, type PublicLeafPath } from "../src/reference.js";
 
 const CLI = resolve(import.meta.dirname, "../dist/agentstate-lite.mjs");
+const SURPLUS = "arity-surplus-sentinel";
 
-const SURPLUS_ARGV = {
-  "bundle locate": ["bundle", "locate", "extra"],
-  "catalog add": ["catalog", "add", "label", "extra"],
-  "catalog list": ["catalog", "list", "extra"],
-  "catalog resolve": ["catalog", "resolve", "label", "extra", "--field", "path"],
-  init: ["init", "extra"],
-  "index generate": ["index", "generate", "extra"],
-  status: ["status", "extra"],
-  "doc write": ["doc", "write", "id", "extra"],
-  "doc update": ["doc", "update", "id", "extra"],
-  "doc read": ["doc", "read", "id", "extra", "--out", "-"],
-  "doc history": ["doc", "history", "id", "extra"],
-  "doc delete": ["doc", "delete", "id", "extra"],
-  list: ["list", "extra"],
-  query: ["query", "extra"],
-  "link add": ["link", "add", "from", "to", "extra"],
-  "link show": ["link", "show", "id", "extra"],
-  "link list": ["link", "list", "extra"],
-  "artifact create": ["artifact", "create", "file", "extra"],
-  promote: ["promote", "file", "extra"],
-  pull: ["pull", "extra", "--out", "-"],
-  blobs: ["blobs", "extra"],
-  delete: ["delete", "extra"],
-  new: ["new", "Context Note", "id", "extra", "--title", "title"],
-  kinds: ["kinds", "extra"],
-  "kind field add": ["kind", "field", "Task", "add", "name", "extra"],
-  "kind field remove": ["kind", "field", "Task", "remove", "name", "extra"],
-  recipes: ["recipes", "extra"],
-  "recipe add": ["recipe", "add", "context-notes", "extra"],
-  serve: ["serve", "extra"],
-  ui: ["ui", "extra"],
-  mcp: ["mcp", "extra"],
-  "view list": ["view", "list", "extra"],
-  sync: ["sync", "extra"],
-  version: ["version", "extra"],
-  "session-start": ["session-start", "extra"],
-  "hook install": ["hook", "install", "extra", "--scope", "project"],
-  "hook status": ["hook", "status", "extra", "--scope", "project"],
-  "hook uninstall": ["hook", "uninstall", "extra", "--scope", "project"],
-  "skill install": ["skill", "install", "extra", "--scope", "project"],
-  "skill status": ["skill", "status", "extra", "--scope", "project"],
-  "skill uninstall": ["skill", "uninstall", "extra", "--scope", "project"],
-} as const satisfies Record<PublicLeafPath, readonly string[]>;
+interface FixtureContext {
+  readonly scratch: string;
+  readonly bundle: string;
+  readonly initTarget: string;
+  readonly artifactFile: string;
+  readonly env: NodeJS.ProcessEnv;
+}
+
+interface LeafCase {
+  readonly canonical: LeafPath;
+  readonly operands: readonly string[];
+  readonly argv: (operands: readonly string[]) => string[];
+  readonly errorChannel?: "stdout" | "stderr";
+}
+
+function simple(
+  canonical: LeafPath,
+  prefix: readonly string[],
+  operands: readonly string[],
+  suffix: readonly string[] = [],
+  errorChannel: "stdout" | "stderr" = "stdout",
+): LeafCase {
+  return { canonical, operands, argv: (data) => [...prefix, ...data, ...suffix], errorChannel };
+}
+
+function leafCases(ctx: FixtureContext): Record<PublicLeafPath, LeafCase> {
+  const dir = ["--dir", ctx.bundle] as const;
+  return {
+    "bundle locate": simple("bundle locate", ["bundle", "locate"], [], dir),
+    "catalog add": simple("catalog add", ["catalog", "add"], ["arity-second"], dir),
+    "catalog list": simple("catalog list", ["catalog", "list"], []),
+    "catalog resolve": simple("catalog resolve", ["catalog", "resolve"], ["arity-bundle"], ["--field", "path"], "stderr"),
+    init: simple("init", ["init"], [], ["--dir", ctx.initTarget, "--recipe", "none"]),
+    "index generate": simple("index generate", ["index", "generate"], [], [...dir, "--check"]),
+    status: simple("status", ["status"], [], dir),
+    "doc write": simple("doc write", ["doc", "write"], ["candidate"], ["--type", "Test", "--body", "body", ...dir]),
+    "doc update": simple("doc update", ["doc", "update"], ["existing"], ["--title", "Changed", ...dir]),
+    "doc read": simple("doc read", ["doc", "read"], ["existing"], ["--out", "-", ...dir], "stderr"),
+    "doc history": simple("doc history", ["doc", "history"], ["existing"], dir),
+    "doc delete": simple("doc delete", ["doc", "delete"], ["victim"], dir),
+    list: simple("list", ["list"], [], dir),
+    query: simple("list", ["query"], [], dir),
+    "link add": simple("link add", ["link", "add"], ["from", "to"], dir),
+    "link show": simple("link show", ["link", "show"], ["from"], dir),
+    "link list": simple("link list", ["link", "list"], [], dir),
+    "artifact create": simple("artifact create", ["artifact", "create"], [ctx.artifactFile], ["--title", "Arity artifact", ...dir]),
+    promote: simple("promote", ["promote"], [ctx.artifactFile], ["--doc-key", "artifacts/review.html", ...dir]),
+    pull: simple("pull", ["pull"], [], ["--doc-key", "existing.md", "--out", "-", ...dir]),
+    blobs: simple("blobs", ["blobs"], [], dir),
+    delete: simple("delete", ["delete"], [], ["--doc-key", "victim.md", ...dir]),
+    new: simple("new", ["new"], ["Context Note", "new-id"], ["--title", "New note", ...dir]),
+    kinds: simple("kinds", ["kinds"], [], dir),
+    "kind field add": {
+      canonical: "kind field add",
+      operands: ["Task", "repair-field"],
+      argv: (data) => [
+        "kind", "field",
+        ...(data[0] === undefined ? [] : [data[0]]),
+        "add",
+        ...(data[1] === undefined ? [] : data.slice(1)),
+        ...dir,
+      ],
+    },
+    "kind field remove": {
+      canonical: "kind field remove",
+      operands: ["Task", "repair-field"],
+      argv: (data) => [
+        "kind", "field",
+        ...(data[0] === undefined ? [] : [data[0]]),
+        "remove",
+        ...(data[1] === undefined ? [] : data.slice(1)),
+        ...dir,
+      ],
+    },
+    recipes: simple("recipes", ["recipes"], [], dir),
+    "recipe add": simple("recipe add", ["recipe", "add"], ["work-tracking"], dir),
+    serve: simple("serve", ["serve"], [], [...dir, "--port", "0"]),
+    ui: simple("ui", ["ui"], [], [...dir, "--port", "0"]),
+    mcp: simple("mcp", ["mcp"], [], dir, "stderr"),
+    "view list": simple("view list", ["view", "list"], [], dir),
+    sync: simple("sync", ["sync"], [], dir),
+    version: simple("version", ["version"], []),
+    "session-start": simple("session-start", ["session-start"], [], [...dir, "--no-update-check"]),
+    "hook install": simple("hook install", ["hook", "install"], [], ["--scope", "project"]),
+    "hook status": simple("hook status", ["hook", "status"], [], ["--scope", "project"]),
+    "hook uninstall": simple("hook uninstall", ["hook", "uninstall"], [], ["--scope", "project"]),
+    "skill install": simple("skill install", ["skill", "install"], [], ["--scope", "project"]),
+    "skill status": simple("skill status", ["skill", "status"], [], ["--scope", "project"]),
+    "skill uninstall": simple("skill uninstall", ["skill", "uninstall"], [], ["--scope", "project"]),
+  };
+}
 
 function run(argv: readonly string[], cwd: string, env?: NodeJS.ProcessEnv) {
-  return spawnSync(process.execPath, [CLI, ...argv], { cwd, env: { ...process.env, ...env }, encoding: "utf8", timeout: 5_000 });
+  return spawnSync(process.execPath, [CLI, ...argv], {
+    cwd,
+    env: { ...process.env, ...env },
+    encoding: "utf8",
+    timeout: 5_000,
+  });
 }
 
 function treeSnapshot(root: string): string {
@@ -73,47 +128,124 @@ function treeSnapshot(root: string): string {
   return rows.join("\n");
 }
 
+function createFixture(): FixtureContext {
+  const scratch = mkdtempSync(join(tmpdir(), "aslite-arity-leaves-"));
+  const bundle = join(scratch, "bundle");
+  const home = join(scratch, "home");
+  const artifactFile = join(scratch, "artifact.html");
+  mkdirSync(home);
+  writeFileSync(artifactFile, "<!doctype html><title>arity</title>\n");
+  const env = { HOME: home, ASLITE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" };
+  const setupCommands = [
+    ["init", "--dir", bundle],
+    ["recipe", "add", "work-tracking", "--dir", bundle],
+    ["doc", "write", "existing", "--type", "Test", "--body", "body", "--dir", bundle],
+    ["doc", "write", "from", "--type", "Test", "--body", "from", "--dir", bundle],
+    ["doc", "write", "to", "--type", "Test", "--body", "to", "--dir", bundle],
+    ["doc", "write", "victim", "--type", "Test", "--body", "victim", "--dir", bundle],
+    ["catalog", "add", "arity-bundle", "--dir", bundle],
+  ] as const;
+  for (const argv of setupCommands) {
+    const result = run(argv, scratch, env);
+    assert.equal(result.status, 0, `fixture setup ${argv.join(" ")}\n${result.stdout}${result.stderr}`);
+  }
+  return { scratch, bundle, initTarget: join(scratch, "must-not-exist"), artifactFile, env };
+}
+
+interface DecodedError {
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly details?: Record<string, unknown>;
+    readonly help?: string;
+  };
+}
+
+function decodedError(result: ReturnType<typeof run>, row: LeafCase, path: string): DecodedError {
+  const channel = row.errorChannel ?? "stdout";
+  const output = channel === "stderr" ? result.stderr : result.stdout;
+  const reserved = channel === "stderr" ? result.stdout : result.stderr;
+  assert.equal(reserved, "", `${path} must keep its reserved non-error channel byte-clean`);
+  assert.notEqual(output, "", `${path} must emit a structured error`);
+  return decode(output.trim()) as unknown as DecodedError;
+}
+
 test("documented paths, runtime top-level registration, arity, and executable rows agree bidirectionally", () => {
   const paths = COMMAND_GROUPS.flatMap((group) => group.commands.flatMap((command) => command.paths));
+  const ctx = { scratch: "", bundle: "bundle", initTarget: "target", artifactFile: "artifact", env: {} };
+  const rows = leafCases(ctx);
   assert.equal(paths.length, 41);
-  assert.deepEqual(Object.keys(SURPLUS_ARGV).sort(), [...paths].sort());
+  assert.deepEqual(Object.keys(rows).sort(), [...paths].sort());
   assert.deepEqual(Object.keys(LEAF_POSITIONAL_ARITY).filter((path) => path !== "home").sort(), [...paths].sort());
   assert.deepEqual([...new Set(paths.map((path) => path.split(" ")[0]))].sort(), [...KNOWN_COMMANDS].sort());
 });
 
-test("all 41 documented built leaves reject a surplus sentinel; reserved channels stay byte-clean", () => {
-  const scratch = mkdtempSync(join(tmpdir(), "aslite-arity-leaves-"));
-  const bundle = join(scratch, "bundle");
-  const init = run(["init", "--dir", bundle], scratch);
-  assert.equal(init.status, 0, init.stdout + init.stderr);
-  const bundleBefore = treeSnapshot(bundle);
+test("all 41 built leaves have a valid boundary and reject one derived surplus with an exact envelope", () => {
+  const ctx = createFixture();
+  const rows = leafCases(ctx);
+  const bundleBefore = treeSnapshot(ctx.bundle);
 
-  for (const [path, baseArgv] of Object.entries(SURPLUS_ARGV)) {
-    const argv = [...baseArgv];
-    if (path === "init") argv.push("--dir", join(scratch, "must-not-exist"), "--recipe", "none");
-    else if (path === "new") argv.push("--dir", bundle);
-    const result = run(argv, scratch);
+  for (const [path, row] of Object.entries(rows)) {
+    const contract = LEAF_POSITIONAL_ARITY[row.canonical];
+    assert.equal(contract.kind, "exact", `${path}: matrix derivation currently requires an exact contract`);
+    if (contract.kind !== "exact") continue;
+    assert.equal(row.operands.length, contract.count, `${path}: fixture must be minimally valid`);
+    assert.doesNotThrow(() => assertLeafArity(row.canonical, row.operands), `${path}: valid boundary`);
+
+    const result = run(row.argv([...row.operands, SURPLUS]), ctx.scratch, ctx.env);
     assert.equal(result.status, 2, `${path}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
-    const reserved = path === "mcp" || path === "doc read" || path === "catalog resolve";
-    if (reserved) {
-      assert.equal(result.stdout, "", `${path} must keep reserved stdout empty`);
-      assert.match(result.stderr, /USAGE/);
-    } else {
-      assert.match(result.stdout + result.stderr, /USAGE/);
-    }
+    const envelope = decodedError(result, row, path);
+    assert.equal(envelope.error.code, "USAGE", path);
+    assert.deepEqual(envelope.error.details, {
+      command: row.canonical,
+      expected: contract.count === 0
+        ? "no positional arguments"
+        : `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`,
+      actual: contract.count + 1,
+      surplus: 1,
+      first_unexpected: SURPLUS,
+    }, path);
+    assert.equal(envelope.error.help?.endsWith(`${row.canonical} --help`), true, `${path}: canonical leaf help`);
   }
-  assert.equal(existsSync(join(scratch, "must-not-exist")), false);
-  assert.equal(treeSnapshot(bundle), bundleBefore, "surplus leaves, including schema-deferred new, must not mutate the bundle");
-  const terminated = run(["new", "Context Note", "terminated", "--dir", bundle, "--", "--title", "extra"], scratch);
-  assert.equal(terminated.status, 2, terminated.stdout + terminated.stderr);
-  assert.equal(treeSnapshot(bundle), bundleBefore, "-- terminated schema-deferred surplus must leave recursive bytes unchanged");
 
-  const explicitHome = run(["home", "extra"], scratch);
+  assert.equal(existsSync(ctx.initTarget), false);
+  assert.equal(treeSnapshot(ctx.bundle), bundleBefore, "surplus leaves, including schema-deferred new, must not mutate the bundle");
+
+  const terminated = run(["new", "Context Note", "terminated", "--dir", ctx.bundle, "--", "--title", SURPLUS], ctx.scratch, ctx.env);
+  assert.equal(terminated.status, 2, terminated.stdout + terminated.stderr);
+  assert.equal(treeSnapshot(ctx.bundle), bundleBefore, "-- terminated schema-deferred surplus must leave recursive bytes unchanged");
+
+  const explicitHome = run(["home", SURPLUS], ctx.scratch, ctx.env);
   assert.equal(explicitHome.status, 2);
-  const meta = run(["--version", "extra"], scratch);
+  const meta = run(["--version", SURPLUS], ctx.scratch, ctx.env);
   assert.equal(meta.status, 0);
-  const shadow = run(["update"], scratch);
+  const shadow = run(["update"], ctx.scratch, ctx.env);
   assert.equal(shadow.status, 2);
+});
+
+test("selected missing boundaries and help precedence are executable across the matrix", () => {
+  const ctx = createFixture();
+  const rows = leafCases(ctx);
+  const bundleBefore = treeSnapshot(ctx.bundle);
+
+  for (const [path, row] of Object.entries(rows)) {
+    const contract = LEAF_POSITIONAL_ARITY[row.canonical];
+    if (contract.kind === "exact" && contract.count > 0) {
+      const missing = run(row.argv(row.operands.slice(0, -1)), ctx.scratch, ctx.env);
+      assert.equal(missing.status, 2, `${path} missing boundary\n${missing.stdout}${missing.stderr}`);
+      const envelope = decodedError(missing, row, path);
+      assert.equal(envelope.error.code, "USAGE", path);
+      assert.equal(envelope.error.details?.command, row.canonical, path);
+      assert.equal(envelope.error.details?.actual, contract.count - 1, path);
+    }
+
+    const help = run([...row.argv([...row.operands, SURPLUS]), "--help"], ctx.scratch, ctx.env);
+    assert.equal(help.status, 0, `${path} help precedence\nstdout=${help.stdout}\nstderr=${help.stderr}`);
+    assert.notEqual(help.stdout, "", `${path}: help should be visible on stdout`);
+  }
+
+  assert.equal(existsSync(ctx.initTarget), false);
+  assert.equal(treeSnapshot(ctx.bundle), bundleBefore, "missing/help probes must not mutate the bundle");
 });
 
 test("schema-deferred new preserves valid dynamic-field ordering", () => {
@@ -134,11 +266,11 @@ test("surplus sync performs zero Git spawns and surplus serve exits before liste
   const fakeGit = join(bin, "git");
   writeFileSync(fakeGit, `#!/bin/sh\nprintf called > ${JSON.stringify(marker)}\nexit 99\n`);
   chmodSync(fakeGit, 0o755);
-  const sync = run(["sync", "extra"], scratch, { PATH: `${bin}:${process.env.PATH ?? ""}` });
+  const sync = run(["sync", SURPLUS], scratch, { PATH: `${bin}:${process.env.PATH ?? ""}` });
   assert.equal(sync.status, 2, sync.stdout + sync.stderr);
   assert.equal(existsSync(marker), false);
 
-  const serve = run(["serve", "extra", "--port", "0"], scratch);
+  const serve = run(["serve", SURPLUS, "--port", "0"], scratch);
   assert.equal(serve.status, 2, serve.stdout + serve.stderr);
   assert.doesNotMatch(serve.stdout + serve.stderr, /listening|ready/i);
 });
@@ -152,7 +284,7 @@ test("surplus remote list performs zero HTTP requests or connections", async () 
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const scratch = mkdtempSync(join(tmpdir(), "aslite-arity-network-"));
-  const child = spawn(process.execPath, [CLI, "list", "extra", "--remote", `http://127.0.0.1:${address.port}`], { cwd: scratch, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [CLI, "list", SURPLUS, "--remote", `http://127.0.0.1:${address.port}`], { cwd: scratch, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });

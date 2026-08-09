@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import test from "node:test";
-import ts from "typescript";
+
+import { scanArityArchitecture, type ArchitectureFacts } from "./support/arity-architecture-scanner.js";
 
 const SRC = join(import.meta.dirname, "../src");
 
@@ -13,82 +14,131 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-function importedLocals(source: ts.SourceFile, moduleName: string, exported: string): Set<string> {
-  const names = new Set<string>();
-  for (const statement of source.statements) {
-    if (!ts.isImportDeclaration(statement) || statement.moduleSpecifier.getText(source).slice(1, -1) !== moduleName) continue;
-    const bindings = statement.importClause?.namedBindings;
-    if (!bindings || !ts.isNamedImports(bindings)) continue;
-    for (const element of bindings.elements) {
-      if ((element.propertyName?.text ?? element.name.text) === exported) names.add(element.name.text);
-    }
+function scanProduction(): ArchitectureFacts {
+  const combined: ArchitectureFacts = { directParseArgs: [], parseDecisions: [], selectorCalls: [], deferFactoryCalls: [] };
+  for (const path of sourceFiles(SRC)) {
+    const facts = scanArityArchitecture(relative(SRC, path), readFileSync(path, "utf8"));
+    combined.directParseArgs.push(...facts.directParseArgs);
+    combined.parseDecisions.push(...facts.parseDecisions);
+    combined.selectorCalls.push(...facts.selectorCalls);
+    combined.deferFactoryCalls.push(...facts.deferFactoryCalls);
   }
-  return names;
+  return combined;
 }
 
-function containingFunctionName(node: ts.Node): string | undefined {
-  for (let current = node.parent; current; current = current.parent) {
-    if (ts.isFunctionDeclaration(current) && current.name) return current.name.text;
-    if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) return current.name.text;
-  }
-  return undefined;
+function labels(rows: Array<{ file: string; functionName: string }>): string[] {
+  return rows.map((row) => `${row.file}:${row.functionName}`).sort();
 }
 
-test("parseArgs bypasses and arity deferrals have an AST/import-aware closed allowlist", () => {
-  const direct: string[] = [];
-  const selectorReasons: string[] = [];
-  const deferredReasons: string[] = [];
-
-  for (const file of sourceFiles(SRC)) {
-    const text = readFileSync(file, "utf8");
-    const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-    const parseArgsNames = importedLocals(source, "node:util", "parseArgs");
-    const parseHelpers = new Set([
-      ...importedLocals(source, "../args.js", "parseOrUsage"),
-      ...importedLocals(source, "../../args.js", "parseOrUsage"),
-      ...importedLocals(source, "../args.js", "parseSelectorOrUsage"),
-    ]);
-    const selectorHelpers = importedLocals(source, "../args.js", "parseSelectorOrUsage");
-    const deferHelpers = new Set([
-      ...importedLocals(source, "../args.js", "deferArity"),
-      ...importedLocals(source, "../../args.js", "deferArity"),
-    ]);
-
-    const visit = (node: ts.Node): void => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-        if (parseArgsNames.has(node.expression.text)) {
-          let joined = false;
-          for (let parent = node.parent; parent; parent = parent.parent) {
-            if (ts.isCallExpression(parent) && ts.isIdentifier(parent.expression) && parseHelpers.has(parent.expression.text)) {
-              joined = true;
-              break;
-            }
-            if (ts.isFunctionDeclaration(parent)) break;
-          }
-          if (!joined) direct.push(`${relative(SRC, file)}:${containingFunctionName(node) ?? "<module>"}`);
-        }
-        if (selectorHelpers.has(node.expression.text)) {
-          const argument = node.arguments[2];
-          selectorReasons.push(argument && ts.isStringLiteral(argument) ? argument.text : "<nonliteral>");
-        }
-        if (deferHelpers.has(node.expression.text)) {
-          const argument = node.arguments[0];
-          deferredReasons.push(argument && ts.isStringLiteral(argument) ? argument.text : "<nonliteral>");
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-  }
-
-  assert.deepEqual(direct.sort(), [
+test("production parser calls and actual decisions satisfy the closed AST/import-aware allowlists", () => {
+  const facts = scanProduction();
+  assert.deepEqual(labels(facts.directParseArgs), [
     "cli.ts:hoistLeadingGlobalFlags",
     "cli.ts:isGlobalOnlyHomeInvocation",
     "commands/home.ts:parseHomeArgs",
   ]);
-  assert.deepEqual(selectorReasons.sort(), [
-    "selector:bundle", "selector:catalog", "selector:hook", "selector:index",
-    "selector:kind", "selector:skill", "selector:view",
+
+  assert.deepEqual(
+    facts.parseDecisions.filter((row) => row.decision.kind === "invalid"),
+    [],
+    "every parseOrUsage call must pass an owning leafArity/deferArity factory call",
+  );
+  assert.deepEqual(
+    facts.parseDecisions
+      .filter((row) => row.decision.kind === "deferred")
+      .map((row) => `${row.file}:${row.functionName}:${row.decision.value}`)
+      .sort(),
+    [
+      "args.ts:parseSelectorOrUsage:<nonliteral>",
+      "commands/doc/update.ts:parseDocUpdateArgs:doc-update:token-normalization",
+      "commands/new.ts:newCommand:new:schema",
+    ],
+  );
+  assert.deepEqual(
+    facts.deferFactoryCalls.map((row) => `${row.file}:${row.functionName}:${row.reason}`).sort(),
+    [
+      "args.ts:parseSelectorOrUsage:<nonliteral>",
+      "commands/doc/update.ts:parseDocUpdateArgs:doc-update:token-normalization",
+      "commands/new.ts:newCommand:new:schema",
+    ],
+  );
+  assert.deepEqual(
+    facts.selectorCalls.map((row) => `${row.file}:${row.functionName}:${row.reason}`).sort(),
+    [
+      "commands/bundle.ts:bundleCommand:selector:bundle",
+      "commands/catalog.ts:catalogInner:selector:catalog",
+      "commands/hook.ts:hook:selector:hook",
+      "commands/index.ts:indexCommand:selector:index",
+      "commands/kind.ts:kind:selector:kind",
+      "commands/skill.ts:skill:selector:skill",
+      "commands/view.ts:view:selector:view",
+    ],
+  );
+});
+
+test("shared scanner recognizes namespace and aliased parser/helper/factory calls", () => {
+  const namespaceBypass = scanArityArchitecture("commands/probe.ts", `
+    import * as util from "node:util";
+    import * as arity from "../args.js";
+    export function bare(argv: string[]) { return util.parseArgs({ args: argv, options: {} }); }
+    export function forged(argv: string[]) {
+      return arity.parseOrUsage(
+        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
+        "list",
+        { kind: "deferred", reason: "new:schema" },
+      );
+    }
+  `);
+  assert.deepEqual(labels(namespaceBypass.directParseArgs), ["commands/probe.ts:bare"]);
+  assert.deepEqual(namespaceBypass.parseDecisions.map((row) => row.decision.kind), ["invalid"]);
+
+  const defaultAndForeign = scanArityArchitecture("commands/foreign.ts", `
+    import util from "util";
+    import * as foreign from "foreign/args.js";
+    export function defaultBare(argv: string[]) {
+      return foreign.parseOrUsage(
+        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
+        "list", foreign.leafArity("list"),
+      );
+    }
+  `);
+  assert.deepEqual(labels(defaultAndForeign.directParseArgs), ["commands/foreign.ts:defaultBare"]);
+  assert.deepEqual(defaultAndForeign.parseDecisions, []);
+
+  const namespaceJoined = scanArityArchitecture("commands/joined.ts", `
+    import * as util from "node:util";
+    import * as arity from "../args.js";
+    export function joined(argv: string[]) {
+      return arity.parseOrUsage(
+        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
+        "list",
+        arity.leafArity("list"),
+      );
+    }
+    export function selected(argv: string[]) {
+      return arity.parseSelectorOrUsage(
+        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
+        "view", "selector:view", () => ({ kind: "navigation" }),
+      );
+    }
+  `);
+  assert.deepEqual(namespaceJoined.directParseArgs, []);
+  assert.deepEqual(namespaceJoined.parseDecisions.map((row) => row.decision), [{ kind: "leaf", value: "list" }]);
+  assert.deepEqual(namespaceJoined.selectorCalls.map((row) => row.reason), ["selector:view"]);
+
+  const aliased = scanArityArchitecture("commands/aliased.ts", `
+    import { parseArgs as parseNode } from "node:util";
+    import { parseOrUsage as parseOwned, deferArity as approvedDeferral } from "../args.js";
+    export function normalized(argv: string[]) {
+      return parseOwned(
+        () => parseNode({ args: argv, options: {}, allowPositionals: true }),
+        "doc update", approvedDeferral("doc-update:token-normalization"),
+      );
+    }
+  `);
+  assert.deepEqual(aliased.directParseArgs, []);
+  assert.deepEqual(aliased.parseDecisions.map((row) => row.decision), [
+    { kind: "deferred", value: "doc-update:token-normalization" },
   ]);
-  assert.deepEqual(deferredReasons.sort(), ["doc-update:token-normalization", "new:schema"]);
+  assert.deepEqual(aliased.deferFactoryCalls.map((row) => row.reason), ["doc-update:token-normalization"]);
 });
