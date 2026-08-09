@@ -796,6 +796,7 @@ test("inspection refuses a draft/tag mismatch before download, signing, or uploa
     mkdirSync(controlledTmp);
     const ghLog = path.join(harness, "gh.log");
     const operationsLog = path.join(harness, "operations.log");
+    const recoveryDir = path.join(harness, "recovery");
     const ghStub = path.join(bin, "gh");
     writeFileSync(ghStub, `#!/bin/sh
 printf '%s\\n' "$*" >> "$ASLITE_TEST_GH_LOG"
@@ -820,6 +821,7 @@ exit 99
       "--draft-release-id", "300",
       "--key", path.join(harness, "unused-key"),
       "--repo", "Holaxis-ai/agentstate-lite",
+      "--recovery-dir", recoveryDir,
     ], {
       encoding: "utf8",
       env: {
@@ -850,10 +852,15 @@ test("inspection mismatch unwinds batch scratch state, emits no receipt, and pri
     const manifestPath = path.join(harness, "candidate.json");
     const batchPath = path.join(harness, "batch.json");
     const ghLog = path.join(harness, "gh.log");
-    writeFileSync(manifestPath, JSON.stringify({
+    const recoveryDir = path.join(harness, "recovery");
+    const manifestText = JSON.stringify({
+      schema: "aslite.release-candidate.v1",
+      tag: `v${PRE}`,
       version: PRE,
-      tarball: { sha256: TARBALL_SHA, integrity: INTEGRITY },
-    }));
+      tarball: { version: PRE, sha256: TARBALL_SHA, integrity: INTEGRITY },
+    });
+    writeFileSync(manifestPath, manifestText);
+    const manifestDigest = sha256Bytes(manifestText);
     writeFileSync(batchPath, JSON.stringify([{
       stage_id: STAGE_ID,
       version: PRE,
@@ -865,7 +872,8 @@ test("inspection mismatch unwinds batch scratch state, emits no receipt, and pri
 printf '%s\\n' "$*" >> "$ASLITE_TEST_GH_LOG"
 case "$*" in
   *releases/assets/*) exec /bin/cat "$ASLITE_TEST_MANIFEST" ;;
-  *releases/300*) printf '%s\\n' '{"id":300,"draft":true,"tag_name":"v0.1.0-pre.4","assets":[{"id":22,"name":"candidate.json"}]}' ;;
+  *--paginate*releases/300/assets*) printf '%s\\n' '[[{"id":22,"name":"candidate.json","digest":"${manifestDigest}"}]]' ;;
+  *releases/300*) printf '%s\\n' '{"id":300,"draft":true,"tag_name":"v0.1.0-pre.4","upload_url":"https://uploads.github.com/repos/Holaxis-ai/agentstate-lite/releases/300/assets{?name,label}"}' ;;
   'api user --jq .login') printf '%s\\n' 'briand-ai' ;;
   *) exit 2 ;;
 esac
@@ -885,6 +893,7 @@ exit 2
       "--batch", batchPath,
       "--key", path.join(harness, "unused-key"),
       "--repo", "Holaxis-ai/agentstate-lite",
+      "--recovery-dir", recoveryDir,
     ], {
       encoding: "utf8",
       env: {
@@ -901,6 +910,7 @@ exit 2
     assert.match(result.stderr, new RegExp(`npm stage reject ${STAGE_ID}`));
     assert.match(result.stderr, /receipt not emitted/);
     assert.deepEqual(readdirSync(controlledTmp), [], "finally removes the scratch directory and suspect tarball");
+    assert.deepEqual(readdirSync(recoveryDir), [], "failed inspection releases its owner and writes no journal");
     assert.doesNotMatch(readFileSync(ghLog, "utf8"), /release upload/, "mismatch never uploads a receipt");
   } finally {
     rmSync(harness, { recursive: true, force: true });
