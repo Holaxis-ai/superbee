@@ -37,7 +37,7 @@ import { parseArgs } from "node:util";
 import { queryHeads, loadKinds, isTerminal, matchesFilter, type KindRegistry, type QueryFilter } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -112,6 +112,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
         allowPositionals: true,
       }),
     "list",
+    leafArity("list"),
   );
   if (values.help) {
     stdout(LIST_USAGE);

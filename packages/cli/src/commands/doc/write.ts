@@ -5,7 +5,7 @@ import { promises as fs } from "node:fs";
 import { loadKinds, type Frontmatter, type OkfDocument } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
-import { parseOrUsage } from "../../args.js";
+import { leafArity, parseOrUsage } from "../../args.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { mutateDoc } from "../../mutate.js";
@@ -51,6 +51,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
         allowPositionals: true,
       }),
     "doc write",
+    leafArity("doc write"),
   );
   if (values.help) {
     stdout(DOC_WRITE_USAGE);

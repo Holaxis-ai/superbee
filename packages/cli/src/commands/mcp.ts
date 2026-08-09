@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { startMcpStdioServer } from "@agentstate-lite/mcp-app";
 import type { Bundle } from "@agentstate-lite/core";
 import type { ViewAuthorizationStore } from "@agentstate-lite/view-runtime";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { resolveActor } from "../actor.js";
 import { openBundle } from "../bundle.js";
 import { deriveBundleDisplayName } from "../bundle-name.js";
@@ -68,7 +68,7 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
   const open = deps.openBundle ?? ((dir: string | undefined) => openBundle(dir));
   const start = deps.startServer ?? startMcpStdioServer;
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -80,17 +80,12 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
         allowPositionals: true,
       }),
     "mcp",
+    leafArity("mcp"),
   );
   if (values.help) {
     stdout(MCP_USAGE);
     return;
   }
-  if (positionals.length > 0) {
-    throw new CliError("USAGE", `unexpected positional argument: ${positionals[0]}`, {
-      help: `${cliInvocation()} mcp --help`,
-    });
-  }
-
   const bundle = await open(values.dir);
   const actor = resolveActor(values.actor, {
     help: `${cliInvocation()} mcp --actor <name>`,

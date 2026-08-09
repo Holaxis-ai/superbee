@@ -67,7 +67,7 @@ import { defaultSyncStore } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
 import { defaultSummarizeBundle, discoverSummarizeBundle, home, type BoardPullOutcome } from "./home.js";
 import { cliInvocation } from "../invocation.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
@@ -277,6 +277,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
         allowPositionals: true,
       }),
     "session-start",
+    leafArity("session-start"),
   );
   if (values.help) {
     stdout(SESSION_START_USAGE);

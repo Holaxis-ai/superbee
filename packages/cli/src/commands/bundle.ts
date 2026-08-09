@@ -1,6 +1,6 @@
 // `agentstate-lite bundle locate` — expose the exact local bundle target the CLI would use.
 import { parseArgs } from "node:util";
-import { parseOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -32,7 +32,7 @@ export interface BundleCliDeps {
 export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const cwd = deps.cwd ?? (() => process.cwd());
-  const parsed = parseOrUsage(
+  const parsed = parseSelectorOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -44,15 +44,20 @@ export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps>
         allowPositionals: true,
       }),
     "bundle locate",
+    "selector:bundle",
+    (positionals) => {
+      if (positionals.length === 0) return { kind: "navigation" } as const;
+      if (positionals[0] !== "locate") return { kind: "unknown", token: positionals[0] } as const;
+      return { kind: "selected", path: "bundle locate", data: positionals.slice(1), payload: undefined } as const;
+    },
   );
 
-  if (parsed.values.help || parsed.positionals.length === 0) {
+  if (parsed.selection.kind === "help" || parsed.selection.kind === "navigation") {
     stdout(BUNDLE_USAGE);
     return;
   }
-  const [subcommand, ...extra] = parsed.positionals;
-  if (subcommand !== "locate" || extra.length > 0) {
-    throw new CliError("USAGE", `unknown bundle subcommand: ${subcommand ?? ""}`, {
+  if (parsed.selection.kind === "unknown") {
+    throw new CliError("USAGE", `unknown bundle subcommand: ${parsed.selection.token ?? ""}`, {
       help: `${cliInvocation()} bundle locate --help`,
     });
   }

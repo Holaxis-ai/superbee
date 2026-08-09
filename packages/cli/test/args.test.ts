@@ -7,8 +7,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "node:util";
 
-import { parseOrUsage } from "../src/args.js";
+import { leafArity, parseOrUsage as parseOrUsageWithArity } from "../src/args.js";
 import { CliError } from "../src/errors.js";
+
+function parseOrUsage<T extends { positionals: readonly string[]; values?: object }>(parse: () => T, command: string): T {
+  return parseOrUsageWithArity(parse, command, leafArity("list"));
+}
 
 function assertUsage(err: unknown, message: string, command = "list"): void {
   assert.ok(err instanceof CliError, "expected a CliError");

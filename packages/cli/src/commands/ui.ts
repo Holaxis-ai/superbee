@@ -21,7 +21,7 @@ import { getApiKeyForOrigin } from "../credentials.js";
 import { bootUiServer as bootUiServerDefault, type UiServerHandle, type UiServerOptions } from "../ui/server.js";
 import { writeUiUrlFile, clearUiUrlFile } from "../ui/url-file.js";
 import { CliError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { resolveActor } from "../actor.js";
@@ -138,6 +138,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
         allowPositionals: true,
       }),
     "ui",
+    leafArity("ui"),
   );
   if (values.help) {
     stdout(UI_USAGE);

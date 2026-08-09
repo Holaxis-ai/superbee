@@ -19,7 +19,7 @@ import {
   resolveProjectBinding,
   resolveRemoteFlag,
 } from "../bundle.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, shellArg } from "../invocation.js";
 import { appliedDocIds, isRecipeApplied } from "../recipes.js";
@@ -152,6 +152,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
         allowPositionals: true,
       }),
     "recipes",
+    leafArity("recipes"),
   );
   if (values.help) {
     stdout(RECIPES_USAGE);

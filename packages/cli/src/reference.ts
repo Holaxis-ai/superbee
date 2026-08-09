@@ -30,43 +30,50 @@ export const DESCRIPTION =
 export interface CommandRef {
   usage: string;
   summary: string;
+  /** Literal executable leaf paths represented by this reference row. */
+  paths: readonly string[];
 }
 
 /** A named group of related commands (e.g. "Bundle", "Notes & Docs", "Session"). */
 export interface CommandGroup {
   group: string;
-  commands: CommandRef[];
+  commands: readonly CommandRef[];
 }
 
 /**
  * Every command the CLI exposes, grouped for display. This is the ONLY place the command list is
  * enumerated.
  */
-export const COMMAND_GROUPS: CommandGroup[] = [
+export const COMMAND_GROUPS = [
   {
     group: "Bundle",
     commands: [
       {
+        paths: ["bundle locate"],
         usage: "bundle locate [--dir <path>]",
         summary: "Resolve the exact canonical local bundle path and report why it won selection",
       },
       {
+        paths: ["catalog add", "catalog list", "catalog resolve"],
         usage:
           "catalog (add <label> [--dir <path>] | list | resolve <label-or-id> [--field path])",
         summary:
           "Register and deterministically resolve this user's explicitly named local workspaces",
       },
       {
+        paths: ["init"],
         usage: "init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]",
         summary:
           "Create (or open) an OKF knowledge bundle in a directory — greenfield setup; a project that already shares a board is set up by sync, not init. --create-only requires a genuinely NEW target and refuses existing, non-empty, symlinked, enclosing, bound, or concurrent targets before publication; runtime failures retain and report any empty directories they created instead of deleting them — 'recipe add' modifies a verified existing bundle",
       },
       {
+        paths: ["index generate"],
         usage: "index generate [--dir <path>] [--check] [--force] [--actor <name>]",
         summary:
           "Generate complete portable Markdown navigation explicitly; refuses curated indexes unless --force adopts them",
       },
       {
+        paths: ["status"],
         usage: "status [--limit <n>] [--remote <url>]",
         summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)",
       },
@@ -76,36 +83,43 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     group: "Documents & links",
     commands: [
       {
+        paths: ["doc write"],
         usage:
           "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--remote <url>]",
         summary: "Write a generic OKF concept document",
       },
       {
+        paths: ["doc update"],
         usage:
           "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]",
         summary: "Patch given fields (incl. kind-declared fields like --status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {
+        paths: ["doc read"],
         usage:
           "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]",
         summary:
           "Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting",
       },
       {
+        paths: ["doc history"],
         usage: "doc history <id> [--limit <n>] [--remote <url>]",
         summary:
           "Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) — the tokens for --expected-version",
       },
       {
+        paths: ["doc delete"],
         usage: "doc delete <id> [--expected-version <v>] [--remote <url>]",
         summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)",
       },
       {
+        paths: ["list", "query"],
         usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--remote <url>]",
         summary:
           "Query concepts over their frontmatter (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
       },
       {
+        paths: ["link add", "link show", "link list"],
         usage:
           "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--remote <url>]",
         summary:
@@ -117,23 +131,28 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     group: "Artifacts",
     commands: [
       {
+        paths: ["artifact create"],
         usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--remote <url>]",
         summary: "Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record",
       },
       {
+        paths: ["promote"],
         usage:
           "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--remote <url>]",
         summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob)",
       },
       {
+        paths: ["pull"],
         usage: "pull --doc-key <key> --out (<path> | -) [--remote <url>]",
         summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)",
       },
       {
+        paths: ["blobs"],
         usage: "blobs [--prefix <p>] [--limit <n>] [--remote <url>]",
         summary: "List the store's blob (non-document) keys (documents are listed by 'list'/'query')",
       },
       {
+        paths: ["delete"],
         usage: "delete --doc-key <key> [--expected-version <v>] [--remote <url>]",
         summary: "Hard-delete a doc or blob by key (idempotent: absent -> deleted:false, exit 0)",
       },
@@ -143,26 +162,31 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     group: "Kinds",
     commands: [
       {
+        paths: ["new"],
         usage:
           'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--remote <url>]',
         summary:
           'Create a new instance of a bundle-declared kind — initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step',
       },
       {
+        paths: ["kinds"],
         usage: "kinds [--remote <url>]",
         summary:
           "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)",
       },
       {
+        paths: ["kind field add", "kind field remove"],
         usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--remote <url>]',
         summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
       },
       {
+        paths: ["recipes"],
         usage: "recipes [--dir <path>] [--remote <url>]",
         summary:
           "Browse built-in recipes before or after init; with a bundle, also show whether each is already applied",
       },
       {
+        paths: ["recipe add"],
         usage: "recipe add <name-or-path> [--remote <url>]",
         summary:
           "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
@@ -173,25 +197,30 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     group: "Remote",
     commands: [
       {
+        paths: ["serve"],
         usage: "serve [--dir <path>] [--host <h>] [--port <p>]",
         summary: "Boot the reference wire-protocol server over a local bundle (loopback, no auth)",
       },
       {
+        paths: ["ui"],
         usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open]",
         summary:
           "Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle's docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register — see status's legacy_naming finding), and see a live activity feed, the bundle's sharing status, and your registered workspaces. The header shows the bundle's display name — derived from the project folder unless set explicitly: doc write docs/bundle --type \"Bundle Name\" --title \"<name>\"",
       },
       {
+        paths: ["mcp"],
         usage: "mcp [--dir <path>] [--actor <name>]",
         summary:
           "Run the experimental local MCP Apps adapter over a bundle (stdio): launch an existing registered View unchanged, or launch standard active View HTML transiently and save its approved exact bytes as a registered View; bundle data and governed actions stay behind local human approval",
       },
       {
+        paths: ["view list"],
         usage: "view list [--limit <n>] [--dir <path> | --remote <url>]",
         summary:
           "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views",
       },
       {
+        paths: ["sync"],
         usage:
           "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]",
         summary:
@@ -203,27 +232,34 @@ export const COMMAND_GROUPS: CommandGroup[] = [
     group: "Session",
     commands: [
       {
+        paths: ["version"],
         usage: "version [--check] [--tag latest|next] [--json]",
         summary:
           "Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy",
       },
       {
+        paths: ["session-start"],
         usage: "session-start [--dir <path>] [--no-update-check]",
         summary:
           "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or ASLITE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh; npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data",
       },
       {
+        paths: ["hook install", "hook status", "hook uninstall"],
         usage: "hook install|status|uninstall [--scope project|user]",
         summary: "Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode",
       },
       {
+        paths: ["skill install", "skill status", "skill uninstall"],
         usage: "skill install|status|uninstall [--scope project|user]",
         summary:
           "Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface — its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage",
       },
     ],
   },
-];
+] as const satisfies readonly CommandGroup[];
+
+/** Public executable leaf path derived from the required literal reference metadata. */
+export type PublicLeafPath = (typeof COMMAND_GROUPS)[number]["commands"][number]["paths"][number];
 
 /**
  * Static pointer TEMPLATE (no bundle I/O) from the offline `--help`/`home` views toward the live

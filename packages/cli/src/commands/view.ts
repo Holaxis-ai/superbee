@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { listViewCatalog } from "@agentstate-lite/view-runtime";
-import { parseOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
 import { maybeAutoPull } from "../autopull.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
@@ -30,7 +30,7 @@ export interface ViewCliDeps {
 
 export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () => parseArgs({
       args: argv,
       options: {
@@ -43,13 +43,19 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
       allowPositionals: true,
     }),
     "view",
+    "selector:view",
+    (positionals) => {
+      if (positionals.length === 0) return { kind: "navigation" } as const;
+      if (positionals[0] !== "list") return { kind: "unknown", token: positionals[0] } as const;
+      return { kind: "selected", path: "view list", data: positionals.slice(1), payload: undefined } as const;
+    },
   );
-  if (values.help || positionals.length === 0) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(VIEW_USAGE);
     return;
   }
-  if (positionals.length !== 1 || positionals[0] !== "list") {
-    throw new CliError("USAGE", `unknown view subcommand: ${positionals.join(" ")}`, {
+  if (selection.kind === "unknown") {
+    throw new CliError("USAGE", `unknown view subcommand: ${selection.token ?? ""}`, {
       help: `${cliInvocation()} view --help`,
     });
   }

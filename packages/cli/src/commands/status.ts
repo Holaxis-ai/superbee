@@ -42,7 +42,7 @@ import {
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { collectLinkDeclarations } from "../link-types.js";
 import {
@@ -211,6 +211,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
         allowPositionals: true,
       }),
     "status",
+    leafArity("status"),
   );
   if (values.help) {
     stdout(STATUS_USAGE);

@@ -41,7 +41,7 @@ import {
 } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { defaultTimestampAndValidateKind } from "../kind-write.js";
@@ -120,6 +120,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
         allowPositionals: true,
       }),
     "promote",
+    leafArity("promote"),
   );
   if (values.help) {
     stdout(PROMOTE_USAGE);

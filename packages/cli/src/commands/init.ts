@@ -11,7 +11,7 @@ import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@agentstate-lite/core";
 import { resolveTargetDir, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, shellArg } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
@@ -87,6 +87,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
         allowPositionals: true,
       }),
     "init",
+    leafArity("init"),
   );
   if (values.help) {
     stdout(INIT_USAGE);

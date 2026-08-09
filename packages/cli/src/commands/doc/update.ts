@@ -4,7 +4,8 @@ import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadKinds, type Frontmatter } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
-import { parseOrUsage } from "../../args.js";
+import { deferArity, parseOrUsage } from "../../args.js";
+import { assertLeafArity } from "../../positional-arity.js";
 import { CliError } from "../../errors.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
@@ -112,6 +113,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
         },
       }),
     "doc update",
+    deferArity("doc-update:token-normalization"),
   );
   // Boolean flags are read straight off `rawValues` at the return (each wrapped in `Boolean(...)`,
   // which safely coerces the `string | boolean | undefined` that `strict:false` types every value
@@ -216,6 +218,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     stdout(DOC_UPDATE_USAGE);
     return;
   }
+  assertLeafArity("doc update", p.positionals);
 
   const rawId = p.positionals[0]?.trim();
   if (!rawId) {
@@ -224,17 +227,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     });
   }
   let id = conceptIdFromCliArgument(rawId);
-  // A stray extra positional almost always means a flag was mistyped (e.g. a missing `--` before a
-  // value) rather than a deliberate second argument — surface it instead of silently absorbing it
-  // (mirrors `new.ts`'s identical guard).
-  if (p.positionals.length > 1) {
-    throw new CliError(
-      "USAGE",
-      `doc update takes exactly one <id> positional, got ${p.positionals.length}: ${p.positionals.join(", ")}`,
-      { help: `${cliInvocation()} doc update <id> --title <t>` },
-    );
-  }
-
   // A PRESENT-but-blank `--expected-version` is a USAGE error, not "no CAS" — mirrors `doc
   // delete`'s identical guard. Coercing a blank flag to `undefined` here would SILENTLY downgrade
   // an intended compare-and-swap claim into an unconditional (bounded-retry) update.

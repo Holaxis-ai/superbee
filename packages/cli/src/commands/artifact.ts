@@ -26,7 +26,7 @@ import { resolveActor } from "../actor.js";
 import { render, type OutputMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
 
 export const ARTIFACT_USAGE = `agentstate-lite artifact — produced outputs you share with a human (HTML today)
@@ -98,6 +98,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   const { values, positionals } = parseOrUsage(
     () => parseArgs({ args: argv.slice(1), strict: true, allowPositionals: true, options: ARTIFACT_CREATE_OPTIONS }),
     "artifact create",
+    leafArity("artifact create"),
   );
   if (values.help) {
     stdout(ARTIFACT_USAGE);

@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { docVersions, type VersionInfo } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
-import { parseOrUsage } from "../../args.js";
+import { leafArity, parseOrUsage } from "../../args.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
@@ -36,6 +36,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
         allowPositionals: true,
       }),
     "doc history",
+    leafArity("doc history"),
   );
   if (values.help) {
     stdout(DOC_HISTORY_USAGE);

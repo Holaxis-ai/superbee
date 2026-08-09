@@ -13,7 +13,7 @@ import {
 } from "@agentstate-lite/core";
 
 import { resolveActor } from "../actor.js";
-import { parseOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
 import { deriveBundleDisplayName } from "../bundle-name.js";
 import { openBundle } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
@@ -122,7 +122,7 @@ function refusalError(
 /** CLI entry: plan once, preflight every target, then either report or apply explicitly. */
 export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -137,13 +137,19 @@ export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> =
         allowPositionals: true,
       }),
     "index",
+    "selector:index",
+    (positionals) => {
+      if (positionals.length === 0) return { kind: "navigation" } as const;
+      if (positionals[0] !== "generate") return { kind: "unknown", token: positionals[0] } as const;
+      return { kind: "selected", path: "index generate", data: positionals.slice(1), payload: undefined } as const;
+    },
   );
-  if (values.help || positionals.length === 0) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(INDEX_USAGE);
     return;
   }
-  if (positionals.length !== 1 || positionals[0] !== "generate") {
-    throw new CliError("USAGE", `unknown index subcommand: ${positionals.join(" ")}`, {
+  if (selection.kind === "unknown") {
+    throw new CliError("USAGE", `unknown index subcommand: ${selection.token ?? ""}`, {
       help: `${cliInvocation()} index --help`,
     });
   }

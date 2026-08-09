@@ -17,6 +17,50 @@
 // Ported from holaxis-agentstate `packages/cli/src/args.ts` (help pointer retargeted to `axi`).
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
+import { assertLeafArity, type LeafPath } from "./positional-arity.js";
+
+export type ArityDecision =
+  | { readonly kind: "leaf"; readonly path: LeafPath }
+  | { readonly kind: "deferred"; readonly reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization" };
+
+export type SelectorDeferral =
+  | "selector:bundle"
+  | "selector:catalog"
+  | "selector:index"
+  | "selector:kind"
+  | "selector:view"
+  | "selector:hook"
+  | "selector:skill";
+
+export const leafArity = (path: LeafPath): ArityDecision => ({ kind: "leaf", path });
+export const deferArity = (reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization"): ArityDecision => ({ kind: "deferred", reason });
+
+export type SelectorResolution<P> =
+  | { readonly kind: "navigation" }
+  | { readonly kind: "unknown"; readonly token?: string; readonly reason?: string }
+  | { readonly kind: "selected"; readonly path: LeafPath; readonly data: readonly string[]; readonly payload: P };
+
+export type ValidatedSelectorResult<V, P> = {
+  readonly values: V;
+  readonly selection: SelectorResolution<P> | { readonly kind: "help" };
+};
+
+/** Resolve selectors once, validate their leaf data, and never expose raw positionals downstream. */
+export function parseSelectorOrUsage<
+  T extends { positionals: readonly string[]; values: object },
+  P,
+>(
+  parse: () => T,
+  command: string,
+  reason: SelectorDeferral,
+  resolve: (positionals: readonly string[]) => SelectorResolution<P>,
+): ValidatedSelectorResult<T["values"], P> {
+  const parsed = parseOrUsage(parse, command, deferArity(reason));
+  if (Boolean((parsed.values as { help?: unknown }).help)) return { values: parsed.values, selection: { kind: "help" } };
+  const selection = resolve(parsed.positionals);
+  if (selection.kind === "selected") assertLeafArity(selection.path, selection.data);
+  return { values: parsed.values, selection };
+}
 
 const QUOTED = /'([^']+)'/;
 
@@ -56,9 +100,16 @@ export function translateParseArgsError(err: unknown): string | null {
 }
 
 /** Run a parseArgs thunk, mapping its bare parse error to a translated USAGE CliError (exit 2). */
-export function parseOrUsage<T>(parse: () => T, command: string): T {
+export function parseOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+  command: string,
+  decision: ArityDecision,
+): T {
   try {
-    return parse();
+    const parsed = parse();
+    if (Boolean((parsed.values as { help?: unknown } | undefined)?.help)) return parsed;
+    if (decision.kind === "leaf") assertLeafArity(decision.path, parsed.positionals);
+    return parsed;
   } catch (err) {
     if (err instanceof CliError) throw err; // passthrough — never remapped
     const translated = translateParseArgsError(err);

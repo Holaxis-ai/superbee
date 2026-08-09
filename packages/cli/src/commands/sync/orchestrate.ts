@@ -61,7 +61,7 @@ import {
 import { showIncoming } from "./show-incoming.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
 import { CliError, asHandled, cliErrorFromBoardGit } from "../../errors.js";
-import { parseOrUsage } from "../../args.js";
+import { leafArity, parseOrUsage } from "../../args.js";
 import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 
@@ -326,6 +326,7 @@ function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
         allowPositionals: true,
       }),
     "sync",
+    leafArity("sync"),
   );
   if (values.help) return { kind: "help" };
 

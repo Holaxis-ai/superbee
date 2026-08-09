@@ -59,7 +59,7 @@ import {
 import { resolveConceptIdCliArgument } from "../concept-id.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, asHandled, classifyBundleError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { deferArity, leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
@@ -356,6 +356,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const pre = parseOrUsage(
     () => parseArgs({ args: argv, strict: false, allowPositionals: true, options: NEW_CONTROL_OPTIONS }),
     "new",
+    deferArity("new:schema"),
   );
   const kindName = (pre.positionals[0] as string | undefined)?.trim();
   // `new --help` with NO kind named → the generic reference. `new "<Kind>" --help` → that kind's
@@ -460,7 +461,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       }
       throw err; // parseOrUsage -> translated USAGE (missing value, takes-no-value, …)
     }
-  }, "new");
+  }, "new", leafArity("new"));
   // Node accepts and tokenizes `--__proto__`, but deliberately omits that key from `values`.
   // The validated token stream is therefore the authority for every kind-defined field.
   const dynamicValues = new Map<string, string[]>();
@@ -479,16 +480,6 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     });
   }
   const id = await resolveConceptIdCliArgument(bundle, rawId);
-  // A stray extra positional almost always means a flag was mistyped (e.g. a missing `--` before
-  // a value) rather than a deliberate third argument — surface it instead of silently absorbing it.
-  if (positionals.length > 2) {
-    throw new CliError(
-      "USAGE",
-      `new takes exactly "<Kind>" and <id>, got ${positionals.length} positionals: ${positionals.join(", ")}`,
-      { help: `${cliInvocation()} new "<Kind>" <id> --<field> <value>` },
-    );
-  }
-
   const actor = resolveActor(values.actor as string | undefined, {
     help: `${cliInvocation()} new "<Kind>" <id> --actor <name>`,
   });

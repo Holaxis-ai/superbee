@@ -34,7 +34,7 @@ import { serve } from "./commands/serve.js";
 import { ui } from "./commands/ui.js";
 import { mcp } from "./commands/mcp.js";
 import { sync } from "./commands/sync.js";
-import { home } from "./commands/home.js";
+import { home, homeCommand } from "./commands/home.js";
 import { hook } from "./commands/hook.js";
 import { skill } from "./commands/skill.js";
 import { sessionStart } from "./commands/session-start.js";
@@ -294,7 +294,7 @@ export async function main(argv: string[]): Promise<void> {
       // Explicit `home` handler so a SessionStart hook (or an agent) can also call `<bin> home`, not
       // only the bare zero-arg form. Not listed in COMMAND_GROUPS — the bare invocation is the primary
       // home surface (AXI §8); this is a defensive alias with identical output.
-      home: wrap(home),
+      home: wrap(homeCommand),
       // Shadow the SDK's reserved built-in `update` command (npm self-update is nonsensical for a
       // committed skill-bundled .mjs). Registering a handler that throws the unknown-command USAGE
       // error restores a TOON envelope, exit 2. `update` is intentionally NOT in KNOWN_COMMANDS.

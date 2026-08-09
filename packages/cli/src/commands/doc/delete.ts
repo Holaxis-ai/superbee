@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 import { deleteDoc, pathFromConceptId, isReservedFile, VersionConflict } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
-import { parseOrUsage } from "../../args.js";
+import { leafArity, parseOrUsage } from "../../args.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
@@ -26,6 +26,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
         allowPositionals: true,
       }),
     "doc delete",
+    leafArity("doc delete"),
   );
   if (values.help) {
     stdout(DOC_DELETE_USAGE);

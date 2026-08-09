@@ -52,7 +52,7 @@ import {
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError, classifyBundleError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { collectLinkDeclarations } from "../link-types.js";
@@ -523,6 +523,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
         allowPositionals: true,
       }),
     "link add",
+    leafArity("link add"),
   );
   if (values.help) {
     stdout(LINK_ADD_USAGE);
@@ -597,6 +598,7 @@ async function linkShow(
         allowPositionals: true,
       }),
     "link show",
+    leafArity("link show"),
   );
   if (values.help) {
     stdout(LINK_SHOW_USAGE);
@@ -750,6 +752,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
         allowPositionals: true,
       }),
     "link list",
+    leafArity("link list"),
   );
   if (values.help) {
     stdout(LINK_LIST_USAGE);

@@ -8,7 +8,7 @@
 import { parseArgs } from "node:util";
 import { freshnessHorizonMs, loadKinds, type KindConvention } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -129,6 +129,7 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
         allowPositionals: true,
       }),
     "kinds",
+    leafArity("kinds"),
   );
   if (values.help) {
     stdout(KINDS_USAGE);

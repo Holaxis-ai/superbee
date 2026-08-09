@@ -18,7 +18,7 @@ import {
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { maybeAutoPull } from "../../autopull.js";
 import { CliError, toExit, asHandled } from "../../errors.js";
-import { parseOrUsage } from "../../args.js";
+import { leafArity, parseOrUsage } from "../../args.js";
 import { render, resolveMode, renderErrorEnvelope } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
@@ -63,6 +63,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
         allowPositionals: true,
       }),
     "doc read",
+    leafArity("doc read"),
   );
   if (values.help) {
     stdout(DOC_READ_USAGE);

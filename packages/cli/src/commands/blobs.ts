@@ -8,7 +8,7 @@
 import { parseArgs } from "node:util";
 import { listBlobs } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -55,6 +55,7 @@ export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): P
         allowPositionals: true,
       }),
     "blobs",
+    leafArity("blobs"),
   );
   if (values.help) {
     stdout(BLOBS_USAGE);

@@ -12,7 +12,7 @@ import { parseArgs } from "node:util";
 import { loadKinds } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { leafArity, parseOrUsage } from "../args.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
@@ -78,6 +78,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         allowPositionals: true,
       }),
     "recipe",
+    leafArity("recipe add"),
   );
   if (values.help) {
     stdout(RECIPE_USAGE);
