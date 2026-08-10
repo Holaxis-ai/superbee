@@ -212,6 +212,42 @@ async function assertExactOwner(ownerPath, owner) {
   ) fail("execution owner changed");
 }
 
+async function exists(file) {
+  try {
+    await lstat(file);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function clearDeadReclaim(reclaimPath, owner) {
+  const cleanupPath = `${reclaimPath}.cleanup`;
+  if (!await publishNoReplace(cleanupPath, canonicalJson(owner))) return false;
+  try {
+    let record;
+    try {
+      record = await readJsonRecord(reclaimPath, "reclaim owner record");
+    } catch (error) {
+      if (error?.code === "ENOENT") return true;
+      throw error;
+    }
+    const reclaimOwner = normalizeOwner(record.value);
+    if (reclaimOwner.hostname !== owner.hostname) fail(`receipt slot reclaim is owned on another host (${reclaimOwner.hostname})`);
+    const state = pidState(reclaimOwner.pid);
+    if (state !== "dead") fail(`receipt slot reclaim PID ${reclaimOwner.pid} is ${state}`);
+    if ((await readJsonRecord(reclaimPath, "reclaim owner record")).text !== record.text) {
+      fail("reclaim owner changed during cleanup");
+    }
+    await unlink(reclaimPath);
+    await syncDirectory(path.dirname(reclaimPath));
+    return true;
+  } finally {
+    await rm(cleanupPath, { force: true }).catch(() => {});
+  }
+}
+
 export async function acquireSlotOwner(ownerPath, testHooks = {}) {
   const owner = {
     schema: OWNER_SCHEMA,
@@ -221,15 +257,27 @@ export async function acquireSlotOwner(ownerPath, testHooks = {}) {
     started_at: new Date().toISOString(),
     token: randomUUID(),
   };
+  const reclaimPath = `${ownerPath}.reclaim`;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    if (await publishNoReplace(ownerPath, canonicalJson(owner))) return owner;
+    if (await exists(reclaimPath)) {
+      await clearDeadReclaim(reclaimPath, owner);
+      continue;
+    }
+    if (await publishNoReplace(ownerPath, canonicalJson(owner))) {
+      if (!await exists(reclaimPath)) return owner;
+      await releaseSlotOwner(ownerPath, owner);
+      await clearDeadReclaim(reclaimPath, owner);
+      continue;
+    }
     const occupied = normalizeOwner((await readJsonRecord(ownerPath, "owner record")).value);
     if (occupied.hostname !== owner.hostname) fail(`receipt slot is owned on another host (${occupied.hostname})`);
     const state = pidState(occupied.pid);
     if (state !== "dead") fail(`receipt slot owner PID ${occupied.pid} is ${state}`);
     const aside = `${ownerPath}.stale.${occupied.token}`;
-    const reclaimPath = `${ownerPath}.reclaim`;
-    if (!await publishNoReplace(reclaimPath, canonicalJson(owner))) continue;
+    if (!await publishNoReplace(reclaimPath, canonicalJson(owner))) {
+      await clearDeadReclaim(reclaimPath, owner);
+      continue;
+    }
     try {
       const before = (await readJsonRecord(ownerPath, "owner record")).text;
       if (before !== canonicalJson(occupied)) fail("stale owner changed during reclamation");
