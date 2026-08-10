@@ -277,6 +277,13 @@ jobs:
           RECEIPT_ARTIFACT_ID: ${{ steps.receipt_upload.outputs.artifact-id }}
           RECEIPT_ARTIFACT_DIGEST: ${{ steps.receipt_upload.outputs.artifact-digest }}
         run: |
+          set -euo pipefail
+          # upload-artifact emits a bare hex digest; the finalizer compares against the Actions REST
+          # API, which reports sha256:<hex>. Show the operator the form the dispatch input expects.
+          case "$RECEIPT_ARTIFACT_DIGEST" in
+            sha256:*) ;;
+            *) RECEIPT_ARTIFACT_DIGEST="sha256:$RECEIPT_ARTIFACT_DIGEST" ;;
+          esac
           {
             echo ""
             echo "### Finalizer receipt artifact"

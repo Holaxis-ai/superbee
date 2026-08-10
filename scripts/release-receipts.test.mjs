@@ -192,3 +192,56 @@ test("finalizer rejects ignored/swapped immutable identifiers and assets", () =>
     assert.throws(() => verifyFinalizerChain(f), /release receipt verification failed/);
   }
 });
+
+// Regression: actions/upload-artifact emits a BARE hex digest, while the Actions REST API the
+// finalizer reads reports the same value as sha256:<hex>. The fixtures above use the API form, so
+// the suite was green while the real workflow died on its first live contact with the action's
+// output. These tests use the shape GitHub actually produces.
+const ACTION_BARE_DIGEST = "c".repeat(64);
+
+test("a bare hex artifact digest (the actions/upload-artifact output shape) is canonicalized", () => {
+  const receipt = buildStageReceipt({
+    runId: "100",
+    artifactId: "101",
+    artifactDigest: ACTION_BARE_DIGEST,
+    stageId: STAGE_ID,
+    version: VERSION,
+    tag: `v${VERSION}`,
+    sourceCommit: COMMIT,
+    policyTag: "next",
+    tarballSha256: TARBALL_SHA,
+    tarballFilename: TARBALL,
+    integrity: INTEGRITY,
+    manifestSha256: MANIFEST_SHA,
+    draftReleaseId: "300",
+    draftAssets: [
+      { id: "201", name: TARBALL, digest: TARBALL_SHA },
+      { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
+    ],
+  });
+  // Stored in the API's form so the finalizer's equality check against artifact metadata holds.
+  assert.equal(receipt.prepared.artifact.digest, `sha256:${ACTION_BARE_DIGEST}`);
+  assert.equal(receipt.prepared.artifact.digest, CANDIDATE_ARTIFACT_DIGEST);
+});
+
+test("a bare hex stage-receipt artifact digest dispatch input verifies against prefixed API metadata", () => {
+  const f = fixture();
+  assert.equal(f.receiptArtifact.digest, RECEIPT_ARTIFACT_DIGEST);
+  f.dispatch.stageReceiptArtifactDigest = RECEIPT_ARTIFACT_DIGEST.replace("sha256:", "");
+  assert.doesNotThrow(() => verifyFinalizerChain(f));
+});
+
+test("canonicalization does not weaken the digest guard", () => {
+  for (const bad of ["sha256:" + "z".repeat(64), "c".repeat(63), "c".repeat(65), "sha256:", "", null]) {
+    assert.throws(
+      () => buildStageReceipt({
+        runId: "100", artifactId: "101", artifactDigest: bad, stageId: STAGE_ID, version: VERSION,
+        tag: `v${VERSION}`, sourceCommit: COMMIT, policyTag: "next", tarballSha256: TARBALL_SHA,
+        tarballFilename: TARBALL, integrity: INTEGRITY, manifestSha256: MANIFEST_SHA,
+        draftReleaseId: "300", draftAssets: [],
+      }),
+      /invalid candidate artifact digest/,
+      `expected rejection for ${JSON.stringify(bad)}`,
+    );
+  }
+});
