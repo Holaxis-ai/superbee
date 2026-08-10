@@ -6,6 +6,7 @@ import { LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-orderin
 const TOKEN = /^[A-Za-z0-9._-]+$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
+const BARE_SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 
 function fail(message) {
@@ -22,8 +23,13 @@ function equal(name, actual, expected) {
   if (String(actual) !== String(expected)) fail(`${name} ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);
 }
 
+// actions/upload-artifact emits a bare hex digest; the Actions REST API reports the same value as
+// sha256:<hex>. Canonicalize to the API's form so a receipt's stored digest compares equal to the
+// artifact metadata the finalizer independently observes.
 function digest(name, value) {
-  return string(name, value, SHA256);
+  const normalized = typeof value === "number" ? String(value) : value;
+  if (typeof normalized === "string" && BARE_SHA256.test(normalized)) return `sha256:${normalized}`;
+  return string(name, normalized, SHA256);
 }
 
 function stageIds(value, found = []) {
@@ -179,7 +185,7 @@ export function verifyFinalizerChain({
   verifyArtifactMetadata("stage receipt artifact", receiptArtifact, {
     id: dispatch.stageReceiptArtifactId,
     name: `release-stage-receipt-${prepared.run_id}`,
-    digest: dispatch.stageReceiptArtifactDigest,
+    digest: digest("stage receipt artifact digest", dispatch.stageReceiptArtifactDigest),
     runId: prepared.run_id,
     commit: prepared.source_commit,
   });
