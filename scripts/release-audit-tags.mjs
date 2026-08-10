@@ -145,7 +145,7 @@ export function checkDeclarationConsistency(declaration, sourceVersion) {
 }
 
 /** Contract §1 numbering: pre-stable publishes are A.B.0-pre.N, N contiguous from 1, times monotone. */
-export function checkVersionScheme(versions, time) {
+export function checkVersionScheme(versions, time, burnedVersions = []) {
   const violations = [];
   const lines = new Map(); // "A.B" -> [{ n, version }]
   for (const version of versions) {
@@ -166,13 +166,26 @@ export function checkVersionScheme(versions, time) {
     if (!lines.has(line)) lines.set(line, []);
     lines.get(line).push({ n: Number(m[4]), version });
   }
+  // A declared burned number fills its contiguity hole: the number was consumed (immutable tag,
+  // never published), so the published sequence legitimately skips it. Undeclared holes still red.
+  const burnedByLine = new Map();
+  for (const version of burnedVersions) {
+    const m = PRERELEASE_SCHEME.exec(version);
+    if (m && Number(m[3]) === 0) {
+      const line = `${m[1]}.${m[2]}`;
+      if (!burnedByLine.has(line)) burnedByLine.set(line, new Set());
+      burnedByLine.get(line).add(Number(m[4]));
+    }
+  }
   for (const [line, entries] of lines) {
     entries.sort((a, b) => a.n - b.n);
     const ns = entries.map((e) => e.n);
-    const expected = Array.from({ length: entries.length }, (_, i) => i + 1);
-    if (ns.join(",") !== expected.join(",")) {
+    const burnedNs = burnedByLine.get(line) ?? new Set();
+    const filled = [...new Set([...ns, ...burnedNs])].sort((a, b) => a - b);
+    const expected = Array.from({ length: filled.length }, (_, i) => i + 1);
+    if (filled.join(",") !== expected.join(",")) {
       violations.push(
-        violation("pre_n_gap", `prerelease line ${line}.0-pre.N is not contiguous from 1: published N = [${ns.join(", ")}]`),
+        violation("pre_n_gap", `prerelease line ${line}.0-pre.N is not contiguous from 1: published N = [${ns.join(", ")}]${burnedNs.size > 0 ? ` with declared burns [${[...burnedNs].sort((a, b) => a - b).join(", ")}]` : ""}`),
       );
     }
     for (let i = 1; i < entries.length; i += 1) {
@@ -295,15 +308,67 @@ export function saneSuccessors(newest) {
   ];
 }
 
-export function checkSourceDrift(sourceVersion, versions) {
+/**
+ * Validate the committed burned-versions declaration (release/burned-versions.json). `raw` is the
+ * parsed JSON object, or null for an absent file (= nothing burned). A burned version is a number
+ * consumed without publication — its immutable v* tag exists at a commit that can never be
+ * released — declared explicitly with a reason so skipping it is a reviewable act, not an
+ * inference. Throws Error on an invalid declaration: an unreadable declaration must fail the
+ * audit, never silently widen it.
+ */
+export function readBurnedDeclaration(raw) {
+  if (raw === null || raw === undefined) return [];
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("burned-versions declaration must be a JSON object");
+  if (!Array.isArray(raw.burned)) throw new Error("burned-versions declaration requires a burned: [] array");
+  const seen = new Set();
+  for (const entry of raw.burned) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw new Error("each burned entry must be an object");
+    const parsed = parseSemver(entry.version);
+    if (!parsed) throw new Error(`burned entry version ${JSON.stringify(entry.version)} is not SemVer`);
+    if (parsed.prerelease.length === 0) throw new Error(`burned entry ${entry.version} is a STABLE version; only never-published prerelease numbers may be burned`);
+    if (typeof entry.reason !== "string" || entry.reason.trim() === "") throw new Error(`burned entry ${entry.version} requires a non-empty reason`);
+    if (seen.has(entry.version)) throw new Error(`burned entry ${entry.version} is declared twice`);
+    seen.add(entry.version);
+  }
+  return raw.burned.map((entry) => entry.version);
+}
+
+export function checkSourceDrift(sourceVersion, versions, burnedVersions = []) {
   if (!parseSemver(sourceVersion)) {
     return { violations: [violation("invalid_source_version", `packages/cli version ${JSON.stringify(sourceVersion)} is not SemVer`)] };
+  }
+  const published = new Set(versions);
+  const burnedPublished = burnedVersions.filter((v) => published.has(v));
+  if (burnedPublished.length > 0) {
+    return {
+      violations: [
+        violation(
+          "burned_version_published",
+          `burned-versions declaration lists ${burnedPublished.join(", ")} but the registry HAS published ${burnedPublished.length === 1 ? "it" : "them"}; a published number is consumed by publication, not burning — remove ${burnedPublished.length === 1 ? "it" : "them"} from release/burned-versions.json`,
+        ),
+      ],
+    };
   }
   const newest = newestOf(versions);
   if (!newest) return { violations: [], state: "no-published-baseline" };
   if (sourceVersion === newest) return { violations: [], state: "in-sync" };
-  const successors = saneSuccessors(newest);
-  if (successors.includes(sourceVersion)) return { violations: [], state: "staged-prep" };
+  // A burned number is consumed: successor chains may step over it, but only through explicitly
+  // declared burns — an undeclared skip still fails. Walk each burned link at most once.
+  const burned = new Set(burnedVersions);
+  const successors = new Set(saneSuccessors(newest));
+  let frontier = [...successors].filter((v) => burned.has(v));
+  while (frontier.length > 0) {
+    const next = [];
+    for (const burnedStep of frontier) {
+      for (const candidate of saneSuccessors(burnedStep)) {
+        if (successors.has(candidate)) continue;
+        successors.add(candidate);
+        if (burned.has(candidate)) next.push(candidate);
+      }
+    }
+    frontier = next;
+  }
+  if (successors.has(sourceVersion)) return { violations: [], state: "staged-prep" };
   if (compareSemver(sourceVersion, newest) < 0) {
     return {
       violations: [
@@ -318,7 +383,7 @@ export function checkSourceDrift(sourceVersion, versions) {
     violations: [
       violation(
         "source_version_jump",
-        `packages/cli version ${sourceVersion} is not a sane successor of newest published ${newest}; expected ${newest} (pre-release-prep) or one of [${successors.join(", ")}] (staged-prep)`,
+        `packages/cli version ${sourceVersion} is not a sane successor of newest published ${newest}; expected ${newest} (pre-release-prep) or one of [${[...successors].join(", ")}] (staged-prep)`,
       ),
     ],
   };
@@ -328,12 +393,12 @@ export function checkSourceDrift(sourceVersion, versions) {
  * The pure audit over one registry snapshot. Returns { violations, notes, facts }; empty
  * violations means the registry, phase declaration, and source agree with policy.
  */
-export function auditRegistryState({ declaration, sourceVersion, registry }) {
+export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [] }) {
   const { distTags, versions, time } = registry;
   const violations = [];
   const notes = [];
 
-  violations.push(...checkVersionScheme(versions, time));
+  violations.push(...checkVersionScheme(versions, time, burnedVersions));
   violations.push(...checkDeclarationConsistency(declaration, sourceVersion));
 
   const tagState = expectedTagState({ declaration, versions, observedTags: distTags });
@@ -371,7 +436,7 @@ export function auditRegistryState({ declaration, sourceVersion, registry }) {
     }
   }
 
-  const drift = checkSourceDrift(sourceVersion, versions);
+  const drift = checkSourceDrift(sourceVersion, versions, burnedVersions);
   violations.push(...drift.violations);
 
   return {
@@ -476,6 +541,7 @@ function arg(argv, flag) {
 
 export async function main(argv = process.argv.slice(2)) {
   const phaseFile = arg(argv, "--phase-file") ?? path.join(repoRoot, "release", "phase.json");
+  const burnedFile = arg(argv, "--burned-file") ?? path.join(repoRoot, "release", "burned-versions.json");
   const registryJson = arg(argv, "--registry-json"); // replay hatch: audit a captured payload
   const registryUrl = arg(argv, "--registry-url") ?? REGISTRY_URL; // test hatch for the network path
 
@@ -484,6 +550,19 @@ export async function main(argv = process.argv.slice(2)) {
     declaration = await readPhaseDeclaration(phaseFile);
   } catch (error) {
     console.error(`release-audit: VIOLATION[phase_declaration]: ${error.message}`);
+    return EXIT_VIOLATION;
+  }
+  let burnedVersions;
+  try {
+    let burnedRaw = null;
+    try {
+      burnedRaw = JSON.parse(await readFile(burnedFile, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    burnedVersions = readBurnedDeclaration(burnedRaw);
+  } catch (error) {
+    console.error(`release-audit: VIOLATION[burned_declaration]: ${error.message}`);
     return EXIT_VIOLATION;
   }
   const cliManifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
@@ -499,7 +578,7 @@ export async function main(argv = process.argv.slice(2)) {
     return EXIT_VIOLATION;
   }
 
-  const result = auditRegistryState({ declaration, sourceVersion: cliManifest.version, registry });
+  const result = auditRegistryState({ declaration, sourceVersion: cliManifest.version, registry, burnedVersions });
   console.log(`release-audit: package ${PACKAGE}`);
   console.log(`release-audit: facts ${JSON.stringify(result.facts)}`);
   for (const note of result.notes) console.log(`release-audit: note: ${note}`);

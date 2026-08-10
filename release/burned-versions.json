@@ -1,0 +1,14 @@
+{
+  "schema": "aslite.burned-versions.v1",
+  "semantics": {
+    "what": "Prerelease version numbers consumed WITHOUT publication. A number is burned when its immutable v* tag exists at a commit that can never be released, so the number can neither be published nor reused. Read by scripts/release-audit-tags.mjs (npm run release:audit-tags), which lets successor chains step over declared burns; an UNDECLARED skip still fails the audit.",
+    "rules": "Prerelease numbers only — a stable number must never be burned. Each entry requires a non-empty reason. An entry whose version the registry HAS published is itself a violation: publication consumes a number, burning does not apply.",
+    "how_to_burn": "Add an entry here in the same PR that retargets packages/cli to the next number, with a reason naming why the tagged commit is unreleasable."
+  },
+  "burned": [
+    {
+      "version": "0.1.0-pre.4",
+      "reason": "tag v0.1.0-pre.4 points at 9c81aecf, which predates the artifact-digest canonicalization fix (PR #238); the staged workflow runs the scripts as of the tagged commit, the v* ruleset makes the tag immovable, and the version was never published or staged"
+    }
+  ]
+}
