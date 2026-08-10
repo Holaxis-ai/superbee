@@ -12,6 +12,7 @@ import {
   type CommandSpecGroup,
 } from "../src/command-spec.js";
 import { KNOWN_COMMANDS, PUBLIC_HANDLERS, RUNTIME_COMMANDS } from "../src/cli.js";
+import { serve } from "../src/commands/serve.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 import { projectCommandSpec } from "./support/command-spec-projector.js";
 
@@ -33,6 +34,7 @@ test("reference, known names, exact handlers, and runtime registration are graph
   assert.deepEqual(referencePaths, projectedPaths);
   assert.strictEqual(KNOWN_COMMANDS, PUBLIC_COMMAND_NAMES);
   assert.deepEqual(Object.keys(PUBLIC_HANDLERS), PUBLIC_COMMAND_NAMES);
+  assert.strictEqual(PUBLIC_HANDLERS.serve, serve);
   assert.deepEqual(Object.keys(RUNTIME_COMMANDS), [...PUBLIC_COMMAND_NAMES, "home", "update"]);
 });
 
