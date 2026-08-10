@@ -6,7 +6,7 @@
 // (exit 2). An agent branches on the exit code first, so a typo'd flag landing on exit 1 (which
 // signals a retryable runtime fault) would invite a pointless re-run of a non-retryable mistake.
 //
-// `parseOrUsage` runs the (already-configured) parse thunk and converts any non-CliError throw
+// The owned parse APIs run an already-configured parse thunk and convert any non-CliError throw
 // into `CliError("USAGE", …)`, TRANSLATING parseArgs's raw message into a clean, tool-native one
 // (AXI §6 — "translate errors, discard noise, never leak dependency wording") by mapping on
 // `err.code`, and attaching a `--help` pointer for the offending command. Node's own advisory
@@ -17,6 +17,44 @@
 // Ported from holaxis-agentstate `packages/cli/src/args.ts` (help pointer retargeted to `axi`).
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
+import {
+  assertCliLeaf,
+  type CliLeafSpec,
+  type PublicCommandName,
+} from "./command-spec.js";
+import { assertLeafArity } from "./positional-arity.js";
+
+export type SelectorResolution<P> =
+  | { readonly kind: "navigation" }
+  | { readonly kind: "unknown"; readonly token?: string; readonly reason?: string }
+  | { readonly kind: "selected"; readonly leaf: CliLeafSpec; readonly data: readonly string[]; readonly payload: P };
+
+export type ValidatedSelectorResult<V, P> = {
+  readonly values: V;
+  readonly selection: SelectorResolution<P> | { readonly kind: "help" };
+};
+
+/** Resolve selectors once, validate their leaf data, and never expose raw positionals downstream. */
+export function parseSelectorOrUsage<
+  T extends { positionals: readonly string[]; values: object },
+  P,
+>(
+  parse: () => T,
+  command: PublicCommandName,
+  resolve: (positionals: readonly string[]) => SelectorResolution<P>,
+): ValidatedSelectorResult<T["values"], P> {
+  const parsed = parseOwnedOrUsage(parse, command);
+  if (Boolean((parsed.values as { help?: unknown }).help)) return { values: parsed.values, selection: { kind: "help" } };
+  const selection = resolve(parsed.positionals);
+  if (selection.kind === "selected") {
+    assertCliLeaf(selection.leaf);
+    if (selection.leaf.exposure !== "public" || selection.leaf.command !== command) {
+      throw new TypeError(`selector for '${command}' returned unrelated leaf '${selection.leaf.path}'`);
+    }
+    assertLeafArity(selection.leaf, selection.data);
+  }
+  return { values: parsed.values, selection };
+}
 
 const QUOTED = /'([^']+)'/;
 
@@ -56,7 +94,10 @@ export function translateParseArgsError(err: unknown): string | null {
 }
 
 /** Run a parseArgs thunk, mapping its bare parse error to a translated USAGE CliError (exit 2). */
-export function parseOrUsage<T>(parse: () => T, command: string): T {
+function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+  command: string,
+): T {
   try {
     return parse();
   } catch (err) {
@@ -66,4 +107,31 @@ export function parseOrUsage<T>(parse: () => T, command: string): T {
     const message = translated ?? stripAdvisory(raw); // unrecognized -> trimmed original, never worse
     throw new CliError("USAGE", message, { help: `${cliInvocation()} ${command} --help` });
   }
+}
+
+/** Parse and validate an ordinary leaf through its branded canonical specification. */
+export function parseLeafOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+  leaf: CliLeafSpec,
+): T {
+  // Validate ownership before invoking the caller's parser thunk or any effects it may contain.
+  assertCliLeaf(leaf);
+  const parsed = parseOwnedOrUsage(parse, leaf.canonical.path);
+  if (Boolean((parsed.values as { help?: unknown } | undefined)?.help)) return parsed;
+  assertLeafArity(leaf, parsed.positionals);
+  return parsed;
+}
+
+/** Exact architectural exception: `new` must load its bundle-declared schema before leaf arity. */
+export function parseNewSchemaPhaseOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+): T {
+  return parseOwnedOrUsage(parse, "new");
+}
+
+/** Exact architectural exception: doc-update normalizes dynamic field tokens before leaf arity. */
+export function parseDocUpdateTokensOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+): T {
+  return parseOwnedOrUsage(parse, "doc update");
 }

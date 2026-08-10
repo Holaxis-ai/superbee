@@ -88,6 +88,8 @@ import {
   retargetBoardInterior,
 } from "@agentstate-lite/board-git";
 import { maybeAutoPull } from "../autopull.js";
+import { parseLeafOrUsage } from "../args.js";
+import { HOME_LEAF } from "../command-spec.js";
 import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from "../cursor.js";
 import { hookNeedsUpdate } from "./hook.js";
 import { loadCatalog } from "../catalog.js";
@@ -118,6 +120,19 @@ Options:
 Environment opt-outs (presence, including an empty value): ASLITE_NO_UPDATE_CHECK,
 NO_UPDATE_NOTIFIER, or CI.
 `;
+
+const HOME_OPTIONS = {
+  remote: { type: "string" },
+  dir: { type: "string" },
+  json: { type: "boolean" },
+  "no-update-check": { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+/** Shared home parser definition; internal home remains fail-soft while the explicit adapter is strict. */
+export function parseHomeArgs(argv: string[]) {
+  return parseArgs({ args: argv, options: HOME_OPTIONS, allowPositionals: true });
+}
 
 /** A dashboard row in the minimal list schema (AXI §2) — reuses `list.ts`'s exact projection. */
 export interface HomeRow {
@@ -803,17 +818,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   let jsonMode = false;
   let helpMode = false;
   try {
-    const parsed = parseArgs({
-      args: argv,
-      options: {
-        remote: { type: "string" },
-        dir: { type: "string" },
-        json: { type: "boolean" },
-        "no-update-check": { type: "boolean" },
-        help: { type: "boolean", short: "h" },
-      },
-      allowPositionals: true,
-    });
+    const parsed = parseHomeArgs(argv);
     remote = parsed.values.remote;
     explicitDir = parsed.values.dir;
     dir = explicitDir;
@@ -980,4 +985,14 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
       jsonMode ? "json" : "default",
     ),
   );
+}
+
+/** Strict SDK adapter for the hidden explicit `home` route. */
+export async function homeCommand(argv: string[], deps: Partial<HomeDeps> = {}): Promise<void> {
+  const parsed = parseLeafOrUsage(() => parseHomeArgs(argv), HOME_LEAF);
+  if (parsed.values.help) {
+    (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(HOME_USAGE);
+    return;
+  }
+  await home(argv, deps);
 }

@@ -106,14 +106,17 @@ test("OSS build and lockfile carry no hosted deployment dependency", async () =>
   );
 });
 
-test("generic wire authorities remain public after hosted extraction", async () => {
-  const [remoteBackend, router, cli] = await Promise.all([
+// This source-only gate owns generic wire package placement. Runtime registration is proved by
+// the CLI command-spec relational tests rather than by pinning a dispatch implementation spelling.
+test("generic wire source authorities remain public after hosted extraction", async () => {
+  const [remoteBackend, router, serveCommand] = await Promise.all([
     readFile(path.join(root, "packages/core/src/remote-backend.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/router.ts"), "utf8"),
-    readFile(path.join(root, "packages/cli/src/cli.ts"), "utf8"),
+    readFile(path.join(root, "packages/cli/src/commands/serve.ts"), "utf8"),
   ]);
 
   assert.match(remoteBackend, /export class RemoteBackend/);
   assert.match(router, /export function createRouterForBackend/);
-  assert.match(cli, /serve: wrap\(serve\)/);
+  assert.match(serveCommand, /export\s+(?:async\s+)?function\s+serve\s*\(/);
+  assert.match(serveCommand, /from\s+["']@agentstate-lite\/server["']/);
 });

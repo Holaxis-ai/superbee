@@ -52,7 +52,8 @@ import {
 import { cliInvocation, collapseHomeDirectory, hookCommand } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { HOST_CONFIG_ROOTS, resolveHostConfigRoot } from "../host-config.js";
 import {
   classifyHookCommand,
@@ -826,7 +827,7 @@ export interface HookDeps extends HookLocationDeps {
 export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -838,22 +839,37 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         allowPositionals: true,
       }),
     "hook",
+    (positionals) => {
+      const [sub, ...data] = positionals;
+      if (sub === undefined) return { kind: "unknown" } as const;
+      if (sub !== "install" && sub !== "status" && sub !== "uninstall") return { kind: "unknown", token: sub } as const;
+      return {
+        kind: "selected",
+        leaf: sub === "install"
+          ? CLI_LEAVES.hookInstall
+          : sub === "status"
+            ? CLI_LEAVES.hookStatus
+            : CLI_LEAVES.hookUninstall,
+        data,
+        payload: sub,
+      } as const;
+    },
   );
-  if (values.help) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(HOOK_USAGE);
     return;
   }
 
-  const sub = positionals[0];
-  if (sub !== "install" && sub !== "status" && sub !== "uninstall") {
+  if (selection.kind === "unknown") {
     throw new CliError(
       "USAGE",
-      sub === undefined
+      selection.token === undefined
         ? "hook requires a subcommand (install|status|uninstall)"
-        : `unknown hook subcommand: ${sub} (expected install|status|uninstall)`,
+        : `unknown hook subcommand: ${selection.token} (expected install|status|uninstall)`,
       { help: `${cliInvocation()} hook install|status|uninstall [--scope project|user]` },
     );
   }
+  const sub = selection.payload;
 
   const requestedScope = values.scope as string | undefined;
   const scope = normalizeInstallScope(requestedScope);

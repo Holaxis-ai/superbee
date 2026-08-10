@@ -19,7 +19,8 @@ import {
   resolveProjectBinding,
   resolveRemoteFlag,
 } from "../bundle.js";
-import { parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, shellArg } from "../invocation.js";
 import { appliedDocIds, isRecipeApplied } from "../recipes.js";
@@ -139,7 +140,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
     findBundleRoot: deps.findBundleRoot ?? findBundleRoot,
   };
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -151,7 +152,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
         },
         allowPositionals: true,
       }),
-    "recipes",
+    CLI_LEAVES.recipes,
   );
   if (values.help) {
     stdout(RECIPES_USAGE);

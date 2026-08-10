@@ -15,7 +15,8 @@ import { parseArgs } from "node:util";
 import { loadKinds, RESERVED_KIND_FIELD_NAMES, type Frontmatter } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
@@ -83,7 +84,7 @@ function deleteOwn(record: Record<string, unknown>, key: string): boolean {
 export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -99,41 +100,45 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
         },
       }),
     "kind",
+    (positionals) => {
+      if (positionals[0]?.trim() !== "field") return { kind: "unknown", token: positionals[0], reason: "subresource" } as const;
+      const action = positionals[2]?.trim();
+      if (action !== "add" && action !== "remove") return { kind: "unknown", token: action, reason: "action" } as const;
+      const kindName = positionals[1];
+      const fieldName = positionals[3];
+      const data = [kindName, fieldName, ...positionals.slice(4)].filter((value): value is string => value !== undefined);
+      return {
+        kind: "selected",
+        leaf: action === "add" ? CLI_LEAVES.kindFieldAdd : CLI_LEAVES.kindFieldRemove,
+        data,
+        payload: { kindName, action, fieldName },
+      } as const;
+    },
   );
-  if (values.help) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(KIND_USAGE);
     return;
   }
 
   const helpHint = `${cliInvocation()} kind field "<Kind>" add <name>`;
-  const subresource = positionals[0]?.trim();
-  if (subresource !== "field") {
+  if (selection.kind === "unknown") {
+    const message = selection.reason === "action"
+      ? `kind field <Kind> <action>: action must be 'add' or 'remove', got '${selection.token ?? ""}'`
+      : `kind: unknown or missing sub-resource '${selection.token ?? ""}' — only 'field' is supported (edit a kind's declared fields)`;
     throw new CliError(
       "USAGE",
-      `kind: unknown or missing sub-resource '${subresource ?? ""}' — only 'field' is supported (edit a kind's declared fields)`,
+      message,
       { help: helpHint },
     );
   }
-  const kindName = positionals[1]?.trim();
-  const action = positionals[2]?.trim();
-  const fieldName = positionals[3]?.trim();
+  const kindName = selection.payload!.kindName?.trim();
+  const action = selection.payload!.action;
+  const fieldName = selection.payload!.fieldName?.trim();
   if (!kindName) {
     throw new CliError("USAGE", 'kind field requires a "<Kind>"', { help: helpHint });
   }
-  if (action !== "add" && action !== "remove") {
-    throw new CliError("USAGE", `kind field "${kindName}" <action>: action must be 'add' or 'remove', got '${action ?? ""}'`, {
-      help: helpHint,
-    });
-  }
   if (!fieldName) {
     throw new CliError("USAGE", `kind field "${kindName}" ${action} requires a <name>`, { help: helpHint });
-  }
-  if (positionals.length > 4) {
-    throw new CliError(
-      "USAGE",
-      `kind field takes exactly "<Kind>" <action> <name>, got extra: ${positionals.slice(4).join(", ")}`,
-      { help: helpHint },
-    );
   }
   // Reject new collisions, but keep `remove` available as the supported migration path for a
   // convention authored before a name became reserved.

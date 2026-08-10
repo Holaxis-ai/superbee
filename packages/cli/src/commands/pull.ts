@@ -44,7 +44,8 @@ import {
 } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, toExit, asHandled, classifyBundleError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, renderErrorEnvelope, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { inBundlePollutionWarning, readErrorToCliError } from "./doc.js";
@@ -160,7 +161,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
   const writeStdoutBytes = deps.writeStdoutBytes ?? ((d: Uint8Array) => void process.stdout.write(d));
 
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -174,25 +175,12 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
         },
         allowPositionals: true,
       }),
-    "pull",
+    CLI_LEAVES.pull,
   );
   if (values.help) {
     stdout(PULL_USAGE);
     return;
   }
-  // `pull` takes NO positionals — everything is flags. A stray one (e.g. `pull file.html
-  // --doc-key …`, a `promote`-habit slip: `promote`'s FIRST argument is a local file) would
-  // otherwise be silently absorbed and ignored by `allowPositionals: true`, masking a
-  // caller's mistake instead of surfacing it.
-  if (positionals.length > 0) {
-    throw new CliError(
-      "USAGE",
-      `pull takes no positional arguments, got ${positionals.length}: ${positionals.join(", ")} ` +
-        `(did you mean 'promote <file> --doc-key <key>'?)`,
-      { help: `${cliInvocation()} pull --doc-key <key> --out <path>` },
-    );
-  }
-
   const key = values["doc-key"]?.trim();
   if (!key) {
     throw new CliError("USAGE", "--doc-key <key> is required", {

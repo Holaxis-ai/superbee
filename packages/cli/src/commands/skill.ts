@@ -54,7 +54,8 @@ import {
 import { atomicWriteFileSync } from "./hook.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { HOST_CONFIG_ROOTS, resolveHostConfigRoot } from "../host-config.js";
 import { buildIdentityEnvelope, cliVersion } from "../build-identity.js";
 import {
@@ -631,7 +632,7 @@ export interface SkillDeps {
 export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -643,22 +644,37 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         allowPositionals: true,
       }),
     "skill",
+    (positionals) => {
+      const [sub, ...data] = positionals;
+      if (sub === undefined) return { kind: "unknown" } as const;
+      if (sub !== "install" && sub !== "status" && sub !== "uninstall") return { kind: "unknown", token: sub } as const;
+      return {
+        kind: "selected",
+        leaf: sub === "install"
+          ? CLI_LEAVES.skillInstall
+          : sub === "status"
+            ? CLI_LEAVES.skillStatus
+            : CLI_LEAVES.skillUninstall,
+        data,
+        payload: sub,
+      } as const;
+    },
   );
-  if (values.help) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(SKILL_USAGE);
     return;
   }
 
-  const sub = positionals[0];
-  if (sub !== "install" && sub !== "status" && sub !== "uninstall") {
+  if (selection.kind === "unknown") {
     throw new CliError(
       "USAGE",
-      sub === undefined
+      selection.token === undefined
         ? "skill requires a subcommand (install|status|uninstall)"
-        : `unknown skill subcommand: ${sub} (expected install|status|uninstall)`,
+        : `unknown skill subcommand: ${selection.token} (expected install|status|uninstall)`,
       { help: `${cliInvocation()} skill install|status|uninstall [--scope project|user]` },
     );
   }
+  const sub = selection.payload;
 
   const requestedScope = values.scope as string | undefined;
   const scope = normalizeInstallScope(requestedScope);

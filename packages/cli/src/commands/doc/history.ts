@@ -3,7 +3,8 @@ import { parseArgs } from "node:util";
 import { docVersions, type VersionInfo } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
-import { parseOrUsage } from "../../args.js";
+import { parseLeafOrUsage } from "../../args.js";
+import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
@@ -22,7 +23,7 @@ const DEFAULT_LIMIT = 20;
 export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -35,7 +36,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
         },
         allowPositionals: true,
       }),
-    "doc history",
+    CLI_LEAVES.docHistory,
   );
   if (values.help) {
     stdout(DOC_HISTORY_USAGE);

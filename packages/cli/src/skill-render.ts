@@ -102,7 +102,7 @@ function hostDiscoveryLines(subpath: string, type: "f" | "d", indent = "    "): 
 // Shared projections (single source: COMMAND_GROUPS), parameterized only by invocation prefix.
 // ---------------------------------------------------------------------------------------------
 
-function renderCommandsSection(groups: CommandGroup[], prefix: string): string[] {
+function renderCommandsSection(groups: readonly CommandGroup[], prefix: string): string[] {
   const lines: string[] = [];
   lines.push("## Commands");
   lines.push("");

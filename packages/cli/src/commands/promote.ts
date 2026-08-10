@@ -41,7 +41,8 @@ import {
 } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { defaultTimestampAndValidateKind } from "../kind-write.js";
@@ -103,7 +104,7 @@ function isDocRouteKey(key: string): boolean {
 export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -119,7 +120,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
         },
         allowPositionals: true,
       }),
-    "promote",
+    CLI_LEAVES.promote,
   );
   if (values.help) {
     stdout(PROMOTE_USAGE);

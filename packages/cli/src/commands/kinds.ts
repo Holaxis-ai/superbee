@@ -8,7 +8,8 @@
 import { parseArgs } from "node:util";
 import { freshnessHorizonMs, loadKinds, type KindConvention } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
-import { parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -116,7 +117,7 @@ function toRow(kind: KindConvention): Record<string, unknown> {
 export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -128,7 +129,7 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
         },
         allowPositionals: true,
       }),
-    "kinds",
+    CLI_LEAVES.kinds,
   );
   if (values.help) {
     stdout(KINDS_USAGE);

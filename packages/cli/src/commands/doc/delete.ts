@@ -3,7 +3,8 @@ import { parseArgs } from "node:util";
 import { deleteDoc, pathFromConceptId, isReservedFile, VersionConflict } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
-import { parseOrUsage } from "../../args.js";
+import { parseLeafOrUsage } from "../../args.js";
+import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
@@ -12,7 +13,7 @@ import { DOC_DELETE_USAGE, type DocCliDeps } from "./common.js";
 export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -25,7 +26,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
         },
         allowPositionals: true,
       }),
-    "doc delete",
+    CLI_LEAVES.docDelete,
   );
   if (values.help) {
     stdout(DOC_DELETE_USAGE);

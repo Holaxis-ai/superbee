@@ -1,26 +1,10 @@
-// SINGLE SOURCE OF TRUTH for the CLI's self-description.
+// Pure render projections over the canonical grouped CLI command specification.
 //
-// `DESCRIPTION` + `COMMAND_GROUPS` feed two consumers that therefore CANNOT drift:
-//   1. the zero-arg `home` view (identity header + command reference),
-//   2. the `--help` / `-h` / `help` reference.
-//
-// Neither `home` nor `--help` may hardcode a command list — both derive from `COMMAND_GROUPS` via the
-// pure `commandReference()` projector below. Adding/removing a command here updates every consumer at
-// once. This module is pure data + a pure projection: NO I/O, NO imports beyond TypeScript types.
-//
-// `--help` renders `commandReference()`'s output as PLAIN PROSE via `helpIndexText()` (grouped
-// headings, one command per physical line) — never TOON. Field feedback (external-agent session,
-// help-index-readability task) found the previous rendering (TOON-encoding the same data) crammed
-// every group's commands into one escaped string-array value per line, forcing an agent to grep a
-// giant line instead of reading it; subcommand help (e.g. `new --help`) is plain prose and was
-// praised by the same agent. Help is prose an agent READS, not data it parses — TOON stays the
-// default for actual data surfaces (`list`, `status`, …), never for this index. `home` keeps
-// rendering `compactCommandReference()`'s command NAMES as TOON (it is real per-session state —
-// bundle summary — not a help manual), so this is a renderer change scoped to `--help`
-// alone; the registry (`COMMAND_GROUPS`) and `commandReference()`'s projection are untouched.
-//
-// Adapted from holaxis-agentstate `packages/cli/src/reference.ts`, retargeted from the promote/pull
-// command set to the OKF-native bundle command set.
+// Executable leaf identity, exact positional count, aliases, display attachment, and public command
+// ordering live in command-spec.ts. This module owns only reference rendering.
+import { CLI_COMMAND_GROUPS, type PublicLeafPath } from "./command-spec.js";
+
+export type { PublicLeafPath } from "./command-spec.js";
 
 /** The one-sentence tagline. */
 export const DESCRIPTION =
@@ -30,200 +14,27 @@ export const DESCRIPTION =
 export interface CommandRef {
   usage: string;
   summary: string;
+  /** Executable leaf paths projected from the canonical grouped specification. */
+  paths: readonly PublicLeafPath[];
 }
 
 /** A named group of related commands (e.g. "Bundle", "Notes & Docs", "Session"). */
 export interface CommandGroup {
   group: string;
-  commands: CommandRef[];
+  commands: readonly CommandRef[];
 }
 
-/**
- * Every command the CLI exposes, grouped for display. This is the ONLY place the command list is
- * enumerated.
- */
-export const COMMAND_GROUPS: CommandGroup[] = [
-  {
-    group: "Bundle",
-    commands: [
-      {
-        usage: "bundle locate [--dir <path>]",
-        summary: "Resolve the exact canonical local bundle path and report why it won selection",
-      },
-      {
-        usage:
-          "catalog (add <label> [--dir <path>] | list | resolve <label-or-id> [--field path])",
-        summary:
-          "Register and deterministically resolve this user's explicitly named local workspaces",
-      },
-      {
-        usage: "init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]",
-        summary:
-          "Create (or open) an OKF knowledge bundle in a directory — greenfield setup; a project that already shares a board is set up by sync, not init. --create-only requires a genuinely NEW target and refuses existing, non-empty, symlinked, enclosing, bound, or concurrent targets before publication; runtime failures retain and report any empty directories they created instead of deleting them — 'recipe add' modifies a verified existing bundle",
-      },
-      {
-        usage: "index generate [--dir <path>] [--check] [--force] [--actor <name>]",
-        summary:
-          "Generate complete portable Markdown navigation explicitly; refuses curated indexes unless --force adopts them",
-      },
-      {
-        usage: "status [--limit <n>] [--remote <url>]",
-        summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)",
-      },
-    ],
-  },
-  {
-    group: "Documents & links",
-    commands: [
-      {
-        usage:
-          "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--remote <url>]",
-        summary: "Write a generic OKF concept document",
-      },
-      {
-        usage:
-          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]",
-        summary: "Patch given fields (incl. kind-declared fields like --status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
-      },
-      {
-        usage:
-          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]",
-        summary:
-          "Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting",
-      },
-      {
-        usage: "doc history <id> [--limit <n>] [--remote <url>]",
-        summary:
-          "Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) — the tokens for --expected-version",
-      },
-      {
-        usage: "doc delete <id> [--expected-version <v>] [--remote <url>]",
-        summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)",
-      },
-      {
-        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--remote <url>]",
-        summary:
-          "Query concepts over their frontmatter (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
-      },
-      {
-        usage:
-          "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--remote <url>]",
-        summary:
-          "Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text",
-      },
-    ],
-  },
-  {
-    group: "Artifacts",
-    commands: [
-      {
-        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--remote <url>]",
-        summary: "Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record",
-      },
-      {
-        usage:
-          "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--remote <url>]",
-        summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob)",
-      },
-      {
-        usage: "pull --doc-key <key> --out (<path> | -) [--remote <url>]",
-        summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)",
-      },
-      {
-        usage: "blobs [--prefix <p>] [--limit <n>] [--remote <url>]",
-        summary: "List the store's blob (non-document) keys (documents are listed by 'list'/'query')",
-      },
-      {
-        usage: "delete --doc-key <key> [--expected-version <v>] [--remote <url>]",
-        summary: "Hard-delete a doc or blob by key (idempotent: absent -> deleted:false, exit 0)",
-      },
-    ],
-  },
-  {
-    group: "Kinds",
-    commands: [
-      {
-        usage:
-          'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--remote <url>]',
-        summary:
-          'Create a new instance of a bundle-declared kind — initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step',
-      },
-      {
-        usage: "kinds [--remote <url>]",
-        summary:
-          "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)",
-      },
-      {
-        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--remote <url>]',
-        summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
-      },
-      {
-        usage: "recipes [--dir <path>] [--remote <url>]",
-        summary:
-          "Browse built-in recipes before or after init; with a bundle, also show whether each is already applied",
-      },
-      {
-        usage: "recipe add <name-or-path> [--remote <url>]",
-        summary:
-          "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
-      },
-    ],
-  },
-  {
-    group: "Remote",
-    commands: [
-      {
-        usage: "serve [--dir <path>] [--host <h>] [--port <p>]",
-        summary: "Boot the reference wire-protocol server over a local bundle (loopback, no auth)",
-      },
-      {
-        usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open]",
-        summary:
-          "Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle's docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register — see status's legacy_naming finding), and see a live activity feed, the bundle's sharing status, and your registered workspaces. The header shows the bundle's display name — derived from the project folder unless set explicitly: doc write docs/bundle --type \"Bundle Name\" --title \"<name>\"",
-      },
-      {
-        usage: "mcp [--dir <path>] [--actor <name>]",
-        summary:
-          "Run the experimental local MCP Apps adapter over a bundle (stdio): launch an existing registered View unchanged, or launch standard active View HTML transiently and save its approved exact bytes as a registered View; bundle data and governed actions stay behind local human approval",
-      },
-      {
-        usage: "view list [--limit <n>] [--dir <path> | --remote <url>]",
-        summary:
-          "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views",
-      },
-      {
-        usage:
-          "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]",
-        summary:
-          "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). `init` makes a LOCAL bundle; --establish is the separate, explicit act that starts sharing it (creates the board branch, pushes; never automatic). A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; AGENTSTATE_LITE_NO_AUTOPULL=<any value, even 0> disables it",
-      },
-    ],
-  },
-  {
-    group: "Session",
-    commands: [
-      {
-        usage: "version [--check] [--tag latest|next] [--json]",
-        summary:
-          "Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy",
-      },
-      {
-        usage: "session-start [--dir <path>] [--no-update-check]",
-        summary:
-          "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or ASLITE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh; npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data",
-      },
-      {
-        usage: "hook install|status|uninstall [--scope project|user]",
-        summary: "Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode",
-      },
-      {
-        usage: "skill install|status|uninstall [--scope project|user]",
-        summary:
-          "Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface — its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage",
-      },
-    ],
-  },
-];
+/** Compatibility projection consumed by help, home, and skill rendering. */
+export const COMMAND_GROUPS: readonly CommandGroup[] = Object.freeze(
+  CLI_COMMAND_GROUPS.map((group) => Object.freeze({
+    group: group.group,
+    commands: Object.freeze(group.commands.map((row) => Object.freeze({
+      usage: row.usage,
+      summary: row.summary,
+      paths: Object.freeze(row.leaves.map((leaf) => leaf.path)),
+    }))),
+  })),
+);
 
 /**
  * Static pointer TEMPLATE (no bundle I/O) from the offline `--help`/`home` views toward the live

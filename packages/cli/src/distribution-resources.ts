@@ -1,3 +1,6 @@
+import { CLI_COMMAND_GROUPS } from "./command-spec.js";
+import { commandName } from "./reference.js";
+
 // One inventory owns auxiliary contracts, portable recipes, examples, and fixtures. A channel is
 // only a projection target; it is never the source of truth. Both channels project these files
 // under their references/ folder: the skill under plugins/…/skills/agentstate-lite/references/,
@@ -114,43 +117,24 @@ export const NPM_RESOURCES = projectResources("npm");
  * Every command NAME (as {@link commandName} in reference.ts would extract it from a usage
  * string) mapped to the shipped-reference `dest`s its advertised capability depends on. Because
  * the npm projection mirrors the skill projection, ONE table serves both channels. `[]` means
- * self-contained — true of most commands. Checked for exhaustiveness against COMMAND_GROUPS by
- * test/skill-distribution.test.ts.
+ * self-contained — true of most commands. Empty defaults are projected from the canonical command
+ * graph, so a newly advertised row cannot be omitted from this resource inventory.
  */
-export const SKILL_COMMAND_RESOURCES: Record<string, string[]> = {
-  "bundle locate": [],
-  catalog: [],
-  init: [],
-  "index generate": [],
-  status: [],
-  "doc write": [],
-  "doc update": [],
-  "doc read": [],
-  "doc history": [],
-  "doc delete": [],
-  list: [],
-  link: [],
-  "artifact create": [],
-  promote: [],
-  pull: [],
-  blobs: [],
-  delete: [],
-  new: [],
-  kinds: [],
-  "kind field": [],
-  recipes: [],
+const SKILL_COMMAND_RESOURCE_OVERRIDES = {
   "recipe add": ["recipes/claims/recipe.md", "recipes/review-workflow/recipe.md"],
-  serve: [],
   ui: ["views/references/view-authoring-v0.md"],
-  mcp: [],
-  "view list": [],
-  sync: [],
-  version: [],
-  "session-start": [],
-  "hook install|status|uninstall": [],
-  // Installs the shipped assets themselves; its own advertised capability needs no reference.
-  "skill install|status|uninstall": [],
-};
+} as const satisfies Partial<Record<string, readonly string[]>>;
+
+const advertisedCommandNames = [
+  ...new Set(CLI_COMMAND_GROUPS.flatMap((group) => group.commands.map((row) => commandName(row.usage)))),
+];
+
+export const SKILL_COMMAND_RESOURCES: Record<string, string[]> = Object.fromEntries(
+  advertisedCommandNames.map((name) => [
+    name,
+    [...(SKILL_COMMAND_RESOURCE_OVERRIDES[name as keyof typeof SKILL_COMMAND_RESOURCE_OVERRIDES] ?? [])],
+  ]),
+);
 
 /** One prose-level tripwire over BOTH rendered SKILL.md channels. */
 export interface SkillCapabilityPattern {

@@ -1,7 +1,8 @@
 import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 
-import { parseOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import {
   addCatalogEntry,
   listCatalogEntries,
@@ -85,7 +86,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const cwd = deps.cwd ?? (() => process.cwd());
   const home = deps.home ?? homedir;
-  const parsed = parseOrUsage(
+  const parsed = parseSelectorOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -98,19 +99,35 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
         allowPositionals: true,
       }),
     "catalog",
+    (positionals) => {
+      const [subcommand, ...data] = positionals;
+      if (subcommand === undefined) return { kind: "navigation" } as const;
+      if (subcommand !== "add" && subcommand !== "list" && subcommand !== "resolve") {
+        return { kind: "unknown", token: subcommand } as const;
+      }
+      return {
+        kind: "selected",
+        leaf: subcommand === "add"
+          ? CLI_LEAVES.catalogAdd
+          : subcommand === "list"
+            ? CLI_LEAVES.catalogList
+            : CLI_LEAVES.catalogResolve,
+        data,
+        payload: { subcommand, operand: data[0] },
+      } as const;
+    },
   );
 
-  if (parsed.values.help || parsed.positionals.length === 0) {
+  if (parsed.selection.kind === "help" || parsed.selection.kind === "navigation") {
     stdout(CATALOG_USAGE);
     return;
   }
-
-  const [subcommand, ...positionals] = parsed.positionals;
+  if (parsed.selection.kind === "unknown") usage(`unknown catalog subcommand: ${parsed.selection.token}`);
+  const { subcommand, operand } = parsed.selection.payload!;
   if (subcommand === "add") {
-    if (positionals.length !== 1) usage("catalog add requires exactly one <label>");
     if (parsed.values.field !== undefined) usage("--field is only valid with catalog resolve");
     const target = await resolveLocalBundleTarget(parsed.values.dir, cwd());
-    const result = await addCatalogEntry(positionals[0]!, target.canonicalRoot, {
+    const result = await addCatalogEntry(operand!, target.canonicalRoot, {
       ...(deps.catalogOptions ?? {}),
       home: home(),
     });
@@ -129,7 +146,6 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
   }
 
   if (subcommand === "list") {
-    if (positionals.length !== 0) usage("catalog list takes no positional arguments");
     if (parsed.values.dir !== undefined) usage("--dir is only valid with catalog add");
     if (parsed.values.field !== undefined) usage("--field is only valid with catalog resolve");
     const entries = await listCatalogEntries(home());
@@ -151,7 +167,6 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
   }
 
   if (subcommand === "resolve") {
-    if (positionals.length !== 1) usage("catalog resolve requires exactly one <label-or-id>");
     if (parsed.values.dir !== undefined) usage("--dir is only valid with catalog add");
     if (parsed.values.field !== undefined && parsed.values.field !== "path") {
       usage('catalog resolve --field supports only "path"');
@@ -159,7 +174,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
     if (parsed.values.field !== undefined && parsed.values.json) {
       usage("--field and --json are mutually exclusive");
     }
-    const entry = await resolveCatalogEntry(positionals[0]!, home());
+    const entry = await resolveCatalogEntry(operand!, home());
     if (parsed.values.field === "path") {
       stdout(entry.locator.path + "\n");
       return;
@@ -175,6 +190,4 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
     );
     return;
   }
-
-  usage(`unknown catalog subcommand: ${subcommand}`);
 }

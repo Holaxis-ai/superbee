@@ -1,7 +1,8 @@
 // `aslite version [--check [--tag latest|next]] [--json]` — local identity plus an optional,
 // bounded read-only comparison against the exact public npm release track.
 import { parseArgs } from "node:util";
-import { parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { buildIdentityEnvelope } from "../build-identity.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -48,7 +49,7 @@ export async function versionCommand(
   deps: Partial<VersionCommandDeps> = {},
 ): Promise<void> {
   const stdout = deps.stdout ?? ((text: string) => void process.stdout.write(text));
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -60,16 +61,11 @@ export async function versionCommand(
         },
         allowPositionals: true,
       }),
-    "version",
+    CLI_LEAVES.version,
   );
   if (values.help) {
     stdout(VERSION_USAGE);
     return;
-  }
-  if (positionals.length > 0) {
-    throw new CliError("USAGE", `unexpected positional argument: ${positionals[0]}`, {
-      help: `${cliInvocation()} version --help`,
-    });
   }
   if (values.tag !== undefined && !values.check) {
     throw new CliError("USAGE", "option '--tag' requires '--check'", {

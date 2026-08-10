@@ -67,7 +67,8 @@ import { defaultSyncStore } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
 import { defaultSummarizeBundle, discoverSummarizeBundle, home, type BoardPullOutcome } from "./home.js";
 import { cliInvocation } from "../invocation.js";
-import { parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
@@ -264,7 +265,7 @@ export async function sessionStartPull(
 export async function sessionStart(argv: string[], deps: Partial<SessionStartDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -276,7 +277,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
         },
         allowPositionals: true,
       }),
-    "session-start",
+    CLI_LEAVES.sessionStart,
   );
   if (values.help) {
     stdout(SESSION_START_USAGE);

@@ -22,7 +22,8 @@ import { parseArgs } from "node:util";
 import { deleteDoc, deleteBlob, conceptIdFromPath, VersionConflict } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
-import { parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -67,7 +68,7 @@ function isDocRouteKey(key: string): boolean {
 export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -81,22 +82,12 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
         },
         allowPositionals: true,
       }),
-    "delete",
+    CLI_LEAVES.delete,
   );
   if (values.help) {
     stdout(DELETE_USAGE);
     return;
   }
-  // No positionals — everything is flags, mirroring `pull`'s guard against a `promote`-habit slip
-  // (`promote`'s FIRST argument is a local file; this command has no such positional at all).
-  if (positionals.length > 0) {
-    throw new CliError(
-      "USAGE",
-      `delete takes no positional arguments, got ${positionals.length}: ${positionals.join(", ")}`,
-      { help: `${cliInvocation()} delete --doc-key <key>` },
-    );
-  }
-
   const key = values["doc-key"]?.trim();
   if (!key) {
     throw new CliError("USAGE", "--doc-key <key> is required", {
