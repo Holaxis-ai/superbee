@@ -256,7 +256,7 @@ bundle-relative**.
   shipping. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
   the installed-tarball proof (`verify:npm-package`), and the npm-target SKILL.md drift gate
   (`check:skill`) in one shot. The plugin-bundle drift gates
-  (`check:skill:bundle`, `check:bundle` — the ~650KB committed artifact and the skill-target
+  (`check:skill:bundle`, `check:bundle` — the ~4.4MB committed artifact and the skill-target
   SKILL.md) are BOT-OWNED on merge to main (see the plugin version + bundle bullet below) and are
   deliberately NOT part of this PR-side gate; a branch that only touches CLI source is not expected
   to carry a current rebuild of either. Run them by hand via `npm run check:plugin-bundle` if you
