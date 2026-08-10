@@ -319,6 +319,14 @@ bundle-relative**.
   `plugins/agentstate-lite/skills/agentstate-lite/scripts/agentstate-lite`, or a manifest field
   other than `version`) has nothing for the bot to regenerate against and will go unnoticed, so it
   still needs a manual version bump in the SAME PR.
+- **Operator receipt emission is non-clobbering and release-ID bound.**
+  `scripts/release-inspect.mjs` completely inventories the draft by numeric release ID, binds the
+  retained `candidate.json`, and treats one valid current receipt as `already_present`. A missing
+  receipt uses a private journaled no-clobber upload. Re-emission is destructive only when the
+  operator supplies the old receipt's exact ID, name, and digest (row-local `replace_existing` in
+  batch mode); interruption recovery resumes the one journaled signed digest and never deletes a
+  competing same-name asset. `--dry-run` signs and validates the same plan without durable owner,
+  journal, DELETE, or upload writes.
 - **Branch from CURRENT `origin/main`, never from a previous PR's tip.** The npm-target
   `packages/cli/SKILL.md` (`check:skill`) is still generated from `reference.ts` and PR-verified, so
   a branch cut from a stale tip can carry a stale version of it relative to current main. More
