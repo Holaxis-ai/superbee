@@ -2,7 +2,7 @@
 // regeneration actually changed something — bump the plugin version in BOTH manifests
 // (`.claude-plugin/marketplace.json`, `plugins/agentstate-lite/.codex-plugin/plugin.json`) and
 // commit artifact+manifests together. This retires the old convention (CLAUDE.md, pre-2026-07-09)
-// where every PR hand-bumped both manifests and hand-rebuilt the ~650KB committed bundle — a tax
+// where every PR hand-bumped both manifests and hand-rebuilt the ~4.4MB committed bundle — a tax
 // that grew O(n^2) in concurrent PRs (each crossing cost a rebase + re-bump + regen + full gate
 // re-run).
 //
