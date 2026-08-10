@@ -5,7 +5,7 @@
     {
       "name": "agentstate-lite",
       "description": "A markdown knowledge bundle in your repo, plus a CLI built for agents — shared, versioned, conflict-safe memory in plain text. Bundles the self-contained CLI; the skill teaches agents the command surface.",
-      "version": "1.0.155",
+      "version": "1.0.156",
       "source": "./plugins/agentstate-lite",
       "author": { "name": "Holaxis" }
     }
