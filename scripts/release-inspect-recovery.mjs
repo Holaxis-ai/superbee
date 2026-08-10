@@ -222,9 +222,39 @@ async function exists(file) {
   }
 }
 
+async function clearDeadCleanup(cleanupPath, owner) {
+  let record;
+  try {
+    record = await readJsonRecord(cleanupPath, "reclaim cleanup owner record");
+  } catch (error) {
+    if (error?.code === "ENOENT") return true;
+    throw error;
+  }
+  const cleanupOwner = normalizeOwner(record.value);
+  if (cleanupOwner.hostname !== owner.hostname) fail(`receipt slot reclaim cleanup is owned on another host (${cleanupOwner.hostname})`);
+  const state = pidState(cleanupOwner.pid);
+  if (state !== "dead") fail(`receipt slot reclaim cleanup PID ${cleanupOwner.pid} is ${state}`);
+  if ((await readJsonRecord(cleanupPath, "reclaim cleanup owner record")).text !== record.text) {
+    fail("reclaim cleanup owner changed during cleanup");
+  }
+  await unlink(cleanupPath).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
+  await syncDirectory(path.dirname(cleanupPath));
+  return true;
+}
+
+async function acquireCleanupOwner(cleanupPath, owner) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (await publishNoReplace(cleanupPath, canonicalJson(owner))) return true;
+    await clearDeadCleanup(cleanupPath, owner);
+  }
+  return false;
+}
+
 async function clearDeadReclaim(reclaimPath, owner) {
   const cleanupPath = `${reclaimPath}.cleanup`;
-  if (!await publishNoReplace(cleanupPath, canonicalJson(owner))) return false;
+  if (!await acquireCleanupOwner(cleanupPath, owner)) return false;
   try {
     let record;
     try {
