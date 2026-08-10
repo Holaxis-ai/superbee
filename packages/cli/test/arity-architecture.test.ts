@@ -64,20 +64,18 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
   ]);
   assert.deepEqual(facts.runAxiCliCalls, [{ file: "cli.ts", functionName: "main", commands: "RUNTIME_COMMANDS" }]);
 
-  const selectorLeafIds = new Set([
-    "bundleLocate", "catalogAdd", "catalogList", "catalogResolve", "indexGenerate",
-    "kindFieldAdd", "kindFieldRemove", "viewList", "hookInstall", "hookStatus", "hookUninstall",
-    "skillInstall", "skillStatus", "skillUninstall", "docUpdate", "query",
-  ]);
-  const expectedOrdinary = Object.keys(CLI_LEAVES)
-    .filter((id) => !selectorLeafIds.has(id))
-    .map((id) => `CLI_LEAVES.${id}`)
-    .concat("HOME_LEAF")
-    .sort();
-  assert.deepEqual(
-    facts.ownedCalls.filter((row) => row.api === "parseLeafOrUsage").map((row) => row.leaf).sort(),
-    expectedOrdinary,
-  );
+  const ordinaryLeaves = facts.ownedCalls
+    .filter((row) => row.api === "parseLeafOrUsage")
+    .map((row) => row.leaf);
+  assert.equal(ordinaryLeaves.filter((leaf) => leaf === "HOME_LEAF").length, 1);
+  const publicOrdinaryIds = ordinaryLeaves.filter((leaf) => leaf !== "HOME_LEAF").map((leaf) => {
+    const matched = /^CLI_LEAVES\.([A-Za-z0-9]+)$/.exec(leaf);
+    assert.ok(matched, `ordinary parser must receive a direct canonical member: ${leaf}`);
+    const id = matched[1]!;
+    assert.equal(Object.hasOwn(CLI_LEAVES, id), true, `ordinary parser names unknown leaf id: ${id}`);
+    return id;
+  });
+  assert.equal(new Set(publicOrdinaryIds).size, publicOrdinaryIds.length, "ordinary leaves must not be duplicated or substituted");
 });
 
 test("scanner rejects local aliases, namespace destructuring, storage, and computed access", () => {

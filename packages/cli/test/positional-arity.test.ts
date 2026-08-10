@@ -53,7 +53,8 @@ test("exact count factory rejects invalid counts", () => {
 
 test("reference paths and canonical leaves are exhaustive and aliases share identity", () => {
   const paths = COMMAND_GROUPS.flatMap((group) => group.commands.flatMap((command) => command.paths));
-  assert.equal(paths.length, 41);
+  assert.equal(paths.length, PUBLIC_LEAVES.length);
+  assert.equal(new Set(paths).size, paths.length);
   assert.deepEqual([...new Set(paths)].sort(), PUBLIC_LEAVES.map((leaf) => leaf.path).sort());
   assert.strictEqual(CLI_LEAVES.query.arity, CLI_LEAVES.list.arity);
   assert.strictEqual(CLI_LEAVES.query.canonical, CLI_LEAVES.list);

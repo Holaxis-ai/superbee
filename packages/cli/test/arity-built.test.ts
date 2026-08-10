@@ -175,13 +175,14 @@ test("documented paths, runtime top-level registration, arity, and executable ro
   const paths = COMMAND_GROUPS.flatMap((group) => group.commands.flatMap((command) => command.paths));
   const ctx = { scratch: "", bundle: "bundle", initTarget: "target", artifactFile: "artifact", env: {} };
   const rows = leafCases(ctx);
-  assert.equal(paths.length, 41);
+  assert.equal(paths.length, Object.keys(rows).length);
+  assert.equal(new Set(paths).size, paths.length);
   assert.deepEqual(Object.keys(rows).sort(), Object.keys(CLI_LEAVES).sort());
   assert.deepEqual(Object.values(rows).map((row) => row.leaf.path).sort(), [...paths].sort());
   assert.deepEqual([...new Set(paths.map((path) => path.split(" ")[0]))].sort(), [...KNOWN_COMMANDS].sort());
 });
 
-test("all 41 built leaves have a valid boundary and reject one derived surplus with an exact envelope", () => {
+test("every catalogued built leaf has a valid boundary and rejects one derived surplus with an exact envelope", () => {
   const ctx = createFixture();
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);

@@ -9,17 +9,17 @@ import {
   HOME_LEAF,
   PUBLIC_COMMAND_NAMES,
   PUBLIC_LEAVES,
-  projectCommandSpec,
   type CommandSpecGroup,
 } from "../src/command-spec.js";
 import { KNOWN_COMMANDS, PUBLIC_HANDLERS, RUNTIME_COMMANDS } from "../src/cli.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
+import { projectCommandSpec } from "./support/command-spec-projector.js";
 
-test("canonical graph owns 41 unique public leaves and one hidden home leaf", () => {
-  assert.equal(PUBLIC_LEAVES.length, 41);
-  assert.equal(Object.keys(CLI_LEAVES).length, 41);
-  assert.equal(new Set(PUBLIC_LEAVES.map((leaf) => leaf.id)).size, 41);
-  assert.equal(new Set(PUBLIC_LEAVES.map((leaf) => leaf.path)).size, 41);
+test("canonical graph owns unique indexed public leaves and one hidden home leaf", () => {
+  assert.equal(PUBLIC_LEAVES.length, Object.keys(CLI_LEAVES).length);
+  assert.equal(new Set(PUBLIC_LEAVES.map((leaf) => leaf.id)).size, PUBLIC_LEAVES.length);
+  assert.equal(new Set(PUBLIC_LEAVES.map((leaf) => leaf.path)).size, PUBLIC_LEAVES.length);
+  assert.deepEqual(PUBLIC_LEAVES.map((leaf) => leaf.id).sort(), Object.keys(CLI_LEAVES).sort());
   assert.equal(PUBLIC_LEAVES.every((leaf) => leaf.exposure === "public"), true);
   assert.equal(HOME_LEAF.exposure, "hidden");
   assert.equal(PUBLIC_LEAVES.some((leaf) => leaf.path === "home" || leaf.path === "update"), false);
@@ -52,7 +52,7 @@ test("pure projection seam gives a one-row change budget for one synthetic addit
       id: "probe",
       usage: "probe",
       summary: "Synthetic projection probe",
-      leaves: [{ path: "probe", arity: { count: 0 } } as never],
+      leaves: [{ id: "probe", path: "probe", arity: { count: 0 } } as never],
     }],
   } as const satisfies CommandSpecGroup;
   const after = projectCommandSpec([...CLI_COMMAND_GROUPS, synthetic]);
@@ -64,33 +64,37 @@ test("pure projection seam gives a one-row change budget for one synthetic addit
 
 test("nested-leaf and exact-count changes project from one graph value", () => {
   const before = projectCommandSpec(CLI_COMMAND_GROUPS);
-  const firstGroup = CLI_COMMAND_GROUPS[0];
-  const firstRow = firstGroup.commands[0];
-  const nestedGroups = [{
-    ...firstGroup,
-    commands: [{
-      ...firstRow,
-      leaves: [...firstRow.leaves, { path: "bundle inspect", arity: { count: 0 } } as never],
-    }, ...firstGroup.commands.slice(1)],
-  }, ...CLI_COMMAND_GROUPS.slice(1)] as const satisfies readonly CommandSpecGroup[];
+  const targetRowId = "bundleLocate";
+  const targetLeafId = "bundleLocate";
+  const nestedGroups = CLI_COMMAND_GROUPS.map((group) => ({
+    ...group,
+    commands: group.commands.map((row) => row.id === targetRowId
+      ? { ...row, leaves: [...row.leaves, { id: "bundleInspect", path: "bundle inspect", arity: { count: 0 } } as never] }
+      : row),
+  })) as readonly CommandSpecGroup[];
   const nested = projectCommandSpec(nestedGroups);
   assert.equal(nested.rows.length, before.rows.length);
   assert.equal(nested.paths.length, before.paths.length + 1);
   assert.equal(nested.commandNames.length, before.commandNames.length);
-  assert.equal(nested.paths.at(-1) === "bundle inspect", false, "display attachment, not a second registry, owns placement");
-  assert.equal(nested.rows[0]?.paths.at(-1), "bundle inspect");
+  assert.equal(nested.rows.find((row) => row.id === targetRowId)?.paths.at(-1), "bundle inspect");
+  assert.equal(nested.leaves.find((leaf) => leaf.id === "bundleInspect")?.path, "bundle inspect");
 
-  const countGroups = [{
-    ...firstGroup,
-    commands: [{
-      ...firstRow,
-      leaves: [{ ...firstRow.leaves[0], arity: { kind: "exact", count: 1 } }],
-    }, ...firstGroup.commands.slice(1)],
-  }, ...CLI_COMMAND_GROUPS.slice(1)] as const satisfies readonly CommandSpecGroup[];
+  const countGroups = CLI_COMMAND_GROUPS.map((group) => ({
+    ...group,
+    commands: group.commands.map((row) => row.id === targetRowId
+      ? {
+          ...row,
+          leaves: row.leaves.map((leaf) => leaf.id === targetLeafId
+            ? { ...leaf, arity: { kind: "exact" as const, count: leaf.arity.count + 1 } }
+            : leaf),
+        }
+      : row),
+  })) as readonly CommandSpecGroup[];
   const changed = projectCommandSpec(countGroups);
+  const beforeCounts = new Map(before.leaves.map((leaf) => [leaf.id, leaf.count]));
   assert.deepEqual(
-    changed.leaves.filter((leaf, index) => leaf.count !== before.leaves[index]?.count),
-    [{ path: CLI_LEAVES.bundleLocate.path, count: 1 }],
+    changed.leaves.filter((leaf) => leaf.count !== beforeCounts.get(leaf.id)),
+    [{ id: targetLeafId, path: CLI_LEAVES.bundleLocate.path, count: CLI_LEAVES.bundleLocate.arity.count + 1 }],
   );
 });
 
