@@ -12,7 +12,8 @@ import { parseArgs } from "node:util";
 import { loadKinds } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
@@ -65,7 +66,7 @@ export async function recipe(argv: string[], deps: Partial<RecipeCliDeps> = {}):
 }
 
 async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<void> {
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -77,8 +78,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         },
         allowPositionals: true,
       }),
-    "recipe",
-    leafArity("recipe add"),
+    CLI_LEAVES.recipeAdd,
   );
   if (values.help) {
     stdout(RECIPE_USAGE);

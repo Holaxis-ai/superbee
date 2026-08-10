@@ -22,7 +22,8 @@ import { parseArgs } from "node:util";
 import { deleteDoc, deleteBlob, conceptIdFromPath, VersionConflict } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -67,7 +68,7 @@ function isDocRouteKey(key: string): boolean {
 export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -81,8 +82,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
         },
         allowPositionals: true,
       }),
-    "delete",
-    leafArity("delete"),
+    CLI_LEAVES.delete,
   );
   if (values.help) {
     stdout(DELETE_USAGE);

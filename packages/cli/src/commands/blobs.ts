@@ -8,7 +8,8 @@
 import { parseArgs } from "node:util";
 import { listBlobs } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -40,7 +41,7 @@ export interface BlobsCliDeps {
 export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -54,8 +55,7 @@ export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): P
         },
         allowPositionals: true,
       }),
-    "blobs",
-    leafArity("blobs"),
+    CLI_LEAVES.blobs,
   );
   if (values.help) {
     stdout(BLOBS_USAGE);

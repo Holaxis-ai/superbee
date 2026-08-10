@@ -24,7 +24,8 @@ import { parseArgs } from "node:util";
 import { serve as bootServerDefault, type ServeOptions, type ServerHandle } from "@agentstate-lite/server";
 import { openBundle } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
@@ -76,7 +77,7 @@ export async function serve(argv: string[], deps: Partial<ServeCliDeps> = {}): P
   const bootServer = deps.bootServer ?? bootServerDefault;
   const waitForShutdown = deps.waitForShutdown ?? defaultWaitForShutdown;
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -89,8 +90,7 @@ export async function serve(argv: string[], deps: Partial<ServeCliDeps> = {}): P
         },
         allowPositionals: true,
       }),
-    "serve",
-    leafArity("serve"),
+    CLI_LEAVES.serve,
   );
   if (values.help) {
     stdout(SERVE_USAGE);

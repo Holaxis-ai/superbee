@@ -11,7 +11,8 @@ import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@agentstate-lite/core";
 import { resolveTargetDir, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, shellArg } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
@@ -69,7 +70,7 @@ export function insideGitRepo(dir: string): boolean {
 export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -86,8 +87,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
         },
         allowPositionals: true,
       }),
-    "init",
-    leafArity("init"),
+    CLI_LEAVES.init,
   );
   if (values.help) {
     stdout(INIT_USAGE);

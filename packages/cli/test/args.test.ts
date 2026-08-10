@@ -1,5 +1,5 @@
 /**
- * `parseOrUsage` / `translateParseArgsError` — the single chokepoint that translates node
+ * `parseLeafOrUsage` / `translateParseArgsError` — the single chokepoint that translates node
  * `parseArgs`'s raw dependency-wording errors into clean, tool-native USAGE messages (AXI §6),
  * grounded in real `parseArgs` throws (not guessed error codes).
  */
@@ -7,11 +7,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "node:util";
 
-import { leafArity, parseOrUsage as parseOrUsageWithArity } from "../src/args.js";
+import { parseLeafOrUsage } from "../src/args.js";
+import { CLI_LEAVES } from "../src/command-spec.js";
 import { CliError } from "../src/errors.js";
 
-function parseOrUsage<T extends { positionals: readonly string[]; values?: object }>(parse: () => T, command: string): T {
-  return parseOrUsageWithArity(parse, command, leafArity("list"));
+function parseForTest<T extends { positionals: readonly string[]; values?: object }>(parse: () => T, command: string): T {
+  void command;
+  return parseLeafOrUsage(parse, CLI_LEAVES.list);
 }
 
 function assertUsage(err: unknown, message: string, command = "list"): void {
@@ -26,7 +28,7 @@ function assertUsage(err: unknown, message: string, command = "list"): void {
 test("A2.a unknown long option -> clean message, no advisory tail", () => {
   assert.throws(
     () =>
-      parseOrUsage(
+      parseForTest(
         () => parseArgs({ args: ["--foo"], options: {}, allowPositionals: true }),
         "list",
       ),
@@ -40,7 +42,7 @@ test("A2.a unknown long option -> clean message, no advisory tail", () => {
 
 test("A2.b unknown short option", () => {
   assert.throws(
-    () => parseOrUsage(() => parseArgs({ args: ["-x"], options: {}, allowPositionals: true }), "list"),
+    () => parseForTest(() => parseArgs({ args: ["-x"], options: {}, allowPositionals: true }), "list"),
     (err: unknown) => {
       assertUsage(err, "unknown option '-x'");
       return true;
@@ -51,7 +53,7 @@ test("A2.b unknown short option", () => {
 test("A2.c missing option value", () => {
   assert.throws(
     () =>
-      parseOrUsage(
+      parseForTest(
         () =>
           parseArgs({
             args: ["--type"],
@@ -70,7 +72,7 @@ test("A2.c missing option value", () => {
 test("A2.d boolean option given a value ('does not take an argument')", () => {
   assert.throws(
     () =>
-      parseOrUsage(
+      parseForTest(
         () =>
           parseArgs({
             args: ["--json=hi"],
@@ -88,9 +90,9 @@ test("A2.d boolean option given a value ('does not take an argument')", () => {
 
 test("A2.e unexpected positional (positionals disallowed)", () => {
   assert.throws(
-    () => parseOrUsage(() => parseArgs({ args: ["bar"], options: {}, allowPositionals: false }), "whoami"),
+    () => parseForTest(() => parseArgs({ args: ["bar"], options: {}, allowPositionals: false }), "list"),
     (err: unknown) => {
-      assertUsage(err, "unexpected argument 'bar'", "whoami");
+      assertUsage(err, "unexpected argument 'bar'", "list");
       return true;
     },
   );
@@ -99,7 +101,7 @@ test("A2.e unexpected positional (positionals disallowed)", () => {
 test("A2.f ambiguous option value ('argument is ambiguous')", () => {
   assert.throws(
     () =>
-      parseOrUsage(
+      parseForTest(
         () =>
           parseArgs({
             args: ["--type", "--json"],
@@ -121,7 +123,7 @@ test("A2.g unrecognized ERR_PARSE_ARGS_* code falls back to a trimmed original, 
   });
   assert.throws(
     () =>
-      parseOrUsage(() => {
+      parseForTest(() => {
         throw synthetic;
       }, "list"),
     (err: unknown) => {
@@ -138,7 +140,7 @@ test("A2.g unrecognized ERR_PARSE_ARGS_* code falls back to a trimmed original, 
 test("A2.h CliError passthrough: never remapped to USAGE", () => {
   assert.throws(
     () =>
-      parseOrUsage(() => {
+      parseForTest(() => {
         throw new CliError("NOT_FOUND", "no such bundle");
       }, "list"),
     (err: unknown) => {
@@ -155,7 +157,7 @@ test("A2.h CliError passthrough: never remapped to USAGE", () => {
 test("A2.i non-Error throw -> String(err), exit 2 (regression guard)", () => {
   assert.throws(
     () =>
-      parseOrUsage(() => {
+      parseForTest(() => {
         // eslint-disable-next-line @typescript-eslint/only-throw-error
         throw "boom";
       }, "list"),
@@ -173,7 +175,7 @@ test("A2.i non-Error throw -> String(err), exit 2 (regression guard)", () => {
 test("A2.j code-less Error with an already-clean message passes through via stripAdvisory unchanged", () => {
   assert.throws(
     () =>
-      parseOrUsage(() => {
+      parseForTest(() => {
         throw new Error("already clean, no advisory tail here");
       }, "list"),
     (err: unknown) => {

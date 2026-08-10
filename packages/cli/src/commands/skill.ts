@@ -55,6 +55,7 @@ import { atomicWriteFileSync } from "./hook.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { HOST_CONFIG_ROOTS, resolveHostConfigRoot } from "../host-config.js";
 import { buildIdentityEnvelope, cliVersion } from "../build-identity.js";
 import {
@@ -643,12 +644,20 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         allowPositionals: true,
       }),
     "skill",
-    "selector:skill",
     (positionals) => {
       const [sub, ...data] = positionals;
       if (sub === undefined) return { kind: "unknown" } as const;
       if (sub !== "install" && sub !== "status" && sub !== "uninstall") return { kind: "unknown", token: sub } as const;
-      return { kind: "selected", path: `skill ${sub}` as "skill install" | "skill status" | "skill uninstall", data, payload: sub } as const;
+      return {
+        kind: "selected",
+        leaf: sub === "install"
+          ? CLI_LEAVES.skillInstall
+          : sub === "status"
+            ? CLI_LEAVES.skillStatus
+            : CLI_LEAVES.skillUninstall,
+        data,
+        payload: sub,
+      } as const;
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {

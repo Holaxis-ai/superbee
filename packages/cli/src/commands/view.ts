@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { listViewCatalog } from "@agentstate-lite/view-runtime";
 import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { maybeAutoPull } from "../autopull.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
@@ -43,11 +44,10 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
       allowPositionals: true,
     }),
     "view",
-    "selector:view",
     (positionals) => {
       if (positionals.length === 0) return { kind: "navigation" } as const;
       if (positionals[0] !== "list") return { kind: "unknown", token: positionals[0] } as const;
-      return { kind: "selected", path: "view list", data: positionals.slice(1), payload: undefined } as const;
+      return { kind: "selected", leaf: CLI_LEAVES.viewList, data: positionals.slice(1), payload: undefined } as const;
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {

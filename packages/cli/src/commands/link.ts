@@ -52,7 +52,8 @@ import {
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError, classifyBundleError } from "../errors.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { collectLinkDeclarations } from "../link-types.js";
@@ -507,7 +508,7 @@ export async function addLink(
 }
 
 async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<void> {
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -522,8 +523,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
         },
         allowPositionals: true,
       }),
-    "link add",
-    leafArity("link add"),
+    CLI_LEAVES.linkAdd,
   );
   if (values.help) {
     stdout(LINK_ADD_USAGE);
@@ -583,7 +583,7 @@ async function linkShow(
   stdout: (s: string) => void,
   autoPull?: (dir?: string) => Promise<unknown>,
 ): Promise<void> {
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -597,8 +597,7 @@ async function linkShow(
         },
         allowPositionals: true,
       }),
-    "link show",
-    leafArity("link show"),
+    CLI_LEAVES.linkShow,
   );
   if (values.help) {
     stdout(LINK_SHOW_USAGE);
@@ -735,7 +734,7 @@ async function linkShow(
  * `backlinks`/`link show` already do today) — one round trip, no wire change.
  */
 async function linkList(argv: string[], stdout: (s: string) => void): Promise<void> {
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -751,8 +750,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
         },
         allowPositionals: true,
       }),
-    "link list",
-    leafArity("link list"),
+    CLI_LEAVES.linkList,
   );
   if (values.help) {
     stdout(LINK_LIST_USAGE);

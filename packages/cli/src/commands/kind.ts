@@ -16,6 +16,7 @@ import { loadKinds, RESERVED_KIND_FIELD_NAMES, type Frontmatter } from "@agentst
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
@@ -99,7 +100,6 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
         },
       }),
     "kind",
-    "selector:kind",
     (positionals) => {
       if (positionals[0]?.trim() !== "field") return { kind: "unknown", token: positionals[0], reason: "subresource" } as const;
       const action = positionals[2]?.trim();
@@ -109,7 +109,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
       const data = [kindName, fieldName, ...positionals.slice(4)].filter((value): value is string => value !== undefined);
       return {
         kind: "selected",
-        path: `kind field ${action}` as "kind field add" | "kind field remove",
+        leaf: action === "add" ? CLI_LEAVES.kindFieldAdd : CLI_LEAVES.kindFieldRemove,
         data,
         payload: { kindName, action, fieldName },
       } as const;

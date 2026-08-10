@@ -3,6 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import test from "node:test";
 
+import { CLI_LEAVES } from "../src/command-spec.js";
 import { scanArityArchitecture, type ArchitectureFacts } from "./support/arity-architecture-scanner.js";
 
 const SRC = join(import.meta.dirname, "../src");
@@ -15,13 +16,16 @@ function sourceFiles(dir: string): string[] {
 }
 
 function scanProduction(): ArchitectureFacts {
-  const combined: ArchitectureFacts = { directParseArgs: [], parseDecisions: [], selectorCalls: [], deferFactoryCalls: [] };
+  const combined: ArchitectureFacts = {
+    directParseArgs: [], ownedCalls: [], directArityAssertions: [], runAxiCliCalls: [], violations: [],
+  };
   for (const path of sourceFiles(SRC)) {
     const facts = scanArityArchitecture(relative(SRC, path), readFileSync(path, "utf8"));
     combined.directParseArgs.push(...facts.directParseArgs);
-    combined.parseDecisions.push(...facts.parseDecisions);
-    combined.selectorCalls.push(...facts.selectorCalls);
-    combined.deferFactoryCalls.push(...facts.deferFactoryCalls);
+    combined.ownedCalls.push(...facts.ownedCalls);
+    combined.directArityAssertions.push(...facts.directArityAssertions);
+    combined.runAxiCliCalls.push(...facts.runAxiCliCalls);
+    combined.violations.push(...facts.violations);
   }
   return combined;
 }
@@ -30,115 +34,110 @@ function labels(rows: Array<{ file: string; functionName: string }>): string[] {
   return rows.map((row) => `${row.file}:${row.functionName}`).sort();
 }
 
-test("production parser calls and actual decisions satisfy the closed AST/import-aware allowlists", () => {
+test("production parser and SDK authorities satisfy the closed import-aware architecture", () => {
   const facts = scanProduction();
+  assert.deepEqual(facts.violations, []);
   assert.deepEqual(labels(facts.directParseArgs), [
     "cli.ts:hoistLeadingGlobalFlags",
     "cli.ts:isGlobalOnlyHomeInvocation",
     "commands/home.ts:parseHomeArgs",
   ]);
+  assert.deepEqual(labels(facts.ownedCalls.filter((row) => row.api === "parseSelectorOrUsage")), [
+    "commands/bundle.ts:bundleCommand",
+    "commands/catalog.ts:catalogInner",
+    "commands/hook.ts:hook",
+    "commands/index.ts:indexCommand",
+    "commands/kind.ts:kind",
+    "commands/skill.ts:skill",
+    "commands/view.ts:view",
+  ]);
+  assert.deepEqual(labels(facts.ownedCalls.filter((row) => row.api === "parseNewSchemaPhaseOrUsage")), [
+    "commands/new.ts:newCommand",
+  ]);
+  assert.deepEqual(labels(facts.ownedCalls.filter((row) => row.api === "parseDocUpdateTokensOrUsage")), [
+    "commands/doc/update.ts:parseDocUpdateArgs",
+  ]);
+  assert.deepEqual(labels(facts.directArityAssertions), [
+    "args.ts:parseLeafOrUsage",
+    "args.ts:parseSelectorOrUsage",
+    "commands/doc/update.ts:docUpdate",
+  ]);
+  assert.deepEqual(facts.runAxiCliCalls, [{ file: "cli.ts", functionName: "main", commands: "RUNTIME_COMMANDS" }]);
 
+  const selectorLeafIds = new Set([
+    "bundleLocate", "catalogAdd", "catalogList", "catalogResolve", "indexGenerate",
+    "kindFieldAdd", "kindFieldRemove", "viewList", "hookInstall", "hookStatus", "hookUninstall",
+    "skillInstall", "skillStatus", "skillUninstall", "docUpdate", "query",
+  ]);
+  const expectedOrdinary = Object.keys(CLI_LEAVES)
+    .filter((id) => !selectorLeafIds.has(id))
+    .map((id) => `CLI_LEAVES.${id}`)
+    .concat("HOME_LEAF")
+    .sort();
   assert.deepEqual(
-    facts.parseDecisions.filter((row) => row.decision.kind === "invalid"),
-    [],
-    "every parseOrUsage call must pass an owning leafArity/deferArity factory call",
-  );
-  assert.deepEqual(
-    facts.parseDecisions
-      .filter((row) => row.decision.kind === "deferred")
-      .map((row) => `${row.file}:${row.functionName}:${row.decision.value}`)
-      .sort(),
-    [
-      "args.ts:parseSelectorOrUsage:<nonliteral>",
-      "commands/doc/update.ts:parseDocUpdateArgs:doc-update:token-normalization",
-      "commands/new.ts:newCommand:new:schema",
-    ],
-  );
-  assert.deepEqual(
-    facts.deferFactoryCalls.map((row) => `${row.file}:${row.functionName}:${row.reason}`).sort(),
-    [
-      "args.ts:parseSelectorOrUsage:<nonliteral>",
-      "commands/doc/update.ts:parseDocUpdateArgs:doc-update:token-normalization",
-      "commands/new.ts:newCommand:new:schema",
-    ],
-  );
-  assert.deepEqual(
-    facts.selectorCalls.map((row) => `${row.file}:${row.functionName}:${row.reason}`).sort(),
-    [
-      "commands/bundle.ts:bundleCommand:selector:bundle",
-      "commands/catalog.ts:catalogInner:selector:catalog",
-      "commands/hook.ts:hook:selector:hook",
-      "commands/index.ts:indexCommand:selector:index",
-      "commands/kind.ts:kind:selector:kind",
-      "commands/skill.ts:skill:selector:skill",
-      "commands/view.ts:view:selector:view",
-    ],
+    facts.ownedCalls.filter((row) => row.api === "parseLeafOrUsage").map((row) => row.leaf).sort(),
+    expectedOrdinary,
   );
 });
 
-test("shared scanner recognizes namespace and aliased parser/helper/factory calls", () => {
-  const namespaceBypass = scanArityArchitecture("commands/probe.ts", `
+test("scanner rejects local aliases, namespace destructuring, storage, and computed access", () => {
+  const cases = [
+    `import { parseArgs } from "node:util"; const p = parseArgs; p({});`,
+    `import * as util from "node:util"; const { parseArgs: p } = util; p({});`,
+    `import { parseLeafOrUsage } from "../args.js"; const helpers = { parseLeafOrUsage };`,
+    `import { parseNewSchemaPhaseOrUsage } from "../args.js"; function keep(x: unknown) { return x; } keep(parseNewSchemaPhaseOrUsage);`,
+    `import { parseDocUpdateTokensOrUsage } from "../args.js"; function escape() { return parseDocUpdateTokensOrUsage; }`,
+    `import * as util from "node:util"; util["parseArgs"]({});`,
+  ];
+  for (const [index, source] of cases.entries()) {
+    const facts = scanArityArchitecture(`commands/escape-${index}.ts`, source);
+    assert.notEqual(facts.violations.length, 0, source);
+  }
+});
+
+test("scanner rejects direct/owned re-exports and non-static module access", () => {
+  const direct = scanArityArchitecture("commands/re-export.ts", `
+    export { parseArgs } from "node:util";
+    export { parseLeafOrUsage } from "../args.js";
+    export * from "axi-sdk-js";
+  `);
+  assert.equal(direct.violations.length, 3);
+
+  const importedThenExported = scanArityArchitecture("commands/export-alias.ts", `
+    import { parseArgs as nodeParser } from "node:util";
+    import { parseLeafOrUsage as ownedParser } from "../args.js";
+    export { nodeParser as parseEscape, ownedParser as ownedEscape };
+  `);
+  assert.equal(importedThenExported.violations.length >= 2, true);
+
+  const dynamic = scanArityArchitecture("commands/dynamic.ts", `
+    import util = require("node:util");
+    async function a() { await import("../args.js"); }
+    function b() { return require("axi-sdk-js"); }
+  `);
+  assert.ok(dynamic.violations.length >= 3);
+});
+
+test("scanner exposes a namespace-qualified raw parser bypass to the closed site allowlist", () => {
+  const facts = scanArityArchitecture("commands/qualified.ts", `
     import * as util from "node:util";
-    import * as arity from "../args.js";
-    export function bare(argv: string[]) { return util.parseArgs({ args: argv, options: {} }); }
-    export function forged(argv: string[]) {
-      return arity.parseOrUsage(
-        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
-        "list",
-        { kind: "deferred", reason: "new:schema" },
-      );
-    }
+    export function bypass(argv: string[]) { return util.parseArgs({ args: argv, options: {} }); }
   `);
-  assert.deepEqual(labels(namespaceBypass.directParseArgs), ["commands/probe.ts:bare"]);
-  assert.deepEqual(namespaceBypass.parseDecisions.map((row) => row.decision.kind), ["invalid"]);
+  assert.deepEqual(labels(facts.directParseArgs), ["commands/qualified.ts:bypass"]);
+  assert.deepEqual(facts.violations, []);
+});
 
-  const defaultAndForeign = scanArityArchitecture("commands/foreign.ts", `
-    import util from "util";
-    import * as foreign from "foreign/args.js";
-    export function defaultBare(argv: string[]) {
-      return foreign.parseOrUsage(
-        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
-        "list", foreign.leafArity("list"),
-      );
+test("scanner requires canonical ordinary leaves and the exact runtime registry expression", () => {
+  const facts = scanArityArchitecture("commands/probe.ts", `
+    import { parseArgs } from "node:util";
+    import { parseLeafOrUsage } from "../args.js";
+    import { runAxiCli } from "axi-sdk-js";
+    export function probe(argv: string[], leaf: unknown) {
+      parseLeafOrUsage(() => parseArgs({ args: argv, options: {} }), leaf as never);
+      return runAxiCli({ commands: { probe: async () => "" } } as never);
     }
   `);
-  assert.deepEqual(labels(defaultAndForeign.directParseArgs), ["commands/foreign.ts:defaultBare"]);
-  assert.deepEqual(defaultAndForeign.parseDecisions, []);
-
-  const namespaceJoined = scanArityArchitecture("commands/joined.ts", `
-    import * as util from "node:util";
-    import * as arity from "../args.js";
-    export function joined(argv: string[]) {
-      return arity.parseOrUsage(
-        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
-        "list",
-        arity.leafArity("list"),
-      );
-    }
-    export function selected(argv: string[]) {
-      return arity.parseSelectorOrUsage(
-        () => util.parseArgs({ args: argv, options: {}, allowPositionals: true }),
-        "view", "selector:view", () => ({ kind: "navigation" }),
-      );
-    }
-  `);
-  assert.deepEqual(namespaceJoined.directParseArgs, []);
-  assert.deepEqual(namespaceJoined.parseDecisions.map((row) => row.decision), [{ kind: "leaf", value: "list" }]);
-  assert.deepEqual(namespaceJoined.selectorCalls.map((row) => row.reason), ["selector:view"]);
-
-  const aliased = scanArityArchitecture("commands/aliased.ts", `
-    import { parseArgs as parseNode } from "node:util";
-    import { parseOrUsage as parseOwned, deferArity as approvedDeferral } from "../args.js";
-    export function normalized(argv: string[]) {
-      return parseOwned(
-        () => parseNode({ args: argv, options: {}, allowPositionals: true }),
-        "doc update", approvedDeferral("doc-update:token-normalization"),
-      );
-    }
-  `);
-  assert.deepEqual(aliased.directParseArgs, []);
-  assert.deepEqual(aliased.parseDecisions.map((row) => row.decision), [
-    { kind: "deferred", value: "doc-update:token-normalization" },
-  ]);
-  assert.deepEqual(aliased.deferFactoryCalls.map((row) => row.reason), ["doc-update:token-normalization"]);
+  assert.deepEqual(facts.directParseArgs, []);
+  assert.equal(facts.violations.some((row) => /canonical leaf/.test(row.reason)), true);
+  assert.equal(facts.violations.some((row) => /RUNTIME_COMMANDS/.test(row.reason)), true);
 });

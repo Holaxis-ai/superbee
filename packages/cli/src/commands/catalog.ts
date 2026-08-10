@@ -2,6 +2,7 @@ import { parseArgs } from "node:util";
 import { homedir } from "node:os";
 
 import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import {
   addCatalogEntry,
   listCatalogEntries,
@@ -98,7 +99,6 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
         allowPositionals: true,
       }),
     "catalog",
-    "selector:catalog",
     (positionals) => {
       const [subcommand, ...data] = positionals;
       if (subcommand === undefined) return { kind: "navigation" } as const;
@@ -107,7 +107,11 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
       }
       return {
         kind: "selected",
-        path: `catalog ${subcommand}` as "catalog add" | "catalog list" | "catalog resolve",
+        leaf: subcommand === "add"
+          ? CLI_LEAVES.catalogAdd
+          : subcommand === "list"
+            ? CLI_LEAVES.catalogList
+            : CLI_LEAVES.catalogResolve,
         data,
         payload: { subcommand, operand: data[0] },
       } as const;

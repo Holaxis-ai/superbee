@@ -49,39 +49,11 @@ import { CliError, toEnvelope, toExit } from "./errors.js";
 import { renderErrorEnvelope } from "./output.js";
 import { DESCRIPTION, helpIndexText } from "./reference.js";
 import { cliInvocation } from "./invocation.js";
+import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
 export { cliVersion } from "./build-identity.js";
 
-export const KNOWN_COMMANDS = [
-  "init",
-  "bundle",
-  "catalog",
-  "index",
-  "doc",
-  "promote",
-  "pull",
-  "blobs",
-  "delete",
-  "link",
-  "list",
-  "query",
-  "new",
-  "artifact",
-  "kinds",
-  "kind",
-  "recipes",
-  "recipe",
-  "status",
-  "serve",
-  "ui",
-  "mcp",
-  "sync",
-  "hook",
-  "skill",
-  "session-start",
-  "version",
-  "view",
-] as const;
+export const KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
 
 /**
  * The `--help` / `-h` / `help` reference, rendered as grouped PLAIN PROSE from COMMAND_GROUPS
@@ -116,6 +88,58 @@ const wrap =
     await fn(args);
     return "";
   };
+
+export type PublicHandler = (args: string[]) => Promise<void>;
+export type PublicHandlerMap = { readonly [Command in PublicCommandName]: PublicHandler };
+
+/** Exact public handler ownership: catalog additions and removals are compile-time obligations. */
+export const PUBLIC_HANDLERS = Object.freeze({
+  init,
+  bundle: bundleCommand,
+  catalog,
+  index: indexCommand,
+  doc,
+  promote,
+  pull,
+  blobs,
+  delete: deleteCommand,
+  link,
+  list,
+  query: list,
+  new: newCommand,
+  artifact,
+  kinds,
+  kind,
+  recipes,
+  recipe,
+  status,
+  serve,
+  ui,
+  mcp,
+  sync,
+  hook,
+  skill,
+  "session-start": sessionStart,
+  version: versionCommand,
+  view,
+} satisfies PublicHandlerMap);
+
+type RuntimeHandler = (args: string[]) => Promise<string>;
+
+const publicRuntimeCommands = Object.fromEntries(
+  PUBLIC_COMMAND_NAMES.map((name) => [name, wrap(PUBLIC_HANDLERS[name])]),
+) as Record<PublicCommandName, RuntimeHandler>;
+
+/** The sole SDK registry: public entries project from the command graph plus two exact exceptions. */
+export const RUNTIME_COMMANDS = Object.freeze({
+  ...publicRuntimeCommands,
+  // Defensive alias for the bare zero-arg home surface; intentionally not public/catalogued.
+  home: wrap(homeCommand),
+  // Shadow the SDK's reserved built-in npm updater with this CLI's ordinary unknown-command error.
+  update: async () => {
+    throw unknownCommandError("update");
+  },
+});
 
 /**
  * Parse argv (already sliced past `node script`) and dispatch to a subcommand.
@@ -259,49 +283,7 @@ export async function main(argv: string[]): Promise<void> {
     // Drop the SDK's mandatory lone trailing "\n" after each successful (void) command so command
     // output stays byte-identical; forward everything else (error envelopes, unknown-command output).
     stdout: { write: (c: string) => (c === "\n" ? true : process.stdout.write(c)) },
-    commands: {
-      init: wrap(init),
-      bundle: wrap(bundleCommand),
-      catalog: wrap(catalog),
-      index: wrap(indexCommand),
-      doc: wrap(doc),
-      promote: wrap(promote),
-      pull: wrap(pull),
-      blobs: wrap(blobs),
-      delete: wrap(deleteCommand),
-      link: wrap(link),
-      list: wrap(list),
-      // `query` is an alias of `list` (the list/query API surface).
-      query: wrap(list),
-      new: wrap(newCommand),
-      artifact: wrap(artifact),
-      kinds: wrap(kinds),
-      kind: wrap(kind),
-      recipes: wrap(recipes),
-      recipe: wrap(recipe),
-      status: wrap(status),
-      serve: wrap(serve),
-      ui: wrap(ui),
-      mcp: wrap(mcp),
-      view: wrap(view),
-      sync: wrap(sync),
-      hook: wrap(hook),
-      // Install/remove this package's generated Agent Skill in host skill folders.
-      skill: wrap(skill),
-      // The SessionStart hook payload: time-boxed board pull, then the home render — in-process.
-      "session-start": wrap(sessionStart),
-      version: wrap(versionCommand),
-      // Explicit `home` handler so a SessionStart hook (or an agent) can also call `<bin> home`, not
-      // only the bare zero-arg form. Not listed in COMMAND_GROUPS — the bare invocation is the primary
-      // home surface (AXI §8); this is a defensive alias with identical output.
-      home: wrap(homeCommand),
-      // Shadow the SDK's reserved built-in `update` command (npm self-update is nonsensical for a
-      // committed skill-bundled .mjs). Registering a handler that throws the unknown-command USAGE
-      // error restores a TOON envelope, exit 2. `update` is intentionally NOT in KNOWN_COMMANDS.
-      update: async () => {
-        throw unknownCommandError("update");
-      },
-    },
+    commands: RUNTIME_COMMANDS,
     // Required by AxiCliOptions; UNREACHED because the no-args path is pre-routed to the home view
     // above. Kept a trivial offline writer (the command reference) — no creds/network.
     home: async () => {

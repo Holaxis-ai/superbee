@@ -53,6 +53,7 @@ import { cliInvocation, collapseHomeDirectory, hookCommand } from "../invocation
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { HOST_CONFIG_ROOTS, resolveHostConfigRoot } from "../host-config.js";
 import {
   classifyHookCommand,
@@ -838,12 +839,20 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         allowPositionals: true,
       }),
     "hook",
-    "selector:hook",
     (positionals) => {
       const [sub, ...data] = positionals;
       if (sub === undefined) return { kind: "unknown" } as const;
       if (sub !== "install" && sub !== "status" && sub !== "uninstall") return { kind: "unknown", token: sub } as const;
-      return { kind: "selected", path: `hook ${sub}` as "hook install" | "hook status" | "hook uninstall", data, payload: sub } as const;
+      return {
+        kind: "selected",
+        leaf: sub === "install"
+          ? CLI_LEAVES.hookInstall
+          : sub === "status"
+            ? CLI_LEAVES.hookStatus
+            : CLI_LEAVES.hookUninstall,
+        data,
+        payload: sub,
+      } as const;
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {

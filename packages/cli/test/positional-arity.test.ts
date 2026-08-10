@@ -6,52 +6,38 @@ import { join } from "node:path";
 import test from "node:test";
 import { parseArgs } from "node:util";
 
-import { leafArity, parseOrUsage } from "../src/args.js";
+import { parseLeafOrUsage } from "../src/args.js";
+import { CLI_LEAVES, HOME_LEAF, PUBLIC_LEAVES, exactPositionalArity } from "../src/command-spec.js";
 import { CliError } from "../src/errors.js";
-import {
-  LEAF_POSITIONAL_ARITY,
-  LEAF_ARITY_VALIDATION_PHASE,
-  assertLeafArity,
-  exact,
-  minimum,
-  range,
-  variadic,
-} from "../src/positional-arity.js";
+import { assertLeafArity } from "../src/positional-arity.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 import { serve } from "../src/commands/serve.js";
 
-test("arity primitive accepts every supported contract shape and never mutates input", () => {
-  const cases = [
-    [exact(0), []],
-    [exact(1), ["a"]],
-    [exact(2), ["a", "b"]],
-    [minimum(1), ["a"]],
-    [minimum(1), ["a", "b", "c"]],
-    [range(1, 3), ["a"]],
-    [range(1, 3), ["a", "b"]],
-    [range(1, 3), ["a", "b", "c"]],
-    [variadic(1, "item"), ["a"]],
-    [variadic(1, "item"), ["a", "b", "c", "d"]],
-  ] as const;
-  for (const [contract, values] of cases) {
+test("exact arity accepts its boundary without mutating input", () => {
+  for (const leaf of [CLI_LEAVES.list, CLI_LEAVES.docWrite, CLI_LEAVES.linkAdd]) {
+    const values = Array.from({ length: leaf.arity.count }, (_, index) => `arg-${index}`);
     const before = [...values];
-    assertLeafArity("doc write", values, contract);
+    assertLeafArity(leaf, values);
     assert.deepEqual(values, before);
   }
 });
 
-test("arity primitive rejects low/high counts as typed bounded USAGE", () => {
-  for (const [contract, values] of [[exact(1), []], [exact(1), ["a", "b"]], [minimum(2), ["a"]], [range(1, 2), []], [range(1, 2), ["a", "b", "c"]], [variadic(2, "item"), ["a"]]] as const) {
-    assert.throws(() => assertLeafArity("doc write", values, contract), (error: unknown) => {
+test("exact arity rejects low/high counts as typed bounded USAGE", () => {
+  for (const [leaf, values] of [
+    [CLI_LEAVES.docWrite, []],
+    [CLI_LEAVES.docWrite, ["a", "b"]],
+    [CLI_LEAVES.linkAdd, ["a"]],
+  ] as const) {
+    assert.throws(() => assertLeafArity(leaf, values), (error: unknown) => {
       assert.ok(error instanceof CliError);
       assert.equal(error.code, "USAGE");
-      assert.match(error.message, /expected|requires|takes/);
+      assert.match(error.message, /expected/);
       return true;
     });
   }
   const huge = "x".repeat(100_000);
   let rendered = "";
-  try { assertLeafArity("list", [huge]); } catch (error) {
+  try { assertLeafArity(CLI_LEAVES.list, [huge]); } catch (error) {
     assert.ok(error instanceof CliError);
     rendered = JSON.stringify({ message: error.message, details: error.details, help: error.help });
   }
@@ -59,49 +45,60 @@ test("arity primitive rejects low/high counts as typed bounded USAGE", () => {
   assert.match(rendered, /…/);
 });
 
-test("reference paths and canonical arity are exhaustive and aliases share identity", () => {
+test("exact count factory rejects invalid counts", () => {
+  for (const value of [-1, 0.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+    assert.throws(() => exactPositionalArity(value), /non-negative safe integer/);
+  }
+});
+
+test("reference paths and canonical leaves are exhaustive and aliases share identity", () => {
   const paths = COMMAND_GROUPS.flatMap((group) => group.commands.flatMap((command) => command.paths));
   assert.equal(paths.length, 41);
-  assert.deepEqual([...new Set(paths)].sort(), Object.keys(LEAF_POSITIONAL_ARITY).filter((path) => path !== "home").sort());
-  assert.strictEqual(LEAF_POSITIONAL_ARITY.query, LEAF_POSITIONAL_ARITY.list);
-  assert.equal(LEAF_POSITIONAL_ARITY.home.kind, "exact");
-  assert.deepEqual(Object.keys(LEAF_ARITY_VALIDATION_PHASE), ["new"]);
+  assert.deepEqual([...new Set(paths)].sort(), PUBLIC_LEAVES.map((leaf) => leaf.path).sort());
+  assert.strictEqual(CLI_LEAVES.query.arity, CLI_LEAVES.list.arity);
+  assert.strictEqual(CLI_LEAVES.query.canonical, CLI_LEAVES.list);
+  assert.equal(HOME_LEAF.exposure, "hidden");
 });
 
-test("parser classification owns options, help precedence, and the -- terminator", () => {
+test("owned parser handles options, help precedence, and the -- terminator", () => {
   const options = { limit: { type: "string" }, help: { type: "boolean", short: "h" } } as const;
-  assert.doesNotThrow(() => parseOrUsage(
+  assert.doesNotThrow(() => parseLeafOrUsage(
     () => parseArgs({ args: ["--limit", "1"], options, allowPositionals: true }),
-    "list",
-    leafArity("list"),
+    CLI_LEAVES.list,
   ));
-  assert.doesNotThrow(() => parseOrUsage(
+  assert.doesNotThrow(() => parseLeafOrUsage(
     () => parseArgs({ args: ["extra", "--help"], options, allowPositionals: true }),
-    "list",
-    leafArity("list"),
+    CLI_LEAVES.list,
   ));
-  assert.throws(() => parseOrUsage(
+  assert.throws(() => parseLeafOrUsage(
     () => parseArgs({ args: ["--", "--help"], options, allowPositionals: true }),
-    "list",
-    leafArity("list"),
+    CLI_LEAVES.list,
   ), (error: unknown) => error instanceof CliError && error.code === "USAGE");
-  assert.throws(() => parseOrUsage(
+  assert.throws(() => parseLeafOrUsage(
     () => parseArgs({ args: ["-1"], options, allowPositionals: true }),
-    "list",
-    leafArity("list"),
+    CLI_LEAVES.list,
   ), (error: unknown) => error instanceof CliError && error.code === "USAGE");
 });
 
-test("parseOrUsage rejects forged decisions before invoking the parser", () => {
+test("owned parser rejects forged leaves before invoking the parser", () => {
   let parserCalls = 0;
-  assert.throws(() => parseOrUsage(
+  assert.throws(() => parseLeafOrUsage(
     () => {
       parserCalls++;
       return parseArgs({ args: [], options: {}, allowPositionals: true });
     },
-    "list",
-    { kind: "deferred", reason: "new:schema" } as never,
-  ), /invalid arity decision/i);
+    { path: "list", arity: { kind: "exact", count: 0 } } as never,
+  ), /invalid CLI leaf/i);
+  assert.equal(parserCalls, 0);
+
+  const copiedBrand = { ...CLI_LEAVES.list };
+  assert.throws(() => parseLeafOrUsage(
+    () => {
+      parserCalls++;
+      return parseArgs({ args: [], options: {}, allowPositionals: true });
+    },
+    copiedBrand,
+  ), /invalid CLI leaf/i);
   assert.equal(parserCalls, 0);
 });
 

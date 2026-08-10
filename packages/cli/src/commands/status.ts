@@ -14,7 +14,7 @@
 // (`isExternalHref`, already filtered out by `parseLinksFromDoc`) never count.
 //
 // Findings are REPORTS, not errors: exit is ALWAYS 0 once the analysis runs (a bad invocation or a
-// missing bundle still exits USAGE/NOT_FOUND as usual, via `parseOrUsage`/`openBundle`). A future
+// missing bundle still exits USAGE/NOT_FOUND as usual, via the owned parser/openBundle). A future
 // `--fail-on-findings` CI flag is intentionally NOT built here.
 //
 // Duplicate-id detection (the old v1.1 wishlist item) is DELIBERATELY DROPPED: a concept id IS its
@@ -42,7 +42,8 @@ import {
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { collectLinkDeclarations } from "../link-types.js";
 import {
@@ -197,7 +198,7 @@ function docType(doc: OkfDocument): string {
 export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -210,8 +211,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
         },
         allowPositionals: true,
       }),
-    "status",
-    leafArity("status"),
+    CLI_LEAVES.status,
   );
   if (values.help) {
     stdout(STATUS_USAGE);

@@ -18,7 +18,8 @@ import {
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { maybeAutoPull } from "../../autopull.js";
 import { CliError, toExit, asHandled } from "../../errors.js";
-import { leafArity, parseOrUsage } from "../../args.js";
+import { parseLeafOrUsage } from "../../args.js";
+import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, renderErrorEnvelope } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
@@ -47,7 +48,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
   const writeStdoutBytes = deps.writeStdoutBytes ?? ((d: Uint8Array) => void process.stdout.write(d));
 
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -62,8 +63,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
         },
         allowPositionals: true,
       }),
-    "doc read",
-    leafArity("doc read"),
+    CLI_LEAVES.docRead,
   );
   if (values.help) {
     stdout(DOC_READ_USAGE);

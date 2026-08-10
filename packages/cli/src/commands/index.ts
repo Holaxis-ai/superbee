@@ -14,6 +14,7 @@ import {
 
 import { resolveActor } from "../actor.js";
 import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { deriveBundleDisplayName } from "../bundle-name.js";
 import { openBundle } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
@@ -137,11 +138,10 @@ export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> =
         allowPositionals: true,
       }),
     "index",
-    "selector:index",
     (positionals) => {
       if (positionals.length === 0) return { kind: "navigation" } as const;
       if (positionals[0] !== "generate") return { kind: "unknown", token: positionals[0] } as const;
-      return { kind: "selected", path: "index generate", data: positionals.slice(1), payload: undefined } as const;
+      return { kind: "selected", leaf: CLI_LEAVES.indexGenerate, data: positionals.slice(1), payload: undefined } as const;
     },
   );
   if (selection.kind === "help" || selection.kind === "navigation") {

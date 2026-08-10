@@ -1,6 +1,7 @@
 // `agentstate-lite bundle locate` — expose the exact local bundle target the CLI would use.
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { resolveLocalBundleTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -43,12 +44,11 @@ export async function bundleCommand(argv: string[], deps: Partial<BundleCliDeps>
         },
         allowPositionals: true,
       }),
-    "bundle locate",
-    "selector:bundle",
+    "bundle",
     (positionals) => {
       if (positionals.length === 0) return { kind: "navigation" } as const;
       if (positionals[0] !== "locate") return { kind: "unknown", token: positionals[0] } as const;
-      return { kind: "selected", path: "bundle locate", data: positionals.slice(1), payload: undefined } as const;
+      return { kind: "selected", leaf: CLI_LEAVES.bundleLocate, data: positionals.slice(1), payload: undefined } as const;
     },
   );
 

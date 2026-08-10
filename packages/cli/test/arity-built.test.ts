@@ -8,8 +8,9 @@ import test from "node:test";
 import { decode } from "@toon-format/toon";
 
 import { KNOWN_COMMANDS } from "../src/cli.js";
-import { LEAF_POSITIONAL_ARITY, assertLeafArity, type LeafPath } from "../src/positional-arity.js";
-import { COMMAND_GROUPS, type PublicLeafPath } from "../src/reference.js";
+import { CLI_LEAVES, type PublicLeaf, type PublicLeafId } from "../src/command-spec.js";
+import { assertLeafArity } from "../src/positional-arity.js";
+import { COMMAND_GROUPS } from "../src/reference.js";
 
 const CLI = resolve(import.meta.dirname, "../dist/agentstate-lite.mjs");
 const SURPLUS = "arity-surplus-sentinel";
@@ -23,51 +24,51 @@ interface FixtureContext {
 }
 
 interface LeafCase {
-  readonly canonical: LeafPath;
+  readonly leaf: PublicLeaf;
   readonly operands: readonly string[];
   readonly argv: (operands: readonly string[]) => string[];
   readonly errorChannel?: "stdout" | "stderr";
 }
 
 function simple(
-  canonical: LeafPath,
+  leaf: PublicLeaf,
   prefix: readonly string[],
   operands: readonly string[],
   suffix: readonly string[] = [],
   errorChannel: "stdout" | "stderr" = "stdout",
 ): LeafCase {
-  return { canonical, operands, argv: (data) => [...prefix, ...data, ...suffix], errorChannel };
+  return { leaf, operands, argv: (data) => [...prefix, ...data, ...suffix], errorChannel };
 }
 
-function leafCases(ctx: FixtureContext): Record<PublicLeafPath, LeafCase> {
+function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
   const dir = ["--dir", ctx.bundle] as const;
   return {
-    "bundle locate": simple("bundle locate", ["bundle", "locate"], [], dir),
-    "catalog add": simple("catalog add", ["catalog", "add"], ["arity-second"], dir),
-    "catalog list": simple("catalog list", ["catalog", "list"], []),
-    "catalog resolve": simple("catalog resolve", ["catalog", "resolve"], ["arity-bundle"], ["--field", "path"], "stderr"),
-    init: simple("init", ["init"], [], ["--dir", ctx.initTarget, "--recipe", "none"]),
-    "index generate": simple("index generate", ["index", "generate"], [], [...dir, "--check"]),
-    status: simple("status", ["status"], [], dir),
-    "doc write": simple("doc write", ["doc", "write"], ["candidate"], ["--type", "Test", "--body", "body", ...dir]),
-    "doc update": simple("doc update", ["doc", "update"], ["existing"], ["--title", "Changed", ...dir]),
-    "doc read": simple("doc read", ["doc", "read"], ["existing"], ["--out", "-", ...dir], "stderr"),
-    "doc history": simple("doc history", ["doc", "history"], ["existing"], dir),
-    "doc delete": simple("doc delete", ["doc", "delete"], ["victim"], dir),
-    list: simple("list", ["list"], [], dir),
-    query: simple("list", ["query"], [], dir),
-    "link add": simple("link add", ["link", "add"], ["from", "to"], dir),
-    "link show": simple("link show", ["link", "show"], ["from"], dir),
-    "link list": simple("link list", ["link", "list"], [], dir),
-    "artifact create": simple("artifact create", ["artifact", "create"], [ctx.artifactFile], ["--title", "Arity artifact", ...dir]),
-    promote: simple("promote", ["promote"], [ctx.artifactFile], ["--doc-key", "artifacts/review.html", ...dir]),
-    pull: simple("pull", ["pull"], [], ["--doc-key", "existing.md", "--out", "-", ...dir]),
-    blobs: simple("blobs", ["blobs"], [], dir),
-    delete: simple("delete", ["delete"], [], ["--doc-key", "victim.md", ...dir]),
-    new: simple("new", ["new"], ["Context Note", "new-id"], ["--title", "New note", ...dir]),
-    kinds: simple("kinds", ["kinds"], [], dir),
-    "kind field add": {
-      canonical: "kind field add",
+    bundleLocate: simple(CLI_LEAVES.bundleLocate, ["bundle", "locate"], [], dir),
+    catalogAdd: simple(CLI_LEAVES.catalogAdd, ["catalog", "add"], ["arity-second"], dir),
+    catalogList: simple(CLI_LEAVES.catalogList, ["catalog", "list"], []),
+    catalogResolve: simple(CLI_LEAVES.catalogResolve, ["catalog", "resolve"], ["arity-bundle"], ["--field", "path"], "stderr"),
+    init: simple(CLI_LEAVES.init, ["init"], [], ["--dir", ctx.initTarget, "--recipe", "none"]),
+    indexGenerate: simple(CLI_LEAVES.indexGenerate, ["index", "generate"], [], [...dir, "--check"]),
+    status: simple(CLI_LEAVES.status, ["status"], [], dir),
+    docWrite: simple(CLI_LEAVES.docWrite, ["doc", "write"], ["candidate"], ["--type", "Test", "--body", "body", ...dir]),
+    docUpdate: simple(CLI_LEAVES.docUpdate, ["doc", "update"], ["existing"], ["--title", "Changed", ...dir]),
+    docRead: simple(CLI_LEAVES.docRead, ["doc", "read"], ["existing"], ["--out", "-", ...dir], "stderr"),
+    docHistory: simple(CLI_LEAVES.docHistory, ["doc", "history"], ["existing"], dir),
+    docDelete: simple(CLI_LEAVES.docDelete, ["doc", "delete"], ["victim"], dir),
+    list: simple(CLI_LEAVES.list, ["list"], [], dir),
+    query: simple(CLI_LEAVES.query, ["query"], [], dir),
+    linkAdd: simple(CLI_LEAVES.linkAdd, ["link", "add"], ["from", "to"], dir),
+    linkShow: simple(CLI_LEAVES.linkShow, ["link", "show"], ["from"], dir),
+    linkList: simple(CLI_LEAVES.linkList, ["link", "list"], [], dir),
+    artifactCreate: simple(CLI_LEAVES.artifactCreate, ["artifact", "create"], [ctx.artifactFile], ["--title", "Arity artifact", ...dir]),
+    promote: simple(CLI_LEAVES.promote, ["promote"], [ctx.artifactFile], ["--doc-key", "artifacts/review.html", ...dir]),
+    pull: simple(CLI_LEAVES.pull, ["pull"], [], ["--doc-key", "existing.md", "--out", "-", ...dir]),
+    blobs: simple(CLI_LEAVES.blobs, ["blobs"], [], dir),
+    delete: simple(CLI_LEAVES.delete, ["delete"], [], ["--doc-key", "victim.md", ...dir]),
+    new: simple(CLI_LEAVES.new, ["new"], ["Context Note", "new-id"], ["--title", "New note", ...dir]),
+    kinds: simple(CLI_LEAVES.kinds, ["kinds"], [], dir),
+    kindFieldAdd: {
+      leaf: CLI_LEAVES.kindFieldAdd,
       operands: ["Task", "repair-field"],
       argv: (data) => [
         "kind", "field",
@@ -77,8 +78,8 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafPath, LeafCase> {
         ...dir,
       ],
     },
-    "kind field remove": {
-      canonical: "kind field remove",
+    kindFieldRemove: {
+      leaf: CLI_LEAVES.kindFieldRemove,
       operands: ["Task", "repair-field"],
       argv: (data) => [
         "kind", "field",
@@ -88,21 +89,21 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafPath, LeafCase> {
         ...dir,
       ],
     },
-    recipes: simple("recipes", ["recipes"], [], dir),
-    "recipe add": simple("recipe add", ["recipe", "add"], ["work-tracking"], dir),
-    serve: simple("serve", ["serve"], [], [...dir, "--port", "0"]),
-    ui: simple("ui", ["ui"], [], [...dir, "--port", "0"]),
-    mcp: simple("mcp", ["mcp"], [], dir, "stderr"),
-    "view list": simple("view list", ["view", "list"], [], dir),
-    sync: simple("sync", ["sync"], [], dir),
-    version: simple("version", ["version"], []),
-    "session-start": simple("session-start", ["session-start"], [], [...dir, "--no-update-check"]),
-    "hook install": simple("hook install", ["hook", "install"], [], ["--scope", "project"]),
-    "hook status": simple("hook status", ["hook", "status"], [], ["--scope", "project"]),
-    "hook uninstall": simple("hook uninstall", ["hook", "uninstall"], [], ["--scope", "project"]),
-    "skill install": simple("skill install", ["skill", "install"], [], ["--scope", "project"]),
-    "skill status": simple("skill status", ["skill", "status"], [], ["--scope", "project"]),
-    "skill uninstall": simple("skill uninstall", ["skill", "uninstall"], [], ["--scope", "project"]),
+    recipes: simple(CLI_LEAVES.recipes, ["recipes"], [], dir),
+    recipeAdd: simple(CLI_LEAVES.recipeAdd, ["recipe", "add"], ["work-tracking"], dir),
+    serve: simple(CLI_LEAVES.serve, ["serve"], [], [...dir, "--port", "0"]),
+    ui: simple(CLI_LEAVES.ui, ["ui"], [], [...dir, "--port", "0"]),
+    mcp: simple(CLI_LEAVES.mcp, ["mcp"], [], dir, "stderr"),
+    viewList: simple(CLI_LEAVES.viewList, ["view", "list"], [], dir),
+    sync: simple(CLI_LEAVES.sync, ["sync"], [], dir),
+    version: simple(CLI_LEAVES.version, ["version"], []),
+    sessionStart: simple(CLI_LEAVES.sessionStart, ["session-start"], [], [...dir, "--no-update-check"]),
+    hookInstall: simple(CLI_LEAVES.hookInstall, ["hook", "install"], [], ["--scope", "project"]),
+    hookStatus: simple(CLI_LEAVES.hookStatus, ["hook", "status"], [], ["--scope", "project"]),
+    hookUninstall: simple(CLI_LEAVES.hookUninstall, ["hook", "uninstall"], [], ["--scope", "project"]),
+    skillInstall: simple(CLI_LEAVES.skillInstall, ["skill", "install"], [], ["--scope", "project"]),
+    skillStatus: simple(CLI_LEAVES.skillStatus, ["skill", "status"], [], ["--scope", "project"]),
+    skillUninstall: simple(CLI_LEAVES.skillUninstall, ["skill", "uninstall"], [], ["--scope", "project"]),
   };
 }
 
@@ -175,8 +176,8 @@ test("documented paths, runtime top-level registration, arity, and executable ro
   const ctx = { scratch: "", bundle: "bundle", initTarget: "target", artifactFile: "artifact", env: {} };
   const rows = leafCases(ctx);
   assert.equal(paths.length, 41);
-  assert.deepEqual(Object.keys(rows).sort(), [...paths].sort());
-  assert.deepEqual(Object.keys(LEAF_POSITIONAL_ARITY).filter((path) => path !== "home").sort(), [...paths].sort());
+  assert.deepEqual(Object.keys(rows).sort(), Object.keys(CLI_LEAVES).sort());
+  assert.deepEqual(Object.values(rows).map((row) => row.leaf.path).sort(), [...paths].sort());
   assert.deepEqual([...new Set(paths.map((path) => path.split(" ")[0]))].sort(), [...KNOWN_COMMANDS].sort());
 });
 
@@ -185,19 +186,19 @@ test("all 41 built leaves have a valid boundary and reject one derived surplus w
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);
 
-  for (const [path, row] of Object.entries(rows)) {
-    const contract = LEAF_POSITIONAL_ARITY[row.canonical];
-    assert.equal(contract.kind, "exact", `${path}: matrix derivation currently requires an exact contract`);
-    if (contract.kind !== "exact") continue;
+  for (const [id, row] of Object.entries(rows)) {
+    const contract = row.leaf.arity;
+    const path = row.leaf.path;
+    assert.equal(contract.kind, "exact", `${id}: matrix derivation requires an exact contract`);
     assert.equal(row.operands.length, contract.count, `${path}: fixture must be minimally valid`);
-    assert.doesNotThrow(() => assertLeafArity(row.canonical, row.operands), `${path}: valid boundary`);
+    assert.doesNotThrow(() => assertLeafArity(row.leaf, row.operands), `${path}: valid boundary`);
 
     const result = run(row.argv([...row.operands, SURPLUS]), ctx.scratch, ctx.env);
     assert.equal(result.status, 2, `${path}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
     const envelope = decodedError(result, row, path);
     assert.equal(envelope.error.code, "USAGE", path);
     assert.deepEqual(envelope.error.details, {
-      command: row.canonical,
+      command: row.leaf.canonical.path,
       expected: contract.count === 0
         ? "no positional arguments"
         : `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`,
@@ -205,7 +206,7 @@ test("all 41 built leaves have a valid boundary and reject one derived surplus w
       surplus: 1,
       first_unexpected: SURPLUS,
     }, path);
-    assert.equal(envelope.error.help?.endsWith(`${row.canonical} --help`), true, `${path}: canonical leaf help`);
+    assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, `${path}: canonical leaf help`);
   }
 
   assert.equal(existsSync(ctx.initTarget), false);
@@ -228,14 +229,15 @@ test("selected missing boundaries and help precedence are executable across the 
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);
 
-  for (const [path, row] of Object.entries(rows)) {
-    const contract = LEAF_POSITIONAL_ARITY[row.canonical];
-    if (contract.kind === "exact" && contract.count > 0) {
+  for (const [id, row] of Object.entries(rows)) {
+    const contract = row.leaf.arity;
+    const path = row.leaf.path;
+    if (contract.count > 0) {
       const missing = run(row.argv(row.operands.slice(0, -1)), ctx.scratch, ctx.env);
       assert.equal(missing.status, 2, `${path} missing boundary\n${missing.stdout}${missing.stderr}`);
       const envelope = decodedError(missing, row, path);
       assert.equal(envelope.error.code, "USAGE", path);
-      assert.equal(envelope.error.details?.command, row.canonical, path);
+      assert.equal(envelope.error.details?.command, row.leaf.canonical.path, id);
       assert.equal(envelope.error.details?.actual, contract.count - 1, path);
     }
 

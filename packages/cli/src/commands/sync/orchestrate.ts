@@ -61,7 +61,8 @@ import {
 import { showIncoming } from "./show-incoming.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
 import { CliError, asHandled, cliErrorFromBoardGit } from "../../errors.js";
-import { leafArity, parseOrUsage } from "../../args.js";
+import { parseLeafOrUsage } from "../../args.js";
+import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 
@@ -307,7 +308,7 @@ export async function sync(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
 
 /** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
 function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -325,8 +326,7 @@ function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
         },
         allowPositionals: true,
       }),
-    "sync",
-    leafArity("sync"),
+    CLI_LEAVES.sync,
   );
   if (values.help) return { kind: "help" };
 

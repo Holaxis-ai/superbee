@@ -88,7 +88,8 @@ import {
   retargetBoardInterior,
 } from "@agentstate-lite/board-git";
 import { maybeAutoPull } from "../autopull.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { HOME_LEAF } from "../command-spec.js";
 import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from "../cursor.js";
 import { hookNeedsUpdate } from "./hook.js";
 import { loadCatalog } from "../catalog.js";
@@ -988,7 +989,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
 
 /** Strict SDK adapter for the hidden explicit `home` route. */
 export async function homeCommand(argv: string[], deps: Partial<HomeDeps> = {}): Promise<void> {
-  const parsed = parseOrUsage(() => parseHomeArgs(argv), "home", leafArity("home"));
+  const parsed = parseLeafOrUsage(() => parseHomeArgs(argv), HOME_LEAF);
   if (parsed.values.help) {
     (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(HOME_USAGE);
     return;

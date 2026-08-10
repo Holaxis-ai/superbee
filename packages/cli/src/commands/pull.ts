@@ -44,7 +44,8 @@ import {
 } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, toExit, asHandled, classifyBundleError } from "../errors.js";
-import { leafArity, parseOrUsage } from "../args.js";
+import { parseLeafOrUsage } from "../args.js";
+import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, renderErrorEnvelope, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { inBundlePollutionWarning, readErrorToCliError } from "./doc.js";
@@ -160,7 +161,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
   const writeStdoutBytes = deps.writeStdoutBytes ?? ((d: Uint8Array) => void process.stdout.write(d));
 
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -174,8 +175,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
         },
         allowPositionals: true,
       }),
-    "pull",
-    leafArity("pull"),
+    CLI_LEAVES.pull,
   );
   if (values.help) {
     stdout(PULL_USAGE);

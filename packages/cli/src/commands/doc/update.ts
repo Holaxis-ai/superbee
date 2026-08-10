@@ -4,7 +4,8 @@ import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
 import { loadKinds, type Frontmatter } from "@agentstate-lite/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
-import { deferArity, parseOrUsage } from "../../args.js";
+import { parseDocUpdateTokensOrUsage } from "../../args.js";
+import { CLI_LEAVES } from "../../command-spec.js";
 import { assertLeafArity } from "../../positional-arity.js";
 import { CliError } from "../../errors.js";
 import { render, resolveMode } from "../../output.js";
@@ -87,7 +88,7 @@ interface ParsedDocUpdateArgs {
  * type for a strict config would be an extra read AND unsound under concurrency.
  */
 function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
-  const { values: rawValues, tokens } = parseOrUsage(
+  const { values: rawValues, tokens } = parseDocUpdateTokensOrUsage(
     () =>
       parseArgs({
         args: argv,
@@ -112,8 +113,6 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
           help: { type: "boolean", short: "h" },
         },
       }),
-    "doc update",
-    deferArity("doc-update:token-normalization"),
   );
   // Boolean flags are read straight off `rawValues` at the return (each wrapped in `Boolean(...)`,
   // which safely coerces the `string | boolean | undefined` that `strict:false` types every value
@@ -218,7 +217,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     stdout(DOC_UPDATE_USAGE);
     return;
   }
-  assertLeafArity("doc update", p.positionals);
+  assertLeafArity(CLI_LEAVES.docUpdate, p.positionals);
 
   const rawId = p.positionals[0]?.trim();
   if (!rawId) {

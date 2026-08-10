@@ -6,7 +6,7 @@
 // (exit 2). An agent branches on the exit code first, so a typo'd flag landing on exit 1 (which
 // signals a retryable runtime fault) would invite a pointless re-run of a non-retryable mistake.
 //
-// `parseOrUsage` runs the (already-configured) parse thunk and converts any non-CliError throw
+// The owned parse APIs run an already-configured parse thunk and convert any non-CliError throw
 // into `CliError("USAGE", …)`, TRANSLATING parseArgs's raw message into a clean, tool-native one
 // (AXI §6 — "translate errors, discard noise, never leak dependency wording") by mapping on
 // `err.code`, and attaching a `--help` pointer for the offending command. Node's own advisory
@@ -17,43 +17,17 @@
 // Ported from holaxis-agentstate `packages/cli/src/args.ts` (help pointer retargeted to `axi`).
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
-import { assertLeafArity, type LeafPath } from "./positional-arity.js";
-
-const ARITY_DECISION_BRAND: unique symbol = Symbol("agentstate-lite.arity-decision");
-
-export type ArityDecision = (
-  | { readonly kind: "leaf"; readonly path: LeafPath }
-  | { readonly kind: "deferred"; readonly reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization" }
-) & { readonly [ARITY_DECISION_BRAND]: true };
-
-export type SelectorDeferral =
-  | "selector:bundle"
-  | "selector:catalog"
-  | "selector:index"
-  | "selector:kind"
-  | "selector:view"
-  | "selector:hook"
-  | "selector:skill";
-
-export const leafArity = (path: LeafPath): ArityDecision =>
-  Object.freeze({ kind: "leaf", path, [ARITY_DECISION_BRAND]: true as const });
-export const deferArity = (reason: SelectorDeferral | "new:schema" | "doc-update:token-normalization"): ArityDecision =>
-  Object.freeze({ kind: "deferred", reason, [ARITY_DECISION_BRAND]: true as const });
-
-function assertOwnedArityDecision(decision: ArityDecision): void {
-  if (
-    typeof decision !== "object" ||
-    decision === null ||
-    (decision as { [ARITY_DECISION_BRAND]?: unknown })[ARITY_DECISION_BRAND] !== true
-  ) {
-    throw new TypeError("invalid arity decision: use leafArity() or deferArity()");
-  }
-}
+import {
+  assertCliLeaf,
+  type CliLeafSpec,
+  type PublicCommandName,
+} from "./command-spec.js";
+import { assertLeafArity } from "./positional-arity.js";
 
 export type SelectorResolution<P> =
   | { readonly kind: "navigation" }
   | { readonly kind: "unknown"; readonly token?: string; readonly reason?: string }
-  | { readonly kind: "selected"; readonly path: LeafPath; readonly data: readonly string[]; readonly payload: P };
+  | { readonly kind: "selected"; readonly leaf: CliLeafSpec; readonly data: readonly string[]; readonly payload: P };
 
 export type ValidatedSelectorResult<V, P> = {
   readonly values: V;
@@ -66,14 +40,19 @@ export function parseSelectorOrUsage<
   P,
 >(
   parse: () => T,
-  command: string,
-  reason: SelectorDeferral,
+  command: PublicCommandName,
   resolve: (positionals: readonly string[]) => SelectorResolution<P>,
 ): ValidatedSelectorResult<T["values"], P> {
-  const parsed = parseOrUsage(parse, command, deferArity(reason));
+  const parsed = parseOwnedOrUsage(parse, command);
   if (Boolean((parsed.values as { help?: unknown }).help)) return { values: parsed.values, selection: { kind: "help" } };
   const selection = resolve(parsed.positionals);
-  if (selection.kind === "selected") assertLeafArity(selection.path, selection.data);
+  if (selection.kind === "selected") {
+    assertCliLeaf(selection.leaf);
+    if (selection.leaf.exposure !== "public" || selection.leaf.command !== command) {
+      throw new TypeError(`selector for '${command}' returned unrelated leaf '${selection.leaf.path}'`);
+    }
+    assertLeafArity(selection.leaf, selection.data);
+  }
   return { values: parsed.values, selection };
 }
 
@@ -115,17 +94,12 @@ export function translateParseArgsError(err: unknown): string | null {
 }
 
 /** Run a parseArgs thunk, mapping its bare parse error to a translated USAGE CliError (exit 2). */
-export function parseOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: object }>(
   parse: () => T,
   command: string,
-  decision: ArityDecision,
 ): T {
-  assertOwnedArityDecision(decision);
   try {
-    const parsed = parse();
-    if (Boolean((parsed.values as { help?: unknown } | undefined)?.help)) return parsed;
-    if (decision.kind === "leaf") assertLeafArity(decision.path, parsed.positionals);
-    return parsed;
+    return parse();
   } catch (err) {
     if (err instanceof CliError) throw err; // passthrough — never remapped
     const translated = translateParseArgsError(err);
@@ -133,4 +107,31 @@ export function parseOrUsage<T extends { positionals: readonly string[]; values?
     const message = translated ?? stripAdvisory(raw); // unrecognized -> trimmed original, never worse
     throw new CliError("USAGE", message, { help: `${cliInvocation()} ${command} --help` });
   }
+}
+
+/** Parse and validate an ordinary leaf through its branded canonical specification. */
+export function parseLeafOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+  leaf: CliLeafSpec,
+): T {
+  // Validate ownership before invoking the caller's parser thunk or any effects it may contain.
+  assertCliLeaf(leaf);
+  const parsed = parseOwnedOrUsage(parse, leaf.canonical.path);
+  if (Boolean((parsed.values as { help?: unknown } | undefined)?.help)) return parsed;
+  assertLeafArity(leaf, parsed.positionals);
+  return parsed;
+}
+
+/** Exact architectural exception: `new` must load its bundle-declared schema before leaf arity. */
+export function parseNewSchemaPhaseOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+): T {
+  return parseOwnedOrUsage(parse, "new");
+}
+
+/** Exact architectural exception: doc-update normalizes dynamic field tokens before leaf arity. */
+export function parseDocUpdateTokensOrUsage<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+): T {
+  return parseOwnedOrUsage(parse, "doc update");
 }
