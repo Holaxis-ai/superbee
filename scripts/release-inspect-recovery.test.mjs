@@ -575,6 +575,43 @@ test("dead reclaim marker does not permanently wedge stale-owner recovery", asyn
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
 
+test("dead reclaim cleanup marker does not permanently wedge stale-owner recovery", async () => {
+  const h = scratch();
+  try {
+    mkdirSync(h.recoveryDir, { mode: 0o700 });
+    const ownerPath = path.join(h.recoveryDir, `${canonicalSlotKey(slot())}.lock`);
+    const hostname = (await import("node:os")).hostname();
+    const dead = {
+      schema: "aslite.receipt-recovery-owner.v1",
+      version: 1,
+      hostname,
+      pid: 2_147_483_647,
+      started_at: "2026-08-09T10:00:00Z",
+      token: "123e4567-e89b-42d3-a456-426614174000",
+    };
+    const deadReclaim = {
+      ...dead,
+      pid: 2_147_483_646,
+      started_at: "2026-08-09T10:01:00Z",
+      token: "323e4567-e89b-42d3-a456-426614174000",
+    };
+    const deadCleanup = {
+      ...dead,
+      pid: 2_147_483_645,
+      started_at: "2026-08-09T10:02:00Z",
+      token: "423e4567-e89b-42d3-a456-426614174000",
+    };
+    writeFileSync(ownerPath, `${JSON.stringify(dead, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(`${ownerPath}.reclaim`, `${JSON.stringify(deadReclaim, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(`${ownerPath}.reclaim.cleanup`, `${JSON.stringify(deadCleanup, null, 2)}\n`, { mode: 0o600 });
+
+    const reclaimed = await acquireSlotOwner(ownerPath);
+    assert.equal(reclaimed.pid, process.pid);
+    assert.notEqual(reclaimed.token, dead.token);
+    assert.equal(readdirSync(h.recoveryDir).some((name) => name.includes(".reclaim")), false);
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
+
 test("an invalid old receipt remains present and makes replacement DELETE unreachable", () => {
   const h = scratch();
   try {
