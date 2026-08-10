@@ -406,6 +406,9 @@ function createProductionDependencies(overrides = {}) {
             decision: slot.decision, stage_id: slot.stage_id, version: slot.version,
             tarball_sha256: slot.tarball_sha256, draft_release_id: slot.draft_release_id,
           })) if (payload[name] !== value) fail(`journaled receipt ${name} does not match this candidate`);
+          if (slot.decision === "inspected" && payload.observed_sha256 !== slot.tarball_sha256) {
+            fail("journaled inspection observed SHA does not match this candidate");
+          }
         },
         verifyAsset,
         async tokenForActor(actor) {

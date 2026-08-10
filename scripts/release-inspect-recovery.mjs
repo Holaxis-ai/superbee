@@ -212,7 +212,7 @@ async function assertExactOwner(ownerPath, owner) {
   ) fail("execution owner changed");
 }
 
-export async function acquireSlotOwner(ownerPath) {
+export async function acquireSlotOwner(ownerPath, testHooks = {}) {
   const owner = {
     schema: OWNER_SCHEMA,
     version: 1,
@@ -228,21 +228,28 @@ export async function acquireSlotOwner(ownerPath) {
     const state = pidState(occupied.pid);
     if (state !== "dead") fail(`receipt slot owner PID ${occupied.pid} is ${state}`);
     const aside = `${ownerPath}.stale.${occupied.token}`;
-    const before = (await readJsonRecord(ownerPath, "owner record")).text;
-    if (before !== canonicalJson(occupied)) fail("stale owner changed during reclamation");
+    const reclaimPath = `${ownerPath}.reclaim`;
+    if (!await publishNoReplace(reclaimPath, canonicalJson(owner))) continue;
     try {
+      const before = (await readJsonRecord(ownerPath, "owner record")).text;
+      if (before !== canonicalJson(occupied)) fail("stale owner changed during reclamation");
+      if (testHooks.beforeStaleOwnerRename) await testHooks.beforeStaleOwnerRename({ ownerPath, occupied, owner });
+      const after = (await readJsonRecord(ownerPath, "owner record")).text;
+      if (after !== canonicalJson(occupied)) fail("stale owner changed during reclamation");
       await rename(ownerPath, aside);
       await syncDirectory(path.dirname(ownerPath));
+      if (await publishNoReplace(ownerPath, canonicalJson(owner))) {
+        await unlink(aside);
+        await syncDirectory(path.dirname(ownerPath));
+        return owner;
+      }
+      // A contender won. Preserve the exact stale aside for diagnosis; never erase a journal.
     } catch (error) {
       if (error?.code === "ENOENT") continue;
       throw error;
+    } finally {
+      await rm(reclaimPath, { force: true }).catch(() => {});
     }
-    if (await publishNoReplace(ownerPath, canonicalJson(owner))) {
-      await unlink(aside);
-      await syncDirectory(path.dirname(ownerPath));
-      return owner;
-    }
-    // A contender won. Preserve the exact stale aside for diagnosis; never erase a journal.
   }
   fail("could not acquire receipt slot owner");
 }

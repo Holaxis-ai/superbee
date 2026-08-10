@@ -509,6 +509,42 @@ test("owner records reject live/cross-host ambiguity and reclaim only a definite
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
 
+test("stale owner reclamation never renames away a newly published live owner", async () => {
+  const h = scratch();
+  try {
+    mkdirSync(h.recoveryDir, { mode: 0o700 });
+    const ownerPath = path.join(h.recoveryDir, `${canonicalSlotKey(slot())}.lock`);
+    const dead = {
+      schema: "aslite.receipt-recovery-owner.v1",
+      version: 1,
+      hostname: (await import("node:os")).hostname(),
+      pid: 2_147_483_647,
+      started_at: "2026-08-09T10:00:00Z",
+      token: "123e4567-e89b-42d3-a456-426614174000",
+    };
+    const live = {
+      ...dead,
+      pid: process.pid,
+      started_at: "2026-08-09T10:01:00Z",
+      token: "223e4567-e89b-42d3-a456-426614174000",
+    };
+    writeFileSync(ownerPath, `${JSON.stringify(dead, null, 2)}\n`, { mode: 0o600 });
+    let injected = false;
+    await assert.rejects(
+      acquireSlotOwner(ownerPath, {
+        async beforeStaleOwnerRename() {
+          injected = true;
+          await (await import("node:fs/promises")).rename(ownerPath, `${ownerPath}.other-stale`);
+          assert.equal(await publishNoReplace(ownerPath, `${JSON.stringify(live, null, 2)}\n`), true);
+        },
+      }),
+      /owner PID .* live|stale owner changed during reclamation|could not acquire/,
+    );
+    assert.equal(injected, true, "test must intercept the stale-owner rename boundary");
+    assert.deepEqual(JSON.parse(readFileSync(ownerPath, "utf8")), live);
+  } finally { rmSync(h.root, { recursive: true, force: true }); }
+});
+
 test("an invalid old receipt remains present and makes replacement DELETE unreachable", () => {
   const h = scratch();
   try {
@@ -670,6 +706,115 @@ function signedReceipt(root, signer, payload) {
   execFileSync("ssh-keygen", ["-Y", "sign", "-f", signer.keyPath, "-n", SIGN_NAMESPACE, message], { stdio: "pipe" });
   return Buffer.from(`${JSON.stringify({ payload, signature: readFileSync(`${message}.sig`, "utf8") }, null, 2)}\n`);
 }
+
+test("resumed inspected journal with wrong observed SHA cannot reach DELETE or upload", async () => {
+  const h = scratch();
+  const token = "canary-pinned-token";
+  try {
+    mkdirSync(h.recoveryDir, { mode: 0o700 });
+    const signer = makeSigner(h.root, "briand-ai");
+    const allowedPath = path.join(h.root, "allowed-signers");
+    writeFileSync(allowedPath, `${signer.allowedLine}\n`);
+    const tarballBytes = Buffer.from("retained tarball bytes");
+    const tarballSha = digest(tarballBytes);
+    const wrongObservedSha = `sha256:${"b".repeat(64)}`;
+    const candidateBytes = Buffer.from(JSON.stringify({
+      schema: "aslite.release-candidate.v1",
+      tag: "v0.1.0-pre.4",
+      version: "0.1.0-pre.4",
+      tarball: { version: "0.1.0-pre.4", sha256: tarballSha, integrity: "sha512-YWJjZA==" },
+    }));
+    const candidate = { id: 22, name: "candidate.json", digest: digest(candidateBytes), uploader: { login: "github-actions[bot]" } };
+    const oldPayload = canonicalReceiptPayload({
+      decision: "inspected", stage_id: STAGE_ID, version: "0.1.0-pre.4", tarball_sha256: tarballSha,
+      draft_release_id: "300", actor: "briand-ai", emitted_at: "2026-08-09T10:00:00Z", observed_sha256: tarballSha,
+    });
+    const oldBytes = signedReceipt(h.root, signer, oldPayload);
+    const old = { id: 401, name: NAME, digest: digest(oldBytes), uploader: { login: "briand-ai" } };
+    const badPayload = canonicalReceiptPayload({
+      decision: "inspected", stage_id: STAGE_ID, version: "0.1.0-pre.4", tarball_sha256: tarballSha,
+      draft_release_id: "300", actor: "briand-ai", emitted_at: "2026-08-09T11:00:00Z", observed_sha256: wrongObservedSha,
+    });
+    const badBytes = signedReceipt(h.root, signer, badPayload);
+    let assets = [candidate, old];
+    const bytesById = new Map([[22, candidateBytes], [401, oldBytes]]);
+    const requests = [];
+    const slotAuthority = {
+      schema: "aslite.receipt-recovery-slot.v1",
+      github_host: "github.com",
+      repo: "Holaxis-ai/agentstate-lite",
+      draft_release_id: "300",
+      tag: "v0.1.0-pre.4",
+      stage_id: STAGE_ID,
+      version: "0.1.0-pre.4",
+      tarball_sha256: tarballSha,
+      decision: "inspected",
+      receipt_name: NAME,
+    };
+    const key = canonicalSlotKey(slotAuthority);
+    writeFileSync(path.join(h.recoveryDir, `${key}.json`), `${JSON.stringify({
+      schema: "aslite.receipt-recovery-journal.v1",
+      version: 1,
+      slot_key: key,
+      slot: slotAuthority,
+      prior: { kind: "existing", asset: { id: old.id, name: old.name, digest: old.digest } },
+      proposed: { bytes_base64: badBytes.toString("base64"), digest: digest(badBytes), actor: "briand-ai" },
+      revision: 1,
+      phase: "prepared",
+      remote: {},
+      owner_token: "323e4567-e89b-42d3-a456-426614174000",
+      updated_at: "2026-08-09T11:00:01Z",
+    }, null, 2)}\n`, { mode: 0o600 });
+
+    function run(command, args, options = {}) {
+      if (command === "gh" && args[0] === "api" && args.includes("--paginate")) return JSON.stringify([assets]);
+      if (command === "gh" && args[0] === "api" && args.includes("repos/Holaxis-ai/agentstate-lite/releases/300")) {
+        return JSON.stringify({
+          id: 300, draft: true, tag_name: "v0.1.0-pre.4",
+          upload_url: "https://uploads.github.com/repos/Holaxis-ai/agentstate-lite/releases/300/assets{?name,label}",
+        });
+      }
+      if (command === "gh" && args[0] === "api" && args.includes("Accept: application/octet-stream")) {
+        const id = Number(args.at(-1).split("/").at(-1));
+        return bytesById.get(id);
+      }
+      if (command === "gh" && args[0] === "auth") return `${token}\n`;
+      if (command === "ssh-keygen") return execFileSync(command, args, options);
+      throw new Error(`unexpected child command: ${command} ${args.join(" ")}`);
+    }
+
+    async function request(url, init) {
+      const href = String(url);
+      requests.push({ href, method: init.method });
+      if (href === "https://api.github.com/user") return new Response(JSON.stringify({ login: "briand-ai" }), { status: 200 });
+      if (init.method === "DELETE") {
+        assets = assets.filter((asset) => asset.id !== 401);
+        return new Response(null, { status: 204 });
+      }
+      if (init.method === "POST") {
+        const bytes = Buffer.from(init.body);
+        const created = { id: 900, name: NAME, digest: digest(bytes), uploader: { login: "briand-ai" } };
+        assets.push(created);
+        bytesById.set(900, bytes);
+        return new Response(JSON.stringify(created), { status: 201 });
+      }
+      throw new Error(`unexpected request ${init.method} ${href}`);
+    }
+
+    const result = await inspectMain([
+      "--stage-id", STAGE_ID, "--version", "0.1.0-pre.4", "--draft-release-id", "300",
+      "--decision", "inspected", "--key", signer.keyPath, "--repo", "Holaxis-ai/agentstate-lite",
+      "--allowed-signers", allowedPath, "--recovery-dir", h.recoveryDir,
+      "--replace-asset-id", "401", "--replace-asset-name", NAME, "--replace-asset-digest", old.digest,
+    ], { run, request, now: () => "2026-08-09T11:00:00Z" });
+    assert.deepEqual(result.rows.map((row) => row.status), ["failed"]);
+    assert.match(result.rows[0].error, /observed SHA/i);
+    assert.equal(requests.some((item) => item.method === "DELETE" || item.method === "POST"), false);
+    assert.deepEqual(assets, [candidate, old]);
+  } finally {
+    rmSync(h.root, { recursive: true, force: true });
+  }
+});
 
 test("production CLI adapter performs paginated exact replacement with one scrubbed signer-pinned token", async () => {
   const h = scratch();
