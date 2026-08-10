@@ -44,7 +44,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var define_ASLITE_BUILD_IDENTITY_default;
 var init_define_ASLITE_BUILD_IDENTITY = __esm({
   "<define:__ASLITE_BUILD_IDENTITY__>"() {
-    define_ASLITE_BUILD_IDENTITY_default = { schema: "aslite.build-identity.v1", package: { name: "@holaxis/aslite", version: "0.1.0-pre.3" }, source: { commit: "18d3a85896a82a6104f60aa52e96e1eab01135f4", dirty: false }, artifact: { channel: "marketplace-legacy" }, compatibility_contracts: { skill: 1, hook: 1, mcp: 1 } };
+    define_ASLITE_BUILD_IDENTITY_default = { schema: "aslite.build-identity.v1", package: { name: "@holaxis/aslite", version: "0.1.0-pre.3" }, source: { commit: "55640c3202e1240ce3e89ea3ed563abffeb02fe9", dirty: false }, artifact: { channel: "marketplace-legacy" }, compatibility_contracts: { skill: 1, hook: 1, mcp: 1 } };
   }
 });
 
@@ -35684,7 +35684,7 @@ var init_az = __esm({
 });
 
 // ../../node_modules/zod/v4/locales/be.js
-function getBelarusianPlural(count, one2, few, many) {
+function getBelarusianPlural(count, one3, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
   const lastTwoDigits = absCount % 100;
@@ -35692,7 +35692,7 @@ function getBelarusianPlural(count, one2, few, many) {
     return many;
   }
   if (lastDigit === 1) {
-    return one2;
+    return one3;
   }
   if (lastDigit >= 2 && lastDigit <= 4) {
     return few;
@@ -37882,8 +37882,8 @@ var init_hu = __esm({
 });
 
 // ../../node_modules/zod/v4/locales/hy.js
-function getArmenianPlural(count, one2, many) {
-  return Math.abs(count) === 1 ? one2 : many;
+function getArmenianPlural(count, one3, many) {
+  return Math.abs(count) === 1 ? one3 : many;
 }
 function withDefiniteArticle(word) {
   if (!word)
@@ -40143,7 +40143,7 @@ var init_ro = __esm({
 });
 
 // ../../node_modules/zod/v4/locales/ru.js
-function getRussianPlural(count, one2, few, many) {
+function getRussianPlural(count, one3, few, many) {
   const absCount = Math.abs(count);
   const lastDigit = absCount % 10;
   const lastTwoDigits = absCount % 100;
@@ -40151,7 +40151,7 @@ function getRussianPlural(count, one2, few, many) {
     return many;
   }
   if (lastDigit === 1) {
-    return one2;
+    return one3;
   }
   if (lastDigit >= 2 && lastDigit <= 4) {
     return few;
@@ -60477,6 +60477,401 @@ async function openBundle(dirFlag, remoteFlag) {
 
 // src/args.ts
 init_define_ASLITE_BUILD_IDENTITY();
+
+// src/command-spec.ts
+init_define_ASLITE_BUILD_IDENTITY();
+var CLI_LEAF_BRAND = Symbol("agentstate-lite.cli-leaf");
+var OWNED_CLI_LEAVES = /* @__PURE__ */ new WeakSet();
+function exactPositionalArity(count) {
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw new TypeError(`exact positional count must be a non-negative safe integer; received ${count}`);
+  }
+  return Object.freeze({ kind: "exact", count });
+}
+var zero = exactPositionalArity(0);
+var one = exactPositionalArity(1);
+var two = exactPositionalArity(2);
+function firstWord(path24) {
+  return path24.split(" ", 1)[0];
+}
+function publicLeaf(id, path24, arity, commandOrder) {
+  if (commandOrder !== void 0 && (!Number.isSafeInteger(commandOrder) || commandOrder < 0)) {
+    throw new TypeError(`command order must be a non-negative safe integer; received ${commandOrder}`);
+  }
+  const mutable = {
+    id,
+    path: path24,
+    command: firstWord(path24),
+    arity,
+    canonical: void 0,
+    exposure: "public",
+    ...commandOrder === void 0 ? {} : { commandOrder },
+    [CLI_LEAF_BRAND]: true
+  };
+  mutable.canonical = mutable;
+  OWNED_CLI_LEAVES.add(mutable);
+  return Object.freeze(mutable);
+}
+function publicAlias(id, path24, canonical, commandOrder) {
+  if (canonical.exposure !== "public") throw new TypeError("a public alias must target a public leaf");
+  const mutable = {
+    id,
+    path: path24,
+    command: firstWord(path24),
+    arity: canonical.arity,
+    canonical: canonical.canonical,
+    exposure: "public",
+    ...commandOrder === void 0 ? {} : { commandOrder },
+    [CLI_LEAF_BRAND]: true
+  };
+  OWNED_CLI_LEAVES.add(mutable);
+  return Object.freeze(mutable);
+}
+function hiddenLeaf(id, path24, arity) {
+  const mutable = {
+    id,
+    path: path24,
+    command: firstWord(path24),
+    arity,
+    canonical: void 0,
+    exposure: "hidden",
+    [CLI_LEAF_BRAND]: true
+  };
+  mutable.canonical = mutable;
+  OWNED_CLI_LEAVES.add(mutable);
+  return Object.freeze(mutable);
+}
+var listLeaf = publicLeaf("list", "list", zero, 10);
+var CLI_COMMAND_GROUPS = [
+  {
+    group: "Bundle",
+    commands: [
+      {
+        id: "bundleLocate",
+        leaves: [publicLeaf("bundleLocate", "bundle locate", zero, 1)],
+        usage: "bundle locate [--dir <path>]",
+        summary: "Resolve the exact canonical local bundle path and report why it won selection"
+      },
+      {
+        id: "catalog",
+        leaves: [
+          publicLeaf("catalogAdd", "catalog add", one, 2),
+          publicLeaf("catalogList", "catalog list", zero),
+          publicLeaf("catalogResolve", "catalog resolve", one)
+        ],
+        usage: "catalog (add <label> [--dir <path>] | list | resolve <label-or-id> [--field path])",
+        summary: "Register and deterministically resolve this user's explicitly named local workspaces"
+      },
+      {
+        id: "init",
+        leaves: [publicLeaf("init", "init", zero, 0)],
+        usage: "init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]",
+        summary: "Create (or open) an OKF knowledge bundle in a directory \u2014 greenfield setup; a project that already shares a board is set up by sync, not init. --create-only requires a genuinely NEW target and refuses existing, non-empty, symlinked, enclosing, bound, or concurrent targets before publication; runtime failures retain and report any empty directories they created instead of deleting them \u2014 'recipe add' modifies a verified existing bundle"
+      },
+      {
+        id: "indexGenerate",
+        leaves: [publicLeaf("indexGenerate", "index generate", zero, 3)],
+        usage: "index generate [--dir <path>] [--check] [--force] [--actor <name>]",
+        summary: "Generate complete portable Markdown navigation explicitly; refuses curated indexes unless --force adopts them"
+      },
+      {
+        id: "status",
+        leaves: [publicLeaf("status", "status", zero, 18)],
+        usage: "status [--limit <n>] [--remote <url>]",
+        summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)"
+      }
+    ]
+  },
+  {
+    group: "Documents & links",
+    commands: [
+      {
+        id: "docWrite",
+        leaves: [publicLeaf("docWrite", "doc write", one, 4)],
+        usage: "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--remote <url>]",
+        summary: "Write a generic OKF concept document"
+      },
+      {
+        id: "docUpdate",
+        leaves: [publicLeaf("docUpdate", "doc update", one)],
+        usage: "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]",
+        summary: "Patch given fields (incl. kind-declared fields like --status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version"
+      },
+      {
+        id: "docRead",
+        leaves: [publicLeaf("docRead", "doc read", one)],
+        usage: "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]",
+        summary: "Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting"
+      },
+      {
+        id: "docHistory",
+        leaves: [publicLeaf("docHistory", "doc history", one)],
+        usage: "doc history <id> [--limit <n>] [--remote <url>]",
+        summary: "Show a doc's version history (newest first, capped at 20 by default \u2014 --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) \u2014 the tokens for --expected-version"
+      },
+      {
+        id: "docDelete",
+        leaves: [publicLeaf("docDelete", "doc delete", one)],
+        usage: "doc delete <id> [--expected-version <v>] [--remote <url>]",
+        summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)"
+      },
+      {
+        id: "list",
+        leaves: [listLeaf, publicAlias("query", "query", listLeaf, 11)],
+        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--remote <url>]",
+        summary: "Query concepts over their frontmatter (alias: query) \u2014 a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)"
+      },
+      {
+        id: "link",
+        leaves: [
+          publicLeaf("linkAdd", "link add", two, 9),
+          publicLeaf("linkShow", "link show", one),
+          publicLeaf("linkList", "link list", zero)
+        ],
+        usage: "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--remote <url>]",
+        summary: "Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text"
+      }
+    ]
+  },
+  {
+    group: "Artifacts",
+    commands: [
+      {
+        id: "artifactCreate",
+        leaves: [publicLeaf("artifactCreate", "artifact create", one, 13)],
+        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--remote <url>]",
+        summary: "Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record"
+      },
+      {
+        id: "promote",
+        leaves: [publicLeaf("promote", "promote", one, 5)],
+        usage: "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--remote <url>]",
+        summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob)"
+      },
+      {
+        id: "pull",
+        leaves: [publicLeaf("pull", "pull", zero, 6)],
+        usage: "pull --doc-key <key> --out (<path> | -) [--remote <url>]",
+        summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)"
+      },
+      {
+        id: "blobs",
+        leaves: [publicLeaf("blobs", "blobs", zero, 7)],
+        usage: "blobs [--prefix <p>] [--limit <n>] [--remote <url>]",
+        summary: "List the store's blob (non-document) keys (documents are listed by 'list'/'query')"
+      },
+      {
+        id: "delete",
+        leaves: [publicLeaf("delete", "delete", zero, 8)],
+        usage: "delete --doc-key <key> [--expected-version <v>] [--remote <url>]",
+        summary: "Hard-delete a doc or blob by key (idempotent: absent -> deleted:false, exit 0)"
+      }
+    ]
+  },
+  {
+    group: "Kinds",
+    commands: [
+      {
+        id: "new",
+        leaves: [publicLeaf("new", "new", two, 12)],
+        usage: 'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--remote <url>]',
+        summary: "Create a new instance of a bundle-declared kind \u2014 initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step"
+      },
+      {
+        id: "kinds",
+        leaves: [publicLeaf("kinds", "kinds", zero, 14)],
+        usage: "kinds [--remote <url>]",
+        summary: "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)"
+      },
+      {
+        id: "kindField",
+        leaves: [
+          publicLeaf("kindFieldAdd", "kind field add", two, 15),
+          publicLeaf("kindFieldRemove", "kind field remove", two)
+        ],
+        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--remote <url>]',
+        summary: "Edit a kind's schema \u2014 add/remove a declared field or enum value on its convention (idempotent)"
+      },
+      {
+        id: "recipes",
+        leaves: [publicLeaf("recipes", "recipes", zero, 16)],
+        usage: "recipes [--dir <path>] [--remote <url>]",
+        summary: "Browse built-in recipes before or after init; with a bundle, also show whether each is already applied"
+      },
+      {
+        id: "recipeAdd",
+        leaves: [publicLeaf("recipeAdd", "recipe add", one, 17)],
+        usage: "recipe add <name-or-path> [--remote <url>]",
+        summary: "Apply a recipe's content-free definitions \u2014 Kinds plus optional declared References and Views \u2014 idempotently"
+      }
+    ]
+  },
+  {
+    group: "Remote",
+    commands: [
+      {
+        id: "serve",
+        leaves: [publicLeaf("serve", "serve", zero, 19)],
+        usage: "serve [--dir <path>] [--host <h>] [--port <p>]",
+        summary: "Boot the reference wire-protocol server over a local bundle (loopback, no auth)"
+      },
+      {
+        id: "ui",
+        leaves: [publicLeaf("ui", "ui", zero, 20)],
+        usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open]",
+        summary: `Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle's docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register \u2014 see status's legacy_naming finding), and see a live activity feed, the bundle's sharing status, and your registered workspaces. The header shows the bundle's display name \u2014 derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"`
+      },
+      {
+        id: "mcp",
+        leaves: [publicLeaf("mcp", "mcp", zero, 21)],
+        usage: "mcp [--dir <path>] [--actor <name>]",
+        summary: "Run the experimental local MCP Apps adapter over a bundle (stdio): launch an existing registered View unchanged, or launch standard active View HTML transiently and save its approved exact bytes as a registered View; bundle data and governed actions stay behind local human approval"
+      },
+      {
+        id: "viewList",
+        leaves: [publicLeaf("viewList", "view list", zero, 27)],
+        usage: "view list [--limit <n>] [--dir <path> | --remote <url>]",
+        summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views"
+      },
+      {
+        id: "sync",
+        leaves: [publicLeaf("sync", "sync", zero, 22)],
+        usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]",
+        summary: "Share the board branch with a remote \u2014 commits, pulls, and pushes (git tier; --pull-only skips commit+push). `init` makes a LOCAL bundle; --establish is the separate, explicit act that starts sharing it (creates the board branch, pushes; never automatic). A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale \u2014 silent, bounded (~2s), never a push; AGENTSTATE_LITE_NO_AUTOPULL=<any value, even 0> disables it"
+      }
+    ]
+  },
+  {
+    group: "Session",
+    commands: [
+      {
+        id: "version",
+        leaves: [publicLeaf("version", "version", zero, 26)],
+        usage: "version [--check] [--tag latest|next] [--json]",
+        summary: "Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy"
+      },
+      {
+        id: "sessionStart",
+        leaves: [publicLeaf("sessionStart", "session-start", zero, 25)],
+        usage: "session-start [--dir <path>] [--no-update-check]",
+        summary: "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or ASLITE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh; npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data"
+      },
+      {
+        id: "hook",
+        leaves: [
+          publicLeaf("hookInstall", "hook install", zero, 23),
+          publicLeaf("hookStatus", "hook status", zero),
+          publicLeaf("hookUninstall", "hook uninstall", zero)
+        ],
+        usage: "hook install|status|uninstall [--scope project|user]",
+        summary: "Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode"
+      },
+      {
+        id: "skill",
+        leaves: [
+          publicLeaf("skillInstall", "skill install", zero, 24),
+          publicLeaf("skillStatus", "skill status", zero),
+          publicLeaf("skillUninstall", "skill uninstall", zero)
+        ],
+        usage: "skill install|status|uninstall [--scope project|user]",
+        summary: "Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface \u2014 its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage"
+      }
+    ]
+  }
+];
+function publicLeaves(groups) {
+  return groups.flatMap((group) => group.commands.flatMap((row2) => row2.leaves));
+}
+function indexLeaves(groups) {
+  const byId = /* @__PURE__ */ Object.create(null);
+  const paths = /* @__PURE__ */ new Set();
+  const rowIds = /* @__PURE__ */ new Set();
+  for (const group of groups) {
+    for (const row2 of group.commands) {
+      if (rowIds.has(row2.id)) throw new TypeError(`duplicate CLI reference row id: ${row2.id}`);
+      rowIds.add(row2.id);
+      if (row2.leaves.length === 0) throw new TypeError(`CLI reference row has no leaves: ${row2.id}`);
+      for (const candidate of row2.leaves) {
+        assertCliLeaf(candidate);
+        if (candidate.exposure !== "public") throw new TypeError(`hidden leaf attached to public row: ${candidate.id}`);
+        if (Object.prototype.hasOwnProperty.call(byId, candidate.id)) throw new TypeError(`duplicate CLI leaf id: ${candidate.id}`);
+        if (paths.has(candidate.path)) throw new TypeError(`duplicate CLI leaf path: ${candidate.path}`);
+        byId[candidate.id] = candidate;
+        paths.add(candidate.path);
+      }
+    }
+  }
+  return Object.freeze(byId);
+}
+function assertCliLeaf(value) {
+  if (typeof value !== "object" || value === null || !OWNED_CLI_LEAVES.has(value) || value[CLI_LEAF_BRAND] !== true) {
+    throw new TypeError("invalid CLI leaf: use CLI_LEAVES or HOME_LEAF");
+  }
+}
+var PUBLIC_LEAVES = Object.freeze(publicLeaves(CLI_COMMAND_GROUPS));
+var CLI_LEAVES = indexLeaves(CLI_COMMAND_GROUPS);
+var HOME_LEAF = hiddenLeaf("home", "home", zero);
+function orderedPublicCommandNames(leaves) {
+  const order = /* @__PURE__ */ new Map();
+  for (const candidate of leaves) {
+    if (candidate.commandOrder === void 0) continue;
+    if (order.has(candidate.command)) throw new TypeError(`duplicate CLI command order owner: ${candidate.command}`);
+    order.set(candidate.command, candidate.commandOrder);
+  }
+  const commands = [...new Set(leaves.map((candidate) => candidate.command))];
+  for (const command of commands) {
+    if (!order.has(command)) throw new TypeError(`missing CLI command order: ${command}`);
+  }
+  const sorted = commands.sort((left, right) => (order.get(left) ?? 0) - (order.get(right) ?? 0));
+  const indexes = sorted.map((command) => order.get(command));
+  if (new Set(indexes).size !== indexes.length || indexes.some((value, index2) => value !== index2)) {
+    throw new TypeError("CLI command order must be unique and contiguous from zero");
+  }
+  return Object.freeze(sorted);
+}
+var PUBLIC_COMMAND_NAMES = orderedPublicCommandNames(PUBLIC_LEAVES);
+
+// src/positional-arity.ts
+init_define_ASLITE_BUILD_IDENTITY();
+function boundedToken(token) {
+  if (token === void 0) return void 0;
+  return token.length <= 80 ? token : `${token.slice(0, 80)}\u2026`;
+}
+function assertLeafArity(leaf, positionals) {
+  assertCliLeaf(leaf);
+  const path24 = leaf.canonical.path;
+  const count = leaf.arity.count;
+  const expected = count === 0 ? "no positional arguments" : `exactly ${count} positional${count === 1 ? "" : "s"}`;
+  const actual = positionals.length;
+  if (actual === count) return;
+  const firstUnexpected = boundedToken(positionals[count]);
+  const surplus = Math.max(0, actual - count);
+  throw new CliError("USAGE", `${path24} expected ${expected}; received ${actual}`, {
+    details: {
+      command: path24,
+      expected,
+      actual,
+      ...surplus === 0 ? {} : { surplus },
+      ...firstUnexpected === void 0 ? {} : { first_unexpected: firstUnexpected }
+    },
+    help: `${cliInvocation()} ${path24} --help`
+  });
+}
+
+// src/args.ts
+function parseSelectorOrUsage(parse5, command, resolve2) {
+  const parsed = parseOwnedOrUsage(parse5, command);
+  if (Boolean(parsed.values.help)) return { values: parsed.values, selection: { kind: "help" } };
+  const selection = resolve2(parsed.positionals);
+  if (selection.kind === "selected") {
+    assertCliLeaf(selection.leaf);
+    if (selection.leaf.exposure !== "public" || selection.leaf.command !== command) {
+      throw new TypeError(`selector for '${command}' returned unrelated leaf '${selection.leaf.path}'`);
+    }
+    assertLeafArity(selection.leaf, selection.data);
+  }
+  return { values: parsed.values, selection };
+}
 var QUOTED = /'([^']+)'/;
 function stripAdvisory(msg) {
   const noPositionalHint = msg.split(". To specify a positional argument")[0] ?? msg;
@@ -60503,7 +60898,7 @@ function translateParseArgsError(err) {
       return null;
   }
 }
-function parseOrUsage(parse5, command) {
+function parseOwnedOrUsage(parse5, command) {
   try {
     return parse5();
   } catch (err) {
@@ -60513,6 +60908,19 @@ function parseOrUsage(parse5, command) {
     const message = translated ?? stripAdvisory(raw);
     throw new CliError("USAGE", message, { help: `${cliInvocation()} ${command} --help` });
   }
+}
+function parseLeafOrUsage(parse5, leaf) {
+  assertCliLeaf(leaf);
+  const parsed = parseOwnedOrUsage(parse5, leaf.canonical.path);
+  if (Boolean(parsed.values?.help)) return parsed;
+  assertLeafArity(leaf, parsed.positionals);
+  return parsed;
+}
+function parseNewSchemaPhaseOrUsage(parse5) {
+  return parseOwnedOrUsage(parse5, "new");
+}
+function parseDocUpdateTokensOrUsage(parse5) {
+  return parseOwnedOrUsage(parse5, "doc update");
 }
 
 // src/output.ts
@@ -61666,7 +62074,7 @@ function insideGitRepo(dir) {
 }
 async function init(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs({
       args: argv2,
       options: {
@@ -61682,7 +62090,7 @@ async function init(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "init"
+    CLI_LEAVES.init
   );
   if (values.help) {
     stdout(INIT_USAGE);
@@ -62275,7 +62683,7 @@ async function resolveConceptIdCliArgument(bundle, raw, options2 = {}) {
 async function docWrite(argv2, deps) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
   const readStdin = deps.readStdin ?? defaultReadStdin;
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs2({
       args: argv2,
       options: {
@@ -62298,7 +62706,7 @@ async function docWrite(argv2, deps) {
       },
       allowPositionals: true
     }),
-    "doc write"
+    CLI_LEAVES.docWrite
   );
   if (values.help) {
     stdout(DOC_WRITE_USAGE);
@@ -62445,7 +62853,7 @@ var DOC_UPDATE_VALUE_FLAGS = /* @__PURE__ */ new Set([
 ]);
 var DOC_UPDATE_BOOLEAN_FLAGS = /* @__PURE__ */ new Set(["keep-timestamp", "strict", "json", "replace-links"]);
 function parseDocUpdateArgs(argv2) {
-  const { values: rawValues, tokens } = parseOrUsage(
+  const { values: rawValues, tokens } = parseDocUpdateTokensOrUsage(
     () => parseArgs3({
       args: argv2,
       tokens: true,
@@ -62469,8 +62877,7 @@ function parseDocUpdateArgs(argv2) {
         json: { type: "boolean" },
         help: { type: "boolean", short: "h" }
       }
-    }),
-    "doc update"
+    })
   );
   const std = {};
   const tags = [];
@@ -62554,6 +62961,7 @@ async function docUpdate(argv2, deps) {
     stdout(DOC_UPDATE_USAGE);
     return;
   }
+  assertLeafArity(CLI_LEAVES.docUpdate, p2.positionals);
   const rawId = p2.positionals[0]?.trim();
   if (!rawId) {
     throw new CliError("USAGE", "doc update requires a concept <id> positional", {
@@ -62561,13 +62969,6 @@ async function docUpdate(argv2, deps) {
     });
   }
   let id = conceptIdFromCliArgument(rawId);
-  if (p2.positionals.length > 1) {
-    throw new CliError(
-      "USAGE",
-      `doc update takes exactly one <id> positional, got ${p2.positionals.length}: ${p2.positionals.join(", ")}`,
-      { help: `${cliInvocation()} doc update <id> --title <t>` }
-    );
-  }
   if (p2.expectedVersion !== void 0 && p2.expectedVersion.trim() === "") {
     throw new CliError(
       "USAGE",
@@ -62711,7 +63112,7 @@ async function docReadInner(argv2, deps) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
   const stderr = deps.stderr ?? ((s) => void process.stderr.write(s));
   const writeStdoutBytes = deps.writeStdoutBytes ?? ((d2) => void process.stdout.write(d2));
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs4({
       args: argv2,
       options: {
@@ -62725,7 +63126,7 @@ async function docReadInner(argv2, deps) {
       },
       allowPositionals: true
     }),
-    "doc read"
+    CLI_LEAVES.docRead
   );
   if (values.help) {
     stdout(DOC_READ_USAGE);
@@ -62978,7 +63379,7 @@ import { parseArgs as parseArgs5 } from "node:util";
 var DEFAULT_LIMIT = 20;
 async function docHistory(argv2, deps) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs5({
       args: argv2,
       options: {
@@ -62990,7 +63391,7 @@ async function docHistory(argv2, deps) {
       },
       allowPositionals: true
     }),
-    "doc history"
+    CLI_LEAVES.docHistory
   );
   if (values.help) {
     stdout(DOC_HISTORY_USAGE);
@@ -63062,7 +63463,7 @@ init_define_ASLITE_BUILD_IDENTITY();
 import { parseArgs as parseArgs6 } from "node:util";
 async function docDelete(argv2, deps) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs6({
       args: argv2,
       options: {
@@ -63074,7 +63475,7 @@ async function docDelete(argv2, deps) {
       },
       allowPositionals: true
     }),
-    "doc delete"
+    CLI_LEAVES.docDelete
   );
   if (values.help) {
     stdout(DOC_DELETE_USAGE);
@@ -63205,7 +63606,7 @@ function isDocRouteKey(key) {
 }
 async function promote(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs7({
       args: argv2,
       options: {
@@ -63220,7 +63621,7 @@ async function promote(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "promote"
+    CLI_LEAVES.promote
   );
   if (values.help) {
     stdout(PROMOTE_USAGE);
@@ -63457,7 +63858,7 @@ async function pull(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
   const stderr = deps.stderr ?? ((s) => void process.stderr.write(s));
   const writeStdoutBytes = deps.writeStdoutBytes ?? ((d2) => void process.stdout.write(d2));
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs8({
       args: argv2,
       options: {
@@ -63470,18 +63871,11 @@ async function pull(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "pull"
+    CLI_LEAVES.pull
   );
   if (values.help) {
     stdout(PULL_USAGE);
     return;
-  }
-  if (positionals.length > 0) {
-    throw new CliError(
-      "USAGE",
-      `pull takes no positional arguments, got ${positionals.length}: ${positionals.join(", ")} (did you mean 'promote <file> --doc-key <key>'?)`,
-      { help: `${cliInvocation()} pull --doc-key <key> --out <path>` }
-    );
   }
   const key = values["doc-key"]?.trim();
   if (!key) {
@@ -63552,7 +63946,7 @@ Options:
 `;
 async function blobs(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs9({
       args: argv2,
       options: {
@@ -63565,7 +63959,7 @@ async function blobs(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "blobs"
+    CLI_LEAVES.blobs
   );
   if (values.help) {
     stdout(BLOBS_USAGE);
@@ -63638,7 +64032,7 @@ function isDocRouteKey3(key) {
 }
 async function deleteCommand(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs10({
       args: argv2,
       options: {
@@ -63651,18 +64045,11 @@ async function deleteCommand(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "delete"
+    CLI_LEAVES.delete
   );
   if (values.help) {
     stdout(DELETE_USAGE);
     return;
-  }
-  if (positionals.length > 0) {
-    throw new CliError(
-      "USAGE",
-      `delete takes no positional arguments, got ${positionals.length}: ${positionals.join(", ")}`,
-      { help: `${cliInvocation()} delete --doc-key <key>` }
-    );
   }
   const key = values["doc-key"]?.trim();
   if (!key) {
@@ -64035,7 +64422,7 @@ async function addLink(bundle, from, to, opts = {}) {
   }
 }
 async function linkAdd(argv2, stdout) {
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs11({
       args: argv2,
       options: {
@@ -64049,7 +64436,7 @@ async function linkAdd(argv2, stdout) {
       },
       allowPositionals: true
     }),
-    "link add"
+    CLI_LEAVES.linkAdd
   );
   if (values.help) {
     stdout(LINK_ADD_USAGE);
@@ -64099,7 +64486,7 @@ async function linkAdd(argv2, stdout) {
   stdout(render(receipt, mode));
 }
 async function linkShow(argv2, stdout, autoPull) {
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs11({
       args: argv2,
       options: {
@@ -64112,7 +64499,7 @@ async function linkShow(argv2, stdout, autoPull) {
       },
       allowPositionals: true
     }),
-    "link show"
+    CLI_LEAVES.linkShow
   );
   if (values.help) {
     stdout(LINK_SHOW_USAGE);
@@ -64200,7 +64587,7 @@ async function linkShow(argv2, stdout, autoPull) {
   stdout(render(payload, resolveMode(values)));
 }
 async function linkList(argv2, stdout) {
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs11({
       args: argv2,
       options: {
@@ -64215,7 +64602,7 @@ async function linkList(argv2, stdout) {
       },
       allowPositionals: true
     }),
-    "link list"
+    CLI_LEAVES.linkList
   );
   if (values.help) {
     stdout(LINK_LIST_USAGE);
@@ -64337,7 +64724,7 @@ query of an ungoverned type, always keeps the minimal {id,type,title,timestamp} 
 `;
 async function list(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs12({
       args: argv2,
       options: {
@@ -64355,7 +64742,7 @@ async function list(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "list"
+    CLI_LEAVES.list
   );
   if (values.help) {
     stdout(LIST_USAGE);
@@ -64723,9 +65110,8 @@ Options:
 }
 async function newCommand(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const pre = parseOrUsage(
-    () => parseArgs13({ args: argv2, strict: false, allowPositionals: true, options: NEW_CONTROL_OPTIONS }),
-    "new"
+  const pre = parseNewSchemaPhaseOrUsage(
+    () => parseArgs13({ args: argv2, strict: false, allowPositionals: true, options: NEW_CONTROL_OPTIONS })
   );
   const kindName = pre.positionals[0]?.trim();
   if (pre.values.help && !kindName) {
@@ -64781,7 +65167,7 @@ async function newCommand(argv2, deps = {}) {
   const fieldOptions = Object.fromEntries(
     fieldNames.map((f2) => [f2, { type: "string", multiple: true }])
   );
-  const { values, positionals, tokens } = parseOrUsage(() => {
+  const { values, positionals, tokens } = parseLeafOrUsage(() => {
     try {
       return parseArgs13({
         args: argv2,
@@ -64802,7 +65188,7 @@ async function newCommand(argv2, deps = {}) {
       }
       throw err;
     }
-  }, "new");
+  }, CLI_LEAVES.new);
   const dynamicValues = /* @__PURE__ */ new Map();
   const dynamicFieldNames = new Set(fieldNames);
   for (const token of tokens) {
@@ -64818,13 +65204,6 @@ async function newCommand(argv2, deps = {}) {
     });
   }
   const id = await resolveConceptIdCliArgument(bundle, rawId);
-  if (positionals.length > 2) {
-    throw new CliError(
-      "USAGE",
-      `new takes exactly "<Kind>" and <id>, got ${positionals.length} positionals: ${positionals.join(", ")}`,
-      { help: `${cliInvocation()} new "<Kind>" <id> --<field> <value>` }
-    );
-  }
   const actor = resolveActor(values.actor, {
     help: `${cliInvocation()} new "<Kind>" <id> --actor <name>`
   });
@@ -65064,7 +65443,7 @@ function toRow(kind2) {
 }
 async function kinds(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs14({
       args: argv2,
       options: {
@@ -65075,7 +65454,7 @@ async function kinds(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "kinds"
+    CLI_LEAVES.kinds
   );
   if (values.help) {
     stdout(KINDS_USAGE);
@@ -65142,7 +65521,7 @@ function deleteOwn(record3, key) {
 }
 async function kind(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () => parseArgs15({
       args: argv2,
       allowPositionals: true,
@@ -65156,41 +65535,43 @@ async function kind(argv2, deps = {}) {
         help: { type: "boolean", short: "h" }
       }
     }),
-    "kind"
+    "kind",
+    (positionals) => {
+      if (positionals[0]?.trim() !== "field") return { kind: "unknown", token: positionals[0], reason: "subresource" };
+      const action2 = positionals[2]?.trim();
+      if (action2 !== "add" && action2 !== "remove") return { kind: "unknown", token: action2, reason: "action" };
+      const kindName2 = positionals[1];
+      const fieldName2 = positionals[3];
+      const data = [kindName2, fieldName2, ...positionals.slice(4)].filter((value) => value !== void 0);
+      return {
+        kind: "selected",
+        leaf: action2 === "add" ? CLI_LEAVES.kindFieldAdd : CLI_LEAVES.kindFieldRemove,
+        data,
+        payload: { kindName: kindName2, action: action2, fieldName: fieldName2 }
+      };
+    }
   );
-  if (values.help) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(KIND_USAGE);
     return;
   }
   const helpHint = `${cliInvocation()} kind field "<Kind>" add <name>`;
-  const subresource = positionals[0]?.trim();
-  if (subresource !== "field") {
+  if (selection.kind === "unknown") {
+    const message = selection.reason === "action" ? `kind field <Kind> <action>: action must be 'add' or 'remove', got '${selection.token ?? ""}'` : `kind: unknown or missing sub-resource '${selection.token ?? ""}' \u2014 only 'field' is supported (edit a kind's declared fields)`;
     throw new CliError(
       "USAGE",
-      `kind: unknown or missing sub-resource '${subresource ?? ""}' \u2014 only 'field' is supported (edit a kind's declared fields)`,
+      message,
       { help: helpHint }
     );
   }
-  const kindName = positionals[1]?.trim();
-  const action = positionals[2]?.trim();
-  const fieldName = positionals[3]?.trim();
+  const kindName = selection.payload.kindName?.trim();
+  const action = selection.payload.action;
+  const fieldName = selection.payload.fieldName?.trim();
   if (!kindName) {
     throw new CliError("USAGE", 'kind field requires a "<Kind>"', { help: helpHint });
   }
-  if (action !== "add" && action !== "remove") {
-    throw new CliError("USAGE", `kind field "${kindName}" <action>: action must be 'add' or 'remove', got '${action ?? ""}'`, {
-      help: helpHint
-    });
-  }
   if (!fieldName) {
     throw new CliError("USAGE", `kind field "${kindName}" ${action} requires a <name>`, { help: helpHint });
-  }
-  if (positionals.length > 4) {
-    throw new CliError(
-      "USAGE",
-      `kind field takes exactly "<Kind>" <action> <name>, got extra: ${positionals.slice(4).join(", ")}`,
-      { help: helpHint }
-    );
   }
   if (action === "add" && RESERVED_FIELD_NAMES2.has(fieldName)) {
     throw new CliError(
@@ -65423,7 +65804,7 @@ async function recipes(argv2, deps = {}) {
     resolveProjectBinding: deps.resolveProjectBinding ?? resolveProjectBinding,
     findBundleRoot: deps.findBundleRoot ?? findBundleRoot
   };
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs16({
       args: argv2,
       options: {
@@ -65434,7 +65815,7 @@ async function recipes(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "recipes"
+    CLI_LEAVES.recipes
   );
   if (values.help) {
     stdout(RECIPES_USAGE);
@@ -65519,7 +65900,7 @@ async function recipe(argv2, deps = {}) {
   });
 }
 async function recipeAdd(argv2, stdout) {
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs17({
       args: argv2,
       options: {
@@ -65530,7 +65911,7 @@ async function recipeAdd(argv2, stdout) {
       },
       allowPositionals: true
     }),
-    "recipe"
+    CLI_LEAVES.recipeAdd
   );
   if (values.help) {
     stdout(RECIPE_USAGE);
@@ -65689,7 +66070,7 @@ function docType2(doc2) {
 }
 async function status(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs18({
       args: argv2,
       options: {
@@ -65701,7 +66082,7 @@ async function status(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "status"
+    CLI_LEAVES.status
   );
   if (values.help) {
     stdout(STATUS_USAGE);
@@ -66414,7 +66795,7 @@ async function serve2(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
   const bootServer = deps.bootServer ?? serve;
   const waitForShutdown = deps.waitForShutdown ?? defaultWaitForShutdown;
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs19({
       args: argv2,
       options: {
@@ -66426,7 +66807,7 @@ async function serve2(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "serve"
+    CLI_LEAVES.serve
   );
   if (values.help) {
     stdout(SERVE_USAGE);
@@ -68894,9 +69275,9 @@ function toString(value, options2) {
   const settings = options2 || emptyOptions;
   const includeImageAlt = typeof settings.includeImageAlt === "boolean" ? settings.includeImageAlt : true;
   const includeHtml = typeof settings.includeHtml === "boolean" ? settings.includeHtml : true;
-  return one(value, includeImageAlt, includeHtml);
+  return one2(value, includeImageAlt, includeHtml);
 }
-function one(value, includeImageAlt, includeHtml) {
+function one2(value, includeImageAlt, includeHtml) {
   if (node(value)) {
     if ("value" in value) {
       return value.type === "html" && !includeHtml ? "" : value.value;
@@ -68917,7 +69298,7 @@ function all(values, includeImageAlt, includeHtml) {
   const result3 = [];
   let index2 = -1;
   while (++index2 < values.length) {
-    result3[index2] = one(values[index2], includeImageAlt, includeHtml);
+    result3[index2] = one2(values[index2], includeImageAlt, includeHtml);
   }
   return result3.join("");
 }
@@ -78839,7 +79220,7 @@ async function ui(argv2, deps = {}) {
   const openBrowser = deps.openBrowser ?? defaultOpenBrowser;
   const writeUrlFile = deps.writeUrlFile ?? ((url3) => writeUiUrlFile(url3));
   const clearUrlFile = deps.clearUrlFile ?? ((url3) => clearUiUrlFile(url3));
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs20({
       args: argv2,
       options: {
@@ -78853,7 +79234,7 @@ async function ui(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "ui"
+    CLI_LEAVES.ui
   );
   if (values.help) {
     stdout(UI_USAGE);
@@ -89821,7 +90202,7 @@ async function mcpInner(argv2, deps) {
   const stdout = deps.stdout ?? ((text4) => void process.stdout.write(text4));
   const open3 = deps.openBundle ?? ((dir) => openBundle(dir));
   const start = deps.startServer ?? startMcpStdioServer;
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs21({
       args: argv2,
       options: {
@@ -89831,16 +90212,11 @@ async function mcpInner(argv2, deps) {
       },
       allowPositionals: true
     }),
-    "mcp"
+    CLI_LEAVES.mcp
   );
   if (values.help) {
     stdout(MCP_USAGE);
     return;
-  }
-  if (positionals.length > 0) {
-    throw new CliError("USAGE", `unexpected positional argument: ${positionals[0]}`, {
-      help: `${cliInvocation()} mcp --help`
-    });
   }
   const bundle = await open3(values.dir);
   const actor = resolveActor(values.actor, {
@@ -90767,7 +91143,7 @@ function hookInstalled(bases, deps = {}) {
 }
 async function hook(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () => parseArgs22({
       args: argv2,
       options: {
@@ -90777,20 +91153,31 @@ async function hook(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "hook"
+    "hook",
+    (positionals) => {
+      const [sub2, ...data] = positionals;
+      if (sub2 === void 0) return { kind: "unknown" };
+      if (sub2 !== "install" && sub2 !== "status" && sub2 !== "uninstall") return { kind: "unknown", token: sub2 };
+      return {
+        kind: "selected",
+        leaf: sub2 === "install" ? CLI_LEAVES.hookInstall : sub2 === "status" ? CLI_LEAVES.hookStatus : CLI_LEAVES.hookUninstall,
+        data,
+        payload: sub2
+      };
+    }
   );
-  if (values.help) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(HOOK_USAGE);
     return;
   }
-  const sub = positionals[0];
-  if (sub !== "install" && sub !== "status" && sub !== "uninstall") {
+  if (selection.kind === "unknown") {
     throw new CliError(
       "USAGE",
-      sub === void 0 ? "hook requires a subcommand (install|status|uninstall)" : `unknown hook subcommand: ${sub} (expected install|status|uninstall)`,
+      selection.token === void 0 ? "hook requires a subcommand (install|status|uninstall)" : `unknown hook subcommand: ${selection.token} (expected install|status|uninstall)`,
       { help: `${cliInvocation()} hook install|status|uninstall [--scope project|user]` }
     );
   }
+  const sub = selection.payload;
   const requestedScope = values.scope;
   const scope = normalizeInstallScope(requestedScope);
   if (scope === void 0) {
@@ -92448,7 +92835,7 @@ async function sync(argv2, deps = {}) {
   }
 }
 function parseSyncInvocation(argv2, inv) {
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs23({
       args: argv2,
       options: {
@@ -92465,7 +92852,7 @@ function parseSyncInvocation(argv2, inv) {
       },
       allowPositionals: true
     }),
-    "sync"
+    CLI_LEAVES.sync
   );
   if (values.help) return { kind: "help" };
   if (values.migrate) {
@@ -92690,162 +93077,16 @@ init_define_ASLITE_BUILD_IDENTITY();
 // src/reference.ts
 init_define_ASLITE_BUILD_IDENTITY();
 var DESCRIPTION = "read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views)";
-var COMMAND_GROUPS = [
-  {
-    group: "Bundle",
-    commands: [
-      {
-        usage: "bundle locate [--dir <path>]",
-        summary: "Resolve the exact canonical local bundle path and report why it won selection"
-      },
-      {
-        usage: "catalog (add <label> [--dir <path>] | list | resolve <label-or-id> [--field path])",
-        summary: "Register and deterministically resolve this user's explicitly named local workspaces"
-      },
-      {
-        usage: "init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]",
-        summary: "Create (or open) an OKF knowledge bundle in a directory \u2014 greenfield setup; a project that already shares a board is set up by sync, not init. --create-only requires a genuinely NEW target and refuses existing, non-empty, symlinked, enclosing, bound, or concurrent targets before publication; runtime failures retain and report any empty directories they created instead of deleting them \u2014 'recipe add' modifies a verified existing bundle"
-      },
-      {
-        usage: "index generate [--dir <path>] [--check] [--force] [--actor <name>]",
-        summary: "Generate complete portable Markdown navigation explicitly; refuses curated indexes unless --force adopts them"
-      },
-      {
-        usage: "status [--limit <n>] [--remote <url>]",
-        summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)"
-      }
-    ]
-  },
-  {
-    group: "Documents & links",
-    commands: [
-      {
-        usage: "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--remote <url>]",
-        summary: "Write a generic OKF concept document"
-      },
-      {
-        usage: "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]",
-        summary: "Patch given fields (incl. kind-declared fields like --status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version"
-      },
-      {
-        usage: "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]",
-        summary: "Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting"
-      },
-      {
-        usage: "doc history <id> [--limit <n>] [--remote <url>]",
-        summary: "Show a doc's version history (newest first, capped at 20 by default \u2014 --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) \u2014 the tokens for --expected-version"
-      },
-      {
-        usage: "doc delete <id> [--expected-version <v>] [--remote <url>]",
-        summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)"
-      },
-      {
-        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--remote <url>]",
-        summary: "Query concepts over their frontmatter (alias: query) \u2014 a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)"
-      },
-      {
-        usage: "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--remote <url>]",
-        summary: "Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text"
-      }
-    ]
-  },
-  {
-    group: "Artifacts",
-    commands: [
-      {
-        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--remote <url>]",
-        summary: "Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record"
-      },
-      {
-        usage: "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--remote <url>]",
-        summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob)"
-      },
-      {
-        usage: "pull --doc-key <key> --out (<path> | -) [--remote <url>]",
-        summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)"
-      },
-      {
-        usage: "blobs [--prefix <p>] [--limit <n>] [--remote <url>]",
-        summary: "List the store's blob (non-document) keys (documents are listed by 'list'/'query')"
-      },
-      {
-        usage: "delete --doc-key <key> [--expected-version <v>] [--remote <url>]",
-        summary: "Hard-delete a doc or blob by key (idempotent: absent -> deleted:false, exit 0)"
-      }
-    ]
-  },
-  {
-    group: "Kinds",
-    commands: [
-      {
-        usage: 'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--remote <url>]',
-        summary: "Create a new instance of a bundle-declared kind \u2014 initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step"
-      },
-      {
-        usage: "kinds [--remote <url>]",
-        summary: "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)"
-      },
-      {
-        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--remote <url>]',
-        summary: "Edit a kind's schema \u2014 add/remove a declared field or enum value on its convention (idempotent)"
-      },
-      {
-        usage: "recipes [--dir <path>] [--remote <url>]",
-        summary: "Browse built-in recipes before or after init; with a bundle, also show whether each is already applied"
-      },
-      {
-        usage: "recipe add <name-or-path> [--remote <url>]",
-        summary: "Apply a recipe's content-free definitions \u2014 Kinds plus optional declared References and Views \u2014 idempotently"
-      }
-    ]
-  },
-  {
-    group: "Remote",
-    commands: [
-      {
-        usage: "serve [--dir <path>] [--host <h>] [--port <p>]",
-        summary: "Boot the reference wire-protocol server over a local bundle (loopback, no auth)"
-      },
-      {
-        usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open]",
-        summary: `Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle's docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register \u2014 see status's legacy_naming finding), and see a live activity feed, the bundle's sharing status, and your registered workspaces. The header shows the bundle's display name \u2014 derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"`
-      },
-      {
-        usage: "mcp [--dir <path>] [--actor <name>]",
-        summary: "Run the experimental local MCP Apps adapter over a bundle (stdio): launch an existing registered View unchanged, or launch standard active View HTML transiently and save its approved exact bytes as a registered View; bundle data and governed actions stay behind local human approval"
-      },
-      {
-        usage: "view list [--limit <n>] [--dir <path> | --remote <url>]",
-        summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views"
-      },
-      {
-        usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]",
-        summary: "Share the board branch with a remote \u2014 commits, pulls, and pushes (git tier; --pull-only skips commit+push). `init` makes a LOCAL bundle; --establish is the separate, explicit act that starts sharing it (creates the board branch, pushes; never automatic). A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale \u2014 silent, bounded (~2s), never a push; AGENTSTATE_LITE_NO_AUTOPULL=<any value, even 0> disables it"
-      }
-    ]
-  },
-  {
-    group: "Session",
-    commands: [
-      {
-        usage: "version [--check] [--tag latest|next] [--json]",
-        summary: "Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy"
-      },
-      {
-        usage: "session-start [--dir <path>] [--no-update-check]",
-        summary: "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or ASLITE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh; npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data"
-      },
-      {
-        usage: "hook install|status|uninstall [--scope project|user]",
-        summary: "Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode"
-      },
-      {
-        usage: "skill install|status|uninstall [--scope project|user]",
-        summary: "Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface \u2014 its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage"
-      }
-    ]
-  }
-];
+var COMMAND_GROUPS = Object.freeze(
+  CLI_COMMAND_GROUPS.map((group) => Object.freeze({
+    group: group.group,
+    commands: Object.freeze(group.commands.map((row2) => Object.freeze({
+      usage: row2.usage,
+      summary: row2.summary,
+      paths: Object.freeze(row2.leaves.map((leaf) => leaf.path))
+    })))
+  }))
+);
 function kindsPointer(invocation) {
   return `kinds are declared per-bundle \u2014 run \`${invocation} kinds\` to list them`;
 }
@@ -93896,6 +94137,16 @@ Options:
 Environment opt-outs (presence, including an empty value): ASLITE_NO_UPDATE_CHECK,
 NO_UPDATE_NOTIFIER, or CI.
 `;
+var HOME_OPTIONS = {
+  remote: { type: "string" },
+  dir: { type: "string" },
+  json: { type: "boolean" },
+  "no-update-check": { type: "boolean" },
+  help: { type: "boolean", short: "h" }
+};
+function parseHomeArgs(argv2) {
+  return parseArgs24({ args: argv2, options: HOME_OPTIONS, allowPositionals: true });
+}
 var HOME_RECENT_LIMIT = 5;
 var HOME_WORKSPACES_BUDGET_MS = 500;
 var HOME_WORKSPACES_LIMIT = 15;
@@ -94161,17 +94412,7 @@ async function home(argv2, deps = {}) {
   let jsonMode = false;
   let helpMode = false;
   try {
-    const parsed = parseArgs24({
-      args: argv2,
-      options: {
-        remote: { type: "string" },
-        dir: { type: "string" },
-        json: { type: "boolean" },
-        "no-update-check": { type: "boolean" },
-        help: { type: "boolean", short: "h" }
-      },
-      allowPositionals: true
-    });
+    const parsed = parseHomeArgs(argv2);
     remote = parsed.values.remote;
     explicitDir = parsed.values.dir;
     dir = explicitDir;
@@ -94301,6 +94542,14 @@ async function home(argv2, deps = {}) {
       jsonMode ? "json" : "default"
     )
   );
+}
+async function homeCommand(argv2, deps = {}) {
+  const parsed = parseLeafOrUsage(() => parseHomeArgs(argv2), HOME_LEAF);
+  if (parsed.values.help) {
+    (deps.stdout ?? ((s) => void process.stdout.write(s)))(HOME_USAGE);
+    return;
+  }
+  await home(argv2, deps);
 }
 
 // src/commands/skill.ts
@@ -94840,7 +95089,7 @@ function skillStatusForDir(dir, assets, installCommand = `${cliInvocation()} ski
 }
 async function skill(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () => parseArgs25({
       args: argv2,
       options: {
@@ -94850,20 +95099,31 @@ async function skill(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "skill"
+    "skill",
+    (positionals) => {
+      const [sub2, ...data] = positionals;
+      if (sub2 === void 0) return { kind: "unknown" };
+      if (sub2 !== "install" && sub2 !== "status" && sub2 !== "uninstall") return { kind: "unknown", token: sub2 };
+      return {
+        kind: "selected",
+        leaf: sub2 === "install" ? CLI_LEAVES.skillInstall : sub2 === "status" ? CLI_LEAVES.skillStatus : CLI_LEAVES.skillUninstall,
+        data,
+        payload: sub2
+      };
+    }
   );
-  if (values.help) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(SKILL_USAGE);
     return;
   }
-  const sub = positionals[0];
-  if (sub !== "install" && sub !== "status" && sub !== "uninstall") {
+  if (selection.kind === "unknown") {
     throw new CliError(
       "USAGE",
-      sub === void 0 ? "skill requires a subcommand (install|status|uninstall)" : `unknown skill subcommand: ${sub} (expected install|status|uninstall)`,
+      selection.token === void 0 ? "skill requires a subcommand (install|status|uninstall)" : `unknown skill subcommand: ${selection.token} (expected install|status|uninstall)`,
       { help: `${cliInvocation()} skill install|status|uninstall [--scope project|user]` }
     );
   }
+  const sub = selection.payload;
   const requestedScope = values.scope;
   const scope = normalizeInstallScope(requestedScope);
   if (scope === void 0) {
@@ -95099,7 +95359,7 @@ async function sessionStartPull(dir, budgetMs = SESSION_START_PULL_BUDGET_MS, no
 }
 async function sessionStart(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs26({
       args: argv2,
       options: {
@@ -95110,7 +95370,7 @@ async function sessionStart(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "session-start"
+    CLI_LEAVES.sessionStart
   );
   if (values.help) {
     stdout(SESSION_START_USAGE);
@@ -95177,7 +95437,7 @@ passing back to ordinary commands with --dir. This command never reads or select
 async function bundleCommand(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
   const cwd = deps.cwd ?? (() => process.cwd());
-  const parsed = parseOrUsage(
+  const parsed = parseSelectorOrUsage(
     () => parseArgs27({
       args: argv2,
       options: {
@@ -95187,15 +95447,19 @@ async function bundleCommand(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "bundle locate"
+    "bundle",
+    (positionals) => {
+      if (positionals.length === 0) return { kind: "navigation" };
+      if (positionals[0] !== "locate") return { kind: "unknown", token: positionals[0] };
+      return { kind: "selected", leaf: CLI_LEAVES.bundleLocate, data: positionals.slice(1), payload: void 0 };
+    }
   );
-  if (parsed.values.help || parsed.positionals.length === 0) {
+  if (parsed.selection.kind === "help" || parsed.selection.kind === "navigation") {
     stdout(BUNDLE_USAGE);
     return;
   }
-  const [subcommand, ...extra] = parsed.positionals;
-  if (subcommand !== "locate" || extra.length > 0) {
-    throw new CliError("USAGE", `unknown bundle subcommand: ${subcommand ?? ""}`, {
+  if (parsed.selection.kind === "unknown") {
+    throw new CliError("USAGE", `unknown bundle subcommand: ${parsed.selection.token ?? ""}`, {
       help: `${cliInvocation()} bundle locate --help`
     });
   }
@@ -95276,7 +95540,7 @@ async function catalogInner(argv2, deps) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
   const cwd = deps.cwd ?? (() => process.cwd());
   const home2 = deps.home ?? homedir11;
-  const parsed = parseOrUsage(
+  const parsed = parseSelectorOrUsage(
     () => parseArgs28({
       args: argv2,
       options: {
@@ -95287,18 +95551,31 @@ async function catalogInner(argv2, deps) {
       },
       allowPositionals: true
     }),
-    "catalog"
+    "catalog",
+    (positionals) => {
+      const [subcommand2, ...data] = positionals;
+      if (subcommand2 === void 0) return { kind: "navigation" };
+      if (subcommand2 !== "add" && subcommand2 !== "list" && subcommand2 !== "resolve") {
+        return { kind: "unknown", token: subcommand2 };
+      }
+      return {
+        kind: "selected",
+        leaf: subcommand2 === "add" ? CLI_LEAVES.catalogAdd : subcommand2 === "list" ? CLI_LEAVES.catalogList : CLI_LEAVES.catalogResolve,
+        data,
+        payload: { subcommand: subcommand2, operand: data[0] }
+      };
+    }
   );
-  if (parsed.values.help || parsed.positionals.length === 0) {
+  if (parsed.selection.kind === "help" || parsed.selection.kind === "navigation") {
     stdout(CATALOG_USAGE);
     return;
   }
-  const [subcommand, ...positionals] = parsed.positionals;
+  if (parsed.selection.kind === "unknown") usage(`unknown catalog subcommand: ${parsed.selection.token}`);
+  const { subcommand, operand } = parsed.selection.payload;
   if (subcommand === "add") {
-    if (positionals.length !== 1) usage("catalog add requires exactly one <label>");
     if (parsed.values.field !== void 0) usage("--field is only valid with catalog resolve");
     const target = await resolveLocalBundleTarget(parsed.values.dir, cwd());
-    const result3 = await addCatalogEntry(positionals[0], target.canonicalRoot, {
+    const result3 = await addCatalogEntry(operand, target.canonicalRoot, {
       ...deps.catalogOptions ?? {},
       home: home2()
     });
@@ -95316,7 +95593,6 @@ async function catalogInner(argv2, deps) {
     return;
   }
   if (subcommand === "list") {
-    if (positionals.length !== 0) usage("catalog list takes no positional arguments");
     if (parsed.values.dir !== void 0) usage("--dir is only valid with catalog add");
     if (parsed.values.field !== void 0) usage("--field is only valid with catalog resolve");
     const entries = await listCatalogEntries(home2());
@@ -95334,7 +95610,6 @@ async function catalogInner(argv2, deps) {
     return;
   }
   if (subcommand === "resolve") {
-    if (positionals.length !== 1) usage("catalog resolve requires exactly one <label-or-id>");
     if (parsed.values.dir !== void 0) usage("--dir is only valid with catalog add");
     if (parsed.values.field !== void 0 && parsed.values.field !== "path") {
       usage('catalog resolve --field supports only "path"');
@@ -95342,7 +95617,7 @@ async function catalogInner(argv2, deps) {
     if (parsed.values.field !== void 0 && parsed.values.json) {
       usage("--field and --json are mutually exclusive");
     }
-    const entry = await resolveCatalogEntry(positionals[0], home2());
+    const entry = await resolveCatalogEntry(operand, home2());
     if (parsed.values.field === "path") {
       stdout(entry.locator.path + "\n");
       return;
@@ -95358,7 +95633,6 @@ async function catalogInner(argv2, deps) {
     );
     return;
   }
-  usage(`unknown catalog subcommand: ${subcommand}`);
 }
 
 // src/commands/index.ts
@@ -95443,7 +95717,7 @@ function refusalError(prepared, displayName, scanned, check2, dir) {
 }
 async function indexCommand(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((s) => void process.stdout.write(s));
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () => parseArgs29({
       args: argv2,
       options: {
@@ -95456,14 +95730,19 @@ async function indexCommand(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "index"
+    "index",
+    (positionals) => {
+      if (positionals.length === 0) return { kind: "navigation" };
+      if (positionals[0] !== "generate") return { kind: "unknown", token: positionals[0] };
+      return { kind: "selected", leaf: CLI_LEAVES.indexGenerate, data: positionals.slice(1), payload: void 0 };
+    }
   );
-  if (values.help || positionals.length === 0) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(INDEX_USAGE);
     return;
   }
-  if (positionals.length !== 1 || positionals[0] !== "generate") {
-    throw new CliError("USAGE", `unknown index subcommand: ${positionals.join(" ")}`, {
+  if (selection.kind === "unknown") {
+    throw new CliError("USAGE", `unknown index subcommand: ${selection.token ?? ""}`, {
       help: `${cliInvocation()} index --help`
     });
   }
@@ -95588,9 +95867,9 @@ async function artifact(argv2, deps = {}) {
       help: `${cliInvocation()} artifact --help`
     });
   }
-  const { values, positionals } = parseOrUsage(
+  const { values, positionals } = parseLeafOrUsage(
     () => parseArgs30({ args: argv2.slice(1), strict: true, allowPositionals: true, options: ARTIFACT_CREATE_OPTIONS }),
-    "artifact create"
+    CLI_LEAVES.artifactCreate
   );
   if (values.help) {
     stdout(ARTIFACT_USAGE);
@@ -95770,7 +96049,7 @@ Options:
 `;
 async function versionCommand(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((text4) => void process.stdout.write(text4));
-  const { values, positionals } = parseOrUsage(
+  const { values } = parseLeafOrUsage(
     () => parseArgs31({
       args: argv2,
       options: {
@@ -95781,16 +96060,11 @@ async function versionCommand(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "version"
+    CLI_LEAVES.version
   );
   if (values.help) {
     stdout(VERSION_USAGE);
     return;
-  }
-  if (positionals.length > 0) {
-    throw new CliError("USAGE", `unexpected positional argument: ${positionals[0]}`, {
-      help: `${cliInvocation()} version --help`
-    });
   }
   if (values.tag !== void 0 && !values.check) {
     throw new CliError("USAGE", "option '--tag' requires '--check'", {
@@ -95847,7 +96121,7 @@ Options:
 `;
 async function view(argv2, deps = {}) {
   const stdout = deps.stdout ?? ((text4) => void process.stdout.write(text4));
-  const { values, positionals } = parseOrUsage(
+  const { values, selection } = parseSelectorOrUsage(
     () => parseArgs32({
       args: argv2,
       options: {
@@ -95859,14 +96133,19 @@ async function view(argv2, deps = {}) {
       },
       allowPositionals: true
     }),
-    "view"
+    "view",
+    (positionals) => {
+      if (positionals.length === 0) return { kind: "navigation" };
+      if (positionals[0] !== "list") return { kind: "unknown", token: positionals[0] };
+      return { kind: "selected", leaf: CLI_LEAVES.viewList, data: positionals.slice(1), payload: void 0 };
+    }
   );
-  if (values.help || positionals.length === 0) {
+  if (selection.kind === "help" || selection.kind === "navigation") {
     stdout(VIEW_USAGE);
     return;
   }
-  if (positionals.length !== 1 || positionals[0] !== "list") {
-    throw new CliError("USAGE", `unknown view subcommand: ${positionals.join(" ")}`, {
+  if (selection.kind === "unknown") {
+    throw new CliError("USAGE", `unknown view subcommand: ${selection.token ?? ""}`, {
       help: `${cliInvocation()} view --help`
     });
   }
@@ -95901,36 +96180,7 @@ async function view(argv2, deps = {}) {
 
 // src/cli.ts
 import { parseArgs as parseArgs33 } from "node:util";
-var KNOWN_COMMANDS = [
-  "init",
-  "bundle",
-  "catalog",
-  "index",
-  "doc",
-  "promote",
-  "pull",
-  "blobs",
-  "delete",
-  "link",
-  "list",
-  "query",
-  "new",
-  "artifact",
-  "kinds",
-  "kind",
-  "recipes",
-  "recipe",
-  "status",
-  "serve",
-  "ui",
-  "mcp",
-  "sync",
-  "hook",
-  "skill",
-  "session-start",
-  "version",
-  "view"
-];
+var KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
 function helpReference() {
   return helpIndexText(cliInvocation());
 }
@@ -95943,6 +96193,48 @@ var wrap2 = (fn) => async (args) => {
   await fn(args);
   return "";
 };
+var PUBLIC_HANDLERS = Object.freeze({
+  init,
+  bundle: bundleCommand,
+  catalog,
+  index: indexCommand,
+  doc,
+  promote,
+  pull,
+  blobs,
+  delete: deleteCommand,
+  link,
+  list,
+  query: list,
+  new: newCommand,
+  artifact,
+  kinds,
+  kind,
+  recipes,
+  recipe,
+  status,
+  serve: serve2,
+  ui,
+  mcp,
+  sync,
+  hook,
+  skill,
+  "session-start": sessionStart,
+  version: versionCommand,
+  view
+});
+var publicRuntimeCommands = Object.fromEntries(
+  PUBLIC_COMMAND_NAMES.map((name) => [name, wrap2(PUBLIC_HANDLERS[name])])
+);
+var RUNTIME_COMMANDS = Object.freeze({
+  ...publicRuntimeCommands,
+  // Defensive alias for the bare zero-arg home surface; intentionally not public/catalogued.
+  home: wrap2(homeCommand),
+  // Shadow the SDK's reserved built-in npm updater with this CLI's ordinary unknown-command error.
+  update: async () => {
+    throw unknownCommandError("update");
+  }
+});
 function isGlobalOnlyHomeInvocation(argv2) {
   try {
     const { positionals } = parseArgs33({
@@ -96031,49 +96323,7 @@ async function main(argv2) {
     // Drop the SDK's mandatory lone trailing "\n" after each successful (void) command so command
     // output stays byte-identical; forward everything else (error envelopes, unknown-command output).
     stdout: { write: (c) => c === "\n" ? true : process.stdout.write(c) },
-    commands: {
-      init: wrap2(init),
-      bundle: wrap2(bundleCommand),
-      catalog: wrap2(catalog),
-      index: wrap2(indexCommand),
-      doc: wrap2(doc),
-      promote: wrap2(promote),
-      pull: wrap2(pull),
-      blobs: wrap2(blobs),
-      delete: wrap2(deleteCommand),
-      link: wrap2(link),
-      list: wrap2(list),
-      // `query` is an alias of `list` (the list/query API surface).
-      query: wrap2(list),
-      new: wrap2(newCommand),
-      artifact: wrap2(artifact),
-      kinds: wrap2(kinds),
-      kind: wrap2(kind),
-      recipes: wrap2(recipes),
-      recipe: wrap2(recipe),
-      status: wrap2(status),
-      serve: wrap2(serve2),
-      ui: wrap2(ui),
-      mcp: wrap2(mcp),
-      view: wrap2(view),
-      sync: wrap2(sync),
-      hook: wrap2(hook),
-      // Install/remove this package's generated Agent Skill in host skill folders.
-      skill: wrap2(skill),
-      // The SessionStart hook payload: time-boxed board pull, then the home render — in-process.
-      "session-start": wrap2(sessionStart),
-      version: wrap2(versionCommand),
-      // Explicit `home` handler so a SessionStart hook (or an agent) can also call `<bin> home`, not
-      // only the bare zero-arg form. Not listed in COMMAND_GROUPS — the bare invocation is the primary
-      // home surface (AXI §8); this is a defensive alias with identical output.
-      home: wrap2(home),
-      // Shadow the SDK's reserved built-in `update` command (npm self-update is nonsensical for a
-      // committed skill-bundled .mjs). Registering a handler that throws the unknown-command USAGE
-      // error restores a TOON envelope, exit 2. `update` is intentionally NOT in KNOWN_COMMANDS.
-      update: async () => {
-        throw unknownCommandError("update");
-      }
-    },
+    commands: RUNTIME_COMMANDS,
     // Required by AxiCliOptions; UNREACHED because the no-args path is pre-routed to the home view
     // above. Kept a trivial offline writer (the command reference) — no creds/network.
     home: async () => {
