@@ -63,7 +63,10 @@ jobs:
     environment: release
     permissions:
       actions: read
-      contents: read
+      # contents:write is held ONLY because GitHub gates DRAFT-release VISIBILITY behind write —
+      # a read token 403s on GET releases/<id> for an unpublished draft (live run 31507532220).
+      # Every step in this job remains a pure read; the finalize job is still the only mutator.
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -151,7 +154,10 @@ jobs:
     environment: release
     permissions:
       actions: read
-      contents: read
+      # contents:write is held ONLY because GitHub gates DRAFT-release VISIBILITY behind write —
+      # a read token 403s on GET releases/<id> for an unpublished draft (live run 31507532220).
+      # Every step in this job remains a pure read; the finalize job is still the only mutator.
+      contents: write
     steps:
       - uses: actions/checkout@v4
 

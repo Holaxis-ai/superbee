@@ -45,6 +45,7 @@ function permissionsOf(jobText) {
   if (at === -1) return null;
   const perms = {};
   for (let i = at + 1; i < lines.length; i++) {
+    if (/^ {6}#/.test(lines[i])) continue; // comment lines inside the block are legitimate YAML
     const m = /^ {6}([a-z-]+):\s*(\S+)\s*$/.exec(lines[i]);
     if (!m) break;
     perms[m[1]] = m[2];
@@ -73,12 +74,23 @@ test("staged workflow: each job carries exactly its minimal permissions", () => 
   );
 });
 
-test("finalize workflow: ordering gate + registry-verify are read-only, finalize gets contents:write only", () => {
+test("finalize workflow: gate jobs hold contents:write ONLY for draft visibility; finalize is the only mutator", () => {
+  // HONEST framing (live run 31507532220): the original design pinned the gate jobs read-only,
+  // but GitHub 403s a read token on GET releases/<id> for an UNPUBLISHED draft — write is the
+  // platform's price for LOOKING at a draft. The property that survives is behavioral, not
+  // token-shaped: the gate jobs' steps contain no mutating command, pinned below.
   const jobs = extractJobs(finalize);
   assert.deepEqual(Object.keys(jobs).sort(), ["finalize", "ordering-verified", "registry-verify"]);
-  assert.deepEqual(permissionsOf(jobs["ordering-verified"]), { actions: "read", contents: "read" });
-  assert.deepEqual(permissionsOf(jobs["registry-verify"]), { actions: "read", contents: "read" });
+  assert.deepEqual(permissionsOf(jobs["ordering-verified"]), { actions: "read", contents: "write" });
+  assert.deepEqual(permissionsOf(jobs["registry-verify"]), { actions: "read", contents: "write" });
   assert.deepEqual(permissionsOf(jobs.finalize), { actions: "read", contents: "write" });
+  // No gate job may carry a mutating gh/npm invocation — GETs and octet-stream downloads only.
+  for (const name of ["ordering-verified", "registry-verify"]) {
+    const body = jobs[name];
+    for (const token of ["-X PATCH", "-X POST", "-X DELETE", "-X PUT", "--method PATCH", "--method POST", "--method DELETE", "gh release upload", "gh release create", "gh release edit", "gh release delete", "npm stage approve", "npm stage reject", "npm publish", "npm dist-tag"]) {
+      assert.ok(!body.includes(token), `gate job ${name} must not contain mutating token ${JSON.stringify(token)}`);
+    }
+  }
 });
 
 test("the ordering gate runs BEFORE registry mutation and again before publication", () => {

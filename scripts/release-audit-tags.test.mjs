@@ -597,7 +597,10 @@ test("the COMMITTED burned-versions declaration parses and admits the current so
   const burned = readBurnedDeclaration(committed);
   assert.ok(burned.includes("0.1.0-pre.4"), "the pre.4 burn that motivated this mechanism is declared");
   const manifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
-  const drift = checkSourceDrift(manifest.version, ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3"], burned);
+  // Fixture mirrors the live registry at build time: 0.1.0-pre.8 published 2026-08-11 (the first
+  // release through the staged machinery), pre.4..pre.7 burned. Update alongside real publishes.
+  const published = ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.8"];
+  const drift = checkSourceDrift(manifest.version, published, burned);
   assert.deepEqual(drift.violations, []);
 });
 
