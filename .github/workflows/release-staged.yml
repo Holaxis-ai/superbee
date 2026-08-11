@@ -173,7 +173,14 @@ jobs:
               test "$DRAFT" = "true" || { echo "::error::refusing to alter an already-published release"; exit 1; }
             else
               gh release create "$TAG" --draft --title "$TAG" --notes "Prepared draft for $TAG (unpublished)."
-              RELEASE_ID="$(resolve_release_id)"
+              # The releases list lags a just-created draft (observed ~1s+ in run 31498799904), so
+              # the post-create resolve retries with a bounded backoff — and still fails closed.
+              for attempt in 1 2 3 4 5 6; do
+                RELEASE_ID="$(resolve_release_id)"
+                [ -n "$RELEASE_ID" ] && break
+                echo "created draft for $TAG not yet listed (attempt $attempt); retrying"
+                sleep 2
+              done
               test -n "$RELEASE_ID" || { echo "::error::created draft for $TAG is not resolvable by id"; exit 1; }
             fi
             gh release upload "$TAG" "$FILE" "$ARTIFACT_DIR/candidate.json" --clobber
@@ -235,7 +242,10 @@ jobs:
           POLICY_TAG: ${{ needs.candidate.outputs.policy_tag }}
         run: |
           set -euo pipefail
-          TARBALL="$ARTIFACT_DIR/$TARBALL_FILENAME"
+          # The leading ./ is load-bearing: npm parses a bare two-segment path (dir/file.tgz) as
+          # github:owner/repo shorthand and runs git ls-remote against it. ./ forces file
+          # resolution (test-pinned; reproduced against npm locally and in live run 31499362043).
+          TARBALL="./$ARTIFACT_DIR/$TARBALL_FILENAME"
           if [ "$MODE" = "live" ]; then
             test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
             npm stage publish "$TARBALL" --tag "$POLICY_TAG" --provenance --json | tee stage.json

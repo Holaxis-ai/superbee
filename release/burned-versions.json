@@ -17,6 +17,10 @@
     {
       "version": "0.1.0-pre.6",
       "reason": "tag v0.1.0-pre.6 points at 94a01342, whose release-staged.yml resolves the draft via the tag-addressed endpoint that cannot see drafts; workflow_dispatch runs the workflow at the dispatched ref and live mode requires a v* tag ref, so the tag can never pick up the id-based fix; its first live run created draft 368277129 and uploaded assets but crashed at capture; never staged or published"
+    },
+    {
+      "version": "0.1.0-pre.7",
+      "reason": "tag v0.1.0-pre.7 points at 1e2e2aa3, whose release-staged.yml passes the tarball to npm stage publish as a bare two-segment path that npm parses as github:owner/repo shorthand (live run 31499362043 died on git ls-remote before touching the registry); the immovable tag cannot pick up the ./-prefix fix; its draft (id 368610973) exists with assets; never staged or published"
     }
   ]
 }
