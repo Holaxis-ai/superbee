@@ -1,6 +1,6 @@
 {
   "name": "@holaxis/aslite",
-  "version": "0.1.0-pre.9",
+  "version": "0.1.0-pre.10",
   "type": "module",
   "description": "Agent-facing CLI (AXI) for reading and writing local OKF knowledge bundles: context notes, docs, cross-links, and live bundle Views.",
   "keywords": [

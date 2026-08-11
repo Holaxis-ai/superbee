@@ -57,3 +57,17 @@ test("registry proof fails closed on each independent mismatch", () => {
     /no npm-hosted SLSA provenance/,
   );
 });
+
+// Regression (live run 31532497412): npm audit signatures verifies INSTALLED packages, so the
+// scratch install must be REAL — a --package-lock-only install leaves nothing to audit and npm
+// fails with "found no dependencies to audit that were installed from a supported registry".
+// The suite mocks npm, so this pins the SOURCE invocation shape: the coordinate install that
+// precedes the audit must not be lockfile-only.
+test("the scratch install feeding audit signatures is a real install, not lockfile-only", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const source = await readFile(new URL("./release-verify-registry.mjs", import.meta.url), "utf8");
+  assert.ok(!source.includes("--package-lock-only"), "lockfile-only install leaves audit signatures nothing to verify");
+  const installAt = source.indexOf('"install", "--ignore-scripts"');
+  const auditAt = source.indexOf('"audit", "signatures"');
+  assert.ok(installAt !== -1 && auditAt !== -1 && installAt < auditAt, "real install precedes the signatures audit");
+});

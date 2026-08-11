@@ -113,11 +113,13 @@ export async function verifyRegistry({ version, manifest, out }) {
       "npm view dist",
     );
 
-    // npm audit signatures verifies packages in the current package-lock. Build that lock from the
-    // exact coordinate in scratch; `--package` is not an npm audit signatures option.
+    // npm audit signatures verifies INSTALLED packages — a lockfile alone yields "found no
+    // dependencies to audit that were installed from a supported registry" (live run 31532497412;
+    // reproduced against a real registry install before this fix). So install the exact coordinate
+    // for real in scratch (scripts stay disabled) and audit the resulting tree.
     await writeFile(path.join(scratch, "package.json"), `${JSON.stringify({ private: true, dependencies: {} })}\n`);
     await npmInvocation(
-      ["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact", coordinate],
+      ["install", "--ignore-scripts", "--no-audit", "--no-fund", "--save-exact", coordinate],
       { ...env, npm_config_prefix: prefix },
       { cwd: scratch },
     );
