@@ -276,3 +276,17 @@ test("cross-run downloads have actions:read and select artifacts by ID, not name
     assert.match(body, /run-id: \$\{\{ inputs\.run_id \}\}/);
   }
 });
+
+// Regression: the first live run created its draft and then queried GET releases/tags/<tag> —
+// an endpoint that returns only PUBLISHED releases, never drafts (verified empirically: minutes
+// after creation, with both assets uploaded, it still 404s). Draft resolution must go through
+// the releases LIST / numeric-id endpoints; the tag-addressed release endpoint is forbidden in
+// both workflows.
+test("no workflow queries the tag-addressed release endpoint (drafts are invisible to it)", () => {
+  assert.ok(!staged.includes("releases/tags/"), "release-staged.yml must not query releases/tags/<tag>");
+  assert.ok(!finalize.includes("releases/tags/"), "release-finalize.yml must not query releases/tags/<tag>");
+  const jobs = extractJobs(staged);
+  assert.match(jobs.draft, /resolve_release_id/, "draft job resolves the draft by numeric id");
+  assert.match(jobs.draft, /releases\?per_page=100/, "draft resolution lists releases (the endpoint that includes drafts)");
+  assert.match(jobs.draft, /releases\/\$RELEASE_ID" > draft-release\.json/, "draft capture fetches by numeric id");
+});

@@ -160,14 +160,24 @@ jobs:
           FILE="$ARTIFACT_DIR/$TARBALL_FILENAME"
           if [ "$MODE" = "live" ]; then
             test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
-            if gh release view "$TAG" >/dev/null 2>&1; then
-              DRAFT="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.draft')"
+            # A DRAFT release is not addressable by tag: the tag-addressed release endpoint
+            # returns only PUBLISHED releases (a draft carries no tag ref — its URL is
+            # untagged-...). Resolve the draft by numeric id from the releases LIST, which does
+            # include drafts; the tag-addressed endpoint must never be queried here (test-pinned).
+            resolve_release_id() {
+              gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "[.[] | select(.tag_name == \"$TAG\")][0].id // \"\""
+            }
+            RELEASE_ID="$(resolve_release_id)"
+            if [ -n "$RELEASE_ID" ]; then
+              DRAFT="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq '.draft')"
               test "$DRAFT" = "true" || { echo "::error::refusing to alter an already-published release"; exit 1; }
             else
               gh release create "$TAG" --draft --title "$TAG" --notes "Prepared draft for $TAG (unpublished)."
+              RELEASE_ID="$(resolve_release_id)"
+              test -n "$RELEASE_ID" || { echo "::error::created draft for $TAG is not resolvable by id"; exit 1; }
             fi
             gh release upload "$TAG" "$FILE" "$ARTIFACT_DIR/candidate.json" --clobber
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > draft-release.json
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" > draft-release.json
             node scripts/release-verify-chain.mjs capture-draft \
               --release draft-release.json --tag "$TAG" --tarball "$FILE" \
               --manifest "$ARTIFACT_DIR/candidate.json" --github-output "$GITHUB_OUTPUT"
