@@ -17,6 +17,7 @@ import {
   expectedTagState,
   fetchRegistryState,
   parsePhaseDeclaration,
+  readBurnedDeclaration,
   saneSuccessors,
 } from "./release-audit-tags.mjs";
 
@@ -472,11 +473,15 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   const repoRoot = path.dirname(path.dirname(scriptFile));
   const cliVersion = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8")).version;
   // Derive a scheme-consistent published set from the ACTUAL source version so this test keeps
-  // passing across future version bumps (the audit reads the real package.json + phase file).
+  // passing across future version bumps (the audit reads the real package.json + phase and
+  // burned-versions files — so the synthesized registry must not publish a declared burn).
+  const committedBurns = readBurnedDeclaration(
+    JSON.parse(await readFile(path.join(repoRoot, "release", "burned-versions.json"), "utf8").catch(() => "null")),
+  );
   const line = /^(\d+)\.(\d+)\.0-pre\.(\d+)$/.exec(cliVersion);
-  const versions = line
+  const versions = (line
     ? Array.from({ length: Number(line[3]) }, (_, i) => `${line[1]}.${line[2]}.0-pre.${i + 1}`)
-    : [cliVersion];
+    : [cliVersion]).filter((v) => !committedBurns.includes(v));
   const time = Object.fromEntries(versions.map((v, i) => [v, new Date(Date.UTC(2026, 6, 1 + i)).toISOString()]));
   await writeFile(passing, JSON.stringify({ "dist-tags": { latest: cliVersion, next: cliVersion }, versions, time }));
   await writeFile(violating, JSON.stringify({ "dist-tags": { latest: "0.0.1", next: cliVersion }, versions, time }));
@@ -519,4 +524,109 @@ test("compareSemver orders prereleases below their release and pre.N numerically
   assert.ok(compareSemver("0.1.0-pre.3", "0.1.0") < 0);
   assert.ok(compareSemver("0.2.0-pre.1", "0.1.0") > 0);
   assert.equal(compareSemver("0.1.0-pre.3", "0.1.0-pre.3"), 0);
+});
+
+// Burned versions: numbers consumed by an immutable tag without publication. The declaration lets
+// successor chains step over EXPLICIT burns; undeclared skips still fail, stable numbers cannot be
+// burned, and a burn the registry has published is itself a violation.
+test("a declared burned number lets the successor chain step over it", () => {
+  const drift = checkSourceDrift("0.1.0-pre.5", ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3"], ["0.1.0-pre.4"]);
+  assert.equal(drift.violations.length, 0);
+  assert.equal(drift.state, "staged-prep");
+});
+
+test("an UNDECLARED skip still fails source drift", () => {
+  const drift = checkSourceDrift("0.1.0-pre.5", ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3"], []);
+  assert.equal(drift.violations.length, 1);
+  assert.equal(drift.violations[0].code, "source_version_jump");
+});
+
+test("burns chain: two consecutive burned numbers admit the third", () => {
+  const drift = checkSourceDrift("0.1.0-pre.6", ["0.1.0-pre.3"], ["0.1.0-pre.4", "0.1.0-pre.5"]);
+  assert.equal(drift.violations.length, 0);
+  const gap = checkSourceDrift("0.1.0-pre.6", ["0.1.0-pre.3"], ["0.1.0-pre.4"]);
+  assert.equal(gap.violations.length, 1, "a burn chain with a hole does not admit versions past the hole");
+});
+
+test("a burned number the registry HAS published is a violation", () => {
+  const drift = checkSourceDrift("0.1.0-pre.4", ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3"], ["0.1.0-pre.3"]);
+  assert.equal(drift.violations.length, 1);
+  assert.equal(drift.violations[0].code, "burned_version_published");
+});
+
+test("burning still respects the successor shapes: an unrelated burn admits nothing", () => {
+  const drift = checkSourceDrift("0.3.0-pre.1", ["0.1.0-pre.3"], ["0.1.0-pre.4"]);
+  assert.equal(drift.violations.length, 1);
+  assert.equal(drift.violations[0].code, "source_version_jump");
+});
+
+test("auditRegistryState threads burnedVersions through to source drift", () => {
+  const clean = auditRegistryState({
+    declaration: AT_REST, sourceVersion: "0.1.0-pre.5", registry: registryFixture(),
+    burnedVersions: ["0.1.0-pre.4"],
+  });
+  assert.deepEqual(clean.violations, []);
+  assert.equal(clean.facts.source_state, "staged-prep");
+  const missing = auditRegistryState({ declaration: AT_REST, sourceVersion: "0.1.0-pre.5", registry: registryFixture() });
+  assert.equal(missing.violations.length, 1);
+});
+
+test("readBurnedDeclaration validates shape, prerelease-only, reasons, and duplicates", () => {
+  assert.deepEqual(readBurnedDeclaration(null), []);
+  assert.deepEqual(
+    readBurnedDeclaration({ burned: [{ version: "0.1.0-pre.4", reason: "tag burned" }] }),
+    ["0.1.0-pre.4"],
+  );
+  assert.throws(() => readBurnedDeclaration([]), /must be a JSON object/);
+  assert.throws(() => readBurnedDeclaration({}), /requires a burned: \[\] array/);
+  assert.throws(() => readBurnedDeclaration({ burned: [{ version: "nope", reason: "x" }] }), /not SemVer/);
+  assert.throws(() => readBurnedDeclaration({ burned: [{ version: "0.1.0", reason: "x" }] }), /STABLE version/);
+  assert.throws(() => readBurnedDeclaration({ burned: [{ version: "0.1.0-pre.4", reason: " " }] }), /non-empty reason/);
+  assert.throws(
+    () => readBurnedDeclaration({ burned: [
+      { version: "0.1.0-pre.4", reason: "x" },
+      { version: "0.1.0-pre.4", reason: "y" },
+    ] }),
+    /declared twice/,
+  );
+});
+
+test("the COMMITTED burned-versions declaration parses and admits the current source version", async () => {
+  const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const committed = JSON.parse(await readFile(path.join(repoRoot, "release", "burned-versions.json"), "utf8"));
+  const burned = readBurnedDeclaration(committed);
+  assert.ok(burned.includes("0.1.0-pre.4"), "the pre.4 burn that motivated this mechanism is declared");
+  const manifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
+  const drift = checkSourceDrift(manifest.version, ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3"], burned);
+  assert.deepEqual(drift.violations, []);
+});
+
+test("a declared burn fills the published pre.N contiguity hole; an undeclared hole still reds", () => {
+  const published = ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.5"];
+  const time = Object.fromEntries(published.map((v, i) => [v, new Date(Date.UTC(2026, 6, 1 + i)).toISOString()]));
+  const withBurn = checkVersionScheme(published, time, ["0.1.0-pre.4"]);
+  assert.deepEqual(withBurn, []);
+  const withoutBurn = checkVersionScheme(published, time, []);
+  assert.equal(withoutBurn.length, 1);
+  assert.equal(withoutBurn[0].code, "pre_n_gap");
+  const wrongBurn = checkVersionScheme(published, time, ["0.2.0-pre.1"]);
+  assert.equal(wrongBurn.length, 1, "a burn on a different line fills nothing");
+});
+
+test("the FUTURE live registry shape — pre.5 published over the pre.4 burn — passes the full audit", () => {
+  const registry = {
+    distTags: { latest: "0.1.0-pre.5", next: "0.1.0-pre.5" },
+    versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.5"],
+    time: {
+      "0.1.0-pre.1": "2026-07-21T23:37:30.463Z",
+      "0.1.0-pre.2": "2026-07-31T13:46:17.102Z",
+      "0.1.0-pre.3": "2026-08-03T20:15:11.843Z",
+      "0.1.0-pre.5": "2026-08-11T00:00:00.000Z",
+    },
+  };
+  const result = auditRegistryState({
+    declaration: AT_REST, sourceVersion: "0.1.0-pre.5", registry, burnedVersions: ["0.1.0-pre.4"],
+  });
+  assert.deepEqual(result.violations, []);
+  assert.equal(result.facts.source_state, "in-sync");
 });
