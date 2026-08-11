@@ -44,7 +44,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 var define_ASLITE_BUILD_IDENTITY_default;
 var init_define_ASLITE_BUILD_IDENTITY = __esm({
   "<define:__ASLITE_BUILD_IDENTITY__>"() {
-    define_ASLITE_BUILD_IDENTITY_default = { schema: "aslite.build-identity.v1", package: { name: "@holaxis/aslite", version: "0.1.0-pre.4" }, source: { commit: "9c81aecf3bf4188b38f5ec00bc9583df957e8769", dirty: false }, artifact: { channel: "marketplace-legacy" }, compatibility_contracts: { skill: 1, hook: 1, mcp: 1 } };
+    define_ASLITE_BUILD_IDENTITY_default = { schema: "aslite.build-identity.v1", package: { name: "@holaxis/aslite", version: "0.1.0-pre.5" }, source: { commit: "12a59833cc7029566279e34a16db070a5e64c8a3", dirty: false }, artifact: { channel: "marketplace-legacy" }, compatibility_contracts: { skill: 1, hook: 1, mcp: 1 } };
   }
 });
 
