@@ -245,3 +245,51 @@ test("canonicalization does not weaken the digest guard", () => {
     );
   }
 });
+
+// Regression: the pre.5 dry run died AFTER receipt validation, in receiptEmissionCommands, which
+// demanded a UUID stage id while dry-run mode substitutes the "dry-run-stage" sentinel — a
+// validator disagreement between buildStageReceipt (sentinel-aware) and the command renderer
+// (not). This exercises buildReceipt — the exact entry the workflow's stage job calls — with the
+// full dry-run field shape from the failed run, through markdown rendering.
+test("buildReceipt completes for a DRY RUN (sentinel stage id) end to end", () => {
+  const built = buildReceipt({
+    runId: "31445190599",
+    artifactId: "9082708155",
+    artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
+    stageId: "dry-run-stage",
+    version: VERSION,
+    tag: `v${VERSION}`,
+    sourceCommit: COMMIT,
+    policyTag: "next",
+    tarballSha256: TARBALL_SHA,
+    tarballFilename: TARBALL,
+    integrity: INTEGRITY,
+    manifestSha256: MANIFEST_SHA,
+    draftReleaseId: "dry-run-release",
+    draftAssets: [
+      { id: "dry-run-tarball", name: TARBALL, digest: TARBALL_SHA },
+      { id: "dry-run-manifest", name: "candidate.json", digest: MANIFEST_SHA },
+    ],
+  });
+  assert.equal(built.receipt.stage.id, "dry-run-stage");
+  assert.equal(built.receipt.stage.download_filename, null);
+  assert.match(built.receipt_emission.inspected, /--stage-id dry-run-stage/);
+  const markdown = renderReceiptMarkdown(built);
+  assert.match(markdown, /dry-run-stage/);
+});
+
+test("a live receipt still refuses a non-UUID, non-sentinel stage id", () => {
+  assert.throws(
+    () => buildReceipt({
+      runId: "100", artifactId: "101", artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
+      stageId: "not-a-uuid", version: VERSION, tag: `v${VERSION}`, sourceCommit: COMMIT,
+      policyTag: "next", tarballSha256: TARBALL_SHA, tarballFilename: TARBALL,
+      integrity: INTEGRITY, manifestSha256: MANIFEST_SHA, draftReleaseId: "300",
+      draftAssets: [
+        { id: "201", name: TARBALL, digest: TARBALL_SHA },
+        { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
+      ],
+    }),
+    /invalid stage id/,
+  );
+});

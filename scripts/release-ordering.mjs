@@ -19,6 +19,10 @@ const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const ACTOR = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/; // GitHub login shape
 const LIVE_STAGE_ID_SOURCE = "[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}";
 export const LIVE_STAGE_ID = new RegExp(`^${LIVE_STAGE_ID_SOURCE}$`, "i");
+// The staged workflow's dry-run mode substitutes this sentinel for the npm stage id. Validators
+// that render or record (not authorize) may accept it; anything that AUTHORIZES a mutation must
+// keep requiring LIVE_STAGE_ID.
+export const DRY_RUN_STAGE_ID = "dry-run-stage";
 const AUX_ASSET = new RegExp(`^receipt-(inspected|approved|status)-(${LIVE_STAGE_ID_SOURCE})\\.json$`, "i");
 const SSH_SIG = /^-----BEGIN SSH SIGNATURE-----\n[\s\S]+\n-----END SSH SIGNATURE-----\n?$/;
 
@@ -517,9 +521,12 @@ export function verifyFinalPublication({ release, plan }) {
   };
 }
 
-/** Operator commands rendered into the stage summary for signed receipt emission. */
+/** Operator commands rendered into the stage summary for signed receipt emission. These are
+ * DISPLAY, not authorization: a dry run renders them with the sentinel. The rendered command
+ * cannot execute against a dry run — release-inspect's recovery slot layer (normalizeSlot,
+ * which every mutation path crosses) requires a UUID stage id and refuses the sentinel. */
 export function receiptEmissionCommands({ stageId, version, draftReleaseId }) {
-  field("stage id", stageId, LIVE_STAGE_ID);
+  field("stage id", stageId, stageId === DRY_RUN_STAGE_ID ? /^dry-run-stage$/ : LIVE_STAGE_ID);
   field("version", version, SEMVER);
   field("draft release id", draftReleaseId, TOKEN);
   const base = `node scripts/release-inspect.mjs --stage-id ${stageId} --version ${version} --draft-release-id ${draftReleaseId} --key ~/.ssh/id_ed25519`;

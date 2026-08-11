@@ -1,7 +1,7 @@
 // Pure parsers and validators for the immutable staged-release receipt chain. Workflows pass
 // untrusted API/input JSON into these functions; every identifier and digest is checked before it
 // can authorize registry or GitHub mutation.
-import { LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
+import { DRY_RUN_STAGE_ID, LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 
 const TOKEN = /^[A-Za-z0-9._-]+$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
@@ -96,7 +96,7 @@ export function buildStageReceipt(fields) {
   const integrity = string("npm integrity", fields.integrity, /^sha512-[A-Za-z0-9+/=]+$/);
   const draftReleaseId = string("draft release id", fields.draftReleaseId);
   const draftAssets = normalizedAssets(fields.draftAssets);
-  const stageId = string("stage id", fields.stageId, fields.stageId === "dry-run-stage" ? TOKEN : LIVE_STAGE_ID);
+  const stageId = string("stage id", fields.stageId, fields.stageId === DRY_RUN_STAGE_ID ? TOKEN : LIVE_STAGE_ID);
   const stageTag = string("stage tag", fields.policyTag);
 
   const assetByName = new Map(draftAssets.map((asset) => [asset.name, asset]));
@@ -123,7 +123,7 @@ export function buildStageReceipt(fields) {
     stage: {
       id: stageId,
       tag: stageTag,
-      download_filename: stageId === "dry-run-stage" ? null : stageDownloadFilename(version, stageId),
+      download_filename: stageId === DRY_RUN_STAGE_ID ? null : stageDownloadFilename(version, stageId),
     },
   };
 }
