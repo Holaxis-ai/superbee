@@ -161,7 +161,9 @@ test("the stage job stages the LITERAL retained tarball, not a fresh build", () 
   const jobs = extractJobs(staged);
   assert.match(jobs.stage, /download-artifact/, "stage must download the retained artifact");
   assert.match(jobs.stage, /artifact-ids: \$\{\{ needs\.candidate\.outputs\.artifact_id \}\}/);
-  assert.match(jobs.stage, /TARBALL="\$ARTIFACT_DIR\/\$TARBALL_FILENAME"/);
+  // The leading ./ is load-bearing: npm parses a bare dir/file.tgz as github:owner/repo
+  // shorthand and never opens the file (live run 31499362043 died on git ls-remote there).
+  assert.match(jobs.stage, /TARBALL="\.\/\$ARTIFACT_DIR\/\$TARBALL_FILENAME"/);
   assert.match(jobs.stage, /npm stage publish "\$TARBALL" --tag "\$POLICY_TAG"/);
   // And it re-verifies the retained bytes against the prepared SHA before staging.
   assert.match(jobs.stage, /needs\.candidate\.outputs\.tarball_sha256/);
@@ -289,4 +291,17 @@ test("no workflow queries the tag-addressed release endpoint (drafts are invisib
   assert.match(jobs.draft, /resolve_release_id/, "draft job resolves the draft by numeric id");
   assert.match(jobs.draft, /releases\?per_page=100/, "draft resolution lists releases (the endpoint that includes drafts)");
   assert.match(jobs.draft, /releases\/\$RELEASE_ID" > draft-release\.json/, "draft capture fetches by numeric id");
+});
+
+// Live-path hardening (the desk-check unit after live runs 31498799904 and 31499362043): the
+// draft job's post-create resolve retries the releases list (which lags a just-created draft)
+// and still fails closed; the stage job's tarball spec carries the leading ./ that keeps npm
+// from parsing dir/file.tgz as github:owner/repo shorthand.
+test("the draft job retries post-create resolution and still fails closed", () => {
+  const draft = extractJobs(staged).draft;
+  const createAt = draft.indexOf("gh release create");
+  const retryAt = draft.indexOf("not yet listed (attempt");
+  const failAt = draft.indexOf("not resolvable by id");
+  assert.ok(createAt !== -1 && retryAt !== -1 && failAt !== -1);
+  assert.ok(createAt < retryAt && retryAt < failAt, "create -> bounded retry -> fail-closed guard");
 });
