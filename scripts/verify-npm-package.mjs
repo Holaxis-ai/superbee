@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { DEFAULT_TARGETS, targetFromPackageName } from "./release-targets.mjs";
+import { DEFAULT_RELEASE_TARGETS_PATH, DEFAULT_TARGETS, loadReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
@@ -980,7 +980,15 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   const actualSha = await fileSha256(tarballPath);
   const recorded = parseJson(await readFile(path.resolve(manifest), "utf8"), "candidate manifest");
   const targetId = recorded?.target ?? targetFromPackageName(recorded?.package?.name ?? recorded?.build_identity?.package?.name) ?? "successor";
-  const target = DEFAULT_TARGETS[targetId];
+  const targetManifest = await loadReleaseTargets(DEFAULT_RELEASE_TARGETS_PATH);
+  if (recorded?.agreement?.release_targets_sha256) {
+    assert.equal(
+      await fileSha256(DEFAULT_RELEASE_TARGETS_PATH),
+      recorded.agreement.release_targets_sha256,
+      "candidate manifest release-target agreement does not match release/targets.json",
+    );
+  }
+  const target = targetManifest.targets[targetId];
   if (!target) throw new Error(`candidate manifest names unknown release target ${JSON.stringify(targetId)}`);
   const recordedSha = recorded?.tarball?.sha256;
   assert.equal(
