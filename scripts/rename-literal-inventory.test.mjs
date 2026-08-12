@@ -113,6 +113,7 @@ test("unknown legacy literals fail closed until a policy owner classifies them",
 test("repository inventory is deterministic and has no unclassified legacy literals", async () => {
   const inventory = await generateRenameLiteralInventory();
   assert.equal(inventory.schema, INVENTORY_SCHEMA);
+  assert.equal(inventory.source, "git-ls-files");
   assert.ok(inventory.files_scanned > 0);
   assert.ok(inventory.matches.length > 0);
   assertClassifiedInventory(inventory);
@@ -133,4 +134,14 @@ test("repository inventory is deterministic and has no unclassified legacy liter
 
   const second = await generateRenameLiteralInventory();
   assert.deepEqual(second, inventory);
+});
+
+test("repository inventory includes tracked root files, including the dev shim and dotfiles", async () => {
+  const inventory = await generateRenameLiteralInventory();
+  const rows = inventory.matches.map((row) => `${row.file}:${row.literal}`);
+  assert.ok(rows.includes("aslite:aslite"), "dev shim name must be inventoried");
+  assert.ok(rows.includes("aslite:agentstate-lite"), "dev shim dist target must be inventoried");
+  assert.ok(rows.includes(".gitignore:.agentstate.json"), "root binding ignore entry must be inventoried");
+  assert.ok(rows.includes(".gitignore:.agentstate-lite"), "root bundle ignore entry must be inventoried");
+  assert.ok(rows.includes(".gitattributes:agentstate-lite"), "root generated-file metadata must be inventoried");
 });

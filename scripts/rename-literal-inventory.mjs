@@ -1,25 +1,14 @@
+import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
+const execFileAsync = promisify(execFile);
 
 export const INVENTORY_SCHEMA = "superbee.rename-literal-inventory.v1";
-
-const DEFAULT_ROOTS = [
-  ".github",
-  "examples",
-  "packages",
-  "release",
-  "scripts",
-  "AGENTS.md",
-  "CLAUDE.md",
-  "README.md",
-  "STATUS.md",
-  "package.json",
-  "package-lock.json",
-];
 
 const SKIP_DIRS = new Set([
   ".git",
@@ -78,6 +67,12 @@ function positionFor(starts, offset) {
 
 function containsAny(value, needles) {
   return needles.some((needle) => value.includes(needle));
+}
+
+function shouldScanFile(file) {
+  if (SELF_FILES.has(file)) return false;
+  if (!TEXT_EXTENSIONS.has(path.extname(file))) return false;
+  return !file.split("/").some((part) => SKIP_DIRS.has(part));
 }
 
 export function classifyLegacyLiteral({ file, lineText, match }) {
@@ -275,16 +270,29 @@ async function* walk(root, rel = "") {
   yield toPosix(rel);
 }
 
-export async function generateRenameLiteralInventory({ root = repoRoot, roots = DEFAULT_ROOTS } = {}) {
+async function trackedTextFiles(root) {
+  const { stdout } = await execFileAsync("git", ["-C", root, "ls-files", "-z"], { maxBuffer: 20 * 1024 * 1024 });
+  return stdout
+    .split("\0")
+    .filter(Boolean)
+    .map(toPosix)
+    .filter(shouldScanFile)
+    .sort();
+}
+
+export async function generateRenameLiteralInventory({ root = repoRoot, roots } = {}) {
   const files = [];
-  for (const entry of roots) {
-    for await (const file of walk(root, entry)) files.push(file);
+  if (roots) {
+    for (const entry of roots) {
+      for await (const file of walk(root, entry)) if (shouldScanFile(file)) files.push(file);
+    }
+    files.sort();
+  } else {
+    files.push(...(await trackedTextFiles(root)));
   }
-  files.sort();
 
   const matches = [];
   for (const file of files) {
-    if (SELF_FILES.has(file)) continue;
     const absolute = path.join(root, ...file.split("/"));
     const text = await readFile(absolute, "utf8");
     const starts = lineStarts(text);
@@ -307,7 +315,8 @@ export async function generateRenameLiteralInventory({ root = repoRoot, roots = 
   matches.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
   return {
     schema: INVENTORY_SCHEMA,
-    roots: roots.map(toPosix),
+    source: roots ? "explicit-roots" : "git-ls-files",
+    roots: roots ? roots.map(toPosix) : [],
     files_scanned: files.length,
     matches,
     summary: matches.reduce((acc, row) => {
