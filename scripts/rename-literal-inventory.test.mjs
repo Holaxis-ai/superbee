@@ -144,4 +144,6 @@ test("repository inventory includes tracked root files, including the dev shim a
   assert.ok(rows.includes(".gitignore:.agentstate.json"), "root binding ignore entry must be inventoried");
   assert.ok(rows.includes(".gitignore:.agentstate-lite"), "root bundle ignore entry must be inventoried");
   assert.ok(rows.includes(".gitattributes:agentstate-lite"), "root generated-file metadata must be inventoried");
+  assert.ok(rows.includes("examples/views/demo.sh:agentstate-lite"), "tracked shell script dist target must be inventoried");
+  assert.ok(rows.includes("examples/views/demo.sh:aslite"), "tracked shell script temp prefix must be inventoried");
 });
