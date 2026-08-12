@@ -4,8 +4,7 @@
 // assets come only from the Vite build below, which keeps the CLI embed input explicit.
 //
 // Deterministic, hashed asset filenames (Vite's default) are what makes the CLI's embed step
-// reproducible byte-for-byte given identical source (the skill-bundle drift gate depends on
-// this — see packages/cli/scripts/embed-ui-assets.mjs).
+// reproducible byte-for-byte given identical source (see packages/cli/scripts/embed-ui-assets.mjs).
 // `vitest/config`'s `defineConfig` merges Vite's `UserConfig` with the `test` block's type —
 // a drop-in replacement for `vite`'s own `defineConfig` that also typechecks `test` below.
 import { defineConfig, type Plugin } from "vitest/config";
@@ -14,11 +13,10 @@ import { readFileSync } from "node:fs";
 
 /**
  * Ship the self-hosted Cormorant Garamond subset's OFL license text alongside the woff2 in
- * dist/ (embed-ui-assets.mjs gzips whatever lands in dist/ into the CLI's committed skill
- * bundle, and it ships in the npm package the same way) — OFL 1.1 §2 requires the copyright and
+ * dist/ (embed-ui-assets.mjs gzips whatever lands in dist/ into the npm CLI bundle) — OFL 1.1 §2 requires the copyright and
  * license notice travel with the Font Software, including a subsetted/modified copy, and a
- * sibling file that stays in `src/` (never built) satisfies neither the npm nor the skill
- * distribution channel. The font's own name-table IDs 0/13/14 carry a copy too (belt); this is
+ * sibling file that stays in `src/` (never built) does not satisfy the npm distribution. The
+ * font's own name-table IDs 0/13/14 carry a copy too (belt); this is
  * the plain-text suspenders, readable without a font parser.
  */
 function shipFontLicense(): Plugin {

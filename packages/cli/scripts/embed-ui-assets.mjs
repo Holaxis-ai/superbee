@@ -10,7 +10,7 @@
 // Determinism: files are walked in a stable sorted order, and each is gzipped with the
 // exact-version-pinned pure-JS compressor
 // `pako` (packages/cli devDependency) — NOT `node:zlib`, whose DEFLATE output varies across zlib
-// (i.e. Node) versions for identical input, which made the committed bundle's bytes depend on
+// (i.e. Node) versions for identical input, which made the built CLI's bytes depend on
 // which Node built it (a node-25 machine produced different gzip streams than CI's node-20 for
 // byte-identical uncompressed assets). The gzip header's MTIME field (RFC 1952 bytes 4-7) and OS
 // byte (byte 9) are still normalized. Decompression is format-standard, so the RUNTIME keeps
@@ -142,8 +142,8 @@ export function embedUiAssets() {
 //
 // Regenerated fresh from a \`packages/ui\` build on every \`packages/cli/build.mjs\` run (never
 // committed — gitignored like every other package's \`dist/\`). \`src/ui/assets.ts\` is the CLI-owned
-// adapter that injects this table into the ui-server runtime. See that script's module doc for the determinism discipline (stable file
-// order, zeroed gzip MTIME/OS header fields) the skill-bundle byte-compare drift gate depends on.
+// adapter that injects this table into the ui-server runtime. See that script's module doc for the
+// determinism discipline (stable file order, zeroed gzip MTIME/OS header fields).
 
 export interface EmbeddedAsset {
   contentType: string;

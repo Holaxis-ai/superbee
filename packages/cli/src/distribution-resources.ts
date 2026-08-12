@@ -14,7 +14,7 @@ export const RESOURCE_ROLES = [
 export type ResourceRole = (typeof RESOURCE_ROLES)[number];
 
 export interface DistributionResource {
-  /** Repo-root-relative authority. Generated plugin files are never authorities. */
+  /** Repo-root-relative source authority. */
   src: string;
   role: ResourceRole;
   /** Destination within the npm package's references root. */

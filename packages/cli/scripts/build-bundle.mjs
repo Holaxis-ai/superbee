@@ -49,8 +49,7 @@ export function currentSourceFacts() {
 
 /**
  * Bundle src/index.ts (+ the workspace source packages + every npm dep) into ONE self-contained
- * ESM file at `outfile`. Does NOT chmod the result — callers decide whether the output needs +x
- * (the committed bundles do; a scratch drift-gate temp file does not).
+ * ESM file at `outfile`. Does not chmod the result; build.mjs owns executable permissions.
  */
 export async function buildCliBundle(outfile, options) {
   const artifactChannel = options?.artifactChannel;

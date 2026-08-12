@@ -394,7 +394,7 @@ function renderSyncSection(prefix: string): string[] {
 
 /**
  * `extraBullets`: physical lines appended after the standard bullets, still under the same
- * `## Notes` heading — each channel passes its {@link referenceNotesAddendum} projection.
+ * `## Notes` heading — the npm renderer passes its {@link referenceNotesAddendum} projection.
  */
 function renderNotesSection(extraBullets: string[] = []): string[] {
   const lines: string[] = [];
@@ -444,7 +444,7 @@ function renderNotesSection(extraBullets: string[] = []): string[] {
   return lines;
 }
 
-/** Shared remote-access guidance for both published skill channels. */
+/** Remote-access guidance for the published npm Skill. */
 function renderRemoteAccessSection(invocation: string): string[] {
   const lines: string[] = [];
   lines.push("## Remote bundle access (--remote, serve)");

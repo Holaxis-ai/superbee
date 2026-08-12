@@ -97,10 +97,8 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     throw new CliError(
       "USAGE",
       "the wire protocol has no create-bundle endpoint; run init on the server's directory",
-      // Both halves of this two-step hint must resolve for the ACTUAL running executable (AXI
-      // §7/§10) — a bare `agentstate-lite serve` here would be a phantom invocation under `npx`
-      // or the skill-bundle channel. Found during the A3 audit (the plan's grep missed this one
-      // because it looked for a bare-bin bypass, not a hardcode embedded AFTER an interpolation).
+      // Both halves of this two-step hint must resolve for the actual running executable (AXI
+      // §7/§10); a hard-coded bare command would fail when the CLI is running through npx.
       { help: `${cliInvocation()} init --dir <path> (then ${cliInvocation()} serve --dir <path>)` },
     );
   }

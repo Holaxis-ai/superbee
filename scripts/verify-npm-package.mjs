@@ -27,10 +27,11 @@ const runtimeDependencyFields = [
 
 /** Fail closed if the retired first-party marketplace executable channel returns. */
 export async function assertRetiredDistributionAbsent(root) {
-  for (const retiredPath of [
+  const retiredDirectories = [
     path.join(root, "plugins", "agentstate-lite"),
     path.join(root, ".claude-plugin"),
-  ]) {
+  ];
+  for (const retiredPath of retiredDirectories) {
     const exists = await stat(retiredPath).then(() => true, () => false);
     if (!exists) continue;
     assert.equal(
@@ -39,6 +40,13 @@ export async function assertRetiredDistributionAbsent(root) {
       `${retiredPath} must stay absent; npm is the sole executable distribution authority`,
     );
   }
+  const retiredRegistration = path.join(root, ".agents", "plugins", "marketplace.json");
+  const registrationExists = await stat(retiredRegistration).then(() => true, () => false);
+  assert.equal(
+    registrationExists,
+    false,
+    `${retiredRegistration} must stay absent; npm is the sole executable distribution authority`,
+  );
 }
 
 export function verificationPolicy(mode) {

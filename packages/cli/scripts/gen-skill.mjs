@@ -1,6 +1,6 @@
 // Generate a SKILL.md from the CLI's single source of truth (src/reference.ts COMMAND_GROUPS,
-// rendered by src/skill-render.ts), and sync the target's `references/` folder from its channel
-// projection of src/distribution-resources.ts: a byte-for-byte copy of each source file, with any
+// rendered by src/skill-render.ts), and sync the package's `references/` folder from the inventory
+// in src/distribution-resources.ts: a byte-for-byte copy of each source file, with any
 // stray file under references/ NOT named in the manifest deleted. Idempotent/convergent, same
 // discipline as the SKILL.md write itself.
 //
@@ -9,7 +9,7 @@
 // executable distribution authority.
 //
 //   node scripts/gen-skill.mjs           → (re)write packages/cli/SKILL.md + references/
-//   node scripts/gen-skill.mjs --check   → exit 1 if either committed projection is stale
+//   node scripts/gen-skill.mjs --check   → exit 1 if SKILL.md or references/ is stale
 //
 // src/skill-render.ts (which transitively pulls in reference.ts + src/distribution-resources.ts) is pure
 // data + pure projections (no runtime imports), so we bundle it in-memory with esbuild and import
