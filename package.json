@@ -1,5 +1,5 @@
 {
-  "name": "agentstate-lite-monorepo",
+  "name": "superbee-monorepo",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,20 +9,20 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @agentstate-lite/core -w @agentstate-lite/board-git -w @agentstate-lite/server -w @agentstate-lite/view-runtime -w @agentstate-lite/ui-server -w @agentstate-lite/markdown-renderer -w @agentstate-lite/mcp-app -w @holaxis/aslite",
-    "typecheck": "npm run build -w @agentstate-lite/core -w @agentstate-lite/board-git -w @agentstate-lite/server -w @agentstate-lite/view-runtime -w @agentstate-lite/ui-server -w @agentstate-lite/markdown-renderer -w @agentstate-lite/mcp-app && npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @superbee/core -w @superbee/board-git -w @superbee/server -w @superbee/view-runtime -w @superbee/ui-server -w @superbee/markdown-renderer -w @superbee/mcp-app -w @holaxis/aslite",
+    "typecheck": "npm run build -w @superbee/core -w @superbee/board-git -w @superbee/server -w @superbee/view-runtime -w @superbee/ui-server -w @superbee/markdown-renderer -w @superbee/mcp-app && npm run typecheck --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
     "test:scripts": "node --test --test-concurrency=1 scripts/package-core-external-proof.test.mjs scripts/package-server-external-proof.test.mjs scripts/oss-hosted-boundary.test.mjs scripts/verify-npm-package.test.mjs scripts/mutation-survivors.test.mjs scripts/migrate-legacy-view-names.test.mjs scripts/rename-literal-inventory.test.mjs scripts/release-state.test.mjs scripts/release-audit-tags.test.mjs scripts/release-operations.test.mjs scripts/release-receipts.test.mjs scripts/release-ordering.test.mjs scripts/release-inspect-recovery.test.mjs scripts/release-verify-registry.test.mjs scripts/release-candidate.test.mjs scripts/release-workflow.test.mjs",
-    "e2e": "npm run e2e:gate -w @agentstate-lite/ui",
-    "check": "npm run build && npm run typecheck && npm test --workspaces --if-present && npm run test:scripts && npm run verify:npm-package && npm run check:skill -w @holaxis/aslite && npm run test:browser -w @agentstate-lite/mcp-app && npm run e2e:gate -w @agentstate-lite/ui",
+    "e2e": "npm run e2e:gate -w @superbee/ui",
+    "check": "npm run build && npm run typecheck && npm test --workspaces --if-present && npm run test:scripts && npm run verify:npm-package && npm run check:skill -w @holaxis/aslite && npm run test:browser -w @superbee/mcp-app && npm run e2e:gate -w @superbee/ui",
     "verify:npm-package": "node scripts/verify-npm-package.mjs --local",
     "verify:npm-package:release": "node scripts/verify-npm-package.mjs --release",
     "verify:npm-package:tarball": "node scripts/verify-npm-package.mjs --tarball",
     "release:candidate": "node scripts/release-candidate.mjs",
     "release:audit-tags": "node scripts/release-audit-tags.mjs",
-    "mutation:core": "npm run mutation -w @agentstate-lite/core",
+    "mutation:core": "npm run mutation -w @superbee/core",
     "mutation:cli": "npm run mutation -w @holaxis/aslite",
-    "mutation:board-git": "npm run mutation -w @agentstate-lite/board-git",
+    "mutation:board-git": "npm run mutation -w @superbee/board-git",
     "mutation:survivors": "node scripts/mutation-survivors.mjs"
   },
   "devDependencies": {

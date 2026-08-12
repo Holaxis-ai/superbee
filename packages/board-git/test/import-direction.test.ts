@@ -4,10 +4,10 @@
  *
  * THE RULE, with NO allowlist: every module under `packages/board-git/src` may reach ONLY
  *   - node builtins (either `node:`-prefixed or bare — `isBuiltin` decides, not a list),
- *   - `@agentstate-lite/core` (and its subpaths), and
+ *   - `@superbee/core` (and its subpaths), and
  *   - relative specifiers that RESOLVE INSIDE this package's `src/` (a `../` that escapes the
  *     package — e.g. into the CLI — is a violation even though it is "relative").
- * Anything else — the CLI, `@agentstate-lite/server`, any npm package — fails the gate.
+ * Anything else — the CLI, `@superbee/server`, any npm package — fails the gate.
  *
  * The SAME walk also covers `packages/board-git/test/`, under the pragmatic TEST-file rule (A1
  * review finding 3): builtins, core, in-package sources (relative specifiers resolving anywhere
@@ -29,7 +29,7 @@
  *     is correct here.
  *
  * The gate also pins the package manifest: runtime `dependencies` must be exactly
- * `@agentstate-lite/core` — a dependency edge is an import edge in disguise.
+ * `@superbee/core` — a dependency edge is an import edge in disguise.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -48,7 +48,7 @@ const TEST_DIR = here;
 /** A specifier is legal iff builtin, core, or relative-and-inside-src. */
 function specifierViolation(file: string, specifier: string): string | null {
   if (isBuiltin(specifier)) return null;
-  if (specifier === "@agentstate-lite/core" || specifier.startsWith("@agentstate-lite/core/")) {
+  if (specifier === "@superbee/core" || specifier.startsWith("@superbee/core/")) {
     return null;
   }
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
@@ -66,7 +66,7 @@ function specifierViolation(file: string, specifier: string): string | null {
  */
 function testSpecifierViolation(file: string, specifier: string): string | null {
   if (isBuiltin(specifier)) return null;
-  if (specifier === "@agentstate-lite/core" || specifier.startsWith("@agentstate-lite/core/")) {
+  if (specifier === "@superbee/core" || specifier.startsWith("@superbee/core/")) {
     return null;
   }
   if (specifier === "typescript") return null;
@@ -158,13 +158,13 @@ test("import direction: no board-git TEST module reaches packages/cli sources", 
   assert.deepEqual(violations, [], `import-direction (test) violations:\n${violations.join("\n")}`);
 });
 
-test("import direction: the manifest's runtime dependencies are exactly @agentstate-lite/core", async () => {
+test("import direction: the manifest's runtime dependencies are exactly @superbee/core", async () => {
   const manifest = JSON.parse(await readFile(path.resolve(here, "../package.json"), "utf8")) as {
     dependencies?: Record<string, string>;
     peerDependencies?: Record<string, string>;
     optionalDependencies?: Record<string, string>;
   };
-  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["@agentstate-lite/core"]);
+  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["@superbee/core"]);
   assert.equal(manifest.peerDependencies, undefined);
   assert.equal(manifest.optionalDependencies, undefined);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import type { Bundle } from "@agentstate-lite/core";
+import type { Bundle } from "@superbee/core";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { MCP_USAGE, mcp } from "../src/commands/mcp.js";
 import { CliError } from "../src/errors.js";

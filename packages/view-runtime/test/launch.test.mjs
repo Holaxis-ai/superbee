@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { FilesystemBackend } from "@agentstate-lite/core";
+import { FilesystemBackend } from "@superbee/core";
 import {
   PageLaunchRegistry,
   RegisteredViewLaunchError,

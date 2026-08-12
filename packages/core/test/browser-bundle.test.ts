@@ -1,6 +1,6 @@
 /**
  * Isomorphic-boundary gate: every core subpath the BROWSER runtime-imports must bundle for the
- * browser with no `node:*` builtin. The SPA (packages/ui) runtime-imports `@agentstate-lite/core`
+ * browser with no `node:*` builtin. The SPA (packages/ui) runtime-imports `@superbee/core`
  * subpaths — `links` (resolveConceptId), `meaningful-change-time`
  * (meaningfulChangeTimeValue), `page` (parseRegistration), `query-selection`
  * (applyQuerySelectionFilters), `kinds` (isTerminal) — into a bundle where node builtins do not
@@ -13,7 +13,7 @@
  * sibling-dist convention other core tests document.
  *
  * ADD A SUBPATH HERE when the browser starts runtime-importing a new core subpath — keep this list
- * in sync with the SPA's runtime `@agentstate-lite/core/*` imports.
+ * in sync with the SPA's runtime `@superbee/core/*` imports.
  */
 import test from "node:test";
 import assert from "node:assert/strict";

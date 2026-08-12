@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
-import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@agentstate-lite/core";
+import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@superbee/core";
 
 const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/agentstate-lite.mjs");
 const T = "2026-07-01T00:00:00.000Z";

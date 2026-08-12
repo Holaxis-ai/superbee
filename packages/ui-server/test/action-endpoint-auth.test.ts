@@ -13,8 +13,8 @@ import {
   writeBlob,
   writeDoc,
   type Bundle,
-} from "@agentstate-lite/core";
-import { createRouter } from "@agentstate-lite/server";
+} from "@superbee/core";
+import { createRouter } from "@superbee/server";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 
 const SECRET = "action-endpoint-auth-secret";

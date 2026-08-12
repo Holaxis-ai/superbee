@@ -3,7 +3,7 @@
 //
 // The neutral store implementation (the `createSyncStore` factory, the store interface, the
 // cursor/cache/marker record types, key derivation and schema validation) lives in
-// `@agentstate-lite/board-git`. THIS module is what stays behind: it wires the neutral factory to the
+// `@superbee/board-git`. THIS module is what stays behind: it wires the neutral factory to the
 // CLI's own credentials discipline (`~/.agentstate/sync`, `writeFileAtomic0600`), exposes
 // `defaultSyncStore` — THE production instance every consumer (sync, establish, autopull,
 // session-start, home) uses — and re-exports the neutral types/factory so every existing import
@@ -26,7 +26,7 @@ import {
   type SyncState,
   type SyncStore,
   type SyncStoreOptions,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 
 export {
   createSyncStore,

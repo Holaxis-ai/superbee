@@ -38,7 +38,7 @@ import {
   resolveContentType,
   VersionConflict,
   type Bundle,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";

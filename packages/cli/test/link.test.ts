@@ -3,7 +3,7 @@
  *
  * `timestamp` means "last meaningful change" (OKF + VISION). The engine
  * (`writeDoc`/`writeDocVersioned`) stays caller-controlled and preserves an existing
- * `frontmatter.timestamp` — that is proven in `@agentstate-lite/core`'s own tests and is
+ * `frontmatter.timestamp` — that is proven in `@superbee/core`'s own tests and is
  * NOT re-tested here. What IS tested here is the CLI's `link add`, which is the bug this
  * finding identified: appending a cross-link is a meaningful change, so by default it must
  * refresh the timestamp on its outgoing write, EXCEPT on the idempotent no-op path (the
@@ -29,8 +29,8 @@ import {
   type Bundle,
   type OkfDocument,
   type Version,
-} from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+} from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 import { link, addLink } from "../src/commands/link.js";
 import { CliError } from "../src/errors.js";
 

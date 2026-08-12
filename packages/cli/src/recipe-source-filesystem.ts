@@ -3,7 +3,7 @@
 // definitions-only manifest requires a complete file inventory.
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parseMarkdown } from "@agentstate-lite/core";
+import { parseMarkdown } from "@superbee/core";
 import { parseRecipeFiles, type RecipeFile, type RecipeSource } from "./recipe-parser.js";
 import { expandRecipePath, looksLikeRecipePath } from "./recipe-ref.js";
 

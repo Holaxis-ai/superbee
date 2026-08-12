@@ -5,13 +5,13 @@ import {
   applyHostStyleVariables,
 } from "@modelcontextprotocol/ext-apps";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import type { ActionConfirmation, ActionTerminalResult } from "@agentstate-lite/view-runtime";
+import type { ActionConfirmation, ActionTerminalResult } from "@superbee/view-runtime";
 import {
   actionError,
   actionReply,
   parseActionBridgeMessage,
   type DocumentSetFieldAction,
-} from "@agentstate-lite/view-runtime/action-bridge";
+} from "@superbee/view-runtime/action-bridge";
 import type {
   ActiveViewLaunchPayload,
   McpViewPayload,

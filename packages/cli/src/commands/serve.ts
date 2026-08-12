@@ -1,5 +1,5 @@
 // `agentstate-lite serve [--dir <path>] [--host <h>] [--port <p>]` — boot the reference
-// wire-protocol server (`@agentstate-lite/server`) over a local bundle.
+// wire-protocol server (`@superbee/server`) over a local bundle.
 //
 // With `serve` running, `--remote <url>` on every
 // other bundle command (doc/list/link/status) talks to it over `docs/WIRE-PROTOCOL.md` v0 —
@@ -21,7 +21,7 @@
 // A process crash can leave a diagnosable lock behind; mutation then fails closed until a human
 // confirms no writer is active and removes it. Say that in the usage and receipt too.
 import { parseArgs } from "node:util";
-import { serve as bootServerDefault, type ServeOptions, type ServerHandle } from "@agentstate-lite/server";
+import { serve as bootServerDefault, type ServeOptions, type ServerHandle } from "@superbee/server";
 import { openBundle } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -49,7 +49,7 @@ A process crash can leave a runtime lock that fails closed until inspected and r
 `;
 
 /**
- * The CLI's own stable default port. `@agentstate-lite/server`'s `ServeOptions.port` itself
+ * The CLI's own stable default port. `@superbee/server`'s `ServeOptions.port` itself
  * defaults to `0` (ephemeral) — the CLI documents and passes its own fixed default explicitly
  * so `agentstate-lite serve` is predictable across runs; pass `--port 0` for an ephemeral port.
  */
@@ -58,7 +58,7 @@ export const DEFAULT_SERVE_PORT = 4818;
 /** Injectable seam so boot + shutdown wiring is unit-testable without real sockets/signals. */
 export interface ServeCliDeps {
   stdout: (s: string) => void;
-  /** Boots the wire-protocol server; defaults to the real `@agentstate-lite/server` `serve`. */
+  /** Boots the wire-protocol server; defaults to the real `@superbee/server` `serve`. */
   bootServer: (options: ServeOptions) => Promise<ServerHandle>;
   /** Resolves when the foreground process should stop and close the listener. Defaults to a
    *  SIGINT/SIGTERM listener; tests inject an immediately-resolving promise. */

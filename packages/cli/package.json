@@ -46,12 +46,12 @@
     "prepublishOnly": "node ../../scripts/prepublish-guard.mjs"
   },
   "devDependencies": {
-    "@agentstate-lite/board-git": "*",
-    "@agentstate-lite/core": "*",
-    "@agentstate-lite/markdown-renderer": "*",
-    "@agentstate-lite/mcp-app": "*",
-    "@agentstate-lite/server": "*",
-    "@agentstate-lite/ui-server": "*",
+    "@superbee/board-git": "*",
+    "@superbee/core": "*",
+    "@superbee/markdown-renderer": "*",
+    "@superbee/mcp-app": "*",
+    "@superbee/server": "*",
+    "@superbee/ui-server": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@toon-format/toon": "2.3.0",
     "@types/node": "^22.0.0",

@@ -10,7 +10,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeBlob, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeBlob, writeDoc } from "@superbee/core";
 
 import { artifact, slugifyTitle, firstFreeId } from "../src/commands/artifact.js";
 import { openBundle } from "../src/bundle.js";

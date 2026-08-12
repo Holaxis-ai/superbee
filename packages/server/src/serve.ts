@@ -13,7 +13,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { createRouter } from "./router.js";
-import type { Bundle } from "@agentstate-lite/core";
+import type { Bundle } from "@superbee/core";
 
 /** Options for {@link serve}. */
 export interface ServeOptions {

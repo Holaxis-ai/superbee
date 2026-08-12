@@ -7,7 +7,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { proxyToRemote } from "@agentstate-lite/ui-server";
+import { proxyToRemote } from "@superbee/ui-server";
 
 function withFetch<T>(fn: typeof fetch, run: () => Promise<T>): Promise<T> {
   const original = globalThis.fetch;

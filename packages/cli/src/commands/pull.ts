@@ -41,7 +41,7 @@ import {
   conceptIdFromPath,
   blobVersion,
   type Bundle,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, toExit, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";

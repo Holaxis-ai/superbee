@@ -3,7 +3,7 @@
 // Every in-scope refusal envelope (sync/establish/home) is constructed from a row here via
 // {@link syncOutcomeError}; every in-scope exit-0 guidance string comes from a line row via its
 // bound template. Package-side factories (`preShareWindowError`, `dualBoardError`,
-// `existingDirRefusal` — thrown inside @agentstate-lite/board-git) stay the construction sites for
+// `existingDirRefusal` — thrown inside @superbee/board-git) stay the construction sites for
 // their states; their rows COMPOSE the factories so the agreement suite
 // (`test/sync-outcomes.test.ts`) can enumerate every row against the pre-refactor rendered-byte
 // fixtures (`test/fixtures/sync-outcomes/`). Behavior is BYTE-FROZEN, today's copy inconsistencies
@@ -20,7 +20,7 @@ import {
   preShareWindowError,
   runGit,
   type StatusRow,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { CliError, type CliErrorCode } from "./errors.js";
 
 // ── shared string templates (bound into rows below; command modules re-export them) ──

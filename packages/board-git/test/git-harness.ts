@@ -24,7 +24,7 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeDoc, readDoc, type Frontmatter } from "@agentstate-lite/core";
+import { initBundle, writeDoc, readDoc, type Frontmatter } from "@superbee/core";
 
 /** The branch that carries ONLY the bundle; its root maps to the bundle root. */
 export const BOARD_BRANCH = "board";

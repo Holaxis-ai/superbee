@@ -48,7 +48,7 @@ import {
   type OkfDocument,
   type Version,
   type ValidationWarning,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError, classifyBundleError } from "../errors.js";

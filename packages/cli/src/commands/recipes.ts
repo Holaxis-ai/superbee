@@ -11,7 +11,7 @@
 // enumerable, since there is no registry of "every recipe folder that might exist on disk
 // somewhere." A `recipes --path <dir>` inspect is reserved, not built.
 import { parseArgs } from "node:util";
-import type { Bundle } from "@agentstate-lite/core";
+import type { Bundle } from "@superbee/core";
 import {
   CONVENTIONAL_BUNDLE_DIR_NAME,
   findBundleRoot,

@@ -20,8 +20,8 @@
 //     callers without the git channel simply get `undefined` and pass no hook at all.
 import path from "node:path";
 
-import { BUNDLE_DIR, resolveBundleKey } from "@agentstate-lite/board-git";
-import type { Bundle } from "@agentstate-lite/core";
+import { BUNDLE_DIR, resolveBundleKey } from "@superbee/board-git";
+import type { Bundle } from "@superbee/core";
 
 import { defaultSyncStore } from "./cursor.js";
 

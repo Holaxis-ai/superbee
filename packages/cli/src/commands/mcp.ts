@@ -2,9 +2,9 @@
 // AgentState bundle. The command uses stdio as its transport, so stdout belongs exclusively to MCP
 // protocol frames after startup; diagnostics and human receipts must never be written there.
 import { parseArgs } from "node:util";
-import { startMcpStdioServer } from "@agentstate-lite/mcp-app";
-import type { Bundle } from "@agentstate-lite/core";
-import type { ViewAuthorizationStore } from "@agentstate-lite/view-runtime";
+import { startMcpStdioServer } from "@superbee/mcp-app";
+import type { Bundle } from "@superbee/core";
+import type { ViewAuthorizationStore } from "@superbee/view-runtime";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveActor } from "../actor.js";

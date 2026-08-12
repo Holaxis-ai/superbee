@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { blobVersion, RemoteBackend, type Bundle } from "@agentstate-lite/core";
+import { blobVersion, RemoteBackend, type Bundle } from "@superbee/core";
 import { SessionViewAuthorizationStore, bootUiServer, type UiServerHandle } from "../src/index.js";
 
 const SECRET = "version-trust-secret";

@@ -21,7 +21,7 @@ before(async () => {
   if (existsSync(CORE_DIST)) return;
   const npmCli = process.env.npm_execpath?.trim();
   if (!npmCli) throw new Error("packages/core/dist is missing and npm_execpath is unset — build from the repo root first");
-  await execFileAsync(process.execPath, [npmCli, "run", "build", "-w", "@agentstate-lite/core"], {
+  await execFileAsync(process.execPath, [npmCli, "run", "build", "-w", "@superbee/core"], {
     cwd: repoRoot,
     maxBuffer: 10 * 1024 * 1024,
   });

@@ -11,7 +11,7 @@
 import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
-import { writeDoc } from "@agentstate-lite/core";
+import { writeDoc } from "@superbee/core";
 import { approveViewIfPrompted, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, CLI_DIST } from "./harness.js";
 
 const TASKS = [

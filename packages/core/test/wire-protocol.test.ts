@@ -1,6 +1,6 @@
 /**
  * Tri-backend contract tests, part 3: `RemoteBackend` over the wire-protocol v0
- * reference router (`@agentstate-lite/server`), wired with NO SOCKETS for the
+ * reference router (`@superbee/server`), wired with NO SOCKETS for the
  * contract tests — the router is injected directly as `RemoteBackend`'s fetch
  * transport, so these are deterministic and fast while still exercising the real
  * HTTP-shaped request/response envelopes (headers, status codes, JSON bodies) end
@@ -12,17 +12,17 @@
  * plus HTTP mechanics, envelopes, security gates, and socket-level smoke coverage.
  *
  * Note on module identity: the router's capabilities endpoint does
- * `backend instanceof MemoryBackend` against the COMPILED `@agentstate-lite/core`
- * it imports transitively via `@agentstate-lite/server`. The server-side backend
- * constructed here therefore uses `MemoryBackend` imported from the `@agentstate-lite/core`
+ * `backend instanceof MemoryBackend` against the COMPILED `@superbee/core`
+ * it imports transitively via `@superbee/server`. The server-side backend
+ * constructed here therefore uses `MemoryBackend` imported from the `@superbee/core`
  * package (not the local `../src` module) so that check observes a true match — the
  * rest of this file uses the local `../src` imports, matching `dual-backend.test.ts`.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createRouter, serve } from "@agentstate-lite/server";
-import { MemoryBackend as ServerMemoryBackend } from "@agentstate-lite/core";
+import { createRouter, serve } from "@superbee/server";
+import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { RemoteBackend } from "../src/remote-backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";

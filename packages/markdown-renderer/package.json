@@ -1,5 +1,5 @@
 {
-  "name": "@agentstate-lite/markdown-renderer",
+  "name": "@superbee/markdown-renderer",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -27,7 +27,7 @@
     "test": "node --test ./test/*.test.mjs"
   },
   "dependencies": {
-    "@agentstate-lite/core": "*",
+    "@superbee/core": "*",
     "mdast-util-from-markdown": "^2.0.3",
     "mdast-util-gfm": "^3.1.0",
     "micromark-extension-gfm": "^3.0.0",

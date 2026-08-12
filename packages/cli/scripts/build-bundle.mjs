@@ -102,28 +102,28 @@ export async function buildCliBundle(outfile, options) {
     alias: {
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
-      "@agentstate-lite/core/page": r("../core/src/page.ts"),
-      "@agentstate-lite/core/links": r("../core/src/links.ts"),
-      "@agentstate-lite/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
-      "@agentstate-lite/core": r("../core/src/index.ts"),
+      "@superbee/core/page": r("../core/src/page.ts"),
+      "@superbee/core/links": r("../core/src/links.ts"),
+      "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
+      "@superbee/core": r("../core/src/index.ts"),
       // The git tier lives in its own workspace package (board-git A1); alias to source so the
       // npm artifact stays ONE self-contained file with no dist pre-build.
-      "@agentstate-lite/board-git": r("../board-git/src/index.ts"),
+      "@superbee/board-git": r("../board-git/src/index.ts"),
       // server/src/index.ts is guard-free re-exports (createRouter + serve) — its only deps are
       // core + node:http, so aliasing straight to it keeps the esbuild bundle ONE self-contained file.
-      "@agentstate-lite/server": r("../server/src/index.ts"),
+      "@superbee/server": r("../server/src/index.ts"),
       // The experimental conversational View adapter is private workspace source. It is bundled
       // into the npm CLI exactly like the other internal packages, leaving no runtime workspace
       // dependency for users to install or resolve.
-      "@agentstate-lite/mcp-app": r("../mcp-app/src/index.ts"),
+      "@superbee/mcp-app": r("../mcp-app/src/index.ts"),
       // Shared human-surface primitives are private workspace source too. Alias them explicitly
       // so a clean npm build never depends on sibling dist/ directories existing.
-      "@agentstate-lite/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
-      "@agentstate-lite/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
-      "@agentstate-lite/view-runtime": r("../view-runtime/src/index.ts"),
+      "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
+      "@superbee/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
+      "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
       // The loopback UI runtime is a private workspace package; source-alias it so the npm CLI
       // remains one self-contained artifact with no workspace dependency at install time.
-      "@agentstate-lite/ui-server": r("../ui-server/src/index.ts"),
+      "@superbee/ui-server": r("../ui-server/src/index.ts"),
     },
     // NOTE: esbuild hoists the entry file's own `#!/usr/bin/env node` shebang (src/index.ts) to
     // the top of the output, so the banner must NOT repeat it (two shebangs = a syntax error).

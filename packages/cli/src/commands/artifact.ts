@@ -18,7 +18,7 @@
 // the generic path (the reason `note` was deleted): it owns a fumble-prone multi-step sequence.
 import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
-import { loadKinds, queryHeads, listBlobs, readDoc, writeBlob, type Bundle, type Frontmatter } from "@agentstate-lite/core";
+import { loadKinds, queryHeads, listBlobs, readDoc, writeBlob, type Bundle, type Frontmatter } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { mutateDoc } from "../mutate.js";
 import { boardPostPersistHook } from "../board-attribution.js";

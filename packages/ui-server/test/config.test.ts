@@ -9,8 +9,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { get as httpGet } from "node:http";
 
-import { MemoryBackend, type Bundle } from "@agentstate-lite/core";
-import { createRouter } from "@agentstate-lite/server";
+import { MemoryBackend, type Bundle } from "@superbee/core";
+import { createRouter } from "@superbee/server";
 import { bootUiServer, type SharingSummary, type UiServerHandle, type UiServerOptions } from "../src/server.js";
 
 const SECRET = "config-contract-secret";

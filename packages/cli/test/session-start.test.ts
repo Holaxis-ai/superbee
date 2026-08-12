@@ -43,7 +43,7 @@ import {
   sessionStartPull,
 } from "../src/commands/session-start.js";
 import { sync } from "../src/commands/sync.js";
-import { resolveBundleKey } from "@agentstate-lite/board-git";
+import { resolveBundleKey } from "@superbee/board-git";
 import {
   HOOK_TIMEOUT_SECONDS,
   atomicWriteFileSync,
@@ -74,7 +74,7 @@ import {
   stableNodePair,
 } from "./hook-shell-fixtures.js";
 import { readCursor, readMarker, readSelfActors, type AwarenessCache } from "../src/cursor.js";
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 import { addCatalogEntry } from "../src/catalog.js";
 import {
   commitBoard,

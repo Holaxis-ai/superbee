@@ -1,6 +1,6 @@
 // `doc delete <id>` — see `../doc.ts`'s header comment; hard-delete, idempotent, non-cascading.
 import { parseArgs } from "node:util";
-import { deleteDoc, pathFromConceptId, isReservedFile, VersionConflict } from "@agentstate-lite/core";
+import { deleteDoc, pathFromConceptId, isReservedFile, VersionConflict } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";

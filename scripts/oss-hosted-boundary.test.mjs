@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const hostedDeploymentPackages = new Set(["@agentstate-lite/worker", "miniflare", "workerd", "wrangler"]);
+const hostedDeploymentPackages = new Set(["@superbee/worker", "miniflare", "workerd", "wrangler"]);
 const dependencyFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 
 function isHostedDeploymentPackage(packageName) {
@@ -70,14 +70,14 @@ test("lockfile scanner recognizes hosted deployment dependencies", () => {
       "node_modules/@cloudflare/kv-asset-handler": {},
       "node_modules/example/node_modules/miniflare": {},
       "node_modules/workerd": {},
-      "packages/worker": { name: "@agentstate-lite/worker" },
+      "packages/worker": { name: "@superbee/worker" },
     },
   };
 
   assert.deepEqual(findHostedDeploymentPackages(lockfile), [
-    "@agentstate-lite/worker",
     "@cloudflare/kv-asset-handler",
     "@cloudflare/unenv-preset",
+    "@superbee/worker",
     "miniflare",
     "workerd",
     "wrangler",
@@ -90,7 +90,7 @@ test("OSS build and lockfile carry no hosted deployment dependency", async () =>
   const buildConfiguration = JSON.stringify({ scripts: rootPackage.scripts, workspaces: rootPackage.workspaces });
 
   for (const forbidden of [
-    "@agentstate-lite/worker",
+    "@superbee/worker",
     "packages/worker",
     "@cloudflare/",
     "miniflare",
@@ -118,5 +118,5 @@ test("generic wire source authorities remain public after hosted extraction", as
   assert.match(remoteBackend, /export class RemoteBackend/);
   assert.match(router, /export function createRouterForBackend/);
   assert.match(serveCommand, /export\s+(?:async\s+)?function\s+serve\s*\(/);
-  assert.match(serveCommand, /from\s+["']@agentstate-lite\/server["']/);
+  assert.match(serveCommand, /from\s+["']@superbee\/server["']/);
 });

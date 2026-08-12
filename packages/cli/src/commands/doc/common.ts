@@ -3,7 +3,7 @@
 // Verb modules import from HERE, never from `../doc.js` (the thin entry re-exports FROM here, and a
 // verb importing back from the entry would create a circular import).
 import { fstatSync } from "node:fs";
-import { parseLinks, type Bundle, type Link, type OkfDocument } from "@agentstate-lite/core";
+import { parseLinks, type Bundle, type Link, type OkfDocument } from "@superbee/core";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
 

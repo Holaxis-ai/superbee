@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { initBundle, writeDoc, type OkfDocument } from "@agentstate-lite/core";
+import { initBundle, writeDoc, type OkfDocument } from "@superbee/core";
 
 // HERMETIC CWD + HOME: `home()` peeks at project bindings from the cwd and at the user-scoped
 // workspace catalog, so a REAL `.agentstate.json` anywhere above the test process's cwd — including

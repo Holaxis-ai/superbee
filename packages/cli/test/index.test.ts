@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { indexCommand } from "../src/commands/index.js";

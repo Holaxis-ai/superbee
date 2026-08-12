@@ -11,7 +11,7 @@ import {
   writeBlob,
   writeDoc,
   type Bundle,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
@@ -33,7 +33,7 @@ import {
   createMcpAppServer,
   resolveDurableViewLaunch,
 } from "../src/index.js";
-import { SessionViewAuthorizationStore } from "@agentstate-lite/view-runtime";
+import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
 
 const T = "2026-07-26T12:00:00.000Z";
 

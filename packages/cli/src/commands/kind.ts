@@ -12,7 +12,7 @@
 // over `--dir` and `--remote` alike (it is just a doc read + write). Idempotent: adding an
 // already-declared field, or removing an absent one, is a no-op that exits 0.
 import { parseArgs } from "node:util";
-import { loadKinds, RESERVED_KIND_FIELD_NAMES, type Frontmatter } from "@agentstate-lite/core";
+import { loadKinds, RESERVED_KIND_FIELD_NAMES, type Frontmatter } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";

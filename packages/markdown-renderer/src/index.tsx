@@ -29,7 +29,7 @@ import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfm } from "micromark-extension-gfm";
 import { gfmFromMarkdown } from "mdast-util-gfm";
 import type { AlignType, Node, Parent, RootContent } from "mdast";
-import { resolveConceptId } from "@agentstate-lite/core/links";
+import { resolveConceptId } from "@superbee/core/links";
 
 /** Body cap before parsing (chars ≈ bytes for the ASCII-dominant common case; honest notice on cut). */
 export const MAX_BODY_CHARS = 262_144;

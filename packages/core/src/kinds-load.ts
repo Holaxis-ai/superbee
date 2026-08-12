@@ -2,7 +2,7 @@
  * The backend-touching half of the kind-convention registry (CLAUDE.md gate 3): {@link loadKinds}
  * queries a bundle's `conventions/` prefix and builds the registry out of `kinds.ts`'s pure
  * parsing/derivation. Split from `kinds.ts` ONLY by dependency weight — `kinds.ts` is the
- * browser-safe `@agentstate-lite/core/kinds` subpath (zero value imports), while this module may
+ * browser-safe `@superbee/core/kinds` subpath (zero value imports), while this module may
  * pull the engine (`query` -> backends -> node built-ins). One registry, two entry weights.
  */
 import { query } from "./bundle.js";

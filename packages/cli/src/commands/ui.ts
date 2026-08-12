@@ -5,7 +5,7 @@
 //
 // Source resolution follows the explicit-only remote rule (`resolveRemoteFlag`: only `--remote`
 // activates HTTP; otherwise local bundle discovery) — EXCEPT `ui` builds its OWN
-// remote handling (the reverse proxy in `@agentstate-lite/ui-server`) rather than routing through
+// remote handling (the reverse proxy in `@superbee/ui-server`) rather than routing through
 // `openBundle`'s `RemoteBackend` path, since the SPA needs the raw `/v0/*` wire surface
 // same-origin, not the engine-level `StorageBackend` abstraction.
 //
@@ -14,7 +14,7 @@
 // stays in the foreground until SIGINT/SIGTERM close the listener cleanly.
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { createRouter } from "@agentstate-lite/server";
+import { createRouter } from "@superbee/server";
 import { openBundle, resolveRemoteFlag, resolveApiKeyEnv } from "../bundle.js";
 import { normalizeServer } from "../config.js";
 import { getApiKeyForOrigin } from "../credentials.js";

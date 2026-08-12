@@ -14,7 +14,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeDoc, readDoc, CONVENTION_TYPE, type Bundle } from "@agentstate-lite/core";
+import { initBundle, writeDoc, readDoc, CONVENTION_TYPE, type Bundle } from "@superbee/core";
 
 import { newCommand } from "../src/commands/new.js";
 import { doc } from "../src/commands/doc.js";

@@ -9,14 +9,14 @@ import {
   type Frontmatter,
   type OkfDocument,
   type Version,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   isViewEntryKey,
   isViewRegistryId,
   VIEW_ENTRY_PREFIX,
   VIEW_REGISTRY_PREFIX,
   type BridgeCapability,
-} from "@agentstate-lite/core/page";
+} from "@superbee/core/page";
 
 export interface SaveTransientViewInput {
   launchId: string;

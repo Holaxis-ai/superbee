@@ -2,7 +2,7 @@
  * Wire response shapes for the surface the launcher + pages bridge consume — hand-written against
  * `packages/server/src/router.ts` directly (contract-first codegen is recorded future work,
  * `plans/ui-v1.md` rev 2's Package layout section). `Frontmatter` is the ONE shared type,
- * imported type-only so it is erased at compile time and never pulls `@agentstate-lite/core`
+ * imported type-only so it is erased at compile time and never pulls `@superbee/core`
  * runtime code into the browser bundle (rev 2: "importing shared types type-only").
  *
  * ROUTE-SHAPE NOTE (plan-vs-code drift, verified against the router rather than trusted from
@@ -11,7 +11,7 @@
  * syntactically but unused by the single-bundle reference router, so this client hardcodes the
  * literal `"default"` (client.ts's `BUNDLE`), matching the worker's own `DEFAULT_BUNDLE`.
  */
-import type { Frontmatter } from "@agentstate-lite/core";
+import type { Frontmatter } from "@superbee/core";
 
 export type { Frontmatter };
 

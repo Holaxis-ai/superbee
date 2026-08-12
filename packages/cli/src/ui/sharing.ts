@@ -17,7 +17,7 @@
 //    (`<top>/.agentstate-lite`); any other served bundle inside a repo is `unscoped` (no claim).
 import path from "node:path";
 import { realpathSync } from "node:fs";
-import type { SharingSummary, WorkspaceSummaryEntry } from "@agentstate-lite/ui-server";
+import type { SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -30,7 +30,7 @@ import {
   resolveInTreeUpstream,
   runGit,
   worktreeRootResolvesForOwner,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { loadCatalog } from "../catalog.js";
 
 /** How long one classification is served before the local git evidence is re-read. */

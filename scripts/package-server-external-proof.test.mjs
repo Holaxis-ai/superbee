@@ -54,12 +54,12 @@ test("packed server installs, typechecks, and round-trips through packaged core 
   try {
     await mkdir(packDir);
     await runNpm(
-      ["run", "build", "-w", "@agentstate-lite/core", "-w", "@agentstate-lite/server"],
+      ["run", "build", "-w", "@superbee/core", "-w", "@superbee/server"],
       repoRoot,
     );
 
-    const core = await packWorkspace("@agentstate-lite/core", packDir);
-    const server = await packWorkspace("@agentstate-lite/server", packDir);
+    const core = await packWorkspace("@superbee/core", packDir);
+    const server = await packWorkspace("@superbee/server", packDir);
     const serverPaths = server.receipt.files.map((file) => file.path).sort();
     assert.ok(serverPaths.includes("package.json"));
     assert.ok(serverPaths.includes("dist/index.js"));
@@ -78,8 +78,8 @@ test("packed server installs, typechecks, and round-trips through packaged core 
           private: true,
           type: "module",
           dependencies: {
-            "@agentstate-lite/core": `file:${core.tarball}`,
-            "@agentstate-lite/server": `file:${server.tarball}`,
+            "@superbee/core": `file:${core.tarball}`,
+            "@superbee/server": `file:${server.tarball}`,
           },
           devDependencies: {
             "@types/node": "^22.0.0",
@@ -102,11 +102,11 @@ test("packed server installs, typechecks, and round-trips through packaged core 
   type OkfDocument,
   type StorageBackend,
   type Version,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   createRouterForBackend,
   type ServerHandle,
-} from "@agentstate-lite/server";
+} from "@superbee/server";
 
 const backend: StorageBackend = new MemoryBackend();
 const router = createRouterForBackend(backend);
@@ -161,8 +161,8 @@ import {
   RemoteBackend,
   VersionConflict,
   blobVersion,
-} from "@agentstate-lite/core";
-import { createRouterForBackend } from "@agentstate-lite/server";
+} from "@superbee/core";
+import { createRouterForBackend } from "@superbee/server";
 
 const backend = new MemoryBackend();
 const router = createRouterForBackend(backend);
@@ -221,8 +221,8 @@ assert.deepEqual([...readBlob.bytes], [...bytes]);
     );
     await run(process.execPath, ["consumer.mjs"], scratch);
 
-    const installedServer = path.join(scratch, "node_modules", "@agentstate-lite", "server");
-    const installedCore = path.join(scratch, "node_modules", "@agentstate-lite", "core");
+    const installedServer = path.join(scratch, "node_modules", "@superbee", "server");
+    const installedCore = path.join(scratch, "node_modules", "@superbee", "core");
     assert.equal((await lstat(installedServer)).isSymbolicLink(), false);
     assert.equal((await lstat(installedCore)).isSymbolicLink(), false);
 
@@ -232,7 +232,7 @@ assert.deepEqual([...readBlob.bytes], [...bytes]);
     assert.equal(installedManifest.private, true);
     assert.deepEqual(installedManifest.files, ["dist"]);
     assert.ok(installedManifest.exports["."]);
-    assert.equal(installedManifest.dependencies["@agentstate-lite/core"], "*");
+    assert.equal(installedManifest.dependencies["@superbee/core"], "*");
 
     const installedFiles = await filesUnder(installedServer);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
@@ -242,8 +242,8 @@ assert.deepEqual([...readBlob.bytes], [...bytes]);
       for (const match of source.matchAll(importPattern)) {
         const specifier = match[1];
         assert.ok(!/(^|\/)src(?:\/|$)/.test(specifier), `${file} imports source path ${specifier}`);
-        if (specifier.startsWith("@agentstate-lite/")) {
-          assert.equal(specifier, "@agentstate-lite/core", `${file} imports workspace package ${specifier}`);
+        if (specifier.startsWith("@superbee/")) {
+          assert.equal(specifier, "@superbee/core", `${file} imports workspace package ${specifier}`);
         }
       }
     }

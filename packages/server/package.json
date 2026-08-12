@@ -1,5 +1,5 @@
 {
-  "name": "@agentstate-lite/server",
+  "name": "@superbee/server",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -23,6 +23,6 @@
     "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts"
   },
   "dependencies": {
-    "@agentstate-lite/core": "*"
+    "@superbee/core": "*"
   }
 }

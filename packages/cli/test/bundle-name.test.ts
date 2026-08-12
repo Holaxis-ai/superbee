@@ -16,7 +16,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeDoc, type Bundle, type StorageBackend } from "@agentstate-lite/core";
+import { initBundle, writeDoc, type Bundle, type StorageBackend } from "@superbee/core";
 import { deriveBundleDisplayName, BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../src/bundle-name.js";
 import { CONVENTIONAL_BUNDLE_DIR_NAME } from "../src/bundle.js";
 

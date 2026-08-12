@@ -26,7 +26,7 @@ import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { PAGE_REGISTRY_PREFIX, PAGE_ENTRY_PREFIX } from "@agentstate-lite/core/page";
+import { PAGE_REGISTRY_PREFIX, PAGE_ENTRY_PREFIX } from "@superbee/core/page";
 
 // The frozen historical spellings — literals on purpose, imported from NOTHING.
 const FROZEN_LEGACY_REGISTRY_PREFIX = "pages-registry/";

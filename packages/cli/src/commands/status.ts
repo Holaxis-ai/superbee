@@ -30,7 +30,7 @@ import {
   parseLinksFromDoc,
   query,
   validateAgainstKind,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   isAnyEntryKey,
   isAnyRegistryId,
@@ -38,7 +38,7 @@ import {
   isViewEntryVersion,
   parseRegistration,
   VIEW_ENTRY_PREFIX,
-} from "@agentstate-lite/core/page";
+} from "@superbee/core/page";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";

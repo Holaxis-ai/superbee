@@ -30,11 +30,11 @@
 //     core's own `matchesFilter` predicate per candidate member rather than a second coercion
 //     implementation — no engine/wire change for the OR semantics.
 //   - `--open`: exclude docs whose OWN declared kind marks their current field value(s) terminal
-//     (`isTerminal`, `@agentstate-lite/core`'s kinds.ts). Purely declaration-driven and reader-side;
+//     (`isTerminal`, `@superbee/core`'s kinds.ts). Purely declaration-driven and reader-side;
 //     an ungoverned type, a kind with no terminal declaration, or a doc missing the field are all
 //     INCLUDED (not-terminal is the semantic, never a hardcoded status string).
 import { parseArgs } from "node:util";
-import { queryHeads, loadKinds, isTerminal, matchesFilter, type KindRegistry, type QueryFilter } from "@agentstate-lite/core";
+import { queryHeads, loadKinds, isTerminal, matchesFilter, type KindRegistry, type QueryFilter } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { parseLeafOrUsage } from "../args.js";

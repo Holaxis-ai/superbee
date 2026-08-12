@@ -8,7 +8,7 @@ import {
   readDocVersioned,
   writeBlob,
   writeDoc,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   PageLaunchRegistry,
   SessionViewAuthorizationStore,

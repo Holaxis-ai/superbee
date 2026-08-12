@@ -9,7 +9,7 @@
  * non-CliError throw.
  *
  * The gate below is a minimal API-key envelope wrapped around the REAL
- * `@agentstate-lite/server` router over a `MemoryBackend` — exactly the generic "wire-protocol
+ * `@superbee/server` router over a `MemoryBackend` — exactly the generic "wire-protocol
  * router behind an API-key gate" shape the public client must tolerate. `globalThis.fetch` is
  * monkey-patched for the duration of each test to route to
  * this in-process handler — no real socket — mirroring `packages/core/test/wire-protocol.test.ts`'s
@@ -32,8 +32,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { MemoryBackend, writeDoc, type Bundle } from "@agentstate-lite/core";
-import { createRouter } from "@agentstate-lite/server";
+import { MemoryBackend, writeDoc, type Bundle } from "@superbee/core";
+import { createRouter } from "@superbee/server";
 
 import { list } from "../src/commands/list.js";
 import { doc } from "../src/commands/doc.js";

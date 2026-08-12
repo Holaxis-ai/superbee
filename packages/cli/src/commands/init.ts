@@ -8,7 +8,7 @@
 import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@agentstate-lite/core";
+import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
 import { resolveTargetDir, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";

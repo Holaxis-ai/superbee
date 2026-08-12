@@ -2,7 +2,7 @@
 // converge strings and help chains, row projection, the push/post-commit failure framing, and
 // the sync receipt + awareness-cache builders.
 import { readFileSync } from "node:fs";
-import { parseMarkdown } from "@agentstate-lite/core";
+import { parseMarkdown } from "@superbee/core";
 import {
   annotateLanded,
   classifyGitError,
@@ -18,7 +18,7 @@ import {
   type LandedConflict,
   type ProvisionOutcome,
   type ResolvedConflict,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { defaultSyncStore } from "../../cursor.js";
 import { upstreamHelp } from "../../sync-outcomes.js";
 import { CliError, cliErrorFromBoardGit } from "../../errors.js";

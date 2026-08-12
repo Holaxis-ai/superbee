@@ -1,6 +1,6 @@
 /**
  * `RemoteBackend` — a {@link StorageBackend} implemented over the wire-protocol v0
- * reference contract (`docs/WIRE-PROTOCOL.md`, `@agentstate-lite/server`).
+ * reference contract (`docs/WIRE-PROTOCOL.md`, `@superbee/server`).
  *
  * This is the client half of the seam over HTTP: every method maps directly to a wire endpoint,
  * and response versions remain the same content-addressed {@link Version} tokens local backends
@@ -74,7 +74,7 @@ interface ErrorEnvelope {
 
 /**
  * An injectable fetch-like transport: given a `Request`, resolve a `Response`. This
- * is exactly the shape {@link createRouter} (in `@agentstate-lite/server`) returns,
+ * is exactly the shape {@link createRouter} (in `@superbee/server`) returns,
  * so a router can be injected directly as the transport — no sockets involved.
  */
 export type FetchLike = (request: Request) => Promise<Response>;
@@ -89,7 +89,7 @@ export interface RemoteBackendOptions {
   fetchImpl?: FetchLike;
   /**
    * Optional bearer token sent as `Authorization: Bearer <token>` on EVERY request. The
-   * reference `serve()` (`@agentstate-lite/server`)
+   * reference `serve()` (`@superbee/server`)
    * ignores this header entirely (no auth enforced there), so omitting it is harmless
    * against a local/reference server.
    */
@@ -220,7 +220,7 @@ function encodeBlobKey(key: BlobKey): string {
 
 /**
  * The client half of the wire-protocol v0 contract: implements {@link StorageBackend}
- * over HTTP against a `@agentstate-lite/server` instance (or any conformant
+ * over HTTP against a `@superbee/server` instance (or any conformant
  * implementation of `docs/WIRE-PROTOCOL.md`).
  */
 export class RemoteBackend implements StorageBackend {

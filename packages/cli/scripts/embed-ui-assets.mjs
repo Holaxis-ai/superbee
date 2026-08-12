@@ -85,15 +85,15 @@ export function npmInvocation(args, env = process.env) {
 }
 
 /** Sibling workspaces whose `dist/` the packages/ui PRODUCTION build resolves through package
- * exports (`@agentstate-lite/core/kinds`, `@agentstate-lite/view-runtime/action-bridge`), IN build
+ * exports (`@superbee/core/kinds`, `@superbee/view-runtime/action-bridge`), IN build
  * order — core first, because view-runtime's own tsc consumes core's dist types. npm does NOT
  * build a workspace's deps on a single-workspace build, so on a fresh checkout (the CI
  * a fresh single-workspace `npm ci` state) these dists don't exist and Vite's build fails to resolve
  * the imports. markdown-renderer is covered by packages/ui's own `prebuild` and stays out of this
  * list. */
 export const UI_DIST_PREREQUISITE_WORKSPACES = [
-  "@agentstate-lite/core",
-  "@agentstate-lite/view-runtime",
+  "@superbee/core",
+  "@superbee/view-runtime",
 ];
 
 /** Rebuild `packages/ui`'s dist/ fresh via its own workspace script, building the sibling dists it
@@ -103,7 +103,7 @@ export const UI_DIST_PREREQUISITE_WORKSPACES = [
  * Throws (uncaught, `execFileSync`'s default) — and so fails this whole build immediately — on any
  * build error, e.g. a TypeScript or Vite failure. */
 function buildUiDist() {
-  for (const workspace of [...UI_DIST_PREREQUISITE_WORKSPACES, "@agentstate-lite/ui"]) {
+  for (const workspace of [...UI_DIST_PREREQUISITE_WORKSPACES, "@superbee/ui"]) {
     const invocation = npmInvocation(["run", "build", `--workspace=${workspace}`]);
     execFileSync(invocation.command, invocation.args, {
       cwd: repoRoot,

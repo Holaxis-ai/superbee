@@ -8,8 +8,8 @@ import {
   writeDoc,
   writeDocVersioned,
   type Bundle,
-} from "@agentstate-lite/core";
-import { mintActiveViewLaunch } from "@agentstate-lite/view-runtime";
+} from "@superbee/core";
+import { mintActiveViewLaunch } from "@superbee/view-runtime";
 import {
   PageActionLaunchAuthority,
   PageLaunchRegistry,

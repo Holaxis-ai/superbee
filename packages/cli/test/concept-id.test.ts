@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MemoryBackend, type Bundle } from "@agentstate-lite/core";
+import { MemoryBackend, type Bundle } from "@superbee/core";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../src/concept-id.js";
 
 const T = "2026-08-01T00:00:00.000Z";

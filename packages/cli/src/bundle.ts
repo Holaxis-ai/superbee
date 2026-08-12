@@ -43,7 +43,7 @@
 // `getApiKeyForOrigin`). Neither is required: the reference `serve()` ignores the
 // `Authorization` header entirely (no auth enforced there), so an ungated local bundle works
 // exactly as before with no key configured.
-import { BUNDLE_DIR } from "@agentstate-lite/board-git";
+import { BUNDLE_DIR } from "@superbee/board-git";
 import { constants, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import {
@@ -55,7 +55,7 @@ import {
   type Bundle,
   type FetchLike,
   type FilesystemMutationLockOptions,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { normalizeServer } from "./config.js";

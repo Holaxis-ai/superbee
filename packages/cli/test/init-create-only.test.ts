@@ -23,7 +23,7 @@ import {
   initBundle,
   VersionConflict,
   withFilesystemMutationLock,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { init } from "../src/commands/init.js";
 import {
   assertCreateOnlyTarget,

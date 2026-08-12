@@ -6,8 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { initBundle, parseLinks, readDoc, writeDoc } from "@agentstate-lite/core";
-import { snapshotBundleCommit, stageAndCommit } from "@agentstate-lite/board-git";
+import { initBundle, parseLinks, readDoc, writeDoc } from "@superbee/core";
+import { snapshotBundleCommit, stageAndCommit } from "@superbee/board-git";
 import {
   acquireFilesystemMutationLock,
   filesystemMutationLockPath,

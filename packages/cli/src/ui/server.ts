@@ -6,9 +6,9 @@ import {
   pageError,
   type UiServerHandle,
   type UiServerOptions as RuntimeUiServerOptions,
-} from "@agentstate-lite/ui-server";
-import type { Bundle } from "@agentstate-lite/core";
-import { renderDocumentToStaticHtml } from "@agentstate-lite/markdown-renderer/static";
+} from "@superbee/ui-server";
+import type { Bundle } from "@superbee/core";
+import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { deriveBundleDisplayName } from "../bundle-name.js";
 import { serveEmbeddedUiAsset } from "./assets.js";
 import { createSharingLoader, createWorkspacesLoader } from "./sharing.js";

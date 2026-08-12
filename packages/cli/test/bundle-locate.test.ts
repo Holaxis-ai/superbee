@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle } from "@agentstate-lite/core";
+import { initBundle } from "@superbee/core";
 
 import { openBundle, PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
 import { bundleCommand } from "../src/commands/bundle.js";

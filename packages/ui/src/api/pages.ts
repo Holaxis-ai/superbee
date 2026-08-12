@@ -11,8 +11,8 @@
  */
 import { getDoc, parseErrorEnvelope } from "./client.js";
 import type { Edge, EdgesResponse, Frontmatter } from "./types.js";
-import type { KindConvention } from "@agentstate-lite/core/kinds";
-import type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentSetFieldAction, SharingSummary, WorkspaceSummaryEntry } from "@agentstate-lite/ui-server";
+import type { KindConvention } from "@superbee/core/kinds";
+import type { ActionConfirmation, ActionPrepareResult, ActionTerminalResult, DocumentSetFieldAction, SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
 import { parseRegisteredPage, type BridgeCapability } from "../pages/registry.js";
 
 /** `/__ui/config` shape (server `configResponse`). `sharing`/`workspaces` are ui-server's plain data shapes (type-only import — no runtime dependency), CLI-injected in dir mode. */

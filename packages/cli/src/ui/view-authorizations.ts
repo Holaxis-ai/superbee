@@ -5,7 +5,7 @@ import type {
   RegisteredViewAuthorizationSubject,
   ViewAuthorizationStore,
   ViewAuthorizationSubject,
-} from "@agentstate-lite/ui-server";
+} from "@superbee/ui-server";
 import { credentialsDir, writeFileAtomic0600 } from "../credentials.js";
 
 const STORE_DIR = "view-authorizations";

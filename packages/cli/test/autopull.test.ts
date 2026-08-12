@@ -34,7 +34,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 import {
   AUTO_PULL_STALE_MS,
   NO_AUTOPULL_ENV,
@@ -44,7 +44,7 @@ import {
 import { readCache, readCursor, readSyncState } from "../src/cursor.js";
 import { sync } from "../src/commands/sync.js";
 import { hookInstallHintOnce } from "../src/sync-cli.js";
-import { resolveBundleKey } from "@agentstate-lite/board-git";
+import { resolveBundleKey } from "@superbee/board-git";
 import { hook, hookInstalled } from "../src/commands/hook.js";
 import { home } from "../src/commands/home.js";
 import { list } from "../src/commands/list.js";

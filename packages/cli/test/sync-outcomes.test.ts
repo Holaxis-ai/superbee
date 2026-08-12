@@ -28,7 +28,7 @@ import { CLEANUP_BRANCH } from "../src/commands/sync-establish.js";
 import { buildBoardBlock } from "../src/commands/home.js";
 import { toEnvelope, type CliError } from "../src/errors.js";
 import { renderErrorEnvelope } from "../src/output.js";
-import { boardWindowGuidance, preShareWindowError, type StatusRow } from "@agentstate-lite/board-git";
+import { boardWindowGuidance, preShareWindowError, type StatusRow } from "@superbee/board-git";
 import { makeLocalBoardTop, makePlainTop, makeRemnantTop, type OutcomeState } from "./sync-outcome-states.js";
 
 interface Fixture {

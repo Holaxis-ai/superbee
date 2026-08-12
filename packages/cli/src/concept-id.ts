@@ -7,7 +7,7 @@ import {
   pathFromConceptId,
   type Bundle,
   type ConceptId,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { CliError } from "./errors.js";
 
 /**

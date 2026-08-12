@@ -4,7 +4,7 @@ import { mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle } from "@agentstate-lite/core";
+import { initBundle } from "@superbee/core";
 
 import { catalog } from "../src/commands/catalog.js";
 import { CliError } from "../src/errors.js";

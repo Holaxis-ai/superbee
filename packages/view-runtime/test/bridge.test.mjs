@@ -13,7 +13,7 @@ import {
   MemoryBackend,
   queryEdges,
   writeDoc,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 
 test("bridge parser admits only exact bounded requests", () => {
   assert.deepEqual(

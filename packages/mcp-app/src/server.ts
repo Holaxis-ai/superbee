@@ -1,7 +1,7 @@
 import {
   versionOfBytes,
   type Bundle,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   registerAppResource,
   registerAppTool,
@@ -31,8 +31,8 @@ import {
   type RegisteredPageLaunch,
   type TransientPageLaunch,
   type ViewAuthorizationStore,
-} from "@agentstate-lite/view-runtime";
-import { renderDocumentToStaticHtml } from "@agentstate-lite/markdown-renderer/static";
+} from "@superbee/view-runtime";
+import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { z } from "zod";
 import type {
   DurableShowViewInput,

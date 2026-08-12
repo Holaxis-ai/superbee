@@ -1,5 +1,5 @@
 /**
- * `@agentstate-lite/core` — the OKF store engine.
+ * `@superbee/core` — the OKF store engine.
  *
  * An **Open Knowledge Format (OKF v0.1, Draft)** *Knowledge Bundle* is a
  * directory tree of UTF-8 markdown files, each carrying a YAML frontmatter block
@@ -105,7 +105,7 @@ export type {
 
 // `RemoteBackend` is the CLIENT half of the wire-protocol v0 seam-over-HTTP contract
 // (docs/WIRE-PROTOCOL.md) — a FUTURE plug-in adapter, proven here against the
-// in-repo reference server (`@agentstate-lite/server`) by the tri-backend contract
+// in-repo reference server (`@superbee/server`) by the tri-backend contract
 // tests. No CF/D1/production deployment is implied by its presence.
 export { RemoteBackend, RemoteError } from "./remote-backend.js";
 export type { FetchLike, RemoteBackendOptions } from "./remote-backend.js";

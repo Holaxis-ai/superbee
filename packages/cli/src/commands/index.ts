@@ -10,7 +10,7 @@ import {
   type AppliedIndexTarget,
   type IndexProjectionPreparation,
   type PreparedIndexTarget,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 
 import { resolveActor } from "../actor.js";
 import { parseSelectorOrUsage } from "../args.js";

@@ -43,7 +43,7 @@ import {
   unpushedCount,
   writeGitDirMarker,
   type BundleSnapshotCommit,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { defaultSyncStore } from "../../cursor.js";
 import { render, type OutputMode } from "../../output.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";

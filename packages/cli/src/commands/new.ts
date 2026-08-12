@@ -55,7 +55,7 @@ import {
   type KindConvention,
   type KindRegistry,
   type ValidationWarning,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, asHandled, classifyBundleError } from "../errors.js";

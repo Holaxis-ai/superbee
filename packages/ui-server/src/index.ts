@@ -30,7 +30,7 @@ export {
   type ViewAuthorizationSubject,
   type TrustedActionLaunch,
   type TrustedActionLaunchAuthority,
-} from "@agentstate-lite/view-runtime";
+} from "@superbee/view-runtime";
 export { proxyToRemote } from "./proxy.js";
 export { checkAuth, constantTimeEqual, mintSessionSecret, readCookie, sessionCookieHeader } from "./session.js";
 export {

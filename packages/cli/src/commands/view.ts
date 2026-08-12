@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { listViewCatalog } from "@agentstate-lite/view-runtime";
+import { listViewCatalog } from "@superbee/view-runtime";
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { maybeAutoPull } from "../autopull.js";

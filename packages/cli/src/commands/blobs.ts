@@ -6,7 +6,7 @@
 // exists on the StorageBackend seam AND on RemoteBackend + the wire (GET /blobs), so this command is a
 // thin, backend-agnostic consumer — it rides `--remote` for free, exactly like `list`.
 import { parseArgs } from "node:util";
-import { listBlobs } from "@agentstate-lite/core";
+import { listBlobs } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";

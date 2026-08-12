@@ -12,7 +12,7 @@ name: Mutation tests
 #
 # Per-package runs (cwd = the package dir, matching each stryker.config.json): core and board-git
 # mutate their whole src (fast suites); core needs the
-# sibling dists built (its wire-protocol tests import @agentstate-lite/server's dist); cli
+# sibling dists built (its wire-protocol tests import @superbee/server's dist); cli
 # additionally has Stryker run `node build.mjs` once AFTER instrumentation (mutation switching:
 # one build carries every mutant into the esbuild bundle, activated per run via env), so the
 # minority of cli tests that spawn the BUILT bundle exercise mutants too.
@@ -67,9 +67,9 @@ jobs:
         env:
           TARGET: ${{ inputs.target }}
         run: |
-          core='{"package":"core","workspace":"@agentstate-lite/core"}'
+          core='{"package":"core","workspace":"@superbee/core"}'
           cli='{"package":"cli","workspace":"@holaxis/aslite"}'
-          boardgit='{"package":"board-git","workspace":"@agentstate-lite/board-git"}'
+          boardgit='{"package":"board-git","workspace":"@superbee/board-git"}'
           case "${TARGET:-both}" in
             core) include="$core" ;;
             cli) include="$cli" ;;

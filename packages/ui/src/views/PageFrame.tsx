@@ -27,7 +27,7 @@ import {
 } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
-import { actionError, actionReply, parseActionBridgeMessage } from "@agentstate-lite/view-runtime/action-bridge";
+import { actionError, actionReply, parseActionBridgeMessage } from "@superbee/view-runtime/action-bridge";
 
 const ACTION_CONFIRMATION_ARM_MS = 500;
 const VIEW_AUTHORIZATION_ARM_MS = 500;

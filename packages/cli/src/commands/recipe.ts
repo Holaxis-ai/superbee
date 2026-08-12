@@ -9,7 +9,7 @@
 // through `resolveRecipe` -> `applyRecipe` — the SAME functions, no special-casing — which is what
 // makes recipe application generic rather than a one-off `init`-only special case (CLAUDE.md gate 3).
 import { parseArgs } from "node:util";
-import { loadKinds } from "@agentstate-lite/core";
+import { loadKinds } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";

@@ -33,7 +33,7 @@
  *
  * Runs command functions in-process (no subprocess) against a real temp filesystem bundle, mirroring
  * `link.test.ts`/`kinds.test.ts`'s pattern. The CAS-retry test additionally boots a real
- * `@agentstate-lite/server` `serve()` instance over a `MemoryBackend` bundle, mirroring
+ * `@superbee/server` `serve()` instance over a `MemoryBackend` bundle, mirroring
  * `remote.test.ts`'s multi-writer convergence tests.
  *
  * Test-authoring note: a body-less `doc write`/`doc update` call with NO `readStdin` override falls
@@ -63,8 +63,8 @@ import {
   type Bundle,
   type OkfDocument,
   type Version,
-} from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+} from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 import { encode } from "@toon-format/toon";
 
 import { doc, type DocCliDeps } from "../src/commands/doc.js";

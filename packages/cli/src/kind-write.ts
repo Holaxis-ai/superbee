@@ -8,7 +8,7 @@ import {
   type KindRegistry,
   type OkfDocument,
   type ValidationWarning,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 

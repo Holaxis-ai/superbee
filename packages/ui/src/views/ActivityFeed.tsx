@@ -26,7 +26,7 @@ import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { PAGE_TYPE_NAMES } from "../pages/registry.js";
 import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 
 /** How many rows the feed shows — recent pulse, not a history browser. */
 export const FEED_LIMIT = 8;

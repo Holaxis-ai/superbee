@@ -9,7 +9,7 @@ import {
   isReservedFile,
   parseMarkdown,
   pathFromConceptId,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -21,7 +21,7 @@ import {
   resolveInTreeUpstream,
   retargetBoardInterior,
   runGit,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { type SyncCliDeps } from "../../sync-cli.js";
 import { ffSwallowToError, syncOutcomeError, type InTreeNoBasisReason } from "../../sync-outcomes.js";
 import { CliError, asHandled, toExit } from "../../errors.js";

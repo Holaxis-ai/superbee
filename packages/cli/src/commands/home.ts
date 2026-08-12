@@ -63,8 +63,8 @@ import {
   BUNDLE_NAME_DOC_TYPE,
   type BundleNameSource,
 } from "../bundle-name.js";
-import { queryHeads, type OkfDocument } from "@agentstate-lite/core";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+import { queryHeads, type OkfDocument } from "@superbee/core";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import {
@@ -86,7 +86,7 @@ import {
   isBoardGitError,
   resolveBundleKey,
   retargetBoardInterior,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { maybeAutoPull } from "../autopull.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";

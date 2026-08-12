@@ -62,7 +62,7 @@ import {
   retargetBoardInterior,
   type ChannelDetection,
   type ProvisionOutcome,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { defaultSyncStore } from "../cursor.js";
 import { pullBoardAndRecord } from "../autopull.js";
 import { defaultSummarizeBundle, discoverSummarizeBundle, home, type BoardPullOutcome } from "./home.js";

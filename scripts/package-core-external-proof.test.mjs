@@ -52,9 +52,9 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
   const packDir = path.join(scratch, "pack");
   try {
     await mkdir(packDir);
-    await runNpm(["run", "build", "-w", "@agentstate-lite/core"], repoRoot);
+    await runNpm(["run", "build", "-w", "@superbee/core"], repoRoot);
     const packed = await runNpm(
-      ["pack", "-w", "@agentstate-lite/core", "--json", "--pack-destination", packDir],
+      ["pack", "-w", "@superbee/core", "--json", "--pack-destination", packDir],
       repoRoot,
     );
     const [receipt] = JSON.parse(packed.stdout);
@@ -95,8 +95,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
   RemoteBackend,
   type OkfDocument,
   type StorageBackend,
-} from "@agentstate-lite/core";
-import { isTerminal, type KindConvention } from "@agentstate-lite/core/kinds";
+} from "@superbee/core";
+import { isTerminal, type KindConvention } from "@superbee/core/kinds";
 
 const document: OkfDocument = { id: "proof", frontmatter: { type: "Proof" }, body: "works" };
 const backends: StorageBackend[] = [
@@ -157,8 +157,8 @@ import {
   initBundle,
   readDoc,
   writeDoc,
-} from "@agentstate-lite/core";
-import { freshnessHorizonMs } from "@agentstate-lite/core/kinds";
+} from "@superbee/core";
+import { freshnessHorizonMs } from "@superbee/core/kinds";
 
 const root = await mkdtemp(path.join(tmpdir(), "core-packed-runtime-"));
 try {
@@ -193,7 +193,7 @@ try {
     );
     await run(process.execPath, ["consumer.mjs"], scratch);
 
-    const installed = path.join(scratch, "node_modules", "@agentstate-lite", "core");
+    const installed = path.join(scratch, "node_modules", "@superbee", "core");
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
     assert.equal(installedManifest.private, true);
     assert.deepEqual(installedManifest.files, ["dist"]);
@@ -207,7 +207,7 @@ try {
       const source = await readFile(path.join(installed, file), "utf8");
       for (const match of source.matchAll(importPattern)) {
         const specifier = match[1];
-        assert.ok(!specifier.startsWith("@agentstate-lite/"), `${file} imports workspace package ${specifier}`);
+        assert.ok(!specifier.startsWith("@superbee/"), `${file} imports workspace package ${specifier}`);
         assert.ok(!/(^|\/)src(?:\/|$)/.test(specifier), `${file} imports source path ${specifier}`);
       }
     }

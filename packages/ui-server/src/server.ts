@@ -18,9 +18,9 @@ import {
   RequestBodyTooLargeError,
   requestFromIncomingMessage,
   writeResponseToServerResponse,
-} from "@agentstate-lite/server";
-import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, type Bundle, type EdgeFilter } from "@agentstate-lite/core";
-import { parseRegistration } from "@agentstate-lite/core/page";
+} from "@superbee/server";
+import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, type Bundle, type EdgeFilter } from "@superbee/core";
+import { parseRegistration } from "@superbee/core/page";
 import { isAllowedHost } from "./host.js";
 import { checkAuth, mintSessionSecret, sessionCookieHeader } from "./session.js";
 import type { UiAssetHandler } from "./assets.js";
@@ -44,7 +44,7 @@ import {
   type BridgeOutcome,
   type PageLaunch,
   type ViewAuthorizationStore,
-} from "@agentstate-lite/view-runtime";
+} from "@superbee/view-runtime";
 import { SseHub } from "./events.js";
 import { startWatcher, type ChangeEvent, type WatcherHandle } from "./watch.js";
 

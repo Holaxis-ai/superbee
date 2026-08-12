@@ -1,8 +1,8 @@
 // Build the single, self-contained, publishable CLI bundle.
 //
 // esbuild bundles src/index.ts together with its workspace source packages
-// (@agentstate-lite/core, @agentstate-lite/server, @agentstate-lite/ui-server,
-// @agentstate-lite/mcp-app) and every npm dependency into ONE ESM file with a
+// (@superbee/core, @superbee/server, @superbee/ui-server,
+// @superbee/mcp-app) and every npm dependency into ONE ESM file with a
 // `#!/usr/bin/env node` shebang. The published `@holaxis/aslite` package therefore has NO runtime
 // dependencies and NO unresolved `workspace:*` links — `npx -y @holaxis/aslite …` runs with zero
 // workspace resolution.

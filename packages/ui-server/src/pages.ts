@@ -14,7 +14,7 @@
 //      forwards only bounded requests to a server-owned, launch-bound bridge authority.
 //
 // The nonce is a capability, not a durable grant: short-TTL, single bundle-run, in-memory only.
-import { PAGE_ENTRY_PREFIX, VIEW_ENTRY_PREFIX } from "@agentstate-lite/core/page";
+import { PAGE_ENTRY_PREFIX, VIEW_ENTRY_PREFIX } from "@superbee/core/page";
 
 /** LEGACY bundle-relative key prefix page HTML blobs live under (`promote <file> --doc-key pages/<name>.html`). */
 export const PAGE_BLOB_PREFIX: string = PAGE_ENTRY_PREFIX;

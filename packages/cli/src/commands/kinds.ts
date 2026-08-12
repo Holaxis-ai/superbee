@@ -6,7 +6,7 @@
 // commands. This command IS that verb — the live-registry counterpart to `--help`/`home`'s static
 // pointer line (reference.ts kindsPointer()), which stays offline/no-I/O by AXI contract.
 import { parseArgs } from "node:util";
-import { freshnessHorizonMs, loadKinds, type KindConvention } from "@agentstate-lite/core";
+import { freshnessHorizonMs, loadKinds, type KindConvention } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";

@@ -17,8 +17,8 @@ import {
   type Bundle,
   type HeadResult,
   type QuerySelectionParams,
-} from "@agentstate-lite/core";
-import { BridgeService } from "@agentstate-lite/view-runtime";
+} from "@superbee/core";
+import { BridgeService } from "@superbee/view-runtime";
 
 import { list } from "../src/commands/list.js";
 

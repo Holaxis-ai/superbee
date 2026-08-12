@@ -1,5 +1,5 @@
 {
-  "name": "@agentstate-lite/board-git",
+  "name": "@superbee/board-git",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -24,7 +24,7 @@
     "mutation": "stryker run"
   },
   "dependencies": {
-    "@agentstate-lite/core": "*"
+    "@superbee/core": "*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -1,7 +1,7 @@
 // `agentstate-lite sync` — the entry flow, composed of explicit phases:
 // heal → detect → provision → commit → pull → push → receipt (`--pull-only` skips commit + push).
 //
-// COMMAND LAYER ONLY: this module composes `@agentstate-lite/board-git`'s exported vocabulary
+// COMMAND LAYER ONLY: this module composes `@superbee/board-git`'s exported vocabulary
 // plus the CLI's store wiring (`cursor.ts`), never re-implementing git plumbing or the
 // state-store schema. It keeps COMMAND UX: arg parsing, envelopes, help text, and the git tier's
 // CLI command boundary (BoardGitError → CliError, see `sync()`).
@@ -41,7 +41,7 @@ import {
   type FetchRebaseResolvingOutcome,
   type ProvisionOutcome,
   type SyncCursor,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { REANCHOR_NOTE, defaultSyncStore } from "../../cursor.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
 import { ESTABLISH_ALREADY, establishBoard } from "./establish.js";

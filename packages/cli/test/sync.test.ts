@@ -47,7 +47,7 @@ import {
   singleActor,
   toDeltaRows,
   type DocChange,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { cliInvocation } from "../src/invocation.js";
 import { doc } from "../src/commands/doc.js";
 import { CliError } from "../src/errors.js";

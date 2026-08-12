@@ -19,7 +19,7 @@
 // resolving on the next graph walk), and does NOT append a `log.md` entry (no other engine write
 // path self-logs either — D8).
 import { parseArgs } from "node:util";
-import { deleteDoc, deleteBlob, conceptIdFromPath, VersionConflict } from "@agentstate-lite/core";
+import { deleteDoc, deleteBlob, conceptIdFromPath, VersionConflict } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
