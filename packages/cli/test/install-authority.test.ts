@@ -88,7 +88,7 @@ test("durable npm-package proof fails closed for every missing or transient fact
   }
 });
 
-test("local-dev and marketplace legacy policies remain explicit while unknown fails closed", () => {
+test("local-dev policy remains explicit while unknown fails closed", () => {
   const installedLocalDev = classifyPersistentInstallAuthority({
     ...durableFixture(),
     artifact_channel: "local-dev",
@@ -140,10 +140,6 @@ test("local-dev and marketplace legacy policies remain explicit while unknown fa
   assert.equal(refusedInstalledLocalDev.allowed, false);
   assert.equal(refusedInstalledLocalDev.state, "unknown");
 
-  assert.equal(
-    classifyPersistentInstallAuthority({ ...durableFixture(), artifact_channel: "marketplace-legacy" }).state,
-    "marketplace_legacy",
-  );
   assert.equal(
     classifyPersistentInstallAuthority({ ...durableFixture(), artifact_channel: "unknown" }).allowed,
     false,

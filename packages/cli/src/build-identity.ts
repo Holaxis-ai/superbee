@@ -22,7 +22,6 @@ export const BUILD_IDENTITY_SCHEMA = "aslite.build-identity.v1" as const;
 export const ARTIFACT_CHANNELS = [
   "npm-package",
   "local-dev",
-  "marketplace-legacy",
   "unknown",
 ] as const;
 export type ArtifactChannel = (typeof ARTIFACT_CHANNELS)[number];

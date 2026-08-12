@@ -334,9 +334,8 @@ describe("home surface", () => {
     // Never advertise the UNSCOPED npm coordinate: `aslite` is not ours (404 on the registry),
     // so a copy-pasted `npx -y aslite …` runs whatever lands on that name. Ours is @holaxis/aslite.
     expect(all).not.toMatch(/npx\s+-y\s+aslite\b/);
-    // No paste-ready bare CLI invocations anywhere in the walkthrough: the only
-    // supported channel today (marketplace plugin) does not put `aslite` on PATH, and `skill
-    // install` is npm-only — actions stay agent-mediated, mechanics described without commands.
+    // No paste-ready bare CLI invocations anywhere in the walkthrough; actions stay
+    // agent-mediated and mechanics are described without commands.
     expect(all).not.toMatch(/aslite (skill|hook|recipes|recipe|sync)\b/);
 
     // The second click of a double-click on the nav slot (detail 2 — React reuses Next's DOM

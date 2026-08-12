@@ -175,7 +175,10 @@ function isBareManagedBin(value: string): boolean {
   return value === "aslite" || value === "agentstate-lite";
 }
 
-type ManagedExecutableLayout = "npm" | "local_dev" | "marketplace";
+// Migration-only recognition of executable paths written by the retired marketplace channel.
+// This does not discover, launch, or otherwise restore that channel: it lets npm `hook install`
+// replace an exact historical hook instead of preserving a broken duplicate forever.
+type ManagedExecutableLayout = "npm" | "local_dev" | "retired_marketplace";
 
 function isCanonicalAbsolutePath(value: string): boolean {
   return isAbsolute(value) && normalize(value) === value;
@@ -191,10 +194,10 @@ function managedExecutableLayout(value: string): ManagedExecutableLayout | undef
   }
   if (/\/packages\/cli\/dist\/agentstate-lite\.mjs$/.test(portable)) return "local_dev";
   if (
-    /\/(?:\.claude|\.codex)\/plugins\/cache\/.+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable) ||
+    /\/(?:\.claude|\.codex)\/plugins\/cache\/[^/]+\/agentstate-lite\/[^/]+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable) ||
     /\/plugins\/agentstate-lite\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable)
   ) {
-    return "marketplace";
+    return "retired_marketplace";
   }
   return undefined;
 }
@@ -228,11 +231,22 @@ export function classifyHookCommand(command: string): HookCompatibility {
     return result("stale", "recognized pre-session-start generated bare-bin command");
   }
 
-  if (tokens.length === 2 && managedExecutableLayout(tokens[0]!) && tokens[1] === "session-start") {
-    return result("legacy_path_bound", "recognized generated direct-executable command bound to one path");
+  const directLayout = tokens.length <= 2 ? managedExecutableLayout(tokens[0]!) : undefined;
+  if (tokens.length === 2 && directLayout && tokens[1] === "session-start") {
+    return result(
+      "legacy_path_bound",
+      directLayout === "retired_marketplace"
+        ? "recognized historical marketplace hook; npm hook install will replace it"
+        : "recognized generated direct-executable command bound to one path",
+    );
   }
-  if (tokens.length === 1 && managedExecutableLayout(tokens[0]!)) {
-    return result("stale", "recognized pre-session-start generated direct-executable command");
+  if (tokens.length === 1 && directLayout) {
+    return result(
+      "stale",
+      directLayout === "retired_marketplace"
+        ? "recognized pre-session-start historical marketplace hook"
+        : "recognized pre-session-start generated direct-executable command",
+    );
   }
 
   const legacyNpx =
@@ -252,7 +266,7 @@ export function classifyHookCommand(command: string): HookCompatibility {
     tokens.length === 3 &&
     isCanonicalAbsolutePath(tokens[0]!) &&
     tokens[0]!.endsWith(`${sep}bin${sep}node`) &&
-    (executableLayout === "local_dev" || executableLayout === "marketplace") &&
+    executableLayout === "local_dev" &&
     tokens[2] === "session-start"
   ) {
     return result("current", "recognized generated PATH-independent Node launch");

@@ -1,20 +1,17 @@
 /**
- * Distribution-completeness gate: every capability the skill-target SKILL.md advertises must ship
- * a backing contract/example under `references/` — the skill is one projection of the
- * distribution-neutral inventory in src/distribution-resources.ts.
+ * Distribution-completeness gate: every capability the npm-carried SKILL.md advertises must ship
+ * a backing contract/example under `references/`.
  *
  * Runs in `npm test -w @holaxis/aslite`, hence `npm run check` — PR-side is the right layer here
- * because a gap is a SOURCE defect (a new command that never declares its shipped-contract
- * surface, or new prose that points at a file nobody added to the manifest): the bot that
- * regenerates plugins/ on merge to main would otherwise ship the gap FIRST, and only a human
- * diff-reading the generated output after the fact would ever catch it.
+ * because a gap is a SOURCE defect: a new command that never declares its shipped-contract
+ * surface, or new prose that points at a file nobody added to the manifest.
  *
- * Checks include inventory ownership and channel intent, then skill-projection exhaustiveness.
+ * Checks include inventory ownership and npm-projection exhaustiveness.
  * SKILL_COMMAND_RESOURCES covers every COMMAND_GROUPS
  * command name, no more, no less; (2)+(3) validity — every dest a contract/pattern names, and
- * every src it copies from, actually exists; (4) the capability sweep — render the skill-target
+ * every src it copies from, actually exists; (4) the capability sweep — render the npm-target
  * SKILL.md in memory and confirm every SKILL_CAPABILITY_PATTERNS tripwire both fires AND is satisfied;
- * (5) no orphans/no phantom pointers — the manifest and the rendered prose agree on what's shipped
+ * (5) no orphans/no phantom pointers — the manifest and the renderedNpm prose agree on what's shipped
  * in both directions.
  *
  * Honest limit (see distribution-resources.ts's pattern doc comment): this cannot
@@ -30,16 +27,13 @@ import path from "node:path";
 
 import { COMMAND_GROUPS, commandName } from "../src/reference.js";
 import {
-  DISTRIBUTION_CHANNELS,
   DISTRIBUTION_RESOURCES,
   NPM_RESOURCES,
   RESOURCE_ROLES,
   SKILL_CAPABILITY_PATTERNS,
   SKILL_COMMAND_RESOURCES,
-  SKILL_RESOURCES,
-  projectResources,
 } from "../src/distribution-resources.js";
-import { renderNpm, renderSkill } from "../src/skill-render.js";
+import { renderNpm } from "../src/skill-render.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(here, "../../..");
@@ -47,14 +41,13 @@ const REPO_ROOT = path.resolve(here, "../../..");
 const ALL_COMMAND_NAMES = [
   ...new Set(COMMAND_GROUPS.flatMap(({ commands }) => commands.map((c) => commandName(c.usage)))),
 ];
-const SKILL_DESTS = new Set(SKILL_RESOURCES.map((r) => r.dest));
 const NPM_DESTS = new Set(NPM_RESOURCES.map((r) => r.dest));
 
 // ---------------------------------------------------------------------------------------------
 // Inventory ownership — resources are repo-owned and classified before any channel projects them.
 // ---------------------------------------------------------------------------------------------
 
-test("distribution resources have unique repo authorities, declared roles, and at least one target", () => {
+test("distribution resources have unique repo authorities, destinations, and declared roles", () => {
   const sources = new Set<string>();
   const seenRoles = new Set<string>();
   for (const resource of DISTRIBUTION_RESOURCES) {
@@ -63,30 +56,21 @@ test("distribution resources have unique repo authorities, declared roles, and a
     assert.doesNotMatch(resource.src, /^plugins\//, "generated plugin content cannot be a resource authority");
     assert.ok(RESOURCE_ROLES.includes(resource.role), `unknown resource role: ${resource.role}`);
     seenRoles.add(resource.role);
-    assert.ok(Object.keys(resource.targets).length > 0, `${resource.src} has no distribution target`);
+    assert.ok(resource.dest.length > 0, `${resource.src} has no npm destination`);
   }
   assert.deepEqual([...seenRoles].sort(), [...RESOURCE_ROLES].sort());
 });
 
-test("each channel projection has unique destinations backed by real repo sources", () => {
-  for (const channel of DISTRIBUTION_CHANNELS) {
-    const destinations = new Set<string>();
-    for (const { src, dest } of projectResources(channel)) {
-      assert.ok(!destinations.has(dest), `${channel} projects two resources to ${dest}`);
-      destinations.add(dest);
-      assert.ok(existsSync(path.join(REPO_ROOT, src)), `${channel} projects missing source ${src}`);
-    }
+test("the npm projection has unique destinations backed by real repo sources", () => {
+  const destinations = new Set<string>();
+  for (const { src, dest } of NPM_RESOURCES) {
+    assert.ok(!destinations.has(dest), `npm projects two resources to ${dest}`);
+    destinations.add(dest);
+    assert.ok(existsSync(path.join(REPO_ROOT, src)), `npm projects missing source ${src}`);
   }
 });
 
-test("the npm projection mirrors the skill projection dest-for-dest, and the tarball ships it", () => {
-  // One dest namespace serves the command/capability tables for both channels — a resource added
-  // to one channel but not the other is a deliberate decision, not an accident, so make it loud.
-  assert.deepEqual(
-    [...NPM_DESTS].sort(),
-    [...SKILL_DESTS].sort(),
-    "npm and skill projections must ship the same reference dest set",
-  );
+test("the npm tarball allowlist ships the generated skill and references", () => {
   const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "packages/cli/package.json"), "utf8"));
   assert.deepEqual(packageJson.files, ["dist", "SKILL.md", "references"]);
 });
@@ -117,9 +101,9 @@ test("SKILL_COMMAND_RESOURCES has no stale key for a command that no longer exis
 // manifest entry's src must be a real file (from the repo root).
 // ---------------------------------------------------------------------------------------------
 
-const CHANNEL_DESTS: Record<string, Set<string>> = { skill: SKILL_DESTS, npm: NPM_DESTS };
+const CHANNEL_DESTS: Record<string, Set<string>> = { npm: NPM_DESTS };
 
-test("every SKILL_COMMAND_RESOURCES dest names a real projection in BOTH channels", () => {
+test("every SKILL_COMMAND_RESOURCES dest names a real npm projection", () => {
   for (const [channel, dests] of Object.entries(CHANNEL_DESTS)) {
     for (const [name, required] of Object.entries(SKILL_COMMAND_RESOURCES)) {
       for (const dest of required) {
@@ -129,7 +113,7 @@ test("every SKILL_COMMAND_RESOURCES dest names a real projection in BOTH channel
   }
 });
 
-test("every SKILL_CAPABILITY_PATTERNS requirement names a real projection in BOTH channels", () => {
+test("every SKILL_CAPABILITY_PATTERNS requirement names a real npm projection", () => {
   for (const [channel, dests] of Object.entries(CHANNEL_DESTS)) {
     for (const { pattern, requires } of SKILL_CAPABILITY_PATTERNS) {
       for (const dest of requires) {
@@ -139,8 +123,8 @@ test("every SKILL_CAPABILITY_PATTERNS requirement names a real projection in BOT
   }
 });
 
-test("every skill-projected source exists on disk", () => {
-  for (const { src, dest } of SKILL_RESOURCES) {
+test("every npm-projected source exists on disk", () => {
+  for (const { src, dest } of NPM_RESOURCES) {
     assert.ok(
       existsSync(path.join(REPO_ROOT, src)),
       `manifest entry dest=\`${dest}\` names a source that does not exist: ${src}`,
@@ -154,7 +138,7 @@ test("the shipped View examples include capability-independent navigation from a
     "views/views-registry/about.md",
     "views/references/view-authoring-v0.md",
   ]) {
-    assert.ok(SKILL_DESTS.has(dest), `View navigation reference is not skill-projected: ${dest}`);
+    assert.ok(NPM_DESTS.has(dest), `View navigation reference is not npm-projected: ${dest}`);
   }
 });
 
@@ -175,7 +159,7 @@ test("the shipped review-workflow references exactly mirror the complete recipe 
     src: `${sourcePrefix}${relative}`,
     dest: `${destPrefix}${relative}`,
   }));
-  const actual = SKILL_RESOURCES
+  const actual = NPM_RESOURCES
     .filter(({ src, dest }) => src.startsWith(sourcePrefix) || dest.startsWith(destPrefix))
     .sort((a, b) => a.src.localeCompare(b.src));
   assert.deepEqual(actual, expected);
@@ -204,62 +188,55 @@ test("the View authoring reference documents hello grants for both read and prop
 });
 
 // ---------------------------------------------------------------------------------------------
-// (4)+(5) Render the skill-target SKILL.md in memory and check it against the manifest in BOTH
+// (4)+(5) Render the npm-target SKILL.md in memory and check it against the manifest in both
 // directions: every capability pattern fires and is backed (dead pattern = fail), every shipped
 // file is mentioned (orphan = fail), and every `$REFS/…` path mentioned resolves to something
 // actually shipped (phantom pointer = fail).
 // ---------------------------------------------------------------------------------------------
 
-const rendered = renderSkill();
 const renderedNpm = renderNpm();
 
-test("both skill channels teach only the bounded stable MCP PATH contract", () => {
-  for (const text of [renderedNpm, rendered]) {
-    assert.match(text, /## Stable MCP launch/);
-    assert.match(text, /npm install -g @holaxis\/aslite/);
-    assert.match(text, /command `aslite`.*argument `mcp`/s);
-    assert.match(text, /`aslite version --json`/);
-    assert.match(text, /does not scan or rewrite host MCP configuration/);
-  }
+test("the npm skill teaches only the bounded stable MCP PATH contract", () => {
+  assert.match(renderedNpm, /## Stable MCP launch/);
+  assert.match(renderedNpm, /npm install -g @holaxis\/aslite/);
+  assert.match(renderedNpm, /command `aslite`.*argument `mcp`/s);
+  assert.match(renderedNpm, /`aslite version --json`/);
+  assert.match(renderedNpm, /does not scan or rewrite host MCP configuration/);
 });
 
 test("the typical flow creates a complete Context Note in one command", () => {
-  for (const text of [renderedNpm, rendered]) {
-    assert.match(
-      text,
-      /new "Context Note" cycle-1 --title "cycle-1" --body '# Summary\n\nWhat this session did and what comes next' --actor <your-name>/,
-    );
-    assert.doesNotMatch(text, /doc update context-notes\/cycle-1/);
-  }
+  assert.match(
+    renderedNpm,
+    /new "Context Note" cycle-1 --title "cycle-1" --body '# Summary\n\nWhat this session did and what comes next' --actor <your-name>/,
+  );
+  assert.doesNotMatch(renderedNpm, /doc update context-notes\/cycle-1/);
 });
 
-test("npm and plugin skill channels share the authenticated-remote access contract", () => {
-  for (const text of [renderedNpm, rendered]) {
-    assert.match(text, /## Remote bundle access \(--remote, serve\)/);
-    assert.match(text, /AGENTSTATE_LITE_API_KEY/);
-    assert.match(text, /already-provisioned\s+stored per-origin credential/);
-    assert.match(text, /provisioning is outside the default CLI surface/);
-    assert.doesNotMatch(text, /\b(?:login|join|whoami)\s+--remote\b/);
-    assert.doesNotMatch(text, /\b(?:invite|member|key)\s+(?:create|list|revoke|set-role|remove|mint)\b/);
-  }
+test("the npm skill carries the authenticated-remote access contract", () => {
+  assert.match(renderedNpm, /## Remote bundle access \(--remote, serve\)/);
+  assert.match(renderedNpm, /AGENTSTATE_LITE_API_KEY/);
+  assert.match(renderedNpm, /already-provisioned\s+stored per-origin credential/);
+  assert.match(renderedNpm, /provisioning is outside the default CLI surface/);
+  assert.doesNotMatch(renderedNpm, /\b(?:login|join|whoami)\s+--remote\b/);
+  assert.doesNotMatch(renderedNpm, /\b(?:invite|member|key)\s+(?:create|list|revoke|set-role|remove|mint)\b/);
 });
 
 test("actor guidance distinguishes advisory labels from backend-owned attribution", () => {
   assert.match(
-    rendered,
+    renderedNpm,
     /no advisory actor label is stored in frontmatter or sent as an agent label/,
   );
-  assert.match(rendered, /backend history still reports its own principal/);
-  assert.match(rendered, /local OS owner or an\s+authenticated remote user/);
+  assert.match(renderedNpm, /backend history still reports its own principal/);
+  assert.match(renderedNpm, /local OS owner or an\s+authenticated remote user/);
 });
 
-test("no SKILL_CAPABILITY_PATTERNS entry is dead — each fires and is backed in BOTH rendered channels", () => {
-  const renderedByChannel: Record<string, string> = { skill: rendered, npm: renderedNpm };
+test("no SKILL_CAPABILITY_PATTERNS entry is dead — each fires and is backed in the npm channel", () => {
+  const renderedByChannel: Record<string, string> = { npm: renderedNpm };
   for (const [channel, text] of Object.entries(renderedByChannel)) {
     for (const { pattern, requires } of SKILL_CAPABILITY_PATTERNS) {
       assert.ok(
         pattern.test(text),
-        `capability pattern ${pattern} matches nothing in the rendered ${channel}-target SKILL.md — dead tripwire, fix or remove it.`,
+        `capability pattern ${pattern} matches nothing in the renderedNpm ${channel}-target SKILL.md — dead tripwire, fix or remove it.`,
       );
       for (const dest of requires) {
         assert.ok(
@@ -279,12 +256,12 @@ function destMentionCandidates(dest: string): string[] {
   return candidates;
 }
 
-test("no orphans — every shipped file (or an enclosing directory of it) is mentioned in the rendered SKILL.md", () => {
-  for (const { src, dest } of SKILL_RESOURCES) {
-    const mentioned = destMentionCandidates(dest).some((candidate) => rendered.includes(candidate));
+test("no orphans — every shipped file (or an enclosing directory of it) is mentioned in the npm SKILL.md", () => {
+  for (const { src, dest } of NPM_RESOURCES) {
+    const mentioned = destMentionCandidates(dest).some((candidate) => renderedNpm.includes(candidate));
     assert.ok(
       mentioned,
-      `\`${dest}\` (from ${src}) is shipped but never mentioned in the rendered skill-target SKILL.md — an orphaned reference nobody points at.`,
+      `\`${dest}\` (from ${src}) is shipped but never mentioned in the npm-target SKILL.md — an orphaned reference nobody points at.`,
     );
   }
 });
@@ -297,21 +274,20 @@ function extractRefsPaths(text: string): string[] {
 /** Whether `refPath` is itself a manifest dest, or a (possibly bare, no trailing slash) directory prefix of one. */
 function resolvesToManifest(refPath: string): boolean {
   const normalized = refPath.endsWith("/") ? refPath.slice(0, -1) : refPath;
-  for (const dest of SKILL_DESTS) {
+  for (const dest of NPM_DESTS) {
     if (dest === normalized || dest.startsWith(`${normalized}/`)) return true;
   }
   return false;
 }
 
-test("no phantom pointers — every $REFS/… path in the rendered SKILL.md resolves to a shipped dest or dir-prefix", () => {
-  const phantoms = [...new Set(extractRefsPaths(rendered).filter((p) => !resolvesToManifest(p)))];
+test("no phantom pointers — every $REFS/… path in the renderedNpm SKILL.md resolves to a shipped dest or dir-prefix", () => {
+  const phantoms = [...new Set(extractRefsPaths(renderedNpm).filter((p) => !resolvesToManifest(p)))];
   assert.deepEqual(phantoms, [], `phantom $REFS/ path(s) — point nowhere in the skill projection: ${phantoms.join(", ")}`);
 });
 
 // ---------------------------------------------------------------------------------------------
-// The npm channel under the SAME (4)+(5) discipline: its rendered SKILL.md addresses the shipped
-// tree by plain `references/…` paths relative to the installed file (no $REFS resolver — the npm
-// channel has none by design), so the orphan/phantom sweep runs over that pointer form.
+// The npm Skill uses `$REFS/…` pointers rooted at the host-reported installed Skill directory. It
+// carries no cache-discovery resolver, so the orphan/phantom sweep runs over that bounded form.
 // ---------------------------------------------------------------------------------------------
 
 test("npm: bare-aslite channel identity — no npx examples, no retired coordinate, no marketplace-cache resolver", () => {
@@ -342,17 +318,17 @@ test("npm: reference pointers ride $REFS set from the host-reported base dir —
   }
 });
 
-test("npm: no orphans — every npm-shipped file (or an enclosing directory) is mentioned as $REFS/… in the rendered npm SKILL.md", () => {
+test("npm: no orphans — every npm-shipped file (or an enclosing directory) is mentioned as $REFS/… in the renderedNpm npm SKILL.md", () => {
   for (const { src, dest } of NPM_RESOURCES) {
     const mentioned = destMentionCandidates(dest).some((candidate) => renderedNpm.includes(`$REFS/${candidate}`));
     assert.ok(
       mentioned,
-      `\`${dest}\` (from ${src}) is npm-shipped but never mentioned in the rendered npm-target SKILL.md — an orphaned reference nobody points at.`,
+      `\`${dest}\` (from ${src}) is npm-shipped but never mentioned in the renderedNpm npm-target SKILL.md — an orphaned reference nobody points at.`,
     );
   }
 });
 
-test("npm: no phantom pointers — every $REFS/… path in the rendered npm SKILL.md resolves to a shipped dest or dir-prefix", () => {
+test("npm: no phantom pointers — every $REFS/… path in the renderedNpm npm SKILL.md resolves to a shipped dest or dir-prefix", () => {
   const resolves = (refPath: string): boolean => {
     const normalized = refPath.endsWith("/") ? refPath.slice(0, -1) : refPath;
     for (const dest of NPM_DESTS) {
@@ -370,25 +346,25 @@ test("npm: no phantom pointers — every $REFS/… path in the rendered npm SKIL
 // red-on-old — each failed against the pre-rename render.
 // ---------------------------------------------------------------------------------------------
 
-test("the rendered skill teaches View authoring canonically (views paths, type: View, View convention)", () => {
-  assert.match(rendered, /## Bundle views — ship a live UI as bundle content/);
-  assert.match(rendered, /`type: View` registry doc/);
-  assert.ok(rendered.includes("--doc-key views/my-view.html"), "authoring step 2 must promote under views/");
-  assert.ok(rendered.includes("--doc-key views-registry/my-view.md"), "authoring step 3 must target views-registry/");
-  assert.ok(rendered.includes('promote "$REFS/views/conventions/view.md" --doc-key conventions/view.md'), "authoring step 4 must install the View convention");
-  assert.ok(rendered.includes('cat "$REFS/views/references/view-authoring-v0.md"'), "the shipped contract pointer must be the View authoring reference");
+test("the renderedNpm skill teaches View authoring canonically (views paths, type: View, View convention)", () => {
+  assert.match(renderedNpm, /## Bundle views — ship a live UI as bundle content/);
+  assert.match(renderedNpm, /`type: View` registry doc/);
+  assert.ok(renderedNpm.includes("--doc-key views/my-view.html"), "authoring step 2 must promote under views/");
+  assert.ok(renderedNpm.includes("--doc-key views-registry/my-view.md"), "authoring step 3 must target views-registry/");
+  assert.ok(renderedNpm.includes('promote "$REFS/views/conventions/view.md" --doc-key conventions/view.md'), "authoring step 4 must install the View convention");
+  assert.ok(renderedNpm.includes('cat "$REFS/views/references/view-authoring-v0.md"'), "the shipped contract pointer must be the View authoring reference");
 });
 
-test("the rendered skill mentions legacy Page exactly once — the legacy note, never authoring guidance", () => {
+test("the renderedNpm skill mentions legacy Page exactly once — the legacy note, never authoring guidance", () => {
   // The single accepted-legacy sentence. Any other `type: Page` occurrence is stale teaching.
-  const legacyMentions = rendered.match(/type: Page/g) ?? [];
+  const legacyMentions = renderedNpm.match(/type: Page/g) ?? [];
   assert.equal(legacyMentions.length, 1, "exactly one `type: Page` mention (the legacy note) may remain");
-  assert.match(rendered, /`Page` is the legacy name/);
+  assert.match(renderedNpm, /`Page` is the legacy name/);
   // No authoring guidance may target the legacy prefixes.
-  assert.doesNotMatch(rendered, /--doc-key pages\//);
-  assert.doesNotMatch(rendered, /--doc-key pages-registry\//);
-  assert.doesNotMatch(rendered, /conventions\/page\.md/);
-  assert.doesNotMatch(rendered, /page-authoring-v0/);
+  assert.doesNotMatch(renderedNpm, /--doc-key pages\//);
+  assert.doesNotMatch(renderedNpm, /--doc-key pages-registry\//);
+  assert.doesNotMatch(renderedNpm, /conventions\/page\.md/);
+  assert.doesNotMatch(renderedNpm, /page-authoring-v0/);
 });
 
 test("the npm-target SKILL teaches Views canonically — legacy Page appears exactly once, as the legacy note", () => {
@@ -439,8 +415,8 @@ test("no teaching surface makes a PERMANENCE claim about legacy naming (fix-roun
   const legacyNaming = /\bPages?\b|\bbridge\b|legacy/i;
   const foreverClaim = /\bforever\b/i;
   const sources: Array<[string, string]> = [
-    ["rendered skill SKILL.md", rendered],
-    ["rendered npm SKILL.md", renderedNpm],
+    ["renderedNpm skill SKILL.md", renderedNpm],
+    ["renderedNpm npm SKILL.md", renderedNpm],
   ];
   const sourceFiles = [
     "src/reference.ts",
@@ -481,8 +457,8 @@ test("no teaching surface makes an ACCEPTANCE claim about legacy naming (post-re
   const acceptanceClaim = /(keeps?|kept)\s+working|still\s+(works?|honored|resolves?|accepted|registered)|stays?\s+(supported|honored|accepted)/i;
   const legacyNaming = /\bPages?\b|\bbridge\b|legacy/i;
   const sources: Array<[string, string]> = [
-    ["rendered skill SKILL.md", rendered],
-    ["rendered npm SKILL.md", renderedNpm],
+    ["renderedNpm skill SKILL.md", renderedNpm],
+    ["renderedNpm npm SKILL.md", renderedNpm],
   ];
   const sourceFiles = [
     "src/reference.ts",
@@ -526,9 +502,7 @@ test("examples markdown teaches only View — the word Page appears solely in le
 test("repo-level teaching docs (published README/package.json, root CLAUDE.md/README/AGENTS/STATUS) say Page only as a legacy note", () => {
   // Fix-round-2 finding class: teaching surfaces OUTSIDE the cli package's src tree — the
   // published npm README + package description, and the repo-root orchestrator guidance every
-  // agent session auto-reads. Same per-line rule as above. plugins/ is deliberately EXCLUDED:
-  // its SKILL.md + references tree is regenerated by the merge bot (scripts/ci-version-bundle.mjs
-  // snapshots and rewrites them), so it is generated output, not an authored teaching source.
+  // agent session auto-reads. Same per-line rule as above.
   const repoLevelSources = [
     "packages/cli/README.md",
     "packages/cli/package.json",

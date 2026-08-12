@@ -113,23 +113,9 @@ export const NONCANONICAL_MANAGED_PATH_CASES: ReadonlyArray<{
     args: ["session-start"],
   },
   {
-    family: "direct marketplace entry with parent-directory segment",
-    program:
-      "/Users/u/.codex/plugins/cache/holaxis/agentstate-lite/1.0.0/../1.0.0/skills/agentstate-lite/scripts/agentstate-lite.mjs",
-    args: ["session-start"],
-  },
-  {
     family: "noncanonical runtime with canonical local-dev entry",
     program: "/opt/runtime/./bin/node",
     args: ["/workspace/agentstate-lite/packages/cli/dist/agentstate-lite.mjs", "session-start"],
-  },
-  {
-    family: "noncanonical runtime with canonical marketplace entry",
-    program: "/opt/runtime//bin/node",
-    args: [
-      "/Users/u/.codex/plugins/cache/holaxis/agentstate-lite/1.0.0/skills/agentstate-lite/scripts/agentstate-lite.mjs",
-      "session-start",
-    ],
   },
 ].map((fixture) => ({ ...fixture, command: [fixture.program, ...fixture.args].join(" ") }));
 
@@ -174,18 +160,6 @@ export const NODE_PACKAGE_PAIR_CASES: ReadonlyArray<{
     family: "independently located local-dev package",
     command:
       "/opt/runtime-a/bin/node /workspace/agentstate-lite/packages/cli/dist/agentstate-lite.mjs session-start",
-    state: "current",
-  },
-  {
-    family: "independently located marketplace cache package",
-    command:
-      "/opt/runtime-a/bin/node /Users/u/.codex/plugins/cache/holaxis/agentstate-lite/1.0.0/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start",
-    state: "current",
-  },
-  {
-    family: "independently located repository marketplace package",
-    command:
-      "/opt/runtime-a/bin/node /workspace/agentstate-lite/plugins/agentstate-lite/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start",
     state: "current",
   },
 ];

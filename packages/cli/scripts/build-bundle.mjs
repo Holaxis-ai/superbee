@@ -1,10 +1,5 @@
-// Shared esbuild config for the self-contained CLI bundle — the ONE bundler config, reused by
-// its three consumers: `build.mjs` (an explicitly flavored dev or npm build, writing ONLY dist/ — never the
-// committed plugin path), `build-plugin-bundle.mjs` (the ONE writer of the committed skill
-// bundle, used by the CI bot and the manual `npm run build:plugin-bundle`), and
-// `check-skill-bundle.mjs` (rebuilds to a scratch temp file for a byte-compare drift gate).
-// Keeping this in one place means the bundle-producing call sites can never drift from each
-// other.
+// Shared esbuild config for the self-contained npm CLI bundle. build.mjs selects the local-dev or
+// npm-package flavor and writes packages/cli/dist.
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -18,7 +13,7 @@ const r = (p) => resolve(pkgRoot, p);
 
 // The package version is one part of the immutable build identity baked into every bundle. Runtime
 // code never promotes an adjacent package.json to version authority; it reads one only as a drift
-// diagnostic. This is what keeps lone-file legacy marketplace bundles authoritative too.
+// diagnostic.
 const manifest = JSON.parse(readFileSync(r("package.json"), "utf8"));
 const packageName = manifest.name;
 const version = manifest.version;
@@ -32,7 +27,7 @@ if (
   throw new Error("packages/cli/package.json must contain a valid npm package name and non-empty version");
 }
 const repoRoot = resolve(pkgRoot, "../..");
-export const BUILD_ARTIFACT_CHANNELS = ["npm-package", "local-dev", "marketplace-legacy"];
+export const BUILD_ARTIFACT_CHANNELS = ["npm-package", "local-dev"];
 
 function gitFact(args, fallback) {
   try {
@@ -54,8 +49,7 @@ export function currentSourceFacts() {
 
 /**
  * Bundle src/index.ts (+ the workspace source packages + every npm dep) into ONE self-contained
- * ESM file at `outfile`. Does NOT chmod the result — callers decide whether the output needs +x
- * (the committed bundles do; a scratch drift-gate temp file does not).
+ * ESM file at `outfile`. Does not chmod the result; build.mjs owns executable permissions.
  */
 export async function buildCliBundle(outfile, options) {
   const artifactChannel = options?.artifactChannel;
@@ -92,7 +86,7 @@ export async function buildCliBundle(outfile, options) {
     // vs `../../node_modules/foo/…`), making the OUTPUT BYTES depend on the CALLER's cwd. Every
     // existing call site happened to run with cwd == this package (`npm run build -w @holaxis/aslite`,
     // `-w @holaxis/aslite` script invocations), so this went unnoticed until a
-    // caller running from the repo root (scripts/ci-version-bundle.mjs) hit a false "changed"
+    // caller running from the repo root hit a false "changed"
     // diff on an otherwise-identical rebuild.
     absWorkingDir: pkgRoot,
     entryPoints: [r("src/index.ts")],
@@ -123,7 +117,7 @@ export async function buildCliBundle(outfile, options) {
       // dependency for users to install or resolve.
       "@agentstate-lite/mcp-app": r("../mcp-app/src/index.ts"),
       // Shared human-surface primitives are private workspace source too. Alias them explicitly
-      // so a clean committed-plugin build never depends on sibling dist/ directories existing.
+      // so a clean npm build never depends on sibling dist/ directories existing.
       "@agentstate-lite/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
       "@agentstate-lite/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
       "@agentstate-lite/view-runtime": r("../view-runtime/src/index.ts"),

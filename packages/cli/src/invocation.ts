@@ -95,32 +95,13 @@ export function managedBinNameOnPath(): string | undefined {
 }
 
 /**
- * True when the running executable IS the self-contained skill bundle
- * (skills/agentstate-lite/scripts/agentstate-lite.mjs — the `npx skills add` channel), as opposed
- * to the npm dist/ bundle (dist/agentstate-lite.mjs) or an unbundled dev/test run (src/*.ts).
- * Distinguished by WHERE the running file lives on disk. The explicit baked artifact channel is
- * authoritative for identity, but this path classifier remains the asset-layout guard used by
- * `skill install` (the marketplace bundle carries no npm-layout skill assets).
- */
-export function isSkillBundlePath(exe: string): boolean {
-  const parts = exe.split("/");
-  const base = parts[parts.length - 1];
-  const parentDir = parts[parts.length - 2];
-  return base === "agentstate-lite.mjs" && parentDir === "scripts";
-}
-
-/**
  * The runnable command prefix for emitted follow-ups: the bare bin name when this executable is on
- * PATH; else, when running as the self-contained SKILL bundle, its own resolved absolute path
- * (directly runnable — no npm/npx involved in that channel); else `npx -y @holaxis/aslite` (the
- * npm dist/ bundle off PATH, or a dev/test run). Every `help:` field and success `help[]` entry is
- * built from this so a copy-pasted next step always runs the real tool.
+ * PATH; otherwise `npx -y @holaxis/aslite`. Every `help:` field and success `help[]` entry is built
+ * from this so a copy-pasted next step always runs the supported npm artifact.
  */
 export function cliInvocation(): string {
   const onPath = managedBinNameOnPath();
   if (onPath) return onPath;
-  const exe = currentExecutableRealPath();
-  if (exe && isSkillBundlePath(exe)) return collapseHomeDirectory(exe);
   return `npx -y ${PACKAGE_NAME}`;
 }
 

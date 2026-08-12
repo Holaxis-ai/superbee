@@ -9,9 +9,9 @@ the interim npm coordinate `@holaxis/aslite` (the installed commands stay `aslit
 
 The npm artifact ships one self-contained executable file with **zero runtime dependencies**,
 plus the generated Agent Skill (`SKILL.md` and its `references/` folder — installable into host
-skill folders with `aslite skill install`). The public prerelease is the recommended test-user
-channel; the older marketplace bundle remains temporarily available only as a rollback path while
-the npm upgrade journey is proven. Maintainers can reproduce the complete package proof from the
+skill folders with `aslite skill install`). npm is the sole executable distribution channel;
+the installed Skill contains guidance and references, not a second CLI copy. Maintainers can
+reproduce the complete package proof from the
 repository root with `npm run verify:npm-package`; it builds, packs, installs into an isolated
 prefix, resolves both command names from `PATH`, and exercises an offline bundle workflow. This
 developer proof deliberately stamps `local-dev`, so it works on an in-progress/dirty checkout;
@@ -44,6 +44,10 @@ Codex:
 ```sh
 aslite skill install --scope user # optional guidance for Claude Code + Codex
 ```
+
+If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun both
+`aslite skill install --scope user` and `aslite hook install --scope user`. The hook installer
+replaces exact historical AgentState marketplace hooks instead of adding a duplicate.
 
 ## What it is
 

@@ -1,28 +1,15 @@
 // Generate a SKILL.md from the CLI's single source of truth (src/reference.ts COMMAND_GROUPS,
-// rendered by src/skill-render.ts), and sync the target's `references/` folder from its channel
-// projection of src/distribution-resources.ts: a byte-for-byte copy of each source file, with any
+// rendered by src/skill-render.ts), and sync the package's `references/` folder from the inventory
+// in src/distribution-resources.ts: a byte-for-byte copy of each source file, with any
 // stray file under references/ NOT named in the manifest deleted. Idempotent/convergent, same
 // discipline as the SKILL.md write itself.
 //
-// AXI §7 "single source of truth": every installable channel's command reference is DERIVED from
-// the same COMMAND_GROUPS the home view + `--help` render, so it can never drift. Two TARGETS:
+// AXI §7 "single source of truth": the npm package's command reference is DERIVED from the same
+// COMMAND_GROUPS the home view + `--help` render, so it cannot drift. The npm package is the only
+// executable distribution authority.
 //
-//   --target npm   (default) → packages/cli/SKILL.md + packages/cli/references/ (both committed,
-//                    drift-gated by check:skill; the tarball ships them via package.json `files`),
-//                    examples using the bare `aslite` bin (the published-package channel).
-//   --target skill            → plugins/agentstate-lite/skills/agentstate-lite/SKILL.md +
-//                    .../references/, examples prefixed `"$ASLITE"` (the self-contained
-//                    committed-bundle channel; see the resolver section it generates — the bundle
-//                    is not on PATH, so examples reference the resolved shim path via the shell
-//                    variable convention).
-//
-// The `## Commands` loop is IDENTICAL between targets (rendered by the same renderCommandsSection
-// helper, parameterized only by the invocation prefix) — the two SKILL.md files can describe
-// different distribution channels but can never list different commands.
-//
-//   node scripts/gen-skill.mjs [--target npm|skill]           → (re)write the target's SKILL.md
-//                                                                + sync its references/
-//   node scripts/gen-skill.mjs [--target npm|skill] --check   → exit 1 if stale (CI drift gate)
+//   node scripts/gen-skill.mjs           → (re)write packages/cli/SKILL.md + references/
+//   node scripts/gen-skill.mjs --check   → exit 1 if SKILL.md or references/ is stale
 //
 // src/skill-render.ts (which transitively pulls in reference.ts + src/distribution-resources.ts) is pure
 // data + pure projections (no runtime imports), so we bundle it in-memory with esbuild and import
@@ -37,23 +24,14 @@ const skillRenderTs = resolve(here, "../src/skill-render.ts");
 // packages/cli/scripts -> repo root
 const repoRoot = resolve(here, "../../..");
 
-const targetArgIdx = process.argv.indexOf("--target");
-const TARGET = targetArgIdx !== -1 ? process.argv[targetArgIdx + 1] : "npm";
-if (TARGET !== "npm" && TARGET !== "skill") {
-  console.error(`--target must be "npm" or "skill" (got "${TARGET}")`);
+const skillPath = resolve(here, "../SKILL.md");
+const referencesDir = resolve(here, "../references");
+const args = process.argv.slice(2);
+if (args.length > 1 || (args.length === 1 && args[0] !== "--check")) {
+  console.error("usage: node scripts/gen-skill.mjs [--check]");
   process.exit(2);
 }
-
-const skillPath =
-  TARGET === "npm"
-    ? resolve(here, "../SKILL.md")
-    // packages/cli/scripts -> repo root -> plugins/agentstate-lite/skills/agentstate-lite/SKILL.md
-    : resolve(here, "../../../plugins/agentstate-lite/skills/agentstate-lite/SKILL.md");
-const referencesDir =
-  TARGET === "npm"
-    ? resolve(here, "../references")
-    // packages/cli/scripts -> repo root -> plugins/agentstate-lite/skills/agentstate-lite/references
-    : resolve(here, "../../../plugins/agentstate-lite/skills/agentstate-lite/references");
+const checkOnly = args[0] === "--check";
 
 async function loadSkillRender() {
   const out = await build({
@@ -68,9 +46,8 @@ async function loadSkillRender() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// references/ sync — per target (SKILL_RESOURCES / NPM_RESOURCES), read via the same bundle as the
-// renderer, so a --check run and a real regen can never disagree about what "the manifest"
-// currently is.
+// references/ sync — read via the same bundle as the renderer, so a --check run and a real regen
+// can never disagree about the manifest.
 // ---------------------------------------------------------------------------------------------
 
 /** All files under `dir`, recursively, as absolute paths (empty array if `dir` doesn't exist). */
@@ -134,11 +111,11 @@ async function checkReferences(resources) {
 
 // ---------------------------------------------------------------------------------------------
 
-const { renderNpm, renderSkill, NPM_RESOURCES, SKILL_RESOURCES } = await loadSkillRender();
-const content = TARGET === "npm" ? renderNpm() : renderSkill();
-const resources = TARGET === "npm" ? NPM_RESOURCES : SKILL_RESOURCES;
+const { renderNpm, NPM_RESOURCES } = await loadSkillRender();
+const content = renderNpm();
+const resources = NPM_RESOURCES;
 
-if (process.argv.includes("--check")) {
+if (checkOnly) {
   let ok = true;
   let current = "";
   try {
@@ -147,7 +124,7 @@ if (process.argv.includes("--check")) {
     /* missing → stale */
   }
   if (current !== content) {
-    console.error(`${skillPath} is stale — run \`node scripts/gen-skill.mjs --target ${TARGET}\` to regenerate.`);
+    console.error(`${skillPath} is stale — run \`node scripts/gen-skill.mjs\` to regenerate.`);
     ok = false;
   }
   for (const problem of await checkReferences(resources)) {
@@ -155,7 +132,7 @@ if (process.argv.includes("--check")) {
     ok = false;
   }
   if (!ok) {
-    console.error(`run \`node scripts/gen-skill.mjs --target ${TARGET}\` to regenerate.`);
+    console.error("run `node scripts/gen-skill.mjs` to regenerate.");
     process.exit(1);
   }
   console.log(`${skillPath} is up to date.`);

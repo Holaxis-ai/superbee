@@ -183,7 +183,7 @@ test("informational provenance never changes compatible v2 assets", () => {
     source_identity: {
       release_version: "99.0.0",
       source_commit: "c".repeat(40),
-      artifact_channel: "marketplace-legacy",
+      artifact_channel: "npm-package",
       artifact_sha256: null,
     },
   })!;

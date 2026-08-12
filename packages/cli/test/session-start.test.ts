@@ -912,7 +912,6 @@ test("writer/recognizer agreement: every reachable hookCommand() base composes a
     "agentstate-lite", //                                              bare legacy bin on PATH
     "/usr/local/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs", // npm-dist absolute path (scoped install root)
     "/Users/f b/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs", //    absolute path WITH spaces (quoted form)
-    "/home/u/.claude/plugins/cache/m/agentstate-lite/1.0.0/skills/agentstate-lite/scripts/agentstate-lite.mjs", // skill-bundle shape
   ];
   for (const base of reachableBases) {
     const composed = sessionStartHookCommand(base);
@@ -968,12 +967,6 @@ test("isManagedHookCommand: exact historical/generated tokens, never marker subs
   assert.equal(isManagedHookCommand('"/Users/f b/bin/aslite" session-start'), false);
   assert.equal(
     isManagedHookCommand("/usr/local/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start"),
-    true,
-  );
-  assert.equal(
-    isManagedHookCommand(
-      "'/Users/f b/.codex/plugins/cache/m/agentstate-lite/1.0.0/skills/agentstate-lite/scripts/agentstate-lite.mjs' session-start",
-    ),
     true,
   );
   // Documented asymmetry: the new-form npx spelling is NOT recognized (first token `npx`) —

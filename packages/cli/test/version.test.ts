@@ -114,18 +114,16 @@ test("a real loader-driven source launch identifies and hashes src/index.ts, not
   assert.equal(envelope.identity.runtime.launch_confidence, "certain");
 });
 
-test("plugin-channel layout: a bundle with NO adjacent package.json still prints the BAKED version", () => {
-  // The plugin bundle ships as a lone `skills/…/scripts/agentstate-lite.mjs` with no package.json at
-  // `../` — a runtime file read finds nothing there, so the version must be compiled in.
-  const dir = mkdtempSync(path.join(tmpdir(), "aslite-plugin-layout-"));
+test("a relocated bundle with no adjacent package.json still prints the baked version", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "aslite-relocated-layout-"));
   try {
-    const scriptDir = path.join(dir, "skills", "agentstate-lite", "scripts");
+    const scriptDir = path.join(dir, "isolated");
     mkdirSync(scriptDir, { recursive: true });
     const stray = path.join(scriptDir, "agentstate-lite.mjs");
     copyFileSync(cliBin, stray); // NO package.json anywhere near it
     const r = spawnSync("node", [stray, "--version"], { encoding: "utf8" });
-    assert.equal(r.status, 0, "plugin-layout --version exits 0");
-    assert.equal(r.stdout.trim(), pkgVersion, "plugin-layout --version prints the baked version, not 'unknown'");
+    assert.equal(r.status, 0, "relocated --version exits 0");
+    assert.equal(r.stdout.trim(), pkgVersion, "relocated --version prints the baked version, not 'unknown'");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -176,7 +174,7 @@ test("same version with different bytes cannot present the same complete identit
   }
 });
 
-test("build flavor is mandatory and the legacy marketplace flavor is explicit", async () => {
+test("build flavor is mandatory and unsupported distribution channels are rejected", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "aslite-build-flavor-"));
   try {
     const missing = path.join(dir, "missing.mjs");
@@ -190,14 +188,14 @@ test("build flavor is mandatory and the legacy marketplace flavor is explicit", 
       /npm-package release builds require an exact clean Git source.*Use local-dev for ordinary verification/s,
     );
 
-    const marketplace = path.join(dir, "marketplace.mjs");
-    await buildCliBundle(marketplace, {
-      artifactChannel: "marketplace-legacy",
-      source: { commit: null, dirty: null },
-    });
-    const envelope = runIdentity(marketplace);
-    assert.equal(envelope.identity.artifact.channel, "marketplace-legacy");
-    assert.deepEqual(envelope.identity.source, { commit: null, dirty: null });
+    await assert.rejects(
+      () =>
+        buildCliBundle(path.join(dir, "retired-channel.mjs"), {
+          artifactChannel: "marketplace-legacy",
+          source: { commit: null, dirty: null },
+        }),
+      /requires artifactChannel: npm-package \| local-dev/,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

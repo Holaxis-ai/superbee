@@ -7,11 +7,10 @@
 // root build, `npm run build -w @holaxis/aslite`, and `prepublishOnly` alike (all three run
 // `packages/cli/build.mjs`, which calls this first).
 //
-// Determinism (the skill-bundle byte-compare drift gate `check-skill-bundle.mjs` and the CI
-// bot's regenerate-and-diff `scripts/ci-version-bundle.mjs` both depend on it): files are walked
-// in a STABLE sorted order, and each is gzipped with the EXACT-VERSION-PINNED pure-JS compressor
+// Determinism: files are walked in a stable sorted order, and each is gzipped with the
+// exact-version-pinned pure-JS compressor
 // `pako` (packages/cli devDependency) — NOT `node:zlib`, whose DEFLATE output varies across zlib
-// (i.e. Node) versions for identical input, which made the committed bundle's bytes depend on
+// (i.e. Node) versions for identical input, which made the built CLI's bytes depend on
 // which Node built it (a node-25 machine produced different gzip streams than CI's node-20 for
 // byte-identical uncompressed assets). The gzip header's MTIME field (RFC 1952 bytes 4-7) and OS
 // byte (byte 9) are still normalized. Decompression is format-standard, so the RUNTIME keeps
@@ -89,9 +88,9 @@ export function npmInvocation(args, env = process.env) {
  * exports (`@agentstate-lite/core/kinds`, `@agentstate-lite/view-runtime/action-bridge`), IN build
  * order — core first, because view-runtime's own tsc consumes core's dist types. npm does NOT
  * build a workspace's deps on a single-workspace build, so on a fresh checkout (the CI
- * version-bundle bot's `npm ci` state) these dists don't exist and Vite's build fails to resolve
+ * a fresh single-workspace `npm ci` state) these dists don't exist and Vite's build fails to resolve
  * the imports. markdown-renderer is covered by packages/ui's own `prebuild` and stays out of this
- * list. Coverage of ui's workspace deps is pinned by scripts/ci-version-bundle.test.mjs. */
+ * list. */
 export const UI_DIST_PREREQUISITE_WORKSPACES = [
   "@agentstate-lite/core",
   "@agentstate-lite/view-runtime",
@@ -99,9 +98,8 @@ export const UI_DIST_PREREQUISITE_WORKSPACES = [
 
 /** Rebuild `packages/ui`'s dist/ fresh via its own workspace script, building the sibling dists it
  * resolves FIRST (see UI_DIST_PREREQUISITE_WORKSPACES). Callers that go through root
- * `npm run build` get this ordering for free; the committed-bundle writer
- * (build-plugin-bundle.mjs, used by the version-bundle bot) calls embedUiAssets() directly, so making
- * this step self-sufficient is what keeps BOTH paths correct.
+ * `npm run build` get this ordering for free. Keeping this step self-sufficient also makes direct
+ * package builds correct.
  * Throws (uncaught, `execFileSync`'s default) — and so fails this whole build immediately — on any
  * build error, e.g. a TypeScript or Vite failure. */
 function buildUiDist() {
@@ -144,8 +142,8 @@ export function embedUiAssets() {
 //
 // Regenerated fresh from a \`packages/ui\` build on every \`packages/cli/build.mjs\` run (never
 // committed — gitignored like every other package's \`dist/\`). \`src/ui/assets.ts\` is the CLI-owned
-// adapter that injects this table into the ui-server runtime. See that script's module doc for the determinism discipline (stable file
-// order, zeroed gzip MTIME/OS header fields) the skill-bundle byte-compare drift gate depends on.
+// adapter that injects this table into the ui-server runtime. See that script's module doc for the
+// determinism discipline (stable file order, zeroed gzip MTIME/OS header fields).
 
 export interface EmbeddedAsset {
   contentType: string;
