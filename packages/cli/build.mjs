@@ -3,8 +3,8 @@
 // esbuild bundles src/index.ts together with its workspace source packages
 // (@superbee/core, @superbee/server, @superbee/ui-server,
 // @superbee/mcp-app) and every npm dependency into ONE ESM file with a
-// `#!/usr/bin/env node` shebang. The published `@holaxis/aslite` package therefore has NO runtime
-// dependencies and NO unresolved `workspace:*` links — `npx -y @holaxis/aslite …` runs with zero
+// `#!/usr/bin/env node` shebang. The published `@holaxis/superbee` package therefore has NO runtime
+// dependencies and NO unresolved `workspace:*` links — `npx -y @holaxis/superbee …` runs with zero
 // workspace resolution.
 //
 // The workspace deps are aliased to their SOURCE entry points so this build is self-contained:
@@ -24,7 +24,7 @@ import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const r = (p) => resolve(here, p);
-const outfile = r("dist/agentstate-lite.mjs");
+const outfile = r("dist/superbee.mjs");
 
 /**
  * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`'s
@@ -48,7 +48,7 @@ export async function buildCli(artifactChannel, { source } = {}) {
   await prepareCliBundleInputs();
   await buildCliBundle(outfile, source === undefined ? { artifactChannel } : { artifactChannel, source });
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
-  // in the tarball and for direct `./dist/agentstate-lite.mjs` runs).
+  // in the tarball and for direct `./dist/superbee.mjs` runs).
   await chmod(outfile, 0o755);
   return outfile;
 }

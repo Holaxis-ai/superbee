@@ -78,16 +78,12 @@ function containsNpxCache(candidate: string | null | undefined): boolean {
 
 function isScopedNpmPackageExecutable(candidate: string | null): boolean {
   if (!candidate || !isAbsolute(candidate)) return false;
-  const suffix = join(
-    "lib",
-    "node_modules",
-    "@holaxis",
-    "aslite",
-    "dist",
-    "agentstate-lite.mjs",
-  );
+  const suffixes = [
+    join("lib", "node_modules", "@holaxis", "superbee", "dist", "superbee.mjs"),
+    join("lib", "node_modules", "@holaxis", "aslite", "dist", "agentstate-lite.mjs"),
+  ];
   const normalized = normalize(candidate);
-  return normalized.endsWith(`${sep}${suffix}`);
+  return suffixes.some((suffix) => normalized.endsWith(`${sep}${suffix}`));
 }
 
 /** Classify an already-resolved running distribution. Performs no writes. */
@@ -153,8 +149,11 @@ export function classifyPersistentInstallAuthority(
   if (!supportedBins.has(selectedBin)) {
     return unknown(input, "managed PATH bin is outside the npm global prefix bin directory");
   }
-  const packageRoot = normalize(join(prefix, "lib", "node_modules", "@holaxis", "aslite"));
-  if (executable !== join(packageRoot, "dist", "agentstate-lite.mjs")) {
+  const packageExecutables = [
+    join(normalize(join(prefix, "lib", "node_modules", "@holaxis", "superbee")), "dist", "superbee.mjs"),
+    join(normalize(join(prefix, "lib", "node_modules", "@holaxis", "aslite")), "dist", "agentstate-lite.mjs"),
+  ];
+  if (!packageExecutables.includes(executable)) {
     return unknown(input, "running executable is outside the supported npm global package layout");
   }
   if (!input.runtime_path || !isAbsolute(input.runtime_path) || containsNpxCache(input.runtime_path)) {

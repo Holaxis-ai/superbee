@@ -74,7 +74,7 @@ export async function buildCliBundle(outfile, options) {
     );
   }
   const identity = {
-    schema: "aslite.build-identity.v1",
+    schema: "superbee.build-identity.v1",
     package: { name: packageName, version },
     source,
     artifact: { channel: artifactChannel },
@@ -84,8 +84,8 @@ export async function buildCliBundle(outfile, options) {
     // Pin esbuild's working directory — it otherwise defaults to `process.cwd()` and embeds
     // paths relative to it in the CJS-interop module comments/keys (e.g. `node_modules/foo/…`
     // vs `../../node_modules/foo/…`), making the OUTPUT BYTES depend on the CALLER's cwd. Every
-    // existing call site happened to run with cwd == this package (`npm run build -w @holaxis/aslite`,
-    // `-w @holaxis/aslite` script invocations), so this went unnoticed until a
+    // existing call site happened to run with cwd == this package (`npm run build -w @holaxis/superbee`,
+    // `-w @holaxis/superbee` script invocations), so this went unnoticed until a
     // caller running from the repo root hit a false "changed"
     // diff on an otherwise-identical rebuild.
     absWorkingDir: pkgRoot,
@@ -97,7 +97,7 @@ export async function buildCliBundle(outfile, options) {
     target: "node20",
     // One compile-time authority read by build-identity.ts. The artifact hash is deliberately NOT
     // embedded (that would be recursive); runtime hashes the actual executing bytes lazily.
-    define: { __ASLITE_BUILD_IDENTITY__: JSON.stringify(identity) },
+    define: { __SUPERBEE_BUILD_IDENTITY__: JSON.stringify(identity) },
     // Resolve the workspace deps to their TypeScript source so no dist pre-build is needed.
     alias: {
       // List browser-safe core subpaths before the package root so esbuild does not append the

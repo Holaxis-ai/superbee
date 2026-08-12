@@ -54,7 +54,7 @@ const NOW = new Date("2026-08-05T12:00:01.000Z");
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString("base64")}`;
 const BUILT_CLI = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../dist/agentstate-lite.mjs",
+  "../dist/superbee.mjs",
 );
 const TEST_LOADER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "ts-loader.mjs");
 const CONCURRENCY_FIXTURE = path.resolve(
@@ -66,7 +66,7 @@ const CONCURRENCY_FIXTURE = path.resolve(
 // The first-use command intentionally carries init's create-only safety guard.
 const HOME_BASELINE_TOON = [
   '"agentstate-lite":',
-  "  bin: /opt/aslite/dist/agentstate-lite.mjs",
+  "  bin: /opt/superbee/dist/superbee.mjs",
   "  version: 0.1.0-pre.3",
   "  channel: local-dev",
   '  description: "read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views)"',
@@ -86,7 +86,7 @@ const HOME_BASELINE_TOON = [
 
 const HOME_BASELINE_JSON = `${JSON.stringify({
   "agentstate-lite": {
-    bin: "/opt/aslite/dist/agentstate-lite.mjs",
+    bin: "/opt/superbee/dist/superbee.mjs",
     version: "0.1.0-pre.3",
     channel: "local-dev",
     description:
@@ -116,7 +116,7 @@ function successfulCheck(
   const selected =
     status === "rollback_available" ? "0.1.0-pre.2" : actionable ? SELECTED : RUNNING;
   return {
-    schema: "aslite.update-check.v1",
+    schema: "superbee.update-check.v1",
     track: "latest",
     status,
     relation:
@@ -130,12 +130,12 @@ function successfulCheck(
     selected_version: selected,
     running_deprecated: status === "deprecated" ? "unsupported" : null,
     selected_integrity: INTEGRITY,
-    command: actionable ? `npm install --global @holaxis/aslite@${selected}` : null,
+    command: actionable ? `npm install --global @holaxis/superbee@${selected}` : null,
     verify: actionable
       ? [
-          "aslite version --check",
-          "aslite skill status --scope user",
-          "aslite hook status --scope user",
+          "superbee version --check",
+          "superbee skill status --scope user",
+          "superbee hook status --scope user",
         ]
       : [],
     unavailable: null,
@@ -145,7 +145,7 @@ function successfulCheck(
 function cacheRecord(check: UpdateCheckResult = successfulCheck()): UpdateCacheRecord {
   return {
     schema: UPDATE_CACHE_SCHEMA,
-    package: "@holaxis/aslite",
+    package: "@holaxis/superbee",
     running_version: RUNNING,
     track: "latest",
     check,
@@ -499,7 +499,7 @@ test("passive parent returns cached notice or launches one exact detached privat
       home,
       runningVersion: RUNNING,
       now: () => NOW,
-      executablePath: () => "/opt/aslite/dist/agentstate-lite.mjs",
+      executablePath: () => "/opt/superbee/dist/superbee.mjs",
       spawn: (command, argv, options) => {
         calls.push({ command, argv, options });
         return child;
@@ -511,7 +511,7 @@ test("passive parent returns cached notice or launches one exact detached privat
       {
         command: process.execPath,
         argv: [
-          "/opt/aslite/dist/agentstate-lite.mjs",
+          "/opt/superbee/dist/superbee.mjs",
           "__update-refresh-v1",
           "a".repeat(64),
         ],
@@ -727,7 +727,7 @@ test("worker revalidates token immediately before cache commit", async () => {
 
 test("home bytes stay exact and notice is one five-field block immediately after identity", () => {
   const deps = {
-    binPath: () => "/opt/aslite/dist/agentstate-lite.mjs",
+    binPath: () => "/opt/superbee/dist/superbee.mjs",
     invocation: () => "aslite",
     identity: () => ({ version: "0.1.0-pre.3", channel: "local-dev" as const }),
   };
@@ -758,7 +758,7 @@ test("home bytes stay exact and notice is one five-field block immediately after
 
 test("home JSON and every exact suppressor bypass the orientation seam; default TOON calls it once", async () => {
   const base = {
-    binPath: () => "/opt/aslite/dist/agentstate-lite.mjs",
+    binPath: () => "/opt/superbee/dist/superbee.mjs",
     invocation: () => "aslite",
     stdout: (_value: string) => {},
     summarizeBundle: async () => null,

@@ -14,7 +14,7 @@ import { BIN_NAMES, hookCommand } from "../src/invocation.js";
 import { sessionStartHookCommand } from "../src/commands/hook.js";
 
 test("hookCommand() prefers `aslite` when both managed bins resolve on PATH to the running executable", () => {
-  assert.deepEqual([...BIN_NAMES], ["aslite", "agentstate-lite"], "aslite must stay the preferred bin");
+  assert.deepEqual([...BIN_NAMES], ["superbee", "aslite", "agentstate-lite"], "superbee must be the preferred successor bin");
   // Under the test loader the "running executable" is src/invocation.ts itself; make both managed
   // bin names resolve to it from one PATH directory.
   const exe = realpathSync(fileURLToPath(new URL("../src/invocation.ts", import.meta.url)));

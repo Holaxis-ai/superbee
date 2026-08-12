@@ -188,11 +188,12 @@ function managedExecutableLayout(value: string): ManagedExecutableLayout | undef
   if (!isCanonicalAbsolutePath(value)) return undefined;
   const portable = value.split(sep).join("/");
   if (
+    /\/node_modules\/@holaxis\/superbee\/dist\/superbee\.mjs$/.test(portable) ||
     /\/node_modules\/(?:@holaxis\/aslite|aslite|agentstate-lite)\/dist\/agentstate-lite\.mjs$/.test(portable)
   ) {
     return "npm";
   }
-  if (/\/packages\/cli\/dist\/agentstate-lite\.mjs$/.test(portable)) return "local_dev";
+  if (/\/packages\/cli\/dist\/(?:superbee|agentstate-lite)\.mjs$/.test(portable)) return "local_dev";
   if (
     /\/(?:\.claude|\.codex)\/plugins\/cache\/[^/]+\/agentstate-lite\/[^/]+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable) ||
     /\/plugins\/agentstate-lite\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable)
@@ -205,9 +206,19 @@ function managedExecutableLayout(value: string): ManagedExecutableLayout | undef
 function stableNpmRuntimePair(program: string, executable: string): boolean {
   if (!isCanonicalAbsolutePath(program) || !isCanonicalAbsolutePath(executable)) return false;
   const runtimeSuffix = `${sep}bin${sep}node`;
-  const executableSuffix = `${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}agentstate-lite.mjs`;
-  if (!program.endsWith(runtimeSuffix) || !executable.endsWith(executableSuffix)) return false;
-  return program.slice(0, -runtimeSuffix.length) === executable.slice(0, -executableSuffix.length);
+  if (!program.endsWith(runtimeSuffix)) return false;
+  for (const executableSuffix of [
+    `${sep}lib${sep}node_modules${sep}@holaxis${sep}superbee${sep}dist${sep}superbee.mjs`,
+    `${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}agentstate-lite.mjs`,
+  ]) {
+    if (
+      executable.endsWith(executableSuffix) &&
+      program.slice(0, -runtimeSuffix.length) === executable.slice(0, -executableSuffix.length)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Classify a complete command token sequence; near-matches are always unmanaged. */

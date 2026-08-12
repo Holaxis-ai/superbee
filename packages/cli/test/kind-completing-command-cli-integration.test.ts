@@ -28,7 +28,7 @@ import { existsSync } from "node:fs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 // Build ONLY if the bundle is absent (see doc-cli-integration.test.ts's identical comment: the
 // package `test` script builds once up front, so this is a no-op under `npm test`/`npm run check`).

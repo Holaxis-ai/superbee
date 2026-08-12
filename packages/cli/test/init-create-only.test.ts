@@ -34,7 +34,7 @@ import {
 import { CliError } from "../src/errors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliBin = path.resolve(here, "..", "dist", "agentstate-lite.mjs");
+const cliBin = path.resolve(here, "..", "dist", "superbee.mjs");
 
 async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "agentstate-lite-create-only-test-"));

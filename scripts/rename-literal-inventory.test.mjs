@@ -120,7 +120,6 @@ test("repository inventory is deterministic and has no unclassified legacy liter
 
   const categories = new Set(inventory.matches.map((row) => row.category));
   for (const expected of [
-    "build-identity-marker",
     "bundle-discovery",
     "compiled-artifact-path",
     "environment-variable",

@@ -1,5 +1,5 @@
 /**
- * E2E harness: boot the REAL, BUILT `agentstate-lite ui` command as a child process (never a
+ * E2E harness: boot the REAL, BUILT `superbee ui` command as a child process (never a
  * dev server — plans/ui-v1.md rev 3.2 "E2E: Playwright against the REAL `ui` command server").
  * Readiness/teardown ride the port-0 TOON/JSON receipt, exactly as the CLI's own `serve`
  * command's tests do (`packages/cli/test/serve.test.ts`).
@@ -21,8 +21,8 @@ import {
 } from "@superbee/ui-server";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-// packages/ui/e2e -> repo root -> packages/cli/dist/agentstate-lite.mjs
-export const CLI_DIST = path.resolve(here, "../../cli/dist/agentstate-lite.mjs");
+// packages/ui/e2e -> repo root -> packages/cli/dist/superbee.mjs
+export const CLI_DIST = path.resolve(here, "../../cli/dist/superbee.mjs");
 const UI_DIST = path.resolve(here, "../dist");
 // The production CLI persists exact-byte approvals outside the bundle. The in-process restart
 // harness cannot import that CLI-owned adapter without reversing the package graph, so retain one

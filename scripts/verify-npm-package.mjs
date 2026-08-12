@@ -11,7 +11,17 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-const baseExpectedFiles = ["LICENSE", "README.md", "SKILL.md", "dist/agentstate-lite.mjs", "package.json"];
+const SUCCESSOR_PACKAGE_NAME = "@holaxis/superbee";
+const SUCCESSOR_INSTALL_ROOT = ["@holaxis", "superbee"];
+const SUCCESSOR_ARTIFACT = "dist/superbee.mjs";
+const SUCCESSOR_BINS = {
+  superbee: SUCCESSOR_ARTIFACT,
+  aslite: SUCCESSOR_ARTIFACT,
+  "agentstate-lite": SUCCESSOR_ARTIFACT,
+};
+const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
+
+const baseExpectedFiles = ["LICENSE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
 
 /** The exact expected tarball file set: the fixed base plus the committed references/ tree. */
 export function expectedTarballFiles(referenceFiles) {
@@ -226,15 +236,12 @@ export function assertPackageContract(receipt, manifest, referenceFiles) {
   );
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
-    ["dist/agentstate-lite.mjs"],
+    [SUCCESSOR_ARTIFACT],
     "the tarball must carry exactly one .mjs executable (the dist bundle)",
   );
-  assert.equal(manifest.name, "@holaxis/aslite");
+  assert.equal(manifest.name, SUCCESSOR_PACKAGE_NAME);
   assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references"]);
-  assert.deepEqual(manifest.bin, {
-    aslite: "dist/agentstate-lite.mjs",
-    "agentstate-lite": "dist/agentstate-lite.mjs",
-  });
+  assert.deepEqual(manifest.bin, SUCCESSOR_BINS);
   // Scoped packages default to restricted at publish time — the manifest must pin public.
   assert.deepEqual(manifest.publishConfig, { access: "public" }, "publishConfig.access must be public");
   for (const field of runtimeDependencyFields) {
@@ -371,8 +378,8 @@ async function runInstalledProof(spec) {
 
     const installedRoot =
       process.platform === "win32"
-        ? path.join(prefix, "node_modules", "@holaxis", "aslite")
-        : path.join(prefix, "lib", "node_modules", "@holaxis", "aslite");
+        ? path.join(prefix, "node_modules", ...SUCCESSOR_INSTALL_ROOT)
+        : path.join(prefix, "lib", "node_modules", ...SUCCESSOR_INSTALL_ROOT);
     const manifest = parseJson(await readFile(path.join(installedRoot, "package.json"), "utf8"), "installed package.json");
     const committedSkillRoot = path.join(repoRoot, "packages", "cli");
     const referenceFiles = (await listFiles(path.join(committedSkillRoot, "references"))).map((relative) =>
@@ -380,7 +387,7 @@ async function runInstalledProof(spec) {
     );
     // Derive the tarball's file set from the installed tree so the contract check holds in BOTH
     // producer modes (retained mode never sees npm pack's file list). The installed
-    // node_modules/@holaxis/aslite tree IS the tarball's contents.
+    // node_modules/@holaxis/superbee tree IS the tarball's contents.
     const contractReceipt = {
       files: (await listFiles(installedRoot)).map((relative) => ({ path: relative.split(path.sep).join("/") })),
     };
@@ -431,10 +438,14 @@ async function runInstalledProof(spec) {
       XDG_CONFIG_HOME: path.join(home, ".config"),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
     };
+    await assertCommandInBin("superbee", commandEnv, binDir);
     await assertCommandInBin("aslite", commandEnv, binDir);
     await assertCommandInBin("agentstate-lite", commandEnv, binDir);
 
-    const installedEntrypoint = path.join(installedRoot, manifest.bin.aslite);
+    const installedEntrypoint = path.join(installedRoot, manifest.bin.superbee);
+    for (const [bin, relative] of Object.entries(manifest.bin)) {
+      assert.equal(relative, manifest.bin.superbee, `${bin} must point at the canonical successor artifact`);
+    }
     const runCli = (command, args, options = {}) => {
       const cwd = options.cwd ?? scratch;
       const env = { ...commandEnv, ...(options.env ?? {}) };
@@ -445,11 +456,17 @@ async function runInstalledProof(spec) {
 
     // Every installed projection agrees with the immutable build identity. Both bin aliases resolve
     // the same bytes, and the adjacent installed manifest is diagnostic rather than authority.
-    const preferredVersion = (await runCli("aslite", ["--version"])).stdout.trim();
+    const preferredVersion = (await runCli("superbee", ["--version"])).stdout.trim();
+    const asliteVersion = (await runCli("aslite", ["--version"])).stdout.trim();
     const legacyVersion = (await runCli("agentstate-lite", ["-v"])).stdout.trim();
-    assert.equal(preferredVersion, manifest.version, "aslite --version must equal the package manifest");
+    assert.equal(preferredVersion, manifest.version, "superbee --version must equal the package manifest");
+    assert.equal(asliteVersion, manifest.version, "aslite --version must equal the package manifest");
     assert.equal(legacyVersion, manifest.version, "agentstate-lite -v must equal the package manifest");
     const preferredIdentity = parseJson(
+      (await runCli("superbee", ["version", "--json"])).stdout,
+      "superbee version --json",
+    );
+    const asliteIdentity = parseJson(
       (await runCli("aslite", ["version", "--json"])).stdout,
       "aslite version --json",
     );
@@ -457,10 +474,11 @@ async function runInstalledProof(spec) {
       (await runCli("agentstate-lite", ["version", "--json"])).stdout,
       "agentstate-lite version --json",
     );
-    assert.deepEqual(legacyIdentity, preferredIdentity, "both installed bin aliases must report one identity");
-    assert.equal(preferredIdentity.identity.schema, "aslite.build-identity.v1");
+    assert.deepEqual(asliteIdentity, preferredIdentity, "aslite alias must report the canonical successor identity");
+    assert.deepEqual(legacyIdentity, preferredIdentity, "agentstate-lite alias must report the canonical successor identity");
+    assert.equal(preferredIdentity.identity.schema, SUCCESSOR_BUILD_IDENTITY_SCHEMA);
     assert.deepEqual(preferredIdentity.identity.package, {
-      name: "@holaxis/aslite",
+      name: SUCCESSOR_PACKAGE_NAME,
       version: manifest.version,
     });
     assert.equal(preferredIdentity.identity.artifact.channel, spec.expectedChannel);
@@ -475,8 +493,8 @@ async function runInstalledProof(spec) {
     });
     const discoverySnapshot = await snapshotTree(quickstartProject);
     const noBundleHome = parseJson(
-      (await runCli("aslite", ["--json"], { cwd: quickstartProject })).stdout,
-      "aslite home --json outside a bundle",
+      (await runCli("superbee", ["--json"], { cwd: quickstartProject })).stdout,
+      "superbee home --json outside a bundle",
     );
     const homeIdentity = noBundleHome["agentstate-lite"];
     assert.equal(homeIdentity.version, manifest.version);
@@ -489,16 +507,17 @@ async function runInstalledProof(spec) {
     );
     assert.match(
       noBundleHome.getting_started,
-      /aslite recipes/,
+      /superbee recipes/,
       "bundle-free home must point at Recipe discovery",
     );
 
+    await runCli("superbee", ["--help"]);
     await runCli("agentstate-lite", ["--help"]);
     await runCli("aslite", ["--help"]);
     const initHelp = (await runCli("aslite", ["init", "--help"])).stdout;
     assert.match(
       initHelp,
-      /(?:agentstate-lite|aslite) recipes/,
+      /(?:superbee|agentstate-lite|aslite) recipes/,
       "init help must point at recipe discovery through an installed bin alias",
     );
     const discoveredRecipes = parseJson(
@@ -510,14 +529,14 @@ async function runInstalledProof(spec) {
     assert.ok(contextNotes, "the installed recipe inventory must include context-notes");
     assert.equal(contextNotes.applied, null, "bundle-free discovery must not imply an applied state");
     assert.deepEqual(contextNotes.commands, {
-      create_bundle: "aslite init --create-only --recipe context-notes --dir '.agentstate-lite'",
-      add_to_bundle: "aslite recipe add context-notes",
+      create_bundle: "superbee init --create-only --recipe context-notes --dir '.agentstate-lite'",
+      add_to_bundle: "superbee recipe add context-notes",
     });
     const workTracking = discoveredRecipes.recipes.find((recipe) => recipe.name === "work-tracking");
     assert.ok(workTracking, "the installed recipe inventory must include work-tracking");
     assert.deepEqual(workTracking.commands, {
-      create_bundle: "aslite init --create-only --recipe work-tracking --dir '.agentstate-lite'",
-      add_to_bundle: "aslite recipe add work-tracking",
+      create_bundle: "superbee init --create-only --recipe work-tracking --dir '.agentstate-lite'",
+      add_to_bundle: "superbee recipe add work-tracking",
     });
     assertSnapshotUnchanged(
       discoverySnapshot,
@@ -656,7 +675,7 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(
       appliedRecipes.recipes.find((recipe) => recipe.name === "work-tracking")?.commands,
-      { add_to_bundle: `aslite recipe add work-tracking --dir '${bundle}'` },
+      { add_to_bundle: `superbee recipe add work-tracking --dir '${bundle}'` },
       "an existing local bundle must expose only the actionable add command",
     );
     parseJson(

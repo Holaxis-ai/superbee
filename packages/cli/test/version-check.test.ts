@@ -27,12 +27,12 @@ function result(status: UpdateCheckResult["status"] = "current"): UpdateCheckRes
     selected_version: unavailable ? null : selectedVersion,
     running_deprecated: status === "deprecated" ? "registry policy needs repair" : null,
     selected_integrity: unavailable ? null : `sha512-${Buffer.alloc(64).toString("base64")}`,
-    command: actionable ? `npm install --global @holaxis/aslite@${selectedVersion}` : null,
+    command: actionable ? `npm install --global @holaxis/superbee@${selectedVersion}` : null,
     verify: actionable
       ? [
-          "aslite version --check",
-          "aslite skill status --scope user",
-          "aslite hook status --scope user",
+          "superbee version --check",
+          "superbee skill status --scope user",
+          "superbee hook status --scope user",
         ]
       : [],
     unavailable: unavailable ? { code: "offline", message: "npm registry could not be reached" } : null,
@@ -80,7 +80,7 @@ test("version --check renders identity plus the exact check and keeps successful
       assert.deepEqual(parsed.identity, identity.identity);
       assert.deepEqual(parsed.check, result());
     } else {
-      assert.match(cap.output(), /schema: aslite\.update-check\.v1/);
+      assert.match(cap.output(), /schema: superbee\.update-check\.v1/);
       assert.match(cap.output(), /status: current/);
     }
     assert.deepEqual(exitCodes, []);
@@ -159,7 +159,7 @@ test("version check argument and local-identity failures preserve the exit taxon
           ...buildIdentityEnvelope(),
           identity: {
             ...buildIdentityEnvelope().identity,
-            package: { name: "@holaxis/aslite", version: "not-semver" },
+            package: { name: "@holaxis/superbee", version: "not-semver" },
           },
         }),
       }),

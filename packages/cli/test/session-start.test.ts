@@ -90,7 +90,7 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 /**
  * Deterministic CLI resolution for spawned hook commands. The installed hook no longer inherits
@@ -99,7 +99,7 @@ const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
 let preferredBinDirPromise: Promise<string> | undefined;
 function preferredBinDir(): Promise<string> {
   preferredBinDirPromise ??= (async () => {
-    if (!existsSync(cliBin)) execFileSync("node", ["build.mjs", "local-dev"], { cwd: cliPackageRoot, stdio: "inherit" });
+    if (!existsSync(cliBin)) execFileSync("npm", ["run", "build"], { cwd: cliPackageRoot, stdio: "inherit" });
     const dir = await mkdtemp(path.join(tmpdir(), "aslite-preferred-bin-"));
     await symlink(cliBin, path.join(dir, "aslite"));
     return dir;
@@ -896,8 +896,8 @@ test("hook re-install prompt: a pre-session-start managed hook is detected and s
 test("sessionStartHookCommand: bare base passes through; a spaced path is quoted; plugin spawns argv", () => {
   assert.equal(sessionStartHookCommand("aslite"), "aslite session-start");
   assert.equal(
-    sessionStartHookCommand("/Users/f b/packages/cli/dist/agentstate-lite.mjs"),
-    "'/Users/f b/packages/cli/dist/agentstate-lite.mjs' session-start",
+    sessionStartHookCommand("/Users/f b/packages/cli/dist/superbee.mjs"),
+    "'/Users/f b/packages/cli/dist/superbee.mjs' session-start",
   );
   const src = buildOpenCodePluginSource("/opt/bin/agentstate-lite");
   assert.ok(src.includes('const command = "/opt/bin/agentstate-lite"'));
@@ -1126,9 +1126,9 @@ test("built uninstall recognizes every canonical lexical envelope", async () => 
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-owned-"));
   const canonicalCommands = [
     "aslite session-start",
-    "'/tmp/a b/packages/cli/dist/agentstate-lite.mjs' session-start",
-    String.raw`'/tmp/a'\''b/packages/cli/dist/agentstate-lite.mjs' session-start`,
-    '"/tmp/a b/packages/cli/dist/agentstate-lite.mjs" session-start',
+    "'/tmp/a b/packages/cli/dist/superbee.mjs' session-start",
+    String.raw`'/tmp/a'\''b/packages/cli/dist/superbee.mjs' session-start`,
+    '"/tmp/a b/packages/cli/dist/superbee.mjs" session-start',
     String.raw`'/opt/a'\''b/bin/node' '/opt/a'\''b/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs' session-start`,
   ];
   const settings = JSON.stringify(

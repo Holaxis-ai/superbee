@@ -39,7 +39,7 @@ import { STDIN_SILENT_NOTE } from "../src/commands/doc/common.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 

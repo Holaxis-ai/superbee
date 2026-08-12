@@ -1,10 +1,10 @@
-export const UPDATE_CHECK_SCHEMA = "aslite.update-check.v1";
-export const UPDATE_CHECK_ENDPOINT = "https://registry.npmjs.org/%40holaxis%2Faslite";
+export const UPDATE_CHECK_SCHEMA = "superbee.update-check.v1";
+export const UPDATE_CHECK_ENDPOINT = "https://registry.npmjs.org/%40holaxis%2Fsuperbee";
 export const UPDATE_CHECK_ACCEPT = "application/vnd.npm.install-v1+json";
 export const UPDATE_CHECK_TIMEOUT_MS = 2_000;
 export const UPDATE_CHECK_MAX_BYTES = 1_048_576;
 
-const PACKAGE_NAME = "@holaxis/aslite";
+const PACKAGE_NAME = "@holaxis/superbee";
 const MAX_METADATA_LENGTH = 4_096;
 const MAX_SEMVER_LENGTH = 256;
 
@@ -167,9 +167,9 @@ function malformed(runningVersion: string, track: ReleaseTrack, checkedAt: strin
 
 function verificationCommands(track: ReleaseTrack): string[] {
   return [
-    track === "latest" ? "aslite version --check" : "aslite version --check --tag next",
-    "aslite skill status --scope user",
-    "aslite hook status --scope user",
+    track === "latest" ? "superbee version --check" : "superbee version --check --tag next",
+    "superbee skill status --scope user",
+    "superbee hook status --scope user",
   ];
 }
 

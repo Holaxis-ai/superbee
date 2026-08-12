@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 // Build ONLY if the bundle is absent — the package `test` script builds once up front, so this is
 // a no-op under `npm test`/`npm run check`. That prevents this file and `doc-cli-integration` from

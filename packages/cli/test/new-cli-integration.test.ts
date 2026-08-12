@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 
 import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@superbee/core";
 
-const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/agentstate-lite.mjs");
+const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 const T = "2026-07-01T00:00:00.000Z";
 
 test("built CLI new persists prototype-looking options as exact own properties and rejects omissions", async () => {

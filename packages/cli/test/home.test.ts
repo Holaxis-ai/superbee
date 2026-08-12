@@ -39,8 +39,9 @@ import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 
 const INVOKE = "npx -y @holaxis/aslite";
+const DEFAULT_INVOKE = "npx -y @holaxis/superbee";
 const BASE_DEPS = { binPath: () => "/bin/agentstate-lite", invocation: () => INVOKE };
-const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/agentstate-lite.mjs");
+const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
 function row(id: string, timestamp: string): HomeRow {
   return { id, type: "Note", title: id.split("/").pop() ?? id, timestamp };
@@ -600,11 +601,11 @@ test("A1.12b disappeared project-binding target: recovery init preserves the bou
       const gettingStarted = view.getting_started as string;
       assert.ok(
         gettingStarted.includes(
-          `${INVOKE} init --recipe none --dir '${missingBundle}'`,
+          `${DEFAULT_INVOKE} init --recipe none --dir '${missingBundle}'`,
         ),
       );
       assert.ok(gettingStarted.includes("fix/remove the binding before browsing recipes"));
-      assert.ok(!gettingStarted.includes(`${INVOKE} recipes`));
+      assert.ok(!gettingStarted.includes(`${DEFAULT_INVOKE} recipes`));
       assert.ok(!gettingStarted.includes("init --recipe none`"), "must not emit an unscoped init");
     } finally {
       process.chdir(origCwd);
