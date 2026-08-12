@@ -38,6 +38,11 @@ on:
       version:
         description: "Exact version, e.g. 0.1.0-pre.4"
         required: true
+      target:
+        description: "Release target from release/targets.json"
+        type: choice
+        options: ["successor", "bridge", "rehearsal-reject", "rehearsal-approve"]
+        default: "successor"
       mode:
         description: "dry-run (default) verifies/prints; live verifies registry + publishes draft"
         type: choice
@@ -47,7 +52,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: release-finalize-${{ inputs.version }}
+  group: release-finalize-${{ inputs.target }}-${{ inputs.version }}
   cancel-in-progress: false
 
 env:
@@ -112,8 +117,10 @@ jobs:
           STAGE_ID: ${{ inputs.stage_id }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
+          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" >/dev/null
           node scripts/release-verify-chain.mjs verify-finalizer \
             --candidate "$ARTIFACT_DIR/candidate.json" --receipt "$RECEIPT_DIR/stage-receipt.json" \
             --candidate-artifact candidate-artifact.json --receipt-artifact receipt-artifact.json \
@@ -203,8 +210,10 @@ jobs:
           STAGE_ID: ${{ inputs.stage_id }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
+          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" >/dev/null
           node scripts/release-verify-chain.mjs verify-finalizer \
             --candidate "$ARTIFACT_DIR/candidate.json" --receipt "$RECEIPT_DIR/stage-receipt.json" \
             --candidate-artifact candidate-artifact.json --receipt-artifact receipt-artifact.json \
@@ -229,14 +238,15 @@ jobs:
         env:
           LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
           VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then
             test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
-            node scripts/release-verify-registry.mjs --version "$VERSION" \
+            node scripts/release-verify-registry.mjs --target "$TARGET" --version "$VERSION" \
               --manifest "$ARTIFACT_DIR/candidate.json" --out registry-proof.json
           else
-            echo "[dry-run] verified immutable chain; would run the exact registry proof for @holaxis/aslite@$VERSION"
+            echo "[dry-run] verified immutable chain; would run the exact registry proof for $TARGET@$VERSION"
           fi
 
   finalize:
@@ -293,8 +303,10 @@ jobs:
           STAGE_ID: ${{ inputs.stage_id }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
+          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" >/dev/null
           node scripts/release-verify-chain.mjs verify-finalizer \
             --candidate "$ARTIFACT_DIR/candidate.json" --receipt "$RECEIPT_DIR/stage-receipt.json" \
             --candidate-artifact candidate-artifact.json --receipt-artifact receipt-artifact.json \
@@ -353,6 +365,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
+          TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then
@@ -360,8 +373,8 @@ jobs:
             node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
               --plan publication-plan.json --out final-publication-proof.json
             node scripts/release-run-operations.mjs --op immutable-release \
-              --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --execute
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --execute
           else
             node scripts/release-run-operations.mjs --op immutable-release \
-              --version "$VERSION" --release-id "$DRAFT_RELEASE_ID"
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID"
           fi

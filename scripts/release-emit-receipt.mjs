@@ -33,9 +33,9 @@ function arg(argv, flag, required = true) {
 }
 
 export function buildReceipt(fields) {
-  const { stageId, version, policyTag, tarballSha256, draftReleaseId } = fields;
+  const { stageId, version, policyTag, tarballSha256, draftReleaseId, target = "bridge" } = fields;
   const receipt = buildStageReceipt(fields);
-  const inspection = inspectionInstructions({ stageId, tarballSha256, version });
+  const inspection = inspectionInstructions({ stageId, tarballSha256, version, target });
   return {
     receipt,
     inspection,
@@ -43,8 +43,8 @@ export function buildReceipt(fields) {
     operations: {
       reject: rejectOperation({ stageId }),
       approve: approveOperation({ stageId }),
-      registry_verify: registryVerifyOperations({ version }),
-      promote: promoteOperation({ version, tag: policyTag }),
+      registry_verify: registryVerifyOperations({ version, target }),
+      promote: promoteOperation({ version, tag: policyTag, target }),
       // The immutable-release (draft publish) operation is emitted later by the finalize workflow,
       // once a real draft release id exists — not premature at stage time with a placeholder.
     },
@@ -107,6 +107,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
     artifactId: arg(argv, "--artifact-id"),
     artifactDigest: arg(argv, "--artifact-digest"),
     stageId: arg(argv, "--stage-id"),
+    target: arg(argv, "--target", false) ?? "bridge",
     version: arg(argv, "--version"),
     tag: arg(argv, "--tag"),
     sourceCommit: arg(argv, "--source-commit"),

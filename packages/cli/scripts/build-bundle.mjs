@@ -51,6 +51,20 @@ export function currentSourceFacts() {
  * Bundle src/index.ts (+ the workspace source packages + every npm dep) into ONE self-contained
  * ESM file at `outfile`. Does not chmod the result; build.mjs owns executable permissions.
  */
+function packageIdentity(options) {
+  const identity = options?.packageIdentity ?? { name: packageName, version };
+  if (
+    typeof identity.name !== "string" ||
+    !/^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/.test(identity.name) ||
+    identity.name.length > 214 ||
+    typeof identity.version !== "string" ||
+    identity.version.length === 0
+  ) {
+    throw new Error("buildCliBundle packageIdentity must contain a valid npm package name and non-empty version");
+  }
+  return identity;
+}
+
 export async function buildCliBundle(outfile, options) {
   const artifactChannel = options?.artifactChannel;
   if (!BUILD_ARTIFACT_CHANNELS.includes(artifactChannel)) {
@@ -73,9 +87,10 @@ export async function buildCliBundle(outfile, options) {
         "changes before release publication.",
     );
   }
+  const pkg = packageIdentity(options);
   const identity = {
     schema: "superbee.build-identity.v1",
-    package: { name: packageName, version },
+    package: { name: pkg.name, version: pkg.version },
     source,
     artifact: { channel: artifactChannel },
     compatibility_contracts: { skill: 1, hook: 1, mcp: 1 },

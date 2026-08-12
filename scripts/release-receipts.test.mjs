@@ -41,6 +41,7 @@ function fixture() {
     { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
   ];
   const receipt = buildStageReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -57,7 +58,9 @@ function fixture() {
     draftAssets,
   });
   const candidate = {
-    schema: "aslite.release-candidate.v1",
+    schema: "superbee.release-candidate.v1",
+    target: "bridge",
+    package: { name: "@holaxis/aslite" },
     tag: `v${VERSION}`,
     version: VERSION,
     source: { commit: COMMIT, dirty: false },
@@ -124,7 +127,7 @@ test("stage summary and retained JSON are emitted from the same v2 receipt", () 
     draftReleaseId: "300",
     draftAssets: f.release.assets,
   });
-  assert.equal(built.receipt.schema, "aslite.stage-receipt.v2");
+  assert.equal(built.receipt.schema, "superbee.stage-receipt.v1");
   assert.equal(built.receipt.stage.id, STAGE_ID);
   assert.equal(built.inspection.steps[0], `npm stage download ${STAGE_ID}`);
   assert.ok(!built.inspection.steps.some((step) => step.includes("--out")));

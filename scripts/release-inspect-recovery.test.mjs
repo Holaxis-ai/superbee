@@ -207,7 +207,9 @@ test("QA HOST AUTHORITY — real CLI subprocess pins every observation to github
     const tarballBytes = Buffer.from("host-pinned retained tarball");
     const tarballSha = digest(tarballBytes);
     const candidateText = JSON.stringify({
-      schema: "aslite.release-candidate.v1",
+      schema: "superbee.release-candidate.v1",
+      target: "bridge",
+      package: { name: "@holaxis/aslite" },
       tag: "v0.1.0-pre.4",
       version: "0.1.0-pre.4",
       tarball: { version: "0.1.0-pre.4", sha256: tarballSha, integrity: "sha512-YWJjZA==" },
@@ -786,7 +788,9 @@ test("resumed inspected journal with wrong observed SHA cannot reach DELETE or u
     const tarballSha = digest(tarballBytes);
     const wrongObservedSha = `sha256:${"b".repeat(64)}`;
     const candidateBytes = Buffer.from(JSON.stringify({
-      schema: "aslite.release-candidate.v1",
+      schema: "superbee.release-candidate.v1",
+      target: "bridge",
+      package: { name: "@holaxis/aslite" },
       tag: "v0.1.0-pre.4",
       version: "0.1.0-pre.4",
       tarball: { version: "0.1.0-pre.4", sha256: tarballSha, integrity: "sha512-YWJjZA==" },
@@ -895,7 +899,9 @@ test("production CLI adapter performs paginated exact replacement with one scrub
     const tarballBytes = Buffer.from("retained tarball bytes");
     const tarballSha = digest(tarballBytes);
     const candidateBytes = Buffer.from(JSON.stringify({
-      schema: "aslite.release-candidate.v1",
+      schema: "superbee.release-candidate.v1",
+      target: "bridge",
+      package: { name: "@holaxis/aslite" },
       tag: "v0.1.0-pre.4",
       version: "0.1.0-pre.4",
       tarball: { version: "0.1.0-pre.4", sha256: tarballSha, integrity: "sha512-YWJjZA==" },
@@ -986,6 +992,75 @@ test("production CLI adapter performs paginated exact replacement with one scrub
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
     }
+    rmSync(h.root, { recursive: true, force: true });
+  }
+});
+
+test("approval inspection verifies the successor package coordinate from candidate target metadata", async () => {
+  const h = scratch();
+  try {
+    const signer = makeSigner(h.root, "briand-ai");
+    const allowedPath = path.join(h.root, "allowed-signers");
+    writeFileSync(allowedPath, `${signer.allowedLine}\n`);
+    const tarballSha = `sha256:${"d".repeat(64)}`;
+    const candidateBytes = Buffer.from(JSON.stringify({
+      schema: "superbee.release-candidate.v1",
+      target: "successor",
+      package: { name: "@holaxis/superbee" },
+      tag: "v0.1.0-pre.11",
+      version: "0.1.0-pre.11",
+      tarball: { version: "0.1.0-pre.11", sha256: tarballSha, integrity: "sha512-c3VwZXJiZWU=" },
+    }));
+    const candidate = { id: 22, name: "candidate.json", digest: digest(candidateBytes), uploader: { login: "github-actions[bot]" } };
+    const commands = [];
+    const requests = [];
+
+    function run(command, args, options = {}) {
+      commands.push({ command, args: [...args] });
+      if (command === "gh" && args[0] === "api" && args.includes("--paginate")) return JSON.stringify([[candidate]]);
+      if (command === "gh" && args[0] === "api" && args.includes("repos/Holaxis-ai/superbee-rename-mirror/releases/300")) {
+        return JSON.stringify({
+          id: 300, draft: true, tag_name: "v0.1.0-pre.11",
+          upload_url: "https://uploads.github.com/repos/Holaxis-ai/superbee-rename-mirror/releases/300/assets{?name,label}",
+        });
+      }
+      if (command === "gh" && args[0] === "api" && args.includes("Accept: application/octet-stream")) return candidateBytes;
+      if (command === "gh" && args.join(" ") === "api --hostname github.com user --jq .login") return "briand-ai\n";
+      if (command === "gh" && args[0] === "auth") return "token\n";
+      if (command === "npm" && args[0] === "view") {
+        assert.deepEqual(args, ["view", "@holaxis/superbee@0.1.0-pre.11", "dist", "--json"]);
+        return JSON.stringify({ integrity: "sha512-c3VwZXJiZWU=" });
+      }
+      if (command === "ssh-keygen") return execFileSync(command, args, options);
+      throw new Error(`unexpected child command: ${command} ${args.join(" ")}`);
+    }
+
+    async function request(url, init) {
+      requests.push({ href: String(url), method: init.method });
+      if (String(url) === "https://api.github.com/user") return new Response(JSON.stringify({ login: "briand-ai" }), { status: 200 });
+      if (init.method === "POST") {
+        const bytes = Buffer.from(init.body);
+        return new Response(JSON.stringify({ id: 900, name: `receipt-approved-${STAGE_ID}.json`, digest: digest(bytes), uploader: { login: "briand-ai" } }), { status: 201 });
+      }
+      throw new Error(`unexpected request ${init.method} ${String(url)}`);
+    }
+
+    const result = await inspectMain([
+      "--stage-id", STAGE_ID,
+      "--version", "0.1.0-pre.11",
+      "--draft-release-id", "300",
+      "--decision", "approved",
+      "--target", "successor",
+      "--key", signer.keyPath,
+      "--repo", "Holaxis-ai/superbee-rename-mirror",
+      "--allowed-signers", allowedPath,
+      "--recovery-dir", h.recoveryDir,
+      "--dry-run",
+    ], { run, request, now: () => "2026-08-09T11:00:00Z" });
+    assert.deepEqual(result.rows.map((row) => row.status), ["uploaded"]);
+    assert.ok(commands.some((item) => item.command === "npm" && item.args[1] === "@holaxis/superbee@0.1.0-pre.11"));
+    assert.equal(requests.some((item) => item.method === "POST"), false, "dry-run still emits no upload");
+  } finally {
     rmSync(h.root, { recursive: true, force: true });
   }
 });

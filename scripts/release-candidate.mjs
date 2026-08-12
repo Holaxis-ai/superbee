@@ -10,7 +10,7 @@
 // Usage: node scripts/release-candidate.mjs --tag v<version> --commit <40-hex> [--out <dir>] [--json]
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -18,6 +18,13 @@ import { fileURLToPath } from "node:url";
 import { buildCli } from "../packages/cli/build.mjs";
 import { currentSourceFacts } from "../packages/cli/scripts/build-bundle.mjs";
 import { sanitizedNpmEnvironment, verifyRetainedTarball, fileSha256 } from "./verify-npm-package.mjs";
+import {
+  DEFAULT_RELEASE_TARGETS_PATH,
+  RELEASE_CANDIDATE_SCHEMA,
+  assertAllowedTuple,
+  loadReleaseTargets,
+  resolveReleaseTarget,
+} from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
@@ -39,8 +46,10 @@ export function parseCandidateArgs(argv) {
   const tag = get("--tag");
   const commit = get("--commit");
   const out = get("--out") ?? "release-candidate";
-  if (!tag || !commit) {
-    throw new Error("usage: release-candidate.mjs --tag v<version> --commit <40-hex> [--out <dir>] [--json]");
+  const target = get("--target");
+  const manifest = get("--manifest") ?? DEFAULT_RELEASE_TARGETS_PATH;
+  if (!tag || !commit || !target) {
+    throw new Error("usage: release-candidate.mjs --target <target> --tag v<version> --commit <40-hex> [--manifest <release/targets.json>] [--out <dir>] [--json]");
   }
   if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(tag)) {
     throw new Error(`--tag must be a v-prefixed SemVer tag, got ${tag}`);
@@ -48,7 +57,7 @@ export function parseCandidateArgs(argv) {
   if (!/^[a-f0-9]{40}$/.test(commit)) {
     throw new Error(`--commit must be an exact 40-hex SHA, got ${commit}`);
   }
-  return { tag, commit, out, json };
+  return { tag, commit, target, manifest, out, json };
 }
 
 async function listReferenceShas() {
@@ -66,12 +75,6 @@ async function listReferenceShas() {
   const shas = {};
   for (const rel of entries) shas[rel] = await fileSha256(path.join(root, ...rel.split("/")));
   return shas;
-}
-
-function npmRun(args, env) {
-  const npmCli = env.npm_execpath?.trim();
-  if (!npmCli) throw new Error("npm_execpath is required; run this through `npm run release:candidate`");
-  return execFileAsync(process.execPath, [npmCli, ...args], { cwd: cliRoot, env, maxBuffer: 20 * 1024 * 1024 });
 }
 
 /** Refuse broad, symlinked, or foreign non-empty output directories before recursive cleanup. */
@@ -119,17 +122,53 @@ export function assertCandidateSource(commit, observed = currentSourceFacts()) {
   return observed;
 }
 
+async function preparePackRoot({ target, version, outDir }) {
+  const packRoot = path.join(outDir, "pack-root");
+  await rm(packRoot, { recursive: true, force: true });
+  await mkdir(path.join(packRoot, "dist"), { recursive: true });
+  await cp(path.join(cliRoot, "references"), path.join(packRoot, "references"), { recursive: true });
+  for (const file of ["LICENSE", "README.md", "SKILL.md"]) {
+    await cp(path.join(cliRoot, file), path.join(packRoot, file));
+  }
+  await cp(path.join(cliRoot, ...target.artifact.split("/")), path.join(packRoot, ...target.artifact.split("/")));
+  const baseManifest = JSON.parse(await readFile(path.join(cliRoot, "package.json"), "utf8"));
+  const releaseManifest = {
+    name: target.package.name,
+    version,
+    type: baseManifest.type,
+    description: baseManifest.description,
+    keywords: baseManifest.keywords,
+    license: baseManifest.license,
+    homepage: baseManifest.homepage,
+    repository: baseManifest.repository,
+    bugs: baseManifest.bugs,
+    bin: target.bins,
+    files: ["dist", "SKILL.md", "references"],
+    publishConfig: { access: "public" },
+    engines: baseManifest.engines,
+  };
+  await writeFile(path.join(packRoot, "package.json"), `${JSON.stringify(releaseManifest, null, 2)}\n`);
+  return packRoot;
+}
+
 /**
  * Build once, pack once, emit the immutable manifest, verify the RETAINED tarball. Returns the
  * candidate manifest object. `verify` defaults true; the workflow passes it, tests can skip the
  * heavy install proof and assert the build/pack-once shape directly.
  */
-export async function createReleaseCandidate({ tag, commit, out, verify = true, sourceFacts }) {
+export async function createReleaseCandidate({
+  tag,
+  commit,
+  target: targetId,
+  manifest: targetManifestPath = DEFAULT_RELEASE_TARGETS_PATH,
+  out,
+  verify = true,
+  sourceFacts,
+}) {
   const version = tag.slice(1);
-  const manifest = JSON.parse(await readFile(path.join(cliRoot, "package.json"), "utf8"));
-  if (manifest.version !== version) {
-    throw new Error(`tag ${tag} does not match packages/cli/package.json version ${manifest.version}`);
-  }
+  const targetManifest = await loadReleaseTargets(targetManifestPath);
+  const target = await resolveReleaseTarget(targetId, { manifestPath: targetManifestPath });
+  assertAllowedTuple(targetManifest, { target: target.id, packageName: target.package.name, version, tag });
   // Never trust a caller-supplied SHA or invented clean-tree claim. Production callers always use
   // the observed Git facts; sourceFacts is injectable only so the build-once unit test can remain
   // hermetic while its own test checkout contains uncommitted test edits.
@@ -141,13 +180,20 @@ export async function createReleaseCandidate({ tag, commit, out, verify = true, 
   const outDir = await prepareCandidateOutputDir(requestedOut);
 
   // BUILD ONCE — npm-package channel, exact injected tag SHA, clean tree required.
-  await buildCli("npm-package", { source: { commit, dirty: false } });
+  await buildCli("npm-package", { source: { commit, dirty: false }, packageIdentity: { name: target.package.name, version } });
 
   // PACK ONCE — the single npm pack of this transaction. --ignore-scripts so no lifecycle hook can
   // trigger a second build/pack.
   const env = sanitizedNpmEnvironment(process.env, path.join(outDir, ".empty-npmrc"), path.join(outDir, ".npm-cache"));
+  const npmCli = env.npm_execpath?.trim();
+  if (!npmCli) throw new Error("npm_execpath is required; run this through `npm run release:candidate`");
   await writeFile(path.join(outDir, ".empty-npmrc"), "");
-  const packed = await npmRun(["pack", "--json", "--ignore-scripts", "--pack-destination", outDir], env);
+  const packRoot = await preparePackRoot({ target, version, outDir });
+  const packed = await execFileAsync(process.execPath, [npmCli, "pack", "--json", "--ignore-scripts", "--pack-destination", outDir, packRoot], {
+    cwd: repoRoot,
+    env,
+    maxBuffer: 20 * 1024 * 1024,
+  });
   const receipts = JSON.parse(packed.stdout);
   if (receipts.length !== 1) throw new Error(`npm pack must produce exactly one tarball, got ${receipts.length}`);
   const receipt = receipts[0];
@@ -155,13 +201,15 @@ export async function createReleaseCandidate({ tag, commit, out, verify = true, 
   const tarballSha = await fileSha256(tarballPath);
 
   const candidate = {
-    schema: "aslite.release-candidate.v1",
+    schema: RELEASE_CANDIDATE_SCHEMA,
+    target: target.id,
     tag,
     version,
+    package: { name: target.package.name },
     source: { commit, dirty: false },
     build_identity: {
       schema: "superbee.build-identity.v1",
-      package: { name: manifest.name, version },
+      package: { name: target.package.name, version },
       source: { commit, dirty: false },
       artifact: { channel: "npm-package", sha256: await fileSha256(path.join(cliRoot, "dist", "superbee.mjs")) },
       compatibility_contracts: { skill: 1, hook: 1, mcp: 1 },
@@ -178,6 +226,7 @@ export async function createReleaseCandidate({ tag, commit, out, verify = true, 
       unpacked_size: receipt.unpackedSize,
     },
     agreement: {
+      release_targets_sha256: await fileSha256(targetManifestPath),
       skill_md_sha256: await fileSha256(path.join(cliRoot, "SKILL.md")),
       references_sha256: await listReferenceShas(),
     },

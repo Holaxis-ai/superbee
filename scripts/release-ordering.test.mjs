@@ -76,7 +76,7 @@ function stageReceiptFor(version) {
 
 function chainFor(version) {
   return {
-    schema: "aslite.finalizer-chain-proof.v1",
+    schema: "superbee.finalizer-chain-proof.v1",
     version,
     tag: `v${version}`,
     source_commit: COMMIT,
@@ -854,7 +854,9 @@ test("inspection mismatch unwinds batch scratch state, emits no receipt, and pri
     const ghLog = path.join(harness, "gh.log");
     const recoveryDir = path.join(harness, "recovery");
     const manifestText = JSON.stringify({
-      schema: "aslite.release-candidate.v1",
+      schema: "superbee.release-candidate.v1",
+      target: "bridge",
+      package: { name: "@holaxis/aslite" },
       tag: `v${PRE}`,
       version: PRE,
       tarball: { version: PRE, sha256: TARBALL_SHA, integrity: INTEGRITY },

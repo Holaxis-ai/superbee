@@ -7,18 +7,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DEFAULT_TARGETS, targetFromPackageName } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-const SUCCESSOR_PACKAGE_NAME = "@holaxis/superbee";
-const SUCCESSOR_INSTALL_ROOT = ["@holaxis", "superbee"];
-const SUCCESSOR_ARTIFACT = "dist/superbee.mjs";
-const SUCCESSOR_BINS = {
-  superbee: SUCCESSOR_ARTIFACT,
-  aslite: SUCCESSOR_ARTIFACT,
-  "agentstate-lite": SUCCESSOR_ARTIFACT,
-};
+const SUCCESSOR_TARGET = DEFAULT_TARGETS.successor;
+const SUCCESSOR_PACKAGE_NAME = SUCCESSOR_TARGET.package.name;
+const SUCCESSOR_INSTALL_ROOT = SUCCESSOR_TARGET.package.directory;
+const SUCCESSOR_ARTIFACT = SUCCESSOR_TARGET.artifact;
+const SUCCESSOR_BINS = SUCCESSOR_TARGET.bins;
 const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
 
 const baseExpectedFiles = ["LICENSE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
@@ -227,21 +225,22 @@ function hasWorkspaceReference(value) {
   return false;
 }
 
-export function assertPackageContract(receipt, manifest, referenceFiles) {
+export function assertPackageContract(receipt, manifest, referenceFiles, target = SUCCESSOR_TARGET) {
   const tarballFiles = receipt.files.map((file) => file.path).sort();
+  const expectedArtifact = target.artifact;
   assert.deepEqual(
     tarballFiles,
-    expectedTarballFiles(referenceFiles),
+    ["LICENSE", "README.md", "SKILL.md", expectedArtifact, "package.json", ...referenceFiles.map((relative) => `references/${relative}`)].sort(),
     "the npm tarball must contain only the CLI, manifest, README, license, SKILL.md, and references/",
   );
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
-    [SUCCESSOR_ARTIFACT],
+    [expectedArtifact],
     "the tarball must carry exactly one .mjs executable (the dist bundle)",
   );
-  assert.equal(manifest.name, SUCCESSOR_PACKAGE_NAME);
+  assert.equal(manifest.name, target.package.name);
   assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references"]);
-  assert.deepEqual(manifest.bin, SUCCESSOR_BINS);
+  assert.deepEqual(manifest.bin, target.bins);
   // Scoped packages default to restricted at publish time — the manifest must pin public.
   assert.deepEqual(manifest.publishConfig, { access: "public" }, "publishConfig.access must be public");
   for (const field of runtimeDependencyFields) {
@@ -344,6 +343,7 @@ export async function fileSha256(file) {
  * the bytes we prove are the bytes that ship.
  */
 async function runInstalledProof(spec) {
+  const target = spec.target ?? SUCCESSOR_TARGET;
   const scratch = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-npm-proof-")));
   const packDir = path.join(scratch, "pack");
   const prefix = path.join(scratch, "prefix");
@@ -378,8 +378,8 @@ async function runInstalledProof(spec) {
 
     const installedRoot =
       process.platform === "win32"
-        ? path.join(prefix, "node_modules", ...SUCCESSOR_INSTALL_ROOT)
-        : path.join(prefix, "lib", "node_modules", ...SUCCESSOR_INSTALL_ROOT);
+        ? path.join(prefix, "node_modules", ...target.package.directory)
+        : path.join(prefix, "lib", "node_modules", ...target.package.directory);
     const manifest = parseJson(await readFile(path.join(installedRoot, "package.json"), "utf8"), "installed package.json");
     const committedSkillRoot = path.join(repoRoot, "packages", "cli");
     const referenceFiles = (await listFiles(path.join(committedSkillRoot, "references"))).map((relative) =>
@@ -391,7 +391,7 @@ async function runInstalledProof(spec) {
     const contractReceipt = {
       files: (await listFiles(installedRoot)).map((relative) => ({ path: relative.split(path.sep).join("/") })),
     };
-    assertPackageContract(contractReceipt, manifest, referenceFiles);
+    assertPackageContract(contractReceipt, manifest, referenceFiles, target);
 
     // The shipped skill assets are byte-identical to the repo-committed generated ones (which
     // check:skill pins to the renderer + resource manifest).
@@ -438,13 +438,15 @@ async function runInstalledProof(spec) {
       XDG_CONFIG_HOME: path.join(home, ".config"),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
     };
-    await assertCommandInBin("superbee", commandEnv, binDir);
-    await assertCommandInBin("aslite", commandEnv, binDir);
-    await assertCommandInBin("agentstate-lite", commandEnv, binDir);
+    for (const command of target.expected_commands) await assertCommandInBin(command, commandEnv, binDir);
+    for (const absent of ["superbee", "aslite", "agentstate-lite"].filter((command) => !target.expected_commands.includes(command))) {
+      const resolved = await resolveCommandOnPath(absent, commandEnv);
+      assert.equal(resolved, undefined, `${absent} must not resolve from the isolated npm prefix for ${target.id}`);
+    }
 
-    const installedEntrypoint = path.join(installedRoot, manifest.bin.superbee);
+    const installedEntrypoint = path.join(installedRoot, manifest.bin[target.preferred_command]);
     for (const [bin, relative] of Object.entries(manifest.bin)) {
-      assert.equal(relative, manifest.bin.superbee, `${bin} must point at the canonical successor artifact`);
+      assert.equal(relative, manifest.bin[target.preferred_command], `${bin} must point at the target artifact`);
     }
     const runCli = (command, args, options = {}) => {
       const cwd = options.cwd ?? scratch;
@@ -456,29 +458,26 @@ async function runInstalledProof(spec) {
 
     // Every installed projection agrees with the immutable build identity. Both bin aliases resolve
     // the same bytes, and the adjacent installed manifest is diagnostic rather than authority.
-    const preferredVersion = (await runCli("superbee", ["--version"])).stdout.trim();
-    const asliteVersion = (await runCli("aslite", ["--version"])).stdout.trim();
-    const legacyVersion = (await runCli("agentstate-lite", ["-v"])).stdout.trim();
-    assert.equal(preferredVersion, manifest.version, "superbee --version must equal the package manifest");
-    assert.equal(asliteVersion, manifest.version, "aslite --version must equal the package manifest");
-    assert.equal(legacyVersion, manifest.version, "agentstate-lite -v must equal the package manifest");
+    const preferredVersion = (await runCli(target.preferred_command, ["--version"])).stdout.trim();
+    assert.equal(preferredVersion, manifest.version, `${target.preferred_command} --version must equal the package manifest`);
+    for (const command of target.expected_commands.filter((command) => command !== target.preferred_command)) {
+      const versionOut = (await runCli(command, command === "agentstate-lite" ? ["-v"] : ["--version"])).stdout.trim();
+      assert.equal(versionOut, manifest.version, `${command} --version must equal the package manifest`);
+    }
     const preferredIdentity = parseJson(
-      (await runCli("superbee", ["version", "--json"])).stdout,
-      "superbee version --json",
+      (await runCli(target.preferred_command, ["version", "--json"])).stdout,
+      `${target.preferred_command} version --json`,
     );
-    const asliteIdentity = parseJson(
-      (await runCli("aslite", ["version", "--json"])).stdout,
-      "aslite version --json",
-    );
-    const legacyIdentity = parseJson(
-      (await runCli("agentstate-lite", ["version", "--json"])).stdout,
-      "agentstate-lite version --json",
-    );
-    assert.deepEqual(asliteIdentity, preferredIdentity, "aslite alias must report the canonical successor identity");
-    assert.deepEqual(legacyIdentity, preferredIdentity, "agentstate-lite alias must report the canonical successor identity");
+    for (const command of target.expected_commands.filter((command) => command !== target.preferred_command)) {
+      const identity = parseJson(
+        (await runCli(command, ["version", "--json"])).stdout,
+        `${command} version --json`,
+      );
+      assert.deepEqual(identity, preferredIdentity, `${command} alias must report the canonical target identity`);
+    }
     assert.equal(preferredIdentity.identity.schema, SUCCESSOR_BUILD_IDENTITY_SCHEMA);
     assert.deepEqual(preferredIdentity.identity.package, {
-      name: SUCCESSOR_PACKAGE_NAME,
+      name: target.package.name,
       version: manifest.version,
     });
     assert.equal(preferredIdentity.identity.artifact.channel, spec.expectedChannel);
@@ -493,8 +492,8 @@ async function runInstalledProof(spec) {
     });
     const discoverySnapshot = await snapshotTree(quickstartProject);
     const noBundleHome = parseJson(
-      (await runCli("superbee", ["--json"], { cwd: quickstartProject })).stdout,
-      "superbee home --json outside a bundle",
+      (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
+      `${target.preferred_command} home --json outside a bundle`,
     );
     const homeIdentity = noBundleHome["agentstate-lite"];
     assert.equal(homeIdentity.version, manifest.version);
@@ -507,13 +506,11 @@ async function runInstalledProof(spec) {
     );
     assert.match(
       noBundleHome.getting_started,
-      /superbee recipes/,
+      new RegExp(`${target.preferred_command} recipes`),
       "bundle-free home must point at Recipe discovery",
     );
 
-    await runCli("superbee", ["--help"]);
-    await runCli("agentstate-lite", ["--help"]);
-    await runCli("aslite", ["--help"]);
+    for (const command of target.expected_commands) await runCli(command, ["--help"]);
     const initHelp = (await runCli("aslite", ["init", "--help"])).stdout;
     assert.match(
       initHelp,
@@ -675,7 +672,7 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(
       appliedRecipes.recipes.find((recipe) => recipe.name === "work-tracking")?.commands,
-      { add_to_bundle: `superbee recipe add work-tracking --dir '${bundle}'` },
+      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir '${bundle}'` },
       "an existing local bundle must expose only the actionable add command",
     );
     parseJson(
@@ -764,6 +761,9 @@ async function runInstalledProof(spec) {
         await readFile(path.join(dir, ".aslite-skill.json"), "utf8"),
         "skill manifest",
       );
+      // Compatibility surface: skill install receipts intentionally keep the historical package
+      // authority so existing aslite-managed skill folders remain owned and repairable after the
+      // npm package rename. This is separate from the installed package identity verified above.
       assert.equal(skillManifest.package, "@holaxis/aslite");
       assert.equal(skillManifest.version, manifest.version);
     }
@@ -927,6 +927,7 @@ export async function verifyNpmPackage({ mode }) {
   const policy = verificationPolicy(mode);
   return runInstalledProof({
     mode: policy.mode,
+    target: SUCCESSOR_TARGET,
     expectedChannel: policy.artifactChannel,
     async produce({ packDir, npmUserConfig, npmCache }) {
       const cleanBuildEnv = sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache);
@@ -978,6 +979,9 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   });
   const actualSha = await fileSha256(tarballPath);
   const recorded = parseJson(await readFile(path.resolve(manifest), "utf8"), "candidate manifest");
+  const targetId = recorded?.target ?? targetFromPackageName(recorded?.package?.name ?? recorded?.build_identity?.package?.name) ?? "successor";
+  const target = DEFAULT_TARGETS[targetId];
+  if (!target) throw new Error(`candidate manifest names unknown release target ${JSON.stringify(targetId)}`);
   const recordedSha = recorded?.tarball?.sha256;
   assert.equal(
     actualSha,
@@ -991,6 +995,7 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   );
   return runInstalledProof({
     mode: "tarball",
+    target,
     // A retained release candidate is always an npm-package build; the identity proof enforces it.
     expectedChannel: "npm-package",
     async produce() {

@@ -21,20 +21,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { rejectOperation } from "./release-operations.mjs";
-import { stageDownloadFilename } from "./release-receipts.mjs";
+import { stageDownloadFilenameFor } from "./release-receipts.mjs";
 import { canonicalPayloadBytes, canonicalReceiptPayload, parseReceiptFile, receiptAssetName, SIGN_NAMESPACE } from "./release-ordering.mjs";
 import { allowedSignerPrincipals } from "./release-verify-ordering.mjs";
 import { executeRecoveryTransaction, normalizeAssetTriple, normalizeSlot, runRecoveryBatch, sha256Bytes } from "./release-inspect-recovery.mjs";
+import { RELEASE_CANDIDATE_SCHEMA, DEFAULT_TARGETS, targetFromPackageName } from "./release-targets.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-const PKG = "@holaxis/aslite";
 const SCRUBBED_GITHUB_ENV = new Set([
   "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO",
 ]);
 const VALUE_FLAGS = new Set([
   "--stage-id", "--version", "--draft-release-id", "--key", "--decision", "--repo", "--batch",
-  "--allowed-signers", "--recovery-dir", "--replace-asset-id", "--replace-asset-name", "--replace-asset-digest",
+  "--allowed-signers", "--recovery-dir", "--target", "--replace-asset-id", "--replace-asset-name", "--replace-asset-digest",
 ]);
 const BOOLEAN_FLAGS = new Set(["--dry-run"]);
 
@@ -104,7 +104,7 @@ function safeId(name, value) {
 
 function normalizeRow(input) {
   if (!input || typeof input !== "object" || Array.isArray(input)) fail("candidate row must be an object");
-  const allowed = new Set(["stage_id", "version", "draft_release_id", "decision", "replace_existing"]);
+  const allowed = new Set(["stage_id", "version", "draft_release_id", "decision", "replace_existing", "target"]);
   for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`unknown batch row field ${JSON.stringify(key)}`);
   if (input.replace_existing !== null && input.replace_existing !== undefined) {
     if (typeof input.replace_existing !== "object" || Array.isArray(input.replace_existing)) fail("replace_existing must be an object");
@@ -119,6 +119,7 @@ function normalizeRow(input) {
     draft_release_id: input.draft_release_id,
     decision: input.decision ?? "inspected",
     replace_existing: input.replace_existing ?? null,
+    target: input.target,
   };
 }
 
@@ -146,6 +147,7 @@ export async function parseInspectArgs(argv, { read = readFile, resolveRepo } = 
         version: flags.get("--version", true),
         draft_release_id: flags.get("--draft-release-id", true),
         decision: flags.get("--decision") ?? "inspected",
+        target: flags.get("--target"),
         replace_existing: replacementCount === 3 ? {
           asset_id: flags.get("--replace-asset-id"),
           name: flags.get("--replace-asset-name"),
@@ -223,7 +225,7 @@ function createProductionDependencies(overrides = {}) {
   const now = overrides.now ?? (() => new Date().toISOString());
 
   function ghText(args, options = {}) {
-    return run("gh", args, { encoding: "utf8", stdio: "pipe", ...options });
+  return run("gh", args, { encoding: "utf8", stdio: "pipe", ...options });
   }
 
   function ghBytes(args) {
@@ -268,6 +270,17 @@ function createProductionDependencies(overrides = {}) {
     return Buffer.from(ghBytes(["api", "--hostname", "github.com", "-H", "Accept: application/octet-stream", `repos/${repo}/releases/assets/${assetId}`]));
   }
 
+  function candidateTarget(candidate, row) {
+    const targetId = candidate?.target ?? row.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name) ?? "bridge";
+    const target = DEFAULT_TARGETS[targetId];
+    if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
+    if (row.target !== undefined && row.target !== target.id) fail(`candidate target ${target.id} does not match requested target ${row.target}`);
+    if (candidate?.package?.name !== undefined && candidate.package.name !== target.package.name) {
+      fail(`candidate package ${candidate.package.name} does not match target ${target.package.name}`);
+    }
+    return target;
+  }
+
   async function inspectAnchor({ repo, row }) {
     const releaseId = safeId("draft release id", row.draft_release_id);
     const { release, assets } = await releaseAndAssets(repo, releaseId, `v${row.version}`);
@@ -278,12 +291,13 @@ function createProductionDependencies(overrides = {}) {
     const candidateBytes = await downloadAsset(repo, candidateAsset.id);
     if (sha256Bytes(candidateBytes) !== candidateAsset.digest) fail("downloaded candidate.json digest does not match GitHub metadata");
     const candidate = parseJson(candidateBytes.toString("utf8"), "candidate.json");
-    if (candidate.schema !== "aslite.release-candidate.v1") fail("candidate.json has an unknown schema");
+    if (candidate.schema !== RELEASE_CANDIDATE_SCHEMA) fail("candidate.json has an unknown schema");
+    const target = candidateTarget(candidate, row);
     if (candidate.version !== row.version || candidate.tag !== `v${row.version}` || candidate.tarball?.version !== row.version) {
       fail("candidate.json does not match the requested tag/version");
     }
     if (!/^sha256:[a-f0-9]{64}$/.test(candidate.tarball?.sha256 ?? "")) fail("candidate.json carries no tarball sha256");
-    return { release, assets, candidate, candidateAsset, candidateBytes };
+    return { release, assets, candidate, candidateAsset, candidateBytes, target };
   }
 
   return {
@@ -301,8 +315,8 @@ function createProductionDependencies(overrides = {}) {
         stage_id: row.stage_id,
         version: row.version,
         tarball_sha256: first.candidate.tarball.sha256,
-        decision: row.decision,
-        receipt_name: receiptAssetName(row.decision, row.stage_id),
+          decision: row.decision,
+          receipt_name: receiptAssetName(row.decision, row.stage_id),
       });
       const allowedText = await readFile(options.allowedSignersPath, "utf8");
       const allowedActors = allowedSignerPrincipals(allowedText);
@@ -352,7 +366,7 @@ function createProductionDependencies(overrides = {}) {
               encoding: null,
               env: scrubGitHubEnvironment(),
             });
-            const tarball = await readFile(path.join(scratch, stageDownloadFilename(slot.version, slot.stage_id)));
+            const tarball = await readFile(path.join(scratch, stageDownloadFilenameFor(first.target.id, slot.version, slot.stage_id)));
             const observed = sha256Bytes(tarball);
             if (observed !== slot.tarball_sha256) {
               console.error(`MISMATCH: staged tarball ${observed} != retained candidate ${slot.tarball_sha256}`);
@@ -362,11 +376,12 @@ function createProductionDependencies(overrides = {}) {
             }
             console.log(`MATCH: staged tarball ${observed}`);
           } else {
-            const dist = parseJson(run("npm", ["view", `${PKG}@${slot.version}`, "dist", "--json"], {
+            const coordinate = `${first.target.package.name}@${slot.version}`;
+            const dist = parseJson(run("npm", ["view", coordinate, "dist", "--json"], {
               encoding: "utf8", stdio: "pipe", env: scrubGitHubEnvironment(),
             }), "npm registry dist");
             if (dist?.integrity !== first.candidate.tarball?.integrity) {
-              fail(`registry does not show ${PKG}@${slot.version} public with the candidate integrity`);
+              fail(`registry does not show ${coordinate} public with the candidate integrity`);
             }
           }
           const actor = ghText(["api", "--hostname", "github.com", "user", "--jq", ".login"]).trim();

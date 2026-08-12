@@ -36,7 +36,7 @@ const outfile = r("dist/superbee.mjs");
  * whatever `currentSourceFacts()` observes in a CI checkout. When omitted, build-bundle derives
  * the facts itself (the ordinary dev/verify path).
  */
-export async function buildCli(artifactChannel, { source } = {}) {
+export async function buildCli(artifactChannel, { source, packageIdentity } = {}) {
   if (artifactChannel !== "local-dev" && artifactChannel !== "npm-package") {
     throw new Error("usage: buildCli(local-dev|npm-package)");
   }
@@ -46,7 +46,7 @@ export async function buildCli(artifactChannel, { source } = {}) {
   // same preparation helper used by release verification. The esbuild
   // bundle below imports those generated modules transitively, so none may be missing or stale.
   await prepareCliBundleInputs();
-  await buildCliBundle(outfile, source === undefined ? { artifactChannel } : { artifactChannel, source });
+  await buildCliBundle(outfile, { artifactChannel, ...(source === undefined ? {} : { source }), ...(packageIdentity === undefined ? {} : { packageIdentity }) });
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
   // in the tarball and for direct `./dist/superbee.mjs` runs).
   await chmod(outfile, 0o755);

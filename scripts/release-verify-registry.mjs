@@ -10,11 +10,17 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { fileSha256, sanitizedNpmEnvironment } from "./verify-npm-package.mjs";
+import { DEFAULT_TARGETS, REGISTRY_PROOF_SCHEMA, targetFromPackageName } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
-const PACKAGE = "@holaxis/aslite";
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
+
+function targetFor(targetId = "bridge") {
+  const target = DEFAULT_TARGETS[targetId];
+  if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
+  return target;
+}
 
 function arg(argv, flag, required = true) {
   const at = argv.indexOf(flag);
@@ -42,8 +48,8 @@ function parseJson(text, label) {
   }
 }
 
-export function assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity }) {
-  if (packReceipt.name !== PACKAGE) throw new Error(`registry package ${packReceipt.name} != ${PACKAGE}`);
+export function assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity, target = targetFor(candidate?.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name) ?? "bridge") }) {
+  if (packReceipt.name !== target.package.name) throw new Error(`registry package ${packReceipt.name} != ${target.package.name}`);
   if (packReceipt.version !== candidate.version) {
     throw new Error(`registry version ${packReceipt.version} != candidate ${candidate.version}`);
   }
@@ -69,7 +75,7 @@ export function assertRegistryCandidate({ candidate, packReceipt, packumentDist,
     throw new Error(`registry tarball SHA-256 ${tarballSha256} != candidate ${candidate.tarball.sha256}`);
   }
   const identity = installedIdentity?.identity;
-  if (identity?.package?.name !== PACKAGE || identity?.package?.version !== candidate.version) {
+  if (identity?.package?.name !== target.package.name || identity?.package?.version !== candidate.version) {
     throw new Error("installed registry package identity does not match the candidate coordinate");
   }
   if (identity?.source?.commit !== candidate.source?.commit || identity?.source?.dirty !== false) {
@@ -83,10 +89,14 @@ export function assertRegistryCandidate({ candidate, packReceipt, packumentDist,
   }
 }
 
-export async function verifyRegistry({ version, manifest, out }) {
+export async function verifyRegistry({ target: targetId = "bridge", version, manifest, out }) {
+  const target = targetFor(targetId);
   if (!SEMVER.test(version)) throw new Error(`invalid --version ${version}`);
   const candidate = parseJson(await readFile(manifest, "utf8"), "candidate manifest");
   if (candidate.version !== version) throw new Error(`candidate version ${candidate.version} != requested ${version}`);
+  if (candidate.target !== target.id || candidate.package?.name !== target.package.name) {
+    throw new Error(`candidate target/package ${candidate.target ?? "<missing>"}/${candidate.package?.name ?? "<missing>"} != ${target.id}/${target.package.name}`);
+  }
 
   const scratch = await mkdtemp(path.join(tmpdir(), "aslite-registry-proof-"));
   const packDir = path.join(scratch, "pack");
@@ -96,7 +106,7 @@ export async function verifyRegistry({ version, manifest, out }) {
   try {
     await Promise.all([mkdir(packDir), mkdir(prefix), mkdir(path.join(scratch, "home")), writeFile(npmrc, "")]);
     const env = sanitizedNpmEnvironment(process.env, npmrc, cache);
-    const coordinate = `${PACKAGE}@${version}`;
+    const coordinate = `${target.package.name}@${version}`;
 
     const packed = await npmInvocation(
       ["pack", coordinate, "--json", "--ignore-scripts", "--pack-destination", packDir],
@@ -134,8 +144,8 @@ export async function verifyRegistry({ version, manifest, out }) {
       ["install", "--global", "--prefix", prefix, "--offline", "--ignore-scripts", "--no-audit", "--no-fund", tarball],
       env,
     );
-    const installedRoot = path.join(prefix, "lib", "node_modules", "@holaxis", "aslite");
-    const entrypoint = path.join(installedRoot, "dist", "agentstate-lite.mjs");
+    const installedRoot = path.join(prefix, "lib", "node_modules", ...target.package.directory);
+    const entrypoint = path.join(installedRoot, target.artifact);
     const commandEnv = {
       ...process.env,
       HOME: path.join(scratch, "home"),
@@ -149,10 +159,12 @@ export async function verifyRegistry({ version, manifest, out }) {
       "installed version --json",
     );
     await execFileAsync(process.execPath, [entrypoint, "mcp", "--help"], { env: commandEnv });
-    assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity });
+    assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity, target });
 
     const proof = {
-      schema: "aslite.registry-proof.v1",
+      schema: REGISTRY_PROOF_SCHEMA,
+      target: target.id,
+      package: target.package.name,
       version,
       packument_integrity: packReceipt.integrity,
       shasum: packReceipt.shasum,
@@ -173,6 +185,7 @@ export async function verifyRegistry({ version, manifest, out }) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
   verifyRegistry({
+    target: arg(process.argv.slice(2), "--target", false) ?? "bridge",
     version: arg(process.argv.slice(2), "--version"),
     manifest: arg(process.argv.slice(2), "--manifest"),
     out: arg(process.argv.slice(2), "--out", false),

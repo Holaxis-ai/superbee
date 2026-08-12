@@ -90,7 +90,7 @@ jobs:
       - name: Drive the built bundle on Node 20
         run: |
           node --version | grep -q '^v20\.' # the smoke is meaningless on any other runtime
-          CLI=packages/cli/dist/agentstate-lite.mjs
+          CLI=packages/cli/dist/superbee.mjs
           DIR="$RUNNER_TEMP/smoke-bundle"
           node "$CLI" init --dir "$DIR"
           node "$CLI" doc write specs/auth --type Spec --title "Auth" --body "smoke body" --dir "$DIR"

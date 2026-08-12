@@ -7,9 +7,16 @@
 // operator receipt is tolerated but the publish is permanently stamped; for STABLE candidates both
 // receipts are required. Present-but-invalid evidence is ALWAYS red, in every tier and mode.
 import { reconcile, ReleaseStateError } from "./release-state.mjs";
+import {
+  RELEASE_FINALIZER_PROOF_SCHEMA,
+  RELEASE_STAGE_RECEIPT_SCHEMA,
+} from "./release-targets.mjs";
 
 export const RECEIPT_SCHEMA = "aslite.operator-receipt.v1";
 export const STAMP_SCHEMA = "aslite.receipt-status.v1";
+export const ORDERING_PROOF_SCHEMA = "superbee.ordering-proof.v1";
+export const PUBLICATION_PLAN_SCHEMA = "superbee.publication-plan.v1";
+export const FINAL_PUBLICATION_PROOF_SCHEMA = "superbee.final-publication-proof.v1";
 export const SIGN_NAMESPACE = "aslite-release-receipt";
 export const RECEIPT_DECISIONS = ["inspected", "approved"];
 
@@ -190,8 +197,8 @@ function sameTriple(a, b) {
 }
 
 function stageReceiptEvents(stageReceipt) {
-  if (stageReceipt?.schema !== "aslite.stage-receipt.v2" || stageReceipt?.state !== "staged") {
-    fail("stage receipt schema/state is not staged v2");
+  if (stageReceipt?.schema !== RELEASE_STAGE_RECEIPT_SCHEMA || stageReceipt?.state !== "staged") {
+    fail(`stage receipt schema/state is not ${RELEASE_STAGE_RECEIPT_SCHEMA} staged`);
   }
   const prepared = stageReceipt.prepared ?? {};
   const draft = stageReceipt.draft ?? {};
@@ -313,7 +320,7 @@ export function evaluateOrdering({ mode, chain, stageReceipt, inspected, approve
   }
 
   return {
-    schema: "aslite.ordering-proof.v1",
+    schema: ORDERING_PROOF_SCHEMA,
     mode,
     tier,
     state: ledger.state,
@@ -419,8 +426,8 @@ function expectedStatusProof(ordering, status) {
 
 /** Build the deterministic, draft-bound ID-only cleanup manifest from verified proof inputs. */
 export function buildPublicationPlan({ release, chain, ordering, status, bodyAnnotation }) {
-  if (chain?.schema !== "aslite.finalizer-chain-proof.v1") fail("unknown finalizer chain proof schema");
-  if (ordering?.schema !== "aslite.ordering-proof.v1") fail("unknown ordering proof schema");
+  if (chain?.schema !== RELEASE_FINALIZER_PROOF_SCHEMA) fail("unknown finalizer chain proof schema");
+  if (ordering?.schema !== ORDERING_PROOF_SCHEMA) fail("unknown ordering proof schema");
   const draftReleaseId = numericAssetId("draft release id", chain?.draft_release_id);
   if (numericAssetId("observed draft release id", release?.id) !== draftReleaseId || String(ordering?.draft_release_id) !== String(chain?.draft_release_id)) {
     fail("publication plan draft release id does not match verified proofs");
@@ -470,7 +477,7 @@ export function buildPublicationPlan({ release, chain, ordering, status, bodyAnn
   deletes.sort((a, b) => a.id - b.id || a.name.localeCompare(b.name));
 
   return {
-    schema: "aslite.publication-plan.v1",
+    schema: PUBLICATION_PLAN_SCHEMA,
     draft_release_id: draftReleaseId,
     stage_id: chain.stage_id,
     tag: chain.tag,
@@ -482,7 +489,7 @@ export function buildPublicationPlan({ release, chain, ordering, status, bodyAnn
 
 /** Prove the exact re-queried inventory and owned body immediately before publication. */
 export function verifyFinalPublication({ release, plan }) {
-  if (plan?.schema !== "aslite.publication-plan.v1") fail("unknown publication plan schema");
+  if (plan?.schema !== PUBLICATION_PLAN_SCHEMA) fail("unknown publication plan schema");
   if (numericAssetId("final draft release id", release?.id) !== plan.draft_release_id) fail("final draft release id differs from cleanup plan");
   if (release?.draft !== true) fail("final release is no longer an unpublished draft");
   const expected = proofMap([...plan.keep.core_assets, ...plan.keep.receipt_assets], "final keep asset");
@@ -513,7 +520,7 @@ export function verifyFinalPublication({ release, plan }) {
     "final proof asset",
   );
   return {
-    schema: "aslite.final-publication-proof.v1",
+    schema: FINAL_PUBLICATION_PROOF_SCHEMA,
     draft_release_id: plan.draft_release_id,
     stage_id: plan.stage_id,
     assets,
