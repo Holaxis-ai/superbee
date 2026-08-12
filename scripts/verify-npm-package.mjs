@@ -526,14 +526,14 @@ async function runInstalledProof(spec) {
     assert.ok(contextNotes, "the installed recipe inventory must include context-notes");
     assert.equal(contextNotes.applied, null, "bundle-free discovery must not imply an applied state");
     assert.deepEqual(contextNotes.commands, {
-      create_bundle: "superbee init --create-only --recipe context-notes --dir '.agentstate-lite'",
-      add_to_bundle: "superbee recipe add context-notes",
+      create_bundle: `${target.preferred_command} init --create-only --recipe context-notes --dir '.agentstate-lite'`,
+      add_to_bundle: `${target.preferred_command} recipe add context-notes`,
     });
     const workTracking = discoveredRecipes.recipes.find((recipe) => recipe.name === "work-tracking");
     assert.ok(workTracking, "the installed recipe inventory must include work-tracking");
     assert.deepEqual(workTracking.commands, {
-      create_bundle: "superbee init --create-only --recipe work-tracking --dir '.agentstate-lite'",
-      add_to_bundle: "superbee recipe add work-tracking",
+      create_bundle: `${target.preferred_command} init --create-only --recipe work-tracking --dir '.agentstate-lite'`,
+      add_to_bundle: `${target.preferred_command} recipe add work-tracking`,
     });
     assertSnapshotUnchanged(
       discoverySnapshot,
