@@ -41,7 +41,7 @@ test("parseCandidateArgs validates the tag shape and 40-hex commit", () => {
 
 test("createReleaseCandidate refuses a tag that does not match the package version — before building", async () => {
   const version = JSON.parse(await readFile(cliPackageJson, "utf8")).version;
-  const distPath = path.join(repoRoot, "packages", "cli", "dist", "agentstate-lite.mjs");
+  const distPath = path.join(repoRoot, "packages", "cli", "dist", "superbee.mjs");
   const before = await fileSha256(distPath).catch(() => null);
   await assert.rejects(
     createReleaseCandidate({ tag: "v99.99.99", commit: "a".repeat(40), out: path.join(tmpdir(), "never"), verify: false }),
