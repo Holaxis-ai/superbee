@@ -161,6 +161,8 @@ test("supported quote grammar retains literal shell characters only inside manag
 });
 
 test("command compatibility recognizes exact generated history and rejects near-matches", () => {
+  const marketplace =
+    "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs";
   const table: Array<[string, string]> = [
     [stable, "current"],
     ["aslite session-start", "legacy_path_bound"],
@@ -173,6 +175,24 @@ test("command compatibility recognizes exact generated history and rejects near-
     ["/tmp/bin/node /tmp/agentstate-lite.mjs session-start", "unmanaged"],
     ["npx -y agentstate-lite session-start", "legacy_path_bound"],
     ["npx -y agentstate-lite", "stale"],
+    [`${marketplace} session-start`, "legacy_path_bound"],
+    [marketplace, "stale"],
+    [
+      "/Users/u/.codex/plugins/cache/agentstate-lite/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start",
+      "legacy_path_bound",
+    ],
+    [
+      "/repo/plugins/agentstate-lite/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start",
+      "legacy_path_bound",
+    ],
+    [
+      "/Users/u/.claude/plugins/cache/holaxis/not-agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start",
+      "unmanaged",
+    ],
+    [
+      "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/other.mjs session-start",
+      "unmanaged",
+    ],
     ["npx -y @holaxis/aslite session-start", "unmanaged"],
     ["echo agentstate-lite", "unmanaged"],
     ["agentstate-lite backup", "unmanaged"],

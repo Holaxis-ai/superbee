@@ -177,6 +177,35 @@ test("status reports duplicate generated entries as stale", () => {
   assert.match(status.compatibility.reason, /2 generated hook entries/);
 });
 
+test("npm hook install collapses an exact historical marketplace plus npm hook to one npm hook", () => {
+  const marketplace =
+    "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start";
+  const npm =
+    "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
+  const settings = {
+    hooks: {
+      SessionStart: [
+        { matcher: "", hooks: [{ type: "command", command: marketplace, timeout: 10 }] },
+        { matcher: "", hooks: [{ type: "command", command: npm, timeout: 10 }] },
+      ],
+    },
+  };
+
+  const before = readHookCompatibilityStatus(settings);
+  assert.equal(before.installed, true);
+  assert.equal(before.compatibility.state, "stale");
+  assert.match(before.compatibility.reason, /2 generated hook entries/);
+
+  const [installed, changed] = computeSessionStartHookInstall(settings, { command: npm });
+  assert.equal(changed, true);
+  assert.deepEqual(installed.hooks!.SessionStart, [
+    { matcher: "", hooks: [{ type: "command", command: npm, timeout: 10 }] },
+  ]);
+  const after = readHookCompatibilityStatus(installed);
+  assert.equal(after.installed, true);
+  assert.equal(after.compatibility.state, "current");
+});
+
 test("durable authority composes a stable npm-prefix Node launch", () => {
   const authority: PersistentInstallAuthority = {
     allowed: true,

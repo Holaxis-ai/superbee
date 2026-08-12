@@ -45,6 +45,10 @@ Codex:
 aslite skill install --scope user # optional guidance for Claude Code + Codex
 ```
 
+If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun both
+`aslite skill install --scope user` and `aslite hook install --scope user`. The hook installer
+replaces exact historical AgentState marketplace hooks instead of adding a duplicate.
+
 ## What it is
 
 A knowledge bundle is a directory of markdown that conforms to the **Open Knowledge Format

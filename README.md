@@ -30,6 +30,9 @@ orientation command without installing anything, run `npx -y @holaxis/aslite`.
 
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
+If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun
+`aslite skill install --scope user` and `aslite hook install --scope user`. The hook installer
+replaces exact historical AgentState marketplace hooks rather than leaving two SessionStart hooks.
 
 ## Quickstart
 

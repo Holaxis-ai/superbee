@@ -205,13 +205,11 @@ test("the npm skill teaches only the bounded stable MCP PATH contract", () => {
 });
 
 test("the typical flow creates a complete Context Note in one command", () => {
-  for (const text of [renderedNpm, renderedNpm]) {
-    assert.match(
-      text,
-      /new "Context Note" cycle-1 --title "cycle-1" --body '# Summary\n\nWhat this session did and what comes next' --actor <your-name>/,
-    );
-    assert.doesNotMatch(text, /doc update context-notes\/cycle-1/);
-  }
+  assert.match(
+    renderedNpm,
+    /new "Context Note" cycle-1 --title "cycle-1" --body '# Summary\n\nWhat this session did and what comes next' --actor <your-name>/,
+  );
+  assert.doesNotMatch(renderedNpm, /doc update context-notes\/cycle-1/);
 });
 
 test("the npm skill carries the authenticated-remote access contract", () => {
@@ -288,9 +286,8 @@ test("no phantom pointers — every $REFS/… path in the renderedNpm SKILL.md r
 });
 
 // ---------------------------------------------------------------------------------------------
-// The npm channel under the SAME (4)+(5) discipline: its renderedNpm SKILL.md addresses the shipped
-// tree by plain `references/…` paths relative to the installed file (no $REFS resolver — the npm
-// channel has none by design), so the orphan/phantom sweep runs over that pointer form.
+// The npm Skill uses `$REFS/…` pointers rooted at the host-reported installed Skill directory. It
+// carries no cache-discovery resolver, so the orphan/phantom sweep runs over that bounded form.
 // ---------------------------------------------------------------------------------------------
 
 test("npm: bare-aslite channel identity — no npx examples, no retired coordinate, no marketplace-cache resolver", () => {
