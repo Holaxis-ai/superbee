@@ -39,6 +39,7 @@ import {
   type UpdateCacheRecord,
   type UpdateLeaseRecord,
 } from "../src/update-orientation.js";
+import { LEGACY_NO_UPDATE_CHECK_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "../src/env-policy.js";
 import type { UpdateCheckResult } from "../src/update-check.js";
 import { buildHomeView, home } from "../src/commands/home.js";
 import { sessionStart } from "../src/commands/session-start.js";
@@ -330,7 +331,7 @@ test("passive suppressors are exact tokens and environment-key presence, includi
   assert.equal(isPassiveUpdateSuppressed(["--no-update-check"], {}), true);
   assert.equal(isPassiveUpdateSuppressed(["--no-update-check=false"], {}), false);
   assert.equal(isPassiveUpdateSuppressed(["--no-update-checker"], {}), false);
-  for (const key of ["ASLITE_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "CI"]) {
+  for (const key of [SUPERBEE_NO_UPDATE_CHECK_ENV, LEGACY_NO_UPDATE_CHECK_ENV, "NO_UPDATE_NOTIFIER", "CI"]) {
     for (const value of ["", "0", "1"]) {
       assert.equal(isPassiveUpdateSuppressed([], { [key]: value }), true, `${key}=${value}`);
     }

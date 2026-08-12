@@ -22,6 +22,7 @@ export {
   AUTO_PULL_CONNECT_TIMEOUT_SECONDS,
   AUTO_PULL_STALE_MS,
   NO_AUTOPULL_ENV,
+  SUPERBEE_NO_AUTOPULL_ENV,
   findBoardCandidate,
   type AutoPullOptions,
   type AutoPullOutcome,

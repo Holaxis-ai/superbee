@@ -60,6 +60,11 @@ import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { normalizeServer } from "./config.js";
 import { getApiKeyForOrigin } from "./credentials.js";
+import {
+  LEGACY_API_KEY_ENV,
+  SUPERBEE_API_KEY_ENV,
+  resolveCompatibleScalarEnv,
+} from "./env-policy.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -289,7 +294,17 @@ function wrapTransportErrors(remote: string): FetchLike {
 }
 
 /** Session-wide override for the `--remote` API key. See {@link openRemoteBundle}. */
-export const API_KEY_ENV_VAR = "AGENTSTATE_LITE_API_KEY";
+export const API_KEY_ENV_VAR = LEGACY_API_KEY_ENV;
+export const SUPERBEE_API_KEY_ENV_VAR = SUPERBEE_API_KEY_ENV;
+
+export function resolveApiKeyEnv(env: Readonly<Record<string, string | undefined>> = process.env): string | undefined {
+  return resolveCompatibleScalarEnv({
+    canonical: SUPERBEE_API_KEY_ENV_VAR,
+    legacy: API_KEY_ENV_VAR,
+    label: "API key",
+    env,
+  });
+}
 
 /**
  * Resolve a `--remote <url>` bundle: a `RemoteBackend` wired to the wire-protocol v0 reference
@@ -298,8 +313,10 @@ export const API_KEY_ENV_VAR = "AGENTSTATE_LITE_API_KEY";
  * is a fixed `"default"` — the single-bundle reference router ignores it; meaningful only for a
  * future multi-bundle deployment (no `--bundle` flag exists yet; out of scope).
  *
- * Sources a bearer `authToken` for the resolved origin: `AGENTSTATE_LITE_API_KEY` env var first,
- * else an already-provisioned origin-keyed credentials-file entry. Neither
+ * Sources a bearer `authToken` for the resolved origin: `SUPERBEE_API_KEY` or legacy
+ * `AGENTSTATE_LITE_API_KEY` env var first, else an already-provisioned origin-keyed
+ * credentials-file entry. If both environment variables are set to different non-empty values,
+ * resolution fails before any request and does not print either secret. Neither
  * is required — an ungated bundle (the reference `serve()`) ignores the header either way.
  */
 async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
@@ -314,7 +331,7 @@ async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
       help: `${cliInvocation()} <command> --remote http://127.0.0.1:4818`,
     });
   }
-  const envKey = process.env[API_KEY_ENV_VAR]?.trim();
+  const envKey = resolveApiKeyEnv();
   const authToken = envKey || (await getApiKeyForOrigin(origin));
   const backend = new RemoteBackend({
     baseUrl: base,

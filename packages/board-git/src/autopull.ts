@@ -30,8 +30,9 @@
 // the attempt-side throttle below backs off failing pulls too, so an offline machine pays one
 // bounded probe per window, not one per read.
 //
-// DEFAULT-ON, INCLUDING NON-TTY, with the {@link NO_AUTOPULL_ENV} opt-out
-// ({@code AGENTSTATE_LITE_NO_AUTOPULL=1}) for scripted/CI contexts. The CLI's
+// DEFAULT-ON, INCLUDING NON-TTY, with the {@link SUPERBEE_NO_AUTOPULL_ENV} or legacy
+// {@link NO_AUTOPULL_ENV} opt-out ({@code SUPERBEE_NO_AUTOPULL=1} or
+// {@code AGENTSTATE_LITE_NO_AUTOPULL=1}) for scripted/CI contexts. The CLI's
 // primary consumers are AGENTS driving it non-interactively (stdout is a pipe in every Claude
 // Code/Codex session) — a TTY gate would disable the feature for exactly its target audience. CI
 // is protected structurally, not by sniffing: the trigger is DETECTION-GATED (a CI checkout has no
@@ -97,6 +98,7 @@ export const AUTO_PULL_BUDGET_MS = 2_000;
 export const AUTO_PULL_CONNECT_TIMEOUT_SECONDS = 2;
 /** Set (to any non-empty value) to disable the opportunistic pull entirely — the CI/scripting knob. */
 export const NO_AUTOPULL_ENV = "AGENTSTATE_LITE_NO_AUTOPULL";
+export const SUPERBEE_NO_AUTOPULL_ENV = "SUPERBEE_NO_AUTOPULL";
 
 /** realpath when the path exists; the path unchanged otherwise (stable comparisons). */
 function realOrSame(p: string): string {
@@ -245,7 +247,7 @@ export interface AutoPullOptions {
   budgetMs?: number;
   /** ssh connect budget override (default {@link AUTO_PULL_CONNECT_TIMEOUT_SECONDS}). */
   connectTimeoutSeconds?: number;
-  /** Env override (default `process.env`) — the {@link NO_AUTOPULL_ENV} knob is read from here. */
+  /** Env override (default `process.env`) - the autopull opt-out knobs are read from here. */
   env?: Record<string, string | undefined>;
   /** Injectable clock (the house pattern) — feeds the staleness check AND the state writes. */
   now?: () => Date;
@@ -272,7 +274,7 @@ export async function maybeAutoPull(
 ): Promise<AutoPullOutcome> {
   try {
     const env = opts.env ?? process.env;
-    if (env[NO_AUTOPULL_ENV]) return "disabled";
+    if (env[SUPERBEE_NO_AUTOPULL_ENV] || env[NO_AUTOPULL_ENV]) return "disabled";
     const now = opts.now ?? (() => new Date());
     const staleMs = opts.staleMs ?? AUTO_PULL_STALE_MS;
 

@@ -259,6 +259,26 @@ test("resolveRemoteFlag: legacy AGENTSTATE_LITE_REMOTE is a deterministic migrat
   }
 });
 
+test("resolveRemoteFlag: SUPERBEE_REMOTE is not an ambient remote binding", async () => {
+  const dir = await tempDir();
+  const priorLegacy = process.env.AGENTSTATE_LITE_REMOTE;
+  const priorSuperbee = process.env.SUPERBEE_REMOTE;
+  try {
+    delete process.env.AGENTSTATE_LITE_REMOTE;
+    process.env.SUPERBEE_REMOTE = "http://env.example";
+    await inDir(dir, async () => {
+      const resolved = await resolveRemoteFlag(undefined, undefined);
+      assert.equal(resolved, undefined);
+    });
+  } finally {
+    if (priorLegacy === undefined) delete process.env.AGENTSTATE_LITE_REMOTE;
+    else process.env.AGENTSTATE_LITE_REMOTE = priorLegacy;
+    if (priorSuperbee === undefined) delete process.env.SUPERBEE_REMOTE;
+    else process.env.SUPERBEE_REMOTE = priorSuperbee;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("resolveRemoteFlag: even a blank-but-present legacy env value errors instead of silently falling through local", async () => {
   const dir = await tempDir();
   const prior = process.env.AGENTSTATE_LITE_REMOTE;

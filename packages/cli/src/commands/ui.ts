@@ -15,7 +15,7 @@
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { createRouter } from "@agentstate-lite/server";
-import { openBundle, resolveRemoteFlag, API_KEY_ENV_VAR } from "../bundle.js";
+import { openBundle, resolveRemoteFlag, resolveApiKeyEnv } from "../bundle.js";
 import { normalizeServer } from "../config.js";
 import { getApiKeyForOrigin } from "../credentials.js";
 import { bootUiServer as bootUiServerDefault, type UiServerHandle, type UiServerOptions } from "../ui/server.js";
@@ -179,7 +179,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
         help: `${cliInvocation()} ui --remote http://127.0.0.1:4818`,
       });
     }
-    const envKey = process.env[API_KEY_ENV_VAR]?.trim();
+    const envKey = resolveApiKeyEnv();
     const apiKey = envKey || (await getApiKeyForOrigin(origin));
     // Registered Views, kind/edge reads, and the trusted bridge share the SAME semantic
     // RemoteBackend bundle every other engine-aware command uses over --remote; the SPA's /v0
