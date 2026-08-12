@@ -15,12 +15,7 @@
 // A createRequire shim is injected in the banner because a bundled CommonJS dependency (gray-matter)
 // may call require() at runtime; ESM output has no ambient `require`, so we provide one.
 //
-// This explicitly flavored DEV/NPM build writes ONLY dist/ (plus the gitignored generated UI-assets module). It must
-// NEVER touch the COMMITTED plugin bundle (plugins/agentstate-lite/skills/agentstate-lite/scripts/
-// agentstate-lite.mjs) — that artifact is bot-owned on merge to main, and a default build dirtying
-// it made every subsequent `git pull` collide. The one writer of the committed path is
-// scripts/build-plugin-bundle.mjs (invoked by CI's scripts/ci-version-bundle.mjs and the manual
-// `npm run build:plugin-bundle`); a regression test pins this (scripts/dev-build-no-plugin-writes.test.mjs).
+// This explicitly flavored dev/npm build writes only dist/ plus gitignored generated inputs.
 import { rm, chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
@@ -39,8 +34,7 @@ const outfile = r("dist/agentstate-lite.mjs");
  * `source` is an OPTIONAL injection: the release-candidate builder passes the exact protected
  * tag/checkout SHA (dirty:false) so the npm-package identity is baked from the tag, not from
  * whatever `currentSourceFacts()` observes in a CI checkout. When omitted, build-bundle derives
- * the facts itself (the ordinary dev/verify path). This function NEVER writes the committed plugin
- * bundle — dist/ only (regression-pinned in scripts/dev-build-no-plugin-writes.test.mjs).
+ * the facts itself (the ordinary dev/verify path).
  */
 export async function buildCli(artifactChannel, { source } = {}) {
   if (artifactChannel !== "local-dev" && artifactChannel !== "npm-package") {
@@ -49,7 +43,7 @@ export async function buildCli(artifactChannel, { source } = {}) {
   // Clean dist so the packed tarball never carries stale files (files: ["dist"]).
   await rm(r("dist"), { recursive: true, force: true });
   // FIRST: generate every embedded input (the local UI assets and fixed MCP App shell) through the
-  // same preparation helper used by the committed-plugin writer and drift checker. The esbuild
+  // same preparation helper used by release verification. The esbuild
   // bundle below imports those generated modules transitively, so none may be missing or stale.
   await prepareCliBundleInputs();
   await buildCliBundle(outfile, source === undefined ? { artifactChannel } : { artifactChannel, source });

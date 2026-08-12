@@ -25,6 +25,22 @@ const runtimeDependencyFields = [
   "bundleDependencies",
 ];
 
+/** Fail closed if the retired first-party marketplace executable channel returns. */
+export async function assertRetiredDistributionAbsent(root) {
+  for (const retiredPath of [
+    path.join(root, "plugins", "agentstate-lite"),
+    path.join(root, ".claude-plugin"),
+  ]) {
+    const exists = await stat(retiredPath).then(() => true, () => false);
+    if (!exists) continue;
+    assert.equal(
+      (await snapshotTree(retiredPath)).size,
+      0,
+      `${retiredPath} must stay absent; npm is the sole executable distribution authority`,
+    );
+  }
+}
+
 export function verificationPolicy(mode) {
   if (mode === "local") return { mode, artifactChannel: "local-dev" };
   if (mode === "release") return { mode, artifactChannel: "npm-package" };
@@ -322,10 +338,7 @@ async function runInstalledProof(spec) {
   const bundle = path.join(quickstartProject, ".agentstate-lite");
   const npmUserConfig = path.join(scratch, "empty-npmrc");
   const npmCache = path.join(scratch, "npm-cache");
-  const pluginsDir = path.join(repoRoot, "plugins");
-  const marketplaceDir = path.join(repoRoot, ".claude-plugin");
-  const pluginsBefore = await snapshotTree(pluginsDir);
-  const marketplaceBefore = await snapshotTree(marketplaceDir);
+  await assertRetiredDistributionAbsent(repoRoot);
 
   try {
     await Promise.all([mkdir(packDir), mkdir(prefix), mkdir(home), mkdir(quickstartProject)]);
@@ -846,9 +859,6 @@ async function runInstalledProof(spec) {
       (group.hooks ?? []).map((h) => h.command),
     );
     assert.deepEqual(remaining, [], "hook uninstall must remove the managed SessionStart hook");
-
-    assertSnapshotUnchanged(pluginsBefore, await snapshotTree(pluginsDir), "plugins/");
-    assertSnapshotUnchanged(marketplaceBefore, await snapshotTree(marketplaceDir), ".claude-plugin/");
 
     return {
       mode: spec.mode,

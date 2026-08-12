@@ -3,10 +3,7 @@
 //
 // ASSET SOURCE: the running distribution's own package root (`dirname(executable)/..` → SKILL.md +
 // references/) — the npm layout (`<pkg>/dist/agentstate-lite.mjs`) and a dev/repo build
-// (`packages/cli/dist/…`) both resolve naturally. When the running executable IS the
-// marketplace/plugin skill bundle (`…/skills/agentstate-lite/scripts/agentstate-lite.mjs`,
-// see invocation.ts `isSkillBundlePath`), install refuses with guidance: that channel is
-// installed via the marketplace; `skill install` ships with the npm package.
+// (`packages/cli/dist/…`) both resolve naturally.
 //
 // TARGETS: Claude Code + Codex only, via the ONE HOST_CONFIG_ROOTS authority (the same env-var
 // semantics `hook install --scope user` uses). OpenCode is deliberately excluded — it has no
@@ -49,7 +46,6 @@ import {
   cliInvocation,
   collapseHomeDirectory,
   currentExecutableRealPath,
-  isSkillBundlePath,
 } from "../invocation.js";
 import { atomicWriteFileSync } from "./hook.js";
 import { render, resolveMode } from "../output.js";
@@ -150,13 +146,6 @@ export function resolveSkillAssets(executable?: string): SkillAssets {
     throw new CliError("RUNTIME", "cannot resolve the running executable's own path", {
       help: `${cliInvocation()} skill install --scope project|user`,
     });
-  }
-  if (isSkillBundlePath(exe)) {
-    throw new CliError(
-      "RUNTIME",
-      "this executable is the marketplace skill bundle — that channel is installed and updated via the marketplace, and carries no separately installable skill assets",
-      { help: "`skill install` ships with the npm package: npm install -g @holaxis/aslite, then `aslite skill install`" },
-    );
   }
   const root = dirname(dirname(exe));
   const skillMd = join(root, "SKILL.md");

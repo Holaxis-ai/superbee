@@ -175,7 +175,7 @@ function isBareManagedBin(value: string): boolean {
   return value === "aslite" || value === "agentstate-lite";
 }
 
-type ManagedExecutableLayout = "npm" | "local_dev" | "marketplace";
+type ManagedExecutableLayout = "npm" | "local_dev";
 
 function isCanonicalAbsolutePath(value: string): boolean {
   return isAbsolute(value) && normalize(value) === value;
@@ -190,12 +190,6 @@ function managedExecutableLayout(value: string): ManagedExecutableLayout | undef
     return "npm";
   }
   if (/\/packages\/cli\/dist\/agentstate-lite\.mjs$/.test(portable)) return "local_dev";
-  if (
-    /\/(?:\.claude|\.codex)\/plugins\/cache\/.+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable) ||
-    /\/plugins\/agentstate-lite\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable)
-  ) {
-    return "marketplace";
-  }
   return undefined;
 }
 
@@ -252,7 +246,7 @@ export function classifyHookCommand(command: string): HookCompatibility {
     tokens.length === 3 &&
     isCanonicalAbsolutePath(tokens[0]!) &&
     tokens[0]!.endsWith(`${sep}bin${sep}node`) &&
-    (executableLayout === "local_dev" || executableLayout === "marketplace") &&
+    executableLayout === "local_dev" &&
     tokens[2] === "session-start"
   ) {
     return result("current", "recognized generated PATH-independent Node launch");

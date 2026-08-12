@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertCommandInBin,
   assertPackageContract,
+  assertRetiredDistributionAbsent,
   expectedTarballFiles,
   parseVerificationArgs,
   resolveCommandOnPath,
@@ -42,6 +43,23 @@ const manifest = {
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
 };
+
+test("the npm verifier rejects either retired marketplace root", async () => {
+  for (const retired of [path.join("plugins", "agentstate-lite"), ".claude-plugin"]) {
+    const scratch = await mkdtemp(path.join(tmpdir(), "aslite-retired-channel-"));
+    try {
+      await assertRetiredDistributionAbsent(scratch);
+      await mkdir(path.join(scratch, retired), { recursive: true });
+      await writeFile(path.join(scratch, retired, "unexpected.txt"), "retired channel returned\n");
+      await assert.rejects(
+        () => assertRetiredDistributionAbsent(scratch),
+        /npm is the sole executable distribution authority/,
+      );
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
+});
 
 test("root and npm READMEs teach one literal create-only, agent-driven quickstart", async () => {
   for (const [label, file] of [

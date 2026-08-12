@@ -83,7 +83,7 @@ function parseSourceIdentity(value: unknown): SkillSourceIdentity | null {
   const channel = value.artifact_channel;
   if (typeof value.release_version !== "string" || value.release_version.length === 0) return null;
   if (!(commit === null || (typeof commit === "string" && /^[a-f0-9]{40}$/.test(commit)))) return null;
-  if (!(["npm-package", "local-dev", "marketplace-legacy", "unknown"] as unknown[]).includes(channel)) {
+  if (!(["npm-package", "local-dev", "unknown"] as unknown[]).includes(channel)) {
     return null;
   }
   if (!(artifactSha === null || isSha256(artifactSha))) return null;

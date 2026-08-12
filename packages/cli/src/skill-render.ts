@@ -1,102 +1,20 @@
-// Pure SKILL.md section renderers for both distribution channels — extracted from
-// scripts/gen-skill.mjs so they are typed, unit-testable without esbuild's data-URL bundling
-// dance, and importable directly by test/skill-distribution.test.ts (which renders the skill
-// target in-memory to gate its shipped-references prose). NO I/O: pure functions over
-// reference.ts's COMMAND_GROUPS/DESCRIPTION and distribution-resources.ts's inventory, parameterized only
-// by the caller-supplied invocation prefix where relevant — mirrors reference.ts's own "pure data +
-// pure projection" contract (see that file's header comment).
-//
-// gen-skill.mjs bundles this module (transitively pulling in reference.ts + distribution-resources.ts)
-// via esbuild's data-URL loader and calls `renderNpm()` / `renderSkill()` directly; it no longer
-// contains any rendering logic of its own, only the write/--check CLI shell.
-//
-// Both channels ship the same reference tree (see distribution-resources.ts) and render the same
-// reference-backed sections (Shipped references, Bundle views, the Notes addendum) — parameterized
-// by invocation prefix and by how each channel addresses its installed `references/` copy (the
-// `RefPointer` forms below).
+// Pure renderer for the npm-carried SKILL.md. gen-skill.mjs bundles this module in memory and
+// writes the committed package projection. NO I/O: pure functions over reference.ts's command data
+// and distribution-resources.ts's npm inventory.
 import { DESCRIPTION, COMMAND_GROUPS, commandName, type CommandGroup } from "./reference.js";
-import { NPM_RESOURCES, SKILL_RESOURCES } from "./distribution-resources.js";
-import { HOST_CONFIG_ROOTS, renderShellHostConfigRoot } from "./host-config.js";
+import { NPM_RESOURCES } from "./distribution-resources.js";
 import { STABLE_MCP_LAUNCH_GUIDANCE } from "./integration-guidance.js";
 
-export { NPM_RESOURCES, SKILL_RESOURCES, commandName };
+export { NPM_RESOURCES, commandName };
 
-// The two channels carry DIFFERENT identities on purpose: the npm package publishes under the
-// SCOPED interim coordinate `@holaxis/aslite` (npm rejected the unscoped `aslite` as too similar
-// to existing monikers), while the plugin/skill channel keeps its `agentstate-lite` identity and
-// `skills/agentstate-lite` paths. Within the npm channel there is a SECOND split: the COORDINATE
+// The npm package publishes under the scoped interim coordinate `@holaxis/aslite` (npm rejected
+// the unscoped name as too similar to existing monikers). The COORDINATE
 // (`@holaxis/aslite`) appears only in install/npx command text, while the channel's skill
 // IDENTITY and command prefix stay the bare `aslite` bin — a skill name or install folder must
 // not contain `@` or `/`.
 const NPM_COORDINATE = "@holaxis/aslite";
 const NPM_BIN = "aslite";
-const SKILL_NAME = "agentstate-lite";
 const NPX = `npx -y ${NPM_COORDINATE}`;
-const ASLITE = '"$ASLITE"';
-
-// ---------------------------------------------------------------------------------------------
-// Single source for cross-host resolver coverage. The skill ships two shell resolvers — `$ASLITE`
-// (the CLI, under renderSkill's invocation section) and `$REFS` (the shipped references dir,
-// under renderShippedReferencesSection) — that both need to find the SAME install of this skill
-// under the SAME set of hosts. Every host this skill supports lives in ONE array; both resolvers
-// derive their direct-install and marketplace-cache search from it, so a host can never be added
-// to one and forgotten in the other.
-//
-// Covered: Claude Code and Codex, each via a DIRECT skill install (`<host-home>/skills/agentstate-lite`)
-// and a plugin-MARKETPLACE-cache install (`<host-home>/plugins/cache/<marketplace>/agentstate-lite/<version>/skills/agentstate-lite`
-// — the cache copies the plugin dir's own contents, so there is no extra `plugins/` path segment).
-//
-// Each host's home is ENV-VAR-AWARE, not hardcoded to `$HOME/.<host>` — both hosts support
-// relocating it, and a relocated install is a real, reported case (a bare `$HOME/.<host>` glob
-// misses it entirely): Claude Code via `CLAUDE_CONFIG_DIR` (confirmed against the installed
-// `claude` binary — it resolves `settings.json`/`projects` from `${CLAUDE_CONFIG_DIR:-$HOME/.claude}`,
-// i.e. the var REPLACES `~/.claude` wholesale, not merges with it), Codex via `CODEX_HOME` (confirmed
-// against the installed `codex` binary's own `--help`, e.g. `$CODEX_HOME/<name>.config.toml`). Bash's
-// `${VAR:-default}` expresses that fallback inline. The same host definitions drive global hook
-// targets, so install and discovery cannot independently drift on an env name or fallback folder.
-//
-// OpenCode is deliberately NOT here. It never reads SKILL.md at all: its SessionStart integration
-// is the ambient-context plugin built by `commands/hook.ts`'s `buildOpenCodePluginSource`, which
-// bakes the CLI's already-resolved absolute path in directly at `hook install` time
-// (`hookCommand()`) — there is no skill-relative install path for this resolver to discover, by
-// construction (confirmed against axi-sdk-js: OpenCode gets a managed plugin file, not a
-// skill/plugin-cache directory layout). If a future OpenCode surface ever loads this skill's own
-// files by a discoverable convention path, add it to the shared host authority only when hook and
-// discovery semantics really are the same.
-export const SKILL_HOST_HOMES = [
-  renderShellHostConfigRoot(HOST_CONFIG_ROOTS.claude),
-  renderShellHostConfigRoot(HOST_CONFIG_ROOTS.codex),
-];
-
-// Test-facing projection of every supported host/channel shape. Keep the compatibility matrix
-// literal and inspectable while the emitted resolver itself derives from SKILL_HOST_HOMES.
-export const SKILL_HOST_ROOTS = SKILL_HOST_HOMES.flatMap((home) => [
-  `${home}/skills/agentstate-lite`,
-  `${home}/plugins/cache/*/agentstate-lite/*/skills/agentstate-lite`,
-]);
-
-/**
- * Render the shared, shell-portable discovery loop. Optional marketplace roots are traversed by
- * `find`, not expanded as shell globs: default zsh treats an unmatched glob as a fatal NOMATCH
- * error before `ls` or stderr redirection can run. Bash leaves the same glob literal in place,
- * which is why bash-only execution tests failed to expose the bug.
- */
-function hostDiscoveryLines(subpath: string, type: "f" | "d", indent = "    "): string[] {
-  const lines: string[] = [];
-  lines.push(`${indent}for host_home in \\`);
-  SKILL_HOST_HOMES.forEach((home, index) => {
-    lines.push(`${indent}  ${home}${index === SKILL_HOST_HOMES.length - 1 ? "" : " \\"}`);
-  });
-  lines.push(`${indent}do`);
-  lines.push(`${indent}  direct="$host_home/skills/agentstate-lite/${subpath}"`);
-  lines.push(`${indent}  [ -${type} "$direct" ] && printf '%s\\n' "$direct"`);
-  lines.push(`${indent}  cache="$host_home/plugins/cache"`);
-  lines.push(
-    `${indent}  [ -d "$cache" ] && find "$cache" -type ${type} -path '*/agentstate-lite/*/skills/agentstate-lite/${subpath}' -print 2>/dev/null`,
-  );
-  lines.push(`${indent}done | sort -V | tail -1`);
-  return lines;
-}
 
 // ---------------------------------------------------------------------------------------------
 // Shared projections (single source: COMMAND_GROUPS), parameterized only by invocation prefix.
@@ -550,13 +468,10 @@ function renderRemoteAccessSection(invocation: string): string[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shipped-reference pointer form — ONE `$REFS/<dest>` shape SHARED by both channels: shell
-// commands resolve against the process cwd, never the installed SKILL.md's folder, so a bare
-// relative `references/…` argument would fail from a project root after a host install. The
-// channels differ only in how `$REFS` gets DEFINED: the skill channel emits a cross-host
-// discovery resolver (renderShippedReferencesSection), while the npm channel instructs the
-// reader to set it from the skill base directory its host reports — trivially, no discovery
-// loop, no marketplace-cache search in that channel by design.
+// Shipped-reference pointer form. Shell commands resolve against the process cwd, never the
+// installed SKILL.md's folder, so a bare relative `references/…` argument would fail from a
+// project root after a host install. The npm-carried Skill instructs the reader to set `$REFS`
+// from the skill base directory its host reports; no cache-path discovery is required.
 // ---------------------------------------------------------------------------------------------
 
 interface RefPointer {
@@ -610,7 +525,7 @@ function renderNpmShippedReferencesSection(): string[] {
   return lines;
 }
 
-/** npm-channel "not on PATH" guidance — install channels, no marketplace-cache discovery. */
+/** npm-channel "not on PATH" guidance. */
 function renderNpmPathSection(): string[] {
   const lines: string[] = [];
   lines.push(`## If \`${NPM_BIN}\` is not on PATH`);
@@ -669,50 +584,6 @@ export function renderNpm(): string {
   lines.push(...renderBundleViewsSection(NPM_BIN, REFS_POINTER));
   lines.push(...renderNotesSection(referenceNotesAddendum(NPM_BIN, REFS_POINTER)));
   return lines.join("\n");
-}
-
-// ---------------------------------------------------------------------------------------------
-// skill target — plugins/agentstate-lite/skills/agentstate-lite/SKILL.md, self-contained committed-bundle channel
-// (`npx skills add`). Mirrors the resolver pattern of the reference `holaxis-agentstate` skill.
-// ---------------------------------------------------------------------------------------------
-
-/** `## Shipped references` — resolves `$REFS` once, the same way `$ASLITE` is resolved above. */
-function renderShippedReferencesSection(): string[] {
-  const lines: string[] = [];
-  lines.push("## Shipped references — worked examples & contracts alongside the CLI");
-  lines.push("");
-  lines.push(
-    "A few capabilities below (bundle views, custom recipes) are backed by a full contract or a",
-  );
-  lines.push(
-    "worked example shipped in this skill's `references/` folder rather than inlined here, so a",
-  );
-  lines.push("plain session that never touches them pays nothing for them. Resolve the path once:");
-  lines.push("");
-  lines.push("```bash");
-  lines.push('REFS="$(');
-  lines.push("  {");
-  lines.push(...hostDiscoveryLines("references", "d"));
-  lines.push("  }");
-  lines.push(')"');
-  lines.push('if [ -z "$REFS" ]; then');
-  lines.push(
-    '  echo "agentstate-lite: shipped references not found (checked Claude Code (CLAUDE_CONFIG_DIR or ~/.claude) and Codex (CODEX_HOME or ~/.codex) skill + plugin-cache installs)" >&2',
-  );
-  lines.push("  return 1 2>/dev/null || exit 1");
-  lines.push("fi");
-  lines.push("```");
-  lines.push("");
-  lines.push(
-    "Every `$REFS/…` path below is a byte-for-byte copy of the matching file in the CLI's own repo —",
-  );
-  lines.push("one authority, regenerated on every release, never hand-duplicated. If the resolver");
-  lines.push(
-    "comes up empty, the `references/` folder isn't installed where this skill can find it — an",
-  );
-  lines.push("uncovered install must fail loudly here, never silently as an empty `$REFS`-rooted path later.");
-  lines.push("");
-  return lines;
 }
 
 /** `## Bundle views` — the concept + v0 request-type names + the 4 authoring steps + a pointer. */
@@ -805,166 +676,4 @@ function referenceNotesAddendum(invocation: string, ref: RefPointer): string[] {
     `  relative links, wrapped bullets) ships at \`${ref.path("sample-bundle/")}\` — copy it and point \`--dir\` at`,
     "  the copy to explore a populated bundle without writing one from scratch.",
   ];
-}
-
-export function renderSkill(): string {
-  const lines: string[] = [];
-  lines.push("---");
-  lines.push(`name: ${SKILL_NAME}`);
-  lines.push("description: >-");
-  lines.push(
-    "  Read and write a local OKF knowledge bundle (agent context notes, docs, cross-links, and live",
-  );
-  lines.push(
-    "  bundle Views) via the self-contained agentstate-lite CLI bundled in this",
-  );
-  lines.push(
-    "  skill (scripts/agentstate-lite — a committed, zero-dependency bundle; no npm install",
-  );
-  lines.push(
-    "  required). Use when an agent needs to persist a context note across sessions, store a",
-  );
-  lines.push(
-    "  decision/spec as a doc, link concepts, query a bundle, share the project's board with",
-  );
-  lines.push(
-    "  teammates (`sync`), run a local wire-protocol server (`serve` / `--remote`), or open the",
-  );
-  lines.push("  bundle's local View UI.");
-  lines.push("---");
-  lines.push("");
-  lines.push(`# ${SKILL_NAME}`);
-  lines.push("");
-  lines.push(`${DESCRIPTION}.`);
-  lines.push("");
-  lines.push(
-    "This skill bundles a **self-contained** `agentstate-lite` CLI at `scripts/agentstate-lite` (a",
-  );
-  lines.push(
-    "committed, zero-dependency `.mjs` esbuild bundle, run through a small bash shim). It runs under",
-  );
-  lines.push(
-    "plain `node >= 20` — there is **no install step, no `npm install`, and no `node_modules`**. This",
-  );
-  lines.push(
-    "is a SEPARATE distribution channel from the published npm package (`npx -y @holaxis/aslite`);",
-  );
-  lines.push("both wrap the identical CLI source, so behavior and output are identical.");
-  lines.push("");
-  lines.push(...STABLE_MCP_LAUNCH_GUIDANCE.split("\n"), "");
-  lines.push("## Invocation — it is NOT on PATH");
-  lines.push("");
-  lines.push(
-    "The bundle is **not** on your `PATH`, and it does **not** live at a fixed path — the bundle may",
-  );
-  lines.push(
-    "ship inside a version-keyed plugin cache, so a bare `scripts/agentstate-lite` does **not**",
-  );
-  lines.push(
-    "resolve from an arbitrary cwd. Resolve its absolute path once, with this one-line resolver, then",
-  );
-  lines.push(`use \`${ASLITE}\` in every command:`);
-  lines.push("");
-  lines.push("```bash");
-  lines.push('ASLITE="$(');
-  lines.push("  command -v agentstate-lite 2>/dev/null || {");
-  lines.push(...hostDiscoveryLines("scripts/agentstate-lite", "f"));
-  lines.push("  }");
-  lines.push(')"');
-  lines.push('if [ -z "$ASLITE" ]; then');
-  lines.push(
-    '  echo "agentstate-lite: plugin executable not found (checked PATH, Claude Code (CLAUDE_CONFIG_DIR or ~/.claude), and Codex (CODEX_HOME or ~/.codex) skill + plugin-cache installs)" >&2',
-  );
-  lines.push("  return 1 2>/dev/null || exit 1");
-  lines.push("fi");
-  lines.push(`${ASLITE} --help`);
-  lines.push("```");
-  lines.push("");
-  lines.push(
-    "`command -v` short-circuits if a future install ever puts `agentstate-lite` on `PATH`; otherwise",
-  );
-  lines.push(
-    "the fallback checks, for BOTH Claude Code and Codex, a direct skill install (`<host-home>/skills/…`) and",
-  );
-  lines.push(
-    "a plugin-marketplace cache install (`<host-home>/plugins/cache/<marketplace>/<plugin>/<version>/skills/agentstate-lite/scripts/…` — the cache copies the PLUGIN DIR's contents, so there is no `plugins/` segment); each `<host-home>` honors that host's own relocation variable first (`CLAUDE_CONFIG_DIR` for Claude Code, `CODEX_HOME` for Codex) and falls back to `~/.claude`/`~/.codex`, and",
-  );
-  lines.push(
-    "`sort -V | tail -1` picks whichever matched path sorts last — a true \"highest version\" pick",
-  );
-  lines.push(
-    "only among matches sharing the same root (e.g. two versions under the same marketplace cache);",
-  );
-  lines.push(
-    "across DIFFERENT roots (direct vs cache, Claude vs Codex) it's a best-effort, path-ordered pick,",
-  );
-  lines.push(
-    "not a true cross-host version comparison. Marketplace discovery is delegated to `find` rather",
-  );
-  lines.push(
-    "than shell-expanded optional globs, so the same block works under Bash and default zsh. This",
-  );
-  lines.push(
-    "works from any cwd. Resolve to",
-  );
-  lines.push(
-    "the **shim** (not the `.mjs` directly) so the Node >= 20 floor guard runs first. OpenCode isn't",
-  );
-  lines.push(
-    "in this search: it never reads this file — its SessionStart integration bakes the CLI's path in",
-  );
-  lines.push(
-    "directly at `hook install` time instead (see that command's own docs). If NONE of the checked",
-  );
-  lines.push(
-    "installs match — an uncovered host, a corrupted install — the resolver fails LOUDLY to stderr",
-  );
-  lines.push("and stops, rather than silently handing you an empty command.");
-  lines.push("");
-  lines.push(
-    "> If your harness happens to export `${CLAUDE_PLUGIN_ROOT}` you may instead use",
-  );
-  lines.push(
-    '> `"$CLAUDE_PLUGIN_ROOT/skills/agentstate-lite/scripts/agentstate-lite"`, but it is **often unset**',
-  );
-  lines.push("> in an agent shell — do not rely on it; prefer the resolver above.");
-  lines.push("");
-  lines.push(
-    "**Runtime-hint note.** Every follow-up command the CLI itself prints (`help:` fields, error",
-  );
-  lines.push(
-    "hints) uses its own resolved invocation. Off `PATH`, running the skill bundle now prints its own",
-  );
-  lines.push(
-    "resolved absolute path there — directly runnable as printed, no substitution needed. If a bare",
-  );
-  lines.push(
-    "`aslite`/`agentstate-lite` or an `npx -y @holaxis/aslite …` prefix ever shows up instead (e.g. a",
-  );
-  lines.push(
-    `different install answered the \`PATH\` probe), swap that leading token for \`${ASLITE}\` and run`,
-  );
-  lines.push("the rest of the line unchanged.");
-  lines.push("");
-  lines.push(
-    "<!-- GENERATED from src/reference.ts by scripts/gen-skill.mjs --target skill — do not edit by hand. -->",
-  );
-  lines.push("");
-  lines.push(...renderCommandsSection(COMMAND_GROUPS, ASLITE));
-  lines.push(...renderWorkspaceLocation(ASLITE));
-  lines.push(...renderTypicalFlow(ASLITE));
-  lines.push(...renderSyncSection(ASLITE));
-  lines.push(...renderRemoteAccessSection(ASLITE));
-  lines.push(
-    "The wire-protocol v0.1 contract `serve` implements is documented as a project bundle doc, not",
-  );
-  lines.push(
-    "(yet) shipped in this skill's references — `serve`'s own source is the authoritative reference",
-  );
-  lines.push("implementation in the meantime.");
-  lines.push("");
-  lines.push(...renderShippedReferencesSection());
-  lines.push(...renderBundleViewsSection(ASLITE, REFS_POINTER));
-  lines.push(...renderNotesSection(referenceNotesAddendum(ASLITE, REFS_POINTER)));
-  return lines.join("\n");
 }

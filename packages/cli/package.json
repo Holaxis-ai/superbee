@@ -43,10 +43,6 @@
     "mutation": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid stryker run",
     "gen:skill": "node scripts/gen-skill.mjs",
     "check:skill": "node scripts/gen-skill.mjs --check",
-    "gen:skill:bundle": "node scripts/gen-skill.mjs --target skill",
-    "check:skill:bundle": "node scripts/gen-skill.mjs --target skill --check",
-    "build:plugin-bundle": "node scripts/build-plugin-bundle.mjs && node scripts/gen-skill.mjs --target skill",
-    "check:bundle": "node scripts/check-skill-bundle.mjs",
     "prepublishOnly": "node ../../scripts/prepublish-guard.mjs"
   },
   "devDependencies": {

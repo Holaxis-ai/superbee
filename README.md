@@ -28,9 +28,8 @@ Restart Claude Code or Codex after installing the skill. `hook install` is optio
 Claude Code, Codex, and OpenCode a compact AgentState orientation at session start. To try one
 orientation command without installing anything, run `npx -y @holaxis/aslite`.
 
-The older marketplace plugin remains temporarily available as a rollback channel while the npm
-upgrade journey is proven. New test installations should use npm so agents rely on `PATH`, not a
-host-owned versioned plugin cache.
+The npm package is the sole executable distribution channel. The optional Agent Skill contains
+guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
 
 ## Quickstart
 

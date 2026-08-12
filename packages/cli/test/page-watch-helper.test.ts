@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import vm from "node:vm";
 
-import { SKILL_RESOURCES } from "../src/distribution-resources.js";
+import { NPM_RESOURCES } from "../src/distribution-resources.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../../..");
@@ -116,7 +116,7 @@ test("the contract and both examples embed one identical watch implementation", 
 });
 
 test("the contract and both worked Pages remain in the shipped skill references", () => {
-  const shipped = new Set(SKILL_RESOURCES.map(({ src }) => src));
+  const shipped = new Set(NPM_RESOURCES.map(({ src }) => src));
   for (const relative of Object.values(authorities)) assert.ok(shipped.has(relative), `${relative} is not shipped`);
 });
 

@@ -12,7 +12,6 @@ import { BIN_NAMES } from "./invocation.js";
 export type PersistentInstallAuthorityState =
   | "durable_global"
   | "local_dev"
-  | "marketplace_legacy"
   | "unknown";
 
 export interface PersistentInstallAuthority {
@@ -105,9 +104,6 @@ export function classifyPersistentInstallAuthority(
     input.artifact_channel === "local-dev" && isScopedNpmPackageExecutable(input.executable_path);
   if (input.artifact_channel === "local-dev" && !installedLocalDev) {
     return { allowed: true, state: "local_dev", reason: "developer build", evidence };
-  }
-  if (input.artifact_channel === "marketplace-legacy") {
-    return { allowed: true, state: "marketplace_legacy", reason: "legacy marketplace build", evidence };
   }
   if (input.artifact_channel !== "npm-package" && !installedLocalDev) {
     return unknown(input, "running build channel cannot authorize persistent integration changes");

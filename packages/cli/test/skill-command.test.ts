@@ -253,7 +253,7 @@ test("matching assets ignore informational provenance while digest corruption is
   manifest.source_identity = {
     release_version: "99.0.0",
     source_commit: "c".repeat(40),
-    artifact_channel: "marketplace-legacy",
+    artifact_channel: "npm-package",
     artifact_sha256: null,
   };
   writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -504,25 +504,6 @@ test("--scope user honors host relocation and --scope global remains an alias", 
   const targets = skillTargets("user", { home, env: { CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" } });
   assert.equal(targets.claude, path.join(home, ".claude", "skills", "aslite"));
   assert.equal(targets.codex, path.join(home, ".codex", "skills", "aslite"));
-});
-
-test("running as the marketplace skill bundle: install refuses with marketplace guidance", async () => {
-  const { base } = scratch();
-  const cwd = path.join(base, "project");
-  mkdirSync(cwd, { recursive: true });
-  const bundleExe = path.join(
-    base,
-    "plugins", "cache", "mkt", "agentstate-lite", "1.0.0", "skills", "agentstate-lite", "scripts", "agentstate-lite.mjs",
-  );
-  await assert.rejects(
-    () => runSkill(["install"], { cwd, executable: bundleExe }),
-    (err: unknown) => {
-      assert.ok(err instanceof CliError);
-      assert.match(err.message, /marketplace/);
-      return true;
-    },
-  );
-  assert.equal(existsSync(path.join(cwd, ".claude")), false);
 });
 
 test("a distribution without shipped skill assets is a loud runtime error, not a partial install", async () => {

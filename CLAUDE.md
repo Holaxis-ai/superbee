@@ -255,17 +255,8 @@ bundle-relative**.
   (`--workspaces --if-present`: board-git + core + cli + server + ui suites) must pass, before
   shipping. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
   the installed-tarball proof (`verify:npm-package`), and the npm-target SKILL.md drift gate
-  (`check:skill`) in one shot. The plugin-bundle drift gates
-  (`check:skill:bundle`, `check:bundle` — the ~4.4MB committed artifact and the skill-target
-  SKILL.md) are BOT-OWNED on merge to main (see the plugin version + bundle bullet below) and are
-  deliberately NOT part of this PR-side gate; a branch that only touches CLI source is not expected
-  to carry a current rebuild of either. Run them by hand via `npm run check:plugin-bundle` if you
-  want to eyeball drift before the bot does. The DEFAULT build NEVER writes the committed plugin
-  bundle — dev builds target `packages/cli/dist` only (regression-pinned in
-  `scripts/dev-build-no-plugin-writes.test.mjs`, so a local build can no longer dirty the bot-owned
-  artifact and break the next `git pull`); the ONE writer of the committed path is
-  `packages/cli/scripts/build-plugin-bundle.mjs`, invoked by the CI bot and by the manual
-  `npm run build:plugin-bundle`.
+  (`check:skill`) in one shot. npm is the sole executable distribution authority: the package
+  ships the CLI plus a generated, optional Agent Skill containing guidance and references only.
   **Always build from the REPO ROOT** — a package-scoped build leaves sibling `dist/`s stale and
   test files that import them crash confusingly. `npm run build` bundles the CLI to
   `packages/cli/dist/agentstate-lite.mjs` (esbuild). Invoke the freshly-built CLI in-repo via the
@@ -275,8 +266,8 @@ bundle-relative**.
   never ships (`files: ["dist"]`). Smoke-test the built CLI — at minimum `init`, `doc write`/`doc read`,
   `list`, `link add`/`show`, and `status` on `examples/sample-bundle`. Run
   `npm run verify:npm-package` to prove the exact tarball allowlist, zero-runtime-dependency
-  boundary, both command names on an isolated `PATH`, an offline create/query workflow, and no
-  writes to the committed plugin channel. The developer gate builds an honestly labeled
+  boundary, both command names on an isolated `PATH`, the absence of the retired marketplace
+  executable roots, and an offline create/query workflow. The developer gate builds an honestly labeled
   `local-dev` tarball so it remains runnable on an in-progress/dirty checkout. `prepublishOnly`
   runs the same journey in strict `npm-package` mode and refuses unless Git proves an exact clean
   source commit.
@@ -297,28 +288,6 @@ bundle-relative**.
   test or drift-gate result (up-tree module resolution manufactures phantom failures).
 - `examples/sample-bundle` is the interop fixture: externally-shaped (unquoted timestamps,
   relative links, wrapped bullets). If a change breaks its round-trip, the change is wrong.
-- **Plugin version + committed bundle are BOT-OWNED on merge to main — feature PRs never touch them
-  (2026-07-09, retiring the old hand-bump-and-rebase convention).** A CI workflow
-  (`.github/workflows/ci-version-bundle.yml`, generator logic in `scripts/ci-version-bundle.mjs`,
-  repository transaction in `scripts/ci-version-bundle-pr.mjs`) runs on
-  every push to `main`: it regenerates the skill-target `SKILL.md` and rebuilds the committed
-  `plugins/…/scripts/agentstate-lite.mjs`; only if either differs from what's committed does it
-  bump the patch version in BOTH `.claude-plugin/marketplace.json` and
-  `plugins/agentstate-lite/.codex-plugin/plugin.json`, commit artifact+manifests together on the
-  fixed automation branch, and open or reconcile an ordinary human-reviewed PR (the plugin cache
-  is version-keyed, so they must land atomically). The App token carries GitHub's coarse Contents
-  and Pull requests write categories, but the bridge's executable mutations are limited to the
-  leased fixed branch and its exact PR create/reconcile/close operations; it never approves,
-  merges, or writes directly to `main`. If nothing
-  changed, the run is a no-op — that convergence, not a paths filter or actor check, is what stops
-  the merged bot PR from re-triggering an infinite loop. **A feature PR must NOT hand-bump either
-  manifest or hand-rebuild the committed bundle** — parallel branches no longer collide on the next
-  version number, because they no longer touch it at all; the bot picks it up once, on merge. The
-  bot's regen-and-diff only covers the two GENERATED artifacts (the skill-target SKILL.md, the
-  compiled bundle) — a hand-edit to NON-generated plugin content (the bash shim
-  `plugins/agentstate-lite/skills/agentstate-lite/scripts/agentstate-lite`, or a manifest field
-  other than `version`) has nothing for the bot to regenerate against and will go unnoticed, so it
-  still needs a manual version bump in the SAME PR.
 - **Operator receipt emission is non-clobbering and release-ID bound.**
   `scripts/release-inspect.mjs` completely inventories the draft by numeric release ID, binds the
   retained `candidate.json`, and treats one valid current receipt as `already_present`. A missing
@@ -387,7 +356,6 @@ bundle-relative**.
 - **Security disclosure:** a defect that is (a) exploitable by someone other than the
   victim AND (b) present on main goes through a private GitHub Security Advisory —
   fix privately, merge, then disclose — never a public PR comment or board doc.
-  Because the marketplace channel tracks this repo, "released" means "merged to main".
   Pre-merge review findings stay public by default. The board is public: the
   write-time scrub discipline covers vulnerability details, not just secrets.
 - **Records live on the PROJECT BUNDLE (the in-repo board at `.agentstate-lite/`) — the
@@ -470,12 +438,10 @@ Standing gates on future work:
 - **Hosted revival is human-gated.** This repository carries no Cloudflare deployment target.
   The frozen private reference records that any future revival must review the architecture and
   apply D1 migrations before deploying dependent code.
-- **The public npm prerelease is the test-user distribution channel.** `@holaxis/aslite` ships the
-  self-contained CLI plus an optional installable Agent Skill; keep `npm run verify:npm-package`
-  green and preserve the SKILL generator's dual-channel design during the transition. The older
-  marketplace/plugin bundle remains a temporary rollback channel until the npm upgrade proof
-  passes. Automated publishing, the durable update-notification contract, and deletion of the
-  marketplace channel remain separate explicit units.
+- **The public npm prerelease is the executable distribution channel.** `@holaxis/aslite` ships the
+  self-contained CLI plus an optional installable Agent Skill containing guidance and references;
+  keep `npm run verify:npm-package` and the npm-target SKILL drift gate green. Automated publishing
+  and the durable update-notification contract remain separate explicit units.
 - **Multi-bundle partitioning + per-bundle key scoping + bundle-scoped authz** is its own
   future unit, designed and built TOGETHER (the Stage-2 review's adjudication) — do not build
   piecemeal, and do not build without an explicit decision. Same for the GitHub device-flow

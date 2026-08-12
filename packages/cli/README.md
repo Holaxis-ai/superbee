@@ -9,9 +9,9 @@ the interim npm coordinate `@holaxis/aslite` (the installed commands stay `aslit
 
 The npm artifact ships one self-contained executable file with **zero runtime dependencies**,
 plus the generated Agent Skill (`SKILL.md` and its `references/` folder — installable into host
-skill folders with `aslite skill install`). The public prerelease is the recommended test-user
-channel; the older marketplace bundle remains temporarily available only as a rollback path while
-the npm upgrade journey is proven. Maintainers can reproduce the complete package proof from the
+skill folders with `aslite skill install`). npm is the sole executable distribution channel;
+the installed Skill contains guidance and references, not a second CLI copy. Maintainers can
+reproduce the complete package proof from the
 repository root with `npm run verify:npm-package`; it builds, packs, installs into an isolated
 prefix, resolves both command names from `PATH`, and exercises an offline bundle workflow. This
 developer proof deliberately stamps `local-dev`, so it works on an in-progress/dirty checkout;

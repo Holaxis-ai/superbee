@@ -26,9 +26,6 @@ name: CI tests
 # The chromium pre-install exists because e2e:gate's own `playwright install chromium` does not
 # install OS-level dependencies; `--with-deps` here does, and makes the gate's install a no-op.
 #
-# The committed plugin bundle's drift gates (check:bundle / check:skill:bundle) are deliberately
-# absent: those artifacts are BOT-OWNED on merge to main (ci-version-bundle.yml), and a PR branch
-# is not expected to carry a current rebuild of them.
 on:
   pull_request:
   push:
