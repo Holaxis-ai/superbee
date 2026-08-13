@@ -21,7 +21,7 @@ test("parseResolveTargetArgs requires tag and defaults to the release manifest",
 test("resolveTargetFacts returns the allowlisted tuple and policy tag", async () => {
   assert.deepEqual(await resolveTargetFacts({ target: "successor", tag: "v0.1.0-pre.11" }), {
     target: "successor",
-    package: "@holaxis/superbee",
+    package: "superbee",
     version: "0.1.0-pre.11",
     tag: "v0.1.0-pre.11",
     policy_tag: "next",

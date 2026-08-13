@@ -410,7 +410,7 @@ async function runInstalledProof(spec) {
     );
     // Derive the tarball's file set from the installed tree so the contract check holds in BOTH
     // producer modes (retained mode never sees npm pack's file list). The installed
-    // node_modules/@holaxis/superbee tree IS the tarball's contents.
+    // node_modules/superbee tree IS the tarball's contents.
     const contractReceipt = {
       files: (await listFiles(installedRoot)).map((relative) => ({ path: relative.split(path.sep).join("/") })),
     };

@@ -82,7 +82,7 @@ an absent hook is a no-op. Re-run install after upgrading from a pre-session-sta
 old hook rendered the home view without pulling the board first.
 
 For npm distribution, install must run from a verified global install (\`npm install -g
-@holaxis/superbee\`). One-off npx execution remains supported for read-only/trial commands but cannot
+superbee\`). One-off npx execution remains supported for read-only/trial commands but cannot
 authorize persistent host configuration.
 
 Options:
@@ -1101,7 +1101,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     } catch (err) {
       throw new CliError("RUNTIME", err instanceof Error ? err.message : String(err), {
         ...(authority ? { details: { install_authority: authority } } : {}),
-        help: "run `npm install -g @holaxis/superbee`, verify `superbee version --json`, then re-run hook install; npx remains supported for read-only/trial commands",
+        help: "run `npm install -g superbee`, verify `superbee version --json`, then re-run hook install; npx remains supported for read-only/trial commands",
       });
     }
     const command = launch.command;

@@ -149,7 +149,7 @@ test("verifyRetainedTarball fails closed when the tarball bytes do not match the
 test("verifyRetainedTarball fails closed when the recorded release-target agreement drifts", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "aslite-target-agreement-"));
   try {
-    const fakeTgz = path.join(scratch, "holaxis-superbee-release-rehearsal-0.0.0.tgz");
+    const fakeTgz = path.join(scratch, "superbee-release-rehearsal-0.0.0.tgz");
     await writeFile(fakeTgz, "not a real tarball\n");
     const actualSha = await fileSha256(fakeTgz);
     const manifestPath = path.join(scratch, "candidate.json");
@@ -158,7 +158,7 @@ test("verifyRetainedTarball fails closed when the recorded release-target agreem
       JSON.stringify({
         schema: "superbee.release-candidate.v1",
         target: "rehearsal-approve",
-        package: { name: "@holaxis/superbee-release-rehearsal" },
+        package: { name: "superbee-release-rehearsal" },
         tarball: { sha256: actualSha },
         build_identity: { artifact: { channel: "npm-package" } },
         agreement: { release_targets_sha256: "sha256:" + "0".repeat(64) },

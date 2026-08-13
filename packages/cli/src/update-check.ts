@@ -1,10 +1,10 @@
 export const UPDATE_CHECK_SCHEMA = "superbee.update-check.v1";
-export const UPDATE_CHECK_ENDPOINT = "https://registry.npmjs.org/%40holaxis%2Fsuperbee";
+export const UPDATE_CHECK_ENDPOINT = "https://registry.npmjs.org/superbee";
 export const UPDATE_CHECK_ACCEPT = "application/vnd.npm.install-v1+json";
 export const UPDATE_CHECK_TIMEOUT_MS = 2_000;
 export const UPDATE_CHECK_MAX_BYTES = 1_048_576;
 
-const PACKAGE_NAME = "@holaxis/superbee";
+const PACKAGE_NAME = "superbee";
 const MAX_METADATA_LENGTH = 4_096;
 const MAX_SEMVER_LENGTH = 256;
 

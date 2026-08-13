@@ -1006,7 +1006,7 @@ test("approval inspection verifies the successor package coordinate from candida
     const candidateBytes = Buffer.from(JSON.stringify({
       schema: "superbee.release-candidate.v1",
       target: "successor",
-      package: { name: "@holaxis/superbee" },
+      package: { name: "superbee" },
       tag: "v0.1.0-pre.11",
       version: "0.1.0-pre.11",
       tarball: { version: "0.1.0-pre.11", sha256: tarballSha, integrity: "sha512-c3VwZXJiZWU=" },
@@ -1028,7 +1028,7 @@ test("approval inspection verifies the successor package coordinate from candida
       if (command === "gh" && args.join(" ") === "api --hostname github.com user --jq .login") return "briand-ai\n";
       if (command === "gh" && args[0] === "auth") return "token\n";
       if (command === "npm" && args[0] === "view") {
-        assert.deepEqual(args, ["view", "@holaxis/superbee@0.1.0-pre.11", "dist", "--json"]);
+        assert.deepEqual(args, ["view", "superbee@0.1.0-pre.11", "dist", "--json"]);
         return JSON.stringify({ integrity: "sha512-c3VwZXJiZWU=" });
       }
       if (command === "ssh-keygen") return execFileSync(command, args, options);
@@ -1058,7 +1058,7 @@ test("approval inspection verifies the successor package coordinate from candida
       "--dry-run",
     ], { run, request, now: () => "2026-08-09T11:00:00Z" });
     assert.deepEqual(result.rows.map((row) => row.status), ["uploaded"]);
-    assert.ok(commands.some((item) => item.command === "npm" && item.args[1] === "@holaxis/superbee@0.1.0-pre.11"));
+    assert.ok(commands.some((item) => item.command === "npm" && item.args[1] === "superbee@0.1.0-pre.11"));
     assert.equal(requests.some((item) => item.method === "POST"), false, "dry-run still emits no upload");
   } finally {
     rmSync(h.root, { recursive: true, force: true });

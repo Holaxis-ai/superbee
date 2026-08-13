@@ -14,7 +14,7 @@ import {
 
 const VALID_BAKED = {
   schema: BUILD_IDENTITY_SCHEMA,
-  package: { name: "@holaxis/superbee", version: "0.1.0-pre.2" },
+  package: { name: "superbee", version: "0.1.0-pre.2" },
   source: { commit: "0123456789012345678901234567890123456789", dirty: false },
   artifact: { channel: "npm-package" },
   compatibility_contracts: { skill: 1, hook: 1, mcp: 1 },
@@ -47,7 +47,7 @@ test("an unbundled source run is explicitly local-dev with unknown source-contro
   const identity = staticBuildIdentity();
   assert.equal(identity.artifact.channel, "local-dev");
   assert.deepEqual(identity.source, { commit: null, dirty: null });
-  assert.equal(identity.package.name, "@holaxis/superbee");
+  assert.equal(identity.package.name, "superbee");
   assert.equal(Object.isFrozen(identity), true);
   assert.equal(Object.isFrozen(identity.package), true);
 });

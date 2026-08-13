@@ -39,7 +39,7 @@ import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 
 const INVOKE = "npx -y @holaxis/aslite";
-const DEFAULT_INVOKE = "npx -y @holaxis/superbee";
+const DEFAULT_INVOKE = "npx -y superbee";
 const BASE_DEPS = { binPath: () => "/bin/agentstate-lite", invocation: () => INVOKE };
 const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 

@@ -22,14 +22,14 @@ export const DEFAULT_RELEASE_TARGETS_PATH = path.join(repoRoot, "release", "targ
 export const DEFAULT_TARGETS = Object.freeze({
   successor: Object.freeze({
     id: "successor",
-    package: Object.freeze({ name: "@holaxis/superbee", directory: Object.freeze(["@holaxis", "superbee"]) }),
+    package: Object.freeze({ name: "superbee", directory: Object.freeze(["superbee"]) }),
     artifact: "dist/superbee.mjs",
     bins: Object.freeze({
       superbee: "dist/superbee.mjs",
       aslite: "dist/superbee.mjs",
       "agentstate-lite": "dist/superbee.mjs",
     }),
-    tarball_basename: "holaxis-superbee",
+    tarball_basename: "superbee",
     allow_production: true,
     workflow_contract: "full",
     expected_commands: Object.freeze(["superbee", "aslite", "agentstate-lite"]),
@@ -180,7 +180,7 @@ export function normalizeReleaseTargets(raw) {
     if (!target) throw new Error(`release tuple ${id} references missing target ${normalized.target}`);
     if (normalized.package !== target.package.name) throw new Error(`release tuple ${id} package ${normalized.package} != target ${target.package.name}`);
     if (normalized.production && !target.allow_production) throw new Error(`release tuple ${id} marks non-production target as production`);
-    if (!normalized.production && (normalized.package === "@holaxis/aslite" || normalized.package === "@holaxis/superbee")) {
+    if (!normalized.production && (normalized.package === "@holaxis/aslite" || normalized.package === "superbee")) {
       throw new Error(`rehearsal tuple ${id} must not target production package ${normalized.package}`);
     }
     allowedTuples[id] = normalized;

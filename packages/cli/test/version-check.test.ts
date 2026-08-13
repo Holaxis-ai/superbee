@@ -27,7 +27,7 @@ function result(status: UpdateCheckResult["status"] = "current"): UpdateCheckRes
     selected_version: unavailable ? null : selectedVersion,
     running_deprecated: status === "deprecated" ? "registry policy needs repair" : null,
     selected_integrity: unavailable ? null : `sha512-${Buffer.alloc(64).toString("base64")}`,
-    command: actionable ? `npm install --global @holaxis/superbee@${selectedVersion}` : null,
+    command: actionable ? `npm install --global superbee@${selectedVersion}` : null,
     verify: actionable
       ? [
           "superbee version --check",
@@ -159,7 +159,7 @@ test("version check argument and local-identity failures preserve the exit taxon
           ...buildIdentityEnvelope(),
           identity: {
             ...buildIdentityEnvelope().identity,
-            package: { name: "@holaxis/superbee", version: "not-semver" },
+            package: { name: "superbee", version: "not-semver" },
           },
         }),
       }),

@@ -59,7 +59,7 @@ test("secondary tag operations target the scoped package (argv + display)", () =
   assert.equal(removeSecondaryTagOperation({ tag: "next" }).command, "npm dist-tag rm @holaxis/aslite next");
   assert.equal(
     secondaryTagOperation({ target: "successor", version: "0.1.0-pre.11", tag: "next" }).command,
-    "npm dist-tag add @holaxis/superbee@0.1.0-pre.11 next",
+    "npm dist-tag add superbee@0.1.0-pre.11 next",
   );
 });
 
@@ -78,7 +78,7 @@ test("rollback restores the prior track and deprecates with the recovery command
     failedVersion: "0.1.0-pre.11",
     priorVersion: "0.1.0-pre.10",
   });
-  assert.equal(successor.argvs[1][2], "@holaxis/superbee@0.1.0-pre.11");
+  assert.equal(successor.argvs[1][2], "superbee@0.1.0-pre.11");
   assert.equal(successor.recovery_command, "npm install --global @holaxis/aslite@0.1.0-pre.10");
 });
 
@@ -96,7 +96,7 @@ test("promote and immutable release name the exact version/tag/release id", () =
   assert.equal(promoteOperation({ version: "0.1.0", tag: "latest" }).command, "npm dist-tag add @holaxis/aslite@0.1.0 latest");
   assert.equal(
     promoteOperation({ target: "successor", version: "0.1.0-pre.11", tag: "latest" }).command,
-    "npm dist-tag add @holaxis/superbee@0.1.0-pre.11 latest",
+    "npm dist-tag add superbee@0.1.0-pre.11 latest",
   );
   const rel = immutableReleaseOperations({ releaseId: "rel-42", tag: "v0.1.0" });
   assert.ok(rel.commands[0].includes("releases/rel-42"));

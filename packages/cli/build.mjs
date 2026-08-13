@@ -3,8 +3,8 @@
 // esbuild bundles src/index.ts together with its workspace source packages
 // (@superbee/core, @superbee/server, @superbee/ui-server,
 // @superbee/mcp-app) and every npm dependency into ONE ESM file with a
-// `#!/usr/bin/env node` shebang. The published `@holaxis/superbee` package therefore has NO runtime
-// dependencies and NO unresolved `workspace:*` links — `npx -y @holaxis/superbee …` runs with zero
+// `#!/usr/bin/env node` shebang. The published `superbee` package therefore has NO runtime
+// dependencies and NO unresolved `workspace:*` links — `npx -y superbee …` runs with zero
 // workspace resolution.
 //
 // The workspace deps are aliased to their SOURCE entry points so this build is self-contained:

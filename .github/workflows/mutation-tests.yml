@@ -68,7 +68,7 @@ jobs:
           TARGET: ${{ inputs.target }}
         run: |
           core='{"package":"core","workspace":"@superbee/core"}'
-          cli='{"package":"cli","workspace":"@holaxis/superbee"}'
+          cli='{"package":"cli","workspace":"superbee"}'
           boardgit='{"package":"board-git","workspace":"@superbee/board-git"}'
           case "${TARGET:-both}" in
             core) include="$core" ;;

@@ -130,7 +130,7 @@ function successfulCheck(
     selected_version: selected,
     running_deprecated: status === "deprecated" ? "unsupported" : null,
     selected_integrity: INTEGRITY,
-    command: actionable ? `npm install --global @holaxis/superbee@${selected}` : null,
+    command: actionable ? `npm install --global superbee@${selected}` : null,
     verify: actionable
       ? [
           "superbee version --check",
@@ -145,7 +145,7 @@ function successfulCheck(
 function cacheRecord(check: UpdateCheckResult = successfulCheck()): UpdateCacheRecord {
   return {
     schema: UPDATE_CACHE_SCHEMA,
-    package: "@holaxis/superbee",
+    package: "superbee",
     running_version: RUNNING,
     track: "latest",
     check,

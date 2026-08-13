@@ -34,7 +34,7 @@ const receipt = {
   ],
 };
 const manifest = {
-  name: "@holaxis/superbee",
+  name: "superbee",
   files: ["dist", "SKILL.md", "references"],
   bin: {
     superbee: "dist/superbee.mjs",
@@ -174,7 +174,7 @@ test("npm subprocesses discard inherited lifecycle, workspace, prefix, and bin s
       npm_execpath: "/npm-cli.js",
       npm_config_dry_run: "true",
       NPM_CONFIG_WORKSPACES: "false",
-      npm_config_workspace: "@holaxis/superbee",
+      npm_config_workspace: "superbee",
       npm_config_prefix: "/wrong-prefix",
       npm_config_bin_links: "false",
     },
@@ -294,7 +294,7 @@ test("the complete local proof survives an untracked file and poisoned npm lifec
           ...process.env,
           npm_config_dry_run: "true",
           npm_config_workspaces: "false",
-          npm_config_workspace: "@holaxis/superbee",
+          npm_config_workspace: "superbee",
           npm_config_prefix: path.join(tmpdir(), "wrong-agentstate-lite-prefix"),
           npm_config_bin_links: "false",
         },

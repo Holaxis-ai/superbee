@@ -82,7 +82,7 @@ test("the BUILT CLI exposes the exact complete envelope in JSON and TOON", () =>
   const envelope = runIdentity(cliBin);
   assert.deepEqual(Object.keys(envelope), ["identity", "drift"]);
   assert.equal(envelope.identity.schema, BUILD_IDENTITY_SCHEMA);
-  assert.deepEqual(envelope.identity.package, { name: "@holaxis/superbee", version: pkgVersion });
+  assert.deepEqual(envelope.identity.package, { name: "superbee", version: pkgVersion });
   assert.equal(envelope.identity.artifact.channel, "local-dev");
   assert.match(envelope.identity.artifact.sha256, /^sha256:[a-f0-9]{64}$/);
   assert.equal(envelope.identity.runtime.executable_path, cliBin);

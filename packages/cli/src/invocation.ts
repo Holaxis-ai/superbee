@@ -1,12 +1,12 @@
 // Resolve the running CLI's OWN invocation for emitted follow-up commands + the home-view identity.
 //
-// The CLI is a standalone, npm-publishable package (`@holaxis/superbee`; legacy bin aliases
+// The CLI is a standalone, npm-publishable package (`superbee`; legacy bin aliases
 // `aslite` / `agentstate-lite` stay supported). Per AXI §7/§10 a printed
 // follow-up command must be COPY-PASTE runnable and never a phantom path:
 //
 //   • cliInvocation() — the runnable command PREFIX for hints/help. If a managed bin name resolves on
 //     PATH to THIS executable, we emit the bare name (`superbee`, portable across installs);
-//     otherwise we fall back to `npx -y @holaxis/superbee` (the npm-first distribution form).
+//     otherwise we fall back to `npx -y superbee` (the npm-first distribution form).
 //     Never an absolute dist path.
 //   • binPath() — the home-collapsed ABSOLUTE path of the running executable, for the home view's
 //     `bin:` identity field (AXI §10: "identify the tool itself before the live data").
@@ -19,7 +19,7 @@ import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
 
 /** The npm package coordinate — the token used for the `npx -y <pkg>` fallback (bins stay in BIN_NAMES). */
-export const PACKAGE_NAME = "@holaxis/superbee";
+export const PACKAGE_NAME = "superbee";
 /** The bin names this package installs (see package.json `bin`); the first is preferred for hints. */
 export const BIN_NAMES = ["superbee", "aslite", "agentstate-lite"] as const;
 
@@ -95,7 +95,7 @@ export function managedBinNameOnPath(): string | undefined {
 
 /**
  * The runnable command prefix for emitted follow-ups: the bare bin name when this executable is on
- * PATH; otherwise `npx -y @holaxis/superbee`. Every `help:` field and success `help[]` entry is built
+ * PATH; otherwise `npx -y superbee`. Every `help:` field and success `help[]` entry is built
  * from this so a copy-pasted next step always runs the supported npm artifact.
  */
 export function cliInvocation(): string {
