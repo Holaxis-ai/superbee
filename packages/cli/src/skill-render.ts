@@ -48,6 +48,12 @@ function renderWorkspaceLocation(prefix: string): string[] {
   );
   lines.push("becomes — or stays — shared memory across clones and teammates. Three modes:");
   lines.push("");
+  lines.push("Before creating or publishing a bundle, record one explicit choice: **local-only** or **shared**.");
+  lines.push(
+    "Do not describe a project as synchronized or ask collaborators to rely on its board until the",
+  );
+  lines.push("shared choice has been established and verified on `origin/board`.");
+  lines.push("");
   lines.push(
     "- **A local-only board** — `init` creates a bundle that doesn't exist anywhere yet, and it",
   );
@@ -103,7 +109,8 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push("```sh");
   lines.push(`${prefix} sync                            # existing shared project — provisions the board; a local-only bundle reports its state`);
   lines.push(`${prefix} init --dir .agentstate-lite     # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one`);
-  lines.push(`${prefix} sync --establish                # optional — start sharing a local bundle's board with teammates`);
+  lines.push(`${prefix} sync --establish                # shared choice: publish the board once`);
+  lines.push(`git ls-remote --exit-code origin refs/heads/board  # verify the shared board exists`);
   lines.push("```");
   lines.push("");
   lines.push(
@@ -225,8 +232,11 @@ function renderTypicalFlow(prefix: string): string[] {
   lines.push(`${prefix} sync                          # existing project that shares a board — sets up AND pulls the shared board`);
   lines.push(`${prefix} init --dir .agentstate-lite   # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle`);
   lines.push("");
-  lines.push(`# Optional, after a greenfield init: start sharing this bundle's board with teammates`);
+  lines.push(`# Choose one explicitly after a greenfield init:`);
+  lines.push(`# local-only: record that the board stays local; do not call it synchronized`);
+  lines.push(`# shared: establish and verify the board before collaborators rely on it`);
   lines.push(`${prefix} sync --establish`);
+  lines.push(`git ls-remote --exit-code origin refs/heads/board`);
   lines.push("");
   lines.push(`# Everything after runs bare, from anywhere in the project tree`);
   lines.push(`# Create a complete context note (an OKF concept) for the next session in one command`);

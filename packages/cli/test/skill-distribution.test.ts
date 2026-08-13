@@ -233,6 +233,13 @@ test("the typical flow creates a complete Context Note in one command", () => {
   assert.doesNotMatch(renderedNpm, /doc update context-notes\/cycle-1/);
 });
 
+test("shared-board setup requires an explicit choice and verifies origin/board", () => {
+  assert.match(renderedNpm, /record one explicit choice: \*\*local-only\*\* or \*\*shared\*\*/);
+  assert.match(renderedNpm, /Do not describe a project as synchronized.*origin\/board/s);
+  assert.match(renderedNpm, /superbee sync --establish\n?git ls-remote --exit-code origin refs\/heads\/board/);
+  assert.match(renderedNpm, /local-only: record that the board stays local; do not call it synchronized/);
+});
+
 test("the npm skill carries the authenticated-remote access contract", () => {
   assert.match(renderedNpm, /## Remote bundle access \(--remote, serve\)/);
   assert.match(renderedNpm, /provide `SUPERBEE_API_KEY`/);

@@ -127,6 +127,10 @@ folder at the project root. Two verbs, two different jobs — `init` always crea
 bundle (solo use is first-class, nothing forces sharing); `sync` is how a project's board
 becomes — or stays — shared memory across clones and teammates. Three modes:
 
+Before creating or publishing a bundle, record one explicit choice: **local-only** or **shared**.
+Do not describe a project as synchronized or ask collaborators to rely on its board until the
+shared choice has been established and verified on `origin/board`.
+
 - **A local-only board** — `init` creates a bundle that doesn't exist anywhere yet, and it
   stays LOCAL until someone chooses to share it. This is a first-class mode, not a limbo:
   everything works offline and remote-free, and board changes stay on this machine. A bare
@@ -150,7 +154,8 @@ becomes — or stays — shared memory across clones and teammates. Three modes:
 ```sh
 superbee sync                            # existing shared project — provisions the board; a local-only bundle reports its state
 superbee init --dir .agentstate-lite     # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one
-superbee sync --establish                # optional — start sharing a local bundle's board with teammates
+superbee sync --establish                # shared choice: publish the board once
+git ls-remote --exit-code origin refs/heads/board  # verify the shared board exists
 ```
 
 That's the whole setup. The CLI discovers the conventional folder on its own (the way git
@@ -219,8 +224,11 @@ share this bundle? When the user's intent is ambiguous, ask rather than defaulti
 superbee sync                          # existing project that shares a board — sets up AND pulls the shared board
 superbee init --dir .agentstate-lite   # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle
 
-# Optional, after a greenfield init: start sharing this bundle's board with teammates
+# Choose one explicitly after a greenfield init:
+# local-only: record that the board stays local; do not call it synchronized
+# shared: establish and verify the board before collaborators rely on it
 superbee sync --establish
+git ls-remote --exit-code origin refs/heads/board
 
 # Everything after runs bare, from anywhere in the project tree
 # Create a complete context note (an OKF concept) for the next session in one command
