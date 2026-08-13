@@ -48,6 +48,7 @@
       },
       "tarball_basename": "holaxis-superbee-release-rehearsal",
       "allow_production": false,
+      "workflow_contract": "identity-only",
       "expected_commands": ["superbee-release-rehearsal"],
       "preferred_command": "superbee-release-rehearsal"
     },
@@ -62,6 +63,7 @@
       },
       "tarball_basename": "holaxis-superbee-release-rehearsal",
       "allow_production": false,
+      "workflow_contract": "identity-only",
       "expected_commands": ["superbee-release-rehearsal"],
       "preferred_command": "superbee-release-rehearsal"
     }

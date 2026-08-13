@@ -515,6 +515,27 @@ async function runInstalledProof(spec) {
       adjacent_package_version: manifest.version,
       version_mismatch: false,
     });
+
+    if (target.workflow_contract === "identity-only") {
+      return {
+        mode: spec.mode,
+        package: `${manifest.name}@${manifest.version}`,
+        files: contractReceipt.files.length,
+        bins: Object.keys(manifest.bin),
+        workflow: ["identity-only: install -> command presence -> version identity"],
+        identity: preferredIdentity,
+        tarball: {
+          path: meta.path ?? null,
+          filename: meta.filename,
+          sha256: meta.sha256 ?? (await fileSha256(tarball)),
+          shasum: meta.shasum,
+          integrity: meta.integrity,
+          size: meta.size,
+          unpacked_size: meta.unpackedSize,
+        },
+      };
+    }
+
     const discoverySnapshot = await snapshotTree(quickstartProject);
     const noBundleHome = parseJson(
       (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,

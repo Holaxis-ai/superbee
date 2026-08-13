@@ -31,6 +31,7 @@ export const DEFAULT_TARGETS = Object.freeze({
     }),
     tarball_basename: "holaxis-superbee",
     allow_production: true,
+    workflow_contract: "full",
     expected_commands: Object.freeze(["superbee", "aslite", "agentstate-lite"]),
     preferred_command: "superbee",
   }),
@@ -44,6 +45,7 @@ export const DEFAULT_TARGETS = Object.freeze({
     }),
     tarball_basename: "holaxis-aslite",
     allow_production: true,
+    workflow_contract: "full",
     expected_commands: Object.freeze(["aslite", "agentstate-lite"]),
     preferred_command: "aslite",
   }),
@@ -104,6 +106,7 @@ function normalizeTarget(raw, id) {
     bins: raw.bins,
     tarball_basename: raw.tarball_basename,
     allow_production: raw.allow_production === true,
+    workflow_contract: raw.workflow_contract ?? "full",
     expected_commands: raw.expected_commands,
     preferred_command: raw.preferred_command,
   };
@@ -131,6 +134,12 @@ function normalizeTarget(raw, id) {
   }
   if (typeof target.tarball_basename !== "string" || !TOKEN.test(target.tarball_basename)) {
     throw new Error(`release target ${id} has invalid tarball basename`);
+  }
+  if (!["full", "identity-only"].includes(target.workflow_contract)) {
+    throw new Error(`release target ${id} has invalid workflow contract`);
+  }
+  if (target.allow_production && target.workflow_contract !== "full") {
+    throw new Error(`production release target ${id} must use the full workflow contract`);
   }
   if (!Array.isArray(target.expected_commands) || !target.expected_commands.every((c) => typeof c === "string" && Object.hasOwn(target.bins, c))) {
     throw new Error(`release target ${id} has invalid expected command list`);
