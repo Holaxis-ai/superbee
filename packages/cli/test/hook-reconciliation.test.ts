@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -371,6 +371,55 @@ test("a foreign canonical OpenCode target blocks migration without deleting the 
 
     assert.equal(await readFile(oldPlugin, "utf8"), oldSource);
     assert.equal(await readFile(newPlugin, "utf8"), canonicalForeign);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("a canonical OpenCode symlink to the managed legacy plugin is refused without dangling the link", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-canonical-symlink-"));
+  const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+  const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
+  const oldSource = legacyOpenCodeSource("aslite");
+  try {
+    await mkdir(path.dirname(oldPlugin), { recursive: true });
+    await writeFile(oldPlugin, oldSource);
+    await symlink(path.basename(oldPlugin), newPlugin);
+
+    await assert.rejects(
+      () => hook(["install"], {
+        base,
+        commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+        stdout: () => {},
+      }),
+      CliError,
+    );
+
+    assert.equal((await lstat(newPlugin)).isSymbolicLink(), true);
+    assert.equal(await readFile(oldPlugin, "utf8"), oldSource);
+    assert.equal(await readFile(newPlugin, "utf8"), oldSource);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("a legacy OpenCode symlink is foreign: canonical install succeeds without changing its target", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-legacy-symlink-"));
+  const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+  const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
+  const external = path.join(base, "managed-looking-external.js");
+  const externalSource = legacyOpenCodeSource("aslite");
+  const program = "/workspace/superbee/packages/cli/dist/superbee.mjs";
+  try {
+    await mkdir(path.dirname(oldPlugin), { recursive: true });
+    await writeFile(external, externalSource);
+    await symlink(external, oldPlugin);
+
+    await hook(["install"], { base, commandBase: program, stdout: () => {} });
+
+    assert.equal((await lstat(oldPlugin)).isSymbolicLink(), true);
+    assert.equal(await readFile(external, "utf8"), externalSource);
+    assert.equal(await readFile(newPlugin, "utf8"), buildOpenCodePluginSource(program));
   } finally {
     await rm(base, { recursive: true, force: true });
   }

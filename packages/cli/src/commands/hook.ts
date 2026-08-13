@@ -518,7 +518,7 @@ export function readSettingsForInstall(
  * A non-link destination passes through verbatim (ancestor symlinks need no handling: the temp
  * lives in the same — possibly linked — directory, so rename resolves them identically).
  */
-function resolveWriteDestination(path: string): string {
+function resolveWriteDestination(path: string, followFinalSymlink: boolean): string {
   let isLink = false;
   try {
     isLink = lstatSync(path).isSymbolicLink();
@@ -526,6 +526,9 @@ function resolveWriteDestination(path: string): string {
     return path; // absent → create at the literal path
   }
   if (!isLink) return path;
+  if (!followFinalSymlink) {
+    throw new Error(`symlink at ${path} — refusing to replace a generated plugin through a link`);
+  }
   try {
     return realpathSync(path);
   } catch {
@@ -536,13 +539,18 @@ function resolveWriteDestination(path: string): string {
 /**
  * Atomic file write: temp file in the SAME directory + rename, so a concurrent reader sees either
  * the old bytes or the new bytes — never a torn/empty file (truncate-then-write's race window).
- * A symlinked destination is written through at its resolved target (see
- * {@link resolveWriteDestination}); when replacing an existing file its mode is preserved (a
+ * A symlinked destination is written through at its resolved target by default (see
+ * {@link resolveWriteDestination}); generated plugin callers opt out because their ownership is
+ * the literal directory entry, not a dotfile-manager target. When replacing an existing file its mode is preserved (a
  * user's 0600 settings must not widen to the default umask); the temp is cleaned up on ANY
  * failure (write or rename).
  */
-export function atomicWriteFileSync(path: string, content: string | Uint8Array): void {
-  const destination = resolveWriteDestination(path);
+export function atomicWriteFileSync(
+  path: string,
+  content: string | Uint8Array,
+  options: { followFinalSymlink?: boolean } = {},
+): void {
+  const destination = resolveWriteDestination(path, options.followFinalSymlink ?? true);
   mkdirSync(dirname(destination), { recursive: true });
   const mode = existsSync(destination) ? statSync(destination).mode & 0o7777 : undefined;
   const tmp = `${destination}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -734,8 +742,23 @@ function generatedConstant(source: string, name: string): unknown {
 
 /** Exact-source classifier: a marker or familiar substring alone never authorizes mutation. */
 function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCodeHookStatus {
-  if (!existsSync(path)) {
+  let entry: ReturnType<typeof lstatSync>;
+  try {
+    entry = lstatSync(path);
+  } catch {
     return { installed: false, compatibility: { state: "absent", reason: "plugin file is absent" } };
+  }
+  if (entry.isSymbolicLink()) {
+    return {
+      installed: false,
+      compatibility: {
+        state: "unmanaged",
+        reason: "plugin path is a symlink; generated-plugin ownership requires a regular file",
+      },
+    };
+  }
+  if (!entry.isFile()) {
+    return { installed: false, compatibility: { state: "unmanaged", reason: "plugin path is not a regular file" } };
   }
   let source: string;
   try {
@@ -1119,7 +1142,9 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       if (current !== undefined && currentStatus.compatibility.state === "unmanaged") {
         refusals.push(`${collapseHomeDirectory(targets.opencodePlugin)}: refusing to overwrite unmanaged OpenCode plugin`);
       } else {
-        if (current !== next) atomicWriteFileSync(targets.opencodePlugin, next);
+        if (current !== next) {
+          atomicWriteFileSync(targets.opencodePlugin, next, { followFinalSymlink: false });
+        }
         const legacyStatus = readOpenCodeHookStatus(targets.legacyOpencodePlugin);
         if (legacyStatus.installed) {
           rmSync(targets.legacyOpencodePlugin, { force: true });
