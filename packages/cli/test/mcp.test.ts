@@ -29,8 +29,8 @@ test("mcp help is offline and does not open a bundle", async () => {
   });
   assert.equal(output, MCP_USAGE);
   assert.equal(opened, false);
-  assert.match(output, /npm install -g @holaxis\/aslite/);
-  assert.match(output, /command `aslite`.*argument `mcp`/s);
+  assert.match(output, /npm install -g superbee/);
+  assert.match(output, /command `superbee`.*argument `mcp`/s);
   assert.match(output, /does not scan or rewrite host MCP configuration/);
 });
 

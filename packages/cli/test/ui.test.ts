@@ -44,7 +44,7 @@ test("ui --help: prints usage and does not boot a server", async () => {
     waitForShutdown: () => Promise.resolve(),
     openBrowser: () => {},
   });
-  assert.match(out, /agentstate-lite ui/);
+  assert.match(out, /superbee ui/);
   assert.equal(booted, false);
 });
 
