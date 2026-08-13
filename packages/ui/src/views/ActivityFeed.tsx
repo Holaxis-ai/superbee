@@ -152,7 +152,7 @@ export function ActivityFeed() {
   if (rows.length === 0) {
     return (
       <p className="feed-empty">
-        You don’t have any activity in this bundle yet. Think of this feed like aslite’s pulse; it shows you who is
+        You don’t have any activity in this bundle yet. Think of this feed like Superbee's pulse; it shows you who is
         working on what. For example it might show you that a task was created by a Claude agent on behalf of a human
         user, or that a Codex agent wrote up how a part of the system works.
       </p>

@@ -186,7 +186,7 @@ test("serve --help: prints usage and does not boot a server", async () => {
     },
     waitForShutdown: () => Promise.resolve(),
   });
-  assert.match(out, /agentstate-lite serve/);
+  assert.match(out, /superbee serve/);
   assert.equal(booted, false);
 });
 

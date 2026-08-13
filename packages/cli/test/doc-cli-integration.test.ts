@@ -585,10 +585,10 @@ test("built CLI: `doc read --help`'s documented safe-edit-cycle example, extract
 
     // Extract the exact two example lines (never a hand-copied literal — a drift in the source
     // string would change what this regex matches, and thus what actually runs).
-    const readLineMatch = helpText.match(/^ {2,}(agentstate-lite doc read <id> --body-out \S+ --json)\s*$/m);
+    const readLineMatch = helpText.match(/^ {2,}(superbee doc read <id> --body-out \S+ --json)\s*$/m);
     assert.ok(readLineMatch, `expected a 'doc read <id> --body-out ... --json' example line in:\n${helpText}`);
     const updateLineMatch = helpText.match(
-      /^ {2,}(agentstate-lite doc update <id> --body-file \S+) \\\n\s*(--expected-version <version>)\s*$/m,
+      /^ {2,}(superbee doc update <id> --body-file \S+) \\\n\s*(--expected-version <version>)\s*$/m,
     );
     assert.ok(updateLineMatch, `expected a two-line 'doc update <id> --body-file ... --expected-version <version>' example in:\n${helpText}`);
 

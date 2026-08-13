@@ -1,4 +1,4 @@
-// `agentstate-lite blobs [--prefix <p>] [--limit <n>]` — enumerate the store's blob (non-document) keys.
+// `superbee blobs [--prefix <p>] [--limit <n>]` — enumerate the store's blob (non-document) keys.
 //
 // Blobs are opaque byte artifacts (generated HTML, images, binary assets) addressed by key — the
 // non-'.md' half of the store that 'promote'/'pull'/'delete --doc-key' operate on ONE key at a time.
@@ -14,10 +14,10 @@ import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 
-export const BLOBS_USAGE = `agentstate-lite blobs — list the store's blob (non-document) keys
+export const BLOBS_USAGE = `superbee blobs — list the store's blob (non-document) keys
 
 Usage:
-  agentstate-lite blobs [--prefix <p>] [--limit <n>] [--dir <path> | --remote <url>]
+  superbee blobs [--prefix <p>] [--limit <n>] [--dir <path> | --remote <url>]
 
 Blobs are opaque byte artifacts (generated HTML, images, …) addressed by key — the non-'.md' half
 of the store that 'promote'/'pull'/'delete --doc-key' operate on individually. This lists their

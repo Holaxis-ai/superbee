@@ -139,8 +139,10 @@ test("repository inventory is deterministic and has no unclassified legacy liter
 test("repository inventory includes tracked root files, including the dev shim and dotfiles", async () => {
   const inventory = await generateRenameLiteralInventory();
   const rows = inventory.matches.map((row) => `${row.file}:${row.literal}`);
-  assert.ok(rows.includes("aslite:aslite"), "dev shim name must be inventoried");
-  assert.ok(rows.includes("aslite:agentstate-lite"), "dev shim dist target must be inventoried");
+  const legacyShim = await readFile(new URL("../aslite", import.meta.url), "utf8");
+  assert.match(legacyShim, /dist\/superbee\.mjs/, "legacy dev shim must route to the Superbee artifact");
+  const superbeeShim = await readFile(new URL("../superbee", import.meta.url), "utf8");
+  assert.match(superbeeShim, /dist\/superbee\.mjs/, "canonical dev shim must target the Superbee artifact");
   assert.ok(rows.includes(".gitignore:.agentstate.json"), "root binding ignore entry must be inventoried");
   assert.ok(rows.includes(".gitignore:.agentstate-lite"), "root bundle ignore entry must be inventoried");
   assert.ok(rows.includes(".gitattributes:agentstate-lite"), "root generated-file metadata must be inventoried");

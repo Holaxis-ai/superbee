@@ -198,9 +198,9 @@ const renderedNpm = renderNpm();
 
 test("the npm skill teaches only the bounded stable MCP PATH contract", () => {
   assert.match(renderedNpm, /## Stable MCP launch/);
-  assert.match(renderedNpm, /npm install -g @holaxis\/aslite/);
-  assert.match(renderedNpm, /command `aslite`.*argument `mcp`/s);
-  assert.match(renderedNpm, /`aslite version --json`/);
+  assert.match(renderedNpm, /npm install -g superbee/);
+  assert.match(renderedNpm, /command `superbee`.*argument `mcp`/s);
+  assert.match(renderedNpm, /`superbee version --json`/);
   assert.match(renderedNpm, /does not scan or rewrite host MCP configuration/);
 });
 
@@ -290,16 +290,14 @@ test("no phantom pointers — every $REFS/… path in the renderedNpm SKILL.md r
 // carries no cache-discovery resolver, so the orphan/phantom sweep runs over that bounded form.
 // ---------------------------------------------------------------------------------------------
 
-test("npm: bare-aslite channel identity — no npx examples, no retired coordinate, no marketplace-cache resolver", () => {
-  // Skill IDENTITY stays the bare `aslite` bin; only install/npx text carries the scoped coordinate.
-  assert.match(renderedNpm, /^---\nname: aslite\n/);
-  // Examples run the bare bin; `npx -y @holaxis/aslite` survives only as the explicit no-install fallback.
-  assert.match(renderedNpm, /## If `aslite` is not on PATH/);
-  assert.match(renderedNpm, /npm install -g @holaxis\/aslite/);
-  assert.match(renderedNpm, /npx -y @holaxis\/aslite/);
+test("npm: Superbee is the canonical skill and npm channel identity", () => {
+  assert.match(renderedNpm, /^---\nname: superbee\n/);
+  assert.match(renderedNpm, /npm install -g superbee/);
+  assert.match(renderedNpm, /npx -y superbee/);
+  assert.match(renderedNpm, /legacy aliases `aslite` and `agentstate-lite`/);
   assert.ok(!renderedNpm.includes("npx -y agentstate-lite"), "retired npm coordinate must not appear");
   assert.ok(!renderedNpm.includes("npx -y aslite"), "retired unscoped npx coordinate must not appear");
-  assert.ok(!renderedNpm.includes("npm install -g aslite"), "retired unscoped install coordinate must not appear");
+  assert.ok(!renderedNpm.includes("@holaxis/aslite"), "legacy package coordinate must not be taught as current");
   assert.ok(!renderedNpm.includes("plugins/cache"), "npm channel must not teach marketplace-cache discovery");
   assert.ok(!renderedNpm.includes('ASLITE="$('), "npm channel must not carry the skill-channel resolver");
 });

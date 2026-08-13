@@ -113,7 +113,7 @@ function resultMessage(result: unknown): string {
   if (result.status === "committed") return "The confirmed change was committed.";
   if (result.status === "cancelled") return "The proposed change was cancelled.";
   if (result.status === "conflict") return "The document changed after this View loaded. Refresh before trying again.";
-  return `AgentState action: ${result.status}.`;
+  return `Superbee action: ${result.status}.`;
 }
 
 function scalarLabel(value: unknown): string {
@@ -358,7 +358,7 @@ function renderResult(result: CallToolResult): void {
   if (result.isError === true) {
     statusEl.dataset.kind = "error";
     statusEl.textContent =
-      firstResultText(result) ?? "The AgentState server reported an error for this View.";
+      firstResultText(result) ?? "The Superbee server reported an error for this View.";
     clearFrameDocument();
     return;
   }
@@ -612,7 +612,7 @@ async function prepareActiveAction(
         result.confirmation,
       );
       statusEl.dataset.kind = "ready";
-      statusEl.textContent = "Review the trusted AgentState confirmation.";
+      statusEl.textContent = "Review the trusted Superbee confirmation.";
       return;
     }
     statusEl.dataset.kind = result?.status === "conflict" ? "error" : "ready";
@@ -940,7 +940,7 @@ frame.addEventListener("load", () => {
   retirePayload();
   statusEl.dataset.kind = "error";
   statusEl.textContent =
-    "This View navigated away from its approved document, so AgentState closed the launch. Reopen it to continue.";
+    "This View navigated away from its approved document, so Superbee closed the launch. Reopen it to continue.";
 });
 
 window.addEventListener("message", (event) => {
@@ -1027,7 +1027,7 @@ document.addEventListener("visibilitychange", () => {
 
 void (async () => {
   app = new App(
-    { name: "AgentState View Host", version: "0.0.1" },
+    { name: "Superbee View Host", version: "0.0.1" },
     { availableDisplayModes: ["inline", "fullscreen"] },
   );
   app.ontoolresult = renderResult;

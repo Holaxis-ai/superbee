@@ -1,7 +1,3 @@
 #!/bin/sh
-# Dev-repo convenience shim for the freshly-built CLI (see designs/dev-cli-invocation).
-# Runs the LOCAL build at packages/cli/dist so in-repo work exercises local changes, and gives a
-# short, shell-agnostic invocation (`./aslite doc write ...`) so no one reaches for a fragile
-# `B="node packages/cli/dist/agentstate-lite.mjs"` alias — which breaks in zsh (no word-splitting).
-# NOT shipped: the package allowlist is `files: ["dist"]`, so this repo-root file never enters the tarball.
-exec node "$(dirname "$0")/packages/cli/dist/agentstate-lite.mjs" "$@"
+# Compatibility wrapper for the former in-repo command. New development guidance uses `./superbee`.
+exec node "$(dirname "$0")/packages/cli/dist/superbee.mjs" "$@"

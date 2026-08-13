@@ -1,4 +1,4 @@
-// `agentstate-lite promote <file> --doc-key <key>` — the out-of-band byte-IN channel: move a local
+// `superbee promote <file> --doc-key <key>` — the out-of-band byte-IN channel: move a local
 // file's bytes into the store WITHOUT the content ever entering the model context window (the
 // reverse of `doc read --out`; the write-side counterpart to `pull`).
 //
@@ -48,10 +48,10 @@ import { cliInvocation } from "../invocation.js";
 import { defaultTimestampAndValidateKind } from "../kind-write.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 
-export const PROMOTE_USAGE = `agentstate-lite promote — move a local file's bytes into the store (the reverse of 'doc read --out')
+export const PROMOTE_USAGE = `superbee promote — move a local file's bytes into the store (the reverse of 'doc read --out')
 
 Usage:
-  agentstate-lite promote <file> --doc-key <key> [options]
+  superbee promote <file> --doc-key <key> [options]
 
 Routes by the --doc-key's target (checked case-insensitively):
   A key ending '.md' is a DOC: the file is parsed as an OKF concept (YAML frontmatter + markdown

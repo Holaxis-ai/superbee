@@ -1,5 +1,5 @@
 /**
- * `agentstate-lite` zero-arg home view — the content-first dashboard (AXI §8) + the offline
+ * `superbee` zero-arg home view — the content-first dashboard (AXI §8) + the offline
  * fallback (AXI §7/§10). Mirrors `kinds.test.ts`'s/`status.test.ts`'s in-process, dep-injected
  * pattern for the fast, mockable cases (A1.1-A1.5, A1.7-A1.9) and adds a real-filesystem pair
  * (A1.6) that exercises the DEFAULT `summarizeBundle` end to end, offline, directory-scoped.
@@ -38,9 +38,9 @@ import {
 import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 
-const INVOKE = "npx -y @holaxis/aslite";
+const INVOKE = "npx -y superbee";
 const DEFAULT_INVOKE = "npx -y superbee";
-const BASE_DEPS = { binPath: () => "/bin/agentstate-lite", invocation: () => INVOKE };
+const BASE_DEPS = { binPath: () => "/bin/superbee", invocation: () => INVOKE };
 const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
 function row(id: string, timestamp: string): HomeRow {
@@ -71,7 +71,7 @@ const EMPTY_BUNDLE: BundleSummary = {
 };
 
 async function tempDir(): Promise<string> {
-  return mkdtemp(path.join(tmpdir(), "agentstate-lite-home-test-"));
+  return mkdtemp(path.join(tmpdir(), "superbee-home-test-"));
 }
 
 test("A1.1 dashboard: bundle present, docs>0 — bundle block content", () => {
@@ -94,7 +94,7 @@ test("A1.2 ordering: identity -> bundle -> commands (live content before the man
   const summary = summaryWithDocs([row("notes/a", "2026-07-02T00:00:00.000Z")]);
   const view = buildHomeView(BASE_DEPS, summary);
   const keys = Object.keys(view);
-  assert.equal(keys[0], "agentstate-lite");
+  assert.equal(keys[0], "superbee");
   assert.equal(keys[1], "bundle");
   assert.ok(keys.indexOf("commands") > keys.indexOf("bundle"));
 });
@@ -115,7 +115,7 @@ test("A1.3 no-bundle fallback: no bundle block, getting_started hint, commands p
   // home() itself must resolve (never reject) with a null summarizer.
   let out = "";
   await home([], {
-    binPath: () => "/bin/agentstate-lite",
+    binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
     stdout: (s) => (out += s),
     summarizeBundle: async () => null,
@@ -127,7 +127,7 @@ test("A1.3b no-bundle --dir fallback creates in the explicit project's conventio
   let out = "";
   const selected = "/tmp/selected bundle";
   await home(["--dir", selected, "--json"], {
-    binPath: () => "/bin/agentstate-lite",
+    binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
     stdout: (s) => (out += s),
     summarizeBundle: async () => null,
@@ -147,25 +147,25 @@ test("A1.3b no-bundle --dir fallback creates in the explicit project's conventio
 
 test("home --json is honored (renders valid JSON, not silently ignored TOON)", async () => {
   let toon = "";
-  await home([], { binPath: () => "/bin/agentstate-lite", invocation: () => INVOKE, stdout: (s) => (toon += s), summarizeBundle: async () => null });
+  await home([], { binPath: () => "/bin/superbee", invocation: () => INVOKE, stdout: (s) => (toon += s), summarizeBundle: async () => null });
 
   let jsonOut = "";
-  await home(["--json"], { binPath: () => "/bin/agentstate-lite", invocation: () => INVOKE, stdout: (s) => (jsonOut += s), summarizeBundle: async () => null });
+  await home(["--json"], { binPath: () => "/bin/superbee", invocation: () => INVOKE, stdout: (s) => (jsonOut += s), summarizeBundle: async () => null });
 
   // --json actually changes the format (was previously declared-but-ignored) and parses as JSON.
   assert.notEqual(jsonOut, toon);
   const parsed = JSON.parse(jsonOut) as Record<string, unknown>;
-  assert.ok(parsed["agentstate-lite"], "the identity header survives into the JSON view");
-  const identity = parsed["agentstate-lite"] as Record<string, unknown>;
+  assert.ok(parsed.superbee, "the identity header survives into the JSON view");
+  const identity = parsed.superbee as Record<string, unknown>;
   assert.equal(identity.version, cliVersion());
   assert.equal(identity.channel, "local-dev");
-  assert.equal(identity.bin, "/bin/agentstate-lite");
+  assert.equal(identity.bin, "/bin/superbee");
 });
 
 test("workspace catalog orientation: non-empty only, minimal fields, before command reference", async () => {
   let out = "";
   await home(["--json"], {
-    binPath: () => "/bin/agentstate-lite",
+    binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
     stdout: (s) => (out += s),
     summarizeBundle: async () => null,
@@ -192,7 +192,7 @@ test("workspace catalog orientation: non-empty only, minimal fields, before comm
 
   out = "";
   await home(["--json"], {
-    binPath: () => "/bin/agentstate-lite",
+    binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
     stdout: (s) => (out += s),
     summarizeBundle: async () => null,
@@ -208,7 +208,7 @@ test("workspace catalog orientation: caps and sorts labels with full-list guidan
   let out = "";
   const labels = Array.from({ length: 18 }, (_, index) => `workspace-${String(17 - index).padStart(2, "0")}`);
   await home(["--json"], {
-    binPath: () => "/bin/agentstate-lite",
+    binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
     stdout: (s) => (out += s),
     summarizeBundle: async () => null,
@@ -231,7 +231,7 @@ test("workspace catalog orientation: caps and sorts labels with full-list guidan
 test("workspace catalog orientation: loader failure is visible but never fails home", async () => {
   let out = "";
   await home(["--json"], {
-    binPath: () => "/bin/agentstate-lite",
+    binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
     stdout: (s) => (out += s),
     summarizeBundle: async () => null,
@@ -255,7 +255,7 @@ test("workspace catalog orientation: a stalled injected loader cannot stall home
   let out = "";
   const startedAt = Date.now();
   await home(["--json"], {
-    binPath: () => "/bin/agentstate-lite",
+    binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
     stdout: (s) => (out += s),
     summarizeBundle: async () => null,
@@ -344,7 +344,7 @@ test("A1.5 bundle-read-error -> offline fallback, home() still resolves (never r
   let threw = false;
   try {
     await home([], {
-      binPath: () => "/bin/agentstate-lite",
+      binPath: () => "/bin/superbee",
       invocation: () => INVOKE,
       stdout: (s) => (out += s),
       summarizeBundle: async () => {

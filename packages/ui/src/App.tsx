@@ -36,7 +36,7 @@ export function App() {
       <header className="app-header">
         <BrandMark />
         <button type="button" className="app-title" onClick={() => navigate({ view: "launcher" })}>
-          agentstate-lite
+          Superbee
         </button>
       </header>
       <main>{view}</main>

@@ -202,7 +202,7 @@ test("delete: a stray positional is a USAGE error, not silently absorbed", async
 test("delete --help: prints usage and does not touch a bundle", async () => {
   let out = "";
   await deleteCommand(["--help"], { stdout: (s) => (out += s) });
-  assert.match(out, /agentstate-lite delete/);
+  assert.match(out, /superbee delete/);
 });
 
 // ── --remote parity ────────────────────────────────────────────────────────

@@ -160,9 +160,9 @@ test("stage summary carries the bounded stable MCP launch migration guidance", (
   });
   const summary = renderReceiptMarkdown(built);
   assert.equal((summary.match(/## Stable MCP launch/g) ?? []).length, 1);
-  assert.match(summary, /npm install -g @holaxis\/aslite/);
-  assert.match(summary, /host command `aslite` with first argument `mcp`/);
-  assert.match(summary, /aslite version --json/);
+  assert.match(summary, /npm install -g superbee/);
+  assert.match(summary, /host command `superbee` with first argument `mcp`/);
+  assert.match(summary, /superbee version --json/);
   assert.match(summary, /does not scan or rewrite host MCP configuration/);
   assert.ok(summary.endsWith(STABLE_MCP_LAUNCH_GUIDANCE), "receipt consumes the shared guidance authority exactly");
   assert.ok(!Object.hasOwn(built.receipt, "guidance"), "immutable receipt schema remains unchanged");

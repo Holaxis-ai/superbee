@@ -511,7 +511,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
       {confirmation && (
         <div className="action-confirmation-backdrop" role="presentation">
           <section className="action-confirmation" role="dialog" aria-modal="true" aria-labelledby="action-confirmation-title">
-            <p className="action-confirmation-eyebrow">AgentState confirmation</p>
+            <p className="action-confirmation-eyebrow">Superbee confirmation</p>
             <h2 id="action-confirmation-title">Apply this bundle change?</h2>
             <p>
               View <code>{confirmation.source.id}</code> proposes changing <strong>{confirmation.target.title}</strong>.

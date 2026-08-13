@@ -8,10 +8,10 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
 
-export const VIEW_USAGE = `agentstate-lite view — inspect durable bundle Views
+export const VIEW_USAGE = `superbee view — inspect durable bundle Views
 
 Usage:
-  agentstate-lite view list [--limit <n>] [--dir <path> | --remote <url>]
+  superbee view list [--limit <n>] [--dir <path> | --remote <url>]
 
 Lists the same registered durable Views used by the web launcher and MCP list_views tool. Rows are
 sorted by stable View id and include the declared access and optional presentation hint.

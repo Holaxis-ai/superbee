@@ -1,4 +1,4 @@
-// `agentstate-lite artifact create <file> --title <title>` — the ONE command that owns the
+// `superbee artifact create <file> --title <title>` — the ONE command that owns the
 // produced-output sequence (designs/artifact-runtime Unit 1): derive a collision-safe id, promote
 // the bytes to `artifacts/<id>.html` (capturing the version in-process — the agent never sees a
 // hash), and create-only the `type: Artifact` record with `entry` + `entry_version` + `status:
@@ -30,10 +30,10 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
 
-export const ARTIFACT_USAGE = `agentstate-lite artifact — produced outputs you share with a human (HTML today)
+export const ARTIFACT_USAGE = `superbee artifact — produced outputs you share with a human (HTML today)
 
 Usage:
-  agentstate-lite artifact create <file> --title <title> [options]
+  superbee artifact create <file> --title <title> [options]
 
 'create' owns the whole sequence: it promotes <file>'s bytes under artifacts/, captures the version,
 derives a collision-safe id from the title, and writes the type:Artifact record (entry, entry_version,

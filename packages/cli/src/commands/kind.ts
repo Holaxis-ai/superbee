@@ -1,4 +1,4 @@
-// `agentstate-lite kind field "<Kind>" <add|remove> <name> …` — EDIT a kind convention's declared
+// `superbee kind field "<Kind>" <add|remove> <name> …` — EDIT a kind convention's declared
 // schema (add/remove a field, restrict it to an enum). The plural `kinds` command LISTS what a bundle
 // declares; this SINGULAR `kind` command MUTATES one convention doc — the same plural-lists /
 // singular-mutates split as `recipes`/`recipe`.
@@ -24,11 +24,11 @@ import { mutateDoc } from "../mutate.js";
 /** The core parser owns the one authoritative set of field names reserved by mutation surfaces. */
 const RESERVED_FIELD_NAMES = new Set<string>(RESERVED_KIND_FIELD_NAMES);
 
-export const KIND_USAGE = `agentstate-lite kind — edit a bundle's kind conventions (a kind's schema)
+export const KIND_USAGE = `superbee kind — edit a bundle's kind conventions (a kind's schema)
 
 Usage:
-  agentstate-lite kind field "<Kind>" add <name> [--required] [--values <a,b,c>] [options]
-  agentstate-lite kind field "<Kind>" remove <name> [options]
+  superbee kind field "<Kind>" add <name> [--required] [--values <a,b,c>] [options]
+  superbee kind field "<Kind>" remove <name> [options]
 
 Adds or removes a DECLARED field on the '<Kind>' kind's governing convention doc. The plural
 'kinds' command LISTS what a bundle declares; this singular 'kind' command EDITS one (mirroring

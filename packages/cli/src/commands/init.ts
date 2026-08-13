@@ -1,4 +1,4 @@
-// `agentstate-lite init [--dir <path>] [--okf-version <v>]` — create (or open) an OKF knowledge bundle.
+// `superbee init [--dir <path>] [--okf-version <v>]` — create (or open) an OKF knowledge bundle.
 //
 // Thin wrapper over core `initBundle(root, { okfVersion })`: creates the directory and a root
 // `index.md` carrying the `okf_version` frontmatter (the sole place OKF permits index.md frontmatter).
@@ -18,10 +18,10 @@ import { cliInvocation, shellArg } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
 import { resolveRecipe, DEFAULT_RECIPE_REF } from "../recipe-source.js";
 
-export const INIT_USAGE = `agentstate-lite init — create (or open) an OKF knowledge bundle
+export const INIT_USAGE = `superbee init — create (or open) an OKF knowledge bundle
 
 Usage:
-  agentstate-lite init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]
+  superbee init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]
 
 Options:
   --dir <path>            Directory to init the bundle in (default: the current directory)
@@ -29,7 +29,7 @@ Options:
                            other versions remain readable
   --recipe <name-or-path> Apply a recipe on create (default: context-notes; 'none' for a bare
                            bundle) — a built-in name or a path to a recipe folder; see
-                           'agentstate-lite recipes' to list built-ins
+                           'superbee recipes' to list built-ins
   --create-only           Require a genuinely NEW workspace: refuse before publication when
                            the target is already a bundle, is non-empty or a symlink, sits inside
                            an enclosing bundle or bound project workspace, or is created

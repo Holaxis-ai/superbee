@@ -1,4 +1,4 @@
-// `agentstate-lite link add|show` — cross-links and derived backlinks.
+// `superbee link add|show` — cross-links and derived backlinks.
 //
 // OKF cross-links are STANDARD markdown links in a concept's body (never wikilinks); backlinks are
 // DERIVED by reversing the resolved link graph, never stored. `link add <from> <to>` appends a
@@ -69,22 +69,22 @@ const LINK_COMMON_OPTIONS = `Common options:
   -h, --help           Show this help`;
 
 /** Family index for bare `link`; each subcommand owns its focused help below. */
-export const LINK_USAGE = `agentstate-lite link — add a cross-link, show a concept's links + backlinks, or query the bundle's whole edge graph
+export const LINK_USAGE = `superbee link — add a cross-link, show a concept's links + backlinks, or query the bundle's whole edge graph
 
 Usage:
-  agentstate-lite link add  <from> <to> [options]   Add a cross-link (idempotent)
-  agentstate-lite link show <id> [options]          Show a concept's outbound links + derived backlinks
-  agentstate-lite link list [options]               Query the whole bundle's derived edge list, filtered
+  superbee link add  <from> <to> [options]   Add a cross-link (idempotent)
+  superbee link show <id> [options]          Show a concept's outbound links + derived backlinks
+  superbee link list [options]               Query the whole bundle's derived edge list, filtered
 
-Run 'agentstate-lite link <verb> --help' for a verb's full options.
+Run 'superbee link <verb> --help' for a verb's full options.
 
 ${LINK_COMMON_OPTIONS}
 `;
 
-export const LINK_ADD_USAGE = `agentstate-lite link add — append a cross-link from one concept to another (idempotent)
+export const LINK_ADD_USAGE = `superbee link add — append a cross-link from one concept to another (idempotent)
 
 Usage:
-  agentstate-lite link add <from> <to> [--text <t>] [--actor <name>] [options]
+  superbee link add <from> <to> [--text <t>] [--actor <name>] [options]
 
 Idempotent: re-adding the same target with the same exact display text is a no-op — exit 0,
 changed:false, no duplicate link, no timestamp refresh. Different text to the same target is a
@@ -112,14 +112,14 @@ Options:
 ${LINK_COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite link add tasks/review tasks/spec --text "depends on"
-  agentstate-lite link show tasks/review
+  superbee link add tasks/review tasks/spec --text "depends on"
+  superbee link show tasks/review
 `;
 
-export const LINK_SHOW_USAGE = `agentstate-lite link show — show a concept's outbound links and derived backlinks
+export const LINK_SHOW_USAGE = `superbee link show — show a concept's outbound links and derived backlinks
 
 Usage:
-  agentstate-lite link show <id> [--limit <n>] [--text <t>] [options]
+  superbee link show <id> [--limit <n>] [--text <t>] [options]
 
 Reports the concept's outbound links (core 'parseLinks') and its "cited by" backlinks (derived by
 reversing the resolved link graph, never stored — core 'backlinks'), each row carrying the citing/
@@ -137,14 +137,14 @@ Options:
 ${LINK_COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite link show tasks/review
-  agentstate-lite link show tasks/review --text "depends on"
+  superbee link show tasks/review
+  superbee link show tasks/review --text "depends on"
 `;
 
-export const LINK_LIST_USAGE = `agentstate-lite link list — query the whole bundle's derived edge list, filtered
+export const LINK_LIST_USAGE = `superbee link list — query the whole bundle's derived edge list, filtered
 
 Usage:
-  agentstate-lite link list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>] [options]
+  superbee link list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>] [options]
 
 Queries the WHOLE bundle's derived edge list (the same edges 'link show' computes per-concept),
 filtered — the atom a blast-radius/containment/ontology question reduces to. --from/--to each
@@ -165,8 +165,8 @@ Options:
 ${LINK_COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite link list --from tasks/
-  agentstate-lite link list --to tasks/review --text "depends on"
+  superbee link list --from tasks/
+  superbee link list --to tasks/review --text "depends on"
 `;
 
 /** Bounded compare-and-swap retry budget for `link add` (a concurrent writer moved the source doc). */

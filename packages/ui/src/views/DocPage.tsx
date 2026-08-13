@@ -161,7 +161,7 @@ export function DocPage({ docId }: { docId: string }) {
         {rendered.bounded && (
           <p className="doc-bounded-note">
             This doc is large — the view above is truncated. The full content is in the bundle
-            (read it with <code>aslite doc read {doc.id}</code>).
+            (read it with <code>superbee doc read {doc.id}</code>).
           </p>
         )}
         {/* Outbound edges render inline in the body above (markdown.tsx). Only "Cited by" —

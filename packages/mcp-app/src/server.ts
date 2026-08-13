@@ -128,7 +128,7 @@ function decodeViewCursor(cursor: string | undefined): string | undefined {
   try {
     value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
   } catch {
-    throw new Error("cursor is not a valid AgentState View catalog cursor");
+    throw new Error("cursor is not a valid Superbee View catalog cursor");
   }
   if (
     typeof value !== "object" ||
@@ -138,7 +138,7 @@ function decodeViewCursor(cursor: string | undefined): string | undefined {
     (value as { v?: unknown }).v !== 1 ||
     typeof (value as { afterId?: unknown }).afterId !== "string"
   ) {
-    throw new Error("cursor is not a valid AgentState View catalog cursor");
+    throw new Error("cursor is not a valid Superbee View catalog cursor");
   }
   return (value as { afterId: string }).afterId;
 }
@@ -367,12 +367,12 @@ export async function resolveDurableViewLaunch(
 function fallbackText(payload: McpViewPayload): string {
   if (payload.schemaVersion === "agentstate.transient-view-launch.v1") {
     return payload.launch.authorization.authorized
-      ? `Prepared transient AgentState View "${payload.title}" from its exact process-local bytes.`
-      : `Transient AgentState View "${payload.title}" is ready for local approval of its exact process-local bytes before it can read bundle data.`;
+      ? `Prepared transient Superbee View "${payload.title}" from its exact process-local bytes.`
+      : `Transient Superbee View "${payload.title}" is ready for local approval of its exact process-local bytes before it can read bundle data.`;
   }
   return payload.launch.authorization.authorized
-    ? `Prepared registered AgentState View "${payload.title}" (${payload.source.viewId}) from its exact current bundle bytes.`
-    : `Registered AgentState View "${payload.title}" (${payload.source.viewId}) is ready for local approval of its exact current bytes before it can read bundle data.`;
+    ? `Prepared registered Superbee View "${payload.title}" (${payload.source.viewId}) from its exact current bundle bytes.`
+    : `Registered Superbee View "${payload.title}" (${payload.source.viewId}) is ready for local approval of its exact current bytes before it can read bundle data.`;
 }
 
 export interface CreateMcpAppServerOptions {
@@ -385,7 +385,7 @@ export interface CreateMcpAppServerOptions {
 
 export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServer {
   const server = new McpServer({
-    name: "AgentState Lite Conversational Views",
+    name: "Superbee Conversational Views",
     version: options.version ?? "0.0.1",
   });
   const durableLaunches = new PageLaunchRegistry();
@@ -410,7 +410,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     ),
     config: async () => ({
       root: null,
-      name: options.bundleName ?? "AgentState bundle",
+      name: options.bundleName ?? "Superbee bundle",
       mode: "local-mcp",
     }),
     renderDocument: renderDocumentToStaticHtml,
@@ -454,7 +454,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     LIST_VIEWS_TOOL_NAME,
     {
-      title: "List registered AgentState Views",
+      title: "List registered Superbee Views",
       description:
         "List existing durable bundle Views that this MCP host can invoke by exact id with show_view. Results are deterministic and bounded; use nextCursor to continue.",
       inputSchema: listViewsInputSchema,
@@ -515,7 +515,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           content: [
             {
               type: "text",
-              text: `Could not list AgentState Views: ${error instanceof Error ? error.message : String(error)}`,
+              text: `Could not list Superbee Views: ${error instanceof Error ? error.message : String(error)}`,
             },
           ],
         };
@@ -527,7 +527,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     SHOW_VIEW_TOOL_NAME,
     {
-      title: "Show AgentState View",
+      title: "Show Superbee View",
       description:
         "Launch agent-authored active HTML as a process-local transient View with mode:transient, or run an existing registered bundle View unchanged by exact viewId. Both use the standard View bridge and require the human to trust their exact executable bytes and declared access before bundle data is exposed.",
       inputSchema,
@@ -579,7 +579,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           content: [
             {
               type: "text",
-              text: `Could not render the AgentState View: ${detail}`,
+              text: `Could not render the Superbee View: ${detail}`,
             },
           ],
         };
@@ -591,7 +591,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
     {
-      title: "Authorize active AgentState View",
+      title: "Authorize active Superbee View",
       description:
         "Record the trusted shell's local decision to trust exact active View bytes with their declared active access, then return the revalidated launch.",
       inputSchema: z
@@ -645,7 +645,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     SAVE_TRANSIENT_VIEW_TOOL_NAME,
     {
-      title: "Save transient AgentState View",
+      title: "Save transient Superbee View",
       description:
         "Save an already locally approved transient active View as a durable registered bundle View without transforming its HTML. Pass only the transient launchId from show_view, a new views-registry/... id, and optional description; the server rereads its own immutable launch bytes and never accepts replacement HTML.",
       inputSchema: saveTransientViewInputSchema,
@@ -693,7 +693,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           content: [
             {
               type: "text",
-              text: `Could not save the transient AgentState View: ${error instanceof Error ? error.message : String(error)}${retainedEntry}${retainedRegistration}`,
+              text: `Could not save the transient Superbee View: ${error instanceof Error ? error.message : String(error)}${retainedEntry}${retainedRegistration}`,
             },
           ],
         };
@@ -705,7 +705,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     DURABLE_VIEW_BRIDGE_TOOL_NAME,
     {
-      title: "Run active AgentState View bridge request",
+      title: "Run active Superbee View bridge request",
       description:
         "Forward one bounded data bridge request from the current approved active View. Governed change proposals use the separate trusted confirmation tools.",
       inputSchema: z
@@ -745,7 +745,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     RESUME_DURABLE_VIEW_TOOL_NAME,
     {
-      title: "Resume active AgentState View",
+      title: "Resume active Superbee View",
       description:
         "Mint a fresh active View launch after the trusted App quarantines an old visible mount. View identity and authorization are derived only from server-owned launch state.",
       inputSchema: z
@@ -845,7 +845,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     POLL_DURABLE_VIEW_TOOL_NAME,
     {
-      title: "Poll active AgentState View changes",
+      title: "Poll active Superbee View changes",
       description:
         "Poll the server-owned subscription baseline for the current active View.",
       inputSchema: z
@@ -875,7 +875,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     CLOSE_DURABLE_VIEW_TOOL_NAME,
     {
-      title: "Close active AgentState View",
+      title: "Close active Superbee View",
       description:
         "Revoke one process-local active View launch and discard its subscription state.",
       inputSchema: z
@@ -892,7 +892,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     async ({ launchId }): Promise<CallToolResult> => {
       durableBridge.revoke(launchId);
       return {
-        content: [{ type: "text", text: "Closed the registered AgentState View launch." }],
+        content: [{ type: "text", text: "Closed the registered Superbee View launch." }],
         structuredContent: { closed: true },
       };
     },
@@ -902,7 +902,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     PREPARE_VIEW_ACTION_TOOL_NAME,
     {
-      title: "Prepare AgentState View action",
+      title: "Prepare Superbee View action",
       description: "Prepare one trusted-shell action from the current View for explicit human confirmation.",
       inputSchema: z.object({
         launchId: z.string().min(1).max(256),
@@ -930,7 +930,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
             text:
               result.status === "prepared"
                 ? `Prepared a ${result.confirmation.field} change for human confirmation.`
-                : `AgentState action ${result.status}: ${"message" in result && result.message ? result.message : result.status}`,
+                : `Superbee action ${result.status}: ${"message" in result && result.message ? result.message : result.status}`,
           },
         ],
         structuredContent: { result },
@@ -942,7 +942,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     FINISH_VIEW_ACTION_TOOL_NAME,
     {
-      title: "Finish AgentState View action",
+      title: "Finish Superbee View action",
       description: "Commit or cancel an action after the trusted MCP App shell collects the human decision.",
       inputSchema: {
         launchId: z.string().min(1).max(256),
@@ -977,7 +977,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
             text:
               result.status === "committed"
                 ? `Committed the confirmed ${result.field ?? "field"} change.`
-                : `AgentState action ${result.status}: ${result.message ?? result.status}`,
+                : `Superbee action ${result.status}: ${result.message ?? result.status}`,
           },
         ],
         structuredContent: { result },
@@ -987,11 +987,11 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
 
   registerAppResource(
     server,
-    "AgentState View Host",
+    "Superbee View Host",
     MCP_VIEW_RESOURCE_URI,
     {
       mimeType: RESOURCE_MIME_TYPE,
-      description: "Fixed trusted shell for invocation-specific AgentState Views.",
+      description: "Fixed trusted shell for invocation-specific Superbee Views.",
     },
     async (): Promise<ReadResourceResult> => ({
       contents: [
@@ -1021,7 +1021,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     server,
     RESOLVE_LAUNCH_TOOL_NAME,
     {
-      title: "Resolve undelivered AgentState View launch",
+      title: "Resolve undelivered Superbee View launch",
       description:
         "Redeem the exact one-shot claim marker from a show_view result whose structured payload the host stripped. Returns the already-minted payload; unknown or reused claims fail closed.",
       inputSchema: { claim: z.string().min(8).max(256) },
@@ -1041,7 +1041,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           content: [
             {
               type: "text",
-              text: "Unknown, expired, or already-redeemed AgentState View claim. Reopen the View.",
+              text: "Unknown, expired, or already-redeemed Superbee View claim. Reopen the View.",
             },
           ],
         };

@@ -15,12 +15,12 @@ import { asHandled, CliError, toExit } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 
-export const CATALOG_USAGE = `agentstate-lite catalog — register and resolve this user's workspaces
+export const CATALOG_USAGE = `superbee catalog — register and resolve this user's workspaces
 
 Usage:
-  agentstate-lite catalog add <label> [--dir <path>]
-  agentstate-lite catalog list [--json]
-  agentstate-lite catalog resolve <label-or-id> [--field path | --json]
+  superbee catalog add <label> [--dir <path>]
+  superbee catalog list [--json]
+  superbee catalog resolve <label-or-id> [--field path | --json]
 
 Labels are user-defined or agent-defined on the user's behalf. They use 1-64 lowercase letters,
 numbers, dots, dashes, or underscores, beginning and ending with a letter or number. Registration

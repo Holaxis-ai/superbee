@@ -1,4 +1,4 @@
-// `agentstate-lite ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
+// `superbee ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
 // web UI (plans/ui-v1.md rev 3.2): the SPA plus a same-origin `/v0/*` surface, either the
 // reference router mounted in-process over a local bundle (`--dir`) or a reverse proxy onto a
 // deployed remote (`--remote`) with conditional Bearer injection. The SPA never knows which.
@@ -27,10 +27,10 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { resolveActor } from "../actor.js";
 
-export const UI_USAGE = `agentstate-lite ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
+export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
 
 Usage:
-  agentstate-lite ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
+  superbee ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd) — mounts the

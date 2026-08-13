@@ -1,4 +1,4 @@
-// `agentstate-lite session-start` — the SessionStart hook payload.
+// `superbee session-start` — the SessionStart hook payload.
 //
 // One subcommand, pull-then-render in-process — never two hook entries or a compound shell string:
 //
@@ -83,10 +83,10 @@ export const SESSION_START_CONNECT_TIMEOUT_SECONDS = 5;
  */
 export const MIN_USEFUL_BUDGET_MS = 250;
 
-export const SESSION_START_USAGE = `agentstate-lite session-start — the SessionStart hook payload (pull the board, then render home)
+export const SESSION_START_USAGE = `superbee session-start — the SessionStart hook payload (pull the board, then render home)
 
 Usage:
-  agentstate-lite session-start [--dir <path>] [--json] [--no-update-check]
+  superbee session-start [--dir <path>] [--json] [--no-update-check]
 
 Runs a time-boxed, best-effort pull of this repo's shared board (provisioning the checkout from
 origin/board on a fresh clone — announced, never silent), then renders the home view with registered
@@ -100,7 +100,7 @@ OpenCode. Run it directly to see exactly what a new session will see.
 
 Default TOON may show a cached latest-track release notice and launch one detached refresh per
 24-hour attempt window; rendering never waits for npm. The fixed public request names only
-@holaxis/aslite and sends no installed version, cwd, bundle, actor, or usage data beyond ordinary
+superbee and sends no installed version, cwd, bundle, actor, or usage data beyond ordinary
 network metadata. Presence of ASLITE_NO_UPDATE_CHECK, NO_UPDATE_NOTIFIER, or CI disables both
 display and refresh.
 

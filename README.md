@@ -1,9 +1,9 @@
-# agentstate-lite
+# Superbee
 
 > A markdown knowledge bundle in your repo, plus a CLI built for agents.
 
 Coding agents forget everything between sessions, overwrite each other's work, and keep
-what they know invisible to the humans they work for. `agentstate-lite` gives them
+what they know invisible to the humans they work for. Superbee gives them
 shared, versioned, conflict-safe memory in plain text — offline-first, standards-based,
 owned by you.
 
@@ -13,42 +13,42 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 ## Install
 
-Install the test-user prerelease from npm. The package puts the stable short command `aslite` on
+Install the test-user prerelease from npm. The package puts the stable command `superbee` on
 `PATH`; its optional Agent Skill teaches Claude Code and Codex how to use that command without
 carrying another copy of the executable:
 
 ```sh
-npm install -g @holaxis/aslite
-aslite --version
-aslite skill install --scope user
-aslite hook install --scope user
+npm install -g superbee
+superbee --version
+superbee skill install --scope user
+superbee hook install --scope user
 ```
 
 Restart Claude Code or Codex after installing the skill. `hook install` is optional: it gives
 Claude Code, Codex, and OpenCode a compact AgentState orientation at session start. To try one
-orientation command without installing anything, run `npx -y @holaxis/aslite`.
+orientation command without installing anything, run `npx -y superbee`.
 
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
 If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun
-`aslite skill install --scope user` and `aslite hook install --scope user`. The hook installer
+`superbee skill install --scope user` and `superbee hook install --scope user`. The hook installer
 replaces exact historical AgentState marketplace hooks rather than leaving two SessionStart hooks.
 
 ## Quickstart
 
 ```sh
-aslite                                     # confirm that no bundle is selected yet
-aslite recipes                             # compare the workspace setups shipped offline
-aslite init --create-only --recipe work-tracking --dir .agentstate-lite
-aslite new "Task" first-task --title "Plan the first change" --status todo \
+superbee                                   # confirm that no bundle is selected yet
+superbee recipes                           # compare the workspace setups shipped offline
+superbee init --create-only --recipe work-tracking --dir .agentstate-lite
+superbee new "Task" first-task --title "Plan the first change" --status todo \
   --actor quickstart-agent --dir .agentstate-lite
-aslite --dir .agentstate-lite              # see the Task in the live bundle summary
+superbee --dir .agentstate-lite            # see the Task in the live bundle summary
 ```
 
 `--create-only` refuses an occupied, nested, bound, or concurrently claimed target before it
 writes; use `recipe add` when you deliberately want to add capability to an existing bundle.
 Bring source material or intent to your agent in the tool you already use. The agent organizes,
-types, links, and updates the bundle through `aslite`; these commands are the plumbing, not a
+types, links, and updates the bundle through `superbee`; these commands are the plumbing, not a
 manual data-entry workflow.
 
 `quickstart-agent` is an advisory example actor label; replace it with the actual agent identity.
@@ -58,9 +58,10 @@ config (the way git finds `.git`) — every command after setup runs bare from a
 the project tree. A bundle stays local until `sync --establish` explicitly shares it on the
 repository's dedicated `board` branch.
 
-When the first task needs a roadmap, run `aslite recipe add roadmap`. To share the local bundle,
-run `aslite sync --establish`; that explicit step creates the remote `board` branch, and teammates
-then use ordinary `aslite sync`.
+Existing `.agentstate-lite/` bundles and `.agentstate.json` bindings continue to work with
+Superbee; no migration is required. When the first task needs a roadmap, run
+`superbee recipe add roadmap`. To share the local bundle, run `superbee sync --establish`; that
+explicit step creates the remote `board` branch, and teammates then use ordinary `superbee sync`.
 
 **When the conventional project folder does not fit:**
 
@@ -78,22 +79,22 @@ then use ordinary `aslite sync`.
   pass that path to an ordinary command:
 
   ```sh
-  aslite catalog add personal --dir ~/.agentstate-lite/personal
-  aslite catalog list
-  aslite catalog resolve personal --field path
+  superbee catalog add personal --dir ~/.agentstate-lite/personal
+  superbee catalog list
+  superbee catalog resolve personal --field path
   ```
 
 Then, day to day:
 
 ```sh
 export AGENTSTATE_LITE_ACTOR=claude    # optional default; per-command --actor wins
-aslite new "Task" ship-parser --title "Ship the parser" --status todo
-aslite list --type Task
-aslite doc update tasks/ship-parser --status in_progress
-aslite doc history tasks/ship-parser   # who changed what, when
-aslite ui                              # the bundle, rendered — local server, no cloud
-aslite index generate                  # optional: complete portable Markdown navigation
-aslite sync                            # ordinary shared-board updates — commits yours,
+superbee new "Task" ship-parser --title "Ship the parser" --status todo
+superbee list --type Task
+superbee doc update tasks/ship-parser --status in_progress
+superbee doc history tasks/ship-parser # who changed what, when
+superbee ui                            # the bundle, rendered — local server, no cloud
+superbee index generate                # optional: complete portable Markdown navigation
+superbee sync                          # ordinary shared-board updates — commits yours,
                                        # pulls theirs, pushes; leaves code files untouched
 ```
 
@@ -123,8 +124,8 @@ merge).
 Establishment also appends `.agentstate-lite/` to the root working-tree `.gitignore` and
 reports that uncommitted edit; ordinary sync does not modify code-project files.
 
-**If you see a `board` branch** in a repo that uses agentstate-lite: that is the shared
-board — an orphan branch carrying only the knowledge bundle, written by `aslite sync`. It
+**If you see a `board` branch** in a repo that uses Superbee: that is the shared
+board — an orphan branch carrying only the knowledge bundle, written by `superbee sync`. It
 never merges into `main` (it shares no history with it, by design). Protect it the way
 you protect `main`: enable delete and force-push protection on `board` in the repo
 settings — sync only ever appends commits to it.
@@ -189,7 +190,7 @@ Bundles are valid [Open Knowledge Format v0.1](https://github.com/GoogleCloudPla
   Views, and View-bearing definitions-only recipes can carry the operating model, registry entry,
   HTML, and authoring reference together. (`Page` is the legacy name for the kind and is no
   longer read — a legacy `type: Page` doc does not register, and the legacy `bridge:` field
-  grants nothing; `aslite status` flags leftover legacy names and the repo's
+  grants nothing; `superbee status` flags leftover legacy names and the repo's
   `migrate-legacy-view-names` script renames them in place. Legacy folder locations stay
   recognized.) Authoring is still HTML/agent-driven rather than a
   polished end-user builder, so treat the surface as a preview.
@@ -211,7 +212,7 @@ Bundles are valid [Open Knowledge Format v0.1](https://github.com/GoogleCloudPla
 ## Where the deep documentation lives
 
 This project dogfoods itself: the plans, research, design docs, product statement, and
-the full change history live in the project's own agentstate-lite bundle, which the
+the full change history live in the project's own Superbee bundle, which the
 team develops against daily. The repo deliberately carries only this README,
 `CLAUDE.md` (agent-orchestrator conventions), and the code.
 

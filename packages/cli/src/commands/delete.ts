@@ -1,4 +1,4 @@
-// `agentstate-lite delete --doc-key <key>` — hard-delete a doc or blob by its key, symmetric with
+// `superbee delete --doc-key <key>` — hard-delete a doc or blob by its key, symmetric with
 // `promote`/`pull` (the DELETE-operation pass, binding plan item 9 — resolved decision).
 //
 // ROUTES BY TARGET (case-insensitive `.md` suffix, mirrors `promote`/`pull`'s B6 discipline): a
@@ -27,10 +27,10 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
-export const DELETE_USAGE = `agentstate-lite delete — hard-delete a doc or blob by its key (symmetric with promote/pull)
+export const DELETE_USAGE = `superbee delete — hard-delete a doc or blob by its key (symmetric with promote/pull)
 
 Usage:
-  agentstate-lite delete --doc-key <key> [options]
+  superbee delete --doc-key <key> [options]
 
 Routes by the --doc-key's target (checked case-insensitively), symmetric with 'promote'/'pull':
   A key ending '.md' is a DOC: id = the key minus '.md' — deleted through the engine. A reserved id
@@ -38,7 +38,7 @@ Routes by the --doc-key's target (checked case-insensitively), symmetric with 'p
   deletable.
   Any OTHER key is a BLOB: opaque bytes, deleted directly (no OKF semantics to enforce).
 
-'doc delete <id>' (see 'agentstate-lite doc --help') is the concept-native form for docs; this verb
+'doc delete <id>' (see 'superbee doc --help') is the concept-native form for docs; this verb
 exists because blob addressing lives only in the --doc-key family.
 
 Idempotent: deleting an ABSENT key is SUCCESS (deleted:false, exit 0), never NOT_FOUND. Hard-delete

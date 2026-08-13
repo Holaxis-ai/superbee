@@ -19,24 +19,24 @@ const COMMON_OPTIONS = `Common options:
  * The FAMILY INDEX — printed only for a bare `doc`/`doc --help`. Each verb has its OWN focused help
  * (below), so a `doc read --help` no longer dumps the write/update/delete manual too (AXI §10).
  */
-export const DOC_USAGE = `agentstate-lite doc — write, patch, read, or delete a generic OKF concept document
+export const DOC_USAGE = `superbee doc — write, patch, read, or delete a generic OKF concept document
 
 Usage:
-  agentstate-lite doc write   <id> --type <t> [options]        Create/overwrite a concept doc
-  agentstate-lite doc update  <id> [options]                   Patch given fields of an existing doc
-  agentstate-lite doc read    <id> [--out <p> | --body-out <p>] Read a doc (raw/body byte channels)
-  agentstate-lite doc history <id>                             Show a doc's attributed version chain
-  agentstate-lite doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
+  superbee doc write   <id> --type <t> [options]        Create/overwrite a concept doc
+  superbee doc update  <id> [options]                   Patch given fields of an existing doc
+  superbee doc read    <id> [--out <p> | --body-out <p>] Read a doc (raw/body byte channels)
+  superbee doc history <id>                             Show a doc's attributed version chain
+  superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
 
-Run 'agentstate-lite doc <verb> --help' for a verb's full options.
+Run 'superbee doc <verb> --help' for a verb's full options.
 
 ${COMMON_OPTIONS}
 `;
 
-export const DOC_WRITE_USAGE = `agentstate-lite doc write — create or overwrite a generic OKF concept document
+export const DOC_WRITE_USAGE = `superbee doc write — create or overwrite a generic OKF concept document
 
 Usage:
-  agentstate-lite doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [options]
+  superbee doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [options]
 
 Idempotent: re-writing a doc with identical frontmatter + body is a no-op (exit 0, no error, no
 duplication — a plain overwrite that converges to the same on-disk state).
@@ -64,7 +64,7 @@ Options:
                        this flag. SHORT-TERM guard — see 'link add'/'link show' to manage links.
   --strict             If a kind convention governs --type, reject (exit 2) instead of writing with
                        warnings when the doc does not satisfy it (default: warn-and-write, exit 0 —
-                       see 'agentstate-lite kinds')
+                       see 'superbee kinds')
   --actor <name>       Attribute this write: persisted as the doc's own 'actor' frontmatter field
                        (the per-doc attribution sync and its receipts read) and recorded in version
                        history by a persisting backend. Note doc write is a FULL replace: omitting
@@ -75,14 +75,14 @@ Options:
 ${COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite doc write concepts/auth --type Concept --title "Auth flow" --body "How login works"
-  echo "# Notes" | agentstate-lite doc write notes/x --type Note --title "Scratch"
+  superbee doc write concepts/auth --type Concept --title "Auth flow" --body "How login works"
+  echo "# Notes" | superbee doc write notes/x --type Note --title "Scratch"
 `;
 
-export const DOC_UPDATE_USAGE = `agentstate-lite doc update — patch given fields of an EXISTING concept document
+export const DOC_UPDATE_USAGE = `superbee doc update — patch given fields of an EXISTING concept document
 
 Usage:
-  agentstate-lite doc update <id> [--<field> <value> ...] [--body <s> | --body-file <p>] [options]
+  superbee doc update <id> [--<field> <value> ...] [--body <s> | --body-file <p>] [options]
 
 Only the fields you pass change; everything else — including the body when no body source is given —
 is preserved verbatim. Idempotent: a patch that changes NOTHING (ignoring the auto-refreshed
@@ -113,7 +113,7 @@ Options:
   --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
                          writing with warnings (default: warn-and-write, exit 0)
   --<field> <value>      Set a kind-declared field of the doc's type (e.g. --status done). The field
-                         MUST be declared by the kind governing the doc's type — run 'agentstate-lite
+                         MUST be declared by the kind governing the doc's type — run 'superbee
                          kinds' to see them. An unknown field, or an out-of-enum value, is rejected
                          (exit 2, no write). Use 'doc write' to rewrite the whole doc if you must set
                          a not-yet-declared value.
@@ -132,14 +132,14 @@ Passing NO patchable field at all is a USAGE error (exit 2) — there is nothing
 ${COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite doc update tasks/42 --status done
-  agentstate-lite doc update concepts/auth --title "Auth v2" --expected-version sha256:...
+  superbee doc update tasks/42 --status done
+  superbee doc update concepts/auth --title "Auth v2" --expected-version sha256:...
 `;
 
-export const DOC_READ_USAGE = `agentstate-lite doc read — read a concept document (or pull its raw markdown bytes)
+export const DOC_READ_USAGE = `superbee doc read — read a concept document (or pull its raw markdown bytes)
 
 Usage:
-  agentstate-lite doc read <id> [--out (<path> | -) | --body-out (<path> | -)] [options]
+  superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -)] [options]
 
 The default (no --out/--body-out) render shows EVERY frontmatter field — the standard keys plus any
 kind-declared fields like status/priority — and truncates a large body (pointing at --out).
@@ -157,9 +157,9 @@ Options:
                        every case; not applicable to --out - or to --remote.
   --body-out <path>    Write ONLY the parsed markdown body (no YAML frontmatter) as UTF-8. The
                        receipt includes the version from the SAME read, so the safe edit cycle is:
-                         agentstate-lite doc read <id> --body-out <path-outside-bundle> --json
+                         superbee doc read <id> --body-out <path-outside-bundle> --json
                          # edit that file; copy the receipt's version
-                         agentstate-lite doc update <id> --body-file <path-outside-bundle> \\
+                         superbee doc update <id> --body-file <path-outside-bundle> \\
                            --expected-version <version>
                        Choose a unique path OUTSIDE the bundle: a .md target inside a local bundle
                        is refused below, so the safe-cycle path must never be bundle-relative.
@@ -180,16 +180,16 @@ Options:
 ${COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite doc read concepts/auth
-  agentstate-lite doc read concepts/auth --out ./auth.md
-  agentstate-lite doc read concepts/auth --body-out <path-outside-bundle>
-  agentstate-lite doc read concepts/auth --field head_version
+  superbee doc read concepts/auth
+  superbee doc read concepts/auth --out ./auth.md
+  superbee doc read concepts/auth --body-out <path-outside-bundle>
+  superbee doc read concepts/auth --field head_version
 `;
 
-export const DOC_HISTORY_USAGE = `agentstate-lite doc history — show a doc's attributed version chain (newest first)
+export const DOC_HISTORY_USAGE = `superbee doc history — show a doc's attributed version chain (newest first)
 
 Usage:
-  agentstate-lite doc history <id> [--limit <n>] [options]
+  superbee doc history <id> [--limit <n>] [options]
 
 Lists version + actor + timestamp (and agent, when recorded) per revision, with a count. A
 history-keeping backend (a remote deployment) returns the full chain and its real per-write
@@ -210,14 +210,14 @@ Options:
 ${COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite doc history concepts/auth
-  agentstate-lite doc history concepts/auth --limit 0
+  superbee doc history concepts/auth
+  superbee doc history concepts/auth --limit 0
 `;
 
-export const DOC_DELETE_USAGE = `agentstate-lite doc delete — hard-delete a concept document (idempotent)
+export const DOC_DELETE_USAGE = `superbee doc delete — hard-delete a concept document (idempotent)
 
 Usage:
-  agentstate-lite doc delete <id> [--expected-version <v>] [options]
+  superbee doc delete <id> [--expected-version <v>] [options]
 
 Hard-delete (no tombstone) and idempotent: deleting an ABSENT id is SUCCESS (deleted:false, exit 0),
 never an error. Reserved ids (index.md/log.md) are rejected (USAGE, exit 2). Non-cascading: it does
@@ -230,8 +230,8 @@ Options:
 ${COMMON_OPTIONS}
 
 Examples:
-  agentstate-lite doc delete notes/scratch
-  agentstate-lite doc delete concepts/auth --expected-version sha256:...
+  superbee doc delete notes/scratch
+  superbee doc delete concepts/auth --expected-version sha256:...
 `;
 
 /** AXI §3 body-preview cap for `doc read` (no --out): beyond this, truncate + point at the byte channel. */
@@ -273,7 +273,7 @@ export interface DocCliDeps {
  * `isSocket()` is included alongside `isFIFO()`/`isFile()` for a platform-specific reason found while
  * building this fix's own integration test: on macOS (unlike Linux), libuv implements Node's
  * `child_process` "pipe" stdio via an `AF_UNIX` socketpair, not a POSIX FIFO — so a Node-based agent
- * harness piping a REAL body into a spawned `agentstate-lite` (`spawn(cli, { stdio: ["pipe", …] })`,
+ * harness piping a REAL body into a spawned `superbee` (`spawn(cli, { stdio: ["pipe", …] })`,
  * exactly the mechanism many such harnesses use) hands this process a stdin that `fstat`s as a
  * socket, not a FIFO. Excluding sockets would silently defeat legitimate piped input for that entire
  * class of caller — reopening a DIFFERENT variant of the very bug this fix exists to close. A
@@ -306,7 +306,7 @@ export const STDIN_FIRST_BYTE_TIMEOUT_MS = 200;
  * the signal in the ONE owning primitive's return value, so `doc write` and `doc update` both
  * receive it with no extra plumbing.
  */
-export const STDIN_SILENT_TIMEOUT: unique symbol = Symbol("agentstate-lite.stdin-silent-timeout");
+export const STDIN_SILENT_TIMEOUT: unique symbol = Symbol("superbee.stdin-silent-timeout");
 
 /** What a {@link DocCliDeps.readStdin} adapter can resolve — see each member's meaning on `readStdin`'s doc comment. */
 export type StdinReadResult = string | undefined | typeof STDIN_SILENT_TIMEOUT;

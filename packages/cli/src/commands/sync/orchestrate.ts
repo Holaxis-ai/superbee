@@ -1,4 +1,4 @@
-// `agentstate-lite sync` — the entry flow, composed of explicit phases:
+// `superbee sync` — the entry flow, composed of explicit phases:
 // heal → detect → provision → commit → pull → push → receipt (`--pull-only` skips commit + push).
 //
 // COMMAND LAYER ONLY: this module composes `@superbee/board-git`'s exported vocabulary
@@ -66,12 +66,12 @@ import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 
-export const SYNC_USAGE = `agentstate-lite sync — share the board branch with a remote (git tier)
+export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
 Usage:
-  agentstate-lite sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
-  agentstate-lite sync --establish [--yes] [--dir <path>] [--json]
-  agentstate-lite sync --show-incoming <id> [--out <file>] [--dir <path>] [--json]
+  superbee sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
+  superbee sync --establish [--yes] [--dir <path>] [--json]
+  superbee sync --show-incoming <id> [--out <file>] [--dir <path>] [--json]
 
 Shares this repo's board (\`.agentstate-lite\`, kept on its own \`board\` branch) with your
 teammates: ordinary sync commits pending local doc changes, pulls theirs, and pushes yours without

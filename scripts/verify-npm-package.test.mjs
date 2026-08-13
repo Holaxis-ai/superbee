@@ -89,12 +89,12 @@ test("root and npm READMEs teach one literal create-only, agent-driven quickstar
     );
     assert.match(
       readme,
-      /^npm install -g @holaxis\/aslite$/m,
+      /^npm install -g superbee$/m,
       `${label} README must install the supported default package without a preview tag`,
     );
     assert.doesNotMatch(
       readme,
-      /^(?:npm install -g|npx -y) @holaxis\/aslite@next\b/m,
+      /^(?:npm install -g|npx -y) superbee@next\b/m,
       `${label} README must not teach the preview tag as the default journey`,
     );
     assert.doesNotMatch(

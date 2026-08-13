@@ -1,11 +1,11 @@
-// `agentstate-lite list` / `agentstate-lite query` — query concepts over their frontmatter.
+// `superbee list` / `superbee query` — query concepts over their frontmatter.
 //
 // Thin wrapper over core `queryHeads(bundle, { type?, tags?, prefix?, fields? })` (the filter facets
 // are ANDed; reserved index.md/log.md are always excluded) — HEAD projections (id + frontmatter +
 // version), never bodies: every row here reads only frontmatter, and over `--remote` the backend
 // push-down keeps bodies off the wire entirely. Results default to a UNIFORM, flat row shape
 // ({ id, type, title, timestamp }) so TOON renders them as a compact scannable table; the full
-// frontmatter + body of any row is available via `agentstate-lite doc read <id>`.
+// frontmatter + body of any row is available via `superbee doc read <id>`.
 //
 // Two generic kind capabilities (no per-kind code):
 //
@@ -43,10 +43,10 @@ import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 
-export const LIST_USAGE = `agentstate-lite list — query concepts over their frontmatter (alias: query)
+export const LIST_USAGE = `superbee list — query concepts over their frontmatter (alias: query)
 
 Usage:
-  agentstate-lite list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--fields <a,b>] [--open] [--limit <n>] [--dir <path>]
+  superbee list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--fields <a,b>] [--open] [--limit <n>] [--dir <path>]
 
 Options:
   --type <t>           Restrict to concepts whose frontmatter type equals this

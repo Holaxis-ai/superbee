@@ -541,7 +541,7 @@ async function runInstalledProof(spec) {
       (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
       `${target.preferred_command} home --json outside a bundle`,
     );
-    const homeIdentity = noBundleHome["agentstate-lite"];
+    const homeIdentity = noBundleHome.superbee;
     assert.equal(homeIdentity.version, manifest.version);
     assert.equal(homeIdentity.channel, spec.expectedChannel);
     assert.equal(homeIdentity.bin, installedEntrypointRealPath);
@@ -772,7 +772,7 @@ async function runInstalledProof(spec) {
     assert.match(installedReadme, /init --create-only --recipe work-tracking/);
     assert.match(installedReadme, /bring source material or intent\s+to your agent/i);
     assert.match(installedReadme, /agent organizes,\s+types, links, and updates the\s+bundle/i);
-    assert.match(installedReadme, /^npm install -g @holaxis\/aslite$/m);
+    assert.match(installedReadme, /^npm install -g superbee$/m);
     assert.match(
       installedReadme,
       /`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity\./,
@@ -807,10 +807,9 @@ async function runInstalledProof(spec) {
         await readFile(path.join(dir, ".aslite-skill.json"), "utf8"),
         "skill manifest",
       );
-      // Compatibility surface: skill install receipts intentionally keep the historical package
-      // authority so existing aslite-managed skill folders remain owned and repairable after the
-      // npm package rename. This is separate from the installed package identity verified above.
-      assert.equal(skillManifest.package, "@holaxis/aslite");
+      // The legacy skill folder is retained so existing aslite-managed installations stay
+      // discoverable and repairable. New receipts identify the canonical successor package.
+      assert.equal(skillManifest.package, target.package.name);
       assert.equal(skillManifest.version, manifest.version);
     }
 

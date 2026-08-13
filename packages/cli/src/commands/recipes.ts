@@ -1,4 +1,4 @@
-// `agentstate-lite recipes` — list built-in recipes before or after a bundle exists, including
+// `superbee recipes` — list built-in recipes before or after a bundle exists, including
 // whether each is already applied when a bundle is available.
 //
 // Mirrors `kinds.ts` (read-only, --dir/--remote, TOON, a `count`). A recipe bundles one or more
@@ -26,10 +26,10 @@ import { cliInvocation, shellArg } from "../invocation.js";
 import { appliedDocIds, isRecipeApplied } from "../recipes.js";
 import { builtinNames, resolveRecipe, type LoadedRecipe } from "../recipe-source.js";
 
-export const RECIPES_USAGE = `agentstate-lite recipes — browse built-in recipes before or after init
+export const RECIPES_USAGE = `superbee recipes — browse built-in recipes before or after init
 
 Usage:
-  agentstate-lite recipes [--dir <path>] [--remote <url>]
+  superbee recipes [--dir <path>] [--remote <url>]
 
 A recipe is a folder ('recipe.md' manifest + 'conventions/*.md' docs) that 'recipe add
 <name-or-path>' installs onto a bundle in one shot — idempotently (re-adding an already-applied
@@ -40,7 +40,7 @@ path-addressed via 'recipe add <path>'.
 'init' applies the default recipe ('context-notes') automatically unless '--recipe none' is
 passed. Without a discoverable bundle, this command still lists the offline inventory and exact
 commands for safely creating a new bundle ('init --create-only') or adding each recipe to an
-existing bundle. See 'agentstate-lite kinds' for the LIVE per-bundle registry a recipe's docs feed
+existing bundle. See 'superbee kinds' for the LIVE per-bundle registry a recipe's docs feed
 into.
 
 Options:

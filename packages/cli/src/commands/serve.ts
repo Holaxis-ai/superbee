@@ -1,4 +1,4 @@
-// `agentstate-lite serve [--dir <path>] [--host <h>] [--port <p>]` — boot the reference
+// `superbee serve [--dir <path>] [--host <h>] [--port <p>]` — boot the reference
 // wire-protocol server (`@superbee/server`) over a local bundle.
 //
 // With `serve` running, `--remote <url>` on every
@@ -29,10 +29,10 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
-export const SERVE_USAGE = `agentstate-lite serve — boot the reference wire-protocol server over a local bundle
+export const SERVE_USAGE = `superbee serve — boot the reference wire-protocol server over a local bundle
 
 Usage:
-  agentstate-lite serve [--dir <path>] [--host <h>] [--port <p>]
+  superbee serve [--dir <path>] [--host <h>] [--port <p>]
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
@@ -42,7 +42,7 @@ Options:
   -h, --help            Show this help
 
 Connect a client once this is running:
-  agentstate-lite list --remote http://127.0.0.1:<port>
+  superbee list --remote http://127.0.0.1:<port>
 
 Caveat: concurrent writes to the same target across local clients and processes are serialized.
 A process crash can leave a runtime lock that fails closed until inspected and removed.
@@ -51,7 +51,7 @@ A process crash can leave a runtime lock that fails closed until inspected and r
 /**
  * The CLI's own stable default port. `@superbee/server`'s `ServeOptions.port` itself
  * defaults to `0` (ephemeral) — the CLI documents and passes its own fixed default explicitly
- * so `agentstate-lite serve` is predictable across runs; pass `--port 0` for an ephemeral port.
+ * so `superbee serve` is predictable across runs; pass `--port 0` for an ephemeral port.
  */
 export const DEFAULT_SERVE_PORT = 4818;
 
