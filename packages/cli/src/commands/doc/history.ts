@@ -1,6 +1,6 @@
 // `doc history <id>` — see `../doc.ts`'s header comment for the CAS-token / attribution rationale.
 import { parseArgs } from "node:util";
-import { docVersions, type VersionInfo } from "@agentstate-lite/core";
+import { docVersions, type VersionInfo } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";

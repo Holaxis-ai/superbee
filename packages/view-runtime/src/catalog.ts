@@ -3,13 +3,13 @@ import {
   readBlob,
   type Bundle,
   type HeadResult,
-} from "@agentstate-lite/core";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+} from "@superbee/core";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import {
   parseRegistration,
   resolveDeclaredAccess,
   type BridgeCapability,
-} from "@agentstate-lite/core/page";
+} from "@superbee/core/page";
 import { admitActiveView } from "./authorization.js";
 
 export type ViewPresentation = "workspace" | "inline" | "adaptive";

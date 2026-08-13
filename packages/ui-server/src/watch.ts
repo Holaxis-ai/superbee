@@ -8,7 +8,7 @@
 // fs.watch (recursive, verified on this macOS node) / poll loop with a debounce. Snapshots ride
 // the SAME head projection `list` uses (`queryHeads` — no bodies), so a scan is cheap.
 import { watch as fsWatch, type FSWatcher } from "node:fs";
-import { listBlobs, readBlob, queryHeads, type Bundle } from "@agentstate-lite/core";
+import { listBlobs, readBlob, queryHeads, type Bundle } from "@superbee/core";
 import { PAGE_BLOB_PREFIXES } from "./pages.js";
 
 /** The single-bundle reference router's bundle segment (mirrors the SPA client's `BUNDLE`). */

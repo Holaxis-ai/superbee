@@ -2,7 +2,7 @@
  * Playwright E2E config for the `ui` command. The SECURITY-relevant specs (pages + security) now
  * run IN the merge gate via `e2e:gate` (tasks/ui-pages-spike B4), not only `npm run e2e`.
  *
- * Every spec drives the REAL BUILT CLI (`packages/cli/dist/agentstate-lite.mjs ui ...`), not a
+ * Every spec drives the REAL BUILT CLI (`packages/cli/dist/superbee.mjs ui ...`), not a
  * dev server — `webServer` isn't used here because each spec needs its OWN process per mode
  * (`--dir` over a fresh temp bundle, `--remote` proxying a fresh local `serve` instance) with a
  * dynamically OS-assigned port; see `e2e/harness.ts`.

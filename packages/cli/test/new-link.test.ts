@@ -31,8 +31,8 @@ import {
   type ReadResult,
   type Version,
   type WriteOptions,
-} from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+} from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 
 import { newCommand } from "../src/commands/new.js";
 import { CliError } from "../src/errors.js";

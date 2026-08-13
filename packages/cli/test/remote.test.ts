@@ -1,6 +1,6 @@
 /**
  * CLI <-> wire-protocol integration suite (Stage 1 Unit 3 part B): drives the CLI's command
- * layer with `--remote` against a REAL `@agentstate-lite/server` `serve()` instance (an actual
+ * layer with `--remote` against a REAL `@superbee/server` `serve()` instance (an actual
  * `node:http` listener on an ephemeral port — unlike `packages/core/test/wire-protocol.test.ts`,
  * which injects the router directly as the fetch transport with no sockets, this file exercises
  * exactly what a `--remote` CLI invocation talks to) and asserts PARITY against the same
@@ -11,7 +11,7 @@
  * `--remote` + `--dir` -> USAGE/2, `init --remote` -> USAGE/2 with a specific message, a malformed
  * `--remote` URL -> USAGE/2).
  *
- * Test build coupling: this file imports `@agentstate-lite/server`, which resolves to
+ * Test build coupling: this file imports `@superbee/server`, which resolves to
  * `packages/server/dist` — fine under `npm run check` (build runs first), but a bare
  * `npm test -w @holaxis/aslite` with a stale/missing server build will fail to resolve this
  * import. Mirrors `docs/WIRE-PROTOCOL.md`'s "Test coupling note".
@@ -23,8 +23,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { initBundle, writeDoc, MemoryBackend, type Bundle } from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+import { initBundle, writeDoc, MemoryBackend, type Bundle } from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 
 import { newCommand } from "../src/commands/new.js";
 import { doc } from "../src/commands/doc.js";

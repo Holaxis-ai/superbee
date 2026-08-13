@@ -1,5 +1,5 @@
 {
-  "name": "@agentstate-lite/ui-server",
+  "name": "@superbee/ui-server",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -23,9 +23,9 @@
     "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts"
   },
   "dependencies": {
-    "@agentstate-lite/core": "*",
-    "@agentstate-lite/server": "*",
-    "@agentstate-lite/view-runtime": "*"
+    "@superbee/core": "*",
+    "@superbee/server": "*",
+    "@superbee/view-runtime": "*"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

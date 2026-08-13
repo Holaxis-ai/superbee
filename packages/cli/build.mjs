@@ -1,10 +1,10 @@
 // Build the single, self-contained, publishable CLI bundle.
 //
 // esbuild bundles src/index.ts together with its workspace source packages
-// (@agentstate-lite/core, @agentstate-lite/server, @agentstate-lite/ui-server,
-// @agentstate-lite/mcp-app) and every npm dependency into ONE ESM file with a
-// `#!/usr/bin/env node` shebang. The published `@holaxis/aslite` package therefore has NO runtime
-// dependencies and NO unresolved `workspace:*` links — `npx -y @holaxis/aslite …` runs with zero
+// (@superbee/core, @superbee/server, @superbee/ui-server,
+// @superbee/mcp-app) and every npm dependency into ONE ESM file with a
+// `#!/usr/bin/env node` shebang. The published `superbee` package therefore has NO runtime
+// dependencies and NO unresolved `workspace:*` links — `npx -y superbee …` runs with zero
 // workspace resolution.
 //
 // The workspace deps are aliased to their SOURCE entry points so this build is self-contained:
@@ -24,7 +24,7 @@ import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const r = (p) => resolve(here, p);
-const outfile = r("dist/agentstate-lite.mjs");
+const outfile = r("dist/superbee.mjs");
 
 /**
  * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`'s
@@ -36,7 +36,7 @@ const outfile = r("dist/agentstate-lite.mjs");
  * whatever `currentSourceFacts()` observes in a CI checkout. When omitted, build-bundle derives
  * the facts itself (the ordinary dev/verify path).
  */
-export async function buildCli(artifactChannel, { source } = {}) {
+export async function buildCli(artifactChannel, { source, packageIdentity } = {}) {
   if (artifactChannel !== "local-dev" && artifactChannel !== "npm-package") {
     throw new Error("usage: buildCli(local-dev|npm-package)");
   }
@@ -46,9 +46,9 @@ export async function buildCli(artifactChannel, { source } = {}) {
   // same preparation helper used by release verification. The esbuild
   // bundle below imports those generated modules transitively, so none may be missing or stale.
   await prepareCliBundleInputs();
-  await buildCliBundle(outfile, source === undefined ? { artifactChannel } : { artifactChannel, source });
+  await buildCliBundle(outfile, { artifactChannel, ...(source === undefined ? {} : { source }), ...(packageIdentity === undefined ? {} : { packageIdentity }) });
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
-  // in the tarball and for direct `./dist/agentstate-lite.mjs` runs).
+  // in the tarball and for direct `./dist/superbee.mjs` runs).
   await chmod(outfile, 0o755);
   return outfile;
 }

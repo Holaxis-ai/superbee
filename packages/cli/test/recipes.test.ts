@@ -39,9 +39,9 @@ import {
   CONVENTION_TYPE,
   type Bundle,
   type KindConvention,
-} from "@agentstate-lite/core";
-import { parseRegistration, PAGE_REGISTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@agentstate-lite/core/page";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+} from "@superbee/core";
+import { parseRegistration, PAGE_REGISTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
+import { serve, type ServerHandle } from "@superbee/server";
 
 import { init } from "../src/commands/init.js";
 import { recipeInventoryRow, recipes } from "../src/commands/recipes.js";

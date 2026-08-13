@@ -20,7 +20,7 @@ import {
   type OkfDocument,
   type ValidationWarning,
   type Version,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { CliError, classifyBundleError } from "./errors.js";
 import { kindConformanceCliError } from "./kind-write.js";
 

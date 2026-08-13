@@ -1,6 +1,6 @@
 /**
  * `agentstate-lite serve` — the CLI command that boots the reference wire-protocol server
- * (`@agentstate-lite/server`) over a local bundle.
+ * (`@superbee/server`) over a local bundle.
  *
  * Runs the command function in-process (no subprocess) against a real temp filesystem bundle,
  * mirroring `link.test.ts`'s node:test + ts-loader pattern. `bootServer`/`waitForShutdown` are
@@ -14,8 +14,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:net";
 
-import { initBundle } from "@agentstate-lite/core";
-import { serve as bootServer } from "@agentstate-lite/server";
+import { initBundle } from "@superbee/core";
+import { serve as bootServer } from "@superbee/server";
 import { serve, DEFAULT_SERVE_PORT } from "../src/commands/serve.js";
 import { CliError } from "../src/errors.js";
 
@@ -186,7 +186,7 @@ test("serve --help: prints usage and does not boot a server", async () => {
     },
     waitForShutdown: () => Promise.resolve(),
   });
-  assert.match(out, /agentstate-lite serve/);
+  assert.match(out, /superbee serve/);
   assert.equal(booted, false);
 });
 

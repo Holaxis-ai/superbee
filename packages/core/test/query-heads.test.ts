@@ -23,8 +23,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createRouter } from "@agentstate-lite/server";
-import { MemoryBackend as ServerMemoryBackend } from "@agentstate-lite/core";
+import { createRouter } from "@superbee/server";
+import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";

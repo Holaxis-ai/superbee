@@ -1,25 +1,25 @@
-# agentstate-lite — Orchestrator Guide
+# Superbee — Orchestrator Guide
 
-This file is read automatically at every session start. `agentstate-lite` is an
+This file is read automatically at every session start. Superbee is an
 **OKF-native, CLI-first, local-first** knowledge store: `packages/core` (the OKF
-engine), `packages/board-git` (`@agentstate-lite/board-git` — the board's git channel:
+engine), `packages/board-git` (`@superbee/board-git` — the board's git channel:
 porcelain/diff/state-store/engine/flow/autopull; imports ONLY node + core, machine-enforced by
 its own import-direction test with no allowlist; command UX stays in the CLI),
-`packages/server` (`@agentstate-lite/server`
+`packages/server` (`@superbee/server`
 — the wire-protocol REFERENCE server, a pure consumer of core; see gate 3 and Scope),
-`packages/view-runtime` (`@agentstate-lite/view-runtime` — the private host-neutral launch and
+`packages/view-runtime` (`@superbee/view-runtime` — the private host-neutral launch and
 trusted-action authority; imports only Node + core),
-`packages/ui-server` (`@agentstate-lite/ui-server` — the private reusable loopback shell host;
+`packages/ui-server` (`@superbee/ui-server` — the private reusable loopback shell host;
 imports only Node + core + server + view-runtime, while CLI policy and generated assets stay in
-the CLI), `packages/markdown-renderer` (`@agentstate-lite/markdown-renderer` — the private shared
+the CLI), `packages/markdown-renderer` (`@superbee/markdown-renderer` — the private shared
 bounded Markdown-to-React security boundary), `packages/ui` (the browser SPA — PRIVATE workspace;
 only its BUILT assets ship, gzip-embedded into the CLI bundle; it launches bundle-authored Views
 and consumes markdown-renderer, see gate 4), `packages/mcp-app` (the PRIVATE experimental local
 stdio adapter: one fixed MCP App shell over active registered or process-local Views, using the
 same launch, bridge, authorization, rendering, and governed-action authorities as the web host),
 and `packages/cli` —
-the **publishable npm package `@holaxis/aslite`** (scoped interim coordinate per the board
-decision — npm rejected the unscoped name; bins stay `aslite` / `agentstate-lite`), an
+the **publishable npm package `superbee`** (the canonical bin is `superbee`; `aslite` and
+`agentstate-lite` remain compatible aliases), an
 esbuild bundle that inlines core + board-git + server + the built UI assets + deps into one
 self-contained ESM file. The filesystem is the
 DEFAULT local backend; the storage seam is pluggable (gate 3). Hosted deployment code is outside
@@ -27,7 +27,7 @@ this OSS repository; the former Cloudflare implementation is preserved only as a
 reference.
 
 Before changing anything, read the PROJECT BUNDLE — this repo's own knowledge bundle at
-`.agentstate-lite/`, shared on a dedicated `board` branch via `aslite sync` (gitignored on
+`.agentstate-lite/`, shared on a dedicated `board` branch via `superbee sync` (gitignored on
 `main`, NOT committed with code). A fresh clone materializes it with one `sync` — the
 SessionStart hook does a best-effort pull for you — after which the conventional-folder walk
 discovers it with zero config, so a bare `doc read docs/core` just works: `docs/core` (the ONE-PAGE
@@ -37,9 +37,9 @@ pre-2026-07-06 changelog lives in the PRIVATE out-of-repo board archive, with th
 `visibility: private` docs), `docs/vision` (near-term design
 intent + OKF grounding) and `docs/north-star` (the future-state vision) as needed — then
 the packages' `src/`. The repo carries README + this file + code; the bundle rides the
-`board` branch (root `/docs/` stays gitignored; a `.agentstate.json` binding, also gitignored,
-is the local-only override and must NOT be committed here — the conventional folder is the
-resolution path). Ground
+`board` branch (root `/docs/` stays gitignored; `.superbee.json` and supported legacy
+`.agentstate.json` bindings are also gitignored and must NOT be committed here — the conventional
+folder is the resolution path). Ground
 every change in the ACTUAL current code, not assumptions — including the claims in THIS
 file: when this guide and the code disagree, the code wins and this file gets fixed.
 
@@ -182,7 +182,7 @@ Every produced bundle must stay a valid OKF v0.1 Knowledge Bundle:
 
 ### 4. Human visibility — one View model, host-specific adapters
 
-The human-visibility surface is the **local `agentstate-lite ui` command**: one loopback
+The human-visibility surface is the **local `superbee ui` command**: one loopback
 server serving the embedded SPA over a bundle (`--dir` mounts the reference router
 in-process; `--remote` reverse-proxies with the stored key; per-run token + Host allowlist
 + CSP). The shell is a launcher for registered `type: View` docs rendered in sandboxed
@@ -202,7 +202,7 @@ opt into `bundle-propose` for one human-confirmed, version-guarded scalar-field 
 `packages/viewer` / `view` → `viz.html` surface is removed — author human
 views as bundle Views rather than adding a second rendering engine.
 
-The experimental local `agentstate-lite mcp` command is a second host adapter, not a second View
+The experimental local `superbee mcp` command is a second host adapter, not a second View
 system. Its single model-visible `show_view` tool launches either agent-authored active HTML as a
 process-local transient View or one existing registered View unchanged by exact id. Both use the
 same active source contract, launch/bridge authority, sandbox, CSP, shared bounded Markdown
@@ -259,8 +259,8 @@ bundle-relative**.
   ships the CLI plus a generated, optional Agent Skill containing guidance and references only.
   **Always build from the REPO ROOT** — a package-scoped build leaves sibling `dist/`s stale and
   test files that import them crash confusingly. `npm run build` bundles the CLI to
-  `packages/cli/dist/agentstate-lite.mjs` (esbuild). Invoke the freshly-built CLI in-repo via the
-  repo-root **`./aslite`** shim (`./aslite doc write …`) — a short, shell-agnostic wrapper over that
+  `packages/cli/dist/superbee.mjs` (esbuild). Invoke the freshly-built CLI in-repo via the
+  repo-root **`./superbee`** shim (`./superbee doc write …`) — a short, shell-agnostic wrapper over that
   dist; prefer it over the long `node packages/cli/dist/…` path and never alias the path into a shell
   variable (`B="node …"; $B …` breaks under zsh, which does not word-split). The shim is dev-only and
   never ships (`files: ["dist"]`). Smoke-test the built CLI — at minimum `init`, `doc write`/`doc read`,
@@ -304,7 +304,7 @@ bundle-relative**.
   re-read the regenerated prose near your change and check the front-door docs (README quickstart)
   still tell the truth.
 - Commit cadence: one commit per reviewed unit of work, with a descriptive message; push to
-  the public remote (github.com/Holaxis-ai/agentstate-lite) after each committed unit. The
+  the private implementation remote until public cutover approval. The
   pre-public development history lives on the local `archive/pre-public` branch — NEVER push
   it (it predates the open-source scrub).
 - **Review and QA are risk-tiered by change-type, and standing gates absorb review work.**
@@ -370,7 +370,7 @@ bundle-relative**.
   `in_progress` with `--actor` — the CAS write IS the claim (see the bundle's Task convention).
   **Board writes are not code commits.** Board/bundle writes (records, claims, context
   notes, task updates — anything under `.agentstate-lite/` with no code alongside) go through
-  `aslite sync`, which shares them on the repo's own `board` branch. The board was MIGRATED off
+  `superbee sync`, which shares them on the repo's own `board` branch. The board was MIGRATED off
   `main` (it is gitignored there now), so there is no longer a `board:`-prefixed direct-commit-to-main
   path — `sync` is the one channel, and it touches nothing outside the board. Code ships via branch +
   PR + review gates, always. A board doc rides a PR only when it is ITSELF the reviewed
@@ -438,7 +438,7 @@ Standing gates on future work:
 - **Hosted revival is human-gated.** This repository carries no Cloudflare deployment target.
   The frozen private reference records that any future revival must review the architecture and
   apply D1 migrations before deploying dependent code.
-- **The public npm prerelease is the executable distribution channel.** `@holaxis/aslite` ships the
+- **The npm prerelease is the executable distribution channel.** `superbee` ships the
   self-contained CLI plus an optional installable Agent Skill containing guidance and references;
   keep `npm run verify:npm-package` and the npm-target SKILL drift gate green. Automated publishing
   and the durable update-notification contract remain separate explicit units.

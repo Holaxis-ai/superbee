@@ -1,4 +1,4 @@
-// `agentstate-lite bundle locate` — expose the exact local bundle target the CLI would use.
+// `superbee bundle locate` — expose the exact local bundle target the CLI would use.
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -7,10 +7,10 @@ import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
 
-export const BUNDLE_USAGE = `agentstate-lite bundle — inspect local bundle targeting
+export const BUNDLE_USAGE = `superbee bundle — inspect local bundle targeting
 
 Usage:
-  agentstate-lite bundle locate [--dir <path>]
+  superbee bundle locate [--dir <path>]
 
 Commands:
   locate                  Resolve the exact local bundle this invocation would use

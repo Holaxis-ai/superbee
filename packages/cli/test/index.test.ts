@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { indexCommand } from "../src/commands/index.js";
@@ -15,7 +15,7 @@ import { CliError } from "../src/errors.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const cliBin = path.resolve(here, "../dist/agentstate-lite.mjs");
+const cliBin = path.resolve(here, "../dist/superbee.mjs");
 const T = "2026-07-20T00:00:00.000Z";
 
 async function tempBundle(name = "bundle"): Promise<{ root: string; cleanup: () => Promise<void> }> {

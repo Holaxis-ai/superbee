@@ -5,7 +5,7 @@
  * invocation; the exported ops (provision, stage-and-commit, fetch-rebase, push, ff-pull,
  * unpushed-count, stale-rebase detect/abort) are the ONLY vocabulary the CLI's sync command
  * and SessionStart pull speak (the ref-to-ref doc diff family rides them from `diff.ts`).
- * `@agentstate-lite/core` never learns git exists — this package CONSUMES core (its
+ * `@superbee/core` never learns git exists — this package CONSUMES core (its
  * one frontmatter parser, its one path/reserved-file vocabulary) and is consumed by the CLI.
  *
  * Invariants (every call):
@@ -56,7 +56,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { conceptIdFromPath, isReservedFile, parseMarkdown } from "@agentstate-lite/core";
+import { conceptIdFromPath, isReservedFile, parseMarkdown } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 
 /** The dedicated branch that carries ONLY the bundle (its root IS the bundle root). */

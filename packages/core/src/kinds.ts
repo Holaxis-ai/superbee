@@ -18,7 +18,7 @@
  *
  * Pure derivation logic (`validateAgainstKind`, `freshnessHorizonMs`, `isTerminal`, the
  * convention-doc (de)serialization) is dependency-free — this module carries ONLY that, and is
- * exported as the browser-safe `@agentstate-lite/core/kinds` subpath (the ui shell's bridge
+ * exported as the browser-safe `@superbee/core/kinds` subpath (the ui shell's bridge
  * `open` filter consumes `isTerminal` there; a browser bundler must never be dragged through the
  * engine's node built-ins for a pure predicate). The one backend-touching entry point,
  * `loadKinds`, lives in `kinds-load.ts` — same ONE registry, split only by dependency weight.

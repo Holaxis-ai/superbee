@@ -20,8 +20,8 @@ import { fetchEdges, fetchKinds } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
-import { renderMarkdown } from "@agentstate-lite/markdown-renderer";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+import { renderMarkdown } from "@superbee/markdown-renderer";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -161,7 +161,7 @@ export function DocPage({ docId }: { docId: string }) {
         {rendered.bounded && (
           <p className="doc-bounded-note">
             This doc is large — the view above is truncated. The full content is in the bundle
-            (read it with <code>aslite doc read {doc.id}</code>).
+            (read it with <code>superbee doc read {doc.id}</code>).
           </p>
         )}
         {/* Outbound edges render inline in the body above (markdown.tsx). Only "Cited by" —

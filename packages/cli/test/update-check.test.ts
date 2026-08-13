@@ -24,7 +24,7 @@ function entry(
   options: { deprecated?: unknown; integrity?: unknown; name?: unknown } = {},
 ): Record<string, unknown> {
   return {
-    name: options.name ?? "@holaxis/aslite",
+    name: options.name ?? "superbee",
     version,
     dist: { integrity: options.integrity ?? INTEGRITY },
     ...(options.deprecated === undefined ? {} : { deprecated: options.deprecated }),
@@ -42,7 +42,7 @@ function packument(
 ): Record<string, unknown> {
   const track = options.track ?? "latest";
   return {
-    name: "@holaxis/aslite",
+    name: "superbee",
     "dist-tags": { [track]: selected },
     versions: {
       [selected]: options.selectedEntry ?? entry(selected),
@@ -116,21 +116,21 @@ test("selection follows exact dist-tag policy for current, forward, and rollback
   const forward = select("0.1.0-pre.2", "0.1.0-pre.3");
   assert.equal(forward.status, "upgrade_available");
   assert.equal(forward.relation, "selected_newer");
-  assert.equal(forward.command, "npm install --global @holaxis/aslite@0.1.0-pre.3");
+  assert.equal(forward.command, "npm install --global superbee@0.1.0-pre.3");
   assert.deepEqual(forward.verify, [
-    "aslite version --check",
-    "aslite skill status --scope user",
-    "aslite hook status --scope user",
+    "superbee version --check",
+    "superbee skill status --scope user",
+    "superbee hook status --scope user",
   ]);
 
   const rollback = select("0.1.0-pre.3", "0.1.0-pre.2");
   assert.equal(rollback.status, "rollback_available");
   assert.equal(rollback.relation, "selected_older");
-  assert.equal(rollback.command, "npm install --global @holaxis/aslite@0.1.0-pre.2");
+  assert.equal(rollback.command, "npm install --global superbee@0.1.0-pre.2");
 
   const preview = select("0.1.0-pre.2", "0.1.0-pre.4", { track: "next" });
   assert.equal(preview.track, "next");
-  assert.equal(preview.verify[0], "aslite version --check --tag next");
+  assert.equal(preview.verify[0], "superbee version --check --tag next");
 });
 
 test("deprecation precedence never recommends a deprecated selected release", () => {
@@ -165,7 +165,7 @@ test("missing and malformed registry policy fail closed with no install command"
   const base = packument("0.1.0-pre.3", { runningVersion: "0.1.0-pre.2" });
   const inheritedTags = Object.create({ latest: "0.1.0-pre.3" }) as Record<string, unknown>;
   const cases: Array<[string, unknown, "tag_missing" | "malformed"]> = [
-    ["missing dist-tags", { name: "@holaxis/aslite", versions: base.versions }, "tag_missing"],
+    ["missing dist-tags", { name: "superbee", versions: base.versions }, "tag_missing"],
     ["missing requested tag", { ...base, "dist-tags": {} }, "tag_missing"],
     ["inherited requested tag", { ...base, "dist-tags": inheritedTags }, "tag_missing"],
     ["non-string tag", { ...base, "dist-tags": { latest: 3 } }, "malformed"],
@@ -427,7 +427,7 @@ test("bounded transport classifies HTTP, malformed, oversized, timeout, and offl
 });
 
 test("network constants pin the public privacy and resource boundary", () => {
-  assert.equal(UPDATE_CHECK_ENDPOINT, "https://registry.npmjs.org/%40holaxis%2Faslite");
+  assert.equal(UPDATE_CHECK_ENDPOINT, "https://registry.npmjs.org/superbee");
   assert.equal(UPDATE_CHECK_TIMEOUT_MS, 2_000);
   assert.equal(UPDATE_CHECK_MAX_BYTES, 1_048_576);
 });

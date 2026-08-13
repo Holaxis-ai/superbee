@@ -7,13 +7,10 @@ import { STABLE_MCP_LAUNCH_GUIDANCE } from "./integration-guidance.js";
 
 export { NPM_RESOURCES, commandName };
 
-// The npm package publishes under the scoped interim coordinate `@holaxis/aslite` (npm rejected
-// the unscoped name as too similar to existing monikers). The COORDINATE
-// (`@holaxis/aslite`) appears only in install/npx command text, while the channel's skill
-// IDENTITY and command prefix stay the bare `aslite` bin — a skill name or install folder must
-// not contain `@` or `/`.
-const NPM_COORDINATE = "@holaxis/aslite";
-const NPM_BIN = "aslite";
+// Superbee is the canonical npm coordinate and command. The historical `aslite` and
+// `agentstate-lite` bins remain installed aliases so existing users do not need to migrate.
+const NPM_COORDINATE = "superbee";
+const NPM_BIN = "superbee";
 const NPX = `npx -y ${NPM_COORDINATE}`;
 
 // ---------------------------------------------------------------------------------------------
@@ -136,7 +133,7 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push("```");
   lines.push("");
   lines.push(
-    "The folder is LOCAL until you choose to share it: `aslite sync --establish` (once) publishes it",
+    `The folder is LOCAL until you choose to share it: \`${prefix} sync --establish\` (once) publishes it`,
   );
   lines.push(
     "onto its own `board` branch — from then on `sync` commits and pushes board changes itself, never",
@@ -175,9 +172,10 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push("");
   lines.push("Each invocation is stateless. HTTP is activated only by explicit `--remote <url>`.");
   lines.push(
-    "Otherwise bundle resolution stays local: explicit `--dir` → nearest `.agentstate.json`",
+    "Otherwise bundle resolution stays local: explicit `--dir` → nearest `.superbee.json` or",
   );
-  lines.push("local-path binding up-tree → the cwd walk, which at each ancestor checks the");
+  lines.push("supported `.agentstate.json` local-path binding up-tree → the cwd walk, which at each");
+  lines.push("ancestor checks both binding names together (both at one level fail closed), then the");
   lines.push("directory's own `index.md`, then its");
   lines.push(
     "conventional `.agentstate-lite/index.md`. Reserve `--dir` for the exceptions: a bundle outside",
@@ -190,9 +188,10 @@ function renderWorkspaceLocation(prefix: string): string[] {
     "1. **Explicit user direction** — the user names a directory or a `--remote`; use that. A local",
   );
   lines.push(
-    "   `.agentstate.json` binding (`{ \"bundle\": \"<path>\" }` at the project root) is the",
+    "   `.superbee.json` binding (`{ \"bundle\": \"<path>\" }` at the project root) is the",
   );
-  lines.push("   durable form of that direction — it beats the conventional folder when both exist.");
+  lines.push("   preferred durable form; existing `.agentstate.json` bindings remain supported. A binding");
+  lines.push("   beats the conventional folder; both binding names at one level are a conflict.");
   lines.push("   Remote URLs are never durable ambient bindings; pass `--remote <url>` per invocation.");
   lines.push(
     "2. **An existing workspace** — if a bare command already resolves (a binding, an enclosing",
@@ -209,7 +208,7 @@ function renderWorkspaceLocation(prefix: string): string[] {
     "scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate-lite/<name>/`)",
   );
   lines.push(
-    "and point a git-excluded `.agentstate.json` at it. Choose by one question: do teammates",
+    "and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates",
   );
   lines.push("share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.");
   lines.push("");
@@ -256,7 +255,7 @@ function renderSyncSection(prefix: string): string[] {
   lines.push("## Sharing the board — `sync`");
   lines.push("");
   lines.push(
-    "Ordinary `aslite sync` shares your board — commits your changes, pulls your teammate's, pushes yours,",
+    `Ordinary \`${prefix} sync\` shares your board — commits your changes, pulls your teammate's, pushes yours,`,
   );
   lines.push("while leaving code-project files untouched.");
   lines.push("");
@@ -504,7 +503,7 @@ function renderNpmShippedReferencesSection(): string[] {
   lines.push(
     "folder sits NEXT TO this SKILL.md — in the npm package root, and in any host skill folder",
   );
-  lines.push("this file is installed into (`aslite skill install`).");
+  lines.push(`this file is installed into (\`${NPM_BIN} skill install\`).`);
   lines.push("");
   lines.push(
     "Shell commands resolve paths against YOUR working directory, not this file's folder, so set",
@@ -532,7 +531,7 @@ function renderNpmPathSection(): string[] {
   lines.push("");
   lines.push(`Every example below assumes the \`${NPM_BIN}\` bin is on PATH. If it is not:`);
   lines.push("");
-  lines.push(`- \`npm install -g ${NPM_COORDINATE}\` puts it (and the long-form alias \`agentstate-lite\`) on PATH.`);
+  lines.push(`- \`npm install -g ${NPM_COORDINATE}\` puts it (and the legacy aliases \`aslite\` and \`agentstate-lite\`) on PATH.`);
   lines.push(`- \`${NPX} …\` runs any command below with no install at all — swap the leading \`${NPM_BIN}\``);
   lines.push("  for that prefix and the rest of the line runs unchanged.");
   lines.push("");
@@ -548,7 +547,7 @@ export function renderNpm(): string {
     "  Read and write a local OKF knowledge bundle (agent context notes, docs, cross-links, and live",
   );
   lines.push(
-    "  bundle Views) from the shell via the aslite CLI. Use when an agent",
+    "  bundle Views) from the shell via the Superbee CLI. Use when an agent",
   );
   lines.push(
     "  needs to persist a context note across sessions, store a decision/spec as a doc, link concepts,",
@@ -566,7 +565,7 @@ export function renderNpm(): string {
   lines.push(
     `It is a standalone npm package (\`${NPM_COORDINATE}\`) installing two bins for the identical CLI: \`${NPM_BIN}\` and the`,
   );
-  lines.push("long-form alias `agentstate-lite`. Every example below uses the bare `aslite` bin.");
+  lines.push("legacy aliases `aslite` and `agentstate-lite`. Every example below uses `superbee`.");
   lines.push("");
   lines.push("Output is TOON on stdout (a `--json` hatch exists). Errors are structured TOON on stdout with a");
   lines.push("capped exit-code taxonomy (0 ok/no-op, 2 usage, 4 auth, 5 conflict, 6 not-found, 1 runtime).");

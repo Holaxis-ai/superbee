@@ -7,8 +7,10 @@
 import type { ArtifactChannel } from "./build-identity.js";
 
 export const SKILL_MANIFEST_SCHEMA = "aslite.skill-manifest.v2" as const;
-export const SKILL_INSTALLER = "aslite skill install" as const;
-export const OWNED_SKILL_PACKAGES = ["aslite", "@holaxis/aslite"] as const;
+export const SKILL_INSTALLER = "superbee skill install" as const;
+export const LEGACY_SKILL_INSTALLERS = ["aslite skill install"] as const;
+export const OWNED_SKILL_INSTALLERS = [SKILL_INSTALLER, ...LEGACY_SKILL_INSTALLERS] as const;
+export const OWNED_SKILL_PACKAGES = ["superbee", "aslite", "@holaxis/aslite"] as const;
 
 export interface SkillSourceIdentity {
   release_version: string;
@@ -19,7 +21,7 @@ export interface SkillSourceIdentity {
 interface OwnedSkillManifestBase {
   package: (typeof OWNED_SKILL_PACKAGES)[number];
   version: string;
-  installed_by: typeof SKILL_INSTALLER;
+  installed_by: (typeof OWNED_SKILL_INSTALLERS)[number];
   files: string[];
   receipt_valid: boolean;
 }
@@ -108,13 +110,13 @@ export function parseOwnedSkillManifest(value: unknown): OwnedSkillManifest | nu
   if (!isRecord(value)) return null;
   if (!OWNED_SKILL_PACKAGES.includes(value.package as never)) return null;
   if (typeof value.version !== "string" || value.version.length === 0) return null;
-  if (value.installed_by !== SKILL_INSTALLER) return null;
+  if (!OWNED_SKILL_INSTALLERS.includes(value.installed_by as never)) return null;
   const files = parseOwnedFiles(value.files);
   if (files === null) return null;
   const base = {
     package: value.package as OwnedSkillManifestBase["package"],
     version: value.version,
-    installed_by: SKILL_INSTALLER,
+    installed_by: value.installed_by as OwnedSkillManifestBase["installed_by"],
     files,
   };
 

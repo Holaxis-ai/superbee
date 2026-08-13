@@ -43,7 +43,7 @@ import {
   sessionStartPull,
 } from "../src/commands/session-start.js";
 import { sync } from "../src/commands/sync.js";
-import { resolveBundleKey } from "@agentstate-lite/board-git";
+import { resolveBundleKey } from "@superbee/board-git";
 import {
   HOOK_TIMEOUT_SECONDS,
   atomicWriteFileSync,
@@ -74,7 +74,7 @@ import {
   stableNodePair,
 } from "./hook-shell-fixtures.js";
 import { readCursor, readMarker, readSelfActors, type AwarenessCache } from "../src/cursor.js";
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 import { addCatalogEntry } from "../src/catalog.js";
 import {
   commitBoard,
@@ -90,7 +90,7 @@ import {
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 /**
  * Deterministic CLI resolution for spawned hook commands. The installed hook no longer inherits
@@ -99,7 +99,7 @@ const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
 let preferredBinDirPromise: Promise<string> | undefined;
 function preferredBinDir(): Promise<string> {
   preferredBinDirPromise ??= (async () => {
-    if (!existsSync(cliBin)) execFileSync("node", ["build.mjs", "local-dev"], { cwd: cliPackageRoot, stdio: "inherit" });
+    if (!existsSync(cliBin)) execFileSync("npm", ["run", "build"], { cwd: cliPackageRoot, stdio: "inherit" });
     const dir = await mkdtemp(path.join(tmpdir(), "aslite-preferred-bin-"));
     await symlink(cliBin, path.join(dir, "aslite"));
     return dir;
@@ -754,9 +754,9 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
     assert.equal(codex.hooks.SessionStart[0].hooks[0].command, entry.command);
 
     const plugin = await import("node:fs/promises").then((fs) =>
-      fs.readFile(path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js"), "utf8"),
+      fs.readFile(path.join(base, ".config", "opencode", "plugins", "axi-superbee.js"), "utf8"),
     );
-    assert.ok(plugin.includes("axi-sdk-js managed opencode plugin: agentstate-lite"));
+    assert.ok(plugin.includes("axi-sdk-js managed opencode plugin: superbee"));
     assert.ok(plugin.includes(`const command = ${JSON.stringify(launchTokens[0])}`));
     assert.ok(plugin.includes(`const commandArgs = ${JSON.stringify(launchTokens.slice(1))}`));
 
@@ -816,8 +816,8 @@ test("user hook operations honor relocated config homes and global remains an al
     assert.equal(codex.hooks.SessionStart[0].hooks[0].command, claude.hooks.SessionStart[0].hooks[0].command);
     assert.match(await readFile(path.join(codexHome, "config.toml"), "utf8"), /hooks = true/);
     assert.match(
-      await readFile(path.join(xdgHome, "opencode", "plugins", "axi-agentstate-lite.js"), "utf8"),
-      /axi-sdk-js managed opencode plugin: agentstate-lite/,
+      await readFile(path.join(xdgHome, "opencode", "plugins", "axi-superbee.js"), "utf8"),
+      /axi-sdk-js managed opencode plugin: superbee/,
     );
     assert.equal(hookInstalled(undefined, location), true);
     assert.equal(hookNeedsUpdate(undefined, location), false);
@@ -831,13 +831,13 @@ test("user hook operations honor relocated config homes and global remains an al
     await assert.rejects(() => readFile(path.join(homeDir, ".claude", "settings.json")));
     await assert.rejects(() => readFile(path.join(homeDir, ".codex", "hooks.json")));
     await assert.rejects(() =>
-      readFile(path.join(homeDir, ".config", "opencode", "plugins", "axi-agentstate-lite.js")),
+      readFile(path.join(homeDir, ".config", "opencode", "plugins", "axi-superbee.js")),
     );
 
     await hook(["uninstall", "--scope", "user"], { ...location, stdout: () => {} });
     assert.equal(hookInstalled(undefined, location), false);
     await assert.rejects(() =>
-      readFile(path.join(xdgHome, "opencode", "plugins", "axi-agentstate-lite.js")),
+      readFile(path.join(xdgHome, "opencode", "plugins", "axi-superbee.js")),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -849,7 +849,7 @@ test("OpenCode's explicit config directory takes precedence over its XDG config 
     XDG_CONFIG_HOME: "/xdg",
     OPENCODE_CONFIG_DIR: "/profiles/review",
   });
-  assert.equal(targets.opencodePlugin, path.join("/profiles/review", "plugins", "axi-agentstate-lite.js"));
+  assert.equal(targets.opencodePlugin, path.join("/profiles/review", "plugins", "axi-superbee.js"));
 });
 
 test("hook re-install prompt: a pre-session-start managed hook is detected and surfaced in home", async () => {
@@ -896,8 +896,8 @@ test("hook re-install prompt: a pre-session-start managed hook is detected and s
 test("sessionStartHookCommand: bare base passes through; a spaced path is quoted; plugin spawns argv", () => {
   assert.equal(sessionStartHookCommand("aslite"), "aslite session-start");
   assert.equal(
-    sessionStartHookCommand("/Users/f b/packages/cli/dist/agentstate-lite.mjs"),
-    "'/Users/f b/packages/cli/dist/agentstate-lite.mjs' session-start",
+    sessionStartHookCommand("/Users/f b/packages/cli/dist/superbee.mjs"),
+    "'/Users/f b/packages/cli/dist/superbee.mjs' session-start",
   );
   const src = buildOpenCodePluginSource("/opt/bin/agentstate-lite");
   assert.ok(src.includes('const command = "/opt/bin/agentstate-lite"'));
@@ -1126,9 +1126,9 @@ test("built uninstall recognizes every canonical lexical envelope", async () => 
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-owned-"));
   const canonicalCommands = [
     "aslite session-start",
-    "'/tmp/a b/packages/cli/dist/agentstate-lite.mjs' session-start",
-    String.raw`'/tmp/a'\''b/packages/cli/dist/agentstate-lite.mjs' session-start`,
-    '"/tmp/a b/packages/cli/dist/agentstate-lite.mjs" session-start',
+    "'/tmp/a b/packages/cli/dist/superbee.mjs' session-start",
+    String.raw`'/tmp/a'\''b/packages/cli/dist/superbee.mjs' session-start`,
+    '"/tmp/a b/packages/cli/dist/superbee.mjs" session-start',
     String.raw`'/opt/a'\''b/bin/node' '/opt/a'\''b/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs' session-start`,
   ];
   const settings = JSON.stringify(
@@ -1207,7 +1207,7 @@ test("built install and uninstall preserve mismatched npm Node/package pairs acr
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-uninstall-"));
   const mismatchedPlugin = buildOpenCodePluginSource("/opt/runtime-a/bin/node", [
-    "/opt/npm-b/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs",
+    "/opt/npm-b/lib/node_modules/superbee/dist/superbee.mjs",
     "session-start",
   ]);
   const jsonTargets = (base: string): string[] => [
@@ -1215,7 +1215,7 @@ test("built install and uninstall preserve mismatched npm Node/package pairs acr
     path.join(base, ".codex", "hooks.json"),
   ];
   const pluginTarget = (base: string): string =>
-    path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+    path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
   try {
     const controlInstall = await runCliHook(["hook", "install", "--json"], { cwd: control });
     assert.equal(controlInstall.status, 0, controlInstall.stdout + controlInstall.stderr);
@@ -1301,7 +1301,7 @@ test("built lifecycle preserves noncanonical managed-path near-matches across al
     path.join(base, ".codex", "hooks.json"),
   ];
   const pluginTarget = (base: string): string =>
-    path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+    path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
   const foreignEntries = NONCANONICAL_MANAGED_PATH_CASES.map(({ command }) => ({
     type: "command",
     command,
@@ -1400,6 +1400,10 @@ test("hookNeedsUpdate: PATH-bound and pre-session-start hooks are flagged; a sta
     await write(
       "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
     );
+    assert.equal(hookNeedsUpdate([base]), true);
+    await write(
+      "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start",
+    );
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {
     await rm(base, { recursive: true, force: true });
@@ -1490,7 +1494,7 @@ test("hook install over invalid-JSON settings: structured RUNTIME error naming t
     // Other targets still proceeded despite the refusal.
     const codex = JSON.parse(await readFile(path.join(base, ".codex", "hooks.json"), "utf8"));
     assert.ok(codex.hooks.SessionStart[0].hooks[0].command.endsWith(" session-start"));
-    await readFile(path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js"), "utf8");
+    await readFile(path.join(base, ".config", "opencode", "plugins", "axi-superbee.js"), "utf8");
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -1594,6 +1598,32 @@ test("atomicWriteFileSync: replacing an existing file preserves its mode (0600 s
     atomicWriteFileSync(target, "replaced\n");
     assert.equal(await readFile(target, "utf8"), "replaced\n");
     assert.equal((await stat(target)).mode & 0o777, 0o600, "the replacement must not widen the mode");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteFileSync: generated-plugin mode refuses a final symlink without changing either entry", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-symlink-"));
+  const target = path.join(dir, "managed-target.js");
+  const link = path.join(dir, "axi-superbee.js");
+  try {
+    await writeFile(target, "user-owned\n");
+    await symlink(path.basename(target), link);
+
+    assert.throws(
+      () => atomicWriteFileSync(link, "generated\n", { followFinalSymlink: false }),
+      /symlink .*refusing to replace a generated plugin through a link/,
+    );
+
+    assert.equal((await lstat(link)).isSymbolicLink(), true, "the canonical directory entry stays a symlink");
+    assert.equal(await realpath(link), await realpath(target), "the symlink still points at its original target");
+    assert.equal(await readFile(target, "utf8"), "user-owned\n", "the symlink target bytes stay untouched");
+    assert.deepEqual(
+      (await readdir(dir)).sort(),
+      ["axi-superbee.js", "managed-target.js"],
+      "a refused write leaves no temporary file",
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

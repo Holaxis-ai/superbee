@@ -49,7 +49,7 @@ import {
   committedPreviewRecord,
   rolloutNote,
 } from "../src/commands/sync-establish.js";
-import { GITIGNORE_ENTRY, withIgnoreEntry } from "@agentstate-lite/board-git";
+import { GITIGNORE_ENTRY, withIgnoreEntry } from "@superbee/board-git";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import {

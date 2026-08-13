@@ -6,7 +6,7 @@
  * exactly what's under test.
  */
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { writeBlob } from "@agentstate-lite/core";
+import { writeBlob } from "@superbee/core";
 import { bootUiOverDirBundle, bootUiOverPagesBundle, openRegisteredView } from "./harness.js";
 
 test("a request with no token and no session cookie is rejected (403)", async () => {

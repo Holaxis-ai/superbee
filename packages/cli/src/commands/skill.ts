@@ -1,8 +1,8 @@
-// `aslite skill install|status|uninstall` — install this distribution's generated Agent Skill
+// `superbee skill install|status|uninstall` — install this distribution's generated Agent Skill
 // (SKILL.md + references/) into host skill folders.
 //
 // ASSET SOURCE: the running distribution's own package root (`dirname(executable)/..` → SKILL.md +
-// references/) — the npm layout (`<pkg>/dist/agentstate-lite.mjs`) and a dev/repo build
+// references/) — the npm layout (`<pkg>/dist/superbee.mjs`) and a dev/repo build
 // (`packages/cli/dist/…`) both resolve naturally.
 //
 // TARGETS: Claude Code + Codex only, via the ONE HOST_CONFIG_ROOTS authority (the same env-var
@@ -74,12 +74,12 @@ import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 
 export { isSafeManifestEntry };
 
-export const SKILL_USAGE = `agentstate-lite skill — install this package's Agent Skill into host skill folders
+export const SKILL_USAGE = `superbee skill — install this package's Agent Skill into host skill folders
 
 Usage:
-  agentstate-lite skill install   [--scope project|user]
-  agentstate-lite skill status    [--scope project|user]
-  agentstate-lite skill uninstall [--scope project|user]
+  superbee skill install   [--scope project|user]
+  superbee skill status    [--scope project|user]
+  superbee skill uninstall [--scope project|user]
 
 Installs (or removes) the generated Agent Skill shipped with this npm package — SKILL.md plus its
 references/ folder — for Claude Code and Codex. OpenCode is deliberately not a target: it has no
@@ -94,7 +94,7 @@ discovery is verified at USER scope (codex 0.144.x) — project-scope placement 
 host's documented convention.
 
 Persistent install from npm-package bytes requires a durable global install
-(\`npm install -g @holaxis/aslite\`); transient npx/npm-exec cache paths fail closed before either
+(\`npm install -g superbee\`); transient npx/npm-exec cache paths fail closed before either
 host folder is changed. npx remains supported for read-only, trial, and bootstrap commands.
 
 Options:
@@ -296,7 +296,7 @@ function readManifest(dir: string): SkillManifest | undefined | null {
 /** Legacy manifest-first transition: it owns union files without claiming not-yet-true digests. */
 function transitionalManifestContent(assets: SkillAssets, files: readonly string[]): string {
   const manifest = {
-    package: "@holaxis/aslite",
+    package: "superbee",
     version: assets.version,
     installed_by: SKILL_INSTALLER,
     files: [...files],
@@ -312,7 +312,7 @@ function manifestContent(assets: SkillAssets): string {
   }
   const manifest: Omit<SkillManifestV2, "kind" | "receipt_valid"> = {
     schema: SKILL_MANIFEST_SCHEMA,
-    package: "@holaxis/aslite",
+    package: "superbee",
     version: assets.version,
     installed_by: SKILL_INSTALLER,
     compatibility_contract: assets.compatibilityContract,
@@ -710,7 +710,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         `persistent skill install requires a durable npm-global CLI; authority is ${authority.state}: ${authority.reason}`,
         {
           details: { install_authority: authority },
-          help: "run `npm install -g @holaxis/aslite`, verify `aslite version --json`, then re-run skill install; npx remains supported for read-only/trial commands",
+          help: "run `npm install -g superbee`, verify `superbee version --json`, then re-run skill install; npx remains supported for read-only/trial commands",
         },
       );
     }

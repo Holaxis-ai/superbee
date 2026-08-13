@@ -11,7 +11,7 @@ import {
   CONVENTION_TYPE,
   type OkfDocument,
   type ValidationWarning,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   declaredAccessValue,
   isAnyEntryKey,
@@ -21,7 +21,7 @@ import {
   PAGE_REGISTRY_PREFIX,
   VIEW_ENTRY_PREFIX,
   VIEW_REGISTRY_PREFIX,
-} from "@agentstate-lite/core/page";
+} from "@superbee/core/page";
 
 /** One recipe file: a path relative to the recipe root (posix), with its UTF-8 text. */
 export interface RecipeFile {

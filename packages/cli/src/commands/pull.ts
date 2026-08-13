@@ -1,4 +1,4 @@
-// `agentstate-lite pull --doc-key <key> --out (<path> | -)` — the out-of-band byte-OUT channel: the
+// `superbee pull --doc-key <key> --out (<path> | -)` — the out-of-band byte-OUT channel: the
 // reverse of `promote`.
 //
 // ROUTES BY TARGET, symmetric with `promote` (A6, I8): a `--doc-key` ending `.md` (case-insensitive,
@@ -41,7 +41,7 @@ import {
   conceptIdFromPath,
   blobVersion,
   type Bundle,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, toExit, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -50,10 +50,10 @@ import { render, resolveMode, renderErrorEnvelope, type OutputMode } from "../ou
 import { cliInvocation } from "../invocation.js";
 import { inBundlePollutionWarning, readErrorToCliError } from "./doc.js";
 
-export const PULL_USAGE = `agentstate-lite pull — pull a doc or blob's bytes out of the store (the reverse of 'promote')
+export const PULL_USAGE = `superbee pull — pull a doc or blob's bytes out of the store (the reverse of 'promote')
 
 Usage:
-  agentstate-lite pull --doc-key <key> --out (<path> | -) [options]
+  superbee pull --doc-key <key> --out (<path> | -) [options]
 
 Routes by the --doc-key's target (case-insensitive), symmetric with 'promote':
   A key ending '.md' is a DOC: delivered as the CANONICAL OKF re-serialization (core's ONE

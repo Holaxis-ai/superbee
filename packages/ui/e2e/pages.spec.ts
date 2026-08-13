@@ -11,7 +11,7 @@
 import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
-import { writeDoc } from "@agentstate-lite/core";
+import { writeDoc } from "@superbee/core";
 import { approveViewIfPrompted, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, CLI_DIST } from "./harness.js";
 
 const TASKS = [
@@ -426,12 +426,12 @@ test("home surface: flat badged grid, live activity feed, first-run orientation 
     // the last panel (with the privacy promise), and dismissing there persists.
     const orientation = page.locator(".orientation");
     await expect(orientation).toBeVisible();
-    await expect(orientation).toContainText(/what is agentstate-lite\?/i);
+    await expect(orientation).toContainText(/what is superbee\?/i);
     await expect(orientation.getByRole("button", { name: "Got it" })).toHaveCount(0);
     await orientation.getByRole("button", { name: "Next" }).click();
-    await expect(orientation).toContainText(/how do i use aslite\?/i);
+    await expect(orientation).toContainText(/how do i use superbee\?/i);
     await orientation.getByRole("button", { name: "Back" }).click();
-    await expect(orientation).toContainText(/what is agentstate-lite\?/i);
+    await expect(orientation).toContainText(/what is superbee\?/i);
     await orientation.getByRole("button", { name: "Next" }).click();
     await orientation.getByRole("button", { name: "Next" }).click();
     await expect(orientation).toContainText(/recipes/i);

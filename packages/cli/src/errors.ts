@@ -8,8 +8,8 @@
 // reach a command catch-all or fall all the way to `toExit`.
 //
 // The 0/1/2/4/5/6 exit taxonomy is PRESERVED intact from holaxis-agentstate.
-import { InvalidInputError, MalformedDocumentError, RemoteError, VersionConflict } from "@agentstate-lite/core";
-import { isBoardGitError, type BoardGitError } from "@agentstate-lite/board-git";
+import { InvalidInputError, MalformedDocumentError, RemoteError, VersionConflict } from "@superbee/core";
+import { isBoardGitError, type BoardGitError } from "@superbee/board-git";
 
 /** Stable, documented error codes. Finer than the exit table; rides alongside it in the envelope. */
 export type CliErrorCode =
@@ -160,7 +160,7 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  * anything left uncaught, so the two layers can never disagree. Command-level catches may still
  * translate an EXPECTED domain condition with better context (a typed pre-check — e.g. ENOENT ->
  * "no concept document at id 'X'"), but never classify an arbitrary plain error themselves.
- * `classifyGitError` (@agentstate-lite/board-git) is the git-porcelain DOMAIN classifier: it produces
+ * `classifyGitError` (@superbee/board-git) is the git-porcelain DOMAIN classifier: it produces
  * typed `BoardGitError`s that this boundary maps through {@link cliErrorFromBoardGit} — the ONE
  * BoardGitError→CliError mapping (parity pinned by `test/board-git-errors.test.ts`'s table).
  * Contract (pinned by `test/error-boundary.test.ts`'s table):

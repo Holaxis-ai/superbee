@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { MemoryBackend, RemoteBackend, writeBlob, writeDoc, type Bundle } from "@agentstate-lite/core";
-import { createRouter } from "@agentstate-lite/server";
+import { MemoryBackend, RemoteBackend, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { createRouter } from "@superbee/server";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 
 const SECRET = "view-launch-errors-secret";

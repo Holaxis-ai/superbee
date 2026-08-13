@@ -8,17 +8,17 @@ import {
   type Bundle,
   type ConceptId,
   type ReadResult,
-} from "@agentstate-lite/core";
-import { renderDocumentToStaticHtml } from "@agentstate-lite/markdown-renderer/static";
+} from "@superbee/core";
+import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import {
   AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
   DURABLE_VIEW_BRIDGE_TOOL_NAME,
   SHOW_VIEW_TOOL_NAME,
   createMcpAppServer,
-} from "@agentstate-lite/mcp-app";
-import { createRouter } from "@agentstate-lite/server";
-import { bootUiServer } from "@agentstate-lite/ui-server";
-import { SessionViewAuthorizationStore } from "@agentstate-lite/view-runtime";
+} from "@superbee/mcp-app";
+import { createRouter } from "@superbee/server";
+import { bootUiServer } from "@superbee/ui-server";
+import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 

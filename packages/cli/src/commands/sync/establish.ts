@@ -1,4 +1,4 @@
-// `agentstate-lite sync --establish` — the explicit local-bundle -> shared-board transition.
+// `superbee sync --establish` — the explicit local-bundle -> shared-board transition.
 // TWO CASES, ONE VERB. Greenfield (the folder is uncommitted — THIS module): snapshot first,
 // publish second, convert the local folder last — until the exact board commit exists on origin,
 // the user's only bundle copy is never renamed or modified; the conversion keeps a deterministic
@@ -43,7 +43,7 @@ import {
   unpushedCount,
   writeGitDirMarker,
   type BundleSnapshotCommit,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { defaultSyncStore } from "../../cursor.js";
 import { render, type OutputMode } from "../../output.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";

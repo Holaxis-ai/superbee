@@ -13,7 +13,7 @@ import {
   mintSessionSecret,
   readCookie,
   sessionCookieHeader,
-} from "@agentstate-lite/ui-server";
+} from "@superbee/ui-server";
 
 test("hostnameOf strips a port from a plain host", () => {
   assert.equal(hostnameOf("127.0.0.1:4818"), "127.0.0.1");

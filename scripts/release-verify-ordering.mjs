@@ -16,6 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  PUBLICATION_PLAN_SCHEMA,
   buildPublicationPlan,
   buildReceiptStatusStamp,
   canonicalPayloadBytes,
@@ -192,7 +193,7 @@ function isNotFound(error) {
 }
 
 function validatePlanForMutation(plan) {
-  if (plan?.schema !== "aslite.publication-plan.v1") throw new Error("unknown publication plan schema");
+  if (plan?.schema !== PUBLICATION_PLAN_SCHEMA) throw new Error("unknown publication plan schema");
   if (!Number.isSafeInteger(plan.draft_release_id) || plan.draft_release_id <= 0) throw new Error("publication plan has invalid draft release id");
   if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/.test(plan.tag ?? "")) {
     throw new Error("publication plan has invalid release tag");

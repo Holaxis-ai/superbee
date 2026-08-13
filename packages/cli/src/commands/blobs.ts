@@ -1,4 +1,4 @@
-// `agentstate-lite blobs [--prefix <p>] [--limit <n>]` — enumerate the store's blob (non-document) keys.
+// `superbee blobs [--prefix <p>] [--limit <n>]` — enumerate the store's blob (non-document) keys.
 //
 // Blobs are opaque byte artifacts (generated HTML, images, binary assets) addressed by key — the
 // non-'.md' half of the store that 'promote'/'pull'/'delete --doc-key' operate on ONE key at a time.
@@ -6,7 +6,7 @@
 // exists on the StorageBackend seam AND on RemoteBackend + the wire (GET /blobs), so this command is a
 // thin, backend-agnostic consumer — it rides `--remote` for free, exactly like `list`.
 import { parseArgs } from "node:util";
-import { listBlobs } from "@agentstate-lite/core";
+import { listBlobs } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -14,10 +14,10 @@ import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 
-export const BLOBS_USAGE = `agentstate-lite blobs — list the store's blob (non-document) keys
+export const BLOBS_USAGE = `superbee blobs — list the store's blob (non-document) keys
 
 Usage:
-  agentstate-lite blobs [--prefix <p>] [--limit <n>] [--dir <path> | --remote <url>]
+  superbee blobs [--prefix <p>] [--limit <n>] [--dir <path> | --remote <url>]
 
 Blobs are opaque byte artifacts (generated HTML, images, …) addressed by key — the non-'.md' half
 of the store that 'promote'/'pull'/'delete --doc-key' operate on individually. This lists their

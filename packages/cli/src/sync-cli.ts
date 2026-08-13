@@ -4,7 +4,7 @@
 // hosting them here keeps command modules from importing each other for shared CLI facts (the
 // A0 discipline). Deliberately CLI-side: `SyncCliDeps` is an output-channel seam and
 // `hookInstallHintOnce` composes the hook probe with invocation-aware hint copy — neither is
-// git/channel orchestration, so neither belongs in `@agentstate-lite/board-git`.
+// git/channel orchestration, so neither belongs in `@superbee/board-git`.
 import { defaultSyncStore } from "./cursor.js";
 import { hookInstalled } from "./commands/hook.js";
 

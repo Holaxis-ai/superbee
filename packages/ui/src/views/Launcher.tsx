@@ -20,7 +20,7 @@
  * resurface it once), and REOPENABLE afterwards via the "what is this?" affordance — the
  * overview and the example view prompts must stay reachable, not vanish after one reading.
  * Copy rules (designs/home-surface + the 2026-07-24 landing rethink): agent-first framing —
- * ASLite is a cognitive ecosystem used THROUGH agents, and this window exists for the human to
+ * Superbee is a cognitive ecosystem used THROUGH agents, and this window exists for the human to
  * see what agents are doing; the privacy promise is worded to cover the in-tree mode; the
  * try-it hook carries a no-agent-yet fallback.
  *
@@ -103,9 +103,9 @@ function sharingDetail(sharing: SharingSummary | null): string {
   if (sharing === null) return "no sharing information for this bundle";
   switch (sharing.kind) {
     case "private":
-      return "not shared — stays here until you run aslite sync --establish, or commit it with your code";
+      return "not shared — stays here until you run superbee sync --establish, or commit it with your code";
     case "private_local_branch":
-      return "a local board branch exists but has never been pushed — aslite sync shares it";
+      return "a local board branch exists but has never been pushed — superbee sync shares it";
     case "private_intree_no_remote":
       return "committed with the code, but this repo has no remote — pushing the repo shares it";
     case "private_intree_not_pushed":
@@ -128,7 +128,7 @@ function sharingDetail(sharing: SharingSummary | null): string {
 
 /** localStorage key for the first-run orientation's dismissal, scoped per bundle root. */
 export function orientationStorageKey(root: string): string {
-  return `aslite-home-orientation:${root}`;
+  return `superbee-home-orientation:${root}`;
 }
 
 function readOrientationDismissed(root: string): boolean {
@@ -292,9 +292,9 @@ export function Launcher() {
             <section className="orientation" ref={orientationCardRef}>
               {orientationStep === 0 && (
                 <>
-                  <h2 tabIndex={-1}>What is agentstate-lite?</h2>
+                  <h2 tabIndex={-1}>What is Superbee?</h2>
                   <p>
-                    ASLite is a cognitive ecosystem for AI agents: a shared, versioned memory that lives in this
+                    Superbee is a cognitive ecosystem for AI agents: a shared, versioned memory that lives in this
                     project as a folder of plain markdown — notes, decisions, tasks, and the links between them.
                     Agents read and write it as they work; conflict-safe writes keep concurrent agents from stepping
                     on each other; and everything they know stays in files you own and can read.{" "}
@@ -316,7 +316,7 @@ export function Launcher() {
                       </p>
                       <p>
                         Nothing about it is proprietary or locked to this tool: any editor that opens markdown can
-                        read your bundle, and aslite can read a bundle some other program wrote.
+                        read your bundle, and Superbee can read a bundle some other program wrote.
                       </p>
                     </div>
                   )}
@@ -332,13 +332,13 @@ export function Launcher() {
               )}
               {orientationStep === 1 && (
                 <>
-                  <h2 tabIndex={-1}>How do I use ASLite?</h2>
+                  <h2 tabIndex={-1}>How do I use Superbee?</h2>
                   <p>
-                    Actually, agents are the main users of ASLite. In fact it was built <em>by</em> agents,{" "}
+                    Actually, agents are the main users of Superbee. In fact it was built <em>by</em> agents,{" "}
                     <em>for</em> agents, with features that make it easy for them to work together on long-horizon
-                    problems. The ASLite skill provides agents with some basic instructions on how it all works, and
-                    ASLite hooks start each new session with the bundle’s current state already in view. If they
-                    aren’t set up yet, just ask your agent to install the ASLite skill and hooks — for this project
+                    problems. The Superbee skill provides agents with some basic instructions on how it all works, and
+                    Superbee hooks start each new session with the bundle’s current state already in view. If they
+                    aren’t set up yet, just ask your agent to install the Superbee skill and hooks — for this project
                     only, or globally for every project at once.
                   </p>
                   <p>
@@ -355,7 +355,7 @@ export function Launcher() {
                 <>
                   <h2 tabIndex={-1}>Views</h2>
                   <p>
-                    ASLite also makes it extremely easy to create views so that you can see and interact with the
+                    Superbee also makes it extremely easy to create views so that you can see and interact with the
                     project and its bundle. Just tell the agents what you want to see, and they will create it. And
                     they are very good at anticipating what display formats are most useful. Here are a few examples
                     of views that might be helpful:
@@ -367,7 +367,7 @@ export function Launcher() {
                   </ul>
                   <h3>Recipes</h3>
                   <p>
-                    ASLite is not limited to what it ships with — it is flexible by design. You (or your agents) can
+                    Superbee is not limited to what it ships with — it is flexible by design. You (or your agents) can
                     define your own document types, with their own fields and allowed values; your own typed
                     relationships between documents; and your own views over all of it. The bundle adapts to how your
                     project actually works, not the other way around.
@@ -375,7 +375,7 @@ export function Launcher() {
                   <p>
                     Recipes are how that flexibility becomes reusable. A recipe packages a custom set of functionality
                     — document types, relationships, and the views that go with them — into a small, installable
-                    definition you can apply to any bundle and share with others. ASLite ships with a few built in:
+                    definition you can apply to any bundle and share with others. Superbee ships with a few built in:
                     context notes (applied by default), work tracking (the Task type that powers a shared task board),
                     and roadmap. To use one, just ask your agent — e.g.{" "}
                     <em>“Set this project up for task tracking”</em> — and it will apply the right recipe.
@@ -419,7 +419,7 @@ export function Launcher() {
                     you.
                   </p>
                   <p className="orientation-close">
-                    <strong>That’s the tour.</strong> To see ASLite in action, ask your agent to write something down
+                    <strong>That’s the tour.</strong> To see Superbee in action, ask your agent to write something down
                     — a decision you just made, or how some corner of this project works — and watch it land in the
                     activity feed.
                   </p>
@@ -524,7 +524,7 @@ export function Launcher() {
                     <p>
                       Worked examples — including the bridge client to copy — ship with the CLI under{" "}
                       <code>examples/views/</code>. (Views used to be called pages; the legacy{" "}
-                      <code>type: Page</code> name is no longer read — <code>aslite status</code> lists
+                      <code>type: Page</code> name is no longer read — <code>superbee status</code> lists
                       leftover legacy-named documents, and the repo&apos;s migration script renames them in place.)
                     </p>
                   </div>
@@ -587,7 +587,7 @@ function WorkspacesBlock({ entries }: { entries: WorkspaceSummaryEntry[] }) {
                   <span className="workspace-path">{entry.path}</span>
                   {!entry.open && (
                     <span className="workspace-cmd">
-                      open with <code>aslite ui --dir {entry.path}</code>
+                      open with <code>superbee ui --dir {entry.path}</code>
                     </span>
                   )}
                 </>

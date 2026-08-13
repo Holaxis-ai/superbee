@@ -35,7 +35,7 @@ import type { PersistentInstallAuthority } from "../src/install-authority.js";
 const RUNNING_VERSION = cliVersion();
 
 const ASSET_FILES: Record<string, string> = {
-  "SKILL.md": "---\nname: aslite\n---\n# aslite\n",
+  "SKILL.md": "---\nname: superbee\n---\n# superbee\n",
   "references/views/view-authoring.md": "# views contract\n",
   "references/recipes/claims/recipe.md": "# claims recipe\n",
 };
@@ -43,14 +43,14 @@ const ASSET_FILES: Record<string, string> = {
 /** Build a fake npm-layout distribution root; returns its dist executable path. */
 function makeDistribution(root: string, version = "9.9.9", files: Record<string, string> = ASSET_FILES): string {
   mkdirSync(path.join(root, "dist"), { recursive: true });
-  writeFileSync(path.join(root, "dist", "agentstate-lite.mjs"), "// bundle\n");
-  writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "@holaxis/aslite", version }) + "\n");
+  writeFileSync(path.join(root, "dist", "superbee.mjs"), "// bundle\n");
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "superbee", version }) + "\n");
   for (const [relative, content] of Object.entries(files)) {
     const target = path.join(root, ...relative.split("/"));
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, content);
   }
-  return path.join(root, "dist", "agentstate-lite.mjs");
+  return path.join(root, "dist", "superbee.mjs");
 }
 
 function scratch(): { base: string; executable: string } {
@@ -110,9 +110,9 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
       assert.equal(readFileSync(path.join(dir, ...relative.split("/")), "utf8"), content);
     }
     const manifest = JSON.parse(readFileSync(path.join(dir, SKILL_MANIFEST_FILENAME), "utf8"));
-    assert.equal(manifest.package, "@holaxis/aslite");
+    assert.equal(manifest.package, "superbee");
     assert.equal(manifest.version, RUNNING_VERSION);
-    assert.equal(manifest.installed_by, "aslite skill install");
+    assert.equal(manifest.installed_by, "superbee skill install");
     assert.deepEqual(manifest.files, Object.keys(ASSET_FILES).sort());
     assert.deepEqual(Object.keys(manifest), [
       "schema",

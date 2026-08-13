@@ -113,7 +113,7 @@ test("core manifest pins the production dependency contract", async () => {
 test("core import-direction policy rejects hidden upward import channels", () => {
   const syntheticFile = path.join(SOURCE_ROOT, "synthetic.ts");
   const source = [
-    'import type { Router } from "@agentstate-lite/server";',
+    'import type { Router } from "@superbee/server";',
     'export { something } from "../../server/src/index.js";',
     "const target = './types.js';",
     "void import(target);",
@@ -125,7 +125,7 @@ test("core import-direction policy rejects hidden upward import channels", () =>
   ].join("\n");
 
   assert.deepEqual(violationsIn(syntheticFile, source), [
-    'src/synthetic.ts:1 — disallowed specifier "@agentstate-lite/server"',
+    'src/synthetic.ts:1 — disallowed specifier "@superbee/server"',
     'src/synthetic.ts:2 — relative import escapes core/src: "../../server/src/index.js"',
     "src/synthetic.ts:4 — non-literal module specifier",
     "src/synthetic.ts:5 — import-equals declaration (a require channel)",

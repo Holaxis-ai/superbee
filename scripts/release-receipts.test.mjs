@@ -35,12 +35,20 @@ test("stage download uses npm's deterministic filename and no invented --out pat
   assert.equal(stageDownloadFilename(VERSION, STAGE_ID), `holaxis-aslite-${VERSION}-${STAGE_ID}.tgz`);
 });
 
+test("declared rehearsal targets resolve from the manifest but cannot enter the full stage receipt chain", () => {
+  assert.throws(
+    () => buildStageReceipt({ target: "rehearsal-reject", version: "0.0.0-rename-reject.20260812", stageId: STAGE_ID }),
+    /requires workflow contract full/,
+  );
+});
+
 function fixture() {
   const draftAssets = [
     { id: "201", name: TARBALL, digest: TARBALL_SHA },
     { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
   ];
   const receipt = buildStageReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -57,7 +65,9 @@ function fixture() {
     draftAssets,
   });
   const candidate = {
-    schema: "aslite.release-candidate.v1",
+    schema: "superbee.release-candidate.v1",
+    target: "bridge",
+    package: { name: "@holaxis/aslite" },
     tag: `v${VERSION}`,
     version: VERSION,
     source: { commit: COMMIT, dirty: false },
@@ -124,7 +134,7 @@ test("stage summary and retained JSON are emitted from the same v2 receipt", () 
     draftReleaseId: "300",
     draftAssets: f.release.assets,
   });
-  assert.equal(built.receipt.schema, "aslite.stage-receipt.v2");
+  assert.equal(built.receipt.schema, "superbee.stage-receipt.v1");
   assert.equal(built.receipt.stage.id, STAGE_ID);
   assert.equal(built.inspection.steps[0], `npm stage download ${STAGE_ID}`);
   assert.ok(!built.inspection.steps.some((step) => step.includes("--out")));
@@ -150,9 +160,9 @@ test("stage summary carries the bounded stable MCP launch migration guidance", (
   });
   const summary = renderReceiptMarkdown(built);
   assert.equal((summary.match(/## Stable MCP launch/g) ?? []).length, 1);
-  assert.match(summary, /npm install -g @holaxis\/aslite/);
-  assert.match(summary, /host command `aslite` with first argument `mcp`/);
-  assert.match(summary, /aslite version --json/);
+  assert.match(summary, /npm install -g superbee/);
+  assert.match(summary, /host command `superbee` with first argument `mcp`/);
+  assert.match(summary, /superbee version --json/);
   assert.match(summary, /does not scan or rewrite host MCP configuration/);
   assert.ok(summary.endsWith(STABLE_MCP_LAUNCH_GUIDANCE), "receipt consumes the shared guidance authority exactly");
   assert.ok(!Object.hasOwn(built.receipt, "guidance"), "immutable receipt schema remains unchanged");

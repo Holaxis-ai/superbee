@@ -1,11 +1,11 @@
-// `agentstate-lite ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
+// `superbee ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
 // web UI (plans/ui-v1.md rev 3.2): the SPA plus a same-origin `/v0/*` surface, either the
 // reference router mounted in-process over a local bundle (`--dir`) or a reverse proxy onto a
 // deployed remote (`--remote`) with conditional Bearer injection. The SPA never knows which.
 //
 // Source resolution follows the explicit-only remote rule (`resolveRemoteFlag`: only `--remote`
 // activates HTTP; otherwise local bundle discovery) — EXCEPT `ui` builds its OWN
-// remote handling (the reverse proxy in `@agentstate-lite/ui-server`) rather than routing through
+// remote handling (the reverse proxy in `@superbee/ui-server`) rather than routing through
 // `openBundle`'s `RemoteBackend` path, since the SPA needs the raw `/v0/*` wire surface
 // same-origin, not the engine-level `StorageBackend` abstraction.
 //
@@ -14,8 +14,8 @@
 // stays in the foreground until SIGINT/SIGTERM close the listener cleanly.
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
-import { createRouter } from "@agentstate-lite/server";
-import { openBundle, resolveRemoteFlag, API_KEY_ENV_VAR } from "../bundle.js";
+import { createRouter } from "@superbee/server";
+import { openBundle, resolveRemoteFlag, resolveApiKeyEnv } from "../bundle.js";
 import { normalizeServer } from "../config.js";
 import { getApiKeyForOrigin } from "../credentials.js";
 import { bootUiServer as bootUiServerDefault, type UiServerHandle, type UiServerOptions } from "../ui/server.js";
@@ -27,10 +27,10 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { resolveActor } from "../actor.js";
 
-export const UI_USAGE = `agentstate-lite ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
+export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
 
 Usage:
-  agentstate-lite ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
+  superbee ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd) — mounts the
@@ -179,7 +179,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
         help: `${cliInvocation()} ui --remote http://127.0.0.1:4818`,
       });
     }
-    const envKey = process.env[API_KEY_ENV_VAR]?.trim();
+    const envKey = resolveApiKeyEnv();
     const apiKey = envKey || (await getApiKeyForOrigin(origin));
     // Registered Views, kind/edge reads, and the trusted bridge share the SAME semantic
     // RemoteBackend bundle every other engine-aware command uses over --remote; the SPA's /v0

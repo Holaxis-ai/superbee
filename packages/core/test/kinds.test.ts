@@ -15,8 +15,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createRouter } from "@agentstate-lite/server";
-import { MemoryBackend as ServerMemoryBackend } from "@agentstate-lite/core";
+import { createRouter } from "@superbee/server";
+import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { initBundle, query, writeDoc } from "../src/bundle.js";
 import { FilesystemBackend } from "../src/backend.js";

@@ -23,8 +23,8 @@ async function sourceFiles(dir) {
 function allowed(specifier) {
   return (
     isBuiltin(specifier) ||
-    specifier === "@agentstate-lite/core" ||
-    specifier.startsWith("@agentstate-lite/core/") ||
+    specifier === "@superbee/core" ||
+    specifier.startsWith("@superbee/core/") ||
     specifier.startsWith("./")
   );
 }
@@ -53,7 +53,7 @@ test("view-runtime imports only Node, core, and its own source", async () => {
 
 test("view-runtime manifest depends only on core", async () => {
   const manifest = JSON.parse(await readFile(path.join(root, "package.json"), "utf8"));
-  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["@agentstate-lite/core"]);
+  assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ["@superbee/core"]);
   assert.equal(manifest.peerDependencies, undefined);
   assert.equal(manifest.optionalDependencies, undefined);
 });

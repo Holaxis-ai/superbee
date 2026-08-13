@@ -106,7 +106,7 @@ test("owned parser rejects forged leaves before invoking the parser", () => {
 test("built init rejects surplus before creating its target", () => {
   const root = mkdtempSync(join(tmpdir(), "aslite-arity-red-"));
   const target = join(root, "bundle");
-  const result = spawnSync(process.execPath, ["packages/cli/dist/agentstate-lite.mjs", "init", "unexpected", "--dir", target, "--recipe", "none"], { cwd: join(import.meta.dirname, "../../.."), encoding: "utf8" });
+  const result = spawnSync(process.execPath, ["packages/cli/dist/superbee.mjs", "init", "unexpected", "--dir", target, "--recipe", "none"], { cwd: join(import.meta.dirname, "../../.."), encoding: "utf8" });
   assert.equal(result.status, 2, result.stdout + result.stderr);
   assert.match(result.stdout, /USAGE/);
   assert.throws(() => readFileSync(join(target, "index.md")));

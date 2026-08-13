@@ -13,7 +13,7 @@
  *     a stored dismissal suppresses it. It stays REACHABLE afterwards: "what is this?" reopens
  *     it (the 2026-07-24 landing rethink — the overview and the example view prompts must not
  *     vanish after one reading).
- *  4. Landing copy is agent-first (the 2026-07-24 rethink): it says what ASLite IS (a cognitive
+ *  4. Landing copy is agent-first (the 2026-07-24 rethink): it says what Superbee IS (a cognitive
  *     ecosystem for agents), WHY it is valuable (the problems it solves; long-horizon work),
  *     that it is used THROUGH agents with this window as the human's insight surface, and it
  *     hands the reader example view-building prompts.
@@ -242,10 +242,10 @@ describe("home surface", () => {
     };
     expect(orientation(), "first run must render the orientation").not.toBeNull();
 
-    // Panel 1 — what ASLite IS, and WHY it is valuable (the ratchet in plain words: settled work
+    // Panel 1 — what Superbee IS, and WHY it is valuable (the ratchet in plain words: settled work
     // is a floor, not something re-derived — Derfer & Collier 2026). No Back, no Got it yet.
     const panel1 = panelText();
-    expect(panel1).toContain("What is agentstate-lite?");
+    expect(panel1).toContain("What is Superbee?");
     expect(panel1).toContain("cognitive ecosystem");
     expect(panel1).toContain("folder of plain markdown");
     expect(panel1).toContain("What problems does it solve?");
@@ -272,10 +272,10 @@ describe("home surface", () => {
     // Panel 2 — HOW it is used: agents are the primary users; install commands connect one.
     await clickNext();
     const panel2 = panelText();
-    expect(panel2).toContain("How do I use ASLite?");
+    expect(panel2).toContain("How do I use Superbee?");
     expect(panel2).toContain("agents are the main users");
     expect(panel2).toContain("built by agents, for agents");
-    expect(panel2).toContain("ask your agent to install the ASLite skill and hooks");
+    expect(panel2).toContain("ask your agent to install the Superbee skill and hooks");
     expect(panel2).toContain("2 of 4");
     expect(orientation()!.querySelector(".orientation-dismiss")).toBeNull();
 
@@ -284,7 +284,7 @@ describe("home surface", () => {
       (orientation()!.querySelector(".orientation-nav-btn") as HTMLButtonElement).click();
       await flush();
     });
-    expect(panelText()).toContain("What is agentstate-lite?");
+    expect(panelText()).toContain("What is Superbee?");
     await clickNext();
     await clickNext();
 
@@ -331,12 +331,11 @@ describe("home surface", () => {
     const all = panel1 + panel2 + panel3 + panel4;
     expect(all).not.toMatch(/works from any terminal/i);
     expect(all).not.toContain('new "Context Note"');
-    // Never advertise the UNSCOPED npm coordinate: `aslite` is not ours (404 on the registry),
-    // so a copy-pasted `npx -y aslite …` runs whatever lands on that name. Ours is @holaxis/aslite.
+    // Never advertise the legacy aliases as an npm coordinate: `superbee` is the canonical package.
     expect(all).not.toMatch(/npx\s+-y\s+aslite\b/);
     // No paste-ready bare CLI invocations anywhere in the walkthrough; actions stay
     // agent-mediated and mechanics are described without commands.
-    expect(all).not.toMatch(/aslite (skill|hook|recipes|recipe|sync)\b/);
+    expect(all).not.toMatch(/superbee (skill|hook|recipes|recipe|sync)\b/);
 
     // The second click of a double-click on the nav slot (detail 2 — React reuses Next's DOM
     // node as Got it) must never dismiss.
@@ -387,7 +386,7 @@ describe("home surface", () => {
     const orientation = container.querySelector(".orientation");
     expect(orientation, "'what is this?' must reopen the orientation").not.toBeNull();
     // Reopening starts the walkthrough over at panel 1.
-    expect(orientation!.textContent).toContain("What is agentstate-lite?");
+    expect(orientation!.textContent).toContain("What is Superbee?");
     // The affordance yields to the open card (one copy of the overview on screen at a time).
     expect(container.querySelector(".about-btn")).toBeNull();
 
@@ -412,7 +411,7 @@ describe("home surface", () => {
       (container.querySelector(".about-btn") as HTMLButtonElement).click();
       await flush();
     });
-    expect(container.querySelector(".orientation")!.textContent).toContain("What is agentstate-lite?");
+    expect(container.querySelector(".orientation")!.textContent).toContain("What is Superbee?");
   });
 
   it("never shows local privacy onboarding in remote mode, even when config.root carries the remote URL", async () => {
@@ -555,7 +554,7 @@ describe("home surface", () => {
       await flush();
     });
     expect(container.textContent).toContain("/tmp/other");
-    expect(container.textContent).toContain("aslite ui --dir /tmp/other");
+    expect(container.textContent).toContain("superbee ui --dir /tmp/other");
   });
 });
 

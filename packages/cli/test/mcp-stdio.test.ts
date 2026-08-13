@@ -6,12 +6,12 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { cliVersion } from "../src/build-identity.js";
 
-const CLI = fileURLToPath(new URL("../dist/agentstate-lite.mjs", import.meta.url));
+const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
 
 async function runCli(
   args: string[],

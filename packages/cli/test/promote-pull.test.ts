@@ -8,7 +8,7 @@
  *
  * Runs command functions in-process against a real temp filesystem bundle (mirrors
  * `doc.test.ts`/`link.test.ts`'s pattern); the remote acceptance test boots a real
- * `@agentstate-lite/server` `serve()` instance and also drives a few raw `fetch` calls directly
+ * `@superbee/server` `serve()` instance and also drives a few raw `fetch` calls directly
  * against it to verify server-side behavior (served bytes/content-type, which route a `.md` promote
  * actually rode) beyond what the CLI's own receipt claims.
  */
@@ -18,8 +18,8 @@ import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, readDoc, readBlob } from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+import { initBundle, readDoc, readBlob } from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 
 import { promote, type PromoteCliDeps } from "../src/commands/promote.js";
 import { pull, type PullCliDeps } from "../src/commands/pull.js";

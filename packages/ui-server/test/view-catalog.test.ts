@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MemoryBackend, writeBlob, writeDoc, type Bundle } from "@agentstate-lite/core";
-import { createRouter } from "@agentstate-lite/server";
+import { MemoryBackend, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { createRouter } from "@superbee/server";
 import { bootUiServer } from "../src/server.js";
 
 test("the web launcher endpoint serves the shared durable View catalog", async () => {

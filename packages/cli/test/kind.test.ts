@@ -15,8 +15,8 @@ import {
   type Bundle,
   type OkfDocument,
   type Version,
-} from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+} from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 import { applyRecipe } from "../src/recipes.js";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 import { kind } from "../src/commands/kind.js";

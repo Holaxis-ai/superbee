@@ -5,8 +5,8 @@ import {
   resolveDeclaredAccess,
   type BridgeCapability,
   type PageTypeName,
-} from "@agentstate-lite/core/page";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+} from "@superbee/core/page";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 
 export {
   declaredAccessValue,
@@ -24,7 +24,7 @@ export {
   type BridgeCapability,
   type PageRegistration,
   type PageTypeName,
-} from "@agentstate-lite/core/page";
+} from "@superbee/core/page";
 
 export interface RegisteredPage {
   id: string;

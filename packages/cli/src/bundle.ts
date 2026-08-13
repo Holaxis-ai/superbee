@@ -20,15 +20,16 @@
 // guidance; an explicit `--dir` or `--remote` remains authoritative and suppresses that legacy
 // ambient state.
 //
-// `.agentstate.json` (item 43 follow-on — the "project-binding resolution rung") is a COMMITTED,
-// project-scoped LOCAL pointer: `{ "bundle": "<path>" }` at a project root, discovered by walking
-// UP from the cwd (nearest ancestor wins — same shape `findBundleRoot` uses for `index.md`; see
-// `resolveProjectBinding`). It sits between explicit flags and cwd discovery: explicit
+// `.superbee.json` and the supported legacy `.agentstate.json` are COMMITTED, project-scoped LOCAL
+// pointers: `{ "bundle": "<path>" }` at a project root, discovered in ONE walk up from the cwd.
+// At each level both names are inspected together: one wins, while both fail closed rather than
+// guessing. The nearest level wins overall. The binding rung sits between explicit flags and cwd
+// discovery: explicit
 // `--remote`/`--dir` -> the local project binding -> the cwd walk (which checks each ancestor's own
 // `index.md` first, then its conventional `.agentstate-lite/index.md`). Explicit beats committed
 // beats discovered, and within discovery an enclosing bundle beats the conventional project folder
 // at the same level. A relative binding path resolves against the directory containing
-// `.agentstate.json`, never the cwd, so committed pointers stay clone-portable. A malformed file
+// the selected binding, never the cwd, so committed pointers stay clone-portable. A malformed file
 // (unreadable, invalid JSON, missing/empty/
 // non-string `bundle`) is a USAGE CliError naming the file — never a silent fallthrough to the next
 // rung, because a committed-but-broken binding is a real repo mistake the user must see.
@@ -43,7 +44,7 @@
 // `getApiKeyForOrigin`). Neither is required: the reference `serve()` ignores the
 // `Authorization` header entirely (no auth enforced there), so an ungated local bundle works
 // exactly as before with no key configured.
-import { BUNDLE_DIR } from "@agentstate-lite/board-git";
+import { BUNDLE_DIR } from "@superbee/board-git";
 import { constants, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import {
@@ -55,11 +56,16 @@ import {
   type Bundle,
   type FetchLike,
   type FilesystemMutationLockOptions,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { normalizeServer } from "./config.js";
 import { getApiKeyForOrigin } from "./credentials.js";
+import {
+  LEGACY_API_KEY_ENV,
+  SUPERBEE_API_KEY_ENV,
+  resolveCompatibleScalarEnv,
+} from "./env-policy.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -73,22 +79,6 @@ async function exists(p: string): Promise<boolean> {
 /** The directory `init` should create/open: the explicit `--dir`, else the cwd. */
 export function resolveTargetDir(dirFlag: string | undefined): string {
   return path.resolve(dirFlag ?? process.cwd());
-}
-
-/**
- * Walk up from `start` to the nearest ancestor containing `filename`; null if none — the shape
- * both `index.md` bundle discovery and `.agentstate.json` binding discovery share (mirroring how
- * `git` finds `.git`).
- */
-async function findAncestorWithFile(start: string, filename: string): Promise<string | null> {
-  let dir = path.resolve(start);
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    if (await exists(path.join(dir, filename))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
 }
 
 /**
@@ -125,14 +115,22 @@ export async function findBundleRoot(start: string): Promise<string | null> {
   }
 }
 
-/** The committed project-scoped pointer filename (see the module header). */
+/** The preferred committed project-scoped pointer filename (see the module header). */
+export const SUPERBEE_PROJECT_BINDING_FILE_NAME = ".superbee.json";
+
+/** The supported pre-rename pointer filename. Kept exported for compatibility and fixtures. */
 export const PROJECT_BINDING_FILE_NAME = ".agentstate.json";
 
+const PROJECT_BINDING_FILE_NAMES = [
+  SUPERBEE_PROJECT_BINDING_FILE_NAME,
+  PROJECT_BINDING_FILE_NAME,
+] as const;
+
 /**
- * A resolved `.agentstate.json` binding — see the module header for the full precedence story.
+ * A resolved project binding — see the module header for the full precedence story.
  */
 export interface ProjectBinding {
-  /** Absolute path to the `.agentstate.json` file this was read from (surfaced in errors/notes). */
+  /** Absolute path to the selected binding file (surfaced in errors/notes). */
   file: string;
   /** Absolute directory target; relative values resolve against the binding file's directory. */
   target: string;
@@ -247,22 +245,62 @@ async function readProjectBindingFile(file: string): Promise<string> {
   }
 }
 
+function projectBindingConflict(dir: string): CliError {
+  const preferred = path.join(dir, SUPERBEE_PROJECT_BINDING_FILE_NAME);
+  const legacy = path.join(dir, PROJECT_BINDING_FILE_NAME);
+  return new CliError(
+    "USAGE",
+    `conflicting project bindings at ${dir}: found both ${preferred} and ${legacy}; remove one instead of relying on an ambiguous target`,
+    { help: `remove one binding, or pass --dir <bundle-path> explicitly` },
+  );
+}
+
+async function ordinaryBindingEntryExists(file: string): Promise<boolean> {
+  try {
+    await fs.lstat(file);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+    throw new CliError(
+      "USAGE",
+      `could not inspect project binding ${file}: ${err instanceof Error ? err.message : String(err)}`,
+      { help: `fix or remove ${file}` },
+    );
+  }
+}
+
+async function ordinaryProjectBindingAtLevel(dir: string): Promise<string | null> {
+  const observed = await Promise.all(
+    PROJECT_BINDING_FILE_NAMES.map(async (name) => {
+      const file = path.join(dir, name);
+      return { file, present: await ordinaryBindingEntryExists(file) };
+    }),
+  );
+  const present = observed.filter((entry) => entry.present);
+  if (present.length > 1) throw projectBindingConflict(dir);
+  return present[0]?.file ?? null;
+}
+
 /**
- * Discover + parse + validate the nearest `.agentstate.json` walking up from `startDir` (default
- * cwd) — nearest ancestor wins. Returns `null` when none exists anywhere up-tree (the common case;
- * NOT an error). When one IS found, it is read and validated immediately: an unreadable file (a
- * TOCTOU race between the walk's `exists` check and the read), invalid JSON, or a missing/empty/
+ * Discover + parse + validate the nearest project binding walking up from `startDir` (default
+ * cwd). Each level inspects `.superbee.json` and `.agentstate.json` together; both at one level are
+ * an explicit conflict, while either at a nearer level wins over either name farther away. Returns
+ * `null` when neither exists anywhere up-tree (the common case; NOT an error). When one IS found,
+ * it is read and validated immediately: an unreadable file, invalid JSON, or a missing/empty/
  * non-string `bundle` field is a real committed mistake — thrown as a USAGE CliError (exit 2)
  * naming the file, never swallowed into a silent `null`. A URL value is rejected: remote access
  * requires an explicit `--remote`. A filesystem path is resolved against the binding file's OWN
  * directory (never the cwd — see the module header on clone-portability).
  */
 export async function resolveProjectBinding(startDir: string = process.cwd()): Promise<ProjectBinding | null> {
-  const dir = await findAncestorWithFile(startDir, PROJECT_BINDING_FILE_NAME);
-  if (!dir) return null;
-  const file = path.join(dir, PROJECT_BINDING_FILE_NAME);
-
-  return parseProjectBinding(file, await readProjectBindingFile(file));
+  let dir = path.resolve(startDir);
+  for (;;) {
+    const file = await ordinaryProjectBindingAtLevel(dir);
+    if (file) return parseProjectBinding(file, await readProjectBindingFile(file));
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
 }
 
 /**
@@ -289,7 +327,17 @@ function wrapTransportErrors(remote: string): FetchLike {
 }
 
 /** Session-wide override for the `--remote` API key. See {@link openRemoteBundle}. */
-export const API_KEY_ENV_VAR = "AGENTSTATE_LITE_API_KEY";
+export const API_KEY_ENV_VAR = LEGACY_API_KEY_ENV;
+export const SUPERBEE_API_KEY_ENV_VAR = SUPERBEE_API_KEY_ENV;
+
+export function resolveApiKeyEnv(env: Readonly<Record<string, string | undefined>> = process.env): string | undefined {
+  return resolveCompatibleScalarEnv({
+    canonical: SUPERBEE_API_KEY_ENV_VAR,
+    legacy: API_KEY_ENV_VAR,
+    label: "API key",
+    env,
+  });
+}
 
 /**
  * Resolve a `--remote <url>` bundle: a `RemoteBackend` wired to the wire-protocol v0 reference
@@ -298,8 +346,10 @@ export const API_KEY_ENV_VAR = "AGENTSTATE_LITE_API_KEY";
  * is a fixed `"default"` — the single-bundle reference router ignores it; meaningful only for a
  * future multi-bundle deployment (no `--bundle` flag exists yet; out of scope).
  *
- * Sources a bearer `authToken` for the resolved origin: `AGENTSTATE_LITE_API_KEY` env var first,
- * else an already-provisioned origin-keyed credentials-file entry. Neither
+ * Sources a bearer `authToken` for the resolved origin: `SUPERBEE_API_KEY` or legacy
+ * `AGENTSTATE_LITE_API_KEY` env var first, else an already-provisioned origin-keyed
+ * credentials-file entry. If both environment variables are set to different non-empty values,
+ * resolution fails before any request and does not print either secret. Neither
  * is required — an ungated bundle (the reference `serve()`) ignores the header either way.
  */
 async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
@@ -314,7 +364,7 @@ async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
       help: `${cliInvocation()} <command> --remote http://127.0.0.1:4818`,
     });
   }
-  const envKey = process.env[API_KEY_ENV_VAR]?.trim();
+  const envKey = resolveApiKeyEnv();
   const authToken = envKey || (await getApiKeyForOrigin(origin));
   const backend = new RemoteBackend({
     baseUrl: base,
@@ -394,7 +444,7 @@ const createOnlyFs: CreateOnlyFilesystem = {
   realpath: (p) => fs.realpath(p),
   readdir: (p) => fs.readdir(p),
   mkdir: (p) => fs.mkdir(p).then(() => undefined),
-  readFile: (p) => fs.readFile(p, "utf8"),
+  readFile: (p) => readProjectBindingFile(p),
 };
 
 export interface CreateOnlyTargetDeps {
@@ -679,9 +729,26 @@ async function strictProjectBinding(
   let dir = start;
   for (;;) {
     await assertObservedDirectory(io, dir, phase, createdDirectories);
-    const file = path.join(dir, PROJECT_BINDING_FILE_NAME);
-    const info = await optionalLstat(io, file, phase, "lstat-binding", createdDirectories);
-    if (info) {
+    const observed = await Promise.all(
+      PROJECT_BINDING_FILE_NAMES.map(async (name) => {
+        const file = path.join(dir, name);
+        const info = await optionalLstat(
+          io,
+          file,
+          phase,
+          "lstat-binding",
+          createdDirectories,
+        );
+        return { file, info };
+      }),
+    );
+    const present = observed.filter(
+      (entry): entry is { file: string; info: Stats } => entry.info !== null,
+    );
+    if (present.length > 1) throw projectBindingConflict(dir);
+    const selected = present[0];
+    if (selected) {
+      const { file, info } = selected;
       if (!info.isFile() && !info.isSymbolicLink()) {
         throw new CliError("USAGE", `malformed project binding ${file}: expected a regular file`, {
           help: `fix or remove ${file}`,
@@ -691,6 +758,7 @@ async function strictProjectBinding(
       try {
         raw = await io.readFile(file);
       } catch (err) {
+        if (err instanceof CliError) throw err;
         createOnlyUncertainty(phase, "read-binding", file, err, createdDirectories);
       }
       return parseProjectBinding(file, raw);

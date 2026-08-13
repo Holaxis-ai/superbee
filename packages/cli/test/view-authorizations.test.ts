@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ViewAuthorizationSubject } from "@agentstate-lite/ui-server";
+import type { ViewAuthorizationSubject } from "@superbee/ui-server";
 import { credentialsDir } from "../src/credentials.js";
 import { LocalViewAuthorizationStore } from "../src/ui/view-authorizations.js";
 

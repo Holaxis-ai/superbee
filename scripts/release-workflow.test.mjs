@@ -80,7 +80,8 @@ test("finalize workflow: gate jobs hold contents:write ONLY for draft visibility
   // platform's price for LOOKING at a draft. The property that survives is behavioral, not
   // token-shaped: the gate jobs' steps contain no mutating command, pinned below.
   const jobs = extractJobs(finalize);
-  assert.deepEqual(Object.keys(jobs).sort(), ["finalize", "ordering-verified", "registry-verify"]);
+  assert.deepEqual(Object.keys(jobs).sort(), ["finalize", "ordering-verified", "registry-verify", "target-authorized"]);
+  assert.deepEqual(permissionsOf(jobs["target-authorized"]), { contents: "read" });
   assert.deepEqual(permissionsOf(jobs["ordering-verified"]), { actions: "read", contents: "write" });
   assert.deepEqual(permissionsOf(jobs["registry-verify"]), { actions: "read", contents: "write" });
   assert.deepEqual(permissionsOf(jobs.finalize), { actions: "read", contents: "write" });
@@ -91,6 +92,16 @@ test("finalize workflow: gate jobs hold contents:write ONLY for draft visibility
       assert.ok(!body.includes(token), `gate job ${name} must not contain mutating token ${JSON.stringify(token)}`);
     }
   }
+});
+
+test("identity-only rehearsal targets stop after candidate verification", () => {
+  const stagedJobs = extractJobs(staged);
+  assert.match(stagedJobs.draft, /if: needs\.candidate\.outputs\.workflow_contract == 'full'/);
+  assert.match(stagedJobs.stage, /if: needs\.candidate\.outputs\.workflow_contract == 'full'/);
+  const finalJobs = extractJobs(finalize);
+  assert.match(finalJobs["ordering-verified"], /needs: target-authorized/);
+  assert.match(finalJobs["target-authorized"], /identity-only rehearsal targets have no finalization path/);
+  assert.ok(!staged.includes("rehearsal-reject) TAG="), "workflow must not duplicate rehearsal tag literals outside the manifest");
 });
 
 test("the ordering gate runs BEFORE registry mutation and again before publication", () => {
@@ -284,7 +295,8 @@ test("npm staged publishing pins the supported runtime and parses npm's JSON con
 
 test("cross-run downloads have actions:read and select artifacts by ID, not name", () => {
   const jobs = extractJobs(finalize);
-  for (const body of Object.values(jobs)) {
+  for (const name of ["ordering-verified", "registry-verify", "finalize"]) {
+    const body = jobs[name];
     assert.match(body, /artifact-ids: \$\{\{ inputs\.artifact_id \}\}/);
     assert.match(body, /artifact-ids: \$\{\{ inputs\.stage_receipt_artifact_id \}\}/);
     assert.match(body, /run-id: \$\{\{ inputs\.run_id \}\}/);

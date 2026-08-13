@@ -15,13 +15,13 @@ import {
   type KindConvention,
   type ValidationWarning,
   type Version,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   parseRegistration,
   resolveDeclaredAccess,
   type BridgeCapability,
   type PageTypeName,
-} from "@agentstate-lite/core/page";
+} from "@superbee/core/page";
 import {
   ACTIVE_VIEW_POLICY_VERSION,
   SessionViewAuthorizationStore,

@@ -26,7 +26,7 @@
 // is expected to consume THIS function too (the pairing note on
 // tasks/workspace-catalog-dogfood-checkpoint); do not fork a second derivation.
 import path from "node:path";
-import { readDoc, type Bundle } from "@agentstate-lite/core";
+import { readDoc, type Bundle } from "@superbee/core";
 import { CONVENTIONAL_BUNDLE_DIR_NAME } from "./bundle.js";
 
 /**

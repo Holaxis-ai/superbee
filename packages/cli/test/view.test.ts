@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { initBundle, writeBlob, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeBlob, writeDoc } from "@superbee/core";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { view } from "../src/commands/view.js";
 import { COMMAND_GROUPS } from "../src/reference.js";

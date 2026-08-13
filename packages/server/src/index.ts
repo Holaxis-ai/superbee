@@ -1,8 +1,8 @@
 /**
- * `@agentstate-lite/server` — the wire-protocol v0 REFERENCE server
+ * `@superbee/server` — the wire-protocol v0 REFERENCE server
  * (`docs/WIRE-PROTOCOL.md`): a Web-standard `fetch`-style router over the OKF
  * engine, plus a thin `node:http` bootstrap. A pure consumer of
- * `@agentstate-lite/core` — no parsing/link/OKF logic lives here (see `router.ts`
+ * `@superbee/core` — no parsing/link/OKF logic lives here (see `router.ts`
  * module doc). Reference-not-production: no auth, loopback-only default bind.
  *
  * @packageDocumentation

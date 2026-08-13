@@ -13,7 +13,7 @@ import {
   readBlob,
   readDoc,
   type KindConvention,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 
 import { kinds } from "../src/commands/kinds.js";
 import { newCommand } from "../src/commands/new.js";

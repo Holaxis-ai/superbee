@@ -1,10 +1,10 @@
-// `agentstate-lite mcp [--dir <path>] [--actor <name>]` — run the local MCP Apps adapter over one
+// `superbee mcp [--dir <path>] [--actor <name>]` — run the local MCP Apps adapter over one
 // AgentState bundle. The command uses stdio as its transport, so stdout belongs exclusively to MCP
 // protocol frames after startup; diagnostics and human receipts must never be written there.
 import { parseArgs } from "node:util";
-import { startMcpStdioServer } from "@agentstate-lite/mcp-app";
-import type { Bundle } from "@agentstate-lite/core";
-import type { ViewAuthorizationStore } from "@agentstate-lite/view-runtime";
+import { startMcpStdioServer } from "@superbee/mcp-app";
+import type { Bundle } from "@superbee/core";
+import type { ViewAuthorizationStore } from "@superbee/view-runtime";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveActor } from "../actor.js";
@@ -17,10 +17,10 @@ import { LocalViewAuthorizationStore } from "../ui/view-authorizations.js";
 import { cliVersion } from "../build-identity.js";
 import { STABLE_MCP_LAUNCH_GUIDANCE } from "../integration-guidance.js";
 
-export const MCP_USAGE = `agentstate-lite mcp — expose invocation-specific AgentState Views to an MCP Apps host
+export const MCP_USAGE = `superbee mcp — expose invocation-specific Superbee Views to an MCP Apps host
 
 Usage:
-  agentstate-lite mcp [--dir <path>] [--actor <name>]
+  superbee mcp [--dir <path>] [--actor <name>]
 
 Options:
   --dir <path>          Local bundle directory (default: discovered from the cwd)

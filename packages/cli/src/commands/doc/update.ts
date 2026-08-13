@@ -2,7 +2,7 @@
 // rationale (Fork 1/Fork 2 of `plans/kind-aware-doc-surface.md`).
 import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
-import { loadKinds, type Frontmatter } from "@agentstate-lite/core";
+import { loadKinds, type Frontmatter } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";

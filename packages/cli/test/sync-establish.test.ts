@@ -19,7 +19,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle } from "@agentstate-lite/core";
+import { initBundle } from "@superbee/core";
 import { sync, SYNC_LOCAL_ONLY_MESSAGE, syncLocalOnlyNote } from "../src/commands/sync.js";
 import { init } from "../src/commands/init.js";
 import { recipe } from "../src/commands/recipe.js";
@@ -38,7 +38,7 @@ import {
   provisionBoardWorktree,
   pushBoardCommit,
   snapshotBundleCommit,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import {
   BUNDLE_DIR,
   git,

@@ -1,4 +1,4 @@
-# agentstate-lite — Codex entrypoint
+# Superbee — Codex entrypoint
 
 Before taking any task action, read and follow [CLAUDE.md](CLAUDE.md) in full. It is the single
 authoritative orchestrator guide for all coding agents in this repository. This entrypoint is

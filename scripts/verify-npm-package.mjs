@@ -7,11 +7,19 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { DEFAULT_RELEASE_TARGETS_PATH, DEFAULT_TARGETS, loadReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-const baseExpectedFiles = ["LICENSE", "README.md", "SKILL.md", "dist/agentstate-lite.mjs", "package.json"];
+const SUCCESSOR_TARGET = DEFAULT_TARGETS.successor;
+const SUCCESSOR_PACKAGE_NAME = SUCCESSOR_TARGET.package.name;
+const SUCCESSOR_INSTALL_ROOT = SUCCESSOR_TARGET.package.directory;
+const SUCCESSOR_ARTIFACT = SUCCESSOR_TARGET.artifact;
+const SUCCESSOR_BINS = SUCCESSOR_TARGET.bins;
+const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
+
+const baseExpectedFiles = ["LICENSE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
 
 /** The exact expected tarball file set: the fixed base plus the committed references/ tree. */
 export function expectedTarballFiles(referenceFiles) {
@@ -24,6 +32,17 @@ const runtimeDependencyFields = [
   "bundledDependencies",
   "bundleDependencies",
 ];
+
+function npmPrefixShimSource(prefix) {
+  return `#!/usr/bin/env node
+if (process.argv.slice(2).join(" ") === "prefix --global") {
+  console.log(${JSON.stringify(prefix)});
+  process.exit(0);
+}
+console.error("npm verifier shim only supports: npm prefix --global");
+process.exit(1);
+`;
+}
 
 /** Fail closed if the retired first-party marketplace executable channel returns. */
 export async function assertRetiredDistributionAbsent(root) {
@@ -95,10 +114,22 @@ function npmInvocation(args, env = process.env) {
 }
 
 async function run(command, args, options = {}) {
-  return execFileAsync(command, args, {
-    maxBuffer: 20 * 1024 * 1024,
-    ...options,
-  });
+  try {
+    return await execFileAsync(command, args, {
+      maxBuffer: 20 * 1024 * 1024,
+      ...options,
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "stdout" in error) {
+      const details = [
+        `Command failed: ${command} ${args.join(" ")}`,
+        error.stdout ? `stdout:\n${error.stdout}` : null,
+        error.stderr ? `stderr:\n${error.stderr}` : null,
+      ].filter(Boolean).join("\n");
+      error.message = `${details}\n${error.message}`;
+    }
+    throw error;
+  }
 }
 
 async function waitForJsonFile(file, timeoutMs = 10_000) {
@@ -217,24 +248,22 @@ function hasWorkspaceReference(value) {
   return false;
 }
 
-export function assertPackageContract(receipt, manifest, referenceFiles) {
+export function assertPackageContract(receipt, manifest, referenceFiles, target = SUCCESSOR_TARGET) {
   const tarballFiles = receipt.files.map((file) => file.path).sort();
+  const expectedArtifact = target.artifact;
   assert.deepEqual(
     tarballFiles,
-    expectedTarballFiles(referenceFiles),
+    ["LICENSE", "README.md", "SKILL.md", expectedArtifact, "package.json", ...referenceFiles.map((relative) => `references/${relative}`)].sort(),
     "the npm tarball must contain only the CLI, manifest, README, license, SKILL.md, and references/",
   );
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
-    ["dist/agentstate-lite.mjs"],
+    [expectedArtifact],
     "the tarball must carry exactly one .mjs executable (the dist bundle)",
   );
-  assert.equal(manifest.name, "@holaxis/aslite");
+  assert.equal(manifest.name, target.package.name);
   assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references"]);
-  assert.deepEqual(manifest.bin, {
-    aslite: "dist/agentstate-lite.mjs",
-    "agentstate-lite": "dist/agentstate-lite.mjs",
-  });
+  assert.deepEqual(manifest.bin, target.bins);
   // Scoped packages default to restricted at publish time — the manifest must pin public.
   assert.deepEqual(manifest.publishConfig, { access: "public" }, "publishConfig.access must be public");
   for (const field of runtimeDependencyFields) {
@@ -337,6 +366,7 @@ export async function fileSha256(file) {
  * the bytes we prove are the bytes that ship.
  */
 async function runInstalledProof(spec) {
+  const target = spec.target ?? SUCCESSOR_TARGET;
   const scratch = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-npm-proof-")));
   const packDir = path.join(scratch, "pack");
   const prefix = path.join(scratch, "prefix");
@@ -371,8 +401,8 @@ async function runInstalledProof(spec) {
 
     const installedRoot =
       process.platform === "win32"
-        ? path.join(prefix, "node_modules", "@holaxis", "aslite")
-        : path.join(prefix, "lib", "node_modules", "@holaxis", "aslite");
+        ? path.join(prefix, "node_modules", ...target.package.directory)
+        : path.join(prefix, "lib", "node_modules", ...target.package.directory);
     const manifest = parseJson(await readFile(path.join(installedRoot, "package.json"), "utf8"), "installed package.json");
     const committedSkillRoot = path.join(repoRoot, "packages", "cli");
     const referenceFiles = (await listFiles(path.join(committedSkillRoot, "references"))).map((relative) =>
@@ -380,11 +410,11 @@ async function runInstalledProof(spec) {
     );
     // Derive the tarball's file set from the installed tree so the contract check holds in BOTH
     // producer modes (retained mode never sees npm pack's file list). The installed
-    // node_modules/@holaxis/aslite tree IS the tarball's contents.
+    // node_modules/superbee tree IS the tarball's contents.
     const contractReceipt = {
       files: (await listFiles(installedRoot)).map((relative) => ({ path: relative.split(path.sep).join("/") })),
     };
-    assertPackageContract(contractReceipt, manifest, referenceFiles);
+    assertPackageContract(contractReceipt, manifest, referenceFiles, target);
 
     // The shipped skill assets are byte-identical to the repo-committed generated ones (which
     // check:skill pins to the renderer + resource manifest).
@@ -421,6 +451,8 @@ async function runInstalledProof(spec) {
       // Model the supported real-world POSIX global layout so durable hook authority can prove
       // and persist the stable <prefix>/bin/node launcher.
       await symlink(process.execPath, path.join(binDir, "node"));
+      const npmShim = path.join(binDir, "npm");
+      await writeFile(npmShim, npmPrefixShimSource(prefix), { mode: 0o755 });
     }
     const commandEnv = {
       ...sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache),
@@ -431,10 +463,16 @@ async function runInstalledProof(spec) {
       XDG_CONFIG_HOME: path.join(home, ".config"),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
     };
-    await assertCommandInBin("aslite", commandEnv, binDir);
-    await assertCommandInBin("agentstate-lite", commandEnv, binDir);
+    for (const command of target.expected_commands) await assertCommandInBin(command, commandEnv, binDir);
+    for (const absent of ["superbee", "aslite", "agentstate-lite"].filter((command) => !target.expected_commands.includes(command))) {
+      const resolved = await resolveCommandOnPath(absent, commandEnv);
+      assert.equal(resolved, undefined, `${absent} must not resolve from the isolated npm prefix for ${target.id}`);
+    }
 
-    const installedEntrypoint = path.join(installedRoot, manifest.bin.aslite);
+    const installedEntrypoint = path.join(installedRoot, manifest.bin[target.preferred_command]);
+    for (const [bin, relative] of Object.entries(manifest.bin)) {
+      assert.equal(relative, manifest.bin[target.preferred_command], `${bin} must point at the target artifact`);
+    }
     const runCli = (command, args, options = {}) => {
       const cwd = options.cwd ?? scratch;
       const env = { ...commandEnv, ...(options.env ?? {}) };
@@ -445,22 +483,26 @@ async function runInstalledProof(spec) {
 
     // Every installed projection agrees with the immutable build identity. Both bin aliases resolve
     // the same bytes, and the adjacent installed manifest is diagnostic rather than authority.
-    const preferredVersion = (await runCli("aslite", ["--version"])).stdout.trim();
-    const legacyVersion = (await runCli("agentstate-lite", ["-v"])).stdout.trim();
-    assert.equal(preferredVersion, manifest.version, "aslite --version must equal the package manifest");
-    assert.equal(legacyVersion, manifest.version, "agentstate-lite -v must equal the package manifest");
+    const preferredVersion = (await runCli(target.preferred_command, ["--version"])).stdout.trim();
+    assert.equal(preferredVersion, manifest.version, `${target.preferred_command} --version must equal the package manifest`);
+    for (const command of target.expected_commands.filter((command) => command !== target.preferred_command)) {
+      const versionOut = (await runCli(command, command === "agentstate-lite" ? ["-v"] : ["--version"])).stdout.trim();
+      assert.equal(versionOut, manifest.version, `${command} --version must equal the package manifest`);
+    }
     const preferredIdentity = parseJson(
-      (await runCli("aslite", ["version", "--json"])).stdout,
-      "aslite version --json",
+      (await runCli(target.preferred_command, ["version", "--json"])).stdout,
+      `${target.preferred_command} version --json`,
     );
-    const legacyIdentity = parseJson(
-      (await runCli("agentstate-lite", ["version", "--json"])).stdout,
-      "agentstate-lite version --json",
-    );
-    assert.deepEqual(legacyIdentity, preferredIdentity, "both installed bin aliases must report one identity");
-    assert.equal(preferredIdentity.identity.schema, "aslite.build-identity.v1");
+    for (const command of target.expected_commands.filter((command) => command !== target.preferred_command)) {
+      const identity = parseJson(
+        (await runCli(command, ["version", "--json"])).stdout,
+        `${command} version --json`,
+      );
+      assert.deepEqual(identity, preferredIdentity, `${command} alias must report the canonical target identity`);
+    }
+    assert.equal(preferredIdentity.identity.schema, SUCCESSOR_BUILD_IDENTITY_SCHEMA);
     assert.deepEqual(preferredIdentity.identity.package, {
-      name: "@holaxis/aslite",
+      name: target.package.name,
       version: manifest.version,
     });
     assert.equal(preferredIdentity.identity.artifact.channel, spec.expectedChannel);
@@ -473,12 +515,33 @@ async function runInstalledProof(spec) {
       adjacent_package_version: manifest.version,
       version_mismatch: false,
     });
+
+    if (target.workflow_contract === "identity-only") {
+      return {
+        mode: spec.mode,
+        package: `${manifest.name}@${manifest.version}`,
+        files: contractReceipt.files.length,
+        bins: Object.keys(manifest.bin),
+        workflow: ["identity-only: install -> command presence -> version identity"],
+        identity: preferredIdentity,
+        tarball: {
+          path: meta.path ?? null,
+          filename: meta.filename,
+          sha256: meta.sha256 ?? (await fileSha256(tarball)),
+          shasum: meta.shasum,
+          integrity: meta.integrity,
+          size: meta.size,
+          unpacked_size: meta.unpackedSize,
+        },
+      };
+    }
+
     const discoverySnapshot = await snapshotTree(quickstartProject);
     const noBundleHome = parseJson(
-      (await runCli("aslite", ["--json"], { cwd: quickstartProject })).stdout,
-      "aslite home --json outside a bundle",
+      (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
+      `${target.preferred_command} home --json outside a bundle`,
     );
-    const homeIdentity = noBundleHome["agentstate-lite"];
+    const homeIdentity = noBundleHome.superbee;
     assert.equal(homeIdentity.version, manifest.version);
     assert.equal(homeIdentity.channel, spec.expectedChannel);
     assert.equal(homeIdentity.bin, installedEntrypointRealPath);
@@ -489,20 +552,19 @@ async function runInstalledProof(spec) {
     );
     assert.match(
       noBundleHome.getting_started,
-      /aslite recipes/,
+      new RegExp(`${target.preferred_command} recipes`),
       "bundle-free home must point at Recipe discovery",
     );
 
-    await runCli("agentstate-lite", ["--help"]);
-    await runCli("aslite", ["--help"]);
-    const initHelp = (await runCli("aslite", ["init", "--help"])).stdout;
+    for (const command of target.expected_commands) await runCli(command, ["--help"]);
+    const initHelp = (await runCli(target.preferred_command, ["init", "--help"])).stdout;
     assert.match(
       initHelp,
-      /(?:agentstate-lite|aslite) recipes/,
+      /(?:superbee|agentstate-lite|aslite) recipes/,
       "init help must point at recipe discovery through an installed bin alias",
     );
     const discoveredRecipes = parseJson(
-      (await runCli("aslite", ["recipes", "--json"], { cwd: quickstartProject })).stdout,
+      (await runCli(target.preferred_command, ["recipes", "--json"], { cwd: quickstartProject })).stdout,
       "bundle-free recipes",
     );
     assert.ok(discoveredRecipes.count >= 3, "the installed CLI must discover the built-in recipe inventory");
@@ -510,14 +572,14 @@ async function runInstalledProof(spec) {
     assert.ok(contextNotes, "the installed recipe inventory must include context-notes");
     assert.equal(contextNotes.applied, null, "bundle-free discovery must not imply an applied state");
     assert.deepEqual(contextNotes.commands, {
-      create_bundle: "aslite init --create-only --recipe context-notes --dir '.agentstate-lite'",
-      add_to_bundle: "aslite recipe add context-notes",
+      create_bundle: `${target.preferred_command} init --create-only --recipe context-notes --dir '.agentstate-lite'`,
+      add_to_bundle: `${target.preferred_command} recipe add context-notes`,
     });
     const workTracking = discoveredRecipes.recipes.find((recipe) => recipe.name === "work-tracking");
     assert.ok(workTracking, "the installed recipe inventory must include work-tracking");
     assert.deepEqual(workTracking.commands, {
-      create_bundle: "aslite init --create-only --recipe work-tracking --dir '.agentstate-lite'",
-      add_to_bundle: "aslite recipe add work-tracking",
+      create_bundle: `${target.preferred_command} init --create-only --recipe work-tracking --dir '.agentstate-lite'`,
+      add_to_bundle: `${target.preferred_command} recipe add work-tracking`,
     });
     assertSnapshotUnchanged(
       discoverySnapshot,
@@ -646,7 +708,7 @@ async function runInstalledProof(spec) {
     );
     assert.match(initHelp, /--create-only/, "installed init help must carry the exact create-only spelling");
     const appliedRecipes = parseJson(
-      (await runCli("aslite", ["recipes", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["recipes", "--dir", bundle, "--json"])).stdout,
       "bundle recipes",
     );
     assert.equal(
@@ -656,12 +718,12 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(
       appliedRecipes.recipes.find((recipe) => recipe.name === "work-tracking")?.commands,
-      { add_to_bundle: `aslite recipe add work-tracking --dir '${bundle}'` },
+      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir '${bundle}'` },
       "an existing local bundle must expose only the actionable add command",
     );
     parseJson(
       (
-        await runCli("aslite", [
+        await runCli(target.preferred_command, [
           "new",
           "Task",
           "first-task",
@@ -679,13 +741,13 @@ async function runInstalledProof(spec) {
       "new",
     );
     const createdTask = parseJson(
-      (await runCli("aslite", ["doc", "read", "tasks/first-task", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["doc", "read", "tasks/first-task", "--dir", bundle, "--json"])).stdout,
       "read attributed quickstart Task",
     );
     assert.equal(createdTask.actor, "quickstart-agent", "the literal quickstart Task must retain attribution");
     assert.equal(createdTask.title, "Plan the first change", "the verifier must execute the documented Task command");
     const listed = parseJson(
-      (await runCli("aslite", ["list", "--type", "Task", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["list", "--type", "Task", "--dir", bundle, "--json"])).stdout,
       "list",
     );
     assert.ok(
@@ -693,7 +755,7 @@ async function runInstalledProof(spec) {
       "the installed CLI must list the Task it created",
     );
     const productiveHome = parseJson(
-      (await runCli("aslite", ["--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["--dir", bundle, "--json"])).stdout,
       "productive quickstart home",
     );
     assert.ok(
@@ -701,7 +763,7 @@ async function runInstalledProof(spec) {
       "home must surface the new Task as useful live state",
     );
     const productiveStatus = parseJson(
-      (await runCli("aslite", ["status", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["status", "--dir", bundle, "--json"])).stdout,
       "productive quickstart status",
     );
     assert.equal(productiveStatus.kind_warnings, 0, "the attributed Task must keep the quickstart bundle kind-clean");
@@ -710,7 +772,7 @@ async function runInstalledProof(spec) {
     assert.match(installedReadme, /init --create-only --recipe work-tracking/);
     assert.match(installedReadme, /bring source material or intent\s+to your agent/i);
     assert.match(installedReadme, /agent organizes,\s+types, links, and updates the\s+bundle/i);
-    assert.match(installedReadme, /^npm install -g @holaxis\/aslite$/m);
+    assert.match(installedReadme, /^npm install -g superbee$/m);
     assert.match(
       installedReadme,
       /`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity\./,
@@ -723,7 +785,7 @@ async function runInstalledProof(spec) {
     await writeFile(path.join(foreignSkill, "SKILL.md"), "# foreign skill — must survive\n");
 
     const skillInstall = parseJson(
-      (await runCli("aslite", ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill install",
     );
     assert.equal(skillInstall.skill.changed, true, "first skill install must report changed");
@@ -745,12 +807,14 @@ async function runInstalledProof(spec) {
         await readFile(path.join(dir, ".aslite-skill.json"), "utf8"),
         "skill manifest",
       );
-      assert.equal(skillManifest.package, "@holaxis/aslite");
+      // The legacy skill folder is retained so existing aslite-managed installations stay
+      // discoverable and repairable. New receipts identify the canonical successor package.
+      assert.equal(skillManifest.package, target.package.name);
       assert.equal(skillManifest.version, manifest.version);
     }
 
     const skillStatus = parseJson(
-      (await runCli("aslite", ["skill", "status", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "status", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill status",
     );
     assert.equal(skillStatus.skill.hosts.claude_code.state, "installed");
@@ -769,13 +833,13 @@ async function runInstalledProof(spec) {
     );
 
     const skillReinstall = parseJson(
-      (await runCli("aslite", ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill reinstall",
     );
     assert.equal(skillReinstall.skill.changed, false, "reinstall over a current install must be a no-op");
 
     parseJson(
-      (await runCli("aslite", ["skill", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill uninstall",
     );
     for (const host of [".claude", ".codex"]) {
@@ -797,7 +861,7 @@ async function runInstalledProof(spec) {
     const relocatedEnv = { CLAUDE_CONFIG_DIR: relocatedClaude, CODEX_HOME: relocatedCodex };
     parseJson(
       (
-        await runCli("aslite", ["skill", "install", "--scope", "user", "--json"], {
+        await runCli(target.preferred_command, ["skill", "install", "--scope", "user", "--json"], {
           cwd: project,
           env: relocatedEnv,
         })
@@ -809,7 +873,7 @@ async function runInstalledProof(spec) {
     }
     const userStatus = parseJson(
       (
-        await runCli("aslite", ["skill", "status", "--scope", "user", "--json"], {
+        await runCli(target.preferred_command, ["skill", "status", "--scope", "user", "--json"], {
           cwd: project,
           env: relocatedEnv,
         })
@@ -820,7 +884,7 @@ async function runInstalledProof(spec) {
     assert.equal(userStatus.skill.hosts.codex.state, "installed");
     parseJson(
       (
-        await runCli("aslite", ["skill", "uninstall", "--scope", "user", "--json"], {
+        await runCli(target.preferred_command, ["skill", "uninstall", "--scope", "user", "--json"], {
           cwd: project,
           env: relocatedEnv,
         })
@@ -833,7 +897,7 @@ async function runInstalledProof(spec) {
 
     // ── hook-command stability: installed hooks bind Node + the package entry, never ambient PATH ──
     parseJson(
-      (await runCli("aslite", ["hook", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["hook", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
       "hook install",
     );
     const settings = parseJson(
@@ -856,7 +920,7 @@ async function runInstalledProof(spec) {
       );
     }
     parseJson(
-      (await runCli("aslite", ["hook", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["hook", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
       "hook uninstall",
     );
     const settingsAfter = parseJson(
@@ -908,6 +972,7 @@ export async function verifyNpmPackage({ mode }) {
   const policy = verificationPolicy(mode);
   return runInstalledProof({
     mode: policy.mode,
+    target: SUCCESSOR_TARGET,
     expectedChannel: policy.artifactChannel,
     async produce({ packDir, npmUserConfig, npmCache }) {
       const cleanBuildEnv = sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache);
@@ -959,6 +1024,17 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   });
   const actualSha = await fileSha256(tarballPath);
   const recorded = parseJson(await readFile(path.resolve(manifest), "utf8"), "candidate manifest");
+  const targetId = recorded?.target ?? targetFromPackageName(recorded?.package?.name ?? recorded?.build_identity?.package?.name) ?? "successor";
+  const targetManifest = await loadReleaseTargets(DEFAULT_RELEASE_TARGETS_PATH);
+  if (recorded?.agreement?.release_targets_sha256) {
+    assert.equal(
+      await fileSha256(DEFAULT_RELEASE_TARGETS_PATH),
+      recorded.agreement.release_targets_sha256,
+      "candidate manifest release-target agreement does not match release/targets.json",
+    );
+  }
+  const target = targetManifest.targets[targetId];
+  if (!target) throw new Error(`candidate manifest names unknown release target ${JSON.stringify(targetId)}`);
   const recordedSha = recorded?.tarball?.sha256;
   assert.equal(
     actualSha,
@@ -972,6 +1048,7 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   );
   return runInstalledProof({
     mode: "tarball",
+    target,
     // A retained release candidate is always an npm-package build; the identity proof enforces it.
     expectedChannel: "npm-package",
     async produce() {

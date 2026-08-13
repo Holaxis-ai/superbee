@@ -31,7 +31,7 @@ import {
   type Bundle,
   type OkfDocument,
   type Version,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { CliError, classifyBundleError, toExit, asHandled, EXIT } from "../src/errors.js";
 import { addLink } from "../src/commands/link.js";
 import { doc } from "../src/commands/doc.js";

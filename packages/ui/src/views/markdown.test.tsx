@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MAX_BODY_CHARS, MAX_NODES, renderMarkdown } from "@agentstate-lite/markdown-renderer";
+import { MAX_BODY_CHARS, MAX_NODES, renderMarkdown } from "@superbee/markdown-renderer";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

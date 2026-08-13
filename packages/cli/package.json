@@ -1,8 +1,8 @@
 {
-  "name": "@holaxis/aslite",
+  "name": "superbee",
   "version": "0.1.0-pre.10",
   "type": "module",
-  "description": "Agent-facing CLI (AXI) for reading and writing local OKF knowledge bundles: context notes, docs, cross-links, and live bundle Views.",
+  "description": "Agent-facing Superbee CLI for reading and writing local OKF knowledge bundles: context notes, docs, cross-links, and live bundle Views.",
   "keywords": [
     "okf",
     "knowledge",
@@ -13,17 +13,18 @@
     "context-notes"
   ],
   "license": "MIT",
-  "homepage": "https://github.com/Holaxis-ai/agentstate-lite#readme",
+  "homepage": "https://github.com/Holaxis-ai/superbee#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Holaxis-ai/agentstate-lite.git"
+    "url": "git+https://github.com/Holaxis-ai/superbee.git"
   },
   "bugs": {
-    "url": "https://github.com/Holaxis-ai/agentstate-lite/issues"
+    "url": "https://github.com/Holaxis-ai/superbee/issues"
   },
   "bin": {
-    "aslite": "dist/agentstate-lite.mjs",
-    "agentstate-lite": "dist/agentstate-lite.mjs"
+    "superbee": "dist/superbee.mjs",
+    "aslite": "dist/superbee.mjs",
+    "agentstate-lite": "dist/superbee.mjs"
   },
   "files": [
     "dist",
@@ -46,12 +47,12 @@
     "prepublishOnly": "node ../../scripts/prepublish-guard.mjs"
   },
   "devDependencies": {
-    "@agentstate-lite/board-git": "*",
-    "@agentstate-lite/core": "*",
-    "@agentstate-lite/markdown-renderer": "*",
-    "@agentstate-lite/mcp-app": "*",
-    "@agentstate-lite/server": "*",
-    "@agentstate-lite/ui-server": "*",
+    "@superbee/board-git": "*",
+    "@superbee/core": "*",
+    "@superbee/markdown-renderer": "*",
+    "@superbee/mcp-app": "*",
+    "@superbee/server": "*",
+    "@superbee/ui-server": "*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@toon-format/toon": "2.3.0",
     "@types/node": "^22.0.0",

@@ -4,9 +4,13 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle } from "@agentstate-lite/core";
+import { initBundle } from "@superbee/core";
 
-import { openBundle, PROJECT_BINDING_FILE_NAME } from "../src/bundle.js";
+import {
+  openBundle,
+  PROJECT_BINDING_FILE_NAME,
+  SUPERBEE_PROJECT_BINDING_FILE_NAME,
+} from "../src/bundle.js";
 import { bundleCommand } from "../src/commands/bundle.js";
 import { CliError } from "../src/errors.js";
 
@@ -66,7 +70,7 @@ test("bundle locate: an explicit project directory identifies its conventional b
   }
 });
 
-test("bundle locate: a project binding wins discovery and names the binding that selected it", async () => {
+test("bundle locate: a preferred project binding wins discovery and names the binding that selected it", async () => {
   const root = await tempDir();
   try {
     const bound = path.join(root, "bound");
@@ -75,7 +79,7 @@ test("bundle locate: a project binding wins discovery and names the binding that
     const nested = path.join(project, "src", "deep");
     await mkdir(nested, { recursive: true });
     await initBundle(path.join(project, ".agentstate-lite"));
-    const bindingFile = path.join(project, PROJECT_BINDING_FILE_NAME);
+    const bindingFile = path.join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME);
     await writeFile(bindingFile, JSON.stringify({ bundle: "../bound" }));
 
     const receipt = await runJson(["locate"], nested);

@@ -1,4 +1,4 @@
-// `aslite version [--check [--tag latest|next]] [--json]` — local identity plus an optional,
+// `superbee version [--check [--tag latest|next]] [--json]` — local identity plus an optional,
 // bounded read-only comparison against the exact public npm release track.
 import { parseArgs } from "node:util";
 import { parseLeafOrUsage } from "../args.js";
@@ -15,10 +15,10 @@ import {
   type UpdateCheckResult,
 } from "../update-check.js";
 
-export const VERSION_USAGE = `agentstate-lite version — show identity or compare the supported npm release
+export const VERSION_USAGE = `superbee version — show identity or compare the supported npm release
 
 Usage:
-  agentstate-lite version [--check] [--tag latest|next] [--json]
+  superbee version [--check] [--tag latest|next] [--json]
 
 Reports the package version, source commit/dirty state baked at build time, artifact channel and
 SHA-256, executable path and launch evidence, compatibility-contract generations, and any adjacent

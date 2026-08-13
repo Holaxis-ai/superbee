@@ -1,4 +1,4 @@
-// `agentstate-lite recipe add <name-or-path>` — apply a recipe's definitions to an EXISTING
+// `superbee recipe add <name-or-path>` — apply a recipe's definitions to an EXISTING
 // bundle. `<name-or-path>` is a built-in name (e.g. `context-notes`) OR a path to a recipe folder
 // (npm-style disambiguation: a separator or a leading `~` means a path — see `recipe-source.ts`).
 //
@@ -9,7 +9,7 @@
 // through `resolveRecipe` -> `applyRecipe` — the SAME functions, no special-casing — which is what
 // makes recipe application generic rather than a one-off `init`-only special case (CLAUDE.md gate 3).
 import { parseArgs } from "node:util";
-import { loadKinds } from "@agentstate-lite/core";
+import { loadKinds } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -19,10 +19,10 @@ import { cliInvocation } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
 import { resolveRecipe } from "../recipe-source.js";
 
-export const RECIPE_USAGE = `agentstate-lite recipe — apply a recipe to this bundle
+export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
-  agentstate-lite recipe add <name-or-path> [--dir <path>] [--remote <url>]
+  superbee recipe add <name-or-path> [--dir <path>] [--remote <url>]
 
 Applies a recipe's definitions to the bundle. <name-or-path> is a built-in name (e.g.
 'context-notes') or a path to a recipe folder (a path is anything containing '/' or starting
@@ -35,7 +35,7 @@ rejected before any write.
 Idempotent: a doc the recipe would install that already exists is left untouched (changed:false
 for that doc) rather than erroring or overwriting — re-running 'recipe add' on an already-applied
 recipe is a changed:false no-op overall, and never clobbers a bundle author's own hand-edit. See
-'agentstate-lite recipes' to list built-ins and which are already applied, and 'agentstate-lite
+'superbee recipes' to list built-ins and which are already applied, and 'superbee
 kinds' for the resulting live per-bundle registry.
 
 Options:

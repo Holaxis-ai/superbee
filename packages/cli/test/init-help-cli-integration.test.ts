@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 before(() => {
   if (!existsSync(cliBin)) {

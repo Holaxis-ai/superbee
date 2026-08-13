@@ -13,6 +13,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
+      target:
+        description: "Release target from release/targets.json"
+        type: choice
+        options: ["successor", "bridge", "rehearsal-reject", "rehearsal-approve"]
+        default: "successor"
       mode:
         description: "dry-run (default) prints operations; live stages through the release environment"
         type: choice
@@ -37,10 +42,13 @@ jobs:
     permissions:
       contents: read
     outputs:
+      target: ${{ steps.facts.outputs.target }}
+      package: ${{ steps.facts.outputs.package }}
       tag: ${{ steps.facts.outputs.tag }}
       commit: ${{ steps.facts.outputs.commit }}
       version: ${{ steps.facts.outputs.version }}
       policy_tag: ${{ steps.facts.outputs.policy_tag }}
+      workflow_contract: ${{ steps.facts.outputs.workflow_contract }}
       tarball_filename: ${{ steps.candidate.outputs.tarball_filename }}
       tarball_sha256: ${{ steps.candidate.outputs.tarball_sha256 }}
       manifest_sha256: ${{ steps.candidate.outputs.manifest_sha256 }}
@@ -57,25 +65,21 @@ jobs:
           set -euo pipefail
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
             TAG="$GITHUB_REF_NAME"
+            node scripts/release-resolve-target.mjs --tag "$TAG" --github-output "$GITHUB_OUTPUT"
           else
-            TAG="$(node -p "require('./packages/cli/package.json').version" | sed 's/^/v/')"
+            TARGET="${INPUT_TARGET:-successor}"
+            FACTS="$(node scripts/release-resolve-target.mjs --target "$TARGET" --json)"
+            TAG="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).tag)' "$FACTS")"
+            node scripts/release-resolve-target.mjs --target "$TARGET" --github-output "$GITHUB_OUTPUT"
           fi
           if [ "$MODE" = "live" ]; then
             test "$GITHUB_REF_TYPE" = "tag" || { echo "::error::live staging must be dispatched from a tag ref"; exit 1; }
             test "$GITHUB_REF_NAME" = "$TAG" || { echo "::error::live ref $GITHUB_REF_NAME != $TAG"; exit 1; }
           fi
           COMMIT="$(git rev-parse HEAD)"
-          VERSION="${TAG#v}"
-          case "$VERSION" in
-            *-*) POLICY_TAG="next" ;;
-            *) POLICY_TAG="latest" ;;
-          esac
-          {
-            echo "tag=$TAG"
-            echo "commit=$COMMIT"
-            echo "version=$VERSION"
-            echo "policy_tag=$POLICY_TAG"
-          } >> "$GITHUB_OUTPUT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_TARGET: ${{ inputs.target }}
 
       - uses: actions/setup-node@v4
         with:
@@ -89,9 +93,10 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.facts.outputs.tag }}
           RELEASE_COMMIT: ${{ steps.facts.outputs.commit }}
+          RELEASE_TARGET: ${{ steps.facts.outputs.target }}
         run: |
           set -euo pipefail
-          npm run release:candidate -- --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --out "$ARTIFACT_DIR"
+          npm run release:candidate -- --target "$RELEASE_TARGET" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --out "$ARTIFACT_DIR"
           FILENAME="$(node -p "require('./$ARTIFACT_DIR/candidate.json').tarball.filename")"
           SHA="$(node -p "require('./$ARTIFACT_DIR/candidate.json').tarball.sha256")"
           INTEGRITY="$(node -p "require('./$ARTIFACT_DIR/candidate.json').tarball.integrity")"
@@ -117,6 +122,7 @@ jobs:
   draft:
     name: draft_prepared — prepare (never publish) the GitHub draft
     needs: candidate
+    if: needs.candidate.outputs.workflow_contract == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -197,6 +203,7 @@ jobs:
   stage:
     name: staged — OIDC trusted-publisher stage of the retained tarball
     needs: [candidate, draft]
+    if: needs.candidate.outputs.workflow_contract == 'full'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -259,6 +266,7 @@ jobs:
       - name: Write immutable stage receipt and inspection instructions
         env:
           RUN_ID: ${{ needs.candidate.outputs.run_id }}
+          TARGET: ${{ needs.candidate.outputs.target }}
           ARTIFACT_ID: ${{ needs.candidate.outputs.artifact_id }}
           ARTIFACT_DIGEST: ${{ needs.candidate.outputs.artifact_digest }}
           STAGE_ID: ${{ steps.stage.outputs.stage_id }}
@@ -275,7 +283,7 @@ jobs:
         run: |
           set -euo pipefail
           node scripts/release-emit-receipt.mjs \
-            --run-id "$RUN_ID" --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
+            --target "$TARGET" --run-id "$RUN_ID" --artifact-id "$ARTIFACT_ID" --artifact-digest "$ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --version "$VERSION" --tag "$TAG" --source-commit "$SOURCE_COMMIT" \
             --policy-tag "$POLICY_TAG" --tarball-sha256 "$TARBALL_SHA256" \
             --tarball-filename "$TARBALL_FILENAME" --integrity "$INTEGRITY" \

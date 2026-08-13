@@ -1,0 +1,105 @@
+{
+  "schema": "superbee.release-targets.v1",
+  "semantics": {
+    "what": "Finite release target and version allowlist for the Superbee rename cutover. The release adapter must reject any target/package/version/tag tuple not listed here before OIDC, draft creation, staging, registry verification, or publication.",
+    "tag_contract": "Release tags keep the historical v<version> shape. Bridge, successor, and rehearsal are disambiguated by the reviewed target/package/version tuple, not by tag prefixes.",
+    "production_control": "Non-production rehearsal tuples must never use @holaxis/aslite or superbee. Bridge and successor versions must differ because v<version> tags are immutable."
+  },
+  "targets": {
+    "bridge": {
+      "package": {
+        "name": "@holaxis/aslite",
+        "directory": ["@holaxis", "aslite"]
+      },
+      "artifact": "dist/superbee.mjs",
+      "bins": {
+        "aslite": "dist/superbee.mjs",
+        "agentstate-lite": "dist/superbee.mjs"
+      },
+      "tarball_basename": "holaxis-aslite",
+      "allow_production": true,
+      "expected_commands": ["aslite", "agentstate-lite"],
+      "preferred_command": "aslite"
+    },
+    "successor": {
+      "package": {
+        "name": "superbee",
+        "directory": ["superbee"]
+      },
+      "artifact": "dist/superbee.mjs",
+      "bins": {
+        "superbee": "dist/superbee.mjs",
+        "aslite": "dist/superbee.mjs",
+        "agentstate-lite": "dist/superbee.mjs"
+      },
+      "tarball_basename": "superbee",
+      "allow_production": true,
+      "expected_commands": ["superbee", "aslite", "agentstate-lite"],
+      "preferred_command": "superbee"
+    },
+    "rehearsal-reject": {
+      "package": {
+        "name": "superbee-release-rehearsal",
+        "directory": ["superbee-release-rehearsal"]
+      },
+      "artifact": "dist/superbee.mjs",
+      "bins": {
+        "superbee-release-rehearsal": "dist/superbee.mjs"
+      },
+      "tarball_basename": "superbee-release-rehearsal",
+      "allow_production": false,
+      "workflow_contract": "identity-only",
+      "expected_commands": ["superbee-release-rehearsal"],
+      "preferred_command": "superbee-release-rehearsal"
+    },
+    "rehearsal-approve": {
+      "package": {
+        "name": "superbee-release-rehearsal",
+        "directory": ["superbee-release-rehearsal"]
+      },
+      "artifact": "dist/superbee.mjs",
+      "bins": {
+        "superbee-release-rehearsal": "dist/superbee.mjs"
+      },
+      "tarball_basename": "superbee-release-rehearsal",
+      "allow_production": false,
+      "workflow_contract": "identity-only",
+      "expected_commands": ["superbee-release-rehearsal"],
+      "preferred_command": "superbee-release-rehearsal"
+    }
+  },
+  "allowed_tuples": {
+    "bridge": {
+      "target": "bridge",
+      "package": "@holaxis/aslite",
+      "version": "0.1.0-pre.10",
+      "tag": "v0.1.0-pre.10",
+      "outcome": "publish",
+      "production": true
+    },
+    "successor": {
+      "target": "successor",
+      "package": "superbee",
+      "version": "0.1.0-pre.11",
+      "tag": "v0.1.0-pre.11",
+      "outcome": "publish",
+      "production": true
+    },
+    "rehearsal-reject": {
+      "target": "rehearsal-reject",
+      "package": "superbee-release-rehearsal",
+      "version": "0.0.0-rename-reject.20260812",
+      "tag": "v0.0.0-rename-reject.20260812",
+      "outcome": "reject",
+      "production": false
+    },
+    "rehearsal-approve": {
+      "target": "rehearsal-approve",
+      "package": "superbee-release-rehearsal",
+      "version": "0.0.0-rename-approve.20260812",
+      "tag": "v0.0.0-rename-approve.20260812",
+      "outcome": "approve",
+      "production": false
+    }
+  }
+}

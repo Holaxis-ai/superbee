@@ -14,12 +14,12 @@ const TEST_DIR = here;
 
 function allowedPackage(specifier: string): boolean {
   return (
-    specifier === "@agentstate-lite/core" ||
-    specifier.startsWith("@agentstate-lite/core/") ||
-    specifier === "@agentstate-lite/server" ||
-    specifier.startsWith("@agentstate-lite/server/") ||
-    specifier === "@agentstate-lite/view-runtime" ||
-    specifier.startsWith("@agentstate-lite/view-runtime/")
+    specifier === "@superbee/core" ||
+    specifier.startsWith("@superbee/core/") ||
+    specifier === "@superbee/server" ||
+    specifier.startsWith("@superbee/server/") ||
+    specifier === "@superbee/view-runtime" ||
+    specifier.startsWith("@superbee/view-runtime/")
   );
 }
 
@@ -112,9 +112,9 @@ test("import direction: manifest dependencies are exactly core, server, and view
     optionalDependencies?: Record<string, string>;
   };
   assert.deepEqual(Object.keys(manifest.dependencies ?? {}), [
-    "@agentstate-lite/core",
-    "@agentstate-lite/server",
-    "@agentstate-lite/view-runtime",
+    "@superbee/core",
+    "@superbee/server",
+    "@superbee/view-runtime",
   ]);
   assert.equal(manifest.peerDependencies, undefined);
   assert.equal(manifest.optionalDependencies, undefined);

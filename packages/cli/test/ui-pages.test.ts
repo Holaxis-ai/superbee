@@ -12,8 +12,8 @@ import path from "node:path";
 import { createServer as createHttpServer, type Server, type ServerResponse } from "node:http";
 import { connect } from "node:net";
 
-import { deleteDoc, initBundle, readDoc, writeBlob, writeDoc, RemoteBackend, type Bundle } from "@agentstate-lite/core";
-import { createRouter, serve, type ServerHandle } from "@agentstate-lite/server";
+import { deleteDoc, initBundle, readDoc, writeBlob, writeDoc, RemoteBackend, type Bundle } from "@superbee/core";
+import { createRouter, serve, type ServerHandle } from "@superbee/server";
 import { bootUiServer, escapeHtml, pageError, type UiServerHandle } from "../src/ui/server.js";
 import {
   PageLaunchRegistry,
@@ -24,7 +24,7 @@ import {
   snapshotBundle,
   startWatcher,
   type Snapshot,
-} from "@agentstate-lite/ui-server";
+} from "@superbee/ui-server";
 import { writeUiUrlFile, clearUiUrlFile, uiUrlFilePath } from "../src/ui/url-file.js";
 
 // ── PageLaunchRegistry ───────────────────────────────────────────────────────

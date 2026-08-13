@@ -34,16 +34,17 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 import {
   AUTO_PULL_STALE_MS,
   NO_AUTOPULL_ENV,
+  SUPERBEE_NO_AUTOPULL_ENV,
   maybeAutoPull,
 } from "../src/autopull.js";
 import { readCache, readCursor, readSyncState } from "../src/cursor.js";
 import { sync } from "../src/commands/sync.js";
 import { hookInstallHintOnce } from "../src/sync-cli.js";
-import { resolveBundleKey } from "@agentstate-lite/board-git";
+import { resolveBundleKey } from "@superbee/board-git";
 import { hook, hookInstalled } from "../src/commands/hook.js";
 import { home } from "../src/commands/home.js";
 import { list } from "../src/commands/list.js";
@@ -217,7 +218,7 @@ test("ff-only: a DIVERGED board is swallowed — no rebase, no mid-state, HEAD u
   }
 });
 
-test("opt-out knob: AGENTSTATE_LITE_NO_AUTOPULL disables the trigger entirely", async () => {
+test("opt-out knob: Superbee and legacy no-autopull env vars disable the trigger entirely", async () => {
   const topo = await makeTwoCloneTopology();
   const homeB = await tempHome();
   try {
@@ -225,16 +226,22 @@ test("opt-out knob: AGENTSTATE_LITE_NO_AUTOPULL disables the trigger entirely", 
     commitBoard(topo.a, "board: A adds tasks/late");
     pushBoard(topo.a);
     const before = boardHead(topo.b);
-    const outcome = await withHome(homeB, () =>
-      maybeAutoPull(topo.b.board, { env: { [NO_AUTOPULL_ENV]: "1" }, now: at(0) }),
-    );
-    assert.equal(outcome, "disabled");
-    assert.equal(boardHead(topo.b), before, "nothing pulled");
-    assert.deepEqual(
-      await withHome(homeB, () => readSyncState(resolveBundleKey(topo.b.board))),
-      { cursor: null, cache: null, marker: null, selfActors: null, autoPullAttemptAt: null, hookHintedAt: null },
-      "disabled = zero state writes",
-    );
+    for (const [key, value] of [
+      [NO_AUTOPULL_ENV, "1"],
+      [SUPERBEE_NO_AUTOPULL_ENV, "1"],
+      [SUPERBEE_NO_AUTOPULL_ENV, "0"],
+    ] as const) {
+      const outcome = await withHome(homeB, () =>
+        maybeAutoPull(topo.b.board, { env: { [key]: value }, now: at(0) }),
+      );
+      assert.equal(outcome, "disabled", `${key}=${value}`);
+      assert.equal(boardHead(topo.b), before, "nothing pulled");
+      assert.deepEqual(
+        await withHome(homeB, () => readSyncState(resolveBundleKey(topo.b.board))),
+        { cursor: null, cache: null, marker: null, selfActors: null, autoPullAttemptAt: null, hookHintedAt: null },
+        "disabled = zero state writes",
+      );
+    }
   } finally {
     await topo.cleanup();
     await rm(homeB, { recursive: true, force: true });

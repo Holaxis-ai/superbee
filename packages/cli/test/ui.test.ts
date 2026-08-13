@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:net";
 
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 import { ui } from "../src/commands/ui.js";
 import { bootUiServer } from "../src/ui/server.js";
 import { CliError } from "../src/errors.js";
@@ -44,7 +44,7 @@ test("ui --help: prints usage and does not boot a server", async () => {
     waitForShutdown: () => Promise.resolve(),
     openBrowser: () => {},
   });
-  assert.match(out, /agentstate-lite ui/);
+  assert.match(out, /superbee ui/);
   assert.equal(booted, false);
 });
 

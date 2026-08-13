@@ -63,7 +63,7 @@ export function blobVersion(bytes: Uint8Array): Version {
  * Strip an HTTP ETag's RFC 7232 wrapper — a weak-validator prefix (`W/`) and/or surrounding
  * double quotes — to recover the bare content-addressed {@link Version} token underneath.
  * Exists for the wire-protocol v0.1 transport:
- * `@agentstate-lite/server`'s router tolerates a quoted/weak `If-Match` value a client or
+ * `@superbee/server`'s router tolerates a quoted/weak `If-Match` value a client or
  * intermediary may reflect back, and `RemoteBackend` tolerates a quoted/weak `ETag` a proxy
  * may normalize a response into. Shared here (one implementation, both sides of the wire
  * import it) rather than duplicated, since both packages already depend on core. A value

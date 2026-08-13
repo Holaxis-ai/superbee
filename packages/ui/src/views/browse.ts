@@ -12,7 +12,7 @@
 import type { DocHead } from "../api/types.js";
 import { isFeedHead } from "./ActivityFeed.js";
 import { formatWhen } from "./format.js";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 
 export interface BrowseRow {
   id: string;

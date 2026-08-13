@@ -33,13 +33,13 @@ import { fileURLToPath } from "node:url";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
-import { initBundle, readDoc, writeDoc } from "@agentstate-lite/core";
+import { initBundle, readDoc, writeDoc } from "@superbee/core";
 import { commitBoard, makeTwoCloneTopology, pushBoard, writeBoardDoc } from "../../board-git/test/git-harness.js";
 import { STDIN_SILENT_NOTE } from "../src/commands/doc/common.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
@@ -585,10 +585,10 @@ test("built CLI: `doc read --help`'s documented safe-edit-cycle example, extract
 
     // Extract the exact two example lines (never a hand-copied literal — a drift in the source
     // string would change what this regex matches, and thus what actually runs).
-    const readLineMatch = helpText.match(/^ {2,}(agentstate-lite doc read <id> --body-out \S+ --json)\s*$/m);
+    const readLineMatch = helpText.match(/^ {2,}(superbee doc read <id> --body-out \S+ --json)\s*$/m);
     assert.ok(readLineMatch, `expected a 'doc read <id> --body-out ... --json' example line in:\n${helpText}`);
     const updateLineMatch = helpText.match(
-      /^ {2,}(agentstate-lite doc update <id> --body-file \S+) \\\n\s*(--expected-version <version>)\s*$/m,
+      /^ {2,}(superbee doc update <id> --body-file \S+) \\\n\s*(--expected-version <version>)\s*$/m,
     );
     assert.ok(updateLineMatch, `expected a two-line 'doc update <id> --body-file ... --expected-version <version>' example in:\n${helpText}`);
 

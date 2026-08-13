@@ -63,8 +63,8 @@ import {
   BUNDLE_NAME_DOC_TYPE,
   type BundleNameSource,
 } from "../bundle-name.js";
-import { queryHeads, type OkfDocument } from "@agentstate-lite/core";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+import { queryHeads, type OkfDocument } from "@superbee/core";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import {
@@ -86,7 +86,7 @@ import {
   isBoardGitError,
   resolveBundleKey,
   retargetBoardInterior,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { maybeAutoPull } from "../autopull.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
@@ -100,14 +100,14 @@ import {
   type UpdateNotice,
 } from "../update-orientation.js";
 
-export const HOME_USAGE = `agentstate-lite home — render the local orientation view
+export const HOME_USAGE = `superbee home — render the local orientation view
 
 Usage:
-  agentstate-lite home [--dir <path> | --remote <url>] [--json] [--no-update-check]
+  superbee home [--dir <path> | --remote <url>] [--json] [--no-update-check]
 
 Default TOON output may display a previously validated latest-track release notice and launch one
 detached refresh at most once per 24-hour attempt window. Rendering never waits for npm. The fixed
-public npm request names only @holaxis/aslite; it sends no installed version, cwd, bundle, actor, or
+public npm request names only superbee; it sends no installed version, cwd, bundle, actor, or
 usage data beyond ordinary network metadata.
 
 Options:
@@ -674,7 +674,7 @@ export function buildHomeView(
 
   const projectedIdentity = deps.identity?.();
   const view: Record<string, unknown> = {
-    "agentstate-lite": {
+    superbee: {
       bin: deps.binPath(),
       ...(projectedIdentity
         ? { version: projectedIdentity.version, channel: projectedIdentity.channel }

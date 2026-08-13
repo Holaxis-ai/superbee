@@ -1,4 +1,4 @@
-// `agentstate-lite status` — a read-only, whole-bundle health report (bundle lint).
+// `superbee status` — a read-only, whole-bundle health report (bundle lint).
 //
 // COMPOSITION only: this command adds NO new core validation/link/freshness logic. It composes
 // existing core machinery — `loadKinds`/`validateAgainstKind` (kind conformance), `parseLinksFromDoc`
@@ -30,7 +30,7 @@ import {
   parseLinksFromDoc,
   query,
   validateAgainstKind,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import {
   isAnyEntryKey,
   isAnyRegistryId,
@@ -38,7 +38,7 @@ import {
   isViewEntryVersion,
   parseRegistration,
   VIEW_ENTRY_PREFIX,
-} from "@agentstate-lite/core/page";
+} from "@superbee/core/page";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { CliError } from "../errors.js";
@@ -55,10 +55,10 @@ import {
 } from "../legacy-page.js";
 import { cliInvocation } from "../invocation.js";
 
-export const STATUS_USAGE = `agentstate-lite status — read-only whole-bundle health report (bundle lint)
+export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
 Usage:
-  agentstate-lite status [--limit <n>] [--dir <path> | --remote <url>]
+  superbee status [--limit <n>] [--dir <path> | --remote <url>]
 
 Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared conventions/,
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
@@ -576,7 +576,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     if (namesPresent) {
       legacy.help =
         "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the " +
-        "agentstate-lite repo) to rename the listed docs in place — types flip to View, " +
+        "Superbee repo) to rename the listed docs in place — types flip to View, " +
         "bridge renames to access, and the shipped View convention is refreshed";
     }
     if (pageTyped.total > 0) legacy.page_typed_rows = pageTyped;

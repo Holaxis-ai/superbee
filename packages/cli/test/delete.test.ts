@@ -14,8 +14,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, readDoc, readBlob, writeDoc, writeBlob, readDocVersioned } from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+import { initBundle, readDoc, readBlob, writeDoc, writeBlob, readDocVersioned } from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 
 import { deleteCommand, type DeleteCliDeps } from "../src/commands/delete.js";
 import { CliError } from "../src/errors.js";
@@ -202,7 +202,7 @@ test("delete: a stray positional is a USAGE error, not silently absorbed", async
 test("delete --help: prints usage and does not touch a bundle", async () => {
   let out = "";
   await deleteCommand(["--help"], { stdout: (s) => (out += s) });
-  assert.match(out, /agentstate-lite delete/);
+  assert.match(out, /superbee delete/);
 });
 
 // ── --remote parity ────────────────────────────────────────────────────────

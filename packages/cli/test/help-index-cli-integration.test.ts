@@ -1,6 +1,6 @@
 /**
  * End-to-end smoke test for the top-level `--help`/`-h`/`help` rewrite (help-index-readability
- * task), run against the BUILT CLI (`dist/agentstate-lite.mjs`) over a real subprocess — the actual
+ * task), run against the BUILT CLI (`dist/superbee.mjs`) over a real subprocess — the actual
  * bytes an agent shelling out to the tool would see. Mirrors `doc-cli-integration.test.ts`'s
  * `before`-hook build pattern (this package has no other build-once convention to reuse).
  *
@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.join(cliPackageRoot, "dist", "agentstate-lite.mjs");
+const cliBin = path.join(cliPackageRoot, "dist", "superbee.mjs");
 
 // Build ONLY if the bundle is absent — the package `test` script builds once up front, so this is
 // a no-op under `npm test`/`npm run check`. That prevents this file and `doc-cli-integration` from
@@ -44,7 +44,7 @@ for (const argv of [["--help"], ["-h"], ["help"]]) {
 
     // The new shape: a description header, a Usage line, and every group as its own plain heading
     // with each command on its own indented physical line. (The resolved invocation off-PATH is
-    // `npx -y @holaxis/aslite`, a multi-word prefix, so match loosely on the leading token.)
+    // `npx -y superbee`, a multi-word prefix, so match loosely on the leading token.)
     assert.match(out, /^.+ — read and write a local OKF knowledge bundle/);
     assert.match(out, /\nUsage: .+ <command> \[options\]\n/);
     assert.match(out, /\nBundle:\n {2}bundle locate \[--dir <path>\][^\n]* — Resolve the exact canonical local bundle path/);
@@ -66,7 +66,7 @@ for (const argv of [["--help"], ["-h"], ["help"]]) {
 
 test("built CLI: the bare (home) view is UNCHANGED by the --help rewrite — still TOON", () => {
   const out = run([]);
-  assert.match(out, /^"agentstate-lite":\n {2}bin: /);
+  assert.match(out, /^superbee:\n {2}bin: /);
   assert.doesNotMatch(out, /\nBundle:\n {2}init /, "home must not have picked up the --help prose format");
   assert.doesNotMatch(out, /^auth:/m, "home must not project hosted credential identity");
   assert.doesNotMatch(out, /^remotes:/m, "home must not enumerate stored hosted credentials");
@@ -114,7 +114,7 @@ test("built CLI: `view` is now catalog inspection only; the retired static rende
 
 test("built CLI: a subcommand's own `--help` (e.g. `new --help`) is UNCHANGED by the top-level rewrite", () => {
   const out = run(["new", "--help"]);
-  assert.match(out, /^agentstate-lite new — create a new instance of a bundle-declared kind/);
-  assert.match(out, /\nUsage:\n {2}agentstate-lite new /);
+  assert.match(out, /^superbee new — create a new instance of a bundle-declared kind/);
+  assert.match(out, /\nUsage:\n {2}superbee new /);
   assert.doesNotMatch(out, /\nBundle:\n/, "must not have picked up the top-level index's group headings");
 });

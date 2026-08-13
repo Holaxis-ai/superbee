@@ -9,7 +9,13 @@
 // Normative source: version-update-protocols.md §5. Single authority so the workflow, the receipt
 // instructions, and the tests never drift.
 
-const PKG = "@holaxis/aslite";
+import { DEFAULT_TARGETS, assertWorkflowContract, stageDownloadFilenameForTarget } from "./release-targets.mjs";
+
+function targetFor(targetId = "bridge") {
+  const target = DEFAULT_TARGETS[targetId];
+  if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
+  return assertWorkflowContract(target);
+}
 
 // Strict SemVer (optional prerelease/build metadata), no leading v.
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
@@ -52,12 +58,13 @@ function op(argv, extra = {}) {
 }
 
 /** `npm stage download <id>` + local SHA-256 compare — the mandatory pre-approval inspection. */
-export function inspectionInstructions({ stageId, tarballSha256, version }) {
+export function inspectionInstructions({ stageId, tarballSha256, version, target = "bridge" }) {
+  const releaseTarget = targetFor(target);
   assertToken("stageId", stageId);
   assertSha256(tarballSha256);
   assertVersion(version);
   // npm 11.15 does not implement `stage download --out`; it writes this deterministic filename.
-  const out = `./holaxis-aslite-${version}-${stageId}.tgz`;
+  const out = `./${stageDownloadFilenameForTarget(releaseTarget, version, stageId)}`;
   const bare = String(tarballSha256).replace(/^sha256:/, "");
   return {
     title: "Inspect the staged tarball BEFORE approval",
@@ -82,13 +89,15 @@ export function approveOperation({ stageId }) {
 }
 
 /** Move a secondary dist-tag (e.g. float `next` to a prerelease candidate). */
-export function secondaryTagOperation({ version, tag }) {
-  return op(["npm", "dist-tag", "add", `${PKG}@${assertVersion(version)}`, assertToken("tag", tag)]);
+export function secondaryTagOperation({ version, tag, target = "bridge" }) {
+  const releaseTarget = targetFor(target);
+  return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }
 
 /** Remove a stale secondary tag (e.g. drop `next` once stable makes it redundant). */
-export function removeSecondaryTagOperation({ tag }) {
-  return op(["npm", "dist-tag", "rm", PKG, assertToken("tag", tag)]);
+export function removeSecondaryTagOperation({ tag, target = "bridge" }) {
+  const releaseTarget = targetFor(target);
+  return op(["npm", "dist-tag", "rm", releaseTarget.package.name, assertToken("tag", tag)]);
 }
 
 /**
@@ -96,25 +105,28 @@ export function removeSecondaryTagOperation({ tag }) {
  * deprecate the failed version WITH the recovery command as the message. Returns argvs + display
  * commands.
  */
-export function rollbackOperation({ failedVersion, priorVersion, track = "next" }) {
+export function rollbackOperation({ failedVersion, priorVersion, track = "next", target = "bridge", recoveryTarget = target }) {
+  const releaseTarget = targetFor(target);
+  const recovery = targetFor(recoveryTarget);
   assertVersion(failedVersion);
   assertVersion(priorVersion);
   assertToken("track", track);
-  const recovery = `npm install --global ${PKG}@${priorVersion}`;
+  const recoveryCommand = `npm install --global ${recovery.package.name}@${priorVersion}`;
   const argvs = [
-    ["npm", "dist-tag", "add", `${PKG}@${priorVersion}`, track],
-    ["npm", "deprecate", `${PKG}@${failedVersion}`, `superseded — install ${PKG}@${priorVersion} (${recovery})`],
+    ["npm", "dist-tag", "add", `${recovery.package.name}@${priorVersion}`, track],
+    ["npm", "deprecate", `${releaseTarget.package.name}@${failedVersion}`, `superseded - install ${recovery.package.name}@${priorVersion} (${recoveryCommand})`],
   ];
-  return { argvs, commands: argvs.map(displayCommand), recovery_command: recovery };
+  return { argvs, commands: argvs.map(displayCommand), recovery_command: recoveryCommand };
 }
 
 /**
  * Human-readable registry inspection commands. The strict integrity/signature/provenance/install
  * proof is performed by release-verify-registry.mjs in the separately dispatched finalizer.
  */
-export function registryVerifyOperations({ version }) {
+export function registryVerifyOperations({ version, target = "bridge" }) {
+  const releaseTarget = targetFor(target);
   assertVersion(version);
-  const coord = `${PKG}@${version}`;
+  const coord = `${releaseTarget.package.name}@${version}`;
   const argvs = [
     ["npm", "view", coord, "dist.integrity", "dist.shasum", "--json"],
     ["npm", "view", coord, "--json"],
@@ -123,13 +135,14 @@ export function registryVerifyOperations({ version }) {
   return {
     argvs,
     commands: argvs.map(displayCommand),
-    workflow_proof: `node scripts/release-verify-registry.mjs --version ${version} --manifest release-candidate/candidate.json`,
+    workflow_proof: `node scripts/release-verify-registry.mjs --target ${releaseTarget.id} --version ${version} --manifest release-candidate/candidate.json`,
   };
 }
 
 /** Interactive dist-tag promotion after registry proof (§5 promoted). */
-export function promoteOperation({ version, tag = "latest" }) {
-  return op(["npm", "dist-tag", "add", `${PKG}@${assertVersion(version)}`, assertToken("tag", tag)]);
+export function promoteOperation({ version, tag = "latest", target = "bridge" }) {
+  const releaseTarget = targetFor(target);
+  return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }
 
 /**

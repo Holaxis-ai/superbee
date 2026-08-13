@@ -11,13 +11,14 @@ import { mkdtemp, mkdir, rm, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeDoc } from "@agentstate-lite/core";
+import { initBundle, writeDoc } from "@superbee/core";
 
 import {
   resolveProjectBinding,
   resolveRemoteFlag,
   openBundle,
   PROJECT_BINDING_FILE_NAME,
+  SUPERBEE_PROJECT_BINDING_FILE_NAME,
   CONVENTIONAL_BUNDLE_DIR_NAME,
 } from "../src/bundle.js";
 import { CliError } from "../src/errors.js";
@@ -32,12 +33,20 @@ async function tempDir(): Promise<string> {
   return realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-bundle-test-")));
 }
 
-async function writeBinding(dir: string, bundle: unknown): Promise<void> {
-  await writeFile(path.join(dir, PROJECT_BINDING_FILE_NAME), JSON.stringify({ bundle }));
+async function writeBinding(
+  dir: string,
+  bundle: unknown,
+  filename: string = PROJECT_BINDING_FILE_NAME,
+): Promise<void> {
+  await writeFile(path.join(dir, filename), JSON.stringify({ bundle }));
 }
 
-async function writeRawBinding(dir: string, raw: string): Promise<void> {
-  await writeFile(path.join(dir, PROJECT_BINDING_FILE_NAME), raw);
+async function writeRawBinding(
+  dir: string,
+  raw: string,
+  filename: string = PROJECT_BINDING_FILE_NAME,
+): Promise<void> {
+  await writeFile(path.join(dir, filename), raw);
 }
 
 /** Run inside `dir` (chdir + restore), even if `fn` throws. */
@@ -87,6 +96,23 @@ test("resolveProjectBinding: finds a binding in the cwd itself; a relative path 
   }
 });
 
+test("resolveProjectBinding: the preferred .superbee.json binding resolves through the same parser", async () => {
+  const root = await tempDir();
+  try {
+    const project = path.join(root, "project");
+    await mkdir(project);
+    await writeBinding(project, "../shared", SUPERBEE_PROJECT_BINDING_FILE_NAME);
+
+    const binding = await resolveProjectBinding(project);
+    assert.deepEqual(binding, {
+      file: path.join(project, SUPERBEE_PROJECT_BINDING_FILE_NAME),
+      target: path.join(root, "shared"),
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("resolveProjectBinding: walk-up discovery from a nested cwd — the NEAREST ancestor's binding wins, not a further one", async () => {
   const root = await tempDir();
   try {
@@ -102,6 +128,72 @@ test("resolveProjectBinding: walk-up discovery from a nested cwd — the NEAREST
       assert.ok(binding);
       assert.equal(binding!.file, path.join(mid, PROJECT_BINDING_FILE_NAME));
       assert.equal(binding!.target, path.resolve(mid, "../near"));
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveProjectBinding: nearest level wins across old and new names in either direction", async (t) => {
+  for (const [nearName, farName] of [
+    [SUPERBEE_PROJECT_BINDING_FILE_NAME, PROJECT_BINDING_FILE_NAME],
+    [PROJECT_BINDING_FILE_NAME, SUPERBEE_PROJECT_BINDING_FILE_NAME],
+  ] as const) {
+    await t.test(`${nearName} over ${farName}`, async () => {
+      const root = await tempDir();
+      try {
+        await writeBinding(root, "far", farName);
+        const near = path.join(root, "near");
+        const nested = path.join(near, "nested");
+        await mkdir(nested, { recursive: true });
+        await writeBinding(near, "near-target", nearName);
+
+        assert.deepEqual(await resolveProjectBinding(nested), {
+          file: path.join(near, nearName),
+          target: path.join(near, "near-target"),
+        });
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("resolveProjectBinding: both names at the same level fail closed even when targets match", async () => {
+  const root = await tempDir();
+  try {
+    await writeBinding(root, "shared", SUPERBEE_PROJECT_BINDING_FILE_NAME);
+    await writeBinding(root, "shared", PROJECT_BINDING_FILE_NAME);
+
+    await assert.rejects(() => resolveProjectBinding(root), (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.equal(err.code, "USAGE");
+      assert.match(err.message, /conflicting project bindings/);
+      assert.ok(err.message.includes(path.join(root, SUPERBEE_PROJECT_BINDING_FILE_NAME)));
+      assert.ok(err.message.includes(path.join(root, PROJECT_BINDING_FILE_NAME)));
+      assert.match(err.help ?? "", /--dir/);
+      return true;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("resolveProjectBinding: a malformed nearer binding blocks a valid farther binding across names", async () => {
+  const root = await tempDir();
+  try {
+    await writeBinding(root, "far", PROJECT_BINDING_FILE_NAME);
+    const near = path.join(root, "near");
+    const nested = path.join(near, "nested");
+    await mkdir(nested, { recursive: true });
+    await writeRawBinding(near, "{not json", SUPERBEE_PROJECT_BINDING_FILE_NAME);
+
+    await assert.rejects(() => resolveProjectBinding(nested), (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.equal(err.code, "USAGE");
+      assert.ok(err.message.includes(path.join(near, SUPERBEE_PROJECT_BINDING_FILE_NAME)));
+      assert.ok(!err.message.includes(path.join(root, PROJECT_BINDING_FILE_NAME)));
+      return true;
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -255,6 +347,26 @@ test("resolveRemoteFlag: legacy AGENTSTATE_LITE_REMOTE is a deterministic migrat
   } finally {
     if (prior === undefined) delete process.env.AGENTSTATE_LITE_REMOTE;
     else process.env.AGENTSTATE_LITE_REMOTE = prior;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveRemoteFlag: SUPERBEE_REMOTE is not an ambient remote binding", async () => {
+  const dir = await tempDir();
+  const priorLegacy = process.env.AGENTSTATE_LITE_REMOTE;
+  const priorSuperbee = process.env.SUPERBEE_REMOTE;
+  try {
+    delete process.env.AGENTSTATE_LITE_REMOTE;
+    process.env.SUPERBEE_REMOTE = "http://env.example";
+    await inDir(dir, async () => {
+      const resolved = await resolveRemoteFlag(undefined, undefined);
+      assert.equal(resolved, undefined);
+    });
+  } finally {
+    if (priorLegacy === undefined) delete process.env.AGENTSTATE_LITE_REMOTE;
+    else process.env.AGENTSTATE_LITE_REMOTE = priorLegacy;
+    if (priorSuperbee === undefined) delete process.env.SUPERBEE_REMOTE;
+    else process.env.SUPERBEE_REMOTE = priorSuperbee;
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -620,6 +732,24 @@ test("openBundle: an explicit --dir beats the conventional folder, and a bare .a
     } finally {
       await rm(empty, { recursive: true, force: true });
     }
+  } finally {
+    await rm(project, { recursive: true, force: true });
+    await rm(explicit, { recursive: true, force: true });
+  }
+});
+
+test("openBundle: an explicit --dir bypasses an otherwise conflicting same-level binding pair", async () => {
+  const project = await tempDir();
+  const explicit = await tempDir();
+  try {
+    await initBundle(explicit);
+    await writeBinding(project, "one", SUPERBEE_PROJECT_BINDING_FILE_NAME);
+    await writeBinding(project, "two", PROJECT_BINDING_FILE_NAME);
+
+    await inDir(project, async () => {
+      const bundle = await openBundle(explicit, undefined);
+      assert.equal(bundle.root, explicit);
+    });
   } finally {
     await rm(project, { recursive: true, force: true });
     await rm(explicit, { recursive: true, force: true });

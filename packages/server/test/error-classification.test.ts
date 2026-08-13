@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { MemoryBackend, RemoteBackend, type ConceptId } from "@agentstate-lite/core";
+import { MemoryBackend, RemoteBackend, type ConceptId } from "@superbee/core";
 
 import { createRouterForBackend } from "../src/router.js";
 

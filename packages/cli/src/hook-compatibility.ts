@@ -4,6 +4,7 @@ import { isAbsolute, normalize, sep } from "node:path";
 export type HookCompatibilityState =
   | "current"
   | "stale"
+  | "legacy_identity"
   | "legacy_path_bound"
   | "absent"
   | "unmanaged";
@@ -27,7 +28,7 @@ export interface HookEntryContext {
   timeoutSeconds: number;
 }
 
-const CURRENT_REMEDY = "re-run `aslite hook install` from the durable global npm installation";
+const CURRENT_REMEDY = "re-run `superbee hook install` from the durable global npm installation";
 const SAFE_UNQUOTED_HOOK_TOKEN = /^[A-Za-z0-9_@%+=:,./-]+$/;
 
 /** The complete unquoted token language shared by the hook writer and recognizer. */
@@ -45,7 +46,7 @@ export function renderGeneratedHookToken(value: string): string {
 function result(
   state: HookCompatibilityState,
   reason: string,
-  remedy: string | undefined = state === "stale" || state === "legacy_path_bound"
+  remedy: string | undefined = state === "stale" || state === "legacy_identity" || state === "legacy_path_bound"
     ? CURRENT_REMEDY
     : undefined,
 ): HookCompatibility {
@@ -171,14 +172,21 @@ export function tokenizeGeneratedHookCommand(command: string): string[] | undefi
   return lexicalHookTokens(command)?.map(({ value }) => value);
 }
 
-function isBareManagedBin(value: string): boolean {
-  return value === "aslite" || value === "agentstate-lite";
+function bareManagedBinIdentity(value: string): "canonical" | "legacy" | undefined {
+  if (value === "superbee") return "canonical";
+  if (value === "aslite" || value === "agentstate-lite") return "legacy";
+  return undefined;
 }
 
 // Migration-only recognition of executable paths written by the retired marketplace channel.
 // This does not discover, launch, or otherwise restore that channel: it lets npm `hook install`
 // replace an exact historical hook instead of preserving a broken duplicate forever.
-type ManagedExecutableLayout = "npm" | "local_dev" | "retired_marketplace";
+type ManagedExecutableLayout =
+  | "canonical_npm"
+  | "legacy_npm"
+  | "canonical_local_dev"
+  | "legacy_local_dev"
+  | "retired_marketplace";
 
 function isCanonicalAbsolutePath(value: string): boolean {
   return isAbsolute(value) && normalize(value) === value;
@@ -187,12 +195,17 @@ function isCanonicalAbsolutePath(value: string): boolean {
 function managedExecutableLayout(value: string): ManagedExecutableLayout | undefined {
   if (!isCanonicalAbsolutePath(value)) return undefined;
   const portable = value.split(sep).join("/");
-  if (
-    /\/node_modules\/(?:@holaxis\/aslite|aslite|agentstate-lite)\/dist\/agentstate-lite\.mjs$/.test(portable)
-  ) {
-    return "npm";
+  if (/\/node_modules\/superbee\/dist\/superbee\.mjs$/.test(portable)) {
+    return "canonical_npm";
   }
-  if (/\/packages\/cli\/dist\/agentstate-lite\.mjs$/.test(portable)) return "local_dev";
+  if (/\/node_modules\/(?:@holaxis\/aslite|aslite|agentstate-lite)\/dist\/superbee\.mjs$/.test(portable)) {
+    return "legacy_npm";
+  }
+  if (/\/node_modules\/(?:@holaxis\/aslite|aslite|agentstate-lite)\/dist\/agentstate-lite\.mjs$/.test(portable)) {
+    return "legacy_npm";
+  }
+  if (/\/packages\/cli\/dist\/superbee\.mjs$/.test(portable)) return "canonical_local_dev";
+  if (/\/packages\/cli\/dist\/agentstate-lite\.mjs$/.test(portable)) return "legacy_local_dev";
   if (
     /\/(?:\.claude|\.codex)\/plugins\/cache\/[^/]+\/agentstate-lite\/[^/]+\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable) ||
     /\/plugins\/agentstate-lite\/skills\/agentstate-lite\/scripts\/agentstate-lite\.mjs$/.test(portable)
@@ -202,12 +215,27 @@ function managedExecutableLayout(value: string): ManagedExecutableLayout | undef
   return undefined;
 }
 
-function stableNpmRuntimePair(program: string, executable: string): boolean {
-  if (!isCanonicalAbsolutePath(program) || !isCanonicalAbsolutePath(executable)) return false;
+function stableNpmRuntimePair(
+  program: string,
+  executable: string,
+): "canonical" | "legacy" | undefined {
+  if (!isCanonicalAbsolutePath(program) || !isCanonicalAbsolutePath(executable)) return undefined;
   const runtimeSuffix = `${sep}bin${sep}node`;
-  const executableSuffix = `${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}agentstate-lite.mjs`;
-  if (!program.endsWith(runtimeSuffix) || !executable.endsWith(executableSuffix)) return false;
-  return program.slice(0, -runtimeSuffix.length) === executable.slice(0, -executableSuffix.length);
+  if (!program.endsWith(runtimeSuffix)) return undefined;
+  const suffixes: ReadonlyArray<[string, "canonical" | "legacy"]> = [
+    [`${sep}lib${sep}node_modules${sep}superbee${sep}dist${sep}superbee.mjs`, "canonical"],
+    [`${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}superbee.mjs`, "legacy"],
+    [`${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}agentstate-lite.mjs`, "legacy"],
+  ];
+  for (const [executableSuffix, identity] of suffixes) {
+    if (
+      executable.endsWith(executableSuffix) &&
+      program.slice(0, -runtimeSuffix.length) === executable.slice(0, -executableSuffix.length)
+    ) {
+      return identity;
+    }
+  }
+  return undefined;
 }
 
 /** Classify a complete command token sequence; near-matches are always unmanaged. */
@@ -216,28 +244,37 @@ export function classifyHookCommand(command: string): HookCompatibility {
   if (!lexical) return result("unmanaged", "command is outside the generated-command grammar");
   const tokens = lexical.map(({ value }) => value);
 
-  if (
-    tokens.length === 3 &&
-    stableNpmRuntimePair(tokens[0]!, tokens[1]!) &&
-    tokens[2] === "session-start"
-  ) {
-    return result("current", "command uses the stable npm-prefix Node launcher and package entry");
+  const stableIdentity = tokens.length === 3
+    ? stableNpmRuntimePair(tokens[0]!, tokens[1]!)
+    : undefined;
+  if (stableIdentity && tokens[2] === "session-start") {
+    return stableIdentity === "canonical"
+      ? result("current", "command uses the canonical Superbee npm-prefix Node launcher and package entry")
+      : result("legacy_identity", "recognized managed hook uses the legacy ASLite npm package identity");
   }
 
-  if (tokens.length === 2 && isBareManagedBin(tokens[0]!) && tokens[1] === "session-start") {
-    return result("legacy_path_bound", "recognized historical generated command depends on ambient PATH");
+  const bareIdentity = bareManagedBinIdentity(tokens[0]!);
+  if (tokens.length === 2 && bareIdentity && tokens[1] === "session-start") {
+    return result(
+      "legacy_path_bound",
+      bareIdentity === "canonical"
+        ? "recognized canonical bare command depends on ambient PATH"
+        : "recognized historical generated command depends on ambient PATH",
+    );
   }
-  if (tokens.length === 1 && isBareManagedBin(tokens[0]!)) {
+  if (tokens.length === 1 && bareIdentity) {
     return result("stale", "recognized pre-session-start generated bare-bin command");
   }
 
   const directLayout = tokens.length <= 2 ? managedExecutableLayout(tokens[0]!) : undefined;
   if (tokens.length === 2 && directLayout && tokens[1] === "session-start") {
     return result(
-      "legacy_path_bound",
+      directLayout.startsWith("legacy_") ? "legacy_identity" : "legacy_path_bound",
       directLayout === "retired_marketplace"
         ? "recognized historical marketplace hook; npm hook install will replace it"
-        : "recognized generated direct-executable command bound to one path",
+        : directLayout.startsWith("legacy_")
+          ? "recognized direct-executable hook uses the legacy ASLite identity"
+          : "recognized generated direct-executable command bound to one path",
     );
   }
   if (tokens.length === 1 && directLayout) {
@@ -266,13 +303,15 @@ export function classifyHookCommand(command: string): HookCompatibility {
     tokens.length === 3 &&
     isCanonicalAbsolutePath(tokens[0]!) &&
     tokens[0]!.endsWith(`${sep}bin${sep}node`) &&
-    executableLayout === "local_dev" &&
+    (executableLayout === "canonical_local_dev" || executableLayout === "legacy_local_dev") &&
     tokens[2] === "session-start"
   ) {
-    return result("current", "recognized generated PATH-independent Node launch");
+    return executableLayout === "canonical_local_dev"
+      ? result("current", "recognized canonical Superbee PATH-independent Node launch")
+      : result("legacy_identity", "recognized PATH-independent Node launch uses the legacy ASLite identity");
   }
 
-  return result("unmanaged", "command is not an exact generated agentstate-lite form");
+  return result("unmanaged", "command is not an exact generated Superbee or supported legacy form");
 }
 
 /** Classify command ownership together with the host hook shape the generator owns. */

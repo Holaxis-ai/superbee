@@ -26,7 +26,7 @@ const referenceFiles = ["views/pulse.html", "views/references/view-authoring-v0.
 const receipt = {
   files: [
     { path: "package.json" },
-    { path: "dist/agentstate-lite.mjs" },
+    { path: "dist/superbee.mjs" },
     { path: "README.md" },
     { path: "LICENSE" },
     { path: "SKILL.md" },
@@ -34,11 +34,12 @@ const receipt = {
   ],
 };
 const manifest = {
-  name: "@holaxis/aslite",
+  name: "superbee",
   files: ["dist", "SKILL.md", "references"],
   bin: {
-    aslite: "dist/agentstate-lite.mjs",
-    "agentstate-lite": "dist/agentstate-lite.mjs",
+    superbee: "dist/superbee.mjs",
+    aslite: "dist/superbee.mjs",
+    "agentstate-lite": "dist/superbee.mjs",
   },
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
@@ -88,12 +89,12 @@ test("root and npm READMEs teach one literal create-only, agent-driven quickstar
     );
     assert.match(
       readme,
-      /^npm install -g @holaxis\/aslite$/m,
+      /^npm install -g superbee$/m,
       `${label} README must install the supported default package without a preview tag`,
     );
     assert.doesNotMatch(
       readme,
-      /^(?:npm install -g|npx -y) @holaxis\/aslite@next\b/m,
+      /^(?:npm install -g|npx -y) superbee@next\b/m,
       `${label} README must not teach the preview tag as the default journey`,
     );
     assert.doesNotMatch(
@@ -114,7 +115,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "LICENSE",
     "README.md",
     "SKILL.md",
-    "dist/agentstate-lite.mjs",
+    "dist/superbee.mjs",
     "package.json",
     "references/a.md",
     "references/b/c.md",
@@ -173,7 +174,7 @@ test("npm subprocesses discard inherited lifecycle, workspace, prefix, and bin s
       npm_execpath: "/npm-cli.js",
       npm_config_dry_run: "true",
       NPM_CONFIG_WORKSPACES: "false",
-      npm_config_workspace: "@holaxis/aslite",
+      npm_config_workspace: "superbee",
       npm_config_prefix: "/wrong-prefix",
       npm_config_bin_links: "false",
     },
@@ -293,7 +294,7 @@ test("the complete local proof survives an untracked file and poisoned npm lifec
           ...process.env,
           npm_config_dry_run: "true",
           npm_config_workspaces: "false",
-          npm_config_workspace: "@holaxis/aslite",
+          npm_config_workspace: "superbee",
           npm_config_prefix: path.join(tmpdir(), "wrong-agentstate-lite-prefix"),
           npm_config_bin_links: "false",
         },

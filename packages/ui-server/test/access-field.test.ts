@@ -10,8 +10,8 @@ import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { MemoryBackend, RemoteBackend, readDocVersioned, writeBlob, writeDoc, type Bundle } from "@agentstate-lite/core";
-import { createRouter } from "@agentstate-lite/server";
+import { MemoryBackend, RemoteBackend, readDocVersioned, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { createRouter } from "@superbee/server";
 import { bootUiServer, type UiServerHandle } from "../src/server.js";
 
 const SECRET = "access-field-secret";

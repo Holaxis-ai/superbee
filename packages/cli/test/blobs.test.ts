@@ -9,7 +9,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeBlob, type Bundle } from "@agentstate-lite/core";
+import { initBundle, writeBlob, type Bundle } from "@superbee/core";
 import { blobs } from "../src/commands/blobs.js";
 import { CliError } from "../src/errors.js";
 

@@ -2,8 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { MemoryBackend as ServerMemoryBackend } from "@agentstate-lite/core";
-import { createRouter } from "@agentstate-lite/server";
+import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
+import { createRouter } from "@superbee/server";
 
 import { FilesystemBackend } from "../src/backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";

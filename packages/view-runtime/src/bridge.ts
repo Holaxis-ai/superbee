@@ -8,8 +8,8 @@ import {
   type HeadResult,
   type KindConvention,
   type QuerySelectionParams,
-} from "@agentstate-lite/core";
-import { isAnyRegistryId, parseRegistration, type BridgeCapability } from "@agentstate-lite/core/page";
+} from "@superbee/core";
+import { isAnyRegistryId, parseRegistration, type BridgeCapability } from "@superbee/core/page";
 
 export const BRIDGE_PROTOCOL = "v0";
 export const ACTION_BRIDGE_PROTOCOL = "v1";

@@ -1,7 +1,7 @@
 // `autopull.ts` — the opportunistic-freshness trigger's CLI WIRING (board-git A1).
 //
 // The mechanic (staleness window, fs-only pre-gate, attempt throttle, the shared
-// pull-and-record step) lives in `@agentstate-lite/board-git`; this module binds its two
+// pull-and-record step) lives in `@superbee/board-git`; this module binds its two
 // injected seams to the CLI's own facts — `defaultSyncStore` (the `~/.agentstate/sync`
 // credentials discipline) and `findBundleRoot` (the conventional-folder discovery walk) — and
 // re-exports the trigger under its historical signatures so every call site (list, doc read,
@@ -12,7 +12,7 @@ import {
   type AutoPullOptions,
   type BoardPullRecordResult,
   type NetworkBudgetOptions,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 
 import { defaultSyncStore } from "./cursor.js";
 import { findBundleRoot } from "./bundle.js";
@@ -22,11 +22,12 @@ export {
   AUTO_PULL_CONNECT_TIMEOUT_SECONDS,
   AUTO_PULL_STALE_MS,
   NO_AUTOPULL_ENV,
+  SUPERBEE_NO_AUTOPULL_ENV,
   findBoardCandidate,
   type AutoPullOptions,
   type AutoPullOutcome,
   type BoardPullRecordResult,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 
 /** See the package's `maybeAutoPull` — this binds the CLI's store + bundle discovery. */
 export async function maybeAutoPull(dir?: string, opts: AutoPullOptions = {}) {

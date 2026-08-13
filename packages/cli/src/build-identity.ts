@@ -16,9 +16,9 @@ import {
   PACKAGE_NAME,
 } from "./invocation.js";
 
-declare const __ASLITE_BUILD_IDENTITY__: unknown;
+declare const __SUPERBEE_BUILD_IDENTITY__: unknown;
 
-export const BUILD_IDENTITY_SCHEMA = "aslite.build-identity.v1" as const;
+export const BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1" as const;
 export const ARTIFACT_CHANNELS = [
   "npm-package",
   "local-dev",
@@ -149,8 +149,8 @@ function sourcePackageIdentity(): { name: string; version: string } {
 }
 
 function bakedConstant(): { present: boolean; value: unknown } {
-  if (typeof __ASLITE_BUILD_IDENTITY__ === "undefined") return { present: false, value: undefined };
-  return { present: true, value: __ASLITE_BUILD_IDENTITY__ };
+  if (typeof __SUPERBEE_BUILD_IDENTITY__ === "undefined") return { present: false, value: undefined };
+  return { present: true, value: __SUPERBEE_BUILD_IDENTITY__ };
 }
 
 let staticIdentityCache: StaticBuildIdentity | undefined;

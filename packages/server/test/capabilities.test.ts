@@ -20,8 +20,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { FilesystemBackend, MemoryBackend } from "@agentstate-lite/core";
-import type { StorageBackend } from "@agentstate-lite/core";
+import { FilesystemBackend, MemoryBackend } from "@superbee/core";
+import type { StorageBackend } from "@superbee/core";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";

@@ -1,5 +1,5 @@
 {
-  "name": "@agentstate-lite/mcp-app",
+  "name": "@superbee/mcp-app",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -18,18 +18,18 @@
     "dist"
   ],
   "scripts": {
-    "prebuild": "npm run build -w @agentstate-lite/markdown-renderer -w @agentstate-lite/view-runtime",
+    "prebuild": "npm run build -w @superbee/markdown-renderer -w @superbee/view-runtime",
     "build": "node scripts/build-view.mjs && tsc",
-    "pretypecheck": "npm run build -w @agentstate-lite/markdown-renderer -w @agentstate-lite/view-runtime",
+    "pretypecheck": "npm run build -w @superbee/markdown-renderer -w @superbee/view-runtime",
     "typecheck": "node scripts/build-view.mjs && tsc --noEmit",
-    "pretest": "npm run build -w @agentstate-lite/markdown-renderer -w @agentstate-lite/view-runtime",
+    "pretest": "npm run build -w @superbee/markdown-renderer -w @superbee/view-runtime",
     "test": "node scripts/build-view.mjs && node --test --import ./test/ts-loader.mjs ./test/*.test.ts ./test/*.test.mjs",
     "test:browser": "playwright install chromium && playwright test --config playwright.config.ts"
   },
   "dependencies": {
-    "@agentstate-lite/core": "*",
-    "@agentstate-lite/markdown-renderer": "*",
-    "@agentstate-lite/view-runtime": "*",
+    "@superbee/core": "*",
+    "@superbee/markdown-renderer": "*",
+    "@superbee/view-runtime": "*",
     "@modelcontextprotocol/ext-apps": "^1.7.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"

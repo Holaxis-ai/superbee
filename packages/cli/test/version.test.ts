@@ -33,7 +33,7 @@ import { VERSION_USAGE } from "../src/commands/version.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
-const cliBin = path.resolve(cliPackageRoot, "dist/agentstate-lite.mjs");
+const cliBin = path.resolve(cliPackageRoot, "dist/superbee.mjs");
 const pkgVersion = (JSON.parse(readFileSync(path.resolve(cliPackageRoot, "package.json"), "utf8")) as { version: string }).version;
 
 function runCli(executable: string, args: string[]) {
@@ -61,9 +61,9 @@ test("version is registered in command discovery", () => {
 });
 
 test("version help carries bounded stable-MCP verification guidance", () => {
-  assert.match(VERSION_USAGE, /npm install -g @holaxis\/aslite/);
-  assert.match(VERSION_USAGE, /command `aslite`.*argument `mcp`/s);
-  assert.match(VERSION_USAGE, /`aslite version --json`/);
+  assert.match(VERSION_USAGE, /npm install -g superbee/);
+  assert.match(VERSION_USAGE, /command `superbee`.*argument `mcp`/s);
+  assert.match(VERSION_USAGE, /`superbee version --json`/);
   assert.match(VERSION_USAGE, /does not scan or rewrite host MCP configuration/);
   assert.match(VERSION_USAGE, /--check performs one read-only, two-second comparison/);
   assert.match(VERSION_USAGE, /--tag latest\|next/);
@@ -82,7 +82,7 @@ test("the BUILT CLI exposes the exact complete envelope in JSON and TOON", () =>
   const envelope = runIdentity(cliBin);
   assert.deepEqual(Object.keys(envelope), ["identity", "drift"]);
   assert.equal(envelope.identity.schema, BUILD_IDENTITY_SCHEMA);
-  assert.deepEqual(envelope.identity.package, { name: "@holaxis/aslite", version: pkgVersion });
+  assert.deepEqual(envelope.identity.package, { name: "superbee", version: pkgVersion });
   assert.equal(envelope.identity.artifact.channel, "local-dev");
   assert.match(envelope.identity.artifact.sha256, /^sha256:[a-f0-9]{64}$/);
   assert.equal(envelope.identity.runtime.executable_path, cliBin);
@@ -92,7 +92,7 @@ test("the BUILT CLI exposes the exact complete envelope in JSON and TOON", () =>
 
   const toon = runCli(cliBin, ["version"]);
   assert.equal(toon.status, 0, toon.stderr);
-  assert.match(toon.stdout, /schema: aslite\.build-identity\.v1/);
+  assert.match(toon.stdout, /schema: superbee\.build-identity\.v1/);
   assert.match(toon.stdout, new RegExp(`version: ${pkgVersion.replaceAll(".", "\\.")}`));
 });
 
@@ -119,7 +119,7 @@ test("a relocated bundle with no adjacent package.json still prints the baked ve
   try {
     const scriptDir = path.join(dir, "isolated");
     mkdirSync(scriptDir, { recursive: true });
-    const stray = path.join(scriptDir, "agentstate-lite.mjs");
+    const stray = path.join(scriptDir, "superbee.mjs");
     copyFileSync(cliBin, stray); // NO package.json anywhere near it
     const r = spawnSync("node", [stray, "--version"], { encoding: "utf8" });
     assert.equal(r.status, 0, "relocated --version exits 0");
@@ -134,7 +134,7 @@ test("a stale adjacent package manifest is drift evidence, never version authori
   try {
     const dist = path.join(dir, "dist");
     mkdirSync(dist, { recursive: true });
-    const executable = path.join(dist, "agentstate-lite.mjs");
+    const executable = path.join(dist, "superbee.mjs");
     copyFileSync(cliBin, executable);
     writeFileSync(path.join(dir, "package.json"), JSON.stringify({ version: "9.9.9" }));
 

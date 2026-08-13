@@ -12,7 +12,7 @@ import { CLI_LEAVES, type PublicLeaf, type PublicLeafId } from "../src/command-s
 import { assertLeafArity } from "../src/positional-arity.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 
-const CLI = resolve(import.meta.dirname, "../dist/agentstate-lite.mjs");
+const CLI = resolve(import.meta.dirname, "../dist/superbee.mjs");
 const SURPLUS = "arity-surplus-sentinel";
 
 interface FixtureContext {

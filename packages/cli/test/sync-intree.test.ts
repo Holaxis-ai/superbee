@@ -38,8 +38,8 @@ import { mutateDoc } from "../src/mutate.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import { readSyncState } from "../src/cursor.js";
-import { resolveBundleKey, IN_TREE_CURSOR_TIER } from "@agentstate-lite/board-git";
-import type { KindRegistry } from "@agentstate-lite/core";
+import { resolveBundleKey, IN_TREE_CURSOR_TIER } from "@superbee/board-git";
+import type { KindRegistry } from "@superbee/core";
 
 import {
   BUNDLE_DIR,

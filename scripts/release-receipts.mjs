@@ -2,6 +2,16 @@
 // untrusted API/input JSON into these functions; every identifier and digest is checked before it
 // can authorize registry or GitHub mutation.
 import { DRY_RUN_STAGE_ID, LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
+import {
+  DEFAULT_TARGETS,
+  assertWorkflowContract,
+  RELEASE_CANDIDATE_SCHEMA,
+  RELEASE_FINALIZER_PROOF_SCHEMA,
+  RELEASE_STAGE_RECEIPT_SCHEMA,
+  stageDownloadFilenameForTarget,
+  tarballFilename as releaseTarballFilename,
+  targetFromPackageName,
+} from "./release-targets.mjs";
 
 const TOKEN = /^[A-Za-z0-9._-]+$/;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
@@ -65,9 +75,32 @@ export function parseStagePublishJson(text) {
 
 /** npm stage download chooses this filename; the command has no --out option. */
 export function stageDownloadFilename(version, stageId) {
+  return stageDownloadFilenameForTarget(DEFAULT_TARGETS.bridge, version, stageId);
+}
+
+export function stageDownloadFilenameFor(targetId, version, stageId) {
   string("version", version, SEMVER);
   string("stage id", stageId, LIVE_STAGE_ID);
-  return `holaxis-aslite-${version}-${stageId}.tgz`;
+  const target = DEFAULT_TARGETS[targetId];
+  if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
+  return stageDownloadFilenameForTarget(assertWorkflowContract(target), version, stageId);
+}
+
+function resolveTargetFromFields(fields) {
+  const targetId = fields.target ?? targetFromPackageName(fields.packageName) ?? "bridge";
+  const target = DEFAULT_TARGETS[targetId];
+  if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
+  if (fields.packageName !== undefined && fields.packageName !== target.package.name) {
+    fail(`package ${fields.packageName} != target ${target.package.name}`);
+  }
+  return assertWorkflowContract(target);
+}
+
+function resolveTargetFromCandidate(candidate, prepared = {}) {
+  const targetId = candidate?.target ?? prepared.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name);
+  const target = DEFAULT_TARGETS[targetId ?? "bridge"];
+  if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
+  return assertWorkflowContract(target);
 }
 
 function normalizedAssets(assets) {
@@ -82,6 +115,7 @@ function normalizedAssets(assets) {
 }
 
 export function buildStageReceipt(fields) {
+  const target = resolveTargetFromFields(fields);
   const version = string("version", fields.version, SEMVER);
   const tag = string("tag", fields.tag);
   equal("tag", tag, `v${version}`);
@@ -90,7 +124,7 @@ export function buildStageReceipt(fields) {
   const artifactId = string("candidate artifact id", fields.artifactId);
   const artifactDigest = digest("candidate artifact digest", fields.artifactDigest);
   const tarballFilename = string("tarball filename", fields.tarballFilename);
-  equal("tarball filename", tarballFilename, `holaxis-aslite-${version}.tgz`);
+  equal("tarball filename", tarballFilename, releaseTarballFilename(target, version));
   const tarballSha256 = digest("tarball SHA-256", fields.tarballSha256);
   const manifestSha256 = digest("manifest SHA-256", fields.manifestSha256);
   const integrity = string("npm integrity", fields.integrity, /^sha512-[A-Za-z0-9+/=]+$/);
@@ -104,9 +138,11 @@ export function buildStageReceipt(fields) {
   equal("draft manifest asset digest", assetByName.get("candidate.json")?.digest, manifestSha256);
 
   return {
-    schema: "aslite.stage-receipt.v2",
+    schema: RELEASE_STAGE_RECEIPT_SCHEMA,
     state: "staged",
     prepared: {
+      target: target.id,
+      package: target.package.name,
       version,
       tag,
       source_commit: sourceCommit,
@@ -123,7 +159,7 @@ export function buildStageReceipt(fields) {
     stage: {
       id: stageId,
       tag: stageTag,
-      download_filename: stageId === DRY_RUN_STAGE_ID ? null : stageDownloadFilename(version, stageId),
+      download_filename: stageId === DRY_RUN_STAGE_ID ? null : stageDownloadFilenameForTarget(target, version, stageId),
     },
   };
 }
@@ -152,15 +188,20 @@ export function verifyFinalizerChain({
   actualTarballSha256,
   actualManifestSha256,
 }) {
-  if (candidate?.schema !== "aslite.release-candidate.v1") fail("candidate schema is not v1");
-  if (receipt?.schema !== "aslite.stage-receipt.v2" || receipt?.state !== "staged") {
+  if (candidate?.schema !== RELEASE_CANDIDATE_SCHEMA) fail("candidate schema is not v1");
+  if (receipt?.schema !== RELEASE_STAGE_RECEIPT_SCHEMA || receipt?.state !== "staged") {
     fail("stage receipt schema/state is not staged v2");
   }
 
   const prepared = receipt.prepared ?? {};
+  const target = resolveTargetFromCandidate(candidate, prepared);
+  equal("receipt target", prepared.target, target.id);
+  equal("receipt package", prepared.package, target.package.name);
+  equal("candidate target", candidate.target, target.id);
+  equal("candidate package", candidate.package?.name, target.package.name);
   string("receipt version", prepared.version, SEMVER);
   equal("receipt tag", prepared.tag, `v${prepared.version}`);
-  equal("receipt tarball filename", prepared.tarball?.filename, `holaxis-aslite-${prepared.version}.tgz`);
+  equal("receipt tarball filename", prepared.tarball?.filename, releaseTarballFilename(target, prepared.version));
   equal("dispatch run id", dispatch.runId, prepared.run_id);
   equal("dispatch candidate artifact id", dispatch.artifactId, prepared.artifact?.id);
   equal("dispatch stage id", dispatch.stageId, receipt.stage?.id);
@@ -203,7 +244,9 @@ export function verifyFinalizerChain({
   if (JSON.stringify(observedAssets) !== JSON.stringify(recordedAssets)) fail("draft release assets differ from stage receipt");
 
   return {
-    schema: "aslite.finalizer-chain-proof.v1",
+    schema: RELEASE_FINALIZER_PROOF_SCHEMA,
+    target: target.id,
+    package: target.package.name,
     version: prepared.version,
     tag: prepared.tag,
     source_commit: prepared.source_commit,

@@ -1,6 +1,6 @@
 // Tests for tasks/sync-fallback-identity: sync-family git COMMITS must not die with git's raw
 // "Please tell me who you are" on a fresh container / identity-less CI runner. The fallback
-// primitive itself (`identityFlags`) lives in `@agentstate-lite/board-git`'s `porcelain.ts`; this
+// primitive itself (`identityFlags`) lives in `@superbee/board-git`'s `porcelain.ts`; this
 // file exercises it end-to-end through the CLI's real `sync()` entry points — the two DoD
 // scenarios that need a REAL receipt: an ordinary sync commit, and the committed-folder
 // establishment's cleanup commit.

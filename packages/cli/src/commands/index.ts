@@ -10,7 +10,7 @@ import {
   type AppliedIndexTarget,
   type IndexProjectionPreparation,
   type PreparedIndexTarget,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 
 import { resolveActor } from "../actor.js";
 import { parseSelectorOrUsage } from "../args.js";
@@ -21,10 +21,10 @@ import { CliError, classifyBundleError } from "../errors.js";
 import { cliInvocation, shellArg } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
 
-export const INDEX_USAGE = `agentstate-lite index — generate portable Markdown navigation
+export const INDEX_USAGE = `superbee index — generate portable Markdown navigation
 
 Usage:
-  agentstate-lite index generate [--dir <path>] [--check] [--force] [--actor <name>]
+  superbee index generate [--dir <path>] [--check] [--force] [--actor <name>]
 
 Scans concept metadata once and plans the bundle's complete index.md hierarchy. A normal run
 creates missing indexes and refreshes only files carrying AgentState's exact generated marker.

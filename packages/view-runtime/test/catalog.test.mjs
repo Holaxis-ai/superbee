@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { MemoryBackend, writeBlob, writeDoc } from "@agentstate-lite/core";
+import { MemoryBackend, writeBlob, writeDoc } from "@superbee/core";
 import { listViewCatalog, listViewCatalogPage, projectViewCatalog } from "../dist/index.js";
 
 class CountingMemoryBackend extends MemoryBackend {

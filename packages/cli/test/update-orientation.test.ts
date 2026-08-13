@@ -39,6 +39,7 @@ import {
   type UpdateCacheRecord,
   type UpdateLeaseRecord,
 } from "../src/update-orientation.js";
+import { LEGACY_NO_UPDATE_CHECK_ENV, SUPERBEE_NO_UPDATE_CHECK_ENV } from "../src/env-policy.js";
 import type { UpdateCheckResult } from "../src/update-check.js";
 import { buildHomeView, home } from "../src/commands/home.js";
 import { sessionStart } from "../src/commands/session-start.js";
@@ -53,7 +54,7 @@ const NOW = new Date("2026-08-05T12:00:01.000Z");
 const INTEGRITY = `sha512-${Buffer.alloc(64, 7).toString("base64")}`;
 const BUILT_CLI = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "../dist/agentstate-lite.mjs",
+  "../dist/superbee.mjs",
 );
 const TEST_LOADER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "ts-loader.mjs");
 const CONCURRENCY_FIXTURE = path.resolve(
@@ -64,12 +65,12 @@ const CONCURRENCY_FIXTURE = path.resolve(
 // Literal bytes with fixed identity/bin/invocation and no bundle/board/workspace/hook state.
 // The first-use command intentionally carries init's create-only safety guard.
 const HOME_BASELINE_TOON = [
-  '"agentstate-lite":',
-  "  bin: /opt/aslite/dist/agentstate-lite.mjs",
+  "superbee:",
+  "  bin: /opt/superbee/dist/superbee.mjs",
   "  version: 0.1.0-pre.3",
   "  channel: local-dev",
   '  description: "read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views)"',
-  `getting_started: "no OKF bundle found in this directory — run \`aslite init --create-only --recipe none --dir '.agentstate-lite'\` to create a blank bundle, or \`aslite recipes\` to compare available workspace setups; create your chosen setup here with \`aslite init --create-only --recipe <name> --dir '.agentstate-lite'\`"`,
+  `getting_started: "no OKF bundle found in this directory — run \`superbee init --create-only --recipe none --dir '.agentstate-lite'\` to create a blank bundle, or \`superbee recipes\` to compare available workspace setups; create your chosen setup here with \`superbee init --create-only --recipe <name> --dir '.agentstate-lite'\`"`,
   "commands:",
   '  Bundle: "bundle locate, catalog, init, index generate, status"',
   '  "Documents & links": "doc write, doc update, doc read, doc history, doc delete, list, link"',
@@ -77,22 +78,22 @@ const HOME_BASELINE_TOON = [
   '  Kinds: "new, kinds, kind field, recipes, recipe add"',
   '  Remote: "serve, ui, mcp, view list, sync"',
   '  Session: "version, session-start, hook install|status|uninstall, skill install|status|uninstall"',
-  "commands_help: run `aslite <command> --help` (or `aslite --help`) for full usage",
-  "kinds: kinds are declared per-bundle — run `aslite kinds` to list them",
-  'remote_env: "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"',
+  "commands_help: run `superbee <command> --help` (or `superbee --help`) for full usage",
+  "kinds: kinds are declared per-bundle — run `superbee kinds` to list them",
+  'remote_env: "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"',
   "",
 ].join("\n");
 
 const HOME_BASELINE_JSON = `${JSON.stringify({
-  "agentstate-lite": {
-    bin: "/opt/aslite/dist/agentstate-lite.mjs",
+  superbee: {
+    bin: "/opt/superbee/dist/superbee.mjs",
     version: "0.1.0-pre.3",
     channel: "local-dev",
     description:
       "read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views)",
   },
   getting_started:
-    "no OKF bundle found in this directory — run `aslite init --create-only --recipe none --dir '.agentstate-lite'` to create a blank bundle, or `aslite recipes` to compare available workspace setups; create your chosen setup here with `aslite init --create-only --recipe <name> --dir '.agentstate-lite'`",
+    "no OKF bundle found in this directory — run `superbee init --create-only --recipe none --dir '.agentstate-lite'` to create a blank bundle, or `superbee recipes` to compare available workspace setups; create your chosen setup here with `superbee init --create-only --recipe <name> --dir '.agentstate-lite'`",
   commands: {
     Bundle: "bundle locate, catalog, init, index generate, status",
     "Documents & links": "doc write, doc update, doc read, doc history, doc delete, list, link",
@@ -101,10 +102,10 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
     Remote: "serve, ui, mcp, view list, sync",
     Session: "version, session-start, hook install|status|uninstall, skill install|status|uninstall",
   },
-  commands_help: "run `aslite <command> --help` (or `aslite --help`) for full usage",
-  kinds: "kinds are declared per-bundle — run `aslite kinds` to list them",
+  commands_help: "run `superbee <command> --help` (or `superbee --help`) for full usage",
+  kinds: "kinds are declared per-bundle — run `superbee kinds` to list them",
   remote_env:
-    "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
+    "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
 })}\n`;
 
 function successfulCheck(
@@ -115,7 +116,7 @@ function successfulCheck(
   const selected =
     status === "rollback_available" ? "0.1.0-pre.2" : actionable ? SELECTED : RUNNING;
   return {
-    schema: "aslite.update-check.v1",
+    schema: "superbee.update-check.v1",
     track: "latest",
     status,
     relation:
@@ -129,12 +130,12 @@ function successfulCheck(
     selected_version: selected,
     running_deprecated: status === "deprecated" ? "unsupported" : null,
     selected_integrity: INTEGRITY,
-    command: actionable ? `npm install --global @holaxis/aslite@${selected}` : null,
+    command: actionable ? `npm install --global superbee@${selected}` : null,
     verify: actionable
       ? [
-          "aslite version --check",
-          "aslite skill status --scope user",
-          "aslite hook status --scope user",
+          "superbee version --check",
+          "superbee skill status --scope user",
+          "superbee hook status --scope user",
         ]
       : [],
     unavailable: null,
@@ -144,7 +145,7 @@ function successfulCheck(
 function cacheRecord(check: UpdateCheckResult = successfulCheck()): UpdateCacheRecord {
   return {
     schema: UPDATE_CACHE_SCHEMA,
-    package: "@holaxis/aslite",
+    package: "superbee",
     running_version: RUNNING,
     track: "latest",
     check,
@@ -330,7 +331,7 @@ test("passive suppressors are exact tokens and environment-key presence, includi
   assert.equal(isPassiveUpdateSuppressed(["--no-update-check"], {}), true);
   assert.equal(isPassiveUpdateSuppressed(["--no-update-check=false"], {}), false);
   assert.equal(isPassiveUpdateSuppressed(["--no-update-checker"], {}), false);
-  for (const key of ["ASLITE_NO_UPDATE_CHECK", "NO_UPDATE_NOTIFIER", "CI"]) {
+  for (const key of [SUPERBEE_NO_UPDATE_CHECK_ENV, LEGACY_NO_UPDATE_CHECK_ENV, "NO_UPDATE_NOTIFIER", "CI"]) {
     for (const value of ["", "0", "1"]) {
       assert.equal(isPassiveUpdateSuppressed([], { [key]: value }), true, `${key}=${value}`);
     }
@@ -498,7 +499,7 @@ test("passive parent returns cached notice or launches one exact detached privat
       home,
       runningVersion: RUNNING,
       now: () => NOW,
-      executablePath: () => "/opt/aslite/dist/agentstate-lite.mjs",
+      executablePath: () => "/opt/superbee/dist/superbee.mjs",
       spawn: (command, argv, options) => {
         calls.push({ command, argv, options });
         return child;
@@ -510,7 +511,7 @@ test("passive parent returns cached notice or launches one exact detached privat
       {
         command: process.execPath,
         argv: [
-          "/opt/aslite/dist/agentstate-lite.mjs",
+          "/opt/superbee/dist/superbee.mjs",
           "__update-refresh-v1",
           "a".repeat(64),
         ],
@@ -726,8 +727,8 @@ test("worker revalidates token immediately before cache commit", async () => {
 
 test("home bytes stay exact and notice is one five-field block immediately after identity", () => {
   const deps = {
-    binPath: () => "/opt/aslite/dist/agentstate-lite.mjs",
-    invocation: () => "aslite",
+    binPath: () => "/opt/superbee/dist/superbee.mjs",
+    invocation: () => "superbee",
     identity: () => ({ version: "0.1.0-pre.3", channel: "local-dev" as const }),
   };
   const baseline = buildHomeView(deps, null);
@@ -747,7 +748,7 @@ test("home bytes stay exact and notice is one five-field block immediately after
     notice,
   );
   assert.deepEqual(Object.keys(withNotice).slice(0, 3), [
-    "agentstate-lite",
+    "superbee",
     "update_notice",
     "getting_started",
   ]);
@@ -757,8 +758,8 @@ test("home bytes stay exact and notice is one five-field block immediately after
 
 test("home JSON and every exact suppressor bypass the orientation seam; default TOON calls it once", async () => {
   const base = {
-    binPath: () => "/opt/aslite/dist/agentstate-lite.mjs",
-    invocation: () => "aslite",
+    binPath: () => "/opt/superbee/dist/superbee.mjs",
+    invocation: () => "superbee",
     stdout: (_value: string) => {},
     summarizeBundle: async () => null,
     loadBoardStatus: async () => null,

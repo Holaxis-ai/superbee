@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { fileSha256 } from "./verify-npm-package.mjs";
 import { parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 import { parseStagePublishJson, verifyFinalizerChain } from "./release-receipts.mjs";
+import { DEFAULT_TARGETS, assertWorkflowContract, tarballFilename } from "./release-targets.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 
@@ -61,7 +62,9 @@ async function verifyChain(argv) {
   const receiptPath = arg(argv, "--receipt");
   const candidate = await jsonFile(candidatePath);
   const receipt = await jsonFile(receiptPath);
-  const expectedFilename = `holaxis-aslite-${candidate.version}.tgz`;
+  const target = DEFAULT_TARGETS[candidate.target ?? receipt.prepared?.target ?? "bridge"];
+  if (!target) throw new Error(`unknown release target ${JSON.stringify(candidate.target ?? receipt.prepared?.target)}`);
+  const expectedFilename = tarballFilename(assertWorkflowContract(target), candidate.version);
   if (candidate.tarball?.filename !== expectedFilename || path.basename(candidate.tarball.filename) !== candidate.tarball.filename) {
     throw new Error(`candidate tarball filename ${candidate.tarball?.filename} != ${expectedFilename}`);
   }

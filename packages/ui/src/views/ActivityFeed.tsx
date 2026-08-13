@@ -26,7 +26,7 @@ import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { PAGE_TYPE_NAMES } from "../pages/registry.js";
 import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
-import { meaningfulChangeTimeValue } from "@agentstate-lite/core/meaningful-change-time";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 
 /** How many rows the feed shows — recent pulse, not a history browser. */
 export const FEED_LIMIT = 8;
@@ -152,7 +152,7 @@ export function ActivityFeed() {
   if (rows.length === 0) {
     return (
       <p className="feed-empty">
-        You don’t have any activity in this bundle yet. Think of this feed like aslite’s pulse; it shows you who is
+        You don’t have any activity in this bundle yet. Think of this feed like Superbee's pulse; it shows you who is
         working on what. For example it might show you that a task was created by a Claude agent on behalf of a human
         user, or that a Codex agent wrote up how a part of the system works.
       </p>

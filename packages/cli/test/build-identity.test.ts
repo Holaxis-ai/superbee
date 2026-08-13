@@ -14,7 +14,7 @@ import {
 
 const VALID_BAKED = {
   schema: BUILD_IDENTITY_SCHEMA,
-  package: { name: "@holaxis/aslite", version: "0.1.0-pre.2" },
+  package: { name: "superbee", version: "0.1.0-pre.2" },
   source: { commit: "0123456789012345678901234567890123456789", dirty: false },
   artifact: { channel: "npm-package" },
   compatibility_contracts: { skill: 1, hook: 1, mcp: 1 },
@@ -47,7 +47,7 @@ test("an unbundled source run is explicitly local-dev with unknown source-contro
   const identity = staticBuildIdentity();
   assert.equal(identity.artifact.channel, "local-dev");
   assert.deepEqual(identity.source, { commit: null, dirty: null });
-  assert.equal(identity.package.name, "@holaxis/aslite");
+  assert.equal(identity.package.name, "superbee");
   assert.equal(Object.isFrozen(identity), true);
   assert.equal(Object.isFrozen(identity.package), true);
 });
@@ -55,7 +55,7 @@ test("an unbundled source run is explicitly local-dev with unknown source-contro
 test("runtime evidence distinguishes global PATH, probable npx, direct, source, and unknown", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "aslite-runtime-identity-"));
   try {
-    const executable = path.join(dir, "agentstate-lite.mjs");
+    const executable = path.join(dir, "superbee.mjs");
     const source = path.join(dir, "entry.ts");
     writeFileSync(executable, "#!/usr/bin/env node\n");
     writeFileSync(source, "// source\n");
@@ -77,7 +77,7 @@ test("runtime evidence distinguishes global PATH, probable npx, direct, source, 
     assert.equal(npmSubprocessOnPath.identity.runtime.launch_confidence, "certain");
 
     const npxDir = path.join(dir, "_npx", "cache", "node_modules", ".bin");
-    const npxExecutable = path.join(npxDir, "agentstate-lite.mjs");
+    const npxExecutable = path.join(npxDir, "superbee.mjs");
     mkdirSync(npxDir, { recursive: true });
     writeFileSync(npxExecutable, "#!/usr/bin/env node\n");
     const cacheNpx = buildIdentityEnvelope({
@@ -112,7 +112,7 @@ test("runtime evidence distinguishes global PATH, probable npx, direct, source, 
     assert.equal(sourceRun.identity.runtime.launch_confidence, "inferred");
 
     const misleadingSourceDir = path.join(dir, "src");
-    const copiedBundle = path.join(misleadingSourceDir, "agentstate-lite.mjs");
+    const copiedBundle = path.join(misleadingSourceDir, "superbee.mjs");
     mkdirSync(misleadingSourceDir);
     writeFileSync(copiedBundle, "#!/usr/bin/env node\n");
     const copiedDirect = buildIdentityEnvelope({

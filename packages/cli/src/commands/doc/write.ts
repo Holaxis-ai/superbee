@@ -2,7 +2,7 @@
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
 import { promises as fs } from "node:fs";
-import { loadKinds, type Frontmatter, type OkfDocument } from "@agentstate-lite/core";
+import { loadKinds, type Frontmatter, type OkfDocument } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";

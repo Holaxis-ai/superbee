@@ -43,7 +43,7 @@ import {
   statusRows,
   treeOf,
   writeGitDirMarker,
-} from "@agentstate-lite/board-git";
+} from "@superbee/board-git";
 import { CliError } from "../../errors.js";
 import { render, type OutputMode } from "../../output.js";
 import { syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";

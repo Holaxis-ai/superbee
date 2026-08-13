@@ -1,4 +1,4 @@
-import type { BridgeCapability } from "@agentstate-lite/core/page";
+import type { BridgeCapability } from "@superbee/core/page";
 
 export const ACTIVE_VIEW_POLICY_VERSION = "active-view-v1";
 export const MAX_ACTIVE_VIEW_BYTES = 512 * 1024;

@@ -1,4 +1,4 @@
-// `agentstate-lite kinds` — list the kind conventions declared by this bundle.
+// `superbee kinds` — list the kind conventions declared by this bundle.
 //
 // Phase-0 experiment result (binding — see `docs/plan-kind-conventions.md` Part B): agents given NO
 // enumeration path scored 0/3 on discovery of a bundle's declared kinds (~49-command probe spirals,
@@ -6,21 +6,21 @@
 // commands. This command IS that verb — the live-registry counterpart to `--help`/`home`'s static
 // pointer line (reference.ts kindsPointer()), which stays offline/no-I/O by AXI contract.
 import { parseArgs } from "node:util";
-import { freshnessHorizonMs, loadKinds, type KindConvention } from "@agentstate-lite/core";
+import { freshnessHorizonMs, loadKinds, type KindConvention } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 
-export const KINDS_USAGE = `agentstate-lite kinds — list the kind conventions declared by this bundle
+export const KINDS_USAGE = `superbee kinds — list the kind conventions declared by this bundle
 
 Usage:
-  agentstate-lite kinds [--dir <path>] [--remote <url>]
+  superbee kinds [--dir <path>] [--remote <url>]
 
 A kind convention is a plain OKF doc (type: Convention) under conventions/ declaring a document
 kind's purpose, required/optional fields and their descriptions, allowed enum values, typed-link vocabulary, expected body
-sections, and an optional freshness horizon. See 'agentstate-lite new --help' to create an
+sections, and an optional freshness horizon. See 'superbee new --help' to create an
 instance of a declared kind.
 
 Declaring a kind convention (frontmatter keys core reads — everything else is unread prose):
@@ -64,7 +64,7 @@ Declaring a kind convention (frontmatter keys core reads — everything else is 
                                  level-1 Markdown syntax (for example '# Requested decision')
   freshness_horizon    string   '<n>(m|h|d)', e.g. 24h, 30d, 15m
 A misshaped or misplaced key here is a non-fatal registry warning (visible in 'kinds'/'status'
-output), never a silent no-op. See 'agentstate-lite doc read conventions/context-note' on any
+output), never a silent no-op. See 'superbee doc read conventions/context-note' on any
 --init'd bundle for a full worked example with a values: enum and sections:.
 
 Options:

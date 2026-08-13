@@ -1,4 +1,4 @@
-// `agentstate-lite new "<Kind>" <id> --<field> <value> …` — create a new instance of a
+// `superbee new "<Kind>" <id> --<field> <value> …` — create a new instance of a
 // bundle-declared kind.
 //
 // Phase-0 experiment result (binding — Part B of the kind-conventions plan): 9 fresh agents, 3
@@ -55,7 +55,7 @@ import {
   type KindConvention,
   type KindRegistry,
   type ValidationWarning,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError, asHandled, classifyBundleError } from "../errors.js";
@@ -69,12 +69,12 @@ import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
 import { addLink } from "./link.js";
 
-export const NEW_USAGE = `agentstate-lite new — create a new instance of a bundle-declared kind
+export const NEW_USAGE = `superbee new — create a new instance of a bundle-declared kind
 
 Usage:
-  agentstate-lite new "<Kind>" <id> --<field> <value> [--<field> <value> ...] [--body <markdown> | --body-file <path>] [options]
+  superbee new "<Kind>" <id> --<field> <value> [--<field> <value> ...] [--body <markdown> | --body-file <path>] [options]
 
-The kind must be declared by a kind convention doc under conventions/ — run 'agentstate-lite kinds'
+The kind must be declared by a kind convention doc under conventions/ — run 'superbee kinds'
 to list what a bundle declares. Supply each of the kind's required fields via --<field> <value>
 (or --<field>=<value>); declared optional fields may be supplied the same way. Repeat a flag to
 set an array value (e.g. --tags a --tags b). Any field not declared by the kind is a USAGE error.
@@ -415,7 +415,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       "this bundle's 'Page' convention is the retired legacy form of the 'View' kind — a scaffolded type: Page doc would not register anywhere",
       {
         help:
-          "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the agentstate-lite repo) " +
+          "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the superbee repo) " +
           `to migrate the bundle in place, then author with: ${cliInvocation()} new "View" <id> --access <none|bundle-read|bundle-propose>`,
       },
     );

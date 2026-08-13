@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile 
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle } from "@agentstate-lite/core";
+import { initBundle } from "@superbee/core";
 
 import {
   addCatalogEntry,

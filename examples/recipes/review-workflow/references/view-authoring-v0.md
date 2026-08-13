@@ -18,7 +18,7 @@ the returned inert fragment inside the View; do not ship another Markdown parser
 below are the exact protocol contract and copy-paste client. This contract travels with portable
 View-bearing recipes, so authoring does not depend on an agent-harness skill.
 
-Legacy `Page` and `bridge` are retired authoring names. Use `type: View` and `access`; `aslite status`
+Legacy `Page` and `bridge` are retired authoring names. Use `type: View` and `access`; `superbee status`
 reports legacy content that needs migration. Legacy wire names such as `open-page` remain stable.
 
 ## Trust model (exact-byte approval + no credential)
@@ -145,7 +145,7 @@ shows canonical before/after values outside the iframe; and commits only after t
 Apply. The approval token and immutable launch identity never enter the iframe. A stale target is a
 visible conflict and is never retried behind the human's back. V1 is local `--dir` only and excludes
 body writes, links, creation, deletion, remote writes, and persistent grants. Start the shell with
-`aslite ui --actor <name>` (or set `AGENTSTATE_LITE_ACTOR`) to enable proposals.
+`superbee ui --actor <name>` (or set `AGENTSTATE_LITE_ACTOR`) to enable proposals.
 
 ## Live updates
 
@@ -169,7 +169,7 @@ requests at all — and the shell, not the view, is what enforces it:
 - `bridge` is the legacy spelling of this field, and it is no longer read: a doc declaring only
   the legacy `bridge` field resolves to `access: none` (every bundle-data request is denied).
   The repo's `migrate-legacy-view-names` script renames leftover legacy `bridge` fields to
-  `access` in place, and `aslite status` lists them under its `legacy_naming` finding.
+  `access` in place, and `superbee status` lists them under its `legacy_naming` finding.
   Authoring uses `access`.
 - The `View` convention declares `access` REQUIRED — every view is an intentional
   classification, not a silent default. At runtime the shell still fails closed for a doc this
@@ -187,8 +187,8 @@ host provides. Keep data selection bounded and show empty, partial, over-limit, 
 states.
 
 ```sh
-aslite blobs --prefix views/
-aslite pull --doc-key views/review-workflow/reviews.html --out my-view.html
+superbee blobs --prefix views/
+superbee pull --doc-key views/review-workflow/reviews.html --out my-view.html
 ```
 
 Keep HTML, CSS, and JavaScript self-contained with no external hosts. A data View embeds the bridge
@@ -198,13 +198,13 @@ client below. A content View (`access: none`) may use only `openPage`; bundle-da
 Install the HTML blob and its registry entry:
 
 ```sh
-aslite promote my-view.html --doc-key views/my-view.html
-aslite new "View" my-view \
+superbee promote my-view.html --doc-key views/my-view.html
+superbee new "View" my-view \
   --title "My view" \
   --entry views/my-view.html \
   --access bundle-read \
   --description "A live view of this bundle."
-aslite ui --open
+superbee ui --open
 ```
 
 `new "View" my-view` applies the View Kind's declared `views-registry/` path. Use `access: none`
@@ -212,7 +212,7 @@ for a static report or diagram. Re-promoting the HTML updates the open View; the
 with a fresh nonce. If the bundle does not yet declare the View Kind, install its View-bearing
 recipe or promote the supplied `conventions/view.md` once before creating the registry entry.
 
-Verify the same registered id in both surfaces: open it with `aslite ui`, then have an MCP-capable
+Verify the same registered id in both surfaces: open it with `superbee ui`, then have an MCP-capable
 desktop list and show that View. Confirm narrow and expanded layouts without changing the source.
 
 The seed views here are working examples: `pulse.html`/`roadmap.html` are `access: bundle-read`

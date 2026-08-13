@@ -279,6 +279,10 @@ test("active View size reports are handled before the hidden-document bridge gat
     /html\[data-fixed-height\] iframe \{\s*flex: 1 1 auto;\s*height: auto;/,
     "a fixed host's frame fills the remaining card allocation",
   );
+  assert.match(html, /Waiting for a Superbee View/, "the static MCP shell uses the current product identity");
+  assert.match(html, /title="Superbee View"/, "the static iframe title uses the current product identity");
+  assert.match(html, /Superbee confirmation/, "the static approval shell uses the current product identity");
+  assert.doesNotMatch(html, /AgentState/, "the static MCP shell must not retain the prior product label");
   assert.match(
     html,
     /html\[data-fixed-height\], html\[data-fixed-height\] body \{\s*height: 100%;\s*overflow: hidden;/,

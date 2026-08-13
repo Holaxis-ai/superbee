@@ -5,7 +5,7 @@
  * `Response`, so the identical router can mount unchanged in another Fetch-compatible runtime.
  *
  * ONE-ENGINE RULE: this module contains NO parsing/link/OKF logic of its own.
- * Doc WRITES route through the engine (`writeDocVersioned` from `@agentstate-lite/core`)
+ * Doc WRITES route through the engine (`writeDocVersioned` from `@superbee/core`)
  * so server-side OKF enforcement (§9.2 non-empty `type`, id safety, reserved-file
  * rejection) comes free — the engine keeps ALL semantics, the router only maps
  * HTTP <-> the `StorageBackend` seam. Reads / list / versions / reserved-file
@@ -39,7 +39,7 @@ import {
   type StorageBackend,
   type Version,
   type WriteOptions,
-} from "@agentstate-lite/core";
+} from "@superbee/core";
 
 /** Default page size for `GET /docs` when `limit` is not supplied. */
 const DEFAULT_LIST_LIMIT = 50;

@@ -1,5 +1,5 @@
-import type { Version } from "@agentstate-lite/core";
-import type { BridgeCapability } from "@agentstate-lite/core/page";
+import type { Version } from "@superbee/core";
+import type { BridgeCapability } from "@superbee/core/page";
 
 export interface DurableShowViewInput {
   viewId: string;

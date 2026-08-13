@@ -3,7 +3,7 @@
  *
  * Runs the command function in-process (no subprocess) against a real temp filesystem bundle,
  * mirroring `kinds.test.ts`'s / `link.test.ts`'s pattern. The `--remote` parity test additionally
- * boots a real `@agentstate-lite/server` `serve()` instance, mirroring `kinds.test.ts`'s own
+ * boots a real `@superbee/server` `serve()` instance, mirroring `kinds.test.ts`'s own
  * `--remote` test.
  */
 import test from "node:test";
@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { initBundle, writeBlob, writeDoc, type Bundle } from "@agentstate-lite/core";
-import { serve, type ServerHandle } from "@agentstate-lite/server";
+import { initBundle, writeBlob, writeDoc, type Bundle } from "@superbee/core";
+import { serve, type ServerHandle } from "@superbee/server";
 
 import { status } from "../src/commands/status.js";
 import { newCommand } from "../src/commands/new.js";

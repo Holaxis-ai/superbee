@@ -39,23 +39,25 @@ export function operationsFor(op, argv) {
     case "approve":
       return [ops.approveOperation({ stageId: arg(argv, "--stage-id", true) })];
     case "secondary-tag":
-      return [ops.secondaryTagOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag", true) })];
+      return [ops.secondaryTagOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag", true), target: arg(argv, "--target") ?? "bridge" })];
     case "remove-secondary-tag":
-      return [ops.removeSecondaryTagOperation({ tag: arg(argv, "--tag", true) })];
+      return [ops.removeSecondaryTagOperation({ tag: arg(argv, "--tag", true), target: arg(argv, "--target") ?? "bridge" })];
     case "rollback": {
       const r = ops.rollbackOperation({
         failedVersion: arg(argv, "--failed-version", true),
         priorVersion: arg(argv, "--prior-version", true),
         track: arg(argv, "--track") ?? "next",
+        target: arg(argv, "--target") ?? "bridge",
+        recoveryTarget: arg(argv, "--recovery-target") ?? arg(argv, "--target") ?? "bridge",
       });
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }
     case "registry-verify": {
-      const r = ops.registryVerifyOperations({ version: arg(argv, "--version", true) });
+      const r = ops.registryVerifyOperations({ version: arg(argv, "--version", true), target: arg(argv, "--target") ?? "bridge" });
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }
     case "promote":
-      return [ops.promoteOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag") ?? "latest" })];
+      return [ops.promoteOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag") ?? "latest", target: arg(argv, "--target") ?? "bridge" })];
     case "immutable-release": {
       const r = ops.immutableReleaseOperations({
         releaseId: arg(argv, "--release-id", true),

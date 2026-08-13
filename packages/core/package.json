@@ -1,5 +1,5 @@
 {
-  "name": "@agentstate-lite/core",
+  "name": "@superbee/core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -52,7 +52,7 @@
     "js-yaml": "^3.15.0"
   },
   "devDependencies": {
-    "@agentstate-lite/server": "*",
+    "@superbee/server": "*",
     "@types/js-yaml": "3.12.10",
     "@types/node": "^22.0.0",
     "typescript": "^5.4.0"

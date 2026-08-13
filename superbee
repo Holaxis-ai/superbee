@@ -1,0 +1,4 @@
+#!/bin/sh
+# Dev-repo convenience shim for the freshly-built Superbee CLI.
+# NOT shipped: the package allowlist is `files: ["dist"]`.
+exec node "$(dirname "$0")/packages/cli/dist/superbee.mjs" "$@"
