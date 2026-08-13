@@ -444,7 +444,7 @@ const createOnlyFs: CreateOnlyFilesystem = {
   realpath: (p) => fs.realpath(p),
   readdir: (p) => fs.readdir(p),
   mkdir: (p) => fs.mkdir(p).then(() => undefined),
-  readFile: (p) => fs.readFile(p, "utf8"),
+  readFile: (p) => readProjectBindingFile(p),
 };
 
 export interface CreateOnlyTargetDeps {
@@ -758,6 +758,7 @@ async function strictProjectBinding(
       try {
         raw = await io.readFile(file);
       } catch (err) {
+        if (err instanceof CliError) throw err;
         createOnlyUncertainty(phase, "read-binding", file, err, createdDirectories);
       }
       return parseProjectBinding(file, raw);
