@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -39,7 +40,13 @@ const TEXT_EXTENSIONS = new Set([
   ".yaml",
 ]);
 
-const SELF_FILES = new Set(["scripts/rename-literal-inventory.mjs", "scripts/rename-literal-inventory.test.mjs"]);
+const APPROVED_OCCURRENCES_FILE = "scripts/approved-legacy-occurrences.json";
+const APPROVED_OCCURRENCES_SCHEMA = "superbee.approved-legacy-occurrences.v1";
+const SELF_FILES = new Set([
+  "scripts/rename-literal-inventory.mjs",
+  "scripts/rename-literal-inventory.test.mjs",
+  APPROVED_OCCURRENCES_FILE,
+]);
 
 const LEGACY_LITERAL =
   /__ASLITE_BUILD_IDENTITY__|ASLITE_MCP_APP_SCRIPT|AGENTSTATE_LITE_[A-Z0-9_]+|ASLITE_[A-Z0-9_]+|AGENTSTATE_LITE|AGENTSTATE|ASLITE|@agentstate-lite\/[A-Za-z0-9_-]+|@holaxis\/aslite|\.agentstate-lite|\.agentstate\.json|agentstate-lite|agentstate|aslite/g;
@@ -70,13 +77,40 @@ function containsAny(value, needles) {
   return needles.some((needle) => value.includes(needle));
 }
 
+function lineSha256(lineText) {
+  return createHash("sha256").update(lineText).digest("hex");
+}
+
+export function approvedOccurrenceKey({ file, line = 1, lineText, match, ordinal = 0 }) {
+  return `${file}\0${line}\0${lineSha256(lineText)}\0${match}\0${ordinal}`;
+}
+
+async function loadApprovedOccurrences(root) {
+  const parsed = JSON.parse(await readFile(path.join(root, APPROVED_OCCURRENCES_FILE), "utf8"));
+  if (parsed?.schema !== APPROVED_OCCURRENCES_SCHEMA || !Array.isArray(parsed.occurrences)) {
+    throw new Error(`${APPROVED_OCCURRENCES_FILE} must use ${APPROVED_OCCURRENCES_SCHEMA}`);
+  }
+  const approved = new Map();
+  for (const row of parsed.occurrences) {
+    const key = `${row.file}\0${row.line}\0${row.line_sha256}\0${row.literal}\0${row.ordinal}`;
+    if (approved.has(key)) throw new Error(`duplicate approved legacy occurrence: ${row.file}`);
+    approved.set(key, {
+      category: row.category,
+      treatment: row.treatment,
+      owner: row.owner,
+      reason: row.reason,
+    });
+  }
+  return approved;
+}
+
 function shouldScanFile(file) {
   if (SELF_FILES.has(file)) return false;
   if (!TEXT_EXTENSIONS.has(path.extname(file))) return false;
   return !file.split("/").some((part) => SKIP_DIRS.has(part));
 }
 
-export function classifyLegacyLiteral({ file, lineText, match }) {
+export function classifyLegacyLiteral({ file, line = 1, lineText, match, ordinal = 0, approvedOccurrences }) {
   const generatedOrFixture =
     file.includes("/test/fixtures/") ||
     file.includes("/prior-shipped-") ||
@@ -104,6 +138,21 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
       treatment: "update-or-preserve-with-covered-surface",
       owner: "test-owner",
       reason: "test literals move with the product surface they assert or remain as explicit legacy fixtures",
+    };
+  }
+
+  if (match === "agentstate-lite" || match === "aslite") {
+    const key = approvedOccurrenceKey({ file, line, lineText, match, ordinal });
+    const approved = approvedOccurrences?.get(key);
+    if (approved !== undefined) {
+      approvedOccurrences.delete(key);
+      return approved;
+    }
+    return {
+      category: "unclassified",
+      treatment: "fail-closed",
+      owner: "unassigned",
+      reason: "ambiguous lowercase legacy names require an exact approved occurrence",
     };
   }
 
@@ -194,166 +243,6 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
     };
   }
 
-  if (match === "agentstate-lite") {
-    if (file.endsWith("package.json") || file === "package-lock.json") {
-      return {
-        category: "package-or-artifact-identity",
-        treatment: "rename-to-superbee",
-        owner: "build-graph",
-        reason: "AC-06/AC-07 require monorepo and artifact identity to become Superbee",
-      };
-    }
-    if (containsAny(lineText, ["dist/agentstate-lite.mjs", "agentstate-lite.mjs"])) {
-      return {
-        category: "compiled-artifact-path",
-        treatment: "rename-to-dist-superbee",
-        owner: "cli-build",
-        reason: "AC-07 requires the compiled artifact to become dist/superbee.mjs",
-      };
-    }
-    if (
-      containsAny(lineText, [
-        '"agentstate-lite": "dist/superbee.mjs"',
-        '"expected_commands"',
-        '"agentstate-lite release candidate output v1',
-        '"agentstate-lite", "release-receipt-recovery"',
-      ])
-    ) {
-      return {
-        category: "release-bridge-identifier",
-        treatment: "preserve-for-bridge-target",
-        owner: "release-policy",
-        reason: "the frozen package bridge and release recovery state retain explicit legacy identifiers",
-      };
-    }
-    if (containsAny(lineText, ["agentstate-lite-mutation-locks-", "agentstate-lite:generated-index", "agentstate-lite-ui"])) {
-      return {
-        category: "serialized-or-protocol-identifier",
-        treatment: "preserve-for-cross-version-compatibility",
-        owner: "compatibility-policy",
-        reason: "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      };
-    }
-    if (
-      containsAny(lineText, [
-        "LEGACY_HOOK_MARKER",
-        "LEGACY_OPENCODE_PLUGIN_FILENAME",
-        "historical import surface",
-        'return "legacy"',
-        "node_modules/",
-        "node_modules\\/",
-        "dist/agentstate-lite.mjs",
-        "dist\\/agentstate-lite\\.mjs",
-        "/plugins/",
-        "\\/plugins\\/",
-        "tokens[2]",
-        "BIN_NAMES",
-      ]) ||
-      containsAny(lineText.toLowerCase(), [
-        "legacy alias",
-        "historical alias",
-        "compatible alias",
-        "compatible aliases",
-        "supported alias",
-        "supported legacy alias",
-      ])
-    ) {
-      return {
-        category: "legacy-command-compatibility",
-        treatment: "preserve-as-explicit-compatibility",
-        owner: "cli-policy",
-        reason: "legacy command recognition remains supported while Superbee is canonical",
-      };
-    }
-    return {
-      category: "unclassified",
-      treatment: "fail-closed",
-      owner: "unassigned",
-      reason: "a maintained product-name literal must be renamed or assigned an explicit compatibility owner",
-    };
-  }
-
-  if (match === "aslite") {
-    if (
-      containsAny(lineText, [
-        '"schema": "aslite.',
-        '"tarball_basename": "holaxis-aslite"',
-        '".aslite-release-candidate-owned-',
-        "aslite-release-receipt",
-        "aslite.receipt-",
-        "aslite.operator-receipt",
-        "aslite.release-candidate",
-        "aslite-registry-proof-",
-        "aslite-receipt-",
-        "@holaxis%2faslite",
-        '"@holaxis", "aslite"',
-        '"aslite": "dist/superbee.mjs"',
-        '"expected_commands"',
-        '"preferred_command": "aslite"',
-      ])
-    ) {
-      return {
-        category: "release-artifact-or-schema",
-        treatment: "bridge-or-successor-target-policy",
-        owner: "release-policy",
-        reason: "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      };
-    }
-    if (containsAny(lineText, ["data-aslite-", "aslite_ui_session", "aslite.update-", "aslite.skill-manifest", ".aslite-skill.json"])) {
-      return {
-        category: "serialized-or-protocol-identifier",
-        treatment: "preserve-for-cross-version-compatibility",
-        owner: "compatibility-policy",
-        reason: "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      };
-    }
-    if (
-      containsAny(lineText, [
-        "LEGACY_SKILL_DIR_NAME",
-        "LEGACY_SKILL_INSTALLERS",
-        "OWNED_SKILL_PACKAGES",
-        '"aslite skill install"',
-        "skills/aslite",
-        "old-only aslite",
-        "node_modules/",
-        "node_modules\\/",
-        "BIN_NAMES",
-        'value === "aslite"',
-        "@holaxis${sep}aslite",
-      ]) ||
-      containsAny(lineText.toLowerCase(), [
-        "legacy alias",
-        "historical alias",
-        "historical `aslite`",
-        "compatible alias",
-        "compatible aliases",
-        "supported alias",
-        "supported legacy alias",
-      ])
-    ) {
-      return {
-        category: "legacy-command-compatibility",
-        treatment: "preserve-as-explicit-compatibility",
-        owner: "cli-policy",
-        reason: "legacy command and installer recognition remain supported while Superbee is canonical",
-      };
-    }
-    if (containsAny(lineText, ["mkdtemp", "tmpdir()", "tmpdir(),"])) {
-      return {
-        category: "internal-temporary-namespace",
-        treatment: "preserve-internal-non-user-facing-name",
-        owner: "runtime-owner",
-        reason: "temporary scratch names are private implementation namespaces, not product guidance",
-      };
-    }
-    return {
-      category: "unclassified",
-      treatment: "fail-closed",
-      owner: "unassigned",
-      reason: "a maintained legacy brand literal must be assigned an explicit compatibility owner",
-    };
-  }
-
   if (match === "agentstate" || match === "AGENTSTATE") {
     return {
       category: "serialized-or-protocol-identifier",
@@ -406,6 +295,7 @@ async function trackedTextFiles(root) {
 }
 
 export async function generateRenameLiteralInventory({ root = repoRoot, roots } = {}) {
+  const approvedOccurrences = await loadApprovedOccurrences(root);
   const files = [];
   if (roots) {
     for (const entry of roots) {
@@ -426,7 +316,16 @@ export async function generateRenameLiteralInventory({ root = repoRoot, roots } 
       const position = positionFor(starts, offset);
       const lineEnd = text.indexOf("\n", starts[position.line - 1]);
       const lineText = text.slice(starts[position.line - 1], lineEnd === -1 ? text.length : lineEnd);
-      const classification = classifyLegacyLiteral({ file, lineText, match: found[0] });
+      const lineOffset = offset - starts[position.line - 1];
+      const ordinal = [...lineText.slice(0, lineOffset).matchAll(new RegExp(found[0], "g"))].length;
+      const classification = classifyLegacyLiteral({
+        file,
+        line: position.line,
+        lineText,
+        match: found[0],
+        ordinal,
+        approvedOccurrences,
+      });
       matches.push({
         file,
         line: position.line,
@@ -435,6 +334,11 @@ export async function generateRenameLiteralInventory({ root = repoRoot, roots } 
         ...classification,
       });
     }
+  }
+
+  if (!roots && approvedOccurrences.size > 0) {
+    const [first] = approvedOccurrences.keys();
+    throw new Error(`stale approved legacy occurrence: ${first}`);
   }
 
   matches.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);

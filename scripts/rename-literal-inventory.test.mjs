@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  approvedOccurrenceKey,
   assertClassifiedInventory,
   classifyLegacyLiteral,
   generateRenameLiteralInventory,
@@ -53,6 +54,7 @@ test("AC-60 named literals are classified with explicit owners and treatments", 
       file: "scripts/release-candidate.mjs",
       lineText: 'const schema = "aslite.release-candidate.v1";',
       match: "aslite",
+      exactApproval: true,
       category: "release-artifact-or-schema",
       owner: "release-policy",
     },
@@ -81,13 +83,22 @@ test("AC-60 named literals are classified with explicit owners and treatments", 
       file: "scripts/release-candidate.mjs",
       lineText: 'const out = "dist/agentstate-lite.mjs";',
       match: "agentstate-lite",
+      exactApproval: true,
       category: "compiled-artifact-path",
       owner: "cli-build",
     },
   ];
 
   for (const row of rows) {
-    const classified = classifyLegacyLiteral(row);
+    const approvedOccurrences = row.exactApproval
+      ? new Map([[approvedOccurrenceKey(row), {
+          category: row.category,
+          treatment: "bridge-or-successor-target-policy",
+          owner: row.owner,
+          reason: "test approval",
+        }]])
+      : undefined;
+    const classified = classifyLegacyLiteral({ ...row, approvedOccurrences });
     assert.equal(classified.category, row.category, row.match);
     assert.equal(classified.owner, row.owner, row.match);
     assert.notEqual(classified.treatment, "fail-closed", row.match);
@@ -133,6 +144,45 @@ test("unknown legacy literals fail closed until a policy owner classifies them",
       assert.equal(privilegedPathGuide.treatment, "fail-closed", `${file}: ${match}`);
     }
   }
+});
+
+test("lowercase compatibility ownership binds to one exact occurrence, not its surrounding path or line", () => {
+  const approvedRow = {
+    category: "legacy-command-compatibility",
+    treatment: "preserve-as-explicit-compatibility",
+    owner: "cli-policy",
+    reason: "test approval",
+  };
+  const base = {
+    file: "packages/cli/src/commands/hook.ts",
+    line: 99,
+    lineText: 'const LEGACY_HOOK_MARKER = "agentstate-lite";',
+    match: "agentstate-lite",
+    ordinal: 0,
+  };
+  const approvedOccurrences = new Map([[approvedOccurrenceKey(base), approvedRow]]);
+  assert.deepEqual(classifyLegacyLiteral({ ...base, approvedOccurrences }), approvedRow);
+  assert.equal(approvedOccurrences.size, 0, "a consumed occurrence cannot approve a duplicate");
+
+  for (const lineText of [
+    `Run agentstate-lite ui; ${base.lineText}`,
+    `${base.lineText} // Run agentstate-lite ui`,
+  ]) {
+    const mixed = classifyLegacyLiteral({
+      ...base,
+      lineText,
+      approvedOccurrences: new Map([[approvedOccurrenceKey(base), approvedRow]]),
+    });
+    assert.equal(mixed.category, "unclassified");
+    assert.equal(mixed.treatment, "fail-closed");
+  }
+
+  const shifted = classifyLegacyLiteral({
+    ...base,
+    line: 100,
+    approvedOccurrences: new Map([[approvedOccurrenceKey(base), approvedRow]]),
+  });
+  assert.equal(shifted.category, "unclassified", "moving an approval to another occurrence requires review");
 });
 
 test("repository inventory is deterministic and has no unclassified legacy literals", async () => {
