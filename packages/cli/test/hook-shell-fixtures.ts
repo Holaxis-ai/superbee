@@ -74,11 +74,11 @@ export const localDevExecutable = (segment: string): string =>
 
 export const stableNodePair = (segment: string): [string, string] => [
   `/opt/x${segment}x/bin/node`,
-  `/opt/x${segment}x/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs`,
+  `/opt/x${segment}x/lib/node_modules/@holaxis/superbee/dist/superbee.mjs`,
 ];
 
 export const MISMATCHED_NPM_NODE_COMMAND =
-  "/opt/runtime-a/bin/node /opt/npm-b/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
+  "/opt/runtime-a/bin/node /opt/npm-b/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start";
 
 /** Lexically valid path spellings that no hook writer emits and therefore never establish ownership. */
 export const NONCANONICAL_MANAGED_PATH_CASES: ReadonlyArray<{
@@ -123,32 +123,38 @@ export const NONCANONICAL_MANAGED_PATH_CASES: ReadonlyArray<{
 export const NODE_PACKAGE_PAIR_CASES: ReadonlyArray<{
   family: string;
   command: string;
-  state: "current" | "unmanaged";
+  state: "current" | "legacy_identity" | "legacy_path_bound" | "unmanaged";
 }> = [
   {
     family: "same-prefix npm A",
     command:
-      "/opt/npm-a/bin/node /opt/npm-a/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
+      "/opt/npm-a/bin/node /opt/npm-a/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
     state: "current",
   },
   {
     family: "same-prefix npm B",
     command:
-      "/opt/npm-b/bin/node /opt/npm-b/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
+      "/opt/npm-b/bin/node /opt/npm-b/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
     state: "current",
   },
   { family: "foreign runtime with npm B", command: MISMATCHED_NPM_NODE_COMMAND, state: "unmanaged" },
   {
     family: "npm A runtime with npm B package",
     command:
-      "/opt/npm-a/bin/node /opt/npm-b/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
+      "/opt/npm-a/bin/node /opt/npm-b/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
     state: "unmanaged",
   },
   {
     family: "npm B runtime with npm A package",
     command:
-      "/opt/npm-b/bin/node /opt/npm-a/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
+      "/opt/npm-b/bin/node /opt/npm-a/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
     state: "unmanaged",
+  },
+  {
+    family: "legacy scoped npm package remains owned but upgradeable",
+    command:
+      "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
+    state: "legacy_identity",
   },
   {
     family: "historical unscoped npm package is not a current Node pair",
@@ -159,7 +165,7 @@ export const NODE_PACKAGE_PAIR_CASES: ReadonlyArray<{
   {
     family: "independently located local-dev package",
     command:
-      "/opt/runtime-a/bin/node /workspace/agentstate-lite/packages/cli/dist/agentstate-lite.mjs session-start",
+      "/opt/runtime-a/bin/node /workspace/superbee/packages/cli/dist/superbee.mjs session-start",
     state: "current",
   },
 ];

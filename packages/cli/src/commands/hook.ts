@@ -1,4 +1,4 @@
-// `agentstate-lite hook install|status|uninstall` — manage the SessionStart board-aware hook.
+// `superbee hook install|status|uninstall` — manage the SessionStart board-aware hook.
 //
 // The installed hook runs `<bin> session-start` — ONE subcommand doing a
 // time-boxed best-effort board pull and THEN rendering the home view (identity + auth + bundle
@@ -68,12 +68,12 @@ import {
 } from "../install-authority.js";
 import { normalizeInstallScope } from "../install-scope.js";
 
-export const HOOK_USAGE = `agentstate-lite hook — manage the SessionStart board-aware hook
+export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
 
 Usage:
-  agentstate-lite hook install   [--scope project|user]
-  agentstate-lite hook status    [--scope project|user]
-  agentstate-lite hook uninstall [--scope project|user]
+  superbee hook install   [--scope project|user]
+  superbee hook status    [--scope project|user]
+  superbee hook uninstall [--scope project|user]
 
 Installs (or removes) a SessionStart hook that runs \`session-start\` — a time-boxed best-effort
 board pull, then the home view — as ambient context at the start of every agent session, for
@@ -82,7 +82,7 @@ an absent hook is a no-op. Re-run install after upgrading from a pre-session-sta
 old hook rendered the home view without pulling the board first.
 
 For npm distribution, install must run from a verified global install (\`npm install -g
-@holaxis/aslite\`). One-off npx execution remains supported for read-only/trial commands but cannot
+@holaxis/superbee\`). One-off npx execution remains supported for read-only/trial commands but cannot
 authorize persistent host configuration.
 
 Options:
@@ -94,8 +94,9 @@ Options:
 The former spelling --scope global remains accepted as an alias for --scope user.
 `;
 
-/** The historical OpenCode marker. Marker presence alone never establishes ownership. */
-export const HOOK_MARKER = "agentstate-lite";
+/** The canonical OpenCode marker. Marker presence alone never establishes ownership. */
+export const HOOK_MARKER = "superbee";
+const LEGACY_HOOK_MARKER = "agentstate-lite";
 
 /** Backward-compatible command-only ownership predicate, now backed by the exact token classifier. */
 export function isManagedHookCommand(command: string): boolean {
@@ -106,8 +107,10 @@ export const HOOK_TIMEOUT_SECONDS = 10;
 /** The pull-then-render subcommand the installed hook runs. */
 export const HOOK_SUBCOMMAND = "session-start";
 /** The OpenCode plugin filename (SDK naming convention for this marker) and its managed-file marker. */
-const OPENCODE_PLUGIN_FILENAME = "axi-agentstate-lite.js";
+const OPENCODE_PLUGIN_FILENAME = "axi-superbee.js";
+const LEGACY_OPENCODE_PLUGIN_FILENAME = "axi-agentstate-lite.js";
 const OPENCODE_MANAGED_MARKER = `axi-sdk-js managed opencode plugin: ${HOOK_MARKER}`;
+const LEGACY_OPENCODE_MANAGED_MARKER = `axi-sdk-js managed opencode plugin: ${LEGACY_HOOK_MARKER}`;
 
 /**
  * Compose one generated shell command from an argv vector. Values outside the deliberately safe
@@ -346,7 +349,7 @@ export function readHookCompatibilityStatus(settings: HookSettings): HookStatus 
       compatibility: {
         state: "stale",
         reason: `found ${owned.length} generated hook entries; exactly one is expected`,
-        remedy: "re-run `aslite hook install` from the durable global npm installation",
+        remedy: "re-run `superbee hook install` from the durable global npm installation",
       },
     };
   }
@@ -375,6 +378,7 @@ export interface HookTargets {
   codexHooks: string;
   codexConfig: string;
   opencodePlugin: string;
+  legacyOpencodePlugin: string;
 }
 
 function targetsForBase(base: string): HookTargets {
@@ -383,6 +387,7 @@ function targetsForBase(base: string): HookTargets {
     codexHooks: join(base, ".codex", "hooks.json"),
     codexConfig: join(base, ".codex", "config.toml"),
     opencodePlugin: join(base, ".config", "opencode", "plugins", OPENCODE_PLUGIN_FILENAME),
+    legacyOpencodePlugin: join(base, ".config", "opencode", "plugins", LEGACY_OPENCODE_PLUGIN_FILENAME),
   };
 }
 
@@ -401,6 +406,7 @@ export function globalHookTargets(home: string = homedir(), env: NodeJS.ProcessE
     codexHooks: join(codexHome, "hooks.json"),
     codexConfig: join(codexHome, "config.toml"),
     opencodePlugin: join(opencodeHome, "plugins", OPENCODE_PLUGIN_FILENAME),
+    legacyOpencodePlugin: join(opencodeHome, "plugins", LEGACY_OPENCODE_PLUGIN_FILENAME),
   };
 }
 
@@ -512,7 +518,7 @@ export function readSettingsForInstall(
  * A non-link destination passes through verbatim (ancestor symlinks need no handling: the temp
  * lives in the same — possibly linked — directory, so rename resolves them identically).
  */
-function resolveWriteDestination(path: string): string {
+function resolveWriteDestination(path: string, followFinalSymlink: boolean): string {
   let isLink = false;
   try {
     isLink = lstatSync(path).isSymbolicLink();
@@ -520,6 +526,9 @@ function resolveWriteDestination(path: string): string {
     return path; // absent → create at the literal path
   }
   if (!isLink) return path;
+  if (!followFinalSymlink) {
+    throw new Error(`symlink at ${path} — refusing to replace a generated plugin through a link`);
+  }
   try {
     return realpathSync(path);
   } catch {
@@ -530,13 +539,18 @@ function resolveWriteDestination(path: string): string {
 /**
  * Atomic file write: temp file in the SAME directory + rename, so a concurrent reader sees either
  * the old bytes or the new bytes — never a torn/empty file (truncate-then-write's race window).
- * A symlinked destination is written through at its resolved target (see
- * {@link resolveWriteDestination}); when replacing an existing file its mode is preserved (a
+ * A symlinked destination is written through at its resolved target by default (see
+ * {@link resolveWriteDestination}); generated plugin callers opt out because their ownership is
+ * the literal directory entry, not a dotfile-manager target. When replacing an existing file its mode is preserved (a
  * user's 0600 settings must not widen to the default umask); the temp is cleaned up on ANY
  * failure (write or rename).
  */
-export function atomicWriteFileSync(path: string, content: string | Uint8Array): void {
-  const destination = resolveWriteDestination(path);
+export function atomicWriteFileSync(
+  path: string,
+  content: string | Uint8Array,
+  options: { followFinalSymlink?: boolean } = {},
+): void {
+  const destination = resolveWriteDestination(path, options.followFinalSymlink ?? true);
   mkdirSync(dirname(destination), { recursive: true });
   const mode = existsSync(destination) ? statSync(destination).mode & 0o7777 : undefined;
   const tmp = `${destination}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -565,6 +579,9 @@ function buildOpenCodePluginTemplate(options: {
   program: string;
   commandArgs?: string[];
   timeoutSeconds: number;
+  marker: string;
+  managedMarker: string;
+  exportName: string;
   generatedComment: string;
   runFunction: "runAxiSessionStart" | "runAxiHomeView";
 }): string {
@@ -572,13 +589,13 @@ function buildOpenCodePluginTemplate(options: {
     ? ""
     : `const commandArgs = ${JSON.stringify(options.commandArgs)};\n`;
   const spawnArgs = options.commandArgs === undefined ? "[]" : "commandArgs";
-  return `// ${OPENCODE_MANAGED_MARKER}
+  return `// ${options.managedMarker}
 ${options.generatedComment}
 import { spawn } from "node:child_process";
 
 const command = ${JSON.stringify(options.program)};
-${argsDeclaration}const marker = ${JSON.stringify(HOOK_MARKER)};
-const ambientHeader = ${JSON.stringify(`## AXI ambient context: ${HOOK_MARKER}`)};
+${argsDeclaration}const marker = ${JSON.stringify(options.marker)};
+const ambientHeader = ${JSON.stringify(`## AXI ambient context: ${options.marker}`)};
 const timeoutMs = ${JSON.stringify(options.timeoutSeconds * 1000)};
 
 function ${options.runFunction}(cwd) {
@@ -635,7 +652,7 @@ function directoryOrFallback(directory) {
     : process.cwd();
 }
 
-export const AxiAgentstateLiteAmbientContextPlugin = async ({ directory }) => {
+export const ${options.exportName} = async ({ directory }) => {
   const sessionCache = new Map();
 
   return {
@@ -664,6 +681,29 @@ export function buildOpenCodePluginSource(
     program,
     commandArgs,
     timeoutSeconds,
+    marker: HOOK_MARKER,
+    managedMarker: OPENCODE_MANAGED_MARKER,
+    exportName: "AxiSuperbeeAmbientContextPlugin",
+    generatedComment:
+      "// Generated by `superbee hook install` (axi-sdk-js managed-marker compatible). It is safe\n" +
+      "// to edit only if you remove the managed marker above.",
+    runFunction: "runAxiSessionStart",
+  });
+}
+
+/** Byte-for-byte reconstruction of the last ASLite args-aware generator. */
+function buildLegacyOpenCodePluginSource(
+  program: string,
+  commandArgs: string[] = [HOOK_SUBCOMMAND],
+  timeoutSeconds: number = HOOK_TIMEOUT_SECONDS,
+): string {
+  return buildOpenCodePluginTemplate({
+    program,
+    commandArgs,
+    timeoutSeconds,
+    marker: LEGACY_HOOK_MARKER,
+    managedMarker: LEGACY_OPENCODE_MANAGED_MARKER,
+    exportName: "AxiAgentstateLiteAmbientContextPlugin",
     generatedComment:
       "// Generated by `agentstate-lite hook install` (axi-sdk-js managed-marker compatible). It is safe\n" +
       "// to edit only if you remove the managed marker above.",
@@ -676,6 +716,9 @@ function buildLegacySdkOpenCodePluginSource(command: string, timeoutSeconds: num
   return buildOpenCodePluginTemplate({
     program: command,
     timeoutSeconds,
+    marker: LEGACY_HOOK_MARKER,
+    managedMarker: LEGACY_OPENCODE_MANAGED_MARKER,
+    exportName: "AxiAgentstateLiteAmbientContextPlugin",
     generatedComment:
       "// This file is generated by axi-sdk-js. It is safe to edit only if you remove the managed marker above.",
     runFunction: "runAxiHomeView",
@@ -699,8 +742,23 @@ function generatedConstant(source: string, name: string): unknown {
 
 /** Exact-source classifier: a marker or familiar substring alone never authorizes mutation. */
 function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCodeHookStatus {
-  if (!existsSync(path)) {
+  let entry: ReturnType<typeof lstatSync>;
+  try {
+    entry = lstatSync(path);
+  } catch {
     return { installed: false, compatibility: { state: "absent", reason: "plugin file is absent" } };
+  }
+  if (entry.isSymbolicLink()) {
+    return {
+      installed: false,
+      compatibility: {
+        state: "unmanaged",
+        reason: "plugin path is a symlink; generated-plugin ownership requires a regular file",
+      },
+    };
+  }
+  if (!entry.isFile()) {
+    return { installed: false, compatibility: { state: "unmanaged", reason: "plugin path is not a regular file" } };
   }
   let source: string;
   try {
@@ -736,11 +794,33 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
         compatibility: {
           state: "stale",
           reason: "recognized generated plugin has a non-current timeout",
-          remedy: "re-run `aslite hook install` from the durable global npm installation",
+          remedy: "re-run `superbee hook install` from the durable global npm installation",
         },
       };
     }
     return { installed: true, compatibility };
+  }
+
+  if (
+    typeof command === "string" &&
+    Array.isArray(args) &&
+    args.every((arg) => typeof arg === "string") &&
+    typeof timeoutMs === "number" &&
+    Number.isInteger(timeoutMs) &&
+    source === buildLegacyOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
+  ) {
+    const compatibility = classifyHookCommand(
+      [command, ...(args as string[])].map(renderGeneratedHookToken).join(" "),
+    );
+    if (!isOwnedHookCompatibility(compatibility)) return { installed: false, compatibility };
+    return {
+      installed: true,
+      compatibility: {
+        state: timeoutMs === HOOK_TIMEOUT_SECONDS * 1000 ? "legacy_identity" : "stale",
+        reason: "recognized generated OpenCode plugin uses the legacy ASLite identity",
+        remedy: "re-run `superbee hook install` from the durable global npm installation",
+      },
+    };
   }
 
   if (
@@ -756,7 +836,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
       compatibility: {
         state: "stale",
         reason: "recognized pre-session-start axi-sdk-js plugin",
-        remedy: "re-run `aslite hook install` from the durable global npm installation",
+        remedy: "re-run `superbee hook install` from the durable global npm installation",
       },
     };
   }
@@ -768,6 +848,39 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
       reason: "plugin file does not exactly match a known generated source",
     },
   };
+}
+
+function readOpenCodeTargetsStatus(
+  targets: HookTargets,
+  expectedSource?: string,
+): OpenCodeHookStatus {
+  const canonical = readOpenCodeHookStatus(targets.opencodePlugin, expectedSource);
+  const legacy = readOpenCodeHookStatus(targets.legacyOpencodePlugin);
+  const owned = [canonical, legacy].filter((status) => status.installed);
+  if (owned.length > 1) {
+    return {
+      installed: true,
+      compatibility: {
+        state: "stale",
+        reason: "found both canonical and legacy generated OpenCode plugins; exactly one is expected",
+        remedy: "re-run `superbee hook install` from the durable global npm installation",
+      },
+    };
+  }
+  if (owned.length === 1) return owned[0]!;
+  if (
+    canonical.compatibility.state === "unmanaged" ||
+    legacy.compatibility.state === "unmanaged"
+  ) {
+    return {
+      installed: false,
+      compatibility: {
+        state: "unmanaged",
+        reason: "OpenCode plugin files exist, but none is an exact generated form",
+      },
+    };
+  }
+  return canonical;
 }
 
 /**
@@ -783,7 +896,7 @@ export function hookNeedsUpdate(bases?: string[], deps: HookLocationDeps = {}): 
       const s = readHookCompatibilityStatus(readSettings(p));
       if (s.installed && s.compatibility.state !== "current") return true;
     }
-    const opencode = readOpenCodeHookStatus(targets.opencodePlugin);
+    const opencode = readOpenCodeTargetsStatus(targets);
     if (opencode.installed && opencode.compatibility.state !== "current") return true;
   }
   return false;
@@ -802,7 +915,7 @@ export function hookInstalled(bases?: string[], deps: HookLocationDeps = {}): bo
     for (const p of [targets.claudeSettings, targets.codexHooks]) {
       if (readHookCompatibilityStatus(readSettings(p)).installed) return true;
     }
-    if (readOpenCodeHookStatus(targets.opencodePlugin).installed) return true;
+    if (readOpenCodeTargetsStatus(targets).installed) return true;
   }
   return false;
 }
@@ -901,8 +1014,8 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     }
     const claude = readHookCompatibilityStatus(readSettings(targets.claudeSettings));
     const codex = readHookCompatibilityStatus(readSettings(targets.codexHooks));
-    const opencode = readOpenCodeHookStatus(
-      targets.opencodePlugin,
+    const opencode = readOpenCodeTargetsStatus(
+      targets,
       expectedLaunch
         ? buildOpenCodePluginSource(expectedLaunch.program, expectedLaunch.args)
         : undefined,
@@ -988,7 +1101,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     } catch (err) {
       throw new CliError("RUNTIME", err instanceof Error ? err.message : String(err), {
         ...(authority ? { details: { install_authority: authority } } : {}),
-        help: "run `npm install -g @holaxis/aslite`, verify `aslite version --json`, then re-run hook install; npx remains supported for read-only/trial commands",
+        help: "run `npm install -g @holaxis/superbee`, verify `superbee version --json`, then re-run hook install; npx remains supported for read-only/trial commands",
       });
     }
     const command = launch.command;
@@ -1028,8 +1141,14 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       const currentStatus = readOpenCodeHookStatus(targets.opencodePlugin, next);
       if (current !== undefined && currentStatus.compatibility.state === "unmanaged") {
         refusals.push(`${collapseHomeDirectory(targets.opencodePlugin)}: refusing to overwrite unmanaged OpenCode plugin`);
-      } else if (current !== next) {
-        atomicWriteFileSync(targets.opencodePlugin, next);
+      } else {
+        if (current !== next) {
+          atomicWriteFileSync(targets.opencodePlugin, next, { followFinalSymlink: false });
+        }
+        const legacyStatus = readOpenCodeHookStatus(targets.legacyOpencodePlugin);
+        if (legacyStatus.installed) {
+          rmSync(targets.legacyOpencodePlugin, { force: true });
+        }
       }
     } catch (err) {
       failTarget(targets.opencodePlugin, err);
@@ -1070,14 +1189,14 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       changed = true;
     }
   }
-  const openCodeStatus = readOpenCodeHookStatus(targets.opencodePlugin);
-  if (openCodeStatus.installed) {
-    rmSync(targets.opencodePlugin, { force: true });
-    changed = true;
-  } else if (openCodeStatus.compatibility.state === "unmanaged") {
-    notes.push(
-      `preserved unmanaged OpenCode plugin: ${collapseHomeDirectory(targets.opencodePlugin)}`,
-    );
+  for (const path of [targets.opencodePlugin, targets.legacyOpencodePlugin]) {
+    const openCodeStatus = readOpenCodeHookStatus(path);
+    if (openCodeStatus.installed) {
+      rmSync(path, { force: true });
+      changed = true;
+    } else if (openCodeStatus.compatibility.state === "unmanaged") {
+      notes.push(`preserved unmanaged OpenCode plugin: ${collapseHomeDirectory(path)}`);
+    }
   }
   stdout(
     render(
