@@ -1603,6 +1603,32 @@ test("atomicWriteFileSync: replacing an existing file preserves its mode (0600 s
   }
 });
 
+test("atomicWriteFileSync: generated-plugin mode refuses a final symlink without changing either entry", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-symlink-"));
+  const target = path.join(dir, "managed-target.js");
+  const link = path.join(dir, "axi-superbee.js");
+  try {
+    await writeFile(target, "user-owned\n");
+    await symlink(path.basename(target), link);
+
+    assert.throws(
+      () => atomicWriteFileSync(link, "generated\n", { followFinalSymlink: false }),
+      /symlink .*refusing to replace a generated plugin through a link/,
+    );
+
+    assert.equal((await lstat(link)).isSymbolicLink(), true, "the canonical directory entry stays a symlink");
+    assert.equal(await realpath(link), await realpath(target), "the symlink still points at its original target");
+    assert.equal(await readFile(target, "utf8"), "user-owned\n", "the symlink target bytes stay untouched");
+    assert.deepEqual(
+      (await readdir(dir)).sort(),
+      ["axi-superbee.js", "managed-target.js"],
+      "a refused write leaves no temporary file",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("atomicWriteFileSync: a failed rename cleans its temp — no residue beside the target", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-atomic-fail-"));
   // The target path is a NON-EMPTY DIRECTORY, so the rename step deterministically fails after
