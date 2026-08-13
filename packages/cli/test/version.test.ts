@@ -198,6 +198,19 @@ test("build flavor is mandatory and unsupported distribution channels are reject
         }),
       /requires artifactChannel: npm-package \| local-dev/,
     );
+
+    for (const functionalVersionFloor of ["01.2.3", "1.02.3", "1.2.3-01", "1.2.3-alpha."]) {
+      await assert.rejects(
+        () =>
+          buildCliBundle(path.join(dir, "malformed-floor.mjs"), {
+            artifactChannel: "local-dev",
+            functionalVersionFloor,
+            source: { commit: null, dirty: null },
+          }),
+        /requires a strict SemVer functionalVersionFloor/,
+        functionalVersionFloor,
+      );
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

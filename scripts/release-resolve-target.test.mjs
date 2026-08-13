@@ -50,6 +50,19 @@ test("the functional successor floor is the reviewed successor tuple version", a
     () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: undefined }),
     /invalid release version/,
   );
+  for (const malformed of ["01.2.3", "1.02.3", "1.2.3-01", "1.2.3-alpha."]) {
+    const successor = { ...manifest.allowed_tuples.successor, version: malformed, tag: `v${malformed}` };
+    assert.throws(
+      () =>
+        normalizeReleaseTargets({
+          ...manifest,
+          functional_successor_floor: malformed,
+          allowed_tuples: { ...manifest.allowed_tuples, successor },
+        }),
+      /invalid release version/,
+      malformed,
+    );
+  }
 });
 
 test("resolveTargetFacts rejects target/tag mismatches before workflows mutate", async () => {

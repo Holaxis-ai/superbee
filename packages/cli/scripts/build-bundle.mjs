@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { isStrictSemver } from "../../../scripts/strict-semver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // packages/cli/scripts -> packages/cli
@@ -74,7 +75,7 @@ export async function buildCliBundle(outfile, options) {
   }
   const source = options?.source ?? currentSourceFacts();
   const functionalVersionFloor = options?.functionalVersionFloor;
-  if (typeof functionalVersionFloor !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/.test(functionalVersionFloor)) {
+  if (!isStrictSemver(functionalVersionFloor)) {
     throw new Error("buildCliBundle requires a strict SemVer functionalVersionFloor");
   }
   if (

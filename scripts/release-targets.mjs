@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertStrictSemver } from "./strict-semver.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -14,7 +15,6 @@ export const REGISTRY_PROOF_SCHEMA = "superbee.registry-proof.v1";
 const TARGET_ID = /^[a-z][a-z0-9-]*$/;
 const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const DIRECTORY_SEGMENT = /^@?[A-Za-z0-9._][A-Za-z0-9._-]*$/;
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
 
 export const DEFAULT_RELEASE_TARGETS_PATH = path.join(repoRoot, "release", "targets.json");
@@ -27,10 +27,7 @@ export function assertTargetId(targetId) {
 }
 
 export function assertVersion(value) {
-  if (typeof value !== "string" || !SEMVER.test(value)) {
-    throw new Error(`invalid release version: ${JSON.stringify(value)}`);
-  }
-  return value;
+  return assertStrictSemver(value, "release version");
 }
 
 export function assertTagForVersion(tag, version) {
