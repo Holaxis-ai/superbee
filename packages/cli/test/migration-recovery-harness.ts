@@ -26,6 +26,7 @@ export interface MigrationFixture {
   bindingPath?: string;
   catalogPath?: string;
   sidecarBytes: Readonly<Record<string, string>>;
+  canonicalSidecarBytes: Readonly<Record<string, string>>;
   unrelatedPath: string;
   bundleSnapshot: TreeSnapshot;
   unrelatedBytes: Buffer;
@@ -156,8 +157,19 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
   }
 
   const sidecarBytes: Record<string, string> = {};
+  const canonicalSidecarBytes: Record<string, string> = {};
   for (const target of [bindingPath, catalogPath]) {
     if (target) sidecarBytes[target] = (await readFile(target)).toString("base64");
+  }
+  if (bindingPath) {
+    canonicalSidecarBytes[bindingPath] = Buffer.from(
+      `${JSON.stringify({ bundle: destination }, null, 2)}\n`,
+    ).toString("base64");
+  }
+  if (catalogPath) {
+    canonicalSidecarBytes[catalogPath] = Buffer.from(
+      `${JSON.stringify({ version: 1, entries: [{ label: "work", locator: { kind: "local-path", path: destination } }] }, null, 2)}\n`,
+    ).toString("base64");
   }
 
   return {
@@ -171,6 +183,7 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
     bindingPath,
     catalogPath,
     sidecarBytes,
+    canonicalSidecarBytes,
     unrelatedPath,
     bundleSnapshot: await snapshotTree(source),
     unrelatedBytes,
@@ -230,6 +243,12 @@ async function assertOriginalSidecars(fixture: MigrationFixture): Promise<void> 
   }
 }
 
+async function assertCanonicalSidecars(fixture: MigrationFixture): Promise<void> {
+  for (const [target, bytes] of Object.entries(fixture.canonicalSidecarBytes)) {
+    assert.equal((await readFile(target)).toString("base64"), bytes);
+  }
+}
+
 async function withFixture(
   topology: MigrationTopology,
   createDriver: MigrationRecoveryDriverFactory,
@@ -282,6 +301,7 @@ export function migrationRecoveryContractCases(): readonly MigrationRecoveryCont
           assert.equal(await pathExists(driver.journalPath), false);
           assert.equal((await stat(driver.receiptPath)).mode & 0o777, 0o600);
           await assertBundleAt(fixture, fixture.destination);
+          await assertCanonicalSidecars(fixture);
         }),
     });
     cases.push({
@@ -294,6 +314,7 @@ export function migrationRecoveryContractCases(): readonly MigrationRecoveryCont
           assert.equal(await pathExists(fixture.destination), true);
           await assertBundleAt(fixture, fixture.destination);
           const receipt = await driver.resume();
+          await assertCanonicalSidecars(fixture);
           await driver.rollback(receipt);
           assert.equal(await pathExists(fixture.destination), false);
           await assertBundleAt(fixture, fixture.source);
@@ -346,6 +367,19 @@ export function migrationRecoveryContractCases(): readonly MigrationRecoveryCont
           await assert.rejects(() => driver.rollback(receipt));
           assert.equal(await readFile(occupant, "utf8"), "foreign occupant\n");
           await assertBundleAt(fixture, fixture.destination);
+        }),
+    },
+    {
+      name: "post-receipt sidecar drift refuses rollback without moving the bundle",
+      run: (createDriver) =>
+        withFixture("personal", createDriver, async (fixture, driver) => {
+          const receipt = await driver.apply(await driver.plan());
+          assert.ok(fixture.bindingPath);
+          await writeFile(fixture.bindingPath, '{"bundle":"changed-after-receipt"}\n', "utf8");
+          await assert.rejects(() => driver.rollback(receipt));
+          assert.equal(await pathExists(fixture.source), false);
+          await assertBundleAt(fixture, fixture.destination);
+          assert.equal(await readFile(fixture.bindingPath, "utf8"), '{"bundle":"changed-after-receipt"}\n');
         }),
     },
   );

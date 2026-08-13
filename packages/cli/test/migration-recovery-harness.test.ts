@@ -30,6 +30,8 @@ interface Journal {
   source: string;
   destination: string;
   sourceVersion: string;
+  sidecarsBefore: Readonly<Record<string, string>>;
+  sidecarsAfter: Readonly<Record<string, string>>;
 }
 
 interface Receipt extends Omit<Journal, "stage"> {
@@ -78,27 +80,37 @@ class ReferenceMigrationDriver implements MigrationRecoveryDriver {
       source: this.fixture.source,
       destination: this.fixture.destination,
       sourceVersion: plan.sourceVersion,
+      sidecarsBefore: this.fixture.sidecarBytes,
+      sidecarsAfter: this.fixture.canonicalSidecarBytes,
     };
     await this.writeJson(this.journalPath, journal);
     if (interruptAt === "after-journal-before-move") throw new InjectedInterruption(interruptAt);
 
     await this.move(journal.source, journal.destination);
+    if (interruptAt === "after-move-before-receipt") throw new InjectedInterruption(interruptAt);
     journal.stage = "moved";
     await this.writeJson(this.journalPath, journal);
-    if (interruptAt === "after-move-before-receipt") throw new InjectedInterruption(interruptAt);
+    await this.writeSidecars(journal.sidecarsAfter);
     return this.complete(journal);
   }
 
   async resume(): Promise<MigrationReceiptToken> {
     const journal = await this.readJournal();
     if (journal.stage === "prepared") {
-      if (!(await pathExists(journal.source)) || (await pathExists(journal.destination))) {
+      const sourceExists = await pathExists(journal.source);
+      const destinationExists = await pathExists(journal.destination);
+      if (sourceExists && !destinationExists) {
+        if (snapshotVersion(await snapshotTree(journal.source)) !== journal.sourceVersion) {
+          throw new Error("source changed after journal");
+        }
+        await this.move(journal.source, journal.destination);
+      } else if (!sourceExists && destinationExists) {
+        if (snapshotVersion(await snapshotTree(journal.destination)) !== journal.sourceVersion) {
+          throw new Error("destination changed after interrupted move");
+        }
+      } else {
         throw new Error("prepared journal does not match filesystem state");
       }
-      if (snapshotVersion(await snapshotTree(journal.source)) !== journal.sourceVersion) {
-        throw new Error("source changed after journal");
-      }
-      await this.move(journal.source, journal.destination);
       journal.stage = "moved";
       await this.writeJson(this.journalPath, journal);
     }
@@ -108,6 +120,7 @@ class ReferenceMigrationDriver implements MigrationRecoveryDriver {
     if (snapshotVersion(await snapshotTree(journal.destination)) !== journal.sourceVersion) {
       throw new Error("destination changed before receipt");
     }
+    await this.writeSidecars(journal.sidecarsAfter);
     return this.complete(journal);
   }
 
@@ -119,7 +132,11 @@ class ReferenceMigrationDriver implements MigrationRecoveryDriver {
     if (snapshotVersion(await snapshotTree(receipt.destination)) !== receipt.sourceVersion) {
       throw new Error("migrated bundle changed after receipt");
     }
+    for (const [target, expected] of Object.entries(receipt.sidecarsAfter)) {
+      if ((await readFile(target)).toString("base64") !== expected) throw new Error("sidecar changed after receipt");
+    }
     await this.move(receipt.destination, receipt.source);
+    await this.writeSidecars(receipt.sidecarsBefore);
   }
 
   private async readJournal(): Promise<Journal> {
@@ -140,7 +157,11 @@ class ReferenceMigrationDriver implements MigrationRecoveryDriver {
       !MIGRATION_TOPOLOGIES.includes(candidate.topology as MigrationFixture["topology"]) ||
       typeof candidate.source !== "string" ||
       typeof candidate.destination !== "string" ||
-      typeof candidate.sourceVersion !== "string"
+      typeof candidate.sourceVersion !== "string" ||
+      !candidate.sidecarsBefore ||
+      typeof candidate.sidecarsBefore !== "object" ||
+      !candidate.sidecarsAfter ||
+      typeof candidate.sidecarsAfter !== "object"
     ) {
       throw new Error("corrupt migration journal");
     }
@@ -163,6 +184,12 @@ class ReferenceMigrationDriver implements MigrationRecoveryDriver {
   private async writeJson(target: string, value: unknown): Promise<void> {
     await mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
     await writeFile(target, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  }
+
+  private async writeSidecars(sidecars: Readonly<Record<string, string>>): Promise<void> {
+    for (const [target, bytes] of Object.entries(sidecars)) {
+      await writeFile(target, Buffer.from(bytes, "base64"));
+    }
   }
 }
 
