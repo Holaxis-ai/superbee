@@ -223,10 +223,13 @@ function renderWorkspaceLocation(prefix: string): string[] {
     "built-in board path: run `sync` to join an existing `origin/board`; if none exists, explain",
   );
   lines.push(
-    "that `sync --establish` creates it and offer to run that explicit one-time operation. Do not",
+    "that `sync --establish` creates it and offer to run that explicit one-time operation. If the",
   );
   lines.push(
-    "substitute an in-tree committed bundle, a custom Git branch/path, or another sharing mechanism.",
+    "user prefers an in-tree bundle, custom Git branch/path, or another sharing mechanism, surface",
+  );
+  lines.push(
+    "the tradeoff and record that explicit choice; never silently substitute one for Superbee sync.",
   );
   lines.push("");
   return lines;

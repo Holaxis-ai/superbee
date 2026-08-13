@@ -215,8 +215,9 @@ share this bundle? When the user's intent is ambiguous, ask rather than defaulti
 Do not raise a sharing decision during ordinary local work. When the user names teammates,
 a shared board, a handoff, synchronization, or cross-clone coordination, use Superbee's
 built-in board path: run `sync` to join an existing `origin/board`; if none exists, explain
-that `sync --establish` creates it and offer to run that explicit one-time operation. Do not
-substitute an in-tree committed bundle, a custom Git branch/path, or another sharing mechanism.
+that `sync --establish` creates it and offer to run that explicit one-time operation. If the
+user prefers an in-tree bundle, custom Git branch/path, or another sharing mechanism, surface
+the tradeoff and record that explicit choice; never silently substitute one for Superbee sync.
 
 ## Typical flow
 
