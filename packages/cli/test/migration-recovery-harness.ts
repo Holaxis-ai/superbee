@@ -24,9 +24,10 @@ export interface MigrationFixture {
   destination: string;
   stateRoot: string;
   bindingPath?: string;
+  canonicalBindingPath?: string;
   catalogPath?: string;
-  sidecarBytes: Readonly<Record<string, string>>;
-  canonicalSidecarBytes: Readonly<Record<string, string>>;
+  sidecarBytes: SidecarState;
+  canonicalSidecarBytes: SidecarState;
   unrelatedPath: string;
   bundleSnapshot: TreeSnapshot;
   unrelatedBytes: Buffer;
@@ -61,6 +62,7 @@ export interface MigrationRecoveryContractCase {
 }
 
 export type TreeSnapshot = Readonly<Record<string, string>>;
+export type SidecarState = Readonly<Record<string, string | null>>;
 
 function git(cwd: string, args: string[]): string {
   return execFileSync("git", args, {
@@ -129,6 +131,7 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
   let source: string;
   let destination: string;
   let bindingPath: string | undefined;
+  let canonicalBindingPath: string | undefined;
   let catalogPath: string | undefined;
 
   if (topology === "personal") {
@@ -137,6 +140,7 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
     destination = path.join(home, ".superbee", "work");
     await writeBundle(source, topology);
     bindingPath = path.join(project, ".agentstate.json");
+    canonicalBindingPath = path.join(project, ".superbee.json");
     await writeFile(bindingPath, `${JSON.stringify({ bundle: source }, null, 2)}\n`, "utf8");
     catalogPath = path.join(home, ".agentstate", "catalog.json");
     await mkdir(path.dirname(catalogPath), { recursive: true });
@@ -156,13 +160,15 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
     }
   }
 
-  const sidecarBytes: Record<string, string> = {};
-  const canonicalSidecarBytes: Record<string, string> = {};
+  const sidecarBytes: Record<string, string | null> = {};
+  const canonicalSidecarBytes: Record<string, string | null> = {};
   for (const target of [bindingPath, catalogPath]) {
     if (target) sidecarBytes[target] = (await readFile(target)).toString("base64");
   }
-  if (bindingPath) {
-    canonicalSidecarBytes[bindingPath] = Buffer.from(
+  if (canonicalBindingPath) sidecarBytes[canonicalBindingPath] = null;
+  if (bindingPath && canonicalBindingPath) {
+    canonicalSidecarBytes[bindingPath] = null;
+    canonicalSidecarBytes[canonicalBindingPath] = Buffer.from(
       `${JSON.stringify({ bundle: destination }, null, 2)}\n`,
     ).toString("base64");
   }
@@ -181,6 +187,7 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
     destination,
     stateRoot,
     bindingPath,
+    canonicalBindingPath,
     catalogPath,
     sidecarBytes,
     canonicalSidecarBytes,
@@ -239,13 +246,15 @@ async function assertBundleAt(fixture: MigrationFixture, target: string): Promis
 
 async function assertOriginalSidecars(fixture: MigrationFixture): Promise<void> {
   for (const [target, bytes] of Object.entries(fixture.sidecarBytes)) {
-    assert.equal((await readFile(target)).toString("base64"), bytes);
+    if (bytes === null) assert.equal(await pathExists(target), false);
+    else assert.equal((await readFile(target)).toString("base64"), bytes);
   }
 }
 
 async function assertCanonicalSidecars(fixture: MigrationFixture): Promise<void> {
   for (const [target, bytes] of Object.entries(fixture.canonicalSidecarBytes)) {
-    assert.equal((await readFile(target)).toString("base64"), bytes);
+    if (bytes === null) assert.equal(await pathExists(target), false);
+    else assert.equal((await readFile(target)).toString("base64"), bytes);
   }
 }
 
@@ -374,12 +383,15 @@ export function migrationRecoveryContractCases(): readonly MigrationRecoveryCont
       run: (createDriver) =>
         withFixture("personal", createDriver, async (fixture, driver) => {
           const receipt = await driver.apply(await driver.plan());
-          assert.ok(fixture.bindingPath);
-          await writeFile(fixture.bindingPath, '{"bundle":"changed-after-receipt"}\n', "utf8");
+          assert.ok(fixture.canonicalBindingPath);
+          await writeFile(fixture.canonicalBindingPath, '{"bundle":"changed-after-receipt"}\n', "utf8");
           await assert.rejects(() => driver.rollback(receipt));
           assert.equal(await pathExists(fixture.source), false);
           await assertBundleAt(fixture, fixture.destination);
-          assert.equal(await readFile(fixture.bindingPath, "utf8"), '{"bundle":"changed-after-receipt"}\n');
+          assert.equal(
+            await readFile(fixture.canonicalBindingPath, "utf8"),
+            '{"bundle":"changed-after-receipt"}\n',
+          );
         }),
     },
   );

@@ -30,8 +30,8 @@ interface Journal {
   source: string;
   destination: string;
   sourceVersion: string;
-  sidecarsBefore: Readonly<Record<string, string>>;
-  sidecarsAfter: Readonly<Record<string, string>>;
+  sidecarsBefore: Readonly<Record<string, string | null>>;
+  sidecarsAfter: Readonly<Record<string, string | null>>;
 }
 
 interface Receipt extends Omit<Journal, "stage"> {
@@ -133,7 +133,11 @@ class ReferenceMigrationDriver implements MigrationRecoveryDriver {
       throw new Error("migrated bundle changed after receipt");
     }
     for (const [target, expected] of Object.entries(receipt.sidecarsAfter)) {
-      if ((await readFile(target)).toString("base64") !== expected) throw new Error("sidecar changed after receipt");
+      if (expected === null) {
+        if (await pathExists(target)) throw new Error("sidecar changed after receipt");
+      } else if ((await readFile(target)).toString("base64") !== expected) {
+        throw new Error("sidecar changed after receipt");
+      }
     }
     await this.move(receipt.destination, receipt.source);
     await this.writeSidecars(receipt.sidecarsBefore);
@@ -186,9 +190,13 @@ class ReferenceMigrationDriver implements MigrationRecoveryDriver {
     await writeFile(target, `${JSON.stringify(value)}\n`, { mode: 0o600 });
   }
 
-  private async writeSidecars(sidecars: Readonly<Record<string, string>>): Promise<void> {
+  private async writeSidecars(sidecars: Readonly<Record<string, string | null>>): Promise<void> {
     for (const [target, bytes] of Object.entries(sidecars)) {
-      await writeFile(target, Buffer.from(bytes, "base64"));
+      if (bytes === null) await rm(target, { force: true });
+      else {
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, Buffer.from(bytes, "base64"));
+      }
     }
   }
 }
@@ -204,8 +212,10 @@ test("migration harness fixtures cover plain, personal/catalog-bound, in-tree, a
         assert.deepEqual(await readFile(fixture.unrelatedPath), fixture.unrelatedBytes);
         if (topology === "personal") {
           assert.ok(fixture.bindingPath);
+          assert.ok(fixture.canonicalBindingPath);
           assert.ok(fixture.catalogPath);
           assert.match(await readFile(fixture.bindingPath, "utf8"), /\.agentstate-lite/);
+          assert.equal(await pathExists(fixture.canonicalBindingPath), false);
           assert.match(await readFile(fixture.catalogPath, "utf8"), /\.agentstate-lite/);
         } else if (topology === "in-tree") {
           assert.equal(execFileSync("git", ["ls-files", ".agentstate-lite"], { cwd: fixture.project, encoding: "utf8" }).trim().length > 0, true);
