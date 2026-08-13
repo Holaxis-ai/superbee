@@ -61,8 +61,27 @@ env:
   RECEIPT_DIR: release-stage-receipt
 
 jobs:
+  target-authorized:
+    name: target-authorized - full release contract only
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse identity-only rehearsal targets
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          FACTS="$(node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION")"
+          test "$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).workflow_contract)' "$FACTS")" = "full" \
+            || { echo "::error::identity-only rehearsal targets have no finalization path"; exit 1; }
+
   ordering-verified:
     name: approved — signed operator receipt ordering gate
+    needs: target-authorized
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release

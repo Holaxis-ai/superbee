@@ -4,6 +4,7 @@
 import { DRY_RUN_STAGE_ID, LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 import {
   DEFAULT_TARGETS,
+  assertWorkflowContract,
   RELEASE_CANDIDATE_SCHEMA,
   RELEASE_FINALIZER_PROOF_SCHEMA,
   RELEASE_STAGE_RECEIPT_SCHEMA,
@@ -82,7 +83,7 @@ export function stageDownloadFilenameFor(targetId, version, stageId) {
   string("stage id", stageId, LIVE_STAGE_ID);
   const target = DEFAULT_TARGETS[targetId];
   if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
-  return stageDownloadFilenameForTarget(target, version, stageId);
+  return stageDownloadFilenameForTarget(assertWorkflowContract(target), version, stageId);
 }
 
 function resolveTargetFromFields(fields) {
@@ -92,14 +93,14 @@ function resolveTargetFromFields(fields) {
   if (fields.packageName !== undefined && fields.packageName !== target.package.name) {
     fail(`package ${fields.packageName} != target ${target.package.name}`);
   }
-  return target;
+  return assertWorkflowContract(target);
 }
 
 function resolveTargetFromCandidate(candidate, prepared = {}) {
   const targetId = candidate?.target ?? prepared.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name);
   const target = DEFAULT_TARGETS[targetId ?? "bridge"];
   if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
-  return target;
+  return assertWorkflowContract(target);
 }
 
 function normalizedAssets(assets) {

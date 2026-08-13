@@ -6,6 +6,7 @@ import {
   assertTagForVersion,
   loadReleaseTargets,
   resolveAllowedTuple,
+  resolveAllowedTupleByTarget,
   resolveAllowedTupleByTag,
 } from "./release-targets.mjs";
 
@@ -21,7 +22,7 @@ function arg(argv, flag, required = true) {
 export function parseResolveTargetArgs(argv) {
   return {
     target: arg(argv, "--target", false),
-    tag: arg(argv, "--tag"),
+    tag: arg(argv, "--tag", false),
     manifest: arg(argv, "--manifest", false) ?? DEFAULT_RELEASE_TARGETS_PATH,
     githubOutput: arg(argv, "--github-output", false),
     json: argv.includes("--json"),
@@ -30,11 +31,16 @@ export function parseResolveTargetArgs(argv) {
 
 export async function resolveTargetFacts({ target: targetId, tag, manifest: manifestPath = DEFAULT_RELEASE_TARGETS_PATH }) {
   const manifest = await loadReleaseTargets(manifestPath);
-  const version = tag.startsWith("v") ? tag.slice(1) : tag;
-  assertTagForVersion(tag, version);
-  const tuple = targetId === undefined
-    ? resolveAllowedTupleByTag(manifest, { tag })
-    : resolveAllowedTuple(manifest, { target: targetId, version, tag });
+  if (!tag && !targetId) throw new Error("missing --tag or --target");
+  const tuple = tag === undefined
+    ? resolveAllowedTupleByTarget(manifest, { target: targetId })
+    : targetId === undefined
+      ? resolveAllowedTupleByTag(manifest, { tag })
+      : (() => {
+          const version = tag.slice(1);
+          assertTagForVersion(tag, version);
+          return resolveAllowedTuple(manifest, { target: targetId, version, tag });
+        })();
   const target = manifest.targets[tuple.target];
   return {
     target: target.id,
@@ -42,6 +48,7 @@ export async function resolveTargetFacts({ target: targetId, tag, manifest: mani
     version: tuple.version,
     tag: tuple.tag,
     policy_tag: tuple.version.includes("-") ? "next" : "latest",
+    workflow_contract: target.workflow_contract,
   };
 }
 
@@ -56,6 +63,7 @@ export function renderGithubOutput(facts) {
     outputLine("version", facts.version),
     outputLine("tag", facts.tag),
     outputLine("policy_tag", facts.policy_tag),
+    outputLine("workflow_contract", facts.workflow_contract),
   ].join("\n") + "\n";
 }
 

@@ -63,6 +63,13 @@ test("secondary tag operations target the scoped package (argv + display)", () =
   );
 });
 
+test("identity-only rehearsal targets cannot render full release operations", () => {
+  assert.throws(
+    () => inspectionInstructions({ target: "rehearsal-reject", stageId: "stage-1", tarballSha256: SHA, version: "0.0.0-rename-reject.20260812" }),
+    /requires workflow contract full/,
+  );
+});
+
 test("rollback restores the prior track and deprecates with the recovery command as the message", () => {
   const r = rollbackOperation({ failedVersion: "0.1.0-pre.4", priorVersion: "0.1.0-pre.3", track: "next" });
   assert.deepEqual(r.argvs[0], ["npm", "dist-tag", "add", "@holaxis/aslite@0.1.0-pre.3", "next"]);

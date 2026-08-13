@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { fileSha256, sanitizedNpmEnvironment } from "./verify-npm-package.mjs";
-import { DEFAULT_TARGETS, REGISTRY_PROOF_SCHEMA, targetFromPackageName } from "./release-targets.mjs";
+import { DEFAULT_TARGETS, REGISTRY_PROOF_SCHEMA, assertWorkflowContract, targetFromPackageName } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
@@ -19,7 +19,7 @@ const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-
 function targetFor(targetId = "bridge") {
   const target = DEFAULT_TARGETS[targetId];
   if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
-  return target;
+  return assertWorkflowContract(target);
 }
 
 function arg(argv, flag, required = true) {

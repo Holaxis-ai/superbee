@@ -19,45 +19,6 @@ const PACKAGE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
 
 export const DEFAULT_RELEASE_TARGETS_PATH = path.join(repoRoot, "release", "targets.json");
 
-export const DEFAULT_TARGETS = Object.freeze({
-  successor: Object.freeze({
-    id: "successor",
-    package: Object.freeze({ name: "superbee", directory: Object.freeze(["superbee"]) }),
-    artifact: "dist/superbee.mjs",
-    bins: Object.freeze({
-      superbee: "dist/superbee.mjs",
-      aslite: "dist/superbee.mjs",
-      "agentstate-lite": "dist/superbee.mjs",
-    }),
-    tarball_basename: "superbee",
-    allow_production: true,
-    workflow_contract: "full",
-    expected_commands: Object.freeze(["superbee", "aslite", "agentstate-lite"]),
-    preferred_command: "superbee",
-  }),
-  bridge: Object.freeze({
-    id: "bridge",
-    package: Object.freeze({ name: "@holaxis/aslite", directory: Object.freeze(["@holaxis", "aslite"]) }),
-    artifact: "dist/superbee.mjs",
-    bins: Object.freeze({
-      aslite: "dist/superbee.mjs",
-      "agentstate-lite": "dist/superbee.mjs",
-    }),
-    tarball_basename: "holaxis-aslite",
-    allow_production: true,
-    workflow_contract: "full",
-    expected_commands: Object.freeze(["aslite", "agentstate-lite"]),
-    preferred_command: "aslite",
-  }),
-});
-
-export function targetFromPackageName(packageName) {
-  for (const target of Object.values(DEFAULT_TARGETS)) {
-    if (target.package.name === packageName) return target.id;
-  }
-  return null;
-}
-
 export function assertTargetId(targetId) {
   if (typeof targetId !== "string" || !TARGET_ID.test(targetId)) {
     throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
@@ -196,6 +157,22 @@ export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH) {
   return normalizeReleaseTargets(raw);
 }
 
+// The checked-in manifest is the release authority. Keeping a hand-maintained in-code subset
+// caused declared rehearsal targets to disappear after candidate creation.
+export const DEFAULT_TARGETS = Object.freeze((await loadReleaseTargets()).targets);
+
+export function targetFromPackageName(packageName) {
+  const matches = Object.values(DEFAULT_TARGETS).filter((target) => target.package.name === packageName);
+  return matches.length === 1 ? matches[0].id : null;
+}
+
+export function assertWorkflowContract(target, workflowContract = "full") {
+  if (!target || target.workflow_contract !== workflowContract) {
+    throw new Error(`release target ${target?.id ?? "<unknown>"} requires workflow contract ${workflowContract}`);
+  }
+  return target;
+}
+
 export async function resolveReleaseTarget(targetId, { manifestPath = DEFAULT_RELEASE_TARGETS_PATH } = {}) {
   const manifest = await loadReleaseTargets(manifestPath);
   const target = manifest.targets[assertTargetId(targetId)];
@@ -228,6 +205,15 @@ export function resolveAllowedTuple(manifest, { target, version, tag }) {
     throw new Error(`release tuple target=${targetId} version=${version} tag=${tag} is not allowlisted`);
   }
   return found;
+}
+
+export function resolveAllowedTupleByTarget(manifest, { target }) {
+  const targetId = assertTargetId(target);
+  const found = Object.values(manifest.allowed_tuples).filter((tuple) => tuple.target === targetId);
+  if (found.length !== 1) {
+    throw new Error(`release target ${targetId} must match exactly one allowlisted tuple for dispatch, found ${found.length}`);
+  }
+  return found[0];
 }
 
 export function resolveAllowedTupleByTag(manifest, { tag }) {

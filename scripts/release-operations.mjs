@@ -9,12 +9,12 @@
 // Normative source: version-update-protocols.md §5. Single authority so the workflow, the receipt
 // instructions, and the tests never drift.
 
-import { DEFAULT_TARGETS, stageDownloadFilenameForTarget } from "./release-targets.mjs";
+import { DEFAULT_TARGETS, assertWorkflowContract, stageDownloadFilenameForTarget } from "./release-targets.mjs";
 
 function targetFor(targetId = "bridge") {
   const target = DEFAULT_TARGETS[targetId];
   if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
-  return target;
+  return assertWorkflowContract(target);
 }
 
 // Strict SemVer (optional prerelease/build metadata), no leading v.

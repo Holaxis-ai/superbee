@@ -35,6 +35,13 @@ test("stage download uses npm's deterministic filename and no invented --out pat
   assert.equal(stageDownloadFilename(VERSION, STAGE_ID), `holaxis-aslite-${VERSION}-${STAGE_ID}.tgz`);
 });
 
+test("declared rehearsal targets resolve from the manifest but cannot enter the full stage receipt chain", () => {
+  assert.throws(
+    () => buildStageReceipt({ target: "rehearsal-reject", version: "0.0.0-rename-reject.20260812", stageId: STAGE_ID }),
+    /requires workflow contract full/,
+  );
+});
+
 function fixture() {
   const draftAssets = [
     { id: "201", name: TARBALL, digest: TARBALL_SHA },

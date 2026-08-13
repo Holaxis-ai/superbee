@@ -25,7 +25,7 @@ import { stageDownloadFilenameFor } from "./release-receipts.mjs";
 import { canonicalPayloadBytes, canonicalReceiptPayload, parseReceiptFile, receiptAssetName, SIGN_NAMESPACE } from "./release-ordering.mjs";
 import { allowedSignerPrincipals } from "./release-verify-ordering.mjs";
 import { executeRecoveryTransaction, normalizeAssetTriple, normalizeSlot, runRecoveryBatch, sha256Bytes } from "./release-inspect-recovery.mjs";
-import { RELEASE_CANDIDATE_SCHEMA, DEFAULT_TARGETS, targetFromPackageName } from "./release-targets.mjs";
+import { RELEASE_CANDIDATE_SCHEMA, DEFAULT_TARGETS, assertWorkflowContract, targetFromPackageName } from "./release-targets.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -278,7 +278,7 @@ function createProductionDependencies(overrides = {}) {
     if (candidate?.package?.name !== undefined && candidate.package.name !== target.package.name) {
       fail(`candidate package ${candidate.package.name} does not match target ${target.package.name}`);
     }
-    return target;
+    return assertWorkflowContract(target);
   }
 
   async function inspectAnchor({ repo, row }) {
