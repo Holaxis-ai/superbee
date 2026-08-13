@@ -233,11 +233,12 @@ test("the typical flow creates a complete Context Note in one command", () => {
   assert.doesNotMatch(renderedNpm, /doc update context-notes\/cycle-1/);
 });
 
-test("shared-board setup requires an explicit choice and verifies origin/board", () => {
-  assert.match(renderedNpm, /record one explicit choice: \*\*local-only\*\* or \*\*shared\*\*/);
-  assert.match(renderedNpm, /Do not describe a project as synchronized.*origin\/board/s);
-  assert.match(renderedNpm, /superbee sync --establish\n?git ls-remote --exit-code origin refs\/heads\/board/);
-  assert.match(renderedNpm, /local-only: record that the board stays local; do not call it synchronized/);
+test("collaboration guidance directs agents to the built-in shared-board mechanism", () => {
+  assert.match(renderedNpm, /Do not raise a sharing decision during ordinary local work/);
+  assert.match(renderedNpm, /teammates,\s+a shared board, a handoff, synchronization, or cross-clone coordination/s);
+  assert.match(renderedNpm, /run `sync` to join an existing `origin\/board`; if none exists, explain\s+that `sync --establish` creates it and offer to run that explicit one-time operation/s);
+  assert.match(renderedNpm, /Do not\s+substitute an in-tree committed bundle, a custom Git branch\/path, or another sharing mechanism/s);
+  assert.match(renderedNpm, /If collaboration is requested, offer the explicit one-time shared-board operation/);
   assert.match(renderedNpm, /local-only work stays complete locally/);
   assert.match(renderedNpm, /On a shared board, run it whenever you close a unit of work/);
   assert.doesNotMatch(renderedNpm, /recording work isn't done until it's shared/);

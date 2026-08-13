@@ -127,10 +127,6 @@ folder at the project root. Two verbs, two different jobs — `init` always crea
 bundle (solo use is first-class, nothing forces sharing); `sync` is how a project's board
 becomes — or stays — shared memory across clones and teammates. Three modes:
 
-Before creating or publishing a bundle, record one explicit choice: **local-only** or **shared**.
-Do not describe a project as synchronized or ask collaborators to rely on its board until the
-shared choice has been established and verified on `origin/board`.
-
 - **A local-only board** — `init` creates a bundle that doesn't exist anywhere yet, and it
   stays LOCAL until someone chooses to share it. This is a first-class mode, not a limbo:
   everything works offline and remote-free, and board changes stay on this machine. A bare
@@ -154,8 +150,7 @@ shared choice has been established and verified on `origin/board`.
 ```sh
 superbee sync                            # existing shared project — provisions the board; a local-only bundle reports its state
 superbee init --dir .agentstate-lite     # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one
-superbee sync --establish                # shared choice: publish the board once
-git ls-remote --exit-code origin refs/heads/board  # verify the shared board exists
+superbee sync --establish                # establish a new shared board after user approval
 ```
 
 That's the whole setup. The CLI discovers the conventional folder on its own (the way git
@@ -217,6 +212,12 @@ scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate/<
 and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates
 share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.
 
+Do not raise a sharing decision during ordinary local work. When the user names teammates,
+a shared board, a handoff, synchronization, or cross-clone coordination, use Superbee's
+built-in board path: run `sync` to join an existing `origin/board`; if none exists, explain
+that `sync --establish` creates it and offer to run that explicit one-time operation. Do not
+substitute an in-tree committed bundle, a custom Git branch/path, or another sharing mechanism.
+
 ## Typical flow
 
 ```sh
@@ -224,11 +225,8 @@ share this bundle? When the user's intent is ambiguous, ask rather than defaulti
 superbee sync                          # existing project that shares a board — sets up AND pulls the shared board
 superbee init --dir .agentstate-lite   # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle
 
-# Choose one explicitly after a greenfield init:
-# local-only: record that the board stays local; do not call it synchronized
-# shared: establish and verify the board before collaborators rely on it
+# If collaboration is requested, offer the explicit one-time shared-board operation:
 superbee sync --establish
-git ls-remote --exit-code origin refs/heads/board
 
 # Everything after runs bare, from anywhere in the project tree
 # Create a complete context note (an OKF concept) for the next session in one command
