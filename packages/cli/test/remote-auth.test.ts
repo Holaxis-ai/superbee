@@ -3,7 +3,7 @@
  * command's error path closes the documented
  * misclassification (`docs/WIRE-PROTOCOL.md`'s formerly-open "client-side error envelope
  * carries no code" gap): a wrong/missing API key surfaces as `AUTH_REQUIRED`/exit 4 with an
- * `AGENTSTATE_LITE_API_KEY` fixing hint, and a genuine server-side failure (an unconfigured gate)
+ * `SUPERBEE_API_KEY` fixing hint, and a genuine server-side failure (an unconfigured gate)
  * surfaces as `RUNTIME`/exit 1 — NOT
  * the pre-existing generic `USAGE`/exit 2 every command's catch-all used to produce for any
  * non-CliError throw.
@@ -174,7 +174,7 @@ test("--remote against a gated handler: wrong API key -> AUTH_REQUIRED, exit 4, 
       const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
-      assert.match(envelope.error.help ?? "", /AGENTSTATE_LITE_API_KEY=<key>/);
+      assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
       assert.doesNotMatch(envelope.error.help ?? "", /\b(?:login|join|whoami)\s+--remote\b/);
     }),
   );
@@ -187,7 +187,7 @@ test("--remote against a gated handler: MISSING API key (env unset, no credentia
       const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
-      assert.match(envelope.error.help ?? "", /AGENTSTATE_LITE_API_KEY=<key>/);
+      assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
       assert.doesNotMatch(envelope.error.help ?? "", /\b(?:login|join|whoami)\s+--remote\b/);
     }),
   );
@@ -223,7 +223,7 @@ test("--remote against a gated handler, via a command WITH its own catch-all (do
       const { exitCode, envelope } = await exitOf(() => doc(["read", "concepts/alpha", "--remote", REMOTE_URL, "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
-      assert.match(envelope.error.help ?? "", /AGENTSTATE_LITE_API_KEY=<key>/);
+      assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
       assert.doesNotMatch(envelope.error.help ?? "", /\b(?:login|join|whoami)\s+--remote\b/);
     }),
   );
@@ -236,7 +236,7 @@ test("--remote against a gated handler, via `link list` (graph-query-v0's queryE
       const { exitCode, envelope } = await exitOf(() => link(["list", "--remote", REMOTE_URL, "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
-      assert.match(envelope.error.help ?? "", /AGENTSTATE_LITE_API_KEY=<key>/);
+      assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
       assert.doesNotMatch(envelope.error.help ?? "", /\b(?:login|join|whoami)\s+--remote\b/);
       assert.match(
         envelope.error.help ?? "",

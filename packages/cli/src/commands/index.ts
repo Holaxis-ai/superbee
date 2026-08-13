@@ -39,7 +39,8 @@ Options:
   --dir <path>       Local bundle directory (default: discovered from the cwd)
   --check            Report drift/refusal without writing; clean is exit 0, otherwise exit 5
   --force            Adopt and replace unmarked/malformed index files explicitly
-  --actor <name>     Attribute changed writes (overrides AGENTSTATE_LITE_ACTOR)
+  --actor <name>     Attribute changed writes (overrides SUPERBEE_ACTOR; legacy
+                     AGENTSTATE_LITE_ACTOR remains supported)
   --json             Emit compact JSON instead of TOON on success
   -h, --help         Show this help
 

@@ -199,6 +199,8 @@ test("committed-case strings: pinned constants, rollout note, and no forbidden v
 
 test("withIgnoreEntry: appends once, idempotent, respects existing spellings", () => {
   const appended = withIgnoreEntry("node_modules/\n");
+  assert.match(appended, /managed on the 'board' branch by superbee sync/);
+  assert.doesNotMatch(appended, /by aslite sync/);
   assert.match(appended, /^node_modules\/\n\n#.*\n\.agentstate-lite\/\n$/s);
   assert.equal(withIgnoreEntry(appended), appended, "idempotent");
   for (const spelling of [".agentstate-lite", ".agentstate-lite/", "/.agentstate-lite", "/.agentstate-lite/"]) {

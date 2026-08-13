@@ -100,8 +100,8 @@ let preferredBinDirPromise: Promise<string> | undefined;
 function preferredBinDir(): Promise<string> {
   preferredBinDirPromise ??= (async () => {
     if (!existsSync(cliBin)) execFileSync("npm", ["run", "build"], { cwd: cliPackageRoot, stdio: "inherit" });
-    const dir = await mkdtemp(path.join(tmpdir(), "aslite-preferred-bin-"));
-    await symlink(cliBin, path.join(dir, "aslite"));
+    const dir = await mkdtemp(path.join(tmpdir(), "superbee-preferred-bin-"));
+    await symlink(cliBin, path.join(dir, "superbee"));
     return dir;
   })();
   return preferredBinDirPromise;
@@ -110,14 +110,14 @@ test.after(async () => {
   if (preferredBinDirPromise) await rm(await preferredBinDirPromise, { recursive: true, force: true });
 });
 
-/** Spawn the built CLI as the bare `aslite` bin (see {@link preferredBinDir}). */
+/** Spawn the built CLI as the bare `superbee` bin (see {@link preferredBinDir}). */
 async function runCliHook(
   args: string[],
   opts: { cwd: string; env?: NodeJS.ProcessEnv },
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const binDir = await preferredBinDir();
   const baseEnv = opts.env ?? process.env;
-  const result = spawnSync("aslite", args, {
+  const result = spawnSync("superbee", args, {
     cwd: opts.cwd,
     env: { ...baseEnv, PATH: `${binDir}${path.delimiter}${baseEnv.PATH ?? ""}` },
     stdio: ["ignore", "pipe", "pipe"],
@@ -207,7 +207,7 @@ function provisionedStatus(
   return { state: "provisioned", cache, selfActors: [], unpushed: null, uncommitted: null, ...extra };
 }
 
-const INV = "aslite";
+const INV = "superbee";
 
 // ── 1. pinned moment-(e) strings (pure) ───────────────────────────────────────
 
@@ -321,7 +321,7 @@ test("buildBoardBlock: unprovisioned → probe-gated first-contact line (run syn
   const { block, firstContact } = buildBoardBlock({ state: "unprovisioned" }, undefined, INV);
   assert.equal(block, undefined);
   assert.equal(firstContact, boardFirstContactLine(INV));
-  assert.equal(firstContact, "not yet provisioned — run `aslite sync` to set it up");
+  assert.equal(firstContact, "not yet provisioned — run `superbee sync` to set it up");
   assert.ok(!firstContact!.includes("init"));
 });
 
@@ -908,7 +908,8 @@ test("writer/recognizer agreement: every reachable hookCommand() base composes a
   // One table over the composer (writer) and isManagedHookCommand (recognizer) — the invariant
   // the review addendum named: no channel may write a hook our own recognition would not claim.
   const reachableBases = [
-    "aslite", //                                                       bare preferred bin on PATH
+    "superbee", //                                                     bare preferred bin on PATH
+    "aslite", //                                                       bare legacy alias on PATH
     "agentstate-lite", //                                              bare legacy bin on PATH
     "/usr/local/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs", // npm-dist absolute path (scoped install root)
     "/Users/f b/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs", //    absolute path WITH spaces (quoted form)
@@ -952,6 +953,9 @@ test("writer/recognizer agreement: every reachable hookCommand() base composes a
 // either form, and a foreign SessionStart hook is never touched.
 
 test("isManagedHookCommand: exact historical/generated tokens, never marker substrings", () => {
+  // Canonical generated form.
+  assert.equal(isManagedHookCommand("superbee session-start"), true);
+  assert.equal(isManagedHookCommand("superbee"), true);
   // Legacy generated forms.
   assert.equal(isManagedHookCommand("agentstate-lite session-start"), true);
   assert.equal(isManagedHookCommand("/opt/homebrew/bin/agentstate-lite session-start"), false);

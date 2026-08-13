@@ -117,8 +117,8 @@ Options:
   --no-update-check  Disable both cached notice display and detached refresh for this run
   -h, --help         Show this help
 
-Environment opt-outs (presence, including an empty value): ASLITE_NO_UPDATE_CHECK,
-NO_UPDATE_NOTIFIER, or CI.
+Environment opt-outs (presence, including an empty value): SUPERBEE_NO_UPDATE_CHECK, legacy
+ASLITE_NO_UPDATE_CHECK, NO_UPDATE_NOTIFIER, or CI.
 `;
 
 const HOME_OPTIONS = {

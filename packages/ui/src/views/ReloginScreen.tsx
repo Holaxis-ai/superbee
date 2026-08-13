@@ -63,7 +63,7 @@ export function ReloginScreen({ kind }: { kind: Exclude<InterceptorStatus, "ok">
     <div className="relogin-screen" role="alert">
       <h1>Sign-in required</h1>
       <p>
-        Your API key was rejected or has expired. Polling has stopped. Set <code>AGENTSTATE_LITE_API_KEY</code> in the
+        Your API key was rejected or has expired. Polling has stopped. Set <code>SUPERBEE_API_KEY</code> in the
         environment that launches the CLI, rerun the same <code>ui --remote</code> invocation that opened this page, then
         open the fresh URL it prints.
       </p>

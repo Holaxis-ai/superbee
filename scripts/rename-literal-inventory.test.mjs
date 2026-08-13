@@ -127,7 +127,6 @@ test("repository inventory is deterministic and has no unclassified legacy liter
     "generated-marker",
     "npm-old-coordinate",
     "release-artifact-or-schema",
-    "workspace-package-identity",
   ]) {
     assert.ok(categories.has(expected), `inventory must include ${expected}`);
   }
@@ -145,9 +144,25 @@ test("repository inventory includes tracked root files, including the dev shim a
   assert.match(superbeeShim, /dist\/superbee\.mjs/, "canonical dev shim must target the Superbee artifact");
   assert.ok(rows.includes(".gitignore:.agentstate.json"), "root binding ignore entry must be inventoried");
   assert.ok(rows.includes(".gitignore:.agentstate-lite"), "root bundle ignore entry must be inventoried");
-  assert.ok(rows.includes(".gitattributes:agentstate-lite"), "root generated-file metadata must be inventoried");
-  assert.ok(rows.includes("examples/views/demo.sh:agentstate-lite"), "tracked shell script dist target must be inventoried");
-  assert.ok(rows.includes("examples/views/demo.sh:aslite"), "tracked shell script temp prefix must be inventoried");
+  assert.ok(!rows.some((row) => row.startsWith("examples/views/demo.sh:")), "the current View demo must carry no legacy product literals");
+  const demo = await readFile(new URL("../examples/views/demo.sh", import.meta.url), "utf8");
+  assert.match(demo, /packages\/cli\/dist\/superbee\.mjs/);
+  assert.match(demo, /superbee-views-demo/);
+  assert.doesNotMatch(demo, /REPO\/\.agentstate-lite/);
+});
+
+test("maintained first-party consumer authorities use Superbee identity", async () => {
+  const cases = [
+    ["../examples/views/conventions/view.md", /`superbee ui`/, /`(?:agentstate-lite ui|aslite status)`/],
+    ["../packages/ui/index.html", /<title>Superbee<\/title>/, /<title>agentstate-lite<\/title>/],
+    ["../packages/ui-server/README.md", /@superbee\/ui-server/, /@agentstate-lite\/ui-server/],
+    ["../packages/board-git/README.md", /@superbee\/board-git/, /@agentstate-lite\/board-git/],
+  ];
+  for (const [relative, required, forbidden] of cases) {
+    const content = await readFile(new URL(relative, import.meta.url), "utf8");
+    assert.match(content, required, relative);
+    assert.doesNotMatch(content, forbidden, relative);
+  }
 });
 
 test("root gitignore keeps preferred and legacy project bindings machine-local", async () => {

@@ -1,4 +1,4 @@
-# `@agentstate-lite/board-git` — the board's git channel
+# `@superbee/board-git` — the board's git channel
 
 The public-boundary ACCEPTANCE BAR for this package, written down at A0 (before the move, as
 `packages/cli/src/board-git-API.md`) and delivered by A1 (`plans/board-git-package` on the

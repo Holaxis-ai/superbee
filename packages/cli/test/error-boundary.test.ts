@@ -124,7 +124,7 @@ test("error matrix: the 429 TRANSIENT envelope is a structured retry signal (ret
 
 test("error matrix: AUTH_REQUIRED keeps the remote-url fixing hint when the caller has it", () => {
   const classified = classifyBundleError(new RemoteError("401", "AUTH_REQUIRED", 401), "http://127.0.0.1:4818");
-  assert.match(classified.help ?? "", /AGENTSTATE_LITE_API_KEY/);
+  assert.match(classified.help ?? "", /SUPERBEE_API_KEY/);
   assert.match(classified.help ?? "", /--remote http:\/\/127\.0\.0\.1:4818/);
 });
 

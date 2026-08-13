@@ -25,7 +25,7 @@ packages/worker/wrangler.local.jsonc
 .codex/
 .config/
 
-# the shared board — managed on the 'board' branch by aslite sync
+# the shared board — managed on the 'board' branch by superbee sync
 .agentstate-lite/
 
 # retained release-candidate output (scripts/release-candidate.mjs): the built tarball + manifest

@@ -12,7 +12,7 @@ description: >-
 
 read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views).
 
-It is a standalone npm package (`superbee`) installing two bins for the identical CLI: `superbee` and the
+It is a standalone npm package (`superbee`) installing three bins for the identical CLI: `superbee` and the
 legacy aliases `aslite` and `agentstate-lite`. Every example below uses `superbee`.
 
 Output is TOON on stdout (a `--json` hatch exists). Errors are structured TOON on stdout with a
@@ -105,14 +105,14 @@ initialize response reports the same running release. Superbee does not scan or 
 - `superbee view list [--limit <n>] [--dir <path> | --remote <url>]`
   — List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views
 - `superbee sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]`
-  — Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). `init` makes a LOCAL bundle; --establish is the separate, explicit act that starts sharing it (creates the board branch, pushes; never automatic). A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; AGENTSTATE_LITE_NO_AUTOPULL=<any value, even 0> disables it
+  — Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). `init` makes a LOCAL bundle; --establish is the separate, explicit act that starts sharing it (creates the board branch, pushes; never automatic). A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it
 
 ### Session
 
 - `superbee version [--check] [--tag latest|next] [--json]`
   — Show the complete local build/runtime identity, or perform one bounded read-only comparison against npm's exact latest/next release policy
 - `superbee session-start [--dir <path>] [--no-update-check]`
-  — The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or ASLITE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh; npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data
+  — The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or SUPERBEE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh (legacy ASLITE_NO_UPDATE_CHECK remains supported); npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data
 - `superbee hook install|status|uninstall [--scope project|user]`
   — Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode
 - `superbee skill install|status|uninstall [--scope project|user]`
@@ -177,8 +177,9 @@ temporary one: everything works offline and remote-free, and board changes stay 
 whichever the user prefers). (Gitignore the folder only if the workspace should stay private
 to this machine.)
 
-Write with attribution: set `AGENTSTATE_LITE_ACTOR=<your-name>` once for `new`, `doc write`,
+Write with attribution: set `SUPERBEE_ACTOR=<your-name>` once for `new`, `doc write`,
 `doc update`, and `link add`, or pass `--actor <your-name>` per command (the flag wins).
+Existing `AGENTSTATE_LITE_ACTOR` settings remain supported as a compatibility input.
 With neither source, no advisory actor label is stored in frontmatter or sent as an agent label;
 backend history still reports its own principal (for example, the local OS owner or an
 authenticated remote user). A present-but-blank flag or environment value is a usage error.
@@ -205,7 +206,7 @@ Two things override the default:
    it rather than creating a second one.
 
 If the user wants the workspace PRIVATE to their machine instead of shared (a personal
-scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate-lite/<name>/`)
+scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate/<name>/`)
 and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates
 share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.
 
@@ -293,8 +294,9 @@ Reads stay fresh on their own: board-reading commands (`list`, `doc read`, `stat
 than ~5 minutes — silent, time-boxed (~2s), never a rebase, never a push, and it never sets a
 board up (that stays `sync`'s job) — so a plain `list` can advance the board checkout's HEAD.
 Your OWN changes still only leave the machine when you run `sync`. To disable the auto-pull
-(CI, scripted runs), set `AGENTSTATE_LITE_NO_AUTOPULL` to any non-empty value — even `0`
+(CI, scripted runs), set `SUPERBEE_NO_AUTOPULL` to any non-empty value — even `0`
 disables it; the variable's presence is the switch.
+Legacy `AGENTSTATE_LITE_NO_AUTOPULL` remains supported with the same presence semantics.
 
 On projects that share their board you may notice a `board` branch in the repo's GitHub —
 that's the board; it never merges into main (it has no common history with it, by design).
@@ -305,8 +307,9 @@ Protect it like main: enable delete and force-push protection on `board` in the 
 
 Remote bundle access remains explicit and wired the same way as `--dir`: use `serve` to expose
 a local bundle over the wire protocol, or pass `--remote <url>` to a bundle-facing command.
-For an authenticated remote, provide `AGENTSTATE_LITE_API_KEY`; an already-provisioned
-stored per-origin credential is also consumed when present. Account and admin credential
+For an authenticated remote, provide `SUPERBEE_API_KEY`; an already-provisioned
+stored per-origin credential is also consumed when present. Legacy `AGENTSTATE_LITE_API_KEY`
+remains supported as a compatibility input. Account and admin credential
 provisioning is outside the default CLI surface.
 
 ```bash

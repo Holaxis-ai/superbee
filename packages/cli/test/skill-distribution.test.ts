@@ -2,7 +2,7 @@
  * Distribution-completeness gate: every capability the npm-carried SKILL.md advertises must ship
  * a backing contract/example under `references/`.
  *
- * Runs in `npm test -w @holaxis/aslite`, hence `npm run check` — PR-side is the right layer here
+ * Runs in `npm test -w superbee`, hence `npm run check` — PR-side is the right layer here
  * because a gap is a SOURCE defect: a new command that never declares its shipped-contract
  * surface, or new prose that points at a file nobody added to the manifest.
  *
@@ -193,6 +193,8 @@ test("the shipped View authoring reference teaches Superbee commands while prese
     "utf8",
   );
   assert.match(reference, /`superbee ui --actor <name>`/);
+  assert.match(reference, /set `SUPERBEE_ACTOR`/);
+  assert.match(reference, /`AGENTSTATE_LITE_ACTOR` remains a\s+supported compatibility input/);
   assert.match(reference, /superbee blobs --prefix views\//);
   assert.match(reference, /superbee new "View" my-view/);
   assert.doesNotMatch(reference, /\baslite (?:status|ui|blobs|pull|promote|new)\b/);
@@ -226,11 +228,20 @@ test("the typical flow creates a complete Context Note in one command", () => {
 
 test("the npm skill carries the authenticated-remote access contract", () => {
   assert.match(renderedNpm, /## Remote bundle access \(--remote, serve\)/);
-  assert.match(renderedNpm, /AGENTSTATE_LITE_API_KEY/);
+  assert.match(renderedNpm, /provide `SUPERBEE_API_KEY`/);
+  assert.match(renderedNpm, /Legacy `AGENTSTATE_LITE_API_KEY`\s+remains supported as a compatibility input/);
   assert.match(renderedNpm, /already-provisioned\s+stored per-origin credential/);
   assert.match(renderedNpm, /provisioning is outside the default CLI surface/);
   assert.doesNotMatch(renderedNpm, /\b(?:login|join|whoami)\s+--remote\b/);
   assert.doesNotMatch(renderedNpm, /\b(?:invite|member|key)\s+(?:create|list|revoke|set-role|remove|mint)\b/);
+});
+
+test("the npm skill teaches canonical Superbee environment variables and labels old names as compatibility", () => {
+  assert.match(renderedNpm, /set `SUPERBEE_ACTOR=<your-name>`/);
+  assert.match(renderedNpm, /set `SUPERBEE_NO_AUTOPULL`/);
+  assert.match(renderedNpm, /Existing `AGENTSTATE_LITE_ACTOR` settings remain supported as a compatibility input/);
+  assert.match(renderedNpm, /Legacy `AGENTSTATE_LITE_NO_AUTOPULL` remains supported/);
+  assert.doesNotMatch(renderedNpm, /set `AGENTSTATE_LITE_(?:ACTOR|NO_AUTOPULL)/);
 });
 
 test("actor guidance distinguishes advisory labels from backend-owned attribution", () => {

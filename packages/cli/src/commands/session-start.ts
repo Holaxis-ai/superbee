@@ -101,8 +101,8 @@ OpenCode. Run it directly to see exactly what a new session will see.
 Default TOON may show a cached latest-track release notice and launch one detached refresh per
 24-hour attempt window; rendering never waits for npm. The fixed public request names only
 superbee and sends no installed version, cwd, bundle, actor, or usage data beyond ordinary
-network metadata. Presence of ASLITE_NO_UPDATE_CHECK, NO_UPDATE_NOTIFIER, or CI disables both
-display and refresh.
+network metadata. Presence of SUPERBEE_NO_UPDATE_CHECK, legacy ASLITE_NO_UPDATE_CHECK,
+NO_UPDATE_NOTIFIER, or CI disables both display and refresh.
 
 Options:
   --dir <path>       Directory to run from (default: the cwd)

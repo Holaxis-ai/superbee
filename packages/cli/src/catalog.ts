@@ -139,7 +139,7 @@ export function parseCatalog(raw: string, file: string): CatalogFile {
       throw new CliError(
         "NOT_IMPLEMENTED",
         `workspace catalog ${file} uses newer schema version ${parsed.schema_version}; this CLI supports version ${CATALOG_SCHEMA_VERSION}`,
-        { help: "upgrade agentstate-lite before modifying this catalog" },
+        { help: "upgrade Superbee before modifying this catalog" },
       );
     }
     throw invalidCatalog(file, `schema_version must be ${CATALOG_SCHEMA_VERSION}`);

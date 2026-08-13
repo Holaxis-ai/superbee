@@ -93,9 +93,9 @@ Options:
                          (mutually exclusive with --dir; remote access is always explicit)
   --actor <name>         Attribute this write: persisted as the doc's own 'actor' frontmatter field
                          (the per-doc attribution sync and its receipts read) and recorded in version
-                         history by a persisting backend. Precedence: --actor >
-                         AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or environment
-                         value is a USAGE error (exit 2).
+                         history by a persisting backend. Precedence: --actor > SUPERBEE_ACTOR >
+                         legacy AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or
+                         environment value is a USAGE error (exit 2).
   --body <markdown>     Use inline Markdown as the complete initial body. Mutually exclusive with
                        --body-file. The supplied body is validated strictly against the kind's
                        declared sections before anything is written.
@@ -328,7 +328,7 @@ function renderKindHelp(kind: KindConvention, registry: KindRegistry, inv: strin
     `Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT.\n` +
     `To ADD a field to this kind, edit its convention doc (${inv} kinds names it; then pull → edit fields.optional → promote).\n\n` +
     `Options:\n` +
-    `  --actor <name>   Attribute the write (overrides AGENTSTATE_LITE_ACTOR)\n` +
+    `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported)\n` +
     `  --body <markdown>\n` +
     `                   Use inline Markdown as the complete initial body; mutually exclusive with\n` +
     `                   --body-file\n` +

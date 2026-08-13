@@ -745,19 +745,19 @@ test("pairing chain: the documented pull → edit → promote steps in the roadm
 
     const chain = pairingChainLines(ROADMAP_DESC_BODY);
     assert.equal(chain.length, 2, "the documented chain is exactly two commands (pull, promote)");
-    assert.match(chain[0]!, /^agentstate-lite pull /);
-    assert.match(chain[1]!, /^agentstate-lite promote /);
+    assert.match(chain[0]!, /^superbee pull /);
+    assert.match(chain[1]!, /^superbee promote /);
     // The placeholder bindings below assume these exact tokens — assert them BEFORE executing
     // anything, so manifest wording drift fails HERE as a clear assertion rather than silently
     // no-op'ing a .replace() (which would, e.g., pull task.md into the test process cwd).
     assert.match(chain[0]!, /--out task\.md/, "the documented pull must name its out-file 'task.md'");
-    assert.match(chain[1]!, /^agentstate-lite promote task\.md /, "the documented promote must take 'task.md' as its file");
+    assert.match(chain[1]!, /^superbee promote task\.md /, "the documented promote must take 'task.md' as its file");
     assert.match(chain[1]!, /<version from the pull receipt>/, "the documented promote must carry the version placeholder");
 
     // Step 1 — the documented pull, out-path bound to the scratch dir.
     const outFile = path.join(work, "task.md");
     const pullArgv = chain[0]!
-      .replace(/^agentstate-lite pull /, "")
+      .replace(/^superbee pull /, "")
       .replace("--out task.md", `--out ${outFile}`)
       .split(/\s+/);
     const pullReceipt = await runJson(pull, [...pullArgv, "--dir", dir]);
@@ -771,7 +771,7 @@ test("pairing chain: the documented pull → edit → promote steps in the roadm
 
     // Step 3 — the documented promote, placeholders bound (file path + version token).
     const promoteArgv = chain[1]!
-      .replace(/^agentstate-lite promote task\.md /, `${outFile} `)
+      .replace(/^superbee promote task\.md /, `${outFile} `)
       .replace("<version from the pull receipt>", version)
       .split(/\s+/);
     const promoted = await runJson(promote, [...promoteArgv, "--dir", dir]);

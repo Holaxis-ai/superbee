@@ -6,13 +6,13 @@
 // (`packages/cli/dist/…`) both resolve naturally.
 //
 // TARGETS: Claude Code + Codex only, via the ONE HOST_CONFIG_ROOTS authority (the same env-var
-// semantics `hook install --scope user` uses). OpenCode is deliberately excluded — it has no
-// skill surface; its SessionStart integration is the plugin written by `hook install`.
+// semantics `hook install --scope user` uses). New installs use skills/superbee; skills/aslite is
+// inspected only for migration, status, and uninstall. OpenCode is deliberately excluded.
 //
 // DESTRUCTIVE-WRITE DISCIPLINE (same boundary as hook.ts): install writes a manifest
-// (`.aslite-skill.json`: file list + package version + installed-by) inside the target folder and
-// REFUSES a pre-existing folder it does not manage (no manifest, a malformed manifest, or files
-// present that no manifest names) — nothing is written or deleted on refusal. Uninstall removes
+// (`.aslite-skill.json`: file list + package version + installed-by) inside the canonical folder
+// and REFUSES a canonical folder it does not manage (no manifest, a malformed manifest, or files
+// present that no manifest names). A foreign legacy folder coexists untouched. Uninstall removes
 // EXACTLY the manifested files + the manifest, then only empty directories. Reinstall is
 // idempotent/convergent: byte-stable, exit 0, changed:false when already current. Every write is
 // same-directory temp + rename (atomicWriteFileSync).
@@ -38,7 +38,7 @@
 // an empty one converges/uninstalls (rmdir); a non-empty one is a structured refusal — this tool
 // never recursive-deletes content no manifest names.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, rmSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
@@ -85,11 +85,12 @@ Installs (or removes) the generated Agent Skill shipped with this npm package �
 references/ folder — for Claude Code and Codex. OpenCode is deliberately not a target: it has no
 skill surface; its SessionStart integration is the plugin written by \`hook install\`.
 
-Install writes a manifest (${"`"}.aslite-skill.json${"`"}) inside the target folder and refuses a
-pre-existing folder it does not manage; uninstall removes exactly the manifested files and refuses
-a folder holding anything else. Reinstall is idempotent (exit 0, changed:false when current).
-\`status\` reports per host: absent | unmanaged | installed | stale (byte-compare against this
-executable's own shipped assets). Status reports install state at these paths; Codex host
+Install writes a manifest (${"`"}.aslite-skill.json${"`"}) inside the canonical superbee folder.
+An owned old-only aslite folder migrates atomically; an unmanaged legacy folder coexists untouched;
+an unmanaged canonical folder or dual owned folders are refused. Uninstall independently removes
+each proven-owned canonical or legacy folder and refuses foreign bytes. Reinstall is idempotent.
+\`status\` reports canonical and legacy path/state per host: absent | unmanaged | installed | stale
+(byte-compare against this executable's own shipped assets). Codex host
 discovery is verified at USER scope (codex 0.144.x) — project-scope placement follows each
 host's documented convention.
 
@@ -98,7 +99,7 @@ Persistent install from npm-package bytes requires a durable global install
 host folder is changed. npx remains supported for read-only, trial, and bootstrap commands.
 
 Options:
-  --scope project   Write to the CURRENT project (default): .claude/skills/aslite/, .codex/skills/aslite/
+  --scope project   Write to the CURRENT project (default): .claude/skills/superbee/, .codex/skills/superbee/
   --scope user      Write to each host's configured user home (environment override or default)
   --json            Emit compact JSON instead of TOON
   -h, --help        Show this help
@@ -107,7 +108,9 @@ The former spelling --scope global remains accepted as an alias for --scope user
 `;
 
 /** The installed skill folder name under each host's `skills/` directory. */
-export const SKILL_DIR_NAME = "aslite";
+export const SKILL_DIR_NAME = "superbee";
+/** Historical install folder retained only as a migration/uninstall input. */
+export const LEGACY_SKILL_DIR_NAME = "aslite";
 /** The install-manifest filename written inside the target folder. */
 export const SKILL_MANIFEST_FILENAME = ".aslite-skill.json";
 
@@ -183,29 +186,44 @@ export function resolveSkillAssets(executable?: string): SkillAssets {
   };
 }
 
-/** The per-host target folders (the `skills/aslite` dir itself) for one resolved scope. */
+/** The per-host canonical target folders (the `skills/superbee` dir itself). */
 export interface SkillTargets {
   claude: string;
   codex: string;
 }
 
-export function skillTargets(
+function skillTargetsForName(
+  dirName: string,
   scope: InstallScope,
   deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
 ): SkillTargets {
   if (scope === "project") {
     const cwd = deps.cwd ?? process.cwd();
     return {
-      claude: join(cwd, ".claude", "skills", SKILL_DIR_NAME),
-      codex: join(cwd, ".codex", "skills", SKILL_DIR_NAME),
+      claude: join(cwd, ".claude", "skills", dirName),
+      codex: join(cwd, ".codex", "skills", dirName),
     };
   }
   const home = deps.home ?? homedir();
   const env = deps.env ?? process.env;
   return {
-    claude: join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env), "skills", SKILL_DIR_NAME),
-    codex: join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env), "skills", SKILL_DIR_NAME),
+    claude: join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env), "skills", dirName),
+    codex: join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env), "skills", dirName),
   };
+}
+
+export function skillTargets(
+  scope: InstallScope,
+  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
+): SkillTargets {
+  return skillTargetsForName(SKILL_DIR_NAME, scope, deps);
+}
+
+export function legacySkillTargets(
+  scope: InstallScope,
+  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
+): SkillTargets {
+  return skillTargetsForName(LEGACY_SKILL_DIR_NAME, scope, deps);
 }
 
 /**
@@ -368,20 +386,23 @@ function removeManagedPath(p: string): void {
 }
 
 type InstallResult = { ok: true; changed: boolean } | { ok: false; reason: string };
+type InstallPreflight =
+  | { ok: true; manifest: SkillManifest | undefined; ownedForSweep: Set<string> }
+  | { ok: false; reason: string };
 
-/** Convergent install into one target folder. Refuses (nothing written) a folder we don't manage. */
-function installIntoDir(dir: string, assets: SkillAssets): InstallResult {
+/** Complete read-only install preflight for one target folder. */
+function preflightInstallIntoDir(dir: string, assets: SkillAssets): InstallPreflight {
   const notDir = nonDirectoryRefusal(dir);
   if (notDir !== undefined) return { ok: false, reason: notDir };
   const manifest = readManifest(dir);
   const ownedForSweep = sweepOwnership(manifest, assets.files);
+  if (manifest === null) {
+    return { ok: false, reason: `${SKILL_MANIFEST_FILENAME} does not prove ownership - refusing to write over a folder in an unknown state` };
+  }
   if (existsSync(dir)) {
     const logicalFiles = listFilesRelative(dir).filter((file) => !isManagedDebris(file, ownedForSweep));
     if (manifest === undefined && logicalFiles.length > 0) {
       return { ok: false, reason: `folder exists with no ${SKILL_MANIFEST_FILENAME} manifest — not managed by this tool` };
-    }
-    if (manifest === null) {
-      return { ok: false, reason: `${SKILL_MANIFEST_FILENAME} does not prove ownership — refusing to write over a folder in an unknown state` };
     }
     if (manifest !== undefined) {
       if (
@@ -406,6 +427,18 @@ function installIntoDir(dir: string, assets: SkillAssets): InstallResult {
       }
     }
   }
+  return { ok: true, manifest, ownedForSweep };
+}
+
+/** Convergent install into one target folder after its read-only preflight. */
+function installIntoDir(
+  dir: string,
+  assets: SkillAssets,
+  prepared?: Extract<InstallPreflight, { ok: true }>,
+): InstallResult {
+  const preflight = prepared ?? preflightInstallIntoDir(dir, assets);
+  if (!preflight.ok) return preflight;
+  const { manifest, ownedForSweep } = preflight;
   // No refused target has been touched. Debris cleanup starts only after the entire target passes
   // the read-only ownership/extras/obstruction/no-downgrade preflight.
   const debrisRemoved = sweepManagedDebris(dir, ownedForSweep);
@@ -478,26 +511,29 @@ function removeEmptyDirectories(dir: string, removeSelf: boolean): void {
 }
 
 type UninstallResult = { ok: true; changed: boolean } | { ok: false; reason: string };
+type UninstallPreflight =
+  | { ok: true; manifest: SkillManifest | undefined; ownedForSweep: Set<string>; changed: boolean }
+  | { ok: false; reason: string };
 
 /**
- * Remove EXACTLY the manifested files (skip-missing — a manifest-first partial install cleans up
- * without a throw) + the manifest; refuse a folder holding anything else, and refuse a target
- * that is not a real directory before any walk.
+ * Complete read-only uninstall preflight for one path. A successful absent path may still carry
+ * only a reserved manifest temp file, which the mutation phase is allowed to sweep.
  */
-function uninstallFromDir(dir: string): UninstallResult {
+function preflightUninstallFromDir(dir: string): UninstallPreflight {
   const notDir = nonDirectoryRefusal(dir);
   if (notDir !== undefined) return { ok: false, reason: notDir };
-  if (!existsSync(dir)) return { ok: true, changed: false };
+  if (!existsSync(dir)) {
+    return { ok: true, manifest: undefined, ownedForSweep: new Set([SKILL_MANIFEST_FILENAME]), changed: false };
+  }
   const manifest = readManifest(dir);
   const ownedForSweep = sweepOwnership(manifest, []);
   if (manifest === undefined) {
     // A folder left empty (a first-install kill stranded only OUR manifest tmp, or a pre-existing
-    // empty dir) holds nothing foreign — a no-op, cleaned up only when we removed the debris.
+    // empty dir) holds nothing foreign.
     const logicalFiles = listFilesRelative(dir).filter((file) => !isManagedDebris(file, ownedForSweep));
     if (logicalFiles.length === 0) {
-      const debrisRemoved = sweepManagedDebris(dir, ownedForSweep);
-      if (debrisRemoved) removeEmptyDirectories(dir, true);
-      return { ok: true, changed: debrisRemoved };
+      const hasDebris = listFilesRelative(dir).some((file) => isManagedDebris(file, ownedForSweep));
+      return { ok: true, manifest: undefined, ownedForSweep, changed: hasDebris };
     }
     return { ok: false, reason: `folder exists with no ${SKILL_MANIFEST_FILENAME} manifest — not managed by this tool, nothing deleted` };
   }
@@ -514,8 +550,23 @@ function uninstallFromDir(dir: string): UninstallResult {
       reason: `folder holds file(s) the manifest does not name: ${extras.join(", ")} — nothing deleted`,
     };
   }
+  return { ok: true, manifest, ownedForSweep, changed: true };
+}
+
+/** Remove exactly the preflight-proven files and manifest, skipping missing partial-install files. */
+function uninstallFromDir(
+  dir: string,
+  prepared?: Extract<UninstallPreflight, { ok: true }>,
+): UninstallResult {
+  const preflight = prepared ?? preflightUninstallFromDir(dir);
+  if (!preflight.ok) return preflight;
+  const { manifest, ownedForSweep } = preflight;
   // Sweep only after the whole target has passed the no-delete preflight.
-  sweepManagedDebris(dir, ownedForSweep);
+  const debrisRemoved = sweepManagedDebris(dir, ownedForSweep);
+  if (manifest === undefined) {
+    if (debrisRemoved) removeEmptyDirectories(dir, true);
+    return { ok: true, changed: debrisRemoved };
+  }
   for (const relativePath of manifest.files) {
     // Type-aware: a symlinked entry unlinks the link itself (never its target); an EMPTY
     // directory (pre-scanned above) rmdirs; absent files skip without a throw.
@@ -523,7 +574,7 @@ function uninstallFromDir(dir: string): UninstallResult {
   }
   rmSync(join(dir, SKILL_MANIFEST_FILENAME), { force: true });
   removeEmptyDirectories(dir, true);
-  return { ok: true, changed: true };
+  return { ok: true, changed: preflight.changed };
 }
 
 export type { SkillState } from "../skill-compatibility.js";
@@ -601,6 +652,79 @@ export function skillStatusForDir(
   return { ...classified, version };
 }
 
+type SkillStatusResult = ReturnType<typeof skillStatusForDir>;
+type InstallPathInspection =
+  | { ok: true; status: SkillStatusResult; preflight: InstallPreflight }
+  | { ok: false; reason: string };
+
+function inspectInstallPath(dir: string, assets: SkillAssets, installCommand: string): InstallPathInspection {
+  try {
+    return {
+      ok: true,
+      status: skillStatusForDir(dir, assets, installCommand),
+      preflight: preflightInstallIntoDir(dir, assets),
+    };
+  } catch (err) {
+    return { ok: false, reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
+type HostInstallResult =
+  | { ok: true; changed: boolean; migrated: boolean; legacyState: SkillState }
+  | { ok: false; reason: string };
+
+/** Inspect both host paths before mutation, then install or migrate only proven-owned bytes. */
+function installForHost(
+  canonicalDir: string,
+  legacyDir: string,
+  assets: SkillAssets,
+  installCommand: string,
+): HostInstallResult {
+  const canonical = inspectInstallPath(canonicalDir, assets, installCommand);
+  const legacy = inspectInstallPath(legacyDir, assets, installCommand);
+  if (!canonical.ok) return canonical;
+  if (!legacy.ok) return legacy;
+  if (!canonical.preflight.ok) return canonical.preflight;
+
+  const canonicalOwned = canonical.status.state === "installed" || canonical.status.state === "stale";
+  const legacyOwned = legacy.status.state === "installed" || legacy.status.state === "stale";
+  if (legacyOwned && !legacy.preflight.ok) return legacy.preflight;
+  if (canonicalOwned && legacyOwned) {
+    return {
+      ok: false,
+      reason: `both canonical and legacy folders are owned (${canonicalDir}, ${legacyDir}) - refusing ambiguous convergence`,
+    };
+  }
+
+  if (!canonicalOwned && legacyOwned) {
+    // The paths share one host skills directory, so rename is atomic. Any interruption before it
+    // leaves the owned legacy install; any interruption after it leaves an owned canonical install.
+    sweepManagedDebris(canonicalDir, canonical.preflight.ownedForSweep);
+    removeEmptyDirectories(canonicalDir, true);
+    renameSync(legacyDir, canonicalDir);
+    const result = installIntoDir(canonicalDir, assets);
+    return result.ok
+      ? { ok: true, changed: true, migrated: true, legacyState: legacy.status.state }
+      : result;
+  }
+
+  // An unmanaged legacy folder deliberately coexists. It never grants mutation authority and
+  // does not prevent a clean canonical install or refresh.
+  const result = installIntoDir(canonicalDir, assets, canonical.preflight);
+  return result.ok
+    ? { ok: true, changed: result.changed, migrated: false, legacyState: legacy.status.state }
+    : result;
+}
+
+function statusOutput(dir: string, status: SkillStatusResult): Record<string, unknown> {
+  return {
+    path: collapseHomeDirectory(dir),
+    state: status.state,
+    ...(status.version ? { version: status.version } : {}),
+    compatibility: status.compatibility,
+  };
+}
+
 /** Injectable seams, defaulting to production. */
 export interface SkillDeps {
   cwd?: string;
@@ -674,26 +798,31 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
   }
 
   const targets = skillTargets(scope, deps);
+  const legacyTargets = legacySkillTargets(scope, deps);
   const mode = resolveMode(values);
-  const hostDirs: [key: "claude_code" | "codex", dir: string][] = [
-    ["claude_code", targets.claude],
-    ["codex", targets.codex],
+  const hostDirs: [key: "claude_code" | "codex", canonicalDir: string, legacyDir: string][] = [
+    ["claude_code", targets.claude, legacyTargets.claude],
+    ["codex", targets.codex, legacyTargets.codex],
   ];
 
   if (sub === "status") {
     const assets = resolveSkillAssets(deps.executable);
     const hosts: Record<string, unknown> = {};
-    for (const [key, dir] of hostDirs) {
-      const s = skillStatusForDir(
-        dir,
+    for (const [key, canonicalDir, legacyDir] of hostDirs) {
+      const canonical = skillStatusForDir(
+        canonicalDir,
+        assets,
+        `${cliInvocation()} skill install --scope ${scope}`,
+      );
+      const legacy = skillStatusForDir(
+        legacyDir,
         assets,
         `${cliInvocation()} skill install --scope ${scope}`,
       );
       hosts[key] = {
-        path: collapseHomeDirectory(dir),
-        state: s.state,
-        ...(s.version ? { version: s.version } : {}),
-        compatibility: s.compatibility,
+        ...statusOutput(canonicalDir, canonical),
+        canonical: statusOutput(canonicalDir, canonical),
+        legacy: statusOutput(legacyDir, legacy),
       };
     }
     stdout(render({ skill: { action: "status", scope, version: assets.version, hosts } }, mode));
@@ -717,21 +846,32 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     const refusals: string[] = [];
     const hosts: Record<string, unknown> = {};
     let changed = false;
-    for (const [key, dir] of hostDirs) {
+    for (const [key, canonicalDir, legacyDir] of hostDirs) {
       // Any unexpected fs throw on one host becomes a structured refusal so the sibling host
       // still processes (same aggregation shape as hook install).
-      let result: InstallResult;
+      let result: HostInstallResult;
       try {
-        result = installIntoDir(dir, assets);
+        result = installForHost(
+          canonicalDir,
+          legacyDir,
+          assets,
+          `${cliInvocation()} skill install --scope ${scope}`,
+        );
       } catch (err) {
         result = { ok: false, reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}` };
       }
       if (!result.ok) {
-        refusals.push(`${collapseHomeDirectory(dir)}: ${result.reason}`);
+        refusals.push(`${collapseHomeDirectory(canonicalDir)}: ${result.reason}`);
         continue;
       }
       changed = changed || result.changed;
-      hosts[key] = { path: collapseHomeDirectory(dir), changed: result.changed };
+      hosts[key] = {
+        path: collapseHomeDirectory(canonicalDir),
+        legacy_path: collapseHomeDirectory(legacyDir),
+        changed: result.changed,
+        migrated: result.migrated,
+        legacy_state_before: result.legacyState,
+      };
     }
     if (refusals.length > 0) {
       throw new CliError(
@@ -765,20 +905,51 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
   const refusals: string[] = [];
   const hosts: Record<string, unknown> = {};
   let changed = false;
-  for (const [key, dir] of hostDirs) {
-    // Same per-host wrap as install: one host's unexpected fs throw must never abort the sibling.
-    let result: UninstallResult;
-    try {
-      result = uninstallFromDir(dir);
-    } catch (err) {
-      result = { ok: false, reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}` };
+  for (const [key, canonicalDir, legacyDir] of hostDirs) {
+    const paths = [
+      ["canonical", canonicalDir],
+      ["legacy", legacyDir],
+    ] as const;
+    // Both path preflights finish before either path mutates. A refusal remains path-local: the
+    // other proven-owned path and the sibling host still process.
+    const prepared = paths.map(([label, dir]) => {
+      try {
+        return { label, dir, plan: preflightUninstallFromDir(dir) } as const;
+      } catch (err) {
+        return {
+          label,
+          dir,
+          plan: { ok: false, reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}` },
+        } as const;
+      }
+    });
+    const pathResults: Record<string, unknown> = {};
+    let hostChanged = false;
+    for (const entry of prepared) {
+      let result: UninstallResult;
+      if (!entry.plan.ok) {
+        result = entry.plan;
+      } else {
+        try {
+          result = uninstallFromDir(entry.dir, entry.plan);
+        } catch (err) {
+          result = { ok: false, reason: `unexpected error: ${err instanceof Error ? err.message : String(err)}` };
+        }
+      }
+      if (!result.ok) {
+        refusals.push(`${collapseHomeDirectory(entry.dir)}: ${result.reason}`);
+        pathResults[entry.label] = {
+          path: collapseHomeDirectory(entry.dir),
+          changed: false,
+          refused: result.reason,
+        };
+        continue;
+      }
+      hostChanged = hostChanged || result.changed;
+      pathResults[entry.label] = { path: collapseHomeDirectory(entry.dir), changed: result.changed };
     }
-    if (!result.ok) {
-      refusals.push(`${collapseHomeDirectory(dir)}: ${result.reason}`);
-      continue;
-    }
-    changed = changed || result.changed;
-    hosts[key] = { path: collapseHomeDirectory(dir), changed: result.changed };
+    changed = changed || hostChanged;
+    hosts[key] = { changed: hostChanged, ...pathResults };
   }
   if (refusals.length > 0) {
     throw new CliError(

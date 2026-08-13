@@ -1,4 +1,1 @@
-# Mark the committed, self-contained skill CLI bundle as generated so it collapses in PR diffs
-# instead of dominating code review. See skills/agentstate-lite/scripts/ and packages/cli/build.mjs
-# (which produces this file as a byte-identical copy of the npm dist/ bundle).
-skills/agentstate-lite/scripts/agentstate-lite.mjs linguist-generated=true
+# No generated-file overrides are currently needed.

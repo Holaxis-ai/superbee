@@ -227,7 +227,7 @@ export function mustGit(dir: string, args: string[], opts: RunOptions = {}): str
 // ── identity fallback (fresh-container / identity-less-CI-runner safety net) ──
 
 /** The literal fallback identity when no actor is already flowing into the commit path. */
-const IDENTITY_FALLBACK_ACTOR = "agentstate-lite";
+const IDENTITY_FALLBACK_ACTOR = "superbee";
 
 /** Lowercase; any run of non `[a-z0-9.-]` collapses to one `-`; trimmed of leading/trailing `-`. */
 function slugifyActor(actor: string): string {
@@ -262,14 +262,14 @@ function hasResolvableIdentity(dir: string): boolean {
  * `-c` args ONLY when resolution genuinely fails, so a fresh container or an identity-less CI
  * runner can still commit. `user.name` is `actor` — the resolved actor string already flowing
  * into the commit path — falling back to the literal {@link IDENTITY_FALLBACK_ACTOR} when `actor`
- * is absent or blank; `user.email` is `<slug of that name>@agentstate-lite.invalid` (RFC 2606).
+ * is absent or blank; `user.email` is `<slug of that name>@superbee.invalid` (RFC 2606).
  * The ONE primitive every sync-family commit-creating call site consumes — see porcelain.ts's
  * module header for the site map.
  */
 export function identityFlags(dir: string, actor?: string): string[] {
   if (hasResolvableIdentity(dir)) return [];
   const name = actor && actor.trim().length > 0 ? actor.trim() : IDENTITY_FALLBACK_ACTOR;
-  return ["-c", `user.name=${name}`, "-c", `user.email=${slugifyActor(name)}@agentstate-lite.invalid`];
+  return ["-c", `user.name=${name}`, "-c", `user.email=${slugifyActor(name)}@superbee.invalid`];
 }
 
 // ── repo/worktree discovery ───────────────────────────────────────────────────
@@ -1649,7 +1649,7 @@ export function withIgnoreEntry(content: string): string {
   let out = content;
   if (out.length > 0 && !out.endsWith("\n")) out += "\n";
   if (out.length > 0) out += "\n";
-  out += `# the shared board — managed on the '${BOARD_BRANCH}' branch by aslite sync\n${GITIGNORE_ENTRY}\n`;
+  out += `# the shared board — managed on the '${BOARD_BRANCH}' branch by superbee sync\n${GITIGNORE_ENTRY}\n`;
   return out;
 }
 

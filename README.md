@@ -25,7 +25,7 @@ superbee hook install --scope user
 ```
 
 Restart Claude Code or Codex after installing the skill. `hook install` is optional: it gives
-Claude Code, Codex, and OpenCode a compact AgentState orientation at session start. To try one
+Claude Code, Codex, and OpenCode a compact Superbee orientation at session start. To try one
 orientation command without installing anything, run `npx -y superbee`.
 
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
@@ -72,14 +72,14 @@ explicit step creates the remote `board` branch, and teammates then use ordinary
   ambient: pass `--remote <url>` explicitly. Legacy URL bindings and `AGENTSTATE_LITE_REMOTE`
   fail with migration guidance instead of activating HTTP.
 - **Private workspace:** the bundle lives outside the repo (for example,
-  `~/.agentstate-lite/<name>/`); a git-excluded binding points at it, and nothing enters the repo.
+  `~/.agentstate/<name>/`); a git-excluded binding points at it, and nothing enters the repo.
 - **Personal catalog:** register any local bundle under a user- or agent-defined label so it is
   visible when an agent starts outside that project. The catalog is explicit and machine-local:
   it never crawls, clones, or creates an ambient active workspace. Resolve a label to a path, then
   pass that path to an ordinary command:
 
   ```sh
-  superbee catalog add personal --dir ~/.agentstate-lite/personal
+  superbee catalog add personal --dir ~/.agentstate/personal
   superbee catalog list
   superbee catalog resolve personal --field path
   ```
@@ -87,7 +87,7 @@ explicit step creates the remote `board` branch, and teammates then use ordinary
 Then, day to day:
 
 ```sh
-export AGENTSTATE_LITE_ACTOR=claude    # optional default; per-command --actor wins
+export SUPERBEE_ACTOR=claude           # optional default; per-command --actor wins
 superbee new "Task" ship-parser --title "Ship the parser" --status todo
 superbee list --type Task
 superbee doc update tasks/ship-parser --status in_progress
@@ -196,7 +196,7 @@ Bundles are valid [Open Knowledge Format v0.1](https://github.com/GoogleCloudPla
   polished end-user builder, so treat the surface as a preview.
 - **The public package ends at a generic remote boundary.** `serve` exposes a bundle through the
   versioned wire protocol, and bundle commands can target a service explicitly with `--remote`.
-  A gated service may accept `AGENTSTATE_LITE_API_KEY` or an already-provisioned stored per-origin
+  A gated service may accept `SUPERBEE_API_KEY` (`AGENTSTATE_LITE_API_KEY` remains supported) or an already-provisioned stored per-origin
   credential. This repository ships no hosted deployment, identity system, account-administration
   commands, or cloud-provider package.
 - **Wire protocol v0.1** is evolving. One recorded caveat: a document's raw bytes
