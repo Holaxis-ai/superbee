@@ -1207,7 +1207,7 @@ test("built install and uninstall preserve mismatched npm Node/package pairs acr
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-uninstall-"));
   const mismatchedPlugin = buildOpenCodePluginSource("/opt/runtime-a/bin/node", [
-    "/opt/npm-b/lib/node_modules/@holaxis/superbee/dist/superbee.mjs",
+    "/opt/npm-b/lib/node_modules/superbee/dist/superbee.mjs",
     "session-start",
   ]);
   const jsonTargets = (base: string): string[] => [
@@ -1402,7 +1402,7 @@ test("hookNeedsUpdate: PATH-bound and pre-session-start hooks are flagged; a sta
     );
     assert.equal(hookNeedsUpdate([base]), true);
     await write(
-      "/opt/superbee/bin/node /opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
+      "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start",
     );
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {

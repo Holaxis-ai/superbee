@@ -74,11 +74,11 @@ export const localDevExecutable = (segment: string): string =>
 
 export const stableNodePair = (segment: string): [string, string] => [
   `/opt/x${segment}x/bin/node`,
-  `/opt/x${segment}x/lib/node_modules/@holaxis/superbee/dist/superbee.mjs`,
+  `/opt/x${segment}x/lib/node_modules/superbee/dist/superbee.mjs`,
 ];
 
 export const MISMATCHED_NPM_NODE_COMMAND =
-  "/opt/runtime-a/bin/node /opt/npm-b/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start";
+  "/opt/runtime-a/bin/node /opt/npm-b/lib/node_modules/superbee/dist/superbee.mjs session-start";
 
 /** Lexically valid path spellings that no hook writer emits and therefore never establish ownership. */
 export const NONCANONICAL_MANAGED_PATH_CASES: ReadonlyArray<{
@@ -128,26 +128,26 @@ export const NODE_PACKAGE_PAIR_CASES: ReadonlyArray<{
   {
     family: "same-prefix npm A",
     command:
-      "/opt/npm-a/bin/node /opt/npm-a/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
+      "/opt/npm-a/bin/node /opt/npm-a/lib/node_modules/superbee/dist/superbee.mjs session-start",
     state: "current",
   },
   {
     family: "same-prefix npm B",
     command:
-      "/opt/npm-b/bin/node /opt/npm-b/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
+      "/opt/npm-b/bin/node /opt/npm-b/lib/node_modules/superbee/dist/superbee.mjs session-start",
     state: "current",
   },
   { family: "foreign runtime with npm B", command: MISMATCHED_NPM_NODE_COMMAND, state: "unmanaged" },
   {
     family: "npm A runtime with npm B package",
     command:
-      "/opt/npm-a/bin/node /opt/npm-b/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
+      "/opt/npm-a/bin/node /opt/npm-b/lib/node_modules/superbee/dist/superbee.mjs session-start",
     state: "unmanaged",
   },
   {
     family: "npm B runtime with npm A package",
     command:
-      "/opt/npm-b/bin/node /opt/npm-a/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
+      "/opt/npm-b/bin/node /opt/npm-a/lib/node_modules/superbee/dist/superbee.mjs session-start",
     state: "unmanaged",
   },
   {

@@ -18,12 +18,12 @@ import {
 } from "./hook-shell-fixtures.js";
 
 const stable =
-  "/opt/superbee/bin/node /opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start";
+  "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start";
 
 test("generated command tokenizer accepts emitted quoting and rejects shell behavior", () => {
   assert.deepEqual(tokenizeGeneratedHookCommand(stable), [
     "/opt/superbee/bin/node",
-    "/opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs",
+    "/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs",
     "session-start",
   ]);
   assert.deepEqual(tokenizeGeneratedHookCommand('"/Users/a b/bin/aslite" session-start'), [

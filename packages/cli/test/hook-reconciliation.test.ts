@@ -192,7 +192,7 @@ test("npm hook install collapses an exact historical marketplace plus npm hook t
   const legacyNpm =
     "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
   const canonicalNpm =
-    "/opt/superbee/bin/node /opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start";
+    "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start";
   const settings = {
     hooks: {
       SessionStart: [
@@ -226,17 +226,17 @@ test("durable authority composes a stable npm-prefix Node launch", () => {
       npm_prefix: "/opt/superbee",
       bin_path: "/opt/superbee/bin/superbee",
       runtime_path: "/opt/superbee/bin/node",
-      executable_path: "/opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs",
+      executable_path: "/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs",
     },
   };
   assert.deepEqual(buildHookLaunchSpec(authority), {
     program: "/opt/superbee/bin/node",
     args: [
-      "/opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs",
+      "/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs",
       "session-start",
     ],
     command:
-      "/opt/superbee/bin/node /opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start",
+      "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start",
   });
 });
 

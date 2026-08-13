@@ -195,8 +195,11 @@ function isCanonicalAbsolutePath(value: string): boolean {
 function managedExecutableLayout(value: string): ManagedExecutableLayout | undefined {
   if (!isCanonicalAbsolutePath(value)) return undefined;
   const portable = value.split(sep).join("/");
-  if (/\/node_modules\/@holaxis\/superbee\/dist\/superbee\.mjs$/.test(portable)) {
+  if (/\/node_modules\/superbee\/dist\/superbee\.mjs$/.test(portable)) {
     return "canonical_npm";
+  }
+  if (/\/node_modules\/(?:@holaxis\/aslite|aslite|agentstate-lite)\/dist\/superbee\.mjs$/.test(portable)) {
+    return "legacy_npm";
   }
   if (/\/node_modules\/(?:@holaxis\/aslite|aslite|agentstate-lite)\/dist\/agentstate-lite\.mjs$/.test(portable)) {
     return "legacy_npm";
@@ -220,7 +223,8 @@ function stableNpmRuntimePair(
   const runtimeSuffix = `${sep}bin${sep}node`;
   if (!program.endsWith(runtimeSuffix)) return undefined;
   const suffixes: ReadonlyArray<[string, "canonical" | "legacy"]> = [
-    [`${sep}lib${sep}node_modules${sep}@holaxis${sep}superbee${sep}dist${sep}superbee.mjs`, "canonical"],
+    [`${sep}lib${sep}node_modules${sep}superbee${sep}dist${sep}superbee.mjs`, "canonical"],
+    [`${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}superbee.mjs`, "legacy"],
     [`${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}agentstate-lite.mjs`, "legacy"],
   ];
   for (const [executableSuffix, identity] of suffixes) {
