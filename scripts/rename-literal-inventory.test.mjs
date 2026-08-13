@@ -117,6 +117,22 @@ test("unknown legacy literals fail closed until a policy owner classifies them",
   });
   assert.equal(maintainedGuide.category, "unclassified");
   assert.equal(maintainedGuide.treatment, "fail-closed");
+
+  for (const file of [
+    "release/README.md",
+    "packages/core/src/index-marker.ts",
+    "packages/cli/src/commands/hook.ts",
+  ]) {
+    for (const match of ["agentstate-lite", "aslite"]) {
+      const privilegedPathGuide = classifyLegacyLiteral({
+        file,
+        lineText: `Run ${match} ui`,
+        match,
+      });
+      assert.equal(privilegedPathGuide.category, "unclassified", `${file}: ${match}`);
+      assert.equal(privilegedPathGuide.treatment, "fail-closed", `${file}: ${match}`);
+    }
+  }
 });
 
 test("repository inventory is deterministic and has no unclassified legacy literals", async () => {

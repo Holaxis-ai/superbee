@@ -18,8 +18,7 @@ and consumes markdown-renderer, see gate 4), `packages/mcp-app` (the PRIVATE exp
 stdio adapter: one fixed MCP App shell over active registered or process-local Views, using the
 same launch, bridge, authorization, rendering, and governed-action authorities as the web host),
 and `packages/cli` —
-the **publishable npm package `superbee`** (the canonical bin is `superbee`; `aslite` and
-`agentstate-lite` remain compatible aliases), an
+the **publishable npm package `superbee`** (the canonical bin is `superbee`; the legacy aliases `aslite` and `agentstate-lite` remain supported), an
 esbuild bundle that inlines core + board-git + server + the built UI assets + deps into one
 self-contained ESM file. The filesystem is the
 DEFAULT local backend; the storage seam is pluggable (gate 3). Hosted deployment code is outside

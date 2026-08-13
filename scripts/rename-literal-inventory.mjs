@@ -211,7 +211,14 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
         reason: "AC-07 requires the compiled artifact to become dist/superbee.mjs",
       };
     }
-    if (file.startsWith("release/") || file.startsWith("scripts/release-")) {
+    if (
+      containsAny(lineText, [
+        '"agentstate-lite": "dist/superbee.mjs"',
+        '"expected_commands"',
+        '"agentstate-lite release candidate output v1',
+        '"agentstate-lite", "release-receipt-recovery"',
+      ])
+    ) {
       return {
         category: "release-bridge-identifier",
         treatment: "preserve-for-bridge-target",
@@ -219,14 +226,7 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
         reason: "the frozen package bridge and release recovery state retain explicit legacy identifiers",
       };
     }
-    if (
-      file === "packages/core/src/filesystem-lock.ts" ||
-      file === "packages/core/src/index-marker.ts" ||
-      file === "packages/core/src/index-projection.ts" ||
-      file === "packages/ui-server/src/server.ts" ||
-      file === "packages/ui/src/api/client.ts" ||
-      file === "packages/ui/src/api/pages.ts"
-    ) {
+    if (containsAny(lineText, ["agentstate-lite-mutation-locks-", "agentstate-lite:generated-index", "agentstate-lite-ui"])) {
       return {
         category: "serialized-or-protocol-identifier",
         treatment: "preserve-for-cross-version-compatibility",
@@ -235,16 +235,27 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
       };
     }
     if (
-      file === "packages/cli/src/commands/hook.ts" ||
-      file === "packages/cli/src/commands/sync.ts" ||
-      file === "packages/cli/src/hook-compatibility.ts" ||
-      file === "packages/cli/src/invocation.ts" ||
+      containsAny(lineText, [
+        "LEGACY_HOOK_MARKER",
+        "LEGACY_OPENCODE_PLUGIN_FILENAME",
+        "historical import surface",
+        'return "legacy"',
+        "node_modules/",
+        "node_modules\\/",
+        "dist/agentstate-lite.mjs",
+        "dist\\/agentstate-lite\\.mjs",
+        "/plugins/",
+        "\\/plugins\\/",
+        "tokens[2]",
+        "BIN_NAMES",
+      ]) ||
       containsAny(lineText.toLowerCase(), [
         "legacy alias",
         "historical alias",
         "compatible alias",
         "compatible aliases",
         "supported alias",
+        "supported legacy alias",
       ])
     ) {
       return {
@@ -263,7 +274,24 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
   }
 
   if (match === "aslite") {
-    if (containsAny(lineText, ["release-candidate", "schema", ".tgz", "tarball", "package"])) {
+    if (
+      containsAny(lineText, [
+        '"schema": "aslite.',
+        '"tarball_basename": "holaxis-aslite"',
+        '".aslite-release-candidate-owned-',
+        "aslite-release-receipt",
+        "aslite.receipt-",
+        "aslite.operator-receipt",
+        "aslite.release-candidate",
+        "aslite-registry-proof-",
+        "aslite-receipt-",
+        "@holaxis%2faslite",
+        '"@holaxis", "aslite"',
+        '"aslite": "dist/superbee.mjs"',
+        '"expected_commands"',
+        '"preferred_command": "aslite"',
+      ])
+    ) {
       return {
         category: "release-artifact-or-schema",
         treatment: "bridge-or-successor-target-policy",
@@ -271,11 +299,58 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
         reason: "AC-49 through AC-60 require explicit bridge/successor target ownership",
       };
     }
+    if (containsAny(lineText, ["data-aslite-", "aslite_ui_session", "aslite.update-", "aslite.skill-manifest", ".aslite-skill.json"])) {
+      return {
+        category: "serialized-or-protocol-identifier",
+        treatment: "preserve-for-cross-version-compatibility",
+        owner: "compatibility-policy",
+        reason: "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
+      };
+    }
+    if (
+      containsAny(lineText, [
+        "LEGACY_SKILL_DIR_NAME",
+        "LEGACY_SKILL_INSTALLERS",
+        "OWNED_SKILL_PACKAGES",
+        '"aslite skill install"',
+        "skills/aslite",
+        "old-only aslite",
+        "node_modules/",
+        "node_modules\\/",
+        "BIN_NAMES",
+        'value === "aslite"',
+        "@holaxis${sep}aslite",
+      ]) ||
+      containsAny(lineText.toLowerCase(), [
+        "legacy alias",
+        "historical alias",
+        "historical `aslite`",
+        "compatible alias",
+        "compatible aliases",
+        "supported alias",
+        "supported legacy alias",
+      ])
+    ) {
+      return {
+        category: "legacy-command-compatibility",
+        treatment: "preserve-as-explicit-compatibility",
+        owner: "cli-policy",
+        reason: "legacy command and installer recognition remain supported while Superbee is canonical",
+      };
+    }
+    if (containsAny(lineText, ["mkdtemp", "tmpdir()", "tmpdir(),"])) {
+      return {
+        category: "internal-temporary-namespace",
+        treatment: "preserve-internal-non-user-facing-name",
+        owner: "runtime-owner",
+        reason: "temporary scratch names are private implementation namespaces, not product guidance",
+      };
+    }
     return {
-      category: "legacy-bin-or-brand",
-      treatment: "alias-deprecate",
-      owner: "cli-policy",
-      reason: "successor keeps legacy bins as aliases while canonical invocation becomes superbee",
+      category: "unclassified",
+      treatment: "fail-closed",
+      owner: "unassigned",
+      reason: "a maintained legacy brand literal must be assigned an explicit compatibility owner",
     };
   }
 
