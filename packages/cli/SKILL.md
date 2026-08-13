@@ -244,9 +244,9 @@ superbee doc write specs/auth --type Spec --title "Auth" --body "…" --actor <y
 superbee link add specs/auth context-notes/cycle-1
 superbee list --type Spec
 
-# Share the board — recording work isn't done until it's shared
-# (safe everywhere: a local-only board just reports its state; outside any
-#  workspace it prints "sync: nothing to sync" — in both cases nothing is committed or pushed)
+# For a shared board, sync after a unit of work; local-only work stays complete locally
+# (safe everywhere: a local-only board reports its state; outside any workspace it prints
+#  "sync: nothing to sync" — in both cases nothing is committed or pushed)
 superbee sync
 ```
 
@@ -255,8 +255,8 @@ superbee sync
 Ordinary `superbee sync` shares your board — commits your changes, pulls your teammate's, pushes yours,
 while leaving code-project files untouched.
 
-Run it whenever you close a unit of work — a task finished, a decision recorded, a session
-ending. Recording work isn't done until it's shared. Three known empty states (all exit 0):
+On a shared board, run it whenever you close a unit of work — a task finished, a decision recorded, a session
+ending. Local-only work remains complete locally. Three known empty states (all exit 0):
 outside any git repo or workspace it prints `sync: nothing to sync`; a LOCAL-ONLY board (a
 bundle with no shared `board` branch — a supported mode) reports itself as local-only, with
 nothing committed, pulled, or pushed, and its note points at `--establish` — but bare `sync`

@@ -238,6 +238,9 @@ test("shared-board setup requires an explicit choice and verifies origin/board",
   assert.match(renderedNpm, /Do not describe a project as synchronized.*origin\/board/s);
   assert.match(renderedNpm, /superbee sync --establish\n?git ls-remote --exit-code origin refs\/heads\/board/);
   assert.match(renderedNpm, /local-only: record that the board stays local; do not call it synchronized/);
+  assert.match(renderedNpm, /local-only work stays complete locally/);
+  assert.match(renderedNpm, /On a shared board, run it whenever you close a unit of work/);
+  assert.doesNotMatch(renderedNpm, /recording work isn't done until it's shared/);
 });
 
 test("the npm skill carries the authenticated-remote access contract", () => {

@@ -252,9 +252,9 @@ function renderTypicalFlow(prefix: string): string[] {
   lines.push(`${prefix} link add specs/auth context-notes/cycle-1`);
   lines.push(`${prefix} list --type Spec`);
   lines.push("");
-  lines.push(`# Share the board — recording work isn't done until it's shared`);
-  lines.push(`# (safe everywhere: a local-only board just reports its state; outside any`);
-  lines.push(`#  workspace it prints "sync: nothing to sync" — in both cases nothing is committed or pushed)`);
+  lines.push(`# For a shared board, sync after a unit of work; local-only work stays complete locally`);
+  lines.push(`# (safe everywhere: a local-only board reports its state; outside any workspace it prints`);
+  lines.push(`#  "sync: nothing to sync" — in both cases nothing is committed or pushed)`);
   lines.push(`${prefix} sync`);
   lines.push("```");
   lines.push("");
@@ -271,10 +271,10 @@ function renderSyncSection(prefix: string): string[] {
   lines.push("while leaving code-project files untouched.");
   lines.push("");
   lines.push(
-    "Run it whenever you close a unit of work — a task finished, a decision recorded, a session",
+    "On a shared board, run it whenever you close a unit of work — a task finished, a decision recorded, a session",
   );
   lines.push(
-    "ending. Recording work isn't done until it's shared. Three known empty states (all exit 0):",
+    "ending. Local-only work remains complete locally. Three known empty states (all exit 0):",
   );
   lines.push(
     "outside any git repo or workspace it prints `sync: nothing to sync`; a LOCAL-ONLY board (a",
