@@ -5,9 +5,11 @@ import path from "node:path";
 import { classifyPersistentInstallAuthority } from "../src/install-authority.js";
 
 function durableFixture(overrides: Record<string, unknown> = {}) {
-  const prefix = "/opt/superbee-npm";
-  const executable = `${prefix}/lib/node_modules/@holaxis/superbee/dist/superbee.mjs`;
-  const bin = `${prefix}/bin/superbee`;
+  const prefix = (overrides.prefix as string | undefined) ?? "/opt/superbee-npm";
+  const packageRoot = (overrides.packageRoot as string | undefined) ?? "superbee";
+  const command = (overrides.command as string | undefined) ?? "superbee";
+  const executable = `${prefix}/lib/node_modules/${packageRoot}/dist/superbee.mjs`;
+  const bin = `${prefix}/bin/${command}`;
   const runtime = "/opt/node/bin/node";
   const stableRuntime = `${prefix}/bin/node`;
   const realpaths = new Map<string, string>([
@@ -25,7 +27,7 @@ function durableFixture(overrides: Record<string, unknown> = {}) {
     platform: "linux",
     npm_prefix_global: () => prefix,
     realpath: (candidate: string) => realpaths.get(path.normalize(candidate)),
-    ...overrides,
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== "prefix" && key !== "packageRoot" && key !== "command")),
   };
 }
 
@@ -36,6 +38,21 @@ test("npm-package authority requires a supported durable npm-global layout", () 
   assert.equal(result.evidence.bin_path, "/opt/superbee-npm/bin/superbee");
   assert.equal(result.evidence.npm_prefix, "/opt/superbee-npm");
   assert.equal(result.evidence.runtime_path, "/opt/superbee-npm/bin/node");
+});
+
+test("renamed bridge package bytes can authorize legacy-bin persistent hook writes", () => {
+  const result = classifyPersistentInstallAuthority(
+    durableFixture({
+      prefix: "/opt/aslite-npm",
+      packageRoot: "@holaxis/aslite",
+      command: "aslite",
+    }),
+  );
+  assert.equal(result.allowed, true);
+  assert.equal(result.state, "durable_global");
+  assert.equal(result.evidence.bin_path, "/opt/aslite-npm/bin/aslite");
+  assert.equal(result.evidence.npm_prefix, "/opt/aslite-npm");
+  assert.equal(result.evidence.runtime_path, "/opt/aslite-npm/bin/node");
 });
 
 test("legacy ASLite package bytes cannot authorize new persistent hook writes", () => {
@@ -70,7 +87,7 @@ test("durable npm-package proof fails closed for every missing or transient fact
       if (candidate === "/opt/superbee-npm") return candidate;
       if (candidate === "/tmp/shadow/superbee") return "/tmp/foreign.mjs";
       if (candidate === "/opt/superbee-npm/bin/superbee") {
-        return "/opt/superbee-npm/lib/node_modules/@holaxis/superbee/dist/superbee.mjs";
+        return "/opt/superbee-npm/lib/node_modules/superbee/dist/superbee.mjs";
       }
       if (candidate.endsWith("/dist/superbee.mjs")) return candidate;
       return undefined;
@@ -83,14 +100,14 @@ test("durable npm-package proof fails closed for every missing or transient fact
     durableFixture({ env: { PATH: "/usr/bin" } }),
     durableFixture({ env: { PATH: "/opt/superbee-npm/bin", npm_command: "exec" } }),
     durableFixture({ env: { PATH: "/opt/superbee-npm/bin", npm_lifecycle_event: "npx" } }),
-    durableFixture({ executable_path: "/tmp/_npx/123/node_modules/@holaxis/superbee/dist/superbee.mjs" }),
+    durableFixture({ executable_path: "/tmp/_npx/123/node_modules/superbee/dist/superbee.mjs" }),
     durableFixture({ runtime_path: null }),
     durableFixture({
       realpath: (candidate: string) => {
         const normalized = path.normalize(candidate);
         if (normalized === "/opt/superbee-npm") return normalized;
         if (normalized === "/opt/superbee-npm/bin/superbee") {
-          return "/opt/superbee-npm/lib/node_modules/@holaxis/superbee/dist/superbee.mjs";
+          return "/opt/superbee-npm/lib/node_modules/superbee/dist/superbee.mjs";
         }
         if (normalized.endsWith("/dist/superbee.mjs")) return normalized;
         if (normalized === "/opt/node/bin/node") return normalized;
@@ -123,7 +140,7 @@ test("local-dev policy remains explicit while unknown fails closed", () => {
   assert.deepEqual(installedLocalDev.evidence, {
     npm_prefix: "/opt/superbee-npm",
     bin_path: "/opt/superbee-npm/bin/superbee",
-    executable_path: "/opt/superbee-npm/lib/node_modules/@holaxis/superbee/dist/superbee.mjs",
+    executable_path: "/opt/superbee-npm/lib/node_modules/superbee/dist/superbee.mjs",
     runtime_path: "/opt/superbee-npm/bin/node",
   });
 

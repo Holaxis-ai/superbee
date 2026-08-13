@@ -33,6 +33,17 @@ const runtimeDependencyFields = [
   "bundleDependencies",
 ];
 
+function npmPrefixShimSource(prefix) {
+  return `#!/usr/bin/env node
+if (process.argv.slice(2).join(" ") === "prefix --global") {
+  console.log(${JSON.stringify(prefix)});
+  process.exit(0);
+}
+console.error("npm verifier shim only supports: npm prefix --global");
+process.exit(1);
+`;
+}
+
 /** Fail closed if the retired first-party marketplace executable channel returns. */
 export async function assertRetiredDistributionAbsent(root) {
   const retiredDirectories = [
@@ -440,6 +451,8 @@ async function runInstalledProof(spec) {
       // Model the supported real-world POSIX global layout so durable hook authority can prove
       // and persist the stable <prefix>/bin/node launcher.
       await symlink(process.execPath, path.join(binDir, "node"));
+      const npmShim = path.join(binDir, "npm");
+      await writeFile(npmShim, npmPrefixShimSource(prefix), { mode: 0o755 });
     }
     const commandEnv = {
       ...sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache),

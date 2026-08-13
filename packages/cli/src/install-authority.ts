@@ -78,7 +78,10 @@ function containsNpxCache(candidate: string | null | undefined): boolean {
 
 function isScopedNpmPackageExecutable(candidate: string | null): boolean {
   if (!candidate || !isAbsolute(candidate)) return false;
-  const suffixes = [join("lib", "node_modules", "@holaxis", "superbee", "dist", "superbee.mjs")];
+  const suffixes = [
+    join("lib", "node_modules", "superbee", "dist", "superbee.mjs"),
+    join("lib", "node_modules", "@holaxis", "aslite", "dist", "superbee.mjs"),
+  ];
   const normalized = normalize(candidate);
   return suffixes.some((suffix) => normalized.endsWith(`${sep}${suffix}`));
 }
@@ -147,7 +150,8 @@ export function classifyPersistentInstallAuthority(
     return unknown(input, "managed PATH bin is outside the npm global prefix bin directory");
   }
   const packageExecutables = [
-    join(normalize(join(prefix, "lib", "node_modules", "@holaxis", "superbee")), "dist", "superbee.mjs"),
+    join(normalize(join(prefix, "lib", "node_modules", "superbee")), "dist", "superbee.mjs"),
+    join(normalize(join(prefix, "lib", "node_modules", "@holaxis", "aslite")), "dist", "superbee.mjs"),
   ];
   if (!packageExecutables.includes(executable)) {
     return unknown(input, "running executable is outside the supported npm global package layout");
