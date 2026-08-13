@@ -103,10 +103,22 @@ function npmInvocation(args, env = process.env) {
 }
 
 async function run(command, args, options = {}) {
-  return execFileAsync(command, args, {
-    maxBuffer: 20 * 1024 * 1024,
-    ...options,
-  });
+  try {
+    return await execFileAsync(command, args, {
+      maxBuffer: 20 * 1024 * 1024,
+      ...options,
+    });
+  } catch (error) {
+    if (error && typeof error === "object" && "stdout" in error) {
+      const details = [
+        `Command failed: ${command} ${args.join(" ")}`,
+        error.stdout ? `stdout:\n${error.stdout}` : null,
+        error.stderr ? `stderr:\n${error.stderr}` : null,
+      ].filter(Boolean).join("\n");
+      error.message = `${details}\n${error.message}`;
+    }
+    throw error;
+  }
 }
 
 async function waitForJsonFile(file, timeoutMs = 10_000) {
@@ -511,14 +523,14 @@ async function runInstalledProof(spec) {
     );
 
     for (const command of target.expected_commands) await runCli(command, ["--help"]);
-    const initHelp = (await runCli("aslite", ["init", "--help"])).stdout;
+    const initHelp = (await runCli(target.preferred_command, ["init", "--help"])).stdout;
     assert.match(
       initHelp,
       /(?:superbee|agentstate-lite|aslite) recipes/,
       "init help must point at recipe discovery through an installed bin alias",
     );
     const discoveredRecipes = parseJson(
-      (await runCli("aslite", ["recipes", "--json"], { cwd: quickstartProject })).stdout,
+      (await runCli(target.preferred_command, ["recipes", "--json"], { cwd: quickstartProject })).stdout,
       "bundle-free recipes",
     );
     assert.ok(discoveredRecipes.count >= 3, "the installed CLI must discover the built-in recipe inventory");
@@ -662,7 +674,7 @@ async function runInstalledProof(spec) {
     );
     assert.match(initHelp, /--create-only/, "installed init help must carry the exact create-only spelling");
     const appliedRecipes = parseJson(
-      (await runCli("aslite", ["recipes", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["recipes", "--dir", bundle, "--json"])).stdout,
       "bundle recipes",
     );
     assert.equal(
@@ -677,7 +689,7 @@ async function runInstalledProof(spec) {
     );
     parseJson(
       (
-        await runCli("aslite", [
+        await runCli(target.preferred_command, [
           "new",
           "Task",
           "first-task",
@@ -695,13 +707,13 @@ async function runInstalledProof(spec) {
       "new",
     );
     const createdTask = parseJson(
-      (await runCli("aslite", ["doc", "read", "tasks/first-task", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["doc", "read", "tasks/first-task", "--dir", bundle, "--json"])).stdout,
       "read attributed quickstart Task",
     );
     assert.equal(createdTask.actor, "quickstart-agent", "the literal quickstart Task must retain attribution");
     assert.equal(createdTask.title, "Plan the first change", "the verifier must execute the documented Task command");
     const listed = parseJson(
-      (await runCli("aslite", ["list", "--type", "Task", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["list", "--type", "Task", "--dir", bundle, "--json"])).stdout,
       "list",
     );
     assert.ok(
@@ -709,7 +721,7 @@ async function runInstalledProof(spec) {
       "the installed CLI must list the Task it created",
     );
     const productiveHome = parseJson(
-      (await runCli("aslite", ["--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["--dir", bundle, "--json"])).stdout,
       "productive quickstart home",
     );
     assert.ok(
@@ -717,7 +729,7 @@ async function runInstalledProof(spec) {
       "home must surface the new Task as useful live state",
     );
     const productiveStatus = parseJson(
-      (await runCli("aslite", ["status", "--dir", bundle, "--json"])).stdout,
+      (await runCli(target.preferred_command, ["status", "--dir", bundle, "--json"])).stdout,
       "productive quickstart status",
     );
     assert.equal(productiveStatus.kind_warnings, 0, "the attributed Task must keep the quickstart bundle kind-clean");
@@ -739,7 +751,7 @@ async function runInstalledProof(spec) {
     await writeFile(path.join(foreignSkill, "SKILL.md"), "# foreign skill — must survive\n");
 
     const skillInstall = parseJson(
-      (await runCli("aslite", ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill install",
     );
     assert.equal(skillInstall.skill.changed, true, "first skill install must report changed");
@@ -769,7 +781,7 @@ async function runInstalledProof(spec) {
     }
 
     const skillStatus = parseJson(
-      (await runCli("aslite", ["skill", "status", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "status", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill status",
     );
     assert.equal(skillStatus.skill.hosts.claude_code.state, "installed");
@@ -788,13 +800,13 @@ async function runInstalledProof(spec) {
     );
 
     const skillReinstall = parseJson(
-      (await runCli("aslite", ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill reinstall",
     );
     assert.equal(skillReinstall.skill.changed, false, "reinstall over a current install must be a no-op");
 
     parseJson(
-      (await runCli("aslite", ["skill", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["skill", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
       "skill uninstall",
     );
     for (const host of [".claude", ".codex"]) {
@@ -816,7 +828,7 @@ async function runInstalledProof(spec) {
     const relocatedEnv = { CLAUDE_CONFIG_DIR: relocatedClaude, CODEX_HOME: relocatedCodex };
     parseJson(
       (
-        await runCli("aslite", ["skill", "install", "--scope", "user", "--json"], {
+        await runCli(target.preferred_command, ["skill", "install", "--scope", "user", "--json"], {
           cwd: project,
           env: relocatedEnv,
         })
@@ -828,7 +840,7 @@ async function runInstalledProof(spec) {
     }
     const userStatus = parseJson(
       (
-        await runCli("aslite", ["skill", "status", "--scope", "user", "--json"], {
+        await runCli(target.preferred_command, ["skill", "status", "--scope", "user", "--json"], {
           cwd: project,
           env: relocatedEnv,
         })
@@ -839,7 +851,7 @@ async function runInstalledProof(spec) {
     assert.equal(userStatus.skill.hosts.codex.state, "installed");
     parseJson(
       (
-        await runCli("aslite", ["skill", "uninstall", "--scope", "user", "--json"], {
+        await runCli(target.preferred_command, ["skill", "uninstall", "--scope", "user", "--json"], {
           cwd: project,
           env: relocatedEnv,
         })
@@ -852,7 +864,7 @@ async function runInstalledProof(spec) {
 
     // ── hook-command stability: installed hooks bind Node + the package entry, never ambient PATH ──
     parseJson(
-      (await runCli("aslite", ["hook", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["hook", "install", "--scope", "project", "--json"], { cwd: project })).stdout,
       "hook install",
     );
     const settings = parseJson(
@@ -875,7 +887,7 @@ async function runInstalledProof(spec) {
       );
     }
     parseJson(
-      (await runCli("aslite", ["hook", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
+      (await runCli(target.preferred_command, ["hook", "uninstall", "--scope", "project", "--json"], { cwd: project })).stdout,
       "hook uninstall",
     );
     const settingsAfter = parseJson(
