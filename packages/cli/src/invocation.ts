@@ -76,7 +76,7 @@ export function currentExecutableRealPath(): string | undefined {
 }
 
 /**
- * If a managed bin name (`aslite` / `agentstate-lite`) is found on PATH and its realpath matches the
+ * If a managed bin name (`superbee` or a supported legacy alias) is found on PATH and its realpath matches the
  * running executable, return that bare name (portable). Otherwise undefined. POSIX PATH scan — the
  * target platforms are macOS/Linux; Windows PATHEXT is not handled (the tool ships as an .mjs).
  */

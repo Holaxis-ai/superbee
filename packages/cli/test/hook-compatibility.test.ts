@@ -18,12 +18,12 @@ import {
 } from "./hook-shell-fixtures.js";
 
 const stable =
-  "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
+  "/opt/superbee/bin/node /opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs session-start";
 
 test("generated command tokenizer accepts emitted quoting and rejects shell behavior", () => {
   assert.deepEqual(tokenizeGeneratedHookCommand(stable), [
-    "/opt/aslite/bin/node",
-    "/opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs",
+    "/opt/superbee/bin/node",
+    "/opt/superbee/lib/node_modules/@holaxis/superbee/dist/superbee.mjs",
     "session-start",
   ]);
   assert.deepEqual(tokenizeGeneratedHookCommand('"/Users/a b/bin/aslite" session-start'), [
@@ -145,12 +145,12 @@ test("lexical envelopes are whole-token canonical writer spellings, never shell-
 
 test("supported quote grammar retains literal shell characters only inside managed layouts", () => {
   const table: Array<[string, string]> = [
-    ["'/tmp/{a,b}/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_path_bound"],
+    ["'/tmp/{a,b}/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_identity"],
     ['"/tmp/{a,b}/packages/cli/dist/agentstate-lite.mjs" session-start', "unmanaged"],
-    ["'/tmp/#/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_path_bound"],
-    ["'/tmp/~/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_path_bound"],
-    ["'/tmp/!/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_path_bound"],
-    ["'/tmp/café/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_path_bound"],
+    ["'/tmp/#/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_identity"],
+    ["'/tmp/~/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_identity"],
+    ["'/tmp/!/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_identity"],
+    ["'/tmp/café/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_identity"],
     [String.raw`"/tmp/\${HOME}/packages/cli/dist/agentstate-lite.mjs" session-start`, "unmanaged"],
     [String.raw`"/tmp/\$(pwd)/packages/cli/dist/agentstate-lite.mjs" session-start`, "unmanaged"],
     ["'echo {a,b}' session-start", "unmanaged"],
@@ -165,12 +165,17 @@ test("command compatibility recognizes exact generated history and rejects near-
     "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs";
   const table: Array<[string, string]> = [
     [stable, "current"],
+    [
+      "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
+      "legacy_identity",
+    ],
     ["aslite session-start", "legacy_path_bound"],
     ["agentstate-lite session-start", "legacy_path_bound"],
     ["aslite", "stale"],
     ["/usr/local/bin/aslite session-start", "unmanaged"],
-    ["/x/packages/cli/dist/agentstate-lite.mjs session-start", "legacy_path_bound"],
-    ["/opt/node/bin/node /x/packages/cli/dist/agentstate-lite.mjs session-start", "current"],
+    ["/x/packages/cli/dist/agentstate-lite.mjs session-start", "legacy_identity"],
+    ["/opt/node/bin/node /x/packages/cli/dist/agentstate-lite.mjs session-start", "legacy_identity"],
+    ["/opt/node/bin/node /x/packages/cli/dist/superbee.mjs session-start", "current"],
     ["node /tmp/agentstate-lite.mjs session-start", "unmanaged"],
     ["/tmp/bin/node /tmp/agentstate-lite.mjs session-start", "unmanaged"],
     ["npx -y agentstate-lite session-start", "legacy_path_bound"],
@@ -214,12 +219,12 @@ test("command compatibility recognizes exact generated history and rejects near-
       "/opt/[ab]/bin/node /opt/[ab]/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
       "unmanaged",
     ],
-    ["'/tmp/*/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_path_bound"],
+    ["'/tmp/*/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_identity"],
     ['"/tmp/?/packages/cli/dist/agentstate-lite.mjs" session-start', "unmanaged"],
-    ["'/tmp/[ab]/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_path_bound"],
+    ["'/tmp/[ab]/packages/cli/dist/agentstate-lite.mjs' session-start", "legacy_identity"],
     [
       "'/opt/*/bin/node' '/opt/*/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs' session-start",
-      "current",
+      "legacy_identity",
     ],
     ["some-tool --aslite", "unmanaged"],
   ];
