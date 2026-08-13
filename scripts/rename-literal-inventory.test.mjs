@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -145,4 +146,17 @@ test("repository inventory includes tracked root files, including the dev shim a
   assert.ok(rows.includes(".gitattributes:agentstate-lite"), "root generated-file metadata must be inventoried");
   assert.ok(rows.includes("examples/views/demo.sh:agentstate-lite"), "tracked shell script dist target must be inventoried");
   assert.ok(rows.includes("examples/views/demo.sh:aslite"), "tracked shell script temp prefix must be inventoried");
+});
+
+test("root gitignore keeps preferred and legacy project bindings machine-local", async () => {
+  const gitignore = await readFile(new URL("../.gitignore", import.meta.url), "utf8");
+  const entries = new Set(
+    gitignore
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#")),
+  );
+
+  assert.ok(entries.has(".superbee.json"), "preferred binding must be ignored");
+  assert.ok(entries.has(".agentstate.json"), "legacy binding must remain ignored during compatibility");
 });
