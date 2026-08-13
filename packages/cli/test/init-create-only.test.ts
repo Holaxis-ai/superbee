@@ -28,7 +28,9 @@ import { init } from "../src/commands/init.js";
 import {
   assertCreateOnlyTarget,
   createOnlyArbitrationLockKey,
+  PROJECT_BINDING_FILE_NAME,
   resolveProjectBinding,
+  SUPERBEE_PROJECT_BINDING_FILE_NAME,
   withCreateOnlyTarget,
 } from "../src/bundle.js";
 import { CliError } from "../src/errors.js";
@@ -217,6 +219,36 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
     );
     const url = await expectRefusal(["--create-only", "--dir", path.join(proj4, "nb")], /URL bindings/);
     assert.equal(url.code, "USAGE");
+
+    // The preferred binding participates in the same strict create-only discovery.
+    const proj5 = path.join(base, "proj5");
+    await mkdir(proj5, { recursive: true });
+    await writeFile(
+      path.join(proj5, SUPERBEE_PROJECT_BINDING_FILE_NAME),
+      `${JSON.stringify({ bundle: bound })}\n`,
+    );
+    const preferred = await expectRefusal(
+      ["--create-only", "--dir", path.join(proj5, "new-bundle")],
+      /project binding .*\.superbee\.json already resolves this location/,
+    );
+    assert.equal(preferred.code, "ALREADY_EXISTS");
+
+    // Both names at one level are an ambiguity before either target is considered.
+    const proj6 = path.join(base, "proj6");
+    await mkdir(proj6, { recursive: true });
+    await writeFile(
+      path.join(proj6, SUPERBEE_PROJECT_BINDING_FILE_NAME),
+      `${JSON.stringify({ bundle: bound })}\n`,
+    );
+    await writeFile(
+      path.join(proj6, PROJECT_BINDING_FILE_NAME),
+      `${JSON.stringify({ bundle: bound })}\n`,
+    );
+    const conflict = await expectRefusal(
+      ["--create-only", "--dir", path.join(proj6, "new-bundle")],
+      /conflicting project bindings/,
+    );
+    assert.equal(conflict.code, "USAGE");
   } finally {
     await rm(base, { recursive: true, force: true });
   }

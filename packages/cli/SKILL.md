@@ -186,8 +186,9 @@ Advisory attribution describes a real mutation and never creates a no-op write.
 Actor labels are advisory metadata, not authentication or authorization credentials.
 
 Each invocation is stateless. HTTP is activated only by explicit `--remote <url>`.
-Otherwise bundle resolution stays local: explicit `--dir` → nearest `.agentstate.json`
-local-path binding up-tree → the cwd walk, which at each ancestor checks the
+Otherwise bundle resolution stays local: explicit `--dir` → nearest `.superbee.json` or
+supported `.agentstate.json` local-path binding up-tree → the cwd walk, which at each
+ancestor checks both binding names together (both at one level fail closed), then the
 directory's own `index.md`, then its
 conventional `.agentstate-lite/index.md`. Reserve `--dir` for the exceptions: a bundle outside
 any project, a second workspace, or reaching another project's bundle from elsewhere.
@@ -195,8 +196,9 @@ any project, a second workspace, or reaching another project's bundle from elsew
 Two things override the default:
 
 1. **Explicit user direction** — the user names a directory or a `--remote`; use that. A local
-   `.agentstate.json` binding (`{ "bundle": "<path>" }` at the project root) is the
-   durable form of that direction — it beats the conventional folder when both exist.
+   `.superbee.json` binding (`{ "bundle": "<path>" }` at the project root) is the
+   preferred durable form; existing `.agentstate.json` bindings remain supported. A binding
+   beats the conventional folder; both binding names at one level are a conflict.
    Remote URLs are never durable ambient bindings; pass `--remote <url>` per invocation.
 2. **An existing workspace** — if a bare command already resolves (a binding, an enclosing
    bundle, or a conventional folder exists up-tree), that IS this project's workspace — use
@@ -204,7 +206,7 @@ Two things override the default:
 
 If the user wants the workspace PRIVATE to their machine instead of shared (a personal
 scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate-lite/<name>/`)
-and point a git-excluded `.agentstate.json` at it. Choose by one question: do teammates
+and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates
 share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.
 
 ## Typical flow
