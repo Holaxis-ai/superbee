@@ -18,6 +18,7 @@ import {
 
 const CHECKED_AT = "2026-08-05T12:00:00.000Z";
 const INTEGRITY = `sha512-${Buffer.alloc(64).toString("base64")}`;
+const FUNCTIONAL_VERSION_FLOOR = "0.1.0-pre.2";
 
 function entry(
   version: string,
@@ -63,6 +64,7 @@ function select(
     track: options.track ?? "latest",
     runningVersion,
     checkedAt: CHECKED_AT,
+    functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
   });
 }
 
@@ -161,6 +163,33 @@ test("deprecation precedence never recommends a deprecated selected release", ()
   assert.equal(equalDeprecated.command, null);
 });
 
+test("the bridge suppresses placeholder and below-floor successor guidance", () => {
+  for (const selectedVersion of ["0.0.1", "0.1.0-pre.10"]) {
+    const result = selectSupportedRelease({
+      packument: packument(selectedVersion, { runningVersion: "0.1.0-pre.10" }),
+      track: "latest",
+      runningVersion: "0.1.0-pre.10",
+      checkedAt: CHECKED_AT,
+      functionalVersionFloor: "0.1.0-pre.11",
+    });
+    assert.equal(result.status, "unavailable", selectedVersion);
+    assert.equal(result.unavailable?.code, "successor_not_ready", selectedVersion);
+    assert.equal(result.selected_version, selectedVersion);
+    assert.equal(result.command, null, selectedVersion);
+    assert.deepEqual(result.verify, [], selectedVersion);
+  }
+
+  const floor = selectSupportedRelease({
+    packument: packument("0.1.0-pre.11", { runningVersion: "0.1.0-pre.10" }),
+    track: "latest",
+    runningVersion: "0.1.0-pre.10",
+    checkedAt: CHECKED_AT,
+    functionalVersionFloor: "0.1.0-pre.11",
+  });
+  assert.equal(floor.status, "upgrade_available");
+  assert.equal(floor.command, "npm install --global superbee@0.1.0-pre.11");
+});
+
 test("missing and malformed registry policy fail closed with no install command", () => {
   const base = packument("0.1.0-pre.3", { runningVersion: "0.1.0-pre.2" });
   const inheritedTags = Object.create({ latest: "0.1.0-pre.3" }) as Record<string, unknown>;
@@ -220,6 +249,7 @@ test("missing and malformed registry policy fail closed with no install command"
       track: "latest",
       runningVersion: label.includes("build metadata") ? "0.1.0-pre.2+local" : "0.1.0-pre.2",
       checkedAt: CHECKED_AT,
+      functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
     });
     assert.equal(result.status, "unavailable", label);
     assert.equal(result.unavailable?.code, code, label);
@@ -233,6 +263,7 @@ test("missing and malformed registry policy fail closed with no install command"
         track: "latest",
         runningVersion: "not-semver",
         checkedAt: CHECKED_AT,
+        functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
       }),
     /running package version is not valid strict SemVer/,
   );
@@ -452,20 +483,20 @@ test("default transport sends only the fixed read-only registry request", async 
 });
 
 test("tag movement is observed per invocation and never persisted as preference", async () => {
-  let selected = "0.1.0-pre.3";
+  let selected = "0.1.0-pre.4";
   const fetchImpl: typeof fetch = async () =>
-    new Response(JSON.stringify(packument(selected, { runningVersion: "0.1.0-pre.2" })), {
+    new Response(JSON.stringify(packument(selected, { runningVersion: "0.1.0-pre.3" })), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
-  const deps = { fetchImpl, now: () => new Date(CHECKED_AT) };
-  const first = await checkSupportedRelease({ runningVersion: "0.1.0-pre.2", track: "latest" }, deps);
-  selected = "0.1.0-pre.1";
-  const second = await checkSupportedRelease({ runningVersion: "0.1.0-pre.2", track: "latest" }, deps);
+  const deps = { fetchImpl, now: () => new Date(CHECKED_AT), functionalVersionFloor: "0.1.0-pre.2" };
+  const first = await checkSupportedRelease({ runningVersion: "0.1.0-pre.3", track: "latest" }, deps);
+  selected = "0.1.0-pre.2";
+  const second = await checkSupportedRelease({ runningVersion: "0.1.0-pre.3", track: "latest" }, deps);
   assert.equal(first.status, "upgrade_available");
-  assert.equal(first.selected_version, "0.1.0-pre.3");
+  assert.equal(first.selected_version, "0.1.0-pre.4");
   assert.equal(second.status, "rollback_available");
-  assert.equal(second.selected_version, "0.1.0-pre.1");
+  assert.equal(second.selected_version, "0.1.0-pre.2");
 });
 
 test("transport failures retain the complete structured check shape", async () => {
@@ -473,6 +504,7 @@ test("transport failures retain the complete structured check shape", async () =
     { runningVersion: "0.1.0-pre.2", track: "latest" },
     {
       now: () => new Date(CHECKED_AT),
+      functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
       fetchImpl: async () => {
         throw new TypeError("offline with private diagnostic details");
       },

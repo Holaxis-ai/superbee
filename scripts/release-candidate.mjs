@@ -180,7 +180,11 @@ export async function createReleaseCandidate({
   const outDir = await prepareCandidateOutputDir(requestedOut);
 
   // BUILD ONCE — npm-package channel, exact injected tag SHA, clean tree required.
-  await buildCli("npm-package", { source: { commit, dirty: false }, packageIdentity: { name: target.package.name, version } });
+  await buildCli("npm-package", {
+    source: { commit, dirty: false },
+    packageIdentity: { name: target.package.name, version },
+    releaseManifest: targetManifest,
+  });
 
   // PACK ONCE — the single npm pack of this transaction. --ignore-scripts so no lifecycle hook can
   // trigger a second build/pack.

@@ -4,6 +4,8 @@ export const UPDATE_CHECK_ACCEPT = "application/vnd.npm.install-v1+json";
 export const UPDATE_CHECK_TIMEOUT_MS = 2_000;
 export const UPDATE_CHECK_MAX_BYTES = 1_048_576;
 
+declare const __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__: unknown;
+
 const PACKAGE_NAME = "superbee";
 const MAX_METADATA_LENGTH = 4_096;
 const MAX_SEMVER_LENGTH = 256;
@@ -23,6 +25,7 @@ export type UpdateUnavailableCode =
   | "too_large"
   | "malformed"
   | "tag_missing"
+  | "successor_not_ready"
   | "selected_deprecated";
 
 export interface UpdateCheckUnavailable {
@@ -99,6 +102,19 @@ export function compareStrictSemver(left: string, right: string): -1 | 0 | 1 | u
     return leftPart < rightPart ? -1 : 1;
   }
   return 0;
+}
+
+export function bakedFunctionalVersionFloor(): string {
+  if (typeof __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__ === "undefined") {
+    throw new Error("functional successor version floor is not baked into this CLI artifact");
+  }
+  if (
+    typeof __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__ !== "string" ||
+    !parseStrictSemver(__SUPERBEE_FUNCTIONAL_VERSION_FLOOR__)
+  ) {
+    throw new Error("baked functional successor version floor is not valid strict SemVer");
+  }
+  return __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -179,10 +195,14 @@ export function selectSupportedRelease(input: {
   track: ReleaseTrack;
   runningVersion: string;
   checkedAt: string;
+  functionalVersionFloor: string;
 }): UpdateCheckResult {
-  const { packument, track, runningVersion, checkedAt } = input;
+  const { packument, track, runningVersion, checkedAt, functionalVersionFloor } = input;
   if (!parseStrictSemver(runningVersion)) {
     throw new Error("running package version is not valid strict SemVer");
+  }
+  if (!parseStrictSemver(functionalVersionFloor)) {
+    throw new Error("functional successor version floor is not valid strict SemVer");
   }
   const root = record(packument);
   if (!root || root.name !== PACKAGE_NAME) return malformed(runningVersion, track, checkedAt);
@@ -240,6 +260,16 @@ export function selectSupportedRelease(input: {
     running_deprecated: runningDeprecated,
     selected_integrity: integrity,
   };
+  if (compareStrictSemver(selectedVersion, functionalVersionFloor)! < 0) {
+    return unavailable(
+      runningVersion,
+      track,
+      checkedAt,
+      "successor_not_ready",
+      `npm ${track} dist-tag selects a release below the functional successor floor`,
+      known,
+    );
+  }
   if (selectedDeprecation.value !== null && selectedVersion !== runningVersion) {
     return unavailable(
       runningVersion,
@@ -417,6 +447,7 @@ export async function fetchSupportedReleasePackument(
 
 export interface SupportedReleaseCheckDeps extends PackumentFetchDeps {
   now?: () => Date;
+  functionalVersionFloor?: string;
 }
 
 /** Fetch and select the exact release named by the requested public npm track. */
@@ -443,5 +474,6 @@ export async function checkSupportedRelease(
     track: input.track,
     runningVersion: input.runningVersion,
     checkedAt,
+    functionalVersionFloor: deps.functionalVersionFloor ?? bakedFunctionalVersionFloor(),
   });
 }

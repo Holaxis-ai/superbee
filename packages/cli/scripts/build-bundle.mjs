@@ -73,6 +73,10 @@ export async function buildCliBundle(outfile, options) {
     );
   }
   const source = options?.source ?? currentSourceFacts();
+  const functionalVersionFloor = options?.functionalVersionFloor;
+  if (typeof functionalVersionFloor !== "string" || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/.test(functionalVersionFloor)) {
+    throw new Error("buildCliBundle requires a strict SemVer functionalVersionFloor");
+  }
   if (
     !(source?.commit === null || (typeof source?.commit === "string" && /^[a-f0-9]{40}$/.test(source.commit))) ||
     !(source?.dirty === null || typeof source?.dirty === "boolean")
@@ -112,7 +116,10 @@ export async function buildCliBundle(outfile, options) {
     target: "node20",
     // One compile-time authority read by build-identity.ts. The artifact hash is deliberately NOT
     // embedded (that would be recursive); runtime hashes the actual executing bytes lazily.
-    define: { __SUPERBEE_BUILD_IDENTITY__: JSON.stringify(identity) },
+    define: {
+      __SUPERBEE_BUILD_IDENTITY__: JSON.stringify(identity),
+      __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__: JSON.stringify(functionalVersionFloor),
+    },
     // Resolve the workspace deps to their TypeScript source so no dist pre-build is needed.
     alias: {
       // List browser-safe core subpaths before the package root so esbuild does not append the

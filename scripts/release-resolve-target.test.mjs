@@ -4,6 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
+import { loadReleaseTargets, normalizeReleaseTargets } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -34,6 +35,21 @@ test("resolveTargetFacts returns the allowlisted tuple and policy tag", async ()
     policy_tag: "next",
     workflow_contract: "full",
   });
+});
+
+test("the functional successor floor is the reviewed successor tuple version", async () => {
+  const manifest = await loadReleaseTargets();
+  assert.equal(manifest.functional_successor_floor, "0.1.0-pre.11");
+  assert.equal(manifest.functional_successor_floor, manifest.allowed_tuples.successor.version);
+
+  assert.throws(
+    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: "0.1.0-pre.12" }),
+    /must equal the reviewed successor tuple version 0\.1\.0-pre\.11/,
+  );
+  assert.throws(
+    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: undefined }),
+    /invalid release version/,
+  );
 });
 
 test("resolveTargetFacts rejects target/tag mismatches before workflows mutate", async () => {
