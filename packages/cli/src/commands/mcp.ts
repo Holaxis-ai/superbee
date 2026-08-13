@@ -24,7 +24,8 @@ Usage:
 
 Options:
   --dir <path>          Local bundle directory (default: discovered from the cwd)
-  --actor <name>        Attribute confirmed human actions (overrides AGENTSTATE_LITE_ACTOR)
+  --actor <name>        Attribute confirmed human actions (overrides SUPERBEE_ACTOR; legacy
+                        AGENTSTATE_LITE_ACTOR remains supported)
   -h, --help            Show this help
 
 The experimental server uses stdio and exposes one model-visible tool: show_view. An agent can

@@ -27,7 +27,7 @@ timestamp: "2026-07-24T00:00:00.000Z"
 # View
 
 A bundle-hosted UI view. A `type: View` doc is a **registry entry**: it names a self-contained
-HTML blob (`entry`, a bundle-relative blob key under `views/…`) that the `agentstate-lite ui`
+HTML blob (`entry`, a bundle-relative blob key under `views/…`) that the `superbee ui`
 launcher renders in a sandboxed, opaque-origin iframe. The view reaches bundle data only through
 the narrow postMessage bridge documented in the bundle's
 [View authoring reference](../references/view-authoring-v0.md) — it never holds a credential.
@@ -38,7 +38,7 @@ neither is read any longer: a legacy `type: Page` doc does not register, and a d
 only the legacy `bridge` field resolves to `access: none`. Docs under the legacy
 `pages-registry/`/`pages/` prefixes stay recognized where they are once typed `View`; the
 repo's `migrate-legacy-view-names` script renames leftover legacy names in place
-(`aslite status` lists them under `legacy_naming`). Author views as `type: View` with `access`.
+(`superbee status` lists them under `legacy_naming`). Author views as `type: View` with `access`.
 
 - `title` (required) — the launcher card's heading.
 - `entry` (required) — the HTML blob key, e.g. `views/roadmap.html`.

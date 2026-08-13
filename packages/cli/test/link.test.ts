@@ -1359,7 +1359,7 @@ test("every previously-documented fact from the old single combined block is rea
     /Dangling edges \(a link to a doc that doesn't exist yet\) are\s+included/,
     /Filter outbound links AND backlinks to those whose text is EXACTLY <t>/,
     /Cap each of the outbound\/backlink lists \(default: 50; 0 = unlimited\)/,
-    /Falls back to AGENTSTATE_LITE_ACTOR; an existing link remains a true no-op/,
+    /Falls back to SUPERBEE_ACTOR \(or legacy AGENTSTATE_LITE_ACTOR\); an existing\s+link remains a true no-op/,
     /Cap the returned edge rows \(default: 100; 0 = unlimited\)/,
   ];
   for (const re of mustAppearSomewhere) {

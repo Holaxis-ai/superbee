@@ -145,7 +145,8 @@ shows canonical before/after values outside the iframe; and commits only after t
 Apply. The approval token and immutable launch identity never enter the iframe. A stale target is a
 visible conflict and is never retried behind the human's back. V1 is local `--dir` only and excludes
 body writes, links, creation, deletion, remote writes, and persistent grants. Start the shell with
-`superbee ui --actor <name>` (or set `AGENTSTATE_LITE_ACTOR`) to enable proposals.
+`superbee ui --actor <name>` (or set `SUPERBEE_ACTOR`; `AGENTSTATE_LITE_ACTOR` remains a
+supported compatibility input) to enable proposals.
 
 ## Live updates
 

@@ -7,10 +7,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  cpSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
   existsSync,
   lstatSync,
@@ -94,6 +96,14 @@ function assertSameTree(a: Map<string, Buffer>, b: Map<string, Buffer>): void {
   for (const [key, bytes] of a) assert.ok(b.get(key)!.equals(bytes), `${key} bytes changed`);
 }
 
+function hostSkillDir(cwd: string, host: ".claude" | ".codex", name: "superbee" | "aslite"): string {
+  return path.join(cwd, host, "skills", name);
+}
+
+function moveCanonicalToLegacy(cwd: string, host: ".claude" | ".codex"): void {
+  renameSync(hostSkillDir(cwd, host, "superbee"), hostSkillDir(cwd, host, "aslite"));
+}
+
 test("skill install (project scope): assets + manifest land in BOTH host folders; reinstall is byte-stable and changed:false", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
@@ -105,7 +115,8 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   assert.equal(receipt.skill.version, RUNNING_VERSION);
 
   for (const host of [".claude", ".codex"]) {
-    const dir = path.join(cwd, host, "skills", "aslite");
+    const dir = path.join(cwd, host, "skills", "superbee");
+    assert.equal(existsSync(path.join(cwd, host, "skills", "aslite")), false);
     for (const [relative, content] of Object.entries(ASSET_FILES)) {
       assert.equal(readFileSync(path.join(dir, ...relative.split("/")), "utf8"), content);
     }
@@ -145,10 +156,127 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   assertSameTree(before, treeSnapshot(path.join(cwd, ".claude")));
 });
 
+test("old-only owned installs migrate atomically to canonical and status reports both paths", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  await runSkill(["install"], { cwd, executable });
+  for (const host of [".claude", ".codex"] as const) moveCanonicalToLegacy(cwd, host);
+
+  const before = await runSkill(["status"], { cwd, executable });
+  assert.equal(before.skill.hosts.claude_code.canonical.state, "absent");
+  assert.equal(before.skill.hosts.claude_code.legacy.state, "installed");
+  assert.match(before.skill.hosts.claude_code.canonical.path, /skills\/superbee$/);
+  assert.match(before.skill.hosts.claude_code.legacy.path, /skills\/aslite$/);
+
+  const receipt = await runSkill(["install"], { cwd, executable });
+  assert.equal(receipt.skill.hosts.claude_code.migrated, true);
+  assert.equal(receipt.skill.hosts.codex.migrated, true);
+  for (const host of [".claude", ".codex"] as const) {
+    assert.equal(existsSync(hostSkillDir(cwd, host, "aslite")), false);
+    assert.ok(existsSync(path.join(hostSkillDir(cwd, host, "superbee"), "SKILL.md")));
+  }
+  const manifest = JSON.parse(
+    readFileSync(path.join(hostSkillDir(cwd, ".claude", "superbee"), SKILL_MANIFEST_FILENAME), "utf8"),
+  );
+  assert.equal(manifest.schema, "aslite.skill-manifest.v2");
+});
+
+test("an old-only manifest-first partial install migrates and converges", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  await runSkill(["install"], { cwd, executable });
+  moveCanonicalToLegacy(cwd, ".claude");
+  const legacyDir = hostSkillDir(cwd, ".claude", "aslite");
+  rmSync(path.join(legacyDir, "SKILL.md"));
+
+  const before = await runSkill(["status"], { cwd, executable });
+  assert.equal(before.skill.hosts.claude_code.legacy.state, "stale");
+  const receipt = await runSkill(["install"], { cwd, executable });
+  assert.equal(receipt.skill.hosts.claude_code.migrated, true);
+  assert.equal(readFileSync(path.join(hostSkillDir(cwd, ".claude", "superbee"), "SKILL.md"), "utf8"), ASSET_FILES["SKILL.md"]);
+  assert.equal(existsSync(legacyDir), false);
+});
+
+test("dual owned canonical and legacy installs fail closed without changing either tree", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  await runSkill(["install"], { cwd, executable });
+  const canonical = hostSkillDir(cwd, ".claude", "superbee");
+  const legacy = hostSkillDir(cwd, ".claude", "aslite");
+  cpSync(canonical, legacy, { recursive: true });
+  const canonicalBefore = treeSnapshot(canonical);
+  const legacyBefore = treeSnapshot(legacy);
+
+  await assert.rejects(
+    () => runSkill(["install"], { cwd, executable }),
+    (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.match(JSON.stringify(err.details), /both canonical and legacy folders are owned/);
+      return true;
+    },
+  );
+  assertSameTree(canonicalBefore, treeSnapshot(canonical));
+  assertSameTree(legacyBefore, treeSnapshot(legacy));
+});
+
+test("foreign canonical blocks migration and leaves an owned legacy install untouched", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  await runSkill(["install"], { cwd, executable });
+  moveCanonicalToLegacy(cwd, ".claude");
+  const canonical = hostSkillDir(cwd, ".claude", "superbee");
+  const legacy = hostSkillDir(cwd, ".claude", "aslite");
+  mkdirSync(canonical, { recursive: true });
+  writeFileSync(path.join(canonical, "SKILL.md"), "# foreign canonical skill\n");
+  const canonicalBefore = treeSnapshot(canonical);
+  const legacyBefore = treeSnapshot(legacy);
+
+  await assert.rejects(() => runSkill(["install"], { cwd, executable }), CliError);
+  assertSameTree(canonicalBefore, treeSnapshot(canonical));
+  assertSameTree(legacyBefore, treeSnapshot(legacy));
+});
+
+test("foreign legacy coexists with canonical install and is refused but preserved on uninstall", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  const legacy = hostSkillDir(cwd, ".claude", "aslite");
+  mkdirSync(legacy, { recursive: true });
+  writeFileSync(path.join(legacy, "SKILL.md"), "# foreign legacy skill\n");
+
+  const receipt = await runSkill(["install"], { cwd, executable });
+  assert.equal(receipt.skill.hosts.claude_code.legacy_state_before, "unmanaged");
+  assert.ok(existsSync(path.join(hostSkillDir(cwd, ".claude", "superbee"), "SKILL.md")));
+  assert.equal(readFileSync(path.join(legacy, "SKILL.md"), "utf8"), "# foreign legacy skill\n");
+  const status = await runSkill(["status"], { cwd, executable });
+  assert.equal(status.skill.hosts.claude_code.state, "installed");
+  assert.equal(status.skill.hosts.claude_code.legacy.state, "unmanaged");
+
+  await assert.rejects(() => runSkill(["uninstall"], { cwd, executable }), CliError);
+  assert.equal(existsSync(hostSkillDir(cwd, ".claude", "superbee")), false);
+  assert.equal(readFileSync(path.join(legacy, "SKILL.md"), "utf8"), "# foreign legacy skill\n");
+  assert.equal(existsSync(hostSkillDir(cwd, ".codex", "superbee")), false);
+});
+
+test("uninstall removes both canonical and legacy when both independently prove ownership", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  await runSkill(["install"], { cwd, executable });
+  for (const host of [".claude", ".codex"] as const) {
+    cpSync(hostSkillDir(cwd, host, "superbee"), hostSkillDir(cwd, host, "aslite"), { recursive: true });
+  }
+
+  const receipt = await runSkill(["uninstall"], { cwd, executable });
+  assert.equal(receipt.skill.changed, true);
+  for (const host of [".claude", ".codex"] as const) {
+    assert.equal(existsSync(hostSkillDir(cwd, host, "superbee")), false);
+    assert.equal(existsSync(hostSkillDir(cwd, host, "aslite")), false);
+  }
+});
+
 test("skill install refuses a pre-existing unmanaged folder (nothing written there); the other host is still processed", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  const claudeDir = path.join(cwd, ".claude", "skills", "aslite");
+  const claudeDir = path.join(cwd, ".claude", "skills", "superbee");
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(path.join(claudeDir, "somebody-elses.md"), "not ours\n");
 
@@ -163,7 +291,7 @@ test("skill install refuses a pre-existing unmanaged folder (nothing written the
   // Refused folder untouched: the foreign file survives, no manifest, no assets.
   assert.deepEqual(readdirSync(claudeDir), ["somebody-elses.md"]);
   // The codex target was still processed to completion.
-  assert.ok(existsSync(path.join(cwd, ".codex", "skills", "aslite", SKILL_MANIFEST_FILENAME)));
+  assert.ok(existsSync(path.join(cwd, ".codex", "skills", "superbee", SKILL_MANIFEST_FILENAME)));
 });
 
 test("hand-edited managed files: status reports stale, reinstall converges back to installed", async () => {
@@ -172,7 +300,7 @@ test("hand-edited managed files: status reports stale, reinstall converges back 
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
 
-  const edited = path.join(cwd, ".claude", "skills", "aslite", "SKILL.md");
+  const edited = path.join(cwd, ".claude", "skills", "superbee", "SKILL.md");
   writeFileSync(edited, "tampered\n");
 
   const status = await runSkill(["status"], { cwd, executable });
@@ -190,8 +318,8 @@ test("hand-edited managed files: status reports stale, reinstall converges back 
 test("skill status: absent before install, unmanaged for a manifest-less folder, version reported when installed", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  mkdirSync(path.join(cwd, ".codex", "skills", "aslite"), { recursive: true });
-  writeFileSync(path.join(cwd, ".codex", "skills", "aslite", "stray.md"), "x\n");
+  mkdirSync(path.join(cwd, ".codex", "skills", "superbee"), { recursive: true });
+  writeFileSync(path.join(cwd, ".codex", "skills", "superbee", "stray.md"), "x\n");
 
   const status = await runSkill(["status"], { cwd, executable });
   assert.equal(status.skill.hosts.claude_code.state, "absent");
@@ -215,7 +343,7 @@ test("legacy owned receipts remain current and explicit install refreshes only t
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   const manifestPath = path.join(dir, SKILL_MANIFEST_FILENAME);
   const current = JSON.parse(readFileSync(manifestPath, "utf8"));
   writeFileSync(
@@ -247,7 +375,7 @@ test("matching assets ignore informational provenance while digest corruption is
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   await runSkill(["install"], { cwd, executable });
-  const manifestPath = path.join(cwd, ".claude", "skills", "aslite", SKILL_MANIFEST_FILENAME);
+  const manifestPath = path.join(cwd, ".claude", "skills", "superbee", SKILL_MANIFEST_FILENAME);
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   manifest.version = "99.0.0";
   manifest.source_identity = {
@@ -272,7 +400,7 @@ test("higher installed skill contracts are reported and never silently downgrade
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   const manifestPath = path.join(dir, SKILL_MANIFEST_FILENAME);
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
   manifest.compatibility_contract = 2;
@@ -301,7 +429,7 @@ test("ownership field near-misses are never mutated", async () => {
   for (const candidate of candidates) {
     const cwd = path.join(candidate.base, "project");
     await runSkill(["install"], { cwd, executable: candidate.executable });
-    const dir = path.join(cwd, ".claude", "skills", "aslite");
+    const dir = path.join(cwd, ".claude", "skills", "superbee");
     const manifestPath = path.join(dir, SKILL_MANIFEST_FILENAME);
     const manifest = candidate.mutation(JSON.parse(readFileSync(manifestPath, "utf8")));
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -317,7 +445,7 @@ test("a symlinked manifest never establishes ownership and neither mutator follo
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   const manifestPath = path.join(dir, SKILL_MANIFEST_FILENAME);
   const victim = path.join(base, "outside-manifest.json");
   const victimBytes = readFileSync(manifestPath);
@@ -337,7 +465,7 @@ test("a symlinked manifest never establishes ownership and neither mutator follo
 test("reserved manifest debris beside a foreign file is preserved on every refusal", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   mkdirSync(dir, { recursive: true });
   writeFileSync(path.join(dir, "foreign.md"), "keep\n");
   writeFileSync(path.join(dir, `${SKILL_MANIFEST_FILENAME}.tmp-4242-a1-b2`), "partial\n");
@@ -352,7 +480,7 @@ test("backslash-traversal manifests make both mutators refuse without changing t
   for (const verb of ["install", "uninstall"]) {
     const { base, executable } = scratch();
     const cwd = path.join(base, "project");
-    const dir = path.join(cwd, ".claude", "skills", "aslite");
+    const dir = path.join(cwd, ".claude", "skills", "superbee");
     mkdirSync(dir, { recursive: true });
     writeFileSync(path.join(dir, "SKILL.md"), "owned-looking\n");
     writeFileSync(
@@ -373,7 +501,7 @@ test("backslash-traversal manifests make both mutators refuse without changing t
 test("a failed persistent-install authority preflight leaves both host targets untouched", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  const claudeDir = path.join(cwd, ".claude", "skills", "aslite");
+  const claudeDir = path.join(cwd, ".claude", "skills", "superbee");
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(path.join(claudeDir, "foreign.md"), "keep\n");
   const beforeClaude = treeSnapshot(claudeDir);
@@ -406,8 +534,8 @@ test("skill uninstall removes exactly the managed folders and leaves foreign sib
 
   const receipt = await runSkill(["uninstall"], { cwd, executable });
   assert.equal(receipt.skill.changed, true);
-  assert.equal(existsSync(path.join(cwd, ".claude", "skills", "aslite")), false);
-  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "aslite")), false);
+  assert.equal(existsSync(path.join(cwd, ".claude", "skills", "superbee")), false);
+  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "superbee")), false);
   assert.equal(readFileSync(path.join(foreign, "SKILL.md"), "utf8"), "# foreign skill\n");
 
   // Uninstalling again is a no-op, exit 0.
@@ -420,7 +548,7 @@ test("skill uninstall refuses unmanifested extra files — nothing at all is del
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   writeFileSync(path.join(dir, "user-notes.md"), "keep me\n");
 
   await assert.rejects(
@@ -436,14 +564,14 @@ test("skill uninstall refuses unmanifested extra files — nothing at all is del
   assert.equal(readFileSync(path.join(dir, "SKILL.md"), "utf8"), ASSET_FILES["SKILL.md"]);
   assert.ok(existsSync(path.join(dir, SKILL_MANIFEST_FILENAME)));
   // The clean codex folder was still uninstalled.
-  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "aslite")), false);
+  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "superbee")), false);
 });
 
 test("skill uninstall refuses a folder with no manifest and a folder whose manifest is malformed", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  const claudeDir = path.join(cwd, ".claude", "skills", "aslite");
-  const codexDir = path.join(cwd, ".codex", "skills", "aslite");
+  const claudeDir = path.join(cwd, ".claude", "skills", "superbee");
+  const codexDir = path.join(cwd, ".codex", "skills", "superbee");
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(path.join(claudeDir, "SKILL.md"), "unmanaged copy\n");
   mkdirSync(codexDir, { recursive: true });
@@ -464,7 +592,7 @@ test("skill uninstall refuses a folder with no manifest and a folder whose manif
 test("a manifest naming paths outside the folder is malformed — uninstall refuses, nothing outside is touched", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   mkdirSync(dir, { recursive: true });
   const victim = path.join(cwd, ".claude", "skills", "victim.md");
   writeFileSync(victim, "outside the managed folder\n");
@@ -488,22 +616,24 @@ test("--scope user honors host relocation and --scope global remains an alias", 
   const env = { CLAUDE_CONFIG_DIR: claudeHome, CODEX_HOME: codexHome };
   const receipt = await runSkill(["install", "--scope", "user"], { home, env, executable });
   assert.equal(receipt.skill.scope, "user");
-  assert.ok(existsSync(path.join(claudeHome, "skills", "aslite", "SKILL.md")));
-  assert.ok(existsSync(path.join(codexHome, "skills", "aslite", "SKILL.md")));
+  assert.ok(existsSync(path.join(claudeHome, "skills", "superbee", "SKILL.md")));
+  assert.ok(existsSync(path.join(codexHome, "skills", "superbee", "SKILL.md")));
   assert.equal(existsSync(path.join(home, ".claude")), false);
   assert.equal(existsSync(path.join(home, ".codex")), false);
 
   const aliasStatus = await runSkill(["status", "--scope", "global"], { home, env, executable });
   assert.equal(aliasStatus.skill.scope, "user");
+  assert.equal(aliasStatus.skill.hosts.claude_code.canonical.state, "installed");
+  assert.equal(aliasStatus.skill.hosts.claude_code.legacy.state, "absent");
 
   await runSkill(["uninstall", "--scope", "global"], { home, env, executable });
-  assert.equal(existsSync(path.join(claudeHome, "skills", "aslite")), false);
-  assert.equal(existsSync(path.join(codexHome, "skills", "aslite")), false);
+  assert.equal(existsSync(path.join(claudeHome, "skills", "superbee")), false);
+  assert.equal(existsSync(path.join(codexHome, "skills", "superbee")), false);
 
   // An EMPTY env value falls back to <home>/.<host> — the shell ${VAR:-default} rule.
   const targets = skillTargets("user", { home, env: { CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" } });
-  assert.equal(targets.claude, path.join(home, ".claude", "skills", "aslite"));
-  assert.equal(targets.codex, path.join(home, ".codex", "skills", "aslite"));
+  assert.equal(targets.claude, path.join(home, ".claude", "skills", "superbee"));
+  assert.equal(targets.codex, path.join(home, ".codex", "skills", "superbee"));
 });
 
 test("a distribution without shipped skill assets is a loud runtime error, not a partial install", async () => {
@@ -558,13 +688,13 @@ test("a symlinked target folder is refused by install AND uninstall, reported un
   const victimProject = path.join(base, "victim-project");
   mkdirSync(victimProject, { recursive: true });
   await runSkill(["install"], { cwd: victimProject, executable });
-  const victimDir = path.join(victimProject, ".claude", "skills", "aslite");
+  const victimDir = path.join(victimProject, ".claude", "skills", "superbee");
   const victimBefore = treeSnapshot(victimDir);
 
   // The attacked project: claude target is a symlink to the victim's managed install.
   const cwd = path.join(base, "linked-project");
   mkdirSync(path.join(cwd, ".claude", "skills"), { recursive: true });
-  symlinkSync(victimDir, path.join(cwd, ".claude", "skills", "aslite"));
+  symlinkSync(victimDir, path.join(cwd, ".claude", "skills", "superbee"));
 
   // install: refused on the symlinked host, structured error, sibling (codex) still processed.
   await assert.rejects(
@@ -577,7 +707,7 @@ test("a symlinked target folder is refused by install AND uninstall, reported un
     },
   );
   assertSameTree(victimBefore, treeSnapshot(victimDir));
-  assert.ok(existsSync(path.join(cwd, ".codex", "skills", "aslite", SKILL_MANIFEST_FILENAME)));
+  assert.ok(existsSync(path.join(cwd, ".codex", "skills", "superbee", SKILL_MANIFEST_FILENAME)));
 
   // status: the symlinked target is honestly unmanaged, never followed into the victim.
   const status = await runSkill(["status"], { cwd, executable });
@@ -594,9 +724,9 @@ test("a symlinked target folder is refused by install AND uninstall, reported un
       return true;
     },
   );
-  assert.ok(lstatSync(path.join(cwd, ".claude", "skills", "aslite")).isSymbolicLink());
+  assert.ok(lstatSync(path.join(cwd, ".claude", "skills", "superbee")).isSymbolicLink());
   assertSameTree(victimBefore, treeSnapshot(victimDir));
-  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "aslite")), false);
+  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "superbee")), false);
 });
 
 test("manifest-first: an interrupted install (manifest present, files missing) is managed-stale — status stale, install converges, uninstall cleans", async () => {
@@ -604,7 +734,7 @@ test("manifest-first: an interrupted install (manifest present, files missing) i
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
 
   // Simulate the interruption point after the manifest write: manifested files missing.
   rmSync(path.join(dir, "SKILL.md"));
@@ -634,7 +764,7 @@ test("a manifested file symlinked to an outside victim: uninstall unlinks the LI
   writeFileSync(victim, ASSET_FILES["SKILL.md"]);
 
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   const linked = path.join(dir, "SKILL.md");
   rmSync(linked);
   symlinkSync(victim, linked);
@@ -661,7 +791,7 @@ test("a killed atomic write's tmp orphan of an OWNED file is managed debris: ins
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
 
   writeFileSync(path.join(dir, "SKILL.md.tmp-99999-abc-def"), "stranded half-write\n");
   const converge = await runSkill(["install"], { cwd, executable });
@@ -680,7 +810,7 @@ test("a temp-patterned file with a FOREIGN base is NOT debris — install and un
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   // The name MATCHES the temp regex shape exactly — only the owned-base check keeps it foreign,
   // so this test pins `owned.has(base)` itself, not the regex.
   writeFileSync(path.join(dir, "random-foreign.md.tmp-1-ab-cd"), "not ours\n");
@@ -696,7 +826,7 @@ test("the manifest's own tmp orphan: state reads MANAGED (status ignores without
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   const orphan = path.join(dir, ".aslite-skill.json.tmp-4242-q1w2-e3r4");
   writeFileSync(orphan, "{half-written manifest");
 
@@ -710,7 +840,7 @@ test("the manifest's own tmp orphan: state reads MANAGED (status ignores without
   assert.equal(existsSync(orphan), false);
 
   // A FIRST-install kill strands only the manifest tmp: absent (not unmanaged), fresh install ok.
-  const codexDir = path.join(cwd, ".codex", "skills", "aslite");
+  const codexDir = path.join(cwd, ".codex", "skills", "superbee");
   await runSkill(["uninstall"], { cwd, executable });
   mkdirSync(codexDir, { recursive: true });
   writeFileSync(path.join(codexDir, ".aslite-skill.json.tmp-1-a2-b3"), "{");
@@ -748,7 +878,7 @@ test("upgrade end-to-end: obsolete v1 asset removed, final manifest is exactly t
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable: exe1 });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   assert.ok(existsSync(path.join(dir, ...LEGACY_FILE.split("/"))));
 
   const upgraded = await runSkill(["install"], { cwd, executable: exe2 });
@@ -763,7 +893,7 @@ test("upgrade intermediate (transitional manifest + surviving v1 asset): stale, 
   const { base, exe1, exe2 } = upgradeScratch();
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
 
   // The kill point right after the transitional-manifest write: v1 files intact, union manifest.
   const construct = async () => {
@@ -790,7 +920,7 @@ test("upgrade intermediate (transitional manifest + partial v2 assets): stale, i
   const { base, exe1, exe2 } = upgradeScratch();
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
 
   // The kill point mid-asset-writes: union manifest, one v2 asset missing, legacy still present.
   const construct = async () => {
@@ -823,7 +953,7 @@ test("upgrade completed state (final manifest, exact v2 assets): installed, inst
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable: exe1 });
   await runSkill(["install"], { cwd, executable: exe2 });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
 
   assert.equal((await runSkill(["status"], { cwd, executable: exe2 })).skill.hosts.claude_code.state, "installed");
   assert.equal((await runSkill(["install"], { cwd, executable: exe2 })).skill.changed, false);
@@ -836,7 +966,7 @@ test("UNMANAGED folder + asset-named tmp + foreign file: refusal deletes NEITHER
   // foreign data — the sweep must not touch it; only the reserved manifest-name tmp is ours.
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  const claudeDir = path.join(cwd, ".claude", "skills", "aslite");
+  const claudeDir = path.join(cwd, ".claude", "skills", "superbee");
   mkdirSync(claudeDir, { recursive: true });
   writeFileSync(path.join(claudeDir, "SKILL.md.tmp-123-abc-def"), "could be foreign data\n");
   writeFileSync(path.join(claudeDir, "foreign.md"), "definitely foreign\n");
@@ -853,7 +983,7 @@ test("UNMANAGED folder + asset-named tmp + foreign file: refusal deletes NEITHER
 test("install adopts a pre-existing EMPTY real directory as a fresh install", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
-  mkdirSync(path.join(cwd, ".claude", "skills", "aslite"), { recursive: true });
+  mkdirSync(path.join(cwd, ".claude", "skills", "superbee"), { recursive: true });
   const receipt = await runSkill(["install"], { cwd, executable });
   assert.equal(receipt.skill.hosts.claude_code.changed, true);
   assert.equal((await runSkill(["status"], { cwd, executable })).skill.hosts.claude_code.state, "installed");
@@ -864,7 +994,7 @@ test("an EMPTY directory at a manifested path: status stale (no crash), install 
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   const squatted = path.join(dir, "SKILL.md");
 
   rmSync(squatted);
@@ -888,7 +1018,7 @@ test("a NON-EMPTY directory at a manifested path: structured refusal, nested con
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
   await runSkill(["install"], { cwd, executable });
-  const dir = path.join(cwd, ".claude", "skills", "aslite");
+  const dir = path.join(cwd, ".claude", "skills", "superbee");
   const squatted = path.join(dir, "SKILL.md");
   rmSync(squatted);
   mkdirSync(squatted);
@@ -918,7 +1048,7 @@ test("a NON-EMPTY directory at a manifested path: structured refusal, nested con
   assert.equal(readFileSync(path.join(squatted, "nested-foreign.txt"), "utf8"), "do not delete\n");
   assert.ok(existsSync(path.join(dir, SKILL_MANIFEST_FILENAME)), "refusal deletes nothing else either");
   // The sibling codex host was still processed on both verbs (install converged, uninstall removed).
-  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "aslite")), false);
+  assert.equal(existsSync(path.join(cwd, ".codex", "skills", "superbee")), false);
 });
 
 test("skill usage errors: missing/unknown subcommand and bad scope are USAGE, not runtime", async () => {

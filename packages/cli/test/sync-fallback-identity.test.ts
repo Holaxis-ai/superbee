@@ -122,7 +122,7 @@ test("sync: DoD1 — a fresh-container / identity-less git still commits, with a
     // resolved actor ("mike", the doc's own frontmatter actor — the same value the receipt
     // names), user.email is its slug at the RFC 2606 `.invalid` placeholder domain.
     const { author, committer } = identityLine(topo.a.board);
-    assert.equal(author, "mike <mike@agentstate-lite.invalid>");
+    assert.equal(author, "mike <mike@superbee.invalid>");
     assert.equal(committer, author, "commit created directly (not replayed) — author == committer");
   } finally {
     await cleanup();
@@ -144,14 +144,14 @@ test("sync --establish --yes: DoD2 — the committed-folder cleanup commit succe
     // actor in scope, so the fallback's OWN literal names it.
     const boardSha = (rec.board_commit as string).trim();
     const boardIdentity = git(topo.a.root, ["log", "-1", "--format=%an <%ae>", boardSha]).trim();
-    assert.equal(boardIdentity, "agentstate-lite <agentstate-lite@agentstate-lite.invalid>");
+    assert.equal(boardIdentity, "superbee <superbee@superbee.invalid>");
 
     // The folder-removal cleanup commit (createRemovalCommit, flow.ts) — same synthetic identity,
     // on the LOCAL, unpushed `board-cleanup` branch (the DoD's explicit in-scope commit).
     const cleanupSha = (rec.cleanup_commit as string).trim();
     assert.equal(git(topo.a.root, ["rev-parse", `refs/heads/${CLEANUP_BRANCH}`]).trim(), cleanupSha);
     const cleanupIdentity = git(topo.a.root, ["log", "-1", "--format=%an <%ae>", cleanupSha]).trim();
-    assert.equal(cleanupIdentity, "agentstate-lite <agentstate-lite@agentstate-lite.invalid>");
+    assert.equal(cleanupIdentity, "superbee <superbee@superbee.invalid>");
   } finally {
     await cleanup();
     await topo.cleanup();

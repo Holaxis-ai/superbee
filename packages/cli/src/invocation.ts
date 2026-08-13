@@ -1,7 +1,7 @@
 // Resolve the running CLI's OWN invocation for emitted follow-up commands + the home-view identity.
 //
 // The CLI is a standalone, npm-publishable package (`superbee`; legacy bin aliases
-// `aslite` / `agentstate-lite` stay supported). Per AXI §7/§10 a printed
+// the legacy aliases `aslite` / `agentstate-lite` stay supported). Per AXI §7/§10 a printed
 // follow-up command must be COPY-PASTE runnable and never a phantom path:
 //
 //   • cliInvocation() — the runnable command PREFIX for hints/help. If a managed bin name resolves on

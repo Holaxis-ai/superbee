@@ -4,8 +4,8 @@
 // dir. The on-disk field SHAPE stays compatible with holaxis-agentstate `packages/cli/src/credentials.ts`
 // (same field names, same atomic temp-file-then-rename write with 0600/0700 perms), but the FILE is
 // deliberately SEPARATE — `okf-config.json`, NOT canonical AgentState's `credentials.json` — so
-// agentstate-lite never overwrites (nor reads as its own) the canonical CLI's OAuth credential on the
-// same machine. What agentstate-lite stores: per-origin `--remote` API keys (`remotes`) only — the
+// Superbee never overwrites (nor reads as its own) the canonical AgentState CLI's OAuth credential
+// on the same machine. What Superbee stores: per-origin `--remote` API keys (`remotes`) only — the
 // OAuth/PKCE/loopback flow AND the legacy `login --token` bearer store (`server`/`access_token`) are
 // both gone; the live remote auth is a per-origin API key against a gated wire-protocol deployment.
 //

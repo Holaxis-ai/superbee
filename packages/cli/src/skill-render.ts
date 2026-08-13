@@ -7,8 +7,8 @@ import { STABLE_MCP_LAUNCH_GUIDANCE } from "./integration-guidance.js";
 
 export { NPM_RESOURCES, commandName };
 
-// Superbee is the canonical npm coordinate and command. The historical `aslite` and
-// `agentstate-lite` bins remain installed aliases so existing users do not need to migrate.
+// Superbee is the canonical npm coordinate and command. The legacy aliases `aslite` and `agentstate-lite`
+// remain installed so existing users do not need to migrate.
 const NPM_COORDINATE = "superbee";
 const NPM_BIN = "superbee";
 const NPX = `npx -y ${NPM_COORDINATE}`;
@@ -153,11 +153,12 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push("to this machine.)");
   lines.push("");
   lines.push(
-    "Write with attribution: set `AGENTSTATE_LITE_ACTOR=<your-name>` once for `new`, `doc write`,",
+    "Write with attribution: set `SUPERBEE_ACTOR=<your-name>` once for `new`, `doc write`,",
   );
   lines.push(
     "`doc update`, and `link add`, or pass `--actor <your-name>` per command (the flag wins).",
   );
+  lines.push("Existing `AGENTSTATE_LITE_ACTOR` settings remain supported as a compatibility input.");
   lines.push(
     "With neither source, no advisory actor label is stored in frontmatter or sent as an agent label;",
   );
@@ -205,7 +206,7 @@ function renderWorkspaceLocation(prefix: string): string[] {
     "If the user wants the workspace PRIVATE to their machine instead of shared (a personal",
   );
   lines.push(
-    "scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate-lite/<name>/`)",
+    "scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate/<name>/`)",
   );
   lines.push(
     "and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates",
@@ -373,9 +374,10 @@ function renderSyncSection(prefix: string): string[] {
     "Your OWN changes still only leave the machine when you run `sync`. To disable the auto-pull",
   );
   lines.push(
-    "(CI, scripted runs), set `AGENTSTATE_LITE_NO_AUTOPULL` to any non-empty value — even `0`",
+    "(CI, scripted runs), set `SUPERBEE_NO_AUTOPULL` to any non-empty value — even `0`",
   );
   lines.push("disables it; the variable's presence is the switch.");
+  lines.push("Legacy `AGENTSTATE_LITE_NO_AUTOPULL` remains supported with the same presence semantics.");
   lines.push("");
   lines.push(
     "On projects that share their board you may notice a `board` branch in the repo's GitHub —",
@@ -454,8 +456,9 @@ function renderRemoteAccessSection(invocation: string): string[] {
   lines.push(
     "a local bundle over the wire protocol, or pass `--remote <url>` to a bundle-facing command.",
   );
-  lines.push("For an authenticated remote, provide `AGENTSTATE_LITE_API_KEY`; an already-provisioned");
-  lines.push("stored per-origin credential is also consumed when present. Account and admin credential");
+  lines.push("For an authenticated remote, provide `SUPERBEE_API_KEY`; an already-provisioned");
+  lines.push("stored per-origin credential is also consumed when present. Legacy `AGENTSTATE_LITE_API_KEY`");
+  lines.push("remains supported as a compatibility input. Account and admin credential");
   lines.push("provisioning is outside the default CLI surface.");
   lines.push("");
   lines.push("```bash");
@@ -563,7 +566,7 @@ export function renderNpm(): string {
   lines.push(`${DESCRIPTION}.`);
   lines.push("");
   lines.push(
-    `It is a standalone npm package (\`${NPM_COORDINATE}\`) installing two bins for the identical CLI: \`${NPM_BIN}\` and the`,
+    `It is a standalone npm package (\`${NPM_COORDINATE}\`) installing three bins for the identical CLI: \`${NPM_BIN}\` and the`,
   );
   lines.push("legacy aliases `aslite` and `agentstate-lite`. Every example below uses `superbee`.");
   lines.push("");

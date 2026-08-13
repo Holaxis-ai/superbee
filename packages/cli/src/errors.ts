@@ -176,7 +176,7 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *  - `VersionConflict` that escaped a call site's own translation -> STALE_HEAD (5), with
  *    `{expected, actual}` details.
  *  - `RemoteError` -> by ITS server-derived `code`: AUTH_REQUIRED -> exit 4 with an
- *    `AGENTSTATE_LITE_API_KEY` fixing hint; RUNTIME and VERSION_MISSING (a 5xx, or an
+ *    `SUPERBEE_API_KEY` fixing hint; RUNTIME and VERSION_MISSING (a 5xx, or an
  *    intermediary stripping the version header — retry/report, not a caller mistake) -> RUNTIME
  *    (1); FORBIDDEN -> FORBIDDEN (USAGE's exit 2, distinct code — re-authenticating grants no
  *    role); NOT_FOUND -> NOT_FOUND (6); LAST_ADMIN -> LAST_ADMIN (CONFLICT's exit 5). An
@@ -206,7 +206,7 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
     if (err.code === "AUTH_REQUIRED") {
       return new CliError("AUTH_REQUIRED", err.message, {
         help:
-          `set AGENTSTATE_LITE_API_KEY=<key> and retry the same command against --remote ${remoteUrl ?? "<url>"}; ` +
+          `set SUPERBEE_API_KEY=<key> and retry the same command against --remote ${remoteUrl ?? "<url>"}; ` +
           "an already-provisioned stored per-origin credential is also accepted",
       });
     }

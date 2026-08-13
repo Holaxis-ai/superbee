@@ -68,10 +68,10 @@ Options:
   --actor <name>       Attribute this write: persisted as the doc's own 'actor' frontmatter field
                        (the per-doc attribution sync and its receipts read) and recorded in version
                        history by a persisting backend. Note doc write is a FULL replace: omitting
-                       both --actor and AGENTSTATE_LITE_ACTOR on an overwrite drops any existing
-                       actor field (reported in dropped_fields). Precedence: --actor >
-                       AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or environment value
-                       is a USAGE error (exit 2).
+                       both --actor and the supported actor environment variables on an overwrite
+                       drops any existing actor field (reported in dropped_fields). Precedence:
+                       --actor > SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. A
+                       present-but-blank flag or environment value is a USAGE error (exit 2).
 ${COMMON_OPTIONS}
 
 Examples:
@@ -123,8 +123,9 @@ Options:
                          blank value is a USAGE error (exit 2), not "no CAS".
   --actor <name>         Attribute a substantive patch: sets the doc's 'actor' frontmatter field
                          (overwriting a previous actor) and threads to version history (see 'doc
-                         history'). Precedence: --actor > AGENTSTATE_LITE_ACTOR > absent. With
-                         neither source, the existing actor is preserved. Attribution is not a
+                         history'). Precedence: --actor > SUPERBEE_ACTOR > legacy
+                         AGENTSTATE_LITE_ACTOR > absent. With neither source, the existing actor is
+                         preserved. Attribution is not a
                          patch by itself and cannot turn an identical patch into a write. A
                          present-but-blank flag or environment value is a USAGE error (exit 2).
 
@@ -194,11 +195,12 @@ Usage:
 Lists version + actor + timestamp (and agent, when recorded) per revision, with a count. A
 history-keeping backend (a remote deployment) returns the full chain and its real per-write
 attribution; on an AUTH'D remote, actor is your authenticated principal (server-set, unforgeable)
-and agent is the resolved advisory actor label from --actor or AGENTSTATE_LITE_ACTOR. A local
+and agent is the resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy
+AGENTSTATE_LITE_ACTOR. A local
 --dir bundle keeps no history, so it returns just the single current revision and reports the
 file's OS owner as the actor (the filesystem backend keeps no per-write advisory actor label in
-history; the doc's own 'actor' frontmatter field — persisted from --actor or
-AGENTSTATE_LITE_ACTOR — is where per-doc attribution lives). The newest version is the token to
+history; the doc's own 'actor' frontmatter field — persisted from the same sources — is where
+per-doc attribution lives). The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
 Options:

@@ -9,7 +9,7 @@
 //
 // `--remote <url>` is the OTHER way to resolve a bundle: it produces a
 // `{ root: <url>, backend: RemoteBackend }` handle wired to a `docs/WIRE-PROTOCOL.md` v0 server
-// (`agentstate-lite serve`). The sentinel `root` is the URL itself — it can never collide with a
+// (`superbee serve`). The sentinel `root` is the URL itself — it can never collide with a
 // real filesystem path, while still giving consumers a stable display identity (the
 // tri-backend tests' `mem://…` roots are the same pattern). An EXPLICIT `--remote`
 // flag and an EXPLICIT `--dir` flag remain mutually exclusive (a USAGE error) — that combination

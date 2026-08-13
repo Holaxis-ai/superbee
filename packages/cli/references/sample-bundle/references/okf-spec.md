@@ -1,7 +1,7 @@
 ---
 type: Reference
 title: Open Knowledge Format v0.1 (Draft)
-description: The vendor-neutral, filesystem-native knowledge format agentstate-lite conforms to.
+description: The vendor-neutral, filesystem-native knowledge format Superbee conforms to.
 resource: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
 tags: [okf, spec, reference]
 timestamp: 2026-07-01T11:00:00Z

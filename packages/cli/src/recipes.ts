@@ -335,11 +335,11 @@ export const ROADMAP_DESC_BODY =
   "that already exists, so this recipe cannot patch your bundle's `conventions/task` — the\n" +
   "pairing is a deliberate one-step opt-in on the adopting bundle:\n\n" +
   "```\n" +
-  "agentstate-lite pull --doc-key conventions/task.md --out task.md\n" +
+  "superbee pull --doc-key conventions/task.md --out task.md\n" +
   "# edit task.md — add to the frontmatter:\n" +
   "#   expects_inbound:\n" +
   "#     contains: Roadmap Item\n" +
-  "agentstate-lite promote task.md --doc-key conventions/task.md --expected-version <version from the pull receipt>\n" +
+  "superbee promote task.md --doc-key conventions/task.md --expected-version <version from the pull receipt>\n" +
   "```\n\n" +
   "Without this step everything else still works (the `contains` vocabulary and its link-type\n" +
   "validation come from THIS recipe's conventions); only the \"task lacks an owning item\" lint\n" +
@@ -487,7 +487,7 @@ export async function applyRecipe(
   };
   const migrationWarnings: ValidationWarning[] = [];
   const migrationHelp =
-    "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` (in the agentstate-lite repo) to migrate it in place";
+    "run `node scripts/migrate-legacy-view-names.mjs --dir <bundle-root>` from the Superbee repository root to migrate it in place";
 
   const docs: RecipeDocResult[] = [];
   for (const d of recipe.docs) {

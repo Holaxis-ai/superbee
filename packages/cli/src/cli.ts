@@ -154,7 +154,7 @@ export const RUNTIME_COMMANDS = Object.freeze({
  */
 /**
  * True when `argv` is ONLY home-compatible global flags (`--remote <url>` / `--dir <path>` /
- * `--json` / `--no-update-check`) with NO positional subcommand — the canonical `agentstate-lite --remote <url>` an agent
+ * `--json` / `--no-update-check`) with NO positional subcommand — the canonical `superbee --remote <url>` an agent
  * runs to orient against a bundle. Such an invocation routes to the home view rather than the
  * "options must follow the command" USAGE error (which is for a real flag-before-command like
  * `--dir x list`, or an unknown flag like `--bogus`). Any parse failure returns false.
@@ -180,7 +180,7 @@ function isGlobalOnlyHomeInvocation(argv: string[]): boolean {
 
 /**
  * When argv is `[global flags…] <known-subcommand> [rest…]` (a common ordering mistake — the agent
- * mirrors the bare `agentstate-lite --dir <path>` home form), reorder it so it RUNS instead of
+ * mirrors the bare `superbee --dir <path>` home form), reorder it so it RUNS instead of
  * erroring "options must follow the command". The leading global-flag block is moved to the END —
  * `<subcommand> [rest…] [global flags…]` — so it lands after the FULL command path; splicing the
  * flags in right after the first word would break TWO-word commands (`doc read`, `link add`, `kind
@@ -245,7 +245,7 @@ export async function main(argv: string[]): Promise<void> {
   // must FOLLOW the subcommand. Give an actionable hint rather than the opaque "unknown command:
   // --dir". (`--version`/`-v` and `--help`/`-h` are handled above; this is for the rest.) Exit 2.
   if (command.startsWith("-")) {
-    // `agentstate-lite --remote <url>` (or `--dir <path>`) with NO subcommand is the canonical
+  // `superbee --remote <url>` (or `--dir <path>`) with NO subcommand is the canonical
     // "orient me against this bundle" invocation, not a flags-before-command mistake — route it to
     // the home view (scoped to that remote/dir) instead of erroring. A real leading flag before a
     // command (`--dir x list`) or an unknown flag (`--bogus`) still gets the actionable USAGE hint.

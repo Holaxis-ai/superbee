@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
 #
-# demo.sh — set up a SCRATCH bundle you can try the bundle-views UI on (tasks/ui-pages-spike).
+# demo.sh — set up a SCRATCH bundle you can try the bundle-views UI on.
 #
-# It copies THIS repo's own board into a throwaway directory (never writing spike content into the
-# real .agentstate-lite board), applies the View convention + the registry docs, promotes the
-# seed view blobs via the BUILT CLI, then prints the exact commands to launch the UI and to drive
-# live updates from a second terminal. It does NOT launch the UI itself (that is a foreground
+# It creates a throwaway bundle, seeds a small roadmap, applies the View convention + registry docs,
+# promotes the View blobs via the BUILT CLI, then prints the exact commands to launch the UI and to
+# drive live updates from a second terminal. It does NOT launch the UI itself (that is a foreground
 # server) — it prints the command for you to run.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-CLI="$REPO/packages/cli/dist/agentstate-lite.mjs"
+CLI="$REPO/packages/cli/dist/superbee.mjs"
 
 if [ ! -f "$CLI" ]; then
   echo "The built CLI is missing: $CLI" >&2
@@ -19,15 +18,21 @@ if [ ! -f "$CLI" ]; then
   exit 1
 fi
 
-SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/aslite-views-demo.XXXXXX")"
+SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/superbee-views-demo.XXXXXX")"
 BUNDLE="$SCRATCH/bundle"
-mkdir -p "$BUNDLE"
-# Copy the repo's live board into the scratch bundle (contents, including dotfiles) — this is why
-# the Roadmap view renders real content immediately: this repo's own board already carries Roadmap
-# Item docs with `contains` links to real tasks.
-cp -R "$REPO/.agentstate-lite/." "$BUNDLE/"
 
 echo "Seeding scratch bundle: $BUNDLE"
+
+node "$CLI" init --create-only --recipe work-tracking --dir "$BUNDLE" >/dev/null
+node "$CLI" recipe add roadmap --dir "$BUNDLE" >/dev/null
+node "$CLI" new Roadmap roadmap --title "Demo roadmap" --dir "$BUNDLE" >/dev/null
+node "$CLI" new "Roadmap Item" first-party-views --title "Try the first-party Views" \
+  --status active --sequence 1 --description "A small self-contained roadmap for this demo." \
+  --dir "$BUNDLE" >/dev/null
+node "$CLI" new Task open-the-view --title "Open the Roadmap View" --status todo \
+  --dir "$BUNDLE" >/dev/null
+node "$CLI" link add roadmap roadmap-items/first-party-views --text contains --dir "$BUNDLE" >/dev/null
+node "$CLI" link add roadmap-items/first-party-views tasks/open-the-view --text contains --dir "$BUNDLE" >/dev/null
 
 # Install the bundle-native authoring reference with the convention, then the registry docs and
 # view blobs. .md keys route through the doc engine; other keys are opaque blobs.

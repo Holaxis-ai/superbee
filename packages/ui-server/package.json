@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Reusable loopback host for the local AgentState Lite UI shell. CLI policy and generated assets remain consumer-owned.",
+  "description": "Reusable loopback host for the local Superbee UI shell. CLI policy and generated assets remain consumer-owned.",
   "license": "MIT",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -92,7 +92,7 @@ board changes.
 and proceeds as an ordinary sync.
 
 On a repo that has never had the board checkout materialized locally (a fresh clone, or the first
-\`aslite\` invocation after one), sync provisions \`.agentstate-lite\` itself from \`origin/board\` —
+\`superbee\` invocation after one), sync provisions \`.agentstate-lite\` itself from \`origin/board\` —
 never silently: the receipt carries a \`provisioned: <path>\` line. If the checkout already exists
 but its pointers went stale (e.g. it was moved or remounted at a different path), sync self-heals
 it via \`git worktree repair\` and reports \`repaired: <path>\` the same way — a repair is a git
@@ -138,9 +138,9 @@ provisioned board fresh opportunistically: when the board's awareness state is o
 minutes, the read first runs the same fast-forward-only pull \`--pull-only\` uses (time-boxed to
 ~2s; never a rebase, never provisioning, silent on any failure) and then serves fresh state — so
 the board checkout's HEAD can advance after a plain \`list\`. Reads never auto-push; sharing YOUR
-changes is always this verb. Set AGENTSTATE_LITE_NO_AUTOPULL to any non-empty value to disable
-the auto-pull (note: "0" disables it too — the variable's PRESENCE is the switch) for CI or
-scripted runs that must never touch the network.
+changes is always this verb. Set SUPERBEE_NO_AUTOPULL to any non-empty value to disable the
+auto-pull (note: "0" disables it too — the variable's PRESENCE is the switch) for CI or scripted
+runs that must never touch the network. Legacy AGENTSTATE_LITE_NO_AUTOPULL remains supported.
 
 \`--establish\` also handles the project whose \`.agentstate-lite/\` folder is ALREADY COMMITTED
 on the current branch: it creates the \`board\` branch carrying the folder's CURRENT files (files

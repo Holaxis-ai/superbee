@@ -42,7 +42,7 @@ describe("ReloginScreen", () => {
     });
 
     const text = container.textContent ?? "";
-    expect(text).toContain("AGENTSTATE_LITE_API_KEY");
+    expect(text).toContain("SUPERBEE_API_KEY");
     expect(text).toContain("ui --remote");
     expect(text).toContain("https://remote.example");
     expect(text).not.toContain("agentstate-lite login");

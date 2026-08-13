@@ -1,13 +1,13 @@
 ---
 type: Concept
 title: OKF Alignment
-description: How agentstate-lite maps agent knowledge onto Open Knowledge Format primitives.
+description: How Superbee maps agent knowledge onto Open Knowledge Format primitives.
 tags: [okf, design, mapping]
 timestamp: 2026-07-01T12:00:00Z
 ---
 # Summary
 
-agentstate-lite is an OKF-native store. Every agent artifact is one OKF concept
+Superbee is an OKF-native store. Every agent artifact is one OKF concept
 document: a markdown body with a YAML frontmatter block whose only required field
 is `type`. Nothing here is a bespoke database record — it is the format itself.
 

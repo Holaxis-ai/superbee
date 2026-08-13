@@ -82,14 +82,14 @@ test("identityFlags: the four -c args once resolution genuinely fails — actor 
         "-c",
         "user.name=Mike Collier",
         "-c",
-        "user.email=mike-collier@agentstate-lite.invalid",
+        "user.email=mike-collier@superbee.invalid",
       ]);
       // No actor at all -> the literal fallback for both name and email.
       assert.deepEqual(identityFlags(scratch), [
         "-c",
-        "user.name=agentstate-lite",
+        "user.name=superbee",
         "-c",
-        "user.email=agentstate-lite@agentstate-lite.invalid",
+        "user.email=superbee@superbee.invalid",
       ]);
       // A blank actor reads the same as an absent one.
       assert.deepEqual(identityFlags(scratch, "   "), identityFlags(scratch));
@@ -99,7 +99,7 @@ test("identityFlags: the four -c args once resolution genuinely fails — actor 
         "-c",
         "user.name=!!!",
         "-c",
-        "user.email=agentstate-lite@agentstate-lite.invalid",
+        "user.email=superbee@superbee.invalid",
       ]);
     });
   } finally {
@@ -124,9 +124,9 @@ test("identityFlags: author-only env (GIT_AUTHOR_* set, NO committer source) sti
       // author, so a commit gets author=env, committer=synthetic.)
       assert.deepEqual(identityFlags(scratch), [
         "-c",
-        "user.name=agentstate-lite",
+        "user.name=superbee",
         "-c",
-        "user.email=agentstate-lite@agentstate-lite.invalid",
+        "user.email=superbee@superbee.invalid",
       ]);
     });
   } finally {
@@ -146,7 +146,7 @@ test("stageAndCommit: a synthetic identity lands the commit when resolution fail
     const result = await withNoGitIdentity(() => stageAndCommit(topo.a.board));
     assert.equal(result.committed, true);
     const { author, committer } = identityOf(topo.a.board);
-    assert.equal(author, "priya <priya@agentstate-lite.invalid>");
+    assert.equal(author, "priya <priya@superbee.invalid>");
     assert.equal(committer, author, "commit created directly (not replayed) — author == committer");
   } finally {
     await topo.cleanup();
@@ -163,12 +163,12 @@ test("createBoardRootCommit + createRemovalCommit: both plumbing commits succeed
       const treeSha = git(top, ["rev-parse", `HEAD:${BUNDLE_DIR}`]).trim();
       const boardSha = createBoardRootCommit(top, treeSha, "main");
       const board = identityOf(top, boardSha);
-      assert.equal(board.author, "agentstate-lite <agentstate-lite@agentstate-lite.invalid>");
+      assert.equal(board.author, "superbee <superbee@superbee.invalid>");
       assert.equal(board.committer, board.author);
 
       const removalSha = createRemovalCommit(top, "board: retire the committed folder\n");
       const removal = identityOf(top, removalSha);
-      assert.equal(removal.author, "agentstate-lite <agentstate-lite@agentstate-lite.invalid>");
+      assert.equal(removal.author, "superbee <superbee@superbee.invalid>");
       assert.equal(removal.committer, removal.author);
     });
   } finally {
@@ -196,7 +196,7 @@ test("fetchRebase: a clean different-doc REPLAY creates a new commit whose COMMI
     // the replay — the harness planted this commit as "bob" (divergeDifferentDoc); no doc-level
     // actor context flows into a rebase replay, so the committer is the literal fallback.
     assert.equal(author, "bob <bob@example.invalid>", "author preserved from the original local commit");
-    assert.equal(committer, "agentstate-lite <agentstate-lite@agentstate-lite.invalid>", "committer is the synthetic fallback");
+    assert.equal(committer, "superbee <superbee@superbee.invalid>", "committer is the synthetic fallback");
   } finally {
     await topo.cleanup();
   }
@@ -229,7 +229,7 @@ test("fetchRebaseResolving: a resolved conflict whose replayed commit SURVIVES n
     assert.match(git(topo.b.board, ["show", "HEAD:tasks/seed-one.md"]), /changed by A/);
     const { author, committer } = identityOf(topo.b.board);
     assert.equal(author, "bob <bob@example.invalid>", "author preserved from the original local commit");
-    assert.equal(committer, "agentstate-lite <agentstate-lite@agentstate-lite.invalid>", "committer is the synthetic fallback");
+    assert.equal(committer, "superbee <superbee@superbee.invalid>", "committer is the synthetic fallback");
   } finally {
     await rm(exportDir, { recursive: true, force: true });
     await topo.cleanup();

@@ -790,7 +790,12 @@ async function runInstalledProof(spec) {
     );
     assert.equal(skillInstall.skill.changed, true, "first skill install must report changed");
     for (const host of [".claude", ".codex"]) {
-      const dir = path.join(project, host, "skills", "aslite");
+      const dir = path.join(project, host, "skills", "superbee");
+      await assert.rejects(
+        stat(path.join(project, host, "skills", "aslite")),
+        /ENOENT/,
+        `${host}/skills/aslite must not be created by a fresh install`,
+      );
       const installedSkillMd = await readFile(path.join(dir, "SKILL.md"));
       assert.ok(
         installedSkillMd.equals(await readFile(path.join(committedSkillRoot, "SKILL.md"))),
@@ -807,8 +812,8 @@ async function runInstalledProof(spec) {
         await readFile(path.join(dir, ".aslite-skill.json"), "utf8"),
         "skill manifest",
       );
-      // The legacy skill folder is retained so existing aslite-managed installations stay
-      // discoverable and repairable. New receipts identify the canonical successor package.
+      // The serialized receipt identifiers remain compatible inside the canonical skill folder.
+      // New receipts identify the canonical successor package.
       assert.equal(skillManifest.package, target.package.name);
       assert.equal(skillManifest.version, manifest.version);
     }
@@ -819,10 +824,12 @@ async function runInstalledProof(spec) {
     );
     assert.equal(skillStatus.skill.hosts.claude_code.state, "installed");
     assert.equal(skillStatus.skill.hosts.codex.state, "installed");
+    assert.equal(skillStatus.skill.hosts.claude_code.canonical.state, "installed");
+    assert.equal(skillStatus.skill.hosts.claude_code.legacy.state, "absent");
 
     // Follow the installed SKILL.md's own $REFS instruction from the project ROOT: the host
     // reports the skill base dir; REFS = <base>/references, and $REFS/<dest> resolves from any cwd.
-    const skillBaseDir = path.join(project, ".claude", "skills", "aslite");
+    const skillBaseDir = path.join(project, ".claude", "skills", "superbee");
     const refsDir = path.join(skillBaseDir, "references");
     const authoringViaRefs = await readFile(path.join(refsDir, "views", "references", "view-authoring-v0.md"));
     assert.ok(
@@ -844,9 +851,9 @@ async function runInstalledProof(spec) {
     );
     for (const host of [".claude", ".codex"]) {
       await assert.rejects(
-        stat(path.join(project, host, "skills", "aslite")),
+        stat(path.join(project, host, "skills", "superbee")),
         /ENOENT/,
-        `${host}/skills/aslite must be gone after uninstall`,
+        `${host}/skills/superbee must be gone after uninstall`,
       );
     }
     assert.equal(
@@ -869,7 +876,8 @@ async function runInstalledProof(spec) {
       "skill install user",
     );
     for (const dir of [relocatedClaude, relocatedCodex]) {
-      await stat(path.join(dir, "skills", "aslite", "SKILL.md"));
+      await stat(path.join(dir, "skills", "superbee", "SKILL.md"));
+      await assert.rejects(stat(path.join(dir, "skills", "aslite")), /ENOENT/);
     }
     const userStatus = parseJson(
       (
@@ -892,7 +900,7 @@ async function runInstalledProof(spec) {
       "skill uninstall user",
     );
     for (const dir of [relocatedClaude, relocatedCodex]) {
-      await assert.rejects(stat(path.join(dir, "skills", "aslite")), /ENOENT/, `${dir} must be cleaned up`);
+      await assert.rejects(stat(path.join(dir, "skills", "superbee")), /ENOENT/, `${dir} must be cleaned up`);
     }
 
     // ── hook-command stability: installed hooks bind Node + the package entry, never ambient PATH ──

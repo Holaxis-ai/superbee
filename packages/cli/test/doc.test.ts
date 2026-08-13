@@ -3467,7 +3467,7 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   assert.doesNotMatch(deleteHelp, /--blank-body|--title/, "delete help stays minimal");
 
   const historyHelp = await capture(["history", "--help"]);
-  assert.match(historyHelp, /resolved advisory actor label from --actor or AGENTSTATE_LITE_ACTOR/);
+  assert.match(historyHelp, /resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy\s+AGENTSTATE_LITE_ACTOR/);
   assert.match(historyHelp, /authenticated principal \(server-set, unforgeable\)/);
   assert.match(historyHelp, /file's OS owner as the actor/);
 

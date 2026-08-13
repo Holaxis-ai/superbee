@@ -1,6 +1,6 @@
 /**
  * The `init` receipt's follow-up commands must retain an explicit `--dir` target. This test runs
- * the built CLI with its preferred `aslite` bin on PATH, then executes the emitted shell commands
+ * the built CLI with its preferred `superbee` bin on PATH, then executes the emitted shell commands
  * from a different bundle. That catches both failure-to-find and, more importantly, wrong-bundle
  * reads/writes. A target containing spaces and an apostrophe also proves the emitted target is
  * safely shell-quoted.
@@ -29,8 +29,8 @@ async function tempDir(prefix: string): Promise<string> {
 }
 
 async function makeBinOnPath(): Promise<{ binDir: string; env: NodeJS.ProcessEnv }> {
-  const binDir = await tempDir("aslite-init-help-bin-");
-  await symlink(cliBin, path.join(binDir, "aslite"));
+  const binDir = await tempDir("superbee-init-help-bin-");
+  await symlink(cliBin, path.join(binDir, "superbee"));
   return {
     binDir,
     env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` },
@@ -41,7 +41,7 @@ function run(
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync("aslite", args, {
+  const result = spawnSync("superbee", args, {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],

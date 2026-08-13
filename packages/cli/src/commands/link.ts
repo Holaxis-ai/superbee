@@ -108,7 +108,8 @@ Options:
   --keep-timestamp     Preserve the source's existing timestamp (default: refresh to now,
                        since adding a cross-link is a meaningful change)
   --actor <name>       Attribute a newly-added link in the source doc and backend history.
-                       Falls back to AGENTSTATE_LITE_ACTOR; an existing link remains a true no-op.
+                       Falls back to SUPERBEE_ACTOR (or legacy AGENTSTATE_LITE_ACTOR); an existing
+                       link remains a true no-op.
 ${LINK_COMMON_OPTIONS}
 
 Examples:

@@ -117,8 +117,8 @@ Options:
   --no-update-check  Disable both cached notice display and detached refresh for this run
   -h, --help         Show this help
 
-Environment opt-outs (presence, including an empty value): ASLITE_NO_UPDATE_CHECK,
-NO_UPDATE_NOTIFIER, or CI.
+Environment opt-outs (presence, including an empty value): SUPERBEE_NO_UPDATE_CHECK, legacy
+ASLITE_NO_UPDATE_CHECK, NO_UPDATE_NOTIFIER, or CI.
 `;
 
 const HOME_OPTIONS = {
@@ -688,7 +688,7 @@ export function buildHomeView(
     // Scoped to a remote bundle: an OFFLINE orientation pointer (home never fetches — it is the
     // every-session hook payload and must stay cheap). No local bundle block, no `init` nudge; point
     // the agent at the commands that DO read the remote. Resolves the #6 gap where the canonical
-    // `agentstate-lite --remote <url>` invocation errored instead of orienting.
+    // `superbee --remote <url>` invocation errored instead of orienting.
     const remoteBlock: Record<string, unknown> = {
       url: remote,
       help: [

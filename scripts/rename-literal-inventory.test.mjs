@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  approvedOccurrenceKey,
   assertClassifiedInventory,
   classifyLegacyLiteral,
   generateRenameLiteralInventory,
@@ -53,6 +54,7 @@ test("AC-60 named literals are classified with explicit owners and treatments", 
       file: "scripts/release-candidate.mjs",
       lineText: 'const schema = "aslite.release-candidate.v1";',
       match: "aslite",
+      exactApproval: true,
       category: "release-artifact-or-schema",
       owner: "release-policy",
     },
@@ -81,13 +83,22 @@ test("AC-60 named literals are classified with explicit owners and treatments", 
       file: "scripts/release-candidate.mjs",
       lineText: 'const out = "dist/agentstate-lite.mjs";',
       match: "agentstate-lite",
+      exactApproval: true,
       category: "compiled-artifact-path",
       owner: "cli-build",
     },
   ];
 
   for (const row of rows) {
-    const classified = classifyLegacyLiteral(row);
+    const approvedOccurrences = row.exactApproval
+      ? new Map([[approvedOccurrenceKey(row), {
+          category: row.category,
+          treatment: "bridge-or-successor-target-policy",
+          owner: row.owner,
+          reason: "test approval",
+        }]])
+      : undefined;
+    const classified = classifyLegacyLiteral({ ...row, approvedOccurrences });
     assert.equal(classified.category, row.category, row.match);
     assert.equal(classified.owner, row.owner, row.match);
     assert.notEqual(classified.treatment, "fail-closed", row.match);
@@ -109,6 +120,69 @@ test("unknown legacy literals fail closed until a policy owner classifies them",
       }),
     /unclassified legacy literal/,
   );
+
+  const maintainedGuide = classifyLegacyLiteral({
+    file: "docs/getting-started.md",
+    lineText: "Run agentstate-lite ui",
+    match: "agentstate-lite",
+  });
+  assert.equal(maintainedGuide.category, "unclassified");
+  assert.equal(maintainedGuide.treatment, "fail-closed");
+
+  for (const file of [
+    "release/README.md",
+    "packages/core/src/index-marker.ts",
+    "packages/cli/src/commands/hook.ts",
+  ]) {
+    for (const match of ["agentstate-lite", "aslite"]) {
+      const privilegedPathGuide = classifyLegacyLiteral({
+        file,
+        lineText: `Run ${match} ui`,
+        match,
+      });
+      assert.equal(privilegedPathGuide.category, "unclassified", `${file}: ${match}`);
+      assert.equal(privilegedPathGuide.treatment, "fail-closed", `${file}: ${match}`);
+    }
+  }
+});
+
+test("lowercase compatibility ownership binds to one exact occurrence, not its surrounding path or line", () => {
+  const approvedRow = {
+    category: "legacy-command-compatibility",
+    treatment: "preserve-as-explicit-compatibility",
+    owner: "cli-policy",
+    reason: "test approval",
+  };
+  const base = {
+    file: "packages/cli/src/commands/hook.ts",
+    line: 99,
+    lineText: 'const LEGACY_HOOK_MARKER = "agentstate-lite";',
+    match: "agentstate-lite",
+    ordinal: 0,
+  };
+  const approvedOccurrences = new Map([[approvedOccurrenceKey(base), approvedRow]]);
+  assert.deepEqual(classifyLegacyLiteral({ ...base, approvedOccurrences }), approvedRow);
+  assert.equal(approvedOccurrences.size, 0, "a consumed occurrence cannot approve a duplicate");
+
+  for (const lineText of [
+    `Run agentstate-lite ui; ${base.lineText}`,
+    `${base.lineText} // Run agentstate-lite ui`,
+  ]) {
+    const mixed = classifyLegacyLiteral({
+      ...base,
+      lineText,
+      approvedOccurrences: new Map([[approvedOccurrenceKey(base), approvedRow]]),
+    });
+    assert.equal(mixed.category, "unclassified");
+    assert.equal(mixed.treatment, "fail-closed");
+  }
+
+  const shifted = classifyLegacyLiteral({
+    ...base,
+    line: 100,
+    approvedOccurrences: new Map([[approvedOccurrenceKey(base), approvedRow]]),
+  });
+  assert.equal(shifted.category, "unclassified", "moving an approval to another occurrence requires review");
 });
 
 test("repository inventory is deterministic and has no unclassified legacy literals", async () => {
@@ -127,7 +201,6 @@ test("repository inventory is deterministic and has no unclassified legacy liter
     "generated-marker",
     "npm-old-coordinate",
     "release-artifact-or-schema",
-    "workspace-package-identity",
   ]) {
     assert.ok(categories.has(expected), `inventory must include ${expected}`);
   }
@@ -145,9 +218,25 @@ test("repository inventory includes tracked root files, including the dev shim a
   assert.match(superbeeShim, /dist\/superbee\.mjs/, "canonical dev shim must target the Superbee artifact");
   assert.ok(rows.includes(".gitignore:.agentstate.json"), "root binding ignore entry must be inventoried");
   assert.ok(rows.includes(".gitignore:.agentstate-lite"), "root bundle ignore entry must be inventoried");
-  assert.ok(rows.includes(".gitattributes:agentstate-lite"), "root generated-file metadata must be inventoried");
-  assert.ok(rows.includes("examples/views/demo.sh:agentstate-lite"), "tracked shell script dist target must be inventoried");
-  assert.ok(rows.includes("examples/views/demo.sh:aslite"), "tracked shell script temp prefix must be inventoried");
+  assert.ok(!rows.some((row) => row.startsWith("examples/views/demo.sh:")), "the current View demo must carry no legacy product literals");
+  const demo = await readFile(new URL("../examples/views/demo.sh", import.meta.url), "utf8");
+  assert.match(demo, /packages\/cli\/dist\/superbee\.mjs/);
+  assert.match(demo, /superbee-views-demo/);
+  assert.doesNotMatch(demo, /REPO\/\.agentstate-lite/);
+});
+
+test("maintained first-party consumer authorities use Superbee identity", async () => {
+  const cases = [
+    ["../examples/views/conventions/view.md", /`superbee ui`/, /`(?:agentstate-lite ui|aslite status)`/],
+    ["../packages/ui/index.html", /<title>Superbee<\/title>/, /<title>agentstate-lite<\/title>/],
+    ["../packages/ui-server/README.md", /@superbee\/ui-server/, /@agentstate-lite\/ui-server/],
+    ["../packages/board-git/README.md", /@superbee\/board-git/, /@agentstate-lite\/board-git/],
+  ];
+  for (const [relative, required, forbidden] of cases) {
+    const content = await readFile(new URL(relative, import.meta.url), "utf8");
+    assert.match(content, required, relative);
+    assert.doesNotMatch(content, forbidden, relative);
+  }
 });
 
 test("root gitignore keeps preferred and legacy project bindings machine-local", async () => {
