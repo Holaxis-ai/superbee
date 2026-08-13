@@ -187,6 +187,18 @@ test("the View authoring reference documents hello grants for both read and prop
   assert.match(reference, /hello\.result\.grant.*`"read"` for `bundle-read`.*`"propose"` for `bundle-propose`/);
 });
 
+test("the shipped View authoring reference teaches Superbee commands while preserving stable DOM attributes", () => {
+  const reference = readFileSync(
+    path.join(REPO_ROOT, "examples/views/references/view-authoring-v0.md"),
+    "utf8",
+  );
+  assert.match(reference, /`superbee ui --actor <name>`/);
+  assert.match(reference, /superbee blobs --prefix views\//);
+  assert.match(reference, /superbee new "View" my-view/);
+  assert.doesNotMatch(reference, /\baslite (?:status|ui|blobs|pull|promote|new)\b/);
+  assert.match(reference, /data-aslite-doc-id/, "stable DOM attributes remain unchanged");
+});
+
 // ---------------------------------------------------------------------------------------------
 // (4)+(5) Render the npm-target SKILL.md in memory and check it against the manifest in both
 // directions: every capability pattern fires and is backed (dead pattern = fail), every shipped
