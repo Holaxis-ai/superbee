@@ -64,8 +64,10 @@ then use ordinary `aslite sync`.
 
 **When the conventional project folder does not fit:**
 
-- **`.agentstate.json` binding:** a committed local pointer (`{ "bundle": "<path>" }`) for an
-  out-of-tree directory. Beats the conventional folder when both exist. Remote access is never
+- **Project binding:** preferred `.superbee.json`, with `.agentstate.json` retained for existing
+  projects. Either is a committed local pointer (`{ "bundle": "<path>" }`) for an out-of-tree
+  directory and beats the conventional folder. Both names at the same level are a conflict rather
+  than an implicit choice. Remote access is never
   ambient: pass `--remote <url>` explicitly. Legacy URL bindings and `AGENTSTATE_LITE_REMOTE`
   fail with migration guidance instead of activating HTTP.
 - **Private workspace:** the bundle lives outside the repo (for example,
@@ -169,8 +171,8 @@ Bundles are valid [Open Knowledge Format v0.1](https://github.com/GoogleCloudPla
   escape hatches, idempotent mutations, a small stable exit-code taxonomy.
 - The byte channel (`promote`/`pull`) for artifacts that should never enter a model's
   context window.
-- Project discovery: a committed `.agentstate-lite/` folder (or an explicit
-  `.agentstate.json` binding) resolves the bundle for any agent on any machine with zero
+- Project discovery: a committed `.agentstate-lite/` folder (or an explicit `.superbee.json` /
+  supported `.agentstate.json` binding) resolves the bundle for any agent on any machine with zero
   prior context.
 
 ## What's early or experimental

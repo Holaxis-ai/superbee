@@ -37,9 +37,9 @@ pre-2026-07-06 changelog lives in the PRIVATE out-of-repo board archive, with th
 `visibility: private` docs), `docs/vision` (near-term design
 intent + OKF grounding) and `docs/north-star` (the future-state vision) as needed — then
 the packages' `src/`. The repo carries README + this file + code; the bundle rides the
-`board` branch (root `/docs/` stays gitignored; a `.agentstate.json` binding, also gitignored,
-is the local-only override and must NOT be committed here — the conventional folder is the
-resolution path). Ground
+`board` branch (root `/docs/` stays gitignored; `.superbee.json` and supported legacy
+`.agentstate.json` bindings are also gitignored and must NOT be committed here — the conventional
+folder is the resolution path). Ground
 every change in the ACTUAL current code, not assumptions — including the claims in THIS
 file: when this guide and the code disagree, the code wins and this file gets fixed.
 

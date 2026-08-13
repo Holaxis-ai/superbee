@@ -80,7 +80,7 @@ const HOME_BASELINE_TOON = [
   '  Session: "version, session-start, hook install|status|uninstall, skill install|status|uninstall"',
   "commands_help: run `aslite <command> --help` (or `aslite --help`) for full usage",
   "kinds: kinds are declared per-bundle — run `aslite kinds` to list them",
-  'remote_env: "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"',
+  'remote_env: "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly"',
   "",
 ].join("\n");
 
@@ -105,7 +105,7 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
   commands_help: "run `aslite <command> --help` (or `aslite --help`) for full usage",
   kinds: "kinds are declared per-bundle — run `aslite kinds` to list them",
   remote_env:
-    "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
+    "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
 })}\n`;
 
 function successfulCheck(

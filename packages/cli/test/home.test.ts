@@ -584,6 +584,64 @@ test("A1.12 project binding (directory-type, item 43 follow-on): home's dashboar
   }
 });
 
+test("preferred .superbee.json binding scopes home and is named in the via receipt", async () => {
+  const root = await tempDir();
+  try {
+    const sharedBundle = path.join(root, "shared");
+    await initBundle(sharedBundle);
+    await writeDoc(
+      { root: sharedBundle },
+      {
+        id: "notes/preferred",
+        frontmatter: { type: "Note", title: "Preferred", timestamp: "2026-08-12T00:00:00.000Z" },
+        body: "hi",
+      },
+    );
+    const projectDir = path.join(root, "project");
+    await mkdir(projectDir);
+    await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "../shared" }));
+
+    const origCwd = process.cwd();
+    try {
+      process.chdir(projectDir);
+      let out = "";
+      await home(["--json"], { stdout: (s) => (out += s) });
+      const view = JSON.parse(out) as {
+        bundle?: { recent?: { rows?: Array<{ id: string }> }; via?: string };
+      };
+      assert.equal(view.bundle?.recent?.rows?.[0]?.id, "notes/preferred");
+      assert.equal(view.bundle?.via, path.join(await realpath(projectDir), ".superbee.json"));
+    } finally {
+      process.chdir(origCwd);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("same-level old/new binding conflict remains non-fatal in home and withholds initialization guidance", async () => {
+  const projectDir = await tempDir();
+  try {
+    await writeFile(path.join(projectDir, ".superbee.json"), JSON.stringify({ bundle: "one" }));
+    await writeFile(path.join(projectDir, ".agentstate.json"), JSON.stringify({ bundle: "two" }));
+
+    const origCwd = process.cwd();
+    try {
+      process.chdir(projectDir);
+      let out = "";
+      await home(["--json"], { stdout: (s) => (out += s) });
+      const view = JSON.parse(out) as Record<string, unknown>;
+      assert.match(String(view.project_binding_error), /conflicting project bindings/);
+      assert.equal(view.getting_started, undefined);
+      assert.equal(view.bundle, undefined);
+    } finally {
+      process.chdir(origCwd);
+    }
+  } finally {
+    await rm(projectDir, { recursive: true, force: true });
+  }
+});
+
 test("A1.12b disappeared project-binding target: recovery init preserves the bound target and recipe browsing is withheld", async () => {
   const root = await tempDir();
   try {

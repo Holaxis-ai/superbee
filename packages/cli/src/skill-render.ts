@@ -175,9 +175,10 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push("");
   lines.push("Each invocation is stateless. HTTP is activated only by explicit `--remote <url>`.");
   lines.push(
-    "Otherwise bundle resolution stays local: explicit `--dir` → nearest `.agentstate.json`",
+    "Otherwise bundle resolution stays local: explicit `--dir` → nearest `.superbee.json` or",
   );
-  lines.push("local-path binding up-tree → the cwd walk, which at each ancestor checks the");
+  lines.push("supported `.agentstate.json` local-path binding up-tree → the cwd walk, which at each");
+  lines.push("ancestor checks both binding names together (both at one level fail closed), then the");
   lines.push("directory's own `index.md`, then its");
   lines.push(
     "conventional `.agentstate-lite/index.md`. Reserve `--dir` for the exceptions: a bundle outside",
@@ -190,9 +191,10 @@ function renderWorkspaceLocation(prefix: string): string[] {
     "1. **Explicit user direction** — the user names a directory or a `--remote`; use that. A local",
   );
   lines.push(
-    "   `.agentstate.json` binding (`{ \"bundle\": \"<path>\" }` at the project root) is the",
+    "   `.superbee.json` binding (`{ \"bundle\": \"<path>\" }` at the project root) is the",
   );
-  lines.push("   durable form of that direction — it beats the conventional folder when both exist.");
+  lines.push("   preferred durable form; existing `.agentstate.json` bindings remain supported. A binding");
+  lines.push("   beats the conventional folder; both binding names at one level are a conflict.");
   lines.push("   Remote URLs are never durable ambient bindings; pass `--remote <url>` per invocation.");
   lines.push(
     "2. **An existing workspace** — if a bare command already resolves (a binding, an enclosing",
@@ -209,7 +211,7 @@ function renderWorkspaceLocation(prefix: string): string[] {
     "scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate-lite/<name>/`)",
   );
   lines.push(
-    "and point a git-excluded `.agentstate.json` at it. Choose by one question: do teammates",
+    "and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates",
   );
   lines.push("share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.");
   lines.push("");

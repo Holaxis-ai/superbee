@@ -12,7 +12,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, promises as fsPromises, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -28,7 +28,9 @@ import { init } from "../src/commands/init.js";
 import {
   assertCreateOnlyTarget,
   createOnlyArbitrationLockKey,
+  PROJECT_BINDING_FILE_NAME,
   resolveProjectBinding,
+  SUPERBEE_PROJECT_BINDING_FILE_NAME,
   withCreateOnlyTarget,
 } from "../src/bundle.js";
 import { CliError } from "../src/errors.js";
@@ -217,6 +219,36 @@ test("bindings: an existing bound bundle refuses; malformed and URL bindings kee
     );
     const url = await expectRefusal(["--create-only", "--dir", path.join(proj4, "nb")], /URL bindings/);
     assert.equal(url.code, "USAGE");
+
+    // The preferred binding participates in the same strict create-only discovery.
+    const proj5 = path.join(base, "proj5");
+    await mkdir(proj5, { recursive: true });
+    await writeFile(
+      path.join(proj5, SUPERBEE_PROJECT_BINDING_FILE_NAME),
+      `${JSON.stringify({ bundle: bound })}\n`,
+    );
+    const preferred = await expectRefusal(
+      ["--create-only", "--dir", path.join(proj5, "new-bundle")],
+      /project binding .*\.superbee\.json already resolves this location/,
+    );
+    assert.equal(preferred.code, "ALREADY_EXISTS");
+
+    // Both names at one level are an ambiguity before either target is considered.
+    const proj6 = path.join(base, "proj6");
+    await mkdir(proj6, { recursive: true });
+    await writeFile(
+      path.join(proj6, SUPERBEE_PROJECT_BINDING_FILE_NAME),
+      `${JSON.stringify({ bundle: bound })}\n`,
+    );
+    await writeFile(
+      path.join(proj6, PROJECT_BINDING_FILE_NAME),
+      `${JSON.stringify({ bundle: bound })}\n`,
+    );
+    const conflict = await expectRefusal(
+      ["--create-only", "--dir", path.join(proj6, "new-bundle")],
+      /conflicting project bindings/,
+    );
+    assert.equal(conflict.code, "USAGE");
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -265,6 +297,40 @@ test("create-only binding discovery matches ordinary discovery for symlinked bin
       "none",
     ]);
     assert.equal(throughSymlinkedTarget.init, "ok");
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("create-only rejects binding symlinks to FIFOs promptly for both supported names", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("mkfifo is unavailable on Windows");
+    return;
+  }
+  const base = await tempDir();
+  try {
+    const fifo = path.join(base, "binding-source");
+    execFileSync("mkfifo", [fifo]);
+
+    for (const name of [SUPERBEE_PROJECT_BINDING_FILE_NAME, PROJECT_BINDING_FILE_NAME]) {
+      await t.test(name, async () => {
+        const project = path.join(base, name.slice(1, -5));
+        const target = path.join(project, "new-bundle");
+        await mkdir(project);
+        await symlink(fifo, path.join(project, name));
+
+        const result = spawnSync(
+          process.execPath,
+          [cliBin, "init", "--create-only", "--dir", target, "--recipe", "none", "--json"],
+          { encoding: "utf8", timeout: 2_000 },
+        );
+
+        assert.notEqual((result.error as NodeJS.ErrnoException | undefined)?.code, "ETIMEDOUT");
+        assert.equal(result.status, 2, `${result.stdout}${result.stderr}`);
+        assert.match(result.stdout, /project binding .* must be a regular file/);
+        assert.equal(existsSync(target), false, "a refused binding must not create the target");
+      });
+    }
   } finally {
     await rm(base, { recursive: true, force: true });
   }
