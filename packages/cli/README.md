@@ -16,8 +16,8 @@ prefix, resolves both command names from `PATH`, and exercises an offline bundle
 developer proof deliberately stamps `local-dev`, so it works on an in-progress/dirty checkout;
 `prepublishOnly` runs the same journey in strict `npm-package` mode and refuses unless Git proves
 an exact clean source commit.
-Install the supported default once (`superbee` is canonical; `aslite` and `agentstate-lite` remain
-compatible aliases), then run the first-value flow from an ordinary project directory:
+Install the supported default once (`superbee` is canonical; the legacy aliases `aslite` and `agentstate-lite`
+remain supported), then run the first-value flow from an ordinary project directory:
 
 ```sh
 npm install -g superbee

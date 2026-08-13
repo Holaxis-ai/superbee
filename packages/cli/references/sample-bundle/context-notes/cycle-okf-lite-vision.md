@@ -1,13 +1,13 @@
 ---
 type: Context Note
 title: cycle-okf-lite-vision
-description: Handoff for the OKF-native agentstate-lite vision cycle.
-tags: [claude-orchestrator, agentstate-lite, cycle-okf-lite-vision]
+description: Handoff for the OKF-native Superbee vision cycle.
+tags: [claude-orchestrator, superbee, cycle-okf-lite-vision]
 timestamp: 2026-07-01T12:10:00Z
 ---
 # Summary
 
-This cycle established that agentstate-lite should be OKF-native rather than a
+This cycle established that Superbee should be OKF-native rather than a
 store that merely exports to OKF. Notes, links, and freshness map cleanly onto
 OKF concept docs, markdown links, and the `timestamp` field; remote sync is
 deferred to a later adapter. Treat the OKF mapping as settled; treat the exact

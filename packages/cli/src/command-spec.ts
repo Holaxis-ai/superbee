@@ -2,7 +2,7 @@
 // exact positional count, display attachment, and ordered top-level command projection. It imports
 // no handlers, rendering, invocation policy, SDK, or I/O.
 
-const CLI_LEAF_BRAND: unique symbol = Symbol("agentstate-lite.cli-leaf");
+const CLI_LEAF_BRAND: unique symbol = Symbol("superbee.cli-leaf");
 const OWNED_CLI_LEAVES = new WeakSet<object>();
 
 export interface ExactPositionalArity {

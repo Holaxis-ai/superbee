@@ -92,7 +92,13 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
     };
   }
 
-  if (file.includes("/test/") || file.endsWith(".test.mjs") || file.endsWith(".test.ts")) {
+  if (
+    file.includes("/test/") ||
+    file.includes("/e2e/") ||
+    file.endsWith(".test.mjs") ||
+    file.endsWith(".test.ts") ||
+    file.endsWith(".test.tsx")
+  ) {
     return {
       category: "test-assertion",
       treatment: "update-or-preserve-with-covered-surface",
@@ -205,11 +211,54 @@ export function classifyLegacyLiteral({ file, lineText, match }) {
         reason: "AC-07 requires the compiled artifact to become dist/superbee.mjs",
       };
     }
+    if (file.startsWith("release/") || file.startsWith("scripts/release-")) {
+      return {
+        category: "release-bridge-identifier",
+        treatment: "preserve-for-bridge-target",
+        owner: "release-policy",
+        reason: "the frozen package bridge and release recovery state retain explicit legacy identifiers",
+      };
+    }
+    if (
+      file === "packages/core/src/filesystem-lock.ts" ||
+      file === "packages/core/src/index-marker.ts" ||
+      file === "packages/core/src/index-projection.ts" ||
+      file === "packages/ui-server/src/server.ts" ||
+      file === "packages/ui/src/api/client.ts" ||
+      file === "packages/ui/src/api/pages.ts"
+    ) {
+      return {
+        category: "serialized-or-protocol-identifier",
+        treatment: "preserve-for-cross-version-compatibility",
+        owner: "compatibility-policy",
+        reason: "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
+      };
+    }
+    if (
+      file === "packages/cli/src/commands/hook.ts" ||
+      file === "packages/cli/src/commands/sync.ts" ||
+      file === "packages/cli/src/hook-compatibility.ts" ||
+      file === "packages/cli/src/invocation.ts" ||
+      containsAny(lineText.toLowerCase(), [
+        "legacy alias",
+        "historical alias",
+        "compatible alias",
+        "compatible aliases",
+        "supported alias",
+      ])
+    ) {
+      return {
+        category: "legacy-command-compatibility",
+        treatment: "preserve-as-explicit-compatibility",
+        owner: "cli-policy",
+        reason: "legacy command recognition remains supported while Superbee is canonical",
+      };
+    }
     return {
-      category: "product-name",
-      treatment: "rename-or-classify-compatibility",
-      owner: "docs-cli-ui",
-      reason: "current product surfaces become Superbee; old names remain only in explicit compatibility/history",
+      category: "unclassified",
+      treatment: "fail-closed",
+      owner: "unassigned",
+      reason: "a maintained product-name literal must be renamed or assigned an explicit compatibility owner",
     };
   }
 
@@ -328,7 +377,12 @@ export async function generateRenameLiteralInventory({ root = repoRoot, roots } 
 }
 
 export function assertClassifiedInventory(inventory) {
-  const unknown = inventory.matches.filter((row) => row.category === "unclassified" || row.treatment === "fail-closed");
+  const unknown = inventory.matches.filter(
+    (row) =>
+      row.category === "unclassified" ||
+      row.treatment === "fail-closed" ||
+      row.treatment.includes("rename-or-classify"),
+  );
   if (unknown.length) {
     const first = unknown[0];
     throw new Error(

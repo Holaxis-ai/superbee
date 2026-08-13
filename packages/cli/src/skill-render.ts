@@ -7,8 +7,8 @@ import { STABLE_MCP_LAUNCH_GUIDANCE } from "./integration-guidance.js";
 
 export { NPM_RESOURCES, commandName };
 
-// Superbee is the canonical npm coordinate and command. The historical `aslite` and
-// `agentstate-lite` bins remain installed aliases so existing users do not need to migrate.
+// Superbee is the canonical npm coordinate and command. The legacy aliases `aslite` and `agentstate-lite`
+// remain installed so existing users do not need to migrate.
 const NPM_COORDINATE = "superbee";
 const NPM_BIN = "superbee";
 const NPX = `npx -y ${NPM_COORDINATE}`;

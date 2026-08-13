@@ -89,7 +89,7 @@ function readBody(req: IncomingMessage, maxBodyBytes?: number): Promise<Buffer |
 
 /**
  * Adapt a Node `IncomingMessage` into a Web-standard `Request` the router accepts. EXPORTED
- * (the `ui` command's SMALL ADDITIVE surface, `plans/ui-v1.md` rev 3.2): `agentstate-lite ui
+ * (the `ui` command's SMALL ADDITIVE surface, `plans/ui-v1.md` rev 3.2): `superbee ui
  * --dir` needs to mount THIS SAME router in-process behind its own token/Host/CSP middleware
  * (a single node:http listener serving both the SPA and `/v0/*`, same origin) — reusing this
  * adapter means the CLI never forks the Request/Response marshaling this module already owns.

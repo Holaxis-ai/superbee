@@ -109,6 +109,14 @@ test("unknown legacy literals fail closed until a policy owner classifies them",
       }),
     /unclassified legacy literal/,
   );
+
+  const maintainedGuide = classifyLegacyLiteral({
+    file: "docs/getting-started.md",
+    lineText: "Run agentstate-lite ui",
+    match: "agentstate-lite",
+  });
+  assert.equal(maintainedGuide.category, "unclassified");
+  assert.equal(maintainedGuide.treatment, "fail-closed");
 });
 
 test("repository inventory is deterministic and has no unclassified legacy literals", async () => {
