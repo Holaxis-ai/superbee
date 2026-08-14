@@ -22,7 +22,7 @@ import {
 import { InvalidInputError } from "../src/errors.js";
 import { normalizeV01DocumentForWrite } from "../src/document-write-policy.js";
 import { mutateDocument } from "../src/document-mutation.js";
-import { parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
+import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "../src/index-marker.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { VersionConflict, versionOfBytes } from "../src/versioning.js";
@@ -129,6 +129,8 @@ test("readBundleOkfVersion reads the root edition through filesystem and memory 
     assert.equal(await readBundleOkfVersion(memory), undefined);
     await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# External\n");
     assert.equal(await readBundleOkfVersion(memory), "0.2");
+    await backend.writeReserved("", "index.md", "---\nokf_version: [\n---\n# Broken\n");
+    await assert.rejects(() => readBundleOkfVersion(memory), MalformedDocumentError);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

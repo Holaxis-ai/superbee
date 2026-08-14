@@ -370,7 +370,9 @@ test("status: fixture bundle exercises every finding class with the correct coun
       {
         kind: "Widget",
         convention: "conventions/widget",
+        declaration: "enumerated",
         incompatible_values: ["active", "done"],
+        observed_incompatible_values: ["active", "cancelled"],
         affected_documents: 8,
       },
     ]);
@@ -406,6 +408,67 @@ test("status: a v0.1 kind using only OKF v0.2 lifecycle status values has no upg
     });
 
     const result = await runJson(["--dir", dir]);
+    assert.equal("okf_upgrade" in result, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status: actual incompatible values remain blockers when the status enum is absent or already lifecycle-only", async () => {
+  for (const variant of ["unbounded", "lifecycle-only"] as const) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir);
+      await writeDoc(bundle, {
+        id: "conventions/task",
+        frontmatter: {
+          type: "Convention",
+          title: "Task",
+          governs: "Task",
+          fields: {
+            required: ["title", "status"],
+            optional: [],
+            ...(variant === "lifecycle-only"
+              ? { values: { status: ["draft", "stable", "deprecated"] } }
+              : {}),
+          },
+        },
+        body: "Task state.",
+      });
+      await writeDoc(bundle, {
+        id: "tasks/legacy",
+        frontmatter: { type: "Task", title: "Legacy", status: "todo" },
+        body: "Still carries legacy progress state.",
+      });
+
+      const result = await runJson(["--dir", dir]);
+      const upgrade = result.okf_upgrade as {
+        affected_documents: number;
+        status_field_rows: { rows: Record<string, unknown>[] };
+      };
+      assert.equal(upgrade.affected_documents, 1, variant);
+      assert.deepEqual(upgrade.status_field_rows.rows[0]!.observed_incompatible_values, ["todo"]);
+      assert.equal(
+        upgrade.status_field_rows.rows[0]!.declaration,
+        variant === "unbounded" ? "unbounded" : "enumerated",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("status: malformed root index is a finding rather than an abort", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir);
+    await writeFile(path.join(dir, "index.md"), "---\nokf_version: [\n---\n# Broken root\n");
+
+    const result = await runJson(["--dir", dir]);
+    assert.equal(result.malformed, 1);
+    const malformed = result.malformed_docs as { rows: Record<string, unknown>[] };
+    assert.equal(malformed.rows[0]!.id, "index.md");
+    assert.match(String(malformed.rows[0]!.reason), /malformed frontmatter/);
     assert.equal("okf_upgrade" in result, false);
   } finally {
     await rm(dir, { recursive: true, force: true });

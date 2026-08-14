@@ -26,6 +26,7 @@ import {
   isTerminal,
   listBlobs,
   loadKinds,
+  MalformedDocumentError,
   readBundleOkfVersion,
   type KindRegistry,
   type OkfDocument,
@@ -151,9 +152,9 @@ Category semantics (one line each):
                       prefixes — those LOCATIONS remain recognized; relocation is a separate
                       open decision. Omitted when the bundle carries none of the above.
 
-This is a whole-bundle read (one registry load + one query + two prefix-scoped blob listings,
-batched) — acceptable for an explicitly batch-analysis command; over --remote it is one
-whole-bundle fetch, not a per-doc round trip.
+This is a whole-bundle read (one registry load + one query + one root-index read + two
+prefix-scoped blob listings, batched) — acceptable for an explicitly batch-analysis command;
+over --remote it remains a bounded set of requests, not a per-doc round trip.
 
 Exit is ALWAYS 0 once the analysis runs: findings are reports, not errors. (A --fail-on-findings CI
 flag is a recorded future item, not built here.)
@@ -207,11 +208,16 @@ function okfV02WorkflowStatusCollisions(
   docs: OkfDocument[],
 ): Record<string, unknown>[] {
   const affectedByKind = new Map<string, number>();
+  const observedValuesByKind = new Map<string, Set<string>>();
   for (const doc of docs) {
     const value = doc.frontmatter.status;
-    if (typeof value !== "string" || value === "" || OKF_V02_LIFECYCLE_STATUSES.has(value)) continue;
+    if (value === undefined || (typeof value === "string" && OKF_V02_LIFECYCLE_STATUSES.has(value))) continue;
     const type = docType(doc);
     affectedByKind.set(type, (affectedByKind.get(type) ?? 0) + 1);
+    const display = typeof value === "string" ? value : `<${Array.isArray(value) ? "array" : typeof value}>`;
+    const observed = observedValuesByKind.get(type) ?? new Set<string>();
+    observed.add(display);
+    observedValuesByKind.set(type, observed);
   }
 
   const rows: Record<string, unknown>[] = [];
@@ -219,15 +225,19 @@ function okfV02WorkflowStatusCollisions(
     const declaresStatus =
       kind.fields.required.includes("status") || kind.fields.optional.includes("status");
     if (!declaresStatus) continue;
-    const incompatibleValues = (kind.fields.values.status ?? []).filter(
+    const declaredValues = kind.fields.values.status;
+    const incompatibleValues = (declaredValues ?? []).filter(
       (value) => !OKF_V02_LIFECYCLE_STATUSES.has(value),
     );
-    if (incompatibleValues.length === 0) continue;
+    const affectedDocuments = affectedByKind.get(kind.governs) ?? 0;
+    if (declaredValues !== undefined && incompatibleValues.length === 0 && affectedDocuments === 0) continue;
     rows.push({
       kind: kind.governs,
       convention: kind.id,
+      declaration: declaredValues === undefined ? "unbounded" : "enumerated",
       incompatible_values: incompatibleValues,
-      affected_documents: affectedByKind.get(kind.governs) ?? 0,
+      observed_incompatible_values: [...(observedValuesByKind.get(kind.governs) ?? [])].sort(),
+      affected_documents: affectedDocuments,
     });
   }
   return rows;
@@ -275,7 +285,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   // crashing the health report — a health report that can't run because one doc is broken is the
   // opposite of useful; the broken doc IS the headline finding.
   const malformedRows: Record<string, unknown>[] = [];
-  const [registry, docs, legacyBlobKeys, viewBlobKeys, okfVersion] = await Promise.all([
+  const [registry, docs, legacyBlobKeys, viewBlobKeys, okfVersionRead] = await Promise.all([
     loadKinds(bundle),
     query(bundle, {}, { onSkip: (s) => malformedRows.push({ id: s.id, reason: s.reason }) }),
     // legacy_naming audit (below): blob keys still under the legacy pages/ prefix — one extra
@@ -284,8 +294,15 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     // dangling_view_entries (below): the views/ half of the entry-key existence set (the pages/
     // half is the legacy listing above — the only two prefixes a valid entry key can name).
     listBlobs(bundle, VIEW_ENTRY_PREFIX),
-    readBundleOkfVersion(bundle),
+    readBundleOkfVersion(bundle)
+      .then((version) => ({ version }))
+      .catch((error: unknown) => {
+        if (!(error instanceof MalformedDocumentError)) throw error;
+        return { version: undefined, malformed: { id: "index.md", reason: error.message } };
+      }),
   ]);
+  if ("malformed" in okfVersionRead) malformedRows.unshift(okfVersionRead.malformed);
+  const okfVersion = okfVersionRead.version;
   const byId = new Set(docs.map((d) => d.id));
   // `id -> doc`, for the link-type-violation check's target-doc-type lookup below (never a second
   // per-edge query — the doc is already in hand from the ONE `query(bundle)` above).
