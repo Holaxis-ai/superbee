@@ -346,8 +346,132 @@ test("status: fixture bundle exercises every finding class with the correct coun
     assert.equal(result.registry_warnings, 1);
     const registryLint = result.registry_lint as { shown: number; total: number; rows: Record<string, unknown>[] };
     assert.equal(registryLint.rows[0]!.code, "KIND_CONVENTION_MALFORMED");
+
+    const upgrade = result.okf_upgrade as {
+      current_version: string;
+      target_version: string;
+      readiness: string;
+      blocker: string;
+      recommended_logical_field: string;
+      status_field_kinds: number;
+      affected_documents: number;
+      status_field_rows: { rows: Record<string, unknown>[] };
+      note: string;
+      help: string[];
+    };
+    assert.equal(upgrade.current_version, "0.1");
+    assert.equal(upgrade.target_version, "0.2");
+    assert.equal(upgrade.readiness, "blocked");
+    assert.equal(upgrade.blocker, "workflow_status_collision");
+    assert.equal(upgrade.recommended_logical_field, "progress_status");
+    assert.equal(upgrade.status_field_kinds, 1);
+    assert.equal(upgrade.affected_documents, 8);
+    assert.deepEqual(upgrade.status_field_rows.rows, [
+      {
+        kind: "Widget",
+        convention: "conventions/widget",
+        declaration: "enumerated",
+        incompatible_values: ["active", "done"],
+        observed_incompatible_values: ["active", "cancelled"],
+        affected_documents: 8,
+      },
+    ]);
+    assert.match(upgrade.note, /remains a supported OKF v0\.1 bundle/);
+    assert.match(upgrade.help.join(" "), /does not currently perform/);
   } finally {
     await cleanup();
+  }
+});
+
+test("status: a v0.1 kind using only OKF v0.2 lifecycle status values has no upgrade blocker", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir);
+    await writeDoc(bundle, {
+      id: "conventions/lifecycle-note",
+      frontmatter: {
+        type: "Convention",
+        title: "Lifecycle Note",
+        governs: "Lifecycle Note",
+        fields: {
+          required: ["title", "status"],
+          optional: [],
+          values: { status: ["draft", "stable", "deprecated"] },
+        },
+      },
+      body: "Uses the OKF lifecycle field as specified.",
+    });
+    await writeDoc(bundle, {
+      id: "notes/one",
+      frontmatter: { type: "Lifecycle Note", title: "One", status: "stable" },
+      body: "Compatible.",
+    });
+
+    const result = await runJson(["--dir", dir]);
+    assert.equal("okf_upgrade" in result, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status: actual incompatible values remain blockers when the status enum is absent or already lifecycle-only", async () => {
+  for (const variant of ["unbounded", "lifecycle-only"] as const) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir);
+      await writeDoc(bundle, {
+        id: "conventions/task",
+        frontmatter: {
+          type: "Convention",
+          title: "Task",
+          governs: "Task",
+          fields: {
+            required: ["title", "status"],
+            optional: [],
+            ...(variant === "lifecycle-only"
+              ? { values: { status: ["draft", "stable", "deprecated"] } }
+              : {}),
+          },
+        },
+        body: "Task state.",
+      });
+      await writeDoc(bundle, {
+        id: "tasks/legacy",
+        frontmatter: { type: "Task", title: "Legacy", status: "todo" },
+        body: "Still carries legacy progress state.",
+      });
+
+      const result = await runJson(["--dir", dir]);
+      const upgrade = result.okf_upgrade as {
+        affected_documents: number;
+        status_field_rows: { rows: Record<string, unknown>[] };
+      };
+      assert.equal(upgrade.affected_documents, 1, variant);
+      assert.deepEqual(upgrade.status_field_rows.rows[0]!.observed_incompatible_values, ["todo"]);
+      assert.equal(
+        upgrade.status_field_rows.rows[0]!.declaration,
+        variant === "unbounded" ? "unbounded" : "enumerated",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("status: malformed root index is a finding rather than an abort", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir);
+    await writeFile(path.join(dir, "index.md"), "---\nokf_version: [\n---\n# Broken root\n");
+
+    const result = await runJson(["--dir", dir]);
+    assert.equal(result.malformed, 1);
+    const malformed = result.malformed_docs as { rows: Record<string, unknown>[] };
+    assert.equal(malformed.rows[0]!.id, "index.md");
+    assert.match(String(malformed.rows[0]!.reason), /malformed frontmatter/);
+    assert.equal("okf_upgrade" in result, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
