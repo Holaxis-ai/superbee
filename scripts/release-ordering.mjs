@@ -11,6 +11,7 @@ import {
   RELEASE_FINALIZER_PROOF_SCHEMA,
   RELEASE_STAGE_RECEIPT_SCHEMA,
 } from "./release-targets.mjs";
+import { isStrictSemver } from "./strict-semver.mjs";
 
 export const RECEIPT_SCHEMA = "aslite.operator-receipt.v1";
 export const STAMP_SCHEMA = "aslite.receipt-status.v1";
@@ -45,6 +46,11 @@ function field(name, value, pattern) {
   return value;
 }
 
+function strictVersion(name, value) {
+  if (typeof value !== "string" || !isStrictSemver(value)) fail(`invalid ${name}: ${JSON.stringify(value)}`);
+  return value;
+}
+
 function isoTime(name, value) {
   if (typeof value !== "string" || Number.isNaN(Date.parse(value))) fail(`invalid ${name}: ${JSON.stringify(value)}`);
   return value;
@@ -52,7 +58,7 @@ function isoTime(name, value) {
 
 /** prerelease candidates publish to `next`; stable candidates move `latest`. */
 export function releaseTier(version) {
-  const parsed = SEMVER.exec(field("version", version, SEMVER));
+  const parsed = SEMVER.exec(strictVersion("version", version));
   return parsed[1] === undefined ? "stable" : "prerelease";
 }
 
@@ -108,7 +114,7 @@ export function canonicalReceiptPayload(fields) {
     schema: RECEIPT_SCHEMA,
     decision,
     stage_id: field("stage_id", fields.stage_id, LIVE_STAGE_ID),
-    version: field("version", fields.version, SEMVER),
+    version: strictVersion("version", fields.version),
     tarball_sha256: field("tarball_sha256", fields.tarball_sha256, SHA256),
     draft_release_id: field("draft_release_id", fields.draft_release_id, TOKEN),
     actor: field("actor", fields.actor, ACTOR),
@@ -534,7 +540,7 @@ export function verifyFinalPublication({ release, plan }) {
  * which every mutation path crosses) requires a UUID stage id and refuses the sentinel. */
 export function receiptEmissionCommands({ stageId, version, draftReleaseId }) {
   field("stage id", stageId, stageId === DRY_RUN_STAGE_ID ? /^dry-run-stage$/ : LIVE_STAGE_ID);
-  field("version", version, SEMVER);
+  strictVersion("version", version);
   field("draft release id", draftReleaseId, TOKEN);
   const base = `node scripts/release-inspect.mjs --stage-id ${stageId} --version ${version} --draft-release-id ${draftReleaseId} --key ~/.ssh/id_ed25519`;
   return {

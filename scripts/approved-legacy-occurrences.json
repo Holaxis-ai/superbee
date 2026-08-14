@@ -1176,7 +1176,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 12
+      "line": 13
     },
     {
       "file": "release/targets.json",
@@ -1187,7 +1187,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 16
+      "line": 17
     },
     {
       "file": "release/targets.json",
@@ -1198,7 +1198,7 @@
       "treatment": "preserve-for-bridge-target",
       "owner": "release-policy",
       "reason": "the frozen package bridge and release recovery state retain explicit legacy identifiers",
-      "line": 17
+      "line": 18
     },
     {
       "file": "release/targets.json",
@@ -1209,33 +1209,11 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 19
+      "line": 20
     },
     {
       "file": "release/targets.json",
       "line_sha256": "e385f5d635cff20d67d8cf23444be01fd9ed00aa4ec345bf3fdc49ff5ce1d754",
-      "literal": "aslite",
-      "ordinal": 0,
-      "category": "release-artifact-or-schema",
-      "treatment": "bridge-or-successor-target-policy",
-      "owner": "release-policy",
-      "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 21
-    },
-    {
-      "file": "release/targets.json",
-      "line_sha256": "e385f5d635cff20d67d8cf23444be01fd9ed00aa4ec345bf3fdc49ff5ce1d754",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "release-bridge-identifier",
-      "treatment": "preserve-for-bridge-target",
-      "owner": "release-policy",
-      "reason": "the frozen package bridge and release recovery state retain explicit legacy identifiers",
-      "line": 21
-    },
-    {
-      "file": "release/targets.json",
-      "line_sha256": "9be2372d65a63bf5be6866748dd18b7e551ea2e6ed2c2844cd206a7e6a0f185f",
       "literal": "aslite",
       "ordinal": 0,
       "category": "release-artifact-or-schema",
@@ -1246,6 +1224,28 @@
     },
     {
       "file": "release/targets.json",
+      "line_sha256": "e385f5d635cff20d67d8cf23444be01fd9ed00aa4ec345bf3fdc49ff5ce1d754",
+      "literal": "agentstate-lite",
+      "ordinal": 0,
+      "category": "release-bridge-identifier",
+      "treatment": "preserve-for-bridge-target",
+      "owner": "release-policy",
+      "reason": "the frozen package bridge and release recovery state retain explicit legacy identifiers",
+      "line": 22
+    },
+    {
+      "file": "release/targets.json",
+      "line_sha256": "9be2372d65a63bf5be6866748dd18b7e551ea2e6ed2c2844cd206a7e6a0f185f",
+      "literal": "aslite",
+      "ordinal": 0,
+      "category": "release-artifact-or-schema",
+      "treatment": "bridge-or-successor-target-policy",
+      "owner": "release-policy",
+      "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
+      "line": 23
+    },
+    {
+      "file": "release/targets.json",
       "line_sha256": "213a427bbf9b57a7acf00475a99e737587d042480d1014203ed4ef9fa8bbed2c",
       "literal": "aslite",
       "ordinal": 0,
@@ -1253,7 +1253,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 32
+      "line": 33
     },
     {
       "file": "release/targets.json",
@@ -1264,7 +1264,7 @@
       "treatment": "preserve-for-bridge-target",
       "owner": "release-policy",
       "reason": "the frozen package bridge and release recovery state retain explicit legacy identifiers",
-      "line": 33
+      "line": 34
     },
     {
       "file": "release/targets.json",
@@ -1275,7 +1275,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 37
+      "line": 38
     },
     {
       "file": "release/targets.json",
@@ -1286,7 +1286,7 @@
       "treatment": "preserve-for-bridge-target",
       "owner": "release-policy",
       "reason": "the frozen package bridge and release recovery state retain explicit legacy identifiers",
-      "line": 37
+      "line": 38
     },
     {
       "file": "scripts/release-audit-tags.mjs",
@@ -1297,7 +1297,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 27
+      "line": 28
     },
     {
       "file": "scripts/release-candidate.mjs",
@@ -1308,7 +1308,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 33
+      "line": 34
     },
     {
       "file": "scripts/release-candidate.mjs",
@@ -1319,7 +1319,7 @@
       "treatment": "preserve-for-bridge-target",
       "owner": "release-policy",
       "reason": "the frozen package bridge and release recovery state retain explicit legacy identifiers",
-      "line": 34
+      "line": 35
     },
     {
       "file": "scripts/release-inspect-recovery.mjs",
@@ -1330,7 +1330,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 11
+      "line": 12
     },
     {
       "file": "scripts/release-inspect-recovery.mjs",
@@ -1341,7 +1341,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 12
+      "line": 13
     },
     {
       "file": "scripts/release-inspect-recovery.mjs",
@@ -1352,7 +1352,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 13
+      "line": 14
     },
     {
       "file": "scripts/release-inspect.mjs",
@@ -1418,7 +1418,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 15
+      "line": 16
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1429,7 +1429,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 16
+      "line": 17
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1440,7 +1440,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 20
+      "line": 21
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1451,7 +1451,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 36
+      "line": 37
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1462,7 +1462,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 37
+      "line": 38
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1473,7 +1473,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 128
+      "line": 134
     },
     {
       "file": "scripts/release-verify-ordering.mjs",

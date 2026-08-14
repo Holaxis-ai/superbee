@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { isStrictSemver } from "../../../scripts/strict-semver.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // packages/cli/scripts -> packages/cli
@@ -73,6 +74,14 @@ export async function buildCliBundle(outfile, options) {
     );
   }
   const source = options?.source ?? currentSourceFacts();
+  const functionalVersionFloor = options?.functionalVersionFloor;
+  if (!isStrictSemver(functionalVersionFloor)) {
+    throw new Error("buildCliBundle requires a strict SemVer functionalVersionFloor");
+  }
+  const updatePolicy = options?.updatePolicy;
+  if (!updatePolicy || typeof updatePolicy !== "object" || typeof updatePolicy.enabled !== "boolean") {
+    throw new Error("buildCliBundle requires an explicit updatePolicy.enabled boolean");
+  }
   if (
     !(source?.commit === null || (typeof source?.commit === "string" && /^[a-f0-9]{40}$/.test(source.commit))) ||
     !(source?.dirty === null || typeof source?.dirty === "boolean")
@@ -112,7 +121,11 @@ export async function buildCliBundle(outfile, options) {
     target: "node20",
     // One compile-time authority read by build-identity.ts. The artifact hash is deliberately NOT
     // embedded (that would be recursive); runtime hashes the actual executing bytes lazily.
-    define: { __SUPERBEE_BUILD_IDENTITY__: JSON.stringify(identity) },
+    define: {
+      __SUPERBEE_BUILD_IDENTITY__: JSON.stringify(identity),
+      __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__: JSON.stringify(functionalVersionFloor),
+      __SUPERBEE_UPDATE_POLICY__: JSON.stringify(updatePolicy),
+    },
     // Resolve the workspace deps to their TypeScript source so no dist pre-build is needed.
     alias: {
       // List browser-safe core subpaths before the package root so esbuild does not append the

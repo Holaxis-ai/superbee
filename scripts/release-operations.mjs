@@ -9,16 +9,15 @@
 // Normative source: version-update-protocols.md §5. Single authority so the workflow, the receipt
 // instructions, and the tests never drift.
 
-import { DEFAULT_TARGETS, assertWorkflowContract, stageDownloadFilenameForTarget } from "./release-targets.mjs";
+import { assertWorkflowContract, defaultReleaseTargets, stageDownloadFilenameForTarget } from "./release-targets.mjs";
+import { assertStrictSemver } from "./strict-semver.mjs";
 
 function targetFor(targetId = "bridge") {
-  const target = DEFAULT_TARGETS[targetId];
+  const target = defaultReleaseTargets()[targetId];
   if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
   return assertWorkflowContract(target);
 }
 
-// Strict SemVer (optional prerelease/build metadata), no leading v.
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 // A safe token for ids/tags/filenames: alphanumerics and . _ - only, and NOT dash-leading — a
 // flag-shaped value (`-v`, `--registry=…`) must never enter an execFile argv as an option-lookalike.
 const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
@@ -26,10 +25,8 @@ const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const SHA256 = /^(?:sha256:)?[a-f0-9]{64}$/;
 
 export function assertVersion(value) {
-  if (typeof value !== "string" || !SEMVER.test(value)) {
-    throw new Error(`invalid version (must be strict SemVer): ${JSON.stringify(value)}`);
-  }
-  return value;
+  try { return assertStrictSemver(value); }
+  catch { throw new Error(`invalid version (must be strict SemVer): ${JSON.stringify(value)}`); }
 }
 export function assertToken(name, value) {
   if (typeof value !== "string" || !TOKEN.test(value)) {

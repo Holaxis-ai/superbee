@@ -4,6 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
+import { loadReleaseTargets, normalizeReleaseTargets, updatePolicyForTarget } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -25,6 +26,14 @@ test("parseResolveTargetArgs accepts a tag or target and defaults to the release
   });
 });
 
+test("update policy is explicit per target and fails closed for identity-only rehearsals", async () => {
+  const manifest = await loadReleaseTargets();
+  assert.deepEqual(updatePolicyForTarget(manifest.targets.bridge), { enabled: true });
+  assert.deepEqual(updatePolicyForTarget(manifest.targets.successor), { enabled: true });
+  assert.deepEqual(updatePolicyForTarget(manifest.targets["rehearsal-approve"]), { enabled: false });
+  assert.deepEqual(updatePolicyForTarget(undefined), { enabled: false });
+});
+
 test("resolveTargetFacts returns the allowlisted tuple and policy tag", async () => {
   assert.deepEqual(await resolveTargetFacts({ target: "successor", tag: "v0.1.0-pre.11" }), {
     target: "successor",
@@ -34,6 +43,42 @@ test("resolveTargetFacts returns the allowlisted tuple and policy tag", async ()
     policy_tag: "next",
     workflow_contract: "full",
   });
+});
+
+test("the functional successor floor is independently reviewed and remains at or below the successor tuple", async () => {
+  const manifest = await loadReleaseTargets();
+  assert.equal(manifest.functional_successor_floor, manifest.allowed_tuples.successor.version);
+
+  const laterSuccessor = {
+    ...manifest,
+    allowed_tuples: {
+      ...manifest.allowed_tuples,
+      successor: { ...manifest.allowed_tuples.successor, version: "0.1.0-pre.12", tag: "v0.1.0-pre.12" },
+    },
+  };
+  assert.equal(normalizeReleaseTargets(laterSuccessor).functional_successor_floor, manifest.functional_successor_floor);
+
+  assert.throws(
+    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: "0.1.0-pre.12" }),
+    /must be at or above functional successor floor/,
+  );
+  assert.throws(
+    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: undefined }),
+    /invalid release version/,
+  );
+  for (const malformed of ["01.2.3", "1.02.3", "1.2.3-01", "1.2.3-alpha."]) {
+    const successor = { ...manifest.allowed_tuples.successor, version: malformed, tag: `v${malformed}` };
+    assert.throws(
+      () =>
+        normalizeReleaseTargets({
+          ...manifest,
+          functional_successor_floor: malformed,
+          allowed_tuples: { ...manifest.allowed_tuples, successor },
+        }),
+      /invalid release version/,
+      malformed,
+    );
+  }
 });
 
 test("resolveTargetFacts rejects target/tag mismatches before workflows mutate", async () => {

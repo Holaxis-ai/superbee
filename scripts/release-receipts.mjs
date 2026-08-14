@@ -3,8 +3,8 @@
 // can authorize registry or GitHub mutation.
 import { DRY_RUN_STAGE_ID, LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 import {
-  DEFAULT_TARGETS,
   assertWorkflowContract,
+  defaultReleaseTargets,
   RELEASE_CANDIDATE_SCHEMA,
   RELEASE_FINALIZER_PROOF_SCHEMA,
   RELEASE_STAGE_RECEIPT_SCHEMA,
@@ -12,9 +12,9 @@ import {
   tarballFilename as releaseTarballFilename,
   targetFromPackageName,
 } from "./release-targets.mjs";
+import { isStrictSemver } from "./strict-semver.mjs";
 
 const TOKEN = /^[A-Za-z0-9._-]+$/;
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const BARE_SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
@@ -26,6 +26,12 @@ function fail(message) {
 function string(name, value, pattern = TOKEN) {
   const normalized = typeof value === "number" ? String(value) : value;
   if (typeof normalized !== "string" || !pattern.test(normalized)) fail(`invalid ${name}: ${JSON.stringify(value)}`);
+  return normalized;
+}
+
+function strictVersion(name, value) {
+  const normalized = typeof value === "number" ? String(value) : value;
+  if (typeof normalized !== "string" || !isStrictSemver(normalized)) fail(`invalid ${name}: ${JSON.stringify(value)}`);
   return normalized;
 }
 
@@ -75,20 +81,20 @@ export function parseStagePublishJson(text) {
 
 /** npm stage download chooses this filename; the command has no --out option. */
 export function stageDownloadFilename(version, stageId) {
-  return stageDownloadFilenameForTarget(DEFAULT_TARGETS.bridge, version, stageId);
+  return stageDownloadFilenameForTarget(defaultReleaseTargets().bridge, version, stageId);
 }
 
 export function stageDownloadFilenameFor(targetId, version, stageId) {
-  string("version", version, SEMVER);
+  strictVersion("version", version);
   string("stage id", stageId, LIVE_STAGE_ID);
-  const target = DEFAULT_TARGETS[targetId];
+  const target = defaultReleaseTargets()[targetId];
   if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
   return stageDownloadFilenameForTarget(assertWorkflowContract(target), version, stageId);
 }
 
 function resolveTargetFromFields(fields) {
   const targetId = fields.target ?? targetFromPackageName(fields.packageName) ?? "bridge";
-  const target = DEFAULT_TARGETS[targetId];
+  const target = defaultReleaseTargets()[targetId];
   if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
   if (fields.packageName !== undefined && fields.packageName !== target.package.name) {
     fail(`package ${fields.packageName} != target ${target.package.name}`);
@@ -98,7 +104,7 @@ function resolveTargetFromFields(fields) {
 
 function resolveTargetFromCandidate(candidate, prepared = {}) {
   const targetId = candidate?.target ?? prepared.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name);
-  const target = DEFAULT_TARGETS[targetId ?? "bridge"];
+  const target = defaultReleaseTargets()[targetId ?? "bridge"];
   if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
   return assertWorkflowContract(target);
 }
@@ -116,7 +122,7 @@ function normalizedAssets(assets) {
 
 export function buildStageReceipt(fields) {
   const target = resolveTargetFromFields(fields);
-  const version = string("version", fields.version, SEMVER);
+  const version = strictVersion("version", fields.version);
   const tag = string("tag", fields.tag);
   equal("tag", tag, `v${version}`);
   const sourceCommit = string("source commit", fields.sourceCommit, COMMIT);
@@ -199,7 +205,7 @@ export function verifyFinalizerChain({
   equal("receipt package", prepared.package, target.package.name);
   equal("candidate target", candidate.target, target.id);
   equal("candidate package", candidate.package?.name, target.package.name);
-  string("receipt version", prepared.version, SEMVER);
+  strictVersion("receipt version", prepared.version);
   equal("receipt tag", prepared.tag, `v${prepared.version}`);
   equal("receipt tarball filename", prepared.tarball?.filename, releaseTarballFilename(target, prepared.version));
   equal("dispatch run id", dispatch.runId, prepared.run_id);

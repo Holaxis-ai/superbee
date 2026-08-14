@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { buildCliBundle } from "./scripts/build-bundle.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
+import { loadReleaseTargets } from "../../scripts/release-targets.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const r = (p) => resolve(here, p);
@@ -36,9 +37,14 @@ const outfile = r("dist/superbee.mjs");
  * whatever `currentSourceFacts()` observes in a CI checkout. When omitted, build-bundle derives
  * the facts itself (the ordinary dev/verify path).
  */
-export async function buildCli(artifactChannel, { source, packageIdentity } = {}) {
+export async function buildCli(artifactChannel, { source, packageIdentity, releaseManifest, updatePolicy } = {}) {
   if (artifactChannel !== "local-dev" && artifactChannel !== "npm-package") {
     throw new Error("usage: buildCli(local-dev|npm-package)");
+  }
+  const releasePolicy = releaseManifest ?? await loadReleaseTargets();
+  // Validate release policy before deleting dist or rebuilding the embedded UI.
+  if (typeof releasePolicy?.functional_successor_floor !== "string") {
+    throw new Error("buildCli requires a normalized release manifest with a functional successor floor");
   }
   // Clean dist so the packed tarball never carries stale files (files: ["dist"]).
   await rm(r("dist"), { recursive: true, force: true });
@@ -46,7 +52,13 @@ export async function buildCli(artifactChannel, { source, packageIdentity } = {}
   // same preparation helper used by release verification. The esbuild
   // bundle below imports those generated modules transitively, so none may be missing or stale.
   await prepareCliBundleInputs();
-  await buildCliBundle(outfile, { artifactChannel, ...(source === undefined ? {} : { source }), ...(packageIdentity === undefined ? {} : { packageIdentity }) });
+  await buildCliBundle(outfile, {
+    artifactChannel,
+    functionalVersionFloor: releasePolicy.functional_successor_floor,
+    updatePolicy: updatePolicy ?? { enabled: false },
+    ...(source === undefined ? {} : { source }),
+    ...(packageIdentity === undefined ? {} : { packageIdentity }),
+  });
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
   // in the tarball and for direct `./dist/superbee.mjs` runs).
   await chmod(outfile, 0o755);

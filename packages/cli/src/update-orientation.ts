@@ -45,6 +45,7 @@ const INTEGRITY = /^sha512-([A-Za-z0-9+/]+={0,2})$/;
 const METADATA_MAX_LENGTH = 4_096;
 const SUCCESSFUL_STATUSES = new Set([
   "current",
+  "successor_not_ready",
   "deprecated",
   "upgrade_available",
   "rollback_available",
@@ -190,6 +191,15 @@ function parseSuccessfulCheck(
       !stringArrayEquals(check.verify, []) ||
       (status === "current" && check.running_deprecated !== null) ||
       (status === "deprecated" && check.running_deprecated === null)
+    ) {
+      return undefined;
+    }
+  } else if (status === "successor_not_ready") {
+    if (
+      relation === undefined ||
+      check.relation !== (relation === 0 ? "equal" : relation > 0 ? "selected_newer" : "selected_older") ||
+      check.command !== null ||
+      !stringArrayEquals(check.verify, [])
     ) {
       return undefined;
     }
