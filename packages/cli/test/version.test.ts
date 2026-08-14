@@ -194,6 +194,7 @@ test("build flavor is mandatory and unsupported distribution channels are reject
         buildCliBundle(path.join(dir, "dirty-npm.mjs"), {
           artifactChannel: "npm-package",
           functionalVersionFloor: "0.1.0-pre.11",
+          updatePolicy: { enabled: true },
           source: { commit: "0123456789012345678901234567890123456789", dirty: true },
         }),
       /npm-package release builds require an exact clean Git source.*Use local-dev for ordinary verification/s,

@@ -168,7 +168,7 @@ test("deprecation precedence never recommends a deprecated selected release", ()
 });
 
 test("the bridge suppresses placeholder and below-floor successor guidance", () => {
-  for (const selectedVersion of ["0.0.1", "0.1.0-pre.10"]) {
+  for (const selectedVersion of ["0.0.1", "0.1.0-pre.9"]) {
     const result = selectSupportedRelease({
       packument: packument(selectedVersion, { runningVersion: "0.1.0-pre.10" }),
       track: "latest",
