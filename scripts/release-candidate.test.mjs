@@ -13,10 +13,10 @@ import {
   prepareCandidateOutputDir,
 } from "./release-candidate.mjs";
 import { verifyRetainedTarball, fileSha256 } from "./verify-npm-package.mjs";
+import { loadReleaseTargets } from "./release-targets.mjs";
 import { buildCli } from "../packages/cli/build.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const cliPackageJson = path.join(repoRoot, "packages", "cli", "package.json");
 
 function headCommit() {
   try {
@@ -91,7 +91,7 @@ test("build once, pack once: the retained manifest's SHA-256 is the tarball's ac
     t.skip("requires a git checkout and npm_execpath (run via npm)");
     return;
   }
-  const version = JSON.parse(await readFile(cliPackageJson, "utf8")).version;
+  const version = (await loadReleaseTargets()).allowed_tuples.bridge.version;
   const out = await mkdtemp(path.join(tmpdir(), "aslite-candidate-"));
   try {
     const { candidate, tarballPath, outDir } = await createReleaseCandidate({

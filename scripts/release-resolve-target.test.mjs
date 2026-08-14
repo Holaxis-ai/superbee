@@ -9,14 +9,14 @@ import { loadReleaseTargets, normalizeReleaseTargets, updatePolicyForTarget } fr
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("parseResolveTargetArgs accepts a tag or target and defaults to the release manifest", () => {
-  assert.deepEqual(parseResolveTargetArgs(["--target", "successor", "--tag", "v0.1.0-pre.11"]), {
+  assert.deepEqual(parseResolveTargetArgs(["--target", "successor", "--tag", "v0.1.0-pre.12"]), {
     target: "successor",
-    tag: "v0.1.0-pre.11",
+    tag: "v0.1.0-pre.12",
     manifest: path.join(repoRoot, "release", "targets.json"),
     githubOutput: undefined,
     json: false,
   });
-  assert.equal(parseResolveTargetArgs(["--tag", "v0.1.0-pre.10"]).target, undefined);
+  assert.equal(parseResolveTargetArgs(["--tag", "v0.1.0-pre.11"]).target, undefined);
   assert.deepEqual(parseResolveTargetArgs(["--target", "rehearsal-reject"]), {
     target: "rehearsal-reject",
     tag: undefined,
@@ -35,11 +35,11 @@ test("update policy is explicit per target and fails closed for identity-only re
 });
 
 test("resolveTargetFacts returns the allowlisted tuple and policy tag", async () => {
-  assert.deepEqual(await resolveTargetFacts({ target: "successor", tag: "v0.1.0-pre.11" }), {
+  assert.deepEqual(await resolveTargetFacts({ target: "successor", tag: "v0.1.0-pre.12" }), {
     target: "successor",
     package: "superbee",
-    version: "0.1.0-pre.11",
-    tag: "v0.1.0-pre.11",
+    version: "0.1.0-pre.12",
+    tag: "v0.1.0-pre.12",
     policy_tag: "next",
     workflow_contract: "full",
   });
@@ -59,7 +59,7 @@ test("the functional successor floor is independently reviewed and remains at or
   assert.equal(normalizeReleaseTargets(laterSuccessor).functional_successor_floor, manifest.functional_successor_floor);
 
   assert.throws(
-    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: "0.1.0-pre.12" }),
+    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: "0.1.0-pre.13" }),
     /must be at or above functional successor floor/,
   );
   assert.throws(
@@ -83,17 +83,17 @@ test("the functional successor floor is independently reviewed and remains at or
 
 test("resolveTargetFacts rejects target/tag mismatches before workflows mutate", async () => {
   await assert.rejects(
-    resolveTargetFacts({ target: "successor", tag: "v0.1.0-pre.10" }),
+    resolveTargetFacts({ target: "successor", tag: "v0.1.0-pre.11" }),
     /is not allowlisted/,
   );
 });
 
 test("resolveTargetFacts can infer the target from a unique allowlisted tag", async () => {
-  assert.deepEqual(await resolveTargetFacts({ tag: "v0.1.0-pre.10" }), {
+  assert.deepEqual(await resolveTargetFacts({ tag: "v0.1.0-pre.11" }), {
     target: "bridge",
     package: "@holaxis/aslite",
-    version: "0.1.0-pre.10",
-    tag: "v0.1.0-pre.10",
+    version: "0.1.0-pre.11",
+    tag: "v0.1.0-pre.11",
     policy_tag: "next",
     workflow_contract: "full",
   });
@@ -115,11 +115,11 @@ test("renderGithubOutput emits only primitive stable fields", () => {
     renderGithubOutput({
       target: "bridge",
       package: "@holaxis/aslite",
-      version: "0.1.0-pre.10",
-      tag: "v0.1.0-pre.10",
+      version: "0.1.0-pre.11",
+      tag: "v0.1.0-pre.11",
       policy_tag: "next",
       workflow_contract: "full",
     }),
-    "target=bridge\npackage=@holaxis/aslite\nversion=0.1.0-pre.10\ntag=v0.1.0-pre.10\npolicy_tag=next\nworkflow_contract=full\n",
+    "target=bridge\npackage=@holaxis/aslite\nversion=0.1.0-pre.11\ntag=v0.1.0-pre.11\npolicy_tag=next\nworkflow_contract=full\n",
   );
 });

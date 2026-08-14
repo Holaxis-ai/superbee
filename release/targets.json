@@ -5,7 +5,7 @@
     "tag_contract": "Release tags keep the historical v<version> shape. Bridge, successor, and rehearsal are disambiguated by the reviewed target/package/version tuple, not by tag prefixes.",
     "production_control": "Non-production rehearsal tuples must never use @holaxis/aslite or superbee. Bridge and successor versions must differ because v<version> tags are immutable."
   },
-  "functional_successor_floor": "0.1.0-pre.11",
+  "functional_successor_floor": "0.1.0-pre.12",
   "targets": {
     "bridge": {
       "package": {
@@ -73,16 +73,16 @@
     "bridge": {
       "target": "bridge",
       "package": "@holaxis/aslite",
-      "version": "0.1.0-pre.10",
-      "tag": "v0.1.0-pre.10",
+      "version": "0.1.0-pre.11",
+      "tag": "v0.1.0-pre.11",
       "outcome": "publish",
       "production": true
     },
     "successor": {
       "target": "successor",
       "package": "superbee",
-      "version": "0.1.0-pre.11",
-      "tag": "v0.1.0-pre.11",
+      "version": "0.1.0-pre.12",
+      "tag": "v0.1.0-pre.12",
       "outcome": "publish",
       "production": true
     },

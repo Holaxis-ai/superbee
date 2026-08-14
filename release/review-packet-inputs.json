@@ -1,0 +1,30 @@
+{
+  "schema": "superbee.review-packet-inputs.v1",
+  "paths": [
+    ".github/release-allowed-signers",
+    ".github/workflows/release-finalize.yml",
+    ".github/workflows/release-staged.yml",
+    "package-lock.json",
+    "package.json",
+    "packages/cli/SKILL.md",
+    "packages/cli/build.mjs",
+    "packages/cli/package.json",
+    "packages/cli/scripts/build-bundle.mjs",
+    "packages/cli/scripts/embed-ui-assets.mjs",
+    "packages/cli/scripts/prepare-bundle-inputs.mjs",
+    "packages/mcp-app/scripts/build-view.mjs",
+    "release/burned-versions.json",
+    "release/phase.json",
+    "release/review-packet-inputs.json",
+    "release/targets.json",
+    "scripts/release-candidate.mjs",
+    "scripts/release-ordering.mjs",
+    "scripts/release-packet.mjs",
+    "scripts/release-receipts.mjs",
+    "scripts/release-state.mjs",
+    "scripts/release-targets.mjs",
+    "scripts/release-verify-chain.mjs",
+    "scripts/strict-semver.mjs",
+    "scripts/verify-npm-package.mjs"
+  ]
+}
