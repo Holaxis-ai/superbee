@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -38,11 +39,8 @@ const LEGACY_MAIN_GUARD_PATTERNS = [
 ];
 const SHARED_MAIN_GUARD_PATTERN = /\bisMainModule\(import\.meta\.url\b/;
 const NODE_SOURCE_ENTRYPOINT_PATTERN = /\bnode\s+(?:"([^"\n]+?\.mjs)"|'([^'\n]+?\.mjs)'|([^\s"'`()|&;]+?\.mjs))/g;
+const STATIC_MODULE_SPECIFIER_PATTERN = /\b(?:import|export)\s+(?:[^"'`\n;]*?\s+from\s+)?["']([^"'`\n]+)["']/g;
 const MAX_BUFFER = 20 * 1024 * 1024;
-const PURE_IMPORT_PERMISSION_FLAGS = [
-  "--permission",
-  `--allow-fs-read=${repoRoot}`,
-];
 const DISALLOWED_MUTATION_PERMISSION_FLAG_PREFIXES = [
   "--allow-fs-write",
   "--allow-child-process",
@@ -268,8 +266,73 @@ async function createRepoScratchDirectory(t, prefix = ".tmp-entrypoint-permissio
   return scratch;
 }
 
-function buildPureImportNodeArgs(runnerPath) {
-  return [...PURE_IMPORT_PERMISSION_FLAGS, runnerPath];
+async function createExternalDependencyFixture(t) {
+  const fixtureBaseDirectory = await realpath(path.dirname(repoRoot));
+  const fixtureRoot = await mkdtemp(path.join(fixtureBaseDirectory, "superbee-external-deps-"));
+  t.after(() => rm(fixtureRoot, { recursive: true, force: true }));
+  const linkedNodeModules = path.join(fixtureRoot, "node_modules");
+  await symlink(await realpath(path.join(repoRoot, "node_modules")), linkedNodeModules);
+  return {
+    fixtureRoot,
+    linkedNodeModules,
+  };
+}
+
+function parseStaticModuleSpecifiers(source) {
+  return [...source.matchAll(STATIC_MODULE_SPECIFIER_PATTERN)].map((match) => match[1]);
+}
+
+function isBareModuleSpecifier(specifier) {
+  return !specifier.startsWith(".") && !specifier.startsWith("/") && !specifier.startsWith("file:");
+}
+
+function findDependencyReadRoot(resolvedPath) {
+  const { root } = path.parse(resolvedPath);
+  const relativeParts = resolvedPath.slice(root.length).split(path.sep).filter(Boolean);
+  const nodeModulesIndex = relativeParts.indexOf("node_modules");
+  if (nodeModulesIndex === -1) return null;
+  return path.join(root, ...relativeParts.slice(0, nodeModulesIndex + 1));
+}
+
+async function derivePureImportReadRoots(ownerRoot, entryModulePaths) {
+  const canonicalOwnerRoot = await realpath(ownerRoot);
+  const discoveredRoots = new Set([canonicalOwnerRoot]);
+  const pending = [...entryModulePaths];
+  const visited = new Set();
+
+  while (pending.length > 0) {
+    const nextModulePath = pending.pop();
+    const canonicalModulePath = await realpath(nextModulePath);
+    if (visited.has(canonicalModulePath)) continue;
+    visited.add(canonicalModulePath);
+
+    const source = await readFile(canonicalModulePath, "utf8");
+    for (const specifier of parseStaticModuleSpecifiers(source)) {
+      if (specifier.startsWith("node:")) continue;
+
+      if (isBareModuleSpecifier(specifier)) {
+        const resolvedPath = createRequire(canonicalModulePath).resolve(specifier);
+        const dependencyReadRoot = findDependencyReadRoot(await realpath(resolvedPath));
+        if (dependencyReadRoot !== null) discoveredRoots.add(dependencyReadRoot);
+        continue;
+      }
+
+      const resolvedLocalPath = path.resolve(path.dirname(canonicalModulePath), specifier);
+      if (resolvedLocalPath === canonicalOwnerRoot || resolvedLocalPath.startsWith(`${canonicalOwnerRoot}${path.sep}`)) {
+        pending.push(resolvedLocalPath);
+      }
+    }
+  }
+
+  return [...discoveredRoots].sort();
+}
+
+function buildPureImportNodeArgs(readRoots, runnerPath) {
+  return [
+    "--permission",
+    ...readRoots.map((root) => `--allow-fs-read=${root}`),
+    runnerPath,
+  ];
 }
 
 async function runNodeProcess(nodeArgs, cwd) {
@@ -342,6 +405,11 @@ test("positive executable authority comes from declarations plus explicit operat
 });
 
 test("pure import runner requires the Node permission boundary and grants no mutation capabilities", async (t) => {
+  const { pureModuleCandidates } = await deriveExecutableAuthority();
+  const readRoots = await derivePureImportReadRoots(
+    repoRoot,
+    pureModuleCandidates.map((relativePath) => path.join(repoRoot, relativePath)),
+  );
   const scratch = await createRepoScratchDirectory(t);
   const runnerPath = path.join(scratch, "permission-introspect.mjs");
   await writeFile(
@@ -349,8 +417,8 @@ test("pure import runner requires the Node permission boundary and grants no mut
     `process.stdout.write(JSON.stringify({
   execArgv: process.execArgv,
   permissionApi: typeof process.permission?.has,
+  readRoots: ${JSON.stringify(readRoots)}.map((root) => ({ root, allowed: process.permission?.has("fs.read", root) })),
   permissions: {
-    repoRead: process.permission?.has("fs.read", ${JSON.stringify(repoRoot)}),
     cwdRead: process.permission?.has("fs.read", process.cwd()),
     cwdWrite: process.permission?.has("fs.write", process.cwd()),
     child: process.permission?.has("child"),
@@ -363,13 +431,13 @@ test("pure import runner requires the Node permission boundary and grants no mut
 }));\n`,
   );
 
-  const result = await runNodeProcess(buildPureImportNodeArgs(runnerPath), scratch);
+  const result = await runNodeProcess(buildPureImportNodeArgs(readRoots, runnerPath), scratch);
   assert.equal(result.code, 0, "pure import runner must execute under a supported Node permission model");
   assert.equal(result.stderr, "");
 
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.permissionApi, "function", "runtime must expose process.permission.has under the pure import boundary");
-  assert.deepEqual(payload.execArgv.slice(0, PURE_IMPORT_PERMISSION_FLAGS.length), PURE_IMPORT_PERMISSION_FLAGS);
+  assert.deepEqual(payload.execArgv, ["--permission", ...readRoots.map((root) => `--allow-fs-read=${root}`)]);
   for (const prefix of DISALLOWED_MUTATION_PERMISSION_FLAG_PREFIXES) {
     assert.equal(
       payload.execArgv.some((value) => value === prefix || value.startsWith(`${prefix}=`)),
@@ -377,8 +445,12 @@ test("pure import runner requires the Node permission boundary and grants no mut
       `pure import runner must not grant ${prefix}`,
     );
   }
+  assert.deepEqual(
+    payload.readRoots,
+    readRoots.map((root) => ({ root, allowed: true })),
+    "pure import runner must grant exactly the derived canonical read roots",
+  );
   assert.deepEqual(payload.permissions, {
-    repoRead: true,
     cwdRead: true,
     cwdWrite: false,
     child: false,
@@ -406,15 +478,72 @@ writeFileSync(${JSON.stringify(markerPath)}, "laundered\\n");\n`,
 process.stdout.write("IMPORTED\\n");\n`,
   );
 
-  const result = await runNodeProcess(buildPureImportNodeArgs(runnerPath), scratch);
+  const result = await runNodeProcess(buildPureImportNodeArgs([repoRoot], runnerPath), scratch);
   assert.equal(result.code, 1, "silent mutation must fail under the pure import permission boundary");
   assert.equal(result.stdout, "");
   assert.match(result.stderr, /ERR_ACCESS_DENIED|FileSystemWrite|--allow-fs-write/);
   await assert.rejects(readFile(markerPath, "utf8"), /ENOENT/);
 });
 
+test("pure import runner permits canonical dependency roots through an external node_modules symlink without granting writes", async (t) => {
+  const { fixtureRoot } = await createExternalDependencyFixture(t);
+  const markerPath = path.join(fixtureRoot, "external-marker.txt");
+  const pureModulePath = path.join(fixtureRoot, "import-esbuild.mjs");
+  const pureRunnerPath = path.join(fixtureRoot, "import-esbuild-runner.mjs");
+  await writeFile(
+    pureModulePath,
+    `import { build } from "esbuild";
+if (typeof build !== "function") {
+  throw new Error("esbuild build export missing");
+}
+`,
+  );
+  await writeFile(
+    pureRunnerPath,
+    `import ${JSON.stringify(pathToFileURL(pureModulePath).href)};
+process.stdout.write("IMPORTED\\n");\n`,
+  );
+
+  const readRoots = await derivePureImportReadRoots(fixtureRoot, [pureModulePath]);
+  assert.deepEqual(readRoots, [
+    await realpath(fixtureRoot),
+    await realpath(path.join(repoRoot, "node_modules")),
+  ].sort());
+
+  const pureImported = await runNodeProcess(buildPureImportNodeArgs(readRoots, pureRunnerPath), fixtureRoot);
+  assert.deepEqual(pureImported, { code: 0, stdout: "IMPORTED\n", stderr: "" });
+
+  const silentWriteModulePath = path.join(fixtureRoot, "import-esbuild-and-write.mjs");
+  const silentWriteRunnerPath = path.join(fixtureRoot, "import-esbuild-and-write-runner.mjs");
+  await writeFile(
+    silentWriteModulePath,
+    `import { build } from "esbuild";
+import { writeFileSync } from "node:fs";
+if (typeof build !== "function") {
+  throw new Error("esbuild build export missing");
+}
+writeFileSync(${JSON.stringify(markerPath)}, "laundered\\n");
+`,
+  );
+  await writeFile(
+    silentWriteRunnerPath,
+    `import ${JSON.stringify(pathToFileURL(silentWriteModulePath).href)};
+process.stdout.write("IMPORTED\\n");\n`,
+  );
+
+  const silentWriteResult = await runNodeProcess(buildPureImportNodeArgs(readRoots, silentWriteRunnerPath), fixtureRoot);
+  assert.equal(silentWriteResult.code, 1);
+  assert.equal(silentWriteResult.stdout, "");
+  assert.match(silentWriteResult.stderr, /ERR_ACCESS_DENIED|FileSystemWrite|--allow-fs-write/);
+  await assert.rejects(readFile(markerPath, "utf8"), /ENOENT/);
+});
+
 test("pure-module complement imports inertly and carries no entrypoint authority", async (t) => {
   const { pureModuleCandidates } = await deriveExecutableAuthority();
+  const readRoots = await derivePureImportReadRoots(
+    repoRoot,
+    pureModuleCandidates.map((relativePath) => path.join(repoRoot, relativePath)),
+  );
 
   for (const relativePath of pureModuleCandidates) {
     const source = await readFile(path.join(repoRoot, relativePath), "utf8");
@@ -430,7 +559,7 @@ test("pure-module complement imports inertly and carries no entrypoint authority
       runnerPath,
       `import ${JSON.stringify(pathToFileURL(directPath).href)};\nprocess.stdout.write("IMPORTED\\n");\n`,
     );
-    const imported = await runNodeProcess(buildPureImportNodeArgs(runnerPath), scratch);
+    const imported = await runNodeProcess(buildPureImportNodeArgs(readRoots, runnerPath), scratch);
     assert.deepEqual(
       imported,
       { code: 0, stdout: "IMPORTED\n", stderr: "" },
