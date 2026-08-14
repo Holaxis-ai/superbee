@@ -106,6 +106,96 @@ export interface KindRegistry {
   warnings: ValidationWarning[];
 }
 
+/** Stable product-level name for a Kind's workflow progress field. */
+export const PROGRESS_STATUS_FIELD = "progress_status";
+
+/** Producer-qualified v0.2 storage coordinate for Superbee workflow progress. */
+export const SUPERBEE_PROGRESS_STATUS_FIELD = "superbee_progress_status";
+
+/** A logical Kind field and the concrete frontmatter key that stores it in this OKF edition. */
+export interface KindFieldCoordinate {
+  logicalField: string;
+  storageField: string;
+}
+
+function declaresField(kind: KindConvention, field: string): boolean {
+  return kind.fields.required.includes(field) || kind.fields.optional.includes(field);
+}
+
+/**
+ * Compile the declaration-driven workflow-progress coordinate for one Kind. Missing root version
+ * means v0.1 (OKF's compatibility default). Values never activate this mapping.
+ */
+export function progressStatusCoordinate(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+): KindFieldCoordinate | undefined {
+  const version = okfVersion?.trim() || "0.1";
+  if (version === "0.1" && declaresField(kind, "status")) {
+    return { logicalField: PROGRESS_STATUS_FIELD, storageField: "status" };
+  }
+  if (version === "0.2" && declaresField(kind, SUPERBEE_PROGRESS_STATUS_FIELD)) {
+    return {
+      logicalField: PROGRESS_STATUS_FIELD,
+      storageField: SUPERBEE_PROGRESS_STATUS_FIELD,
+    };
+  }
+  return undefined;
+}
+
+/** Resolve an agent-facing Kind field to its declared storage coordinate. */
+export function resolveKindFieldCoordinate(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+  field: string,
+): KindFieldCoordinate | undefined {
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  if (field === PROGRESS_STATUS_FIELD && progress) return progress;
+  return declaresField(kind, field) ? { logicalField: field, storageField: field } : undefined;
+}
+
+/** Declared authoring names plus the logical progress alias, when this Kind proves one exists. */
+export function kindInputFieldNames(okfVersion: string | undefined, kind: KindConvention): string[] {
+  const fields = [...new Set([...kind.fields.required, ...kind.fields.optional])];
+  if (progressStatusCoordinate(okfVersion, kind) && !fields.includes(PROGRESS_STATUS_FIELD)) {
+    fields.push(PROGRESS_STATUS_FIELD);
+  }
+  return fields;
+}
+
+/** Read a declared logical or physical Kind field without changing the stored frontmatter. */
+export function readKindField(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+  frontmatter: Frontmatter,
+  field: string,
+): unknown {
+  const coordinate = resolveKindFieldCoordinate(okfVersion, kind, field);
+  return coordinate
+    ? (frontmatter as Record<string, unknown>)[coordinate.storageField]
+    : undefined;
+}
+
+/**
+ * Add logical field aliases to a product-facing projection while preserving every raw key. Generic
+ * document reads remain raw; only Kind-aware product surfaces call this helper.
+ */
+export function projectLogicalKindFields(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+  frontmatter: Frontmatter,
+): Frontmatter {
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  if (!progress || !hasOwn(frontmatter, progress.storageField)) return frontmatter;
+  const projected = { ...frontmatter } as Frontmatter;
+  setOwn(
+    projected as Record<string, unknown>,
+    progress.logicalField,
+    (frontmatter as Record<string, unknown>)[progress.storageField],
+  );
+  return projected;
+}
+
 /** True for a plain YAML/JSON map (excludes arrays, `null`, dates, and other object instances). */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;

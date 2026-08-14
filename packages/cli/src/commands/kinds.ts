@@ -6,7 +6,13 @@
 // commands. This command IS that verb — the live-registry counterpart to `--help`/`home`'s static
 // pointer line (reference.ts kindsPointer()), which stays offline/no-I/O by AXI contract.
 import { parseArgs } from "node:util";
-import { freshnessHorizonMs, loadKinds, type KindConvention } from "@superbee/core";
+import {
+  freshnessHorizonMs,
+  loadKinds,
+  progressStatusCoordinate,
+  readBundleOkfVersion,
+  type KindConvention,
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -22,6 +28,9 @@ A kind convention is a plain OKF doc (type: Convention) under conventions/ decla
 kind's purpose, required/optional fields and their descriptions, allowed enum values, typed-link vocabulary, expected body
 sections, and an optional freshness horizon. See 'superbee new --help' to create an
 instance of a declared kind.
+
+Rows also expose logical_fields when Superbee provides a version-aware authoring alias. In
+particular, progress_status reports the concrete frontmatter key used by this bundle edition.
 
 Declaring a kind convention (frontmatter keys core reads — everything else is unread prose):
   governs              string   required — the 'type' value this convention governs
@@ -80,7 +89,7 @@ export interface KindsCliDeps {
 }
 
 /** Project one KindConvention into the flat row shape `kinds` renders. */
-function toRow(kind: KindConvention): Record<string, unknown> {
+function toRow(kind: KindConvention, okfVersion: string | undefined): Record<string, unknown> {
   const row: Record<string, unknown> = {
     governs: kind.governs,
     required: kind.fields.required,
@@ -111,6 +120,15 @@ function toRow(kind: KindConvention): Record<string, unknown> {
     const ms = freshnessHorizonMs(kind);
     if (ms !== undefined) row.horizon_ms = ms;
   }
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  if (progress) {
+    row.logical_fields = {
+      [progress.logicalField]: {
+        stored_as: progress.storageField,
+        author_with: `--${progress.logicalField}`,
+      },
+    };
+  }
   return row;
 }
 
@@ -137,8 +155,13 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
   }
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
-  const registry = await loadKinds(bundle);
-  const rows = [...registry.kinds.values()].sort((a, b) => a.governs.localeCompare(b.governs)).map(toRow);
+  const [registry, okfVersion] = await Promise.all([
+    loadKinds(bundle),
+    readBundleOkfVersion(bundle),
+  ]);
+  const rows = [...registry.kinds.values()]
+    .sort((a, b) => a.governs.localeCompare(b.governs))
+    .map((kind) => toRow(kind, okfVersion));
 
   const out: Record<string, unknown> = { count: rows.length, kinds: rows };
   if (registry.warnings.length > 0) out.warnings = registry.warnings;

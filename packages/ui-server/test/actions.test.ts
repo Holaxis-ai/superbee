@@ -22,8 +22,15 @@ import {
 const T = "2026-07-18T12:00:00.000Z";
 const HTML = new TextEncoder().encode("<!doctype html><button>done</button>");
 
-async function fixture(actor: string | undefined = "mike/test") {
+async function fixture(
+  actor: string | undefined = "mike/test",
+  options: { okfVersion?: "0.1" | "0.2"; progressField?: "status" | "superbee_progress_status" } = {},
+) {
   const bundle: Bundle = { root: "mem://trusted-actions", backend: new MemoryBackend() };
+  const progressField = options.progressField ?? "status";
+  if (options.okfVersion === "0.2") {
+    await bundle.backend!.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  }
   await writeDoc(bundle, {
     id: "conventions/task",
     frontmatter: {
@@ -32,9 +39,9 @@ async function fixture(actor: string | undefined = "mike/test") {
       governs: "Task",
       path: "tasks/",
       fields: {
-        required: ["title", "status"],
+        required: ["title", progressField],
         optional: [],
-        values: { status: ["todo", "done"] },
+        values: { [progressField]: ["todo", "done"] },
       },
       timestamp: T,
     },
@@ -42,7 +49,7 @@ async function fixture(actor: string | undefined = "mike/test") {
   });
   await writeDoc(bundle, {
     id: "tasks/alpha",
-    frontmatter: { type: "Task", title: "Alpha", status: "todo", timestamp: T },
+    frontmatter: { type: "Task", title: "Alpha", [progressField]: "todo", timestamp: T },
     body: "",
   });
   await writeDoc(bundle, {
@@ -102,6 +109,36 @@ test("trusted action: human-confirmed scalar update uses hard CAS and returns th
   assert.equal(committed.version, after.version, "the receipt is the final persisted version");
   assert.equal((await service.commit(prepared.approvalToken)).status, "expired", "approval tokens are one-shot");
 });
+
+for (const row of [
+  { label: "v0.1", options: {} },
+  { label: "v0.2", options: { okfVersion: "0.2", progressField: "superbee_progress_status" } },
+] as const) {
+  test(`trusted action: logical progress_status uses the declared ${row.label} storage coordinate`, async () => {
+    const { bundle, launch, service } = await fixture("mike/test", row.options);
+    const before = await readDocVersioned(bundle, "tasks/alpha");
+    const prepared = await service.prepare(launch.launchId, {
+      kind: "document.set-field",
+      docId: "tasks/alpha",
+      field: "progress_status",
+      value: "done",
+      expectedVersion: before.version,
+    });
+    assert.equal(prepared.status, "prepared");
+    if (prepared.status !== "prepared") return;
+    const expectedStorage = row.label === "v0.1" ? "status" : "superbee_progress_status";
+    assert.equal(prepared.confirmation.field, "progress_status");
+    assert.equal(prepared.confirmation.storageField, expectedStorage);
+
+    const committed = await service.commit(prepared.approvalToken);
+    assert.equal(committed.status, "committed");
+    assert.equal(committed.field, "progress_status");
+    assert.equal(committed.storageField, expectedStorage);
+    const after = await readDocVersioned(bundle, "tasks/alpha");
+    assert.equal(after.doc.frontmatter[expectedStorage], "done");
+    assert.equal(Object.hasOwn(after.doc.frontmatter, "progress_status"), false);
+  });
+}
 
 test("trusted action: target races conflict and changed View bytes revoke without retrying", async () => {
   const raced = await fixture();
