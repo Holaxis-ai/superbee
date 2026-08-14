@@ -1019,7 +1019,7 @@ export async function verifyNpmPackage({ mode }) {
  * manifest is supplied its recorded SHA-256 must equal the tarball's actual bytes, so a swapped
  * or rebuilt artifact fails closed here before it can be staged.
  */
-export async function verifyRetainedTarball({ tarball, manifest }) {
+export async function verifyRetainedTarball({ tarball, manifest, targetsPath = DEFAULT_RELEASE_TARGETS_PATH }) {
   const tarballPath = path.resolve(tarball);
   // The manifest is MANDATORY (QA finding #2): it is the only thing that ties these exact bytes to
   // the staged candidate. Without it we could only prove "some valid npm-package tarball", which is
@@ -1033,10 +1033,10 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   const actualSha = await fileSha256(tarballPath);
   const recorded = parseJson(await readFile(path.resolve(manifest), "utf8"), "candidate manifest");
   const targetId = recorded?.target ?? targetFromPackageName(recorded?.package?.name ?? recorded?.build_identity?.package?.name) ?? "successor";
-  const targetManifest = await loadReleaseTargets(DEFAULT_RELEASE_TARGETS_PATH);
+  const targetManifest = await loadReleaseTargets(targetsPath, { cliPackageFile: null });
   if (recorded?.agreement?.release_targets_sha256) {
     assert.equal(
-      await fileSha256(DEFAULT_RELEASE_TARGETS_PATH),
+      await fileSha256(targetsPath),
       recorded.agreement.release_targets_sha256,
       "candidate manifest release-target agreement does not match release/targets.json",
     );

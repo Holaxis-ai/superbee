@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
-  PACKET_OWNER,
   createReleasePacket,
   preparePacketOutputDir,
   staticPacketClosure,
   validatePacketInputManifest,
+  validateRefAssertionsEnvelope,
   verifyReleasePacket,
 } from "./release-packet.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
@@ -19,7 +19,17 @@ import { fileSha256 } from "./verify-npm-package.mjs";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
 const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
-const parent = execFileSync("git", ["rev-parse", "HEAD^"], { cwd: repoRoot, encoding: "utf8" }).trim();
+const parent = head; // CI intentionally checks out depth one; synthetic P may equal R in unit fixtures.
+const syntheticRetainedVerifier = async () => ({ verified: "synthetic" });
+
+async function rewritePacket(out, mutate) {
+  const packetPath = path.join(out, "release-packet.json");
+  const packet = JSON.parse(await readFile(packetPath, "utf8"));
+  mutate(packet);
+  await writeFile(packetPath, `${JSON.stringify(packet, null, 2)}\n`);
+  const sha = await fileSha256(packetPath);
+  await writeFile(path.join(out, "release-packet.sha256"), `${sha.slice("sha256:".length)}  release-packet.json\n`);
+}
 
 function refs(schema, extras = {}) {
   return {
@@ -90,6 +100,9 @@ test("the committed packet-input manifest is the exact static closure plus expli
   const result = await validatePacketInputManifest();
   assert.ok(result.paths.includes("scripts/release-packet.mjs"));
   assert.ok(result.paths.includes("packages/cli/scripts/prepare-bundle-inputs.mjs"));
+  for (const script of ["release-run-operations", "release-resolve-target", "release-verify-ordering", "release-verify-registry", "release-emit-receipt", "release-audit-tags"]) {
+    assert.ok(result.paths.includes(`scripts/${script}.mjs`), `manifest must retain workflow-reached ${script}`);
+  }
 });
 
 test("the packet-input manifest rejects missing, extra, and escaping rows", async () => {
@@ -108,7 +121,7 @@ test("the packet-input manifest rejects missing, extra, and escaping rows", asyn
   }
 });
 
-test("the closure rejects dynamic, unresolved, and escaping local imports", async () => {
+test("the closure rejects dynamic, unresolved, escaping, and unsupported imports", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-closure-"));
   try {
     await writeFile(path.join(root, "dynamic.mjs"), 'await import("./x.mjs");\n');
@@ -117,6 +130,12 @@ test("the closure rejects dynamic, unresolved, and escaping local imports", asyn
     await assert.rejects(staticPacketClosure({ root, entries: ["unresolved.mjs"] }), /missing|unresolved/);
     await writeFile(path.join(root, "escape.mjs"), 'import "../x.mjs";\n');
     await assert.rejects(staticPacketClosure({ root, entries: ["escape.mjs"] }), /invalid|escapes/);
+    await writeFile(path.join(root, "url.mjs"), 'import "file:///tmp/x.mjs";\n');
+    await assert.rejects(staticPacketClosure({ root, entries: ["url.mjs"] }), /non-relative/);
+    await writeFile(path.join(root, "package.mjs"), 'import "#hidden";\n');
+    await assert.rejects(staticPacketClosure({ root, entries: ["package.mjs"] }), /non-relative/);
+    await writeFile(path.join(root, "commonjs.mjs"), 'import "./x.cjs";\n');
+    await assert.rejects(staticPacketClosure({ root, entries: ["commonjs.mjs"] }), /extension/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -145,13 +164,15 @@ test("packet creation retains exactly four slots with detached self-free digest 
       out,
       ...input,
       observedSource: { commit: head, dirty: false },
+      retainedVerifier: syntheticRetainedVerifier,
     });
     assert.deepEqual(Object.keys(result.packet.candidates).sort(), ["bridge", "rehearsal-approve", "rehearsal-reject", "successor"]);
     assert.ok(!JSON.stringify(result.packet).includes("release-packet.sha256"));
-    assert.equal((await readFile(path.join(out, PACKET_OWNER), "utf8")).trim(), "superbee release review packet output v1");
-    await verifyReleasePacket({ packet: path.join(out, "release-packet.json") });
+    assert.equal((await readdir(out)).includes(".superbee-release-packet-owned-v1"), false, "distributed packet must carry no deletion marker");
+    execFileSync("shasum", ["-a", "256", "-c", "release-packet.sha256"], { cwd: out, stdio: "pipe" });
+    await verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } });
     await writeFile(path.join(out, "evidence", "settings-recheck.json"), "tampered\n");
-    await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json") }), /inventory differs/);
+    await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } }), /inventory differs/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -166,7 +187,7 @@ test("packet creation rejects transfer of the held board ref", async () => {
     allowlist.allowed_refs.sort();
     await writeFile(input.evidence["transfer-allowlist"], JSON.stringify(allowlist));
     await assert.rejects(
-      createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, "packet"), ...input, observedSource: { commit: head, dirty: false } }),
+      createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, "packet"), ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier }),
       /must not be transferable/,
     );
   } finally {
@@ -174,12 +195,64 @@ test("packet creation rejects transfer of the held board ref", async () => {
   }
 });
 
-test("packet output cleanup refuses foreign non-empty directories", async () => {
+test("ref assertions reject board lookalikes and control characters", () => {
+  assert.throws(
+    () => validateRefAssertionsEnvelope(refs("superbee.transfer-allowlist.v1", { allowed_refs: ["refs/heads/board ", "refs/heads/main", "refs/notes/review", "refs/tags/v0.1.0-pre.11"] }), {
+      publicAncestor: parent,
+      privateCommit: head,
+      allowlist: true,
+    }),
+    /invalid allowed refs/,
+  );
+  assert.throws(
+    () => validateRefAssertionsEnvelope(refs("superbee.transfer-allowlist.v1", { allowed_refs: ["refs/heads/board", "refs/heads/main", "refs/notes/review", "refs/tags/v0.1.0-pre.11"] }), {
+      publicAncestor: parent,
+      privateCommit: head,
+      allowlist: true,
+    }),
+    /must not be transferable/,
+  );
+});
+
+test("packet output creation refuses every non-empty directory", async () => {
   const out = await mkdtemp(path.join(tmpdir(), "superbee-packet-output-"));
   try {
     await writeFile(path.join(out, "user-file"), "keep\n");
-    await assert.rejects(preparePacketOutputDir(out), /not owned/);
+    await assert.rejects(preparePacketOutputDir(out), /non-empty/);
   } finally {
     await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("packet verification binds to the clean checked-out HEAD and verified summary fields", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-binding-"));
+  const dirtyFile = path.join(repoRoot, ".packet-test-dirty");
+  try {
+    const input = await fixture(root);
+    const out = path.join(root, "packet");
+    await createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier });
+    await rewritePacket(out, (packet) => { packet.candidates.bridge.package = "forged-package"; });
+    await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } }), /summary mismatch/);
+    await rewritePacket(out, (packet) => { packet.source.commit = "0".repeat(40); });
+    await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } }), /clean verification checkout/);
+    await rewritePacket(out, (packet) => { packet.source.commit = head; });
+    await writeFile(dirtyFile, "test\n");
+    await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: true } }), /clean verification checkout/);
+  } finally {
+    await rm(dirtyFile, { force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a self-digest-matching text tarball cannot create a packet", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-tarball-"));
+  try {
+    const input = await fixture(root);
+    await assert.rejects(
+      createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, "packet"), ...input, observedSource: { commit: head, dirty: false } }),
+      /retained-tarball proof failed/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

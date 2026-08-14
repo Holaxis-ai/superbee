@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -79,6 +80,23 @@ test("the functional successor floor is independently reviewed and remains at or
       malformed,
     );
   }
+});
+
+test("release tuples cannot consume burns and the checked-in CLI declares the successor tuple", async () => {
+  const manifest = await loadReleaseTargets();
+  const cli = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
+  assert.deepEqual(
+    { name: cli.name, version: cli.version },
+    { name: manifest.allowed_tuples.successor.package, version: manifest.allowed_tuples.successor.version },
+  );
+  const burnedBridge = {
+    ...manifest,
+    allowed_tuples: {
+      ...manifest.allowed_tuples,
+      bridge: { ...manifest.allowed_tuples.bridge, version: "0.1.0-pre.10", tag: "v0.1.0-pre.10" },
+    },
+  };
+  assert.throws(() => normalizeReleaseTargets(burnedBridge, { burnedVersions: ["0.1.0-pre.10"] }), /uses burned version/);
 });
 
 test("resolveTargetFacts rejects target/tag mismatches before workflows mutate", async () => {

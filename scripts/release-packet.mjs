@@ -1,14 +1,13 @@
 // Generic, offline release-review packet authority. Provider state enters only as retained bytes
 // plus the deliberately small normalized ref assertions checked below.
 import { execFile } from "node:child_process";
-import { cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
-import { init, parse } from "es-module-lexer";
 
 import { currentSourceFacts } from "../packages/cli/scripts/build-bundle.mjs";
-import { fileSha256 } from "./verify-npm-package.mjs";
+import { fileSha256, verifyRetainedTarball } from "./verify-npm-package.mjs";
 import { RELEASE_CANDIDATE_SCHEMA, assertAllowedTuple, loadReleaseTargets, tarballFilename } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -18,11 +17,16 @@ export const REVIEW_PACKET_SCHEMA = "superbee.release-packet.v1";
 export const REVIEW_PACKET_INPUTS_SCHEMA = "superbee.review-packet-inputs.v1";
 export const REF_ASSERTIONS_SCHEMA = "superbee.ref-assertions.v1";
 export const TRANSFER_ALLOWLIST_SCHEMA = "superbee.transfer-allowlist.v1";
-export const PACKET_OWNER = ".superbee-release-packet-owned-v1";
-const OWNER_CONTENT = "superbee release review packet output v1\n";
 const PACKET_FILE = "release-packet.json";
 const DIGEST_FILE = "release-packet.sha256";
 const CANDIDATE_IDS = ["bridge", "successor", "rehearsal-reject", "rehearsal-approve"];
+const SOURCE_ENTRYPOINTS = ["scripts/release-packet.mjs", "scripts/release-candidate.mjs", "scripts/release-verify-chain.mjs"];
+const RELEASE_WORKFLOWS = [
+  ".github/workflows/release-staged.yml",
+  ".github/workflows/release-finalize.yml",
+  ".github/workflows/release-audit.yml",
+];
+const EXTERNAL_IMPORTS = new Set(["esbuild", "pako"]); // Directly declared and lockfile-pinned build dependencies.
 const EVIDENCE = [
   ["planning-heads", "planning-heads.json"],
   ["registry-snapshot", "registry-snapshot.json"],
@@ -48,8 +52,7 @@ const EVIDENCE_SCHEMAS = Object.freeze({
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9@._/-]+$/;
-
-await init;
+const REF = /^refs\/(?:heads|tags|notes)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
 
 export function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -76,6 +79,15 @@ function uniqueSorted(values, label) {
     packetError(`${label} must be sorted and unique`);
   }
   return values;
+}
+
+function exactKeys(value, label, keys) {
+  const actual = Object.keys(requireObject(label, value)).sort();
+  const expected = [...keys].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    packetError(`${label} keys differ (expected: ${expected.join(",")}; actual: ${actual.join(",")})`);
+  }
+  return value;
 }
 
 function literalPath(label, value) {
@@ -111,29 +123,34 @@ function resolveInput(root, relative, label = relative) {
 }
 
 function localStaticImports(source, relative) {
-  let imports;
-  try {
-    [imports] = parse(source);
-  } catch (error) {
-    packetError(`${relative} is not parseable ESM: ${error instanceof Error ? error.message : String(error)}`);
+  // The authority deliberately accepts only the small literal ESM grammar used by its tracked
+  // entrypoints. Unsupported syntax fails closed instead of silently narrowing the closure.
+  if (/\b(?:import|export)\s+(?:[^;]*?\bfrom\s+)?["'](?:file:|#|\/)/.test(source)) {
+    packetError(`${relative} has unsupported non-relative import`);
   }
-  const staticImports = [];
-  for (const imported of imports) {
-    if (imported.d >= 0) packetError(`${relative} contains a dynamic import`);
-    if (typeof imported.n === "string" && imported.n.startsWith(".")) staticImports.push(imported.n);
+  const stripped = source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/[^\n]*/gm, "$1");
+  if (/\bimport\s*\(/.test(stripped)) packetError(`${relative} contains a dynamic import`);
+  if (/\b(?:import|export)\b[^;]*\b(?:with|assert)\s*\{/.test(stripped)) {
+    packetError(`${relative} has an import attribute`);
   }
-  return staticImports;
+  const imports = [];
+  for (const match of stripped.matchAll(/\bimport\s+(["'])([^"']+)\1\s*;?/g)) imports.push(match[2]);
+  for (const match of stripped.matchAll(/\bimport\s+(?!["'])[\s\S]*?\bfrom\s+(["'])([^"']+)\1\s*;?/g)) imports.push(match[2]);
+  for (const match of stripped.matchAll(/\bexport\s+(?:\{[\s\S]*?\}|\*)\s+from\s+(["'])([^"']+)\1\s*;?/g)) imports.push(match[2]);
+  const keywordScan = stripped.replace(/(['"`])(?:\\[\s\S]|(?!\1)[\s\S])*\1/g, '""');
+  if (/\bimport\b(?!\s*(?:["']|[\w*$,{])|\.)/.test(keywordScan)) packetError(`${relative} has an unsupported import declaration`);
+  return imports;
 }
 
 function resolveEsmImport(from, specifier) {
-  if (!specifier.endsWith(".mjs") && !specifier.endsWith(".js") && !specifier.endsWith(".cjs")) {
+  if (!specifier.endsWith(".mjs") && !specifier.endsWith(".js")) {
     packetError(`${from} has a local import without a Node ESM file extension: ${specifier}`);
   }
   const result = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier));
   return literalPath(`${from} import`, result);
 }
 
-export async function staticPacketClosure({ root = repoRoot, entries = ["scripts/release-packet.mjs", "scripts/release-candidate.mjs", "scripts/release-verify-chain.mjs"] } = {}) {
+export async function staticPacketClosure({ root = repoRoot, entries = SOURCE_ENTRYPOINTS } = {}) {
   const found = new Set();
   const pending = [...entries];
   while (pending.length > 0) {
@@ -144,6 +161,11 @@ export async function staticPacketClosure({ root = repoRoot, entries = ["scripts
     found.add(relative);
     const text = await readFile(file, "utf8");
     for (const specifier of localStaticImports(text, relative)) {
+      if (specifier.startsWith("node:")) continue;
+      if (!specifier.startsWith(".")) {
+        if (!EXTERNAL_IMPORTS.has(specifier)) packetError(`${relative} has unsupported non-relative import ${specifier}`);
+        continue;
+      }
       const imported = resolveEsmImport(relative, specifier);
       const importedFile = resolveInput(root, imported, `${relative} import`);
       try {
@@ -158,6 +180,27 @@ export async function staticPacketClosure({ root = repoRoot, entries = ["scripts
   return [...found].sort();
 }
 
+async function workflowReleaseEntrypoints(root) {
+  const direct = new Set();
+  const packageScripts = new Set();
+  for (const relative of RELEASE_WORKFLOWS) {
+    const text = await readFile(resolveInput(root, relative), "utf8");
+    for (const match of text.matchAll(/\bnode\s+(scripts\/[A-Za-z0-9_-]+\.mjs)\b/g)) direct.add(match[1]);
+    for (const match of text.matchAll(/\bnpm\s+run\s+(release:[A-Za-z0-9:_-]+)\b/g)) packageScripts.add(match[1]);
+  }
+  if (packageScripts.size > 0) {
+    const packageJson = requireObject("root package.json", await readJson(resolveInput(root, "package.json"), "root package.json"));
+    const scripts = requireObject("root package scripts", packageJson.scripts);
+    for (const name of packageScripts) {
+      const command = scripts[name];
+      const matched = typeof command === "string" ? /^node\s+(scripts\/[A-Za-z0-9_-]+\.mjs)$/.exec(command) : null;
+      if (!matched) packetError(`workflow package script ${name} must be one literal node scripts/*.mjs command`);
+      direct.add(matched[1]);
+    }
+  }
+  return [...direct].sort();
+}
+
 export async function validatePacketInputManifest({ root = repoRoot, manifestPath = path.join(repoRoot, "release", "review-packet-inputs.json") } = {}) {
   const manifest = requireObject("packet input manifest", await readJson(manifestPath, "packet input manifest"));
   if (manifest.schema !== REVIEW_PACKET_INPUTS_SCHEMA) packetError(`packet input manifest schema is not ${REVIEW_PACKET_INPUTS_SCHEMA}`);
@@ -165,10 +208,11 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
   for (const relative of paths) {
     resolveInput(root, literalPath("packet input manifest path", relative));
   }
-  const closure = await staticPacketClosure({ root });
+  const workflowEntries = await workflowReleaseEntrypoints(root);
+  const closure = await staticPacketClosure({ root, entries: [...SOURCE_ENTRYPOINTS, ...workflowEntries] });
   const explicit = [
     "release/review-packet-inputs.json", "release/targets.json", "release/burned-versions.json", "release/phase.json",
-    ".github/workflows/release-staged.yml", ".github/workflows/release-finalize.yml", ".github/release-allowed-signers",
+    ...RELEASE_WORKFLOWS, ".github/release-allowed-signers",
     "package.json", "package-lock.json", "packages/cli/package.json", "packages/cli/SKILL.md",
   ];
   const expected = [...new Set([...closure, ...explicit])].sort();
@@ -177,16 +221,16 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
     const extra = paths.filter((item) => !expected.includes(item));
     packetError(`packet input manifest closure differs (missing: ${missing.join(",") || "none"}; extra: ${extra.join(",") || "none"})`);
   }
-  return { paths, closure, explicit };
+  return { paths, closure, explicit, workflowEntries };
 }
 
-async function sourceFacts(commit, publicAncestor, observed = currentSourceFacts()) {
+async function sourceFacts(commit, publicAncestor, observed = currentSourceFacts(), root = repoRoot) {
   requireString("commit", commit, COMMIT);
   requireString("public ancestor", publicAncestor, COMMIT);
   if (observed.commit !== commit || observed.dirty !== false) packetError("create requires clean checked-out HEAD equal to --commit");
-  const tree = (await execFileAsync("git", ["rev-parse", `${commit}^{tree}`], { cwd: repoRoot })).stdout.trim();
+  const tree = (await execFileAsync("git", ["rev-parse", `${commit}^{tree}`], { cwd: root })).stdout.trim();
   try {
-    await execFileAsync("git", ["merge-base", "--is-ancestor", publicAncestor, commit], { cwd: repoRoot });
+    await execFileAsync("git", ["merge-base", "--is-ancestor", publicAncestor, commit], { cwd: root });
   } catch {
     packetError(`public ancestor ${publicAncestor} is not an ancestor of ${commit}`);
   }
@@ -208,15 +252,20 @@ export async function preparePacketOutputDir(requested) {
     if (error?.code !== "ENOENT") throw error;
   }
   if (entries.length > 0) {
-    if (!entries.includes(PACKET_OWNER)) throw new Error(`refusing to clean non-empty --out directory not owned by release-packet: ${out}`);
-    if ((await readFile(path.join(out, PACKET_OWNER), "utf8")) !== OWNER_CONTENT) {
-      throw new Error(`refusing to clean --out directory with an invalid ownership marker: ${out}`);
-    }
+    throw new Error(`refusing to replace non-empty --out directory: ${out}`);
   }
-  await rm(out, { recursive: true, force: true });
-  await mkdir(out, { recursive: true });
-  await writeFile(path.join(out, PACKET_OWNER), OWNER_CONTENT);
   return out;
+}
+
+async function stagePacketOutput(out) {
+  await mkdir(path.dirname(out), { recursive: true });
+  return mkdtemp(path.join(path.dirname(out), `.${path.basename(out)}.packet-`));
+}
+
+async function installPacketOutput(staged, out) {
+  // POSIX rename replaces only an empty target directory. If another writer fills it after the
+  // preflight, the rename fails and preserves that writer's output.
+  await rename(staged, out);
 }
 
 async function copyFile(from, to) {
@@ -225,7 +274,7 @@ async function copyFile(from, to) {
   await cp(from, to, { force: false, errorOnExist: true, dereference: false });
 }
 
-async function collectCandidate(slot, sourceDir, outDir, source) {
+async function collectCandidate(slot, sourceDir, outDir, source, { targets, root, retainedVerifier }) {
   const input = path.resolve(sourceDir);
   const info = await lstat(input).catch(() => null);
   if (!info?.isDirectory() || info.isSymbolicLink()) packetError(`candidate ${slot} must be a real directory`);
@@ -237,7 +286,6 @@ async function collectCandidate(slot, sourceDir, outDir, source) {
   if (candidate.schema !== RELEASE_CANDIDATE_SCHEMA) packetError(`candidate ${slot} schema is not ${RELEASE_CANDIDATE_SCHEMA}`);
   if (candidate.target !== slot) packetError(`candidate ${slot} target mismatch`);
   if (candidate.source?.commit !== source.commit || candidate.source?.dirty !== false) packetError(`candidate ${slot} source mismatch`);
-  const targets = await loadReleaseTargets();
   const target = targets.targets[slot];
   if (!target) packetError(`candidate ${slot} is not a known release target`);
   if (candidate.package?.name !== target.package.name || candidate.version !== candidate.tarball?.version) packetError(`candidate ${slot} package/version mismatch`);
@@ -247,6 +295,15 @@ async function collectCandidate(slot, sourceDir, outDir, source) {
   }
   const tarball = path.join(input, tarballs[0]);
   if (await fileSha256(tarball) !== candidate.tarball.sha256) packetError(`candidate ${slot} tarball digest mismatch`);
+  try {
+    await retainedVerifier({
+      tarball,
+      manifest: candidateFile,
+      targetsPath: path.join(root, "release", "targets.json"),
+    });
+  } catch (error) {
+    packetError(`candidate ${slot} retained-tarball proof failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const relativeBase = `candidates/${slot}`;
   await copyFile(candidateFile, path.join(outDir, relativeBase, "candidate.json"));
   await copyFile(tarball, path.join(outDir, relativeBase, tarballs[0]));
@@ -263,12 +320,19 @@ async function collectCandidate(slot, sourceDir, outDir, source) {
 
 function refSet(label, value) {
   const refs = uniqueSorted(value, label);
-  for (const ref of refs) requireString(label, ref, /^refs\/(heads|tags|notes)\/.+/);
+  for (const ref of refs) {
+    requireString(label, ref, REF);
+    if (ref.includes("//") || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".")) {
+      packetError(`invalid ${label}: ${JSON.stringify(ref)}`);
+    }
+  }
   return refs;
 }
 
 export function validateRefAssertionsEnvelope(value, { publicAncestor, privateCommit, allowlist = false } = {}) {
-  const envelope = requireObject("ref assertion envelope", value);
+  const envelope = exactKeys(value, "ref assertion envelope", allowlist
+    ? ["schema", "public_main", "public_ancestor_P", "private_R", "held_board_ref", "allowed_refs", "required_categories"]
+    : ["schema", "public_main", "public_ancestor_P", "private_R", "held_board_ref", "allowed_refs", "required_categories", "observed_refs"]);
   const expectedSchema = allowlist ? TRANSFER_ALLOWLIST_SCHEMA : REF_ASSERTIONS_SCHEMA;
   if (envelope.schema !== expectedSchema) packetError(`ref assertion schema is not ${expectedSchema}`);
   if (envelope.public_main !== publicAncestor || envelope.public_ancestor_P !== publicAncestor || envelope.private_R !== privateCommit) {
@@ -325,86 +389,138 @@ async function inventory(outDir) {
     }
   }
   await walk();
-  return rows.sort((a, b) => a.path.localeCompare(b.path));
+  return rows.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
 async function sourceInputDigests(root = repoRoot) {
   const { paths } = await validatePacketInputManifest({ root, manifestPath: path.join(root, "release", "review-packet-inputs.json") });
-  return Promise.all(paths.map(async (relative) => ({ path: relative, sha256: await fileSha256(resolveInput(root, relative)) }))).then((rows) => rows.sort((a, b) => a.path.localeCompare(b.path)));
+  return Promise.all(paths.map(async (relative) => ({ path: relative, sha256: await fileSha256(resolveInput(root, relative)) }))).then((rows) => rows.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)));
 }
 
-export async function createReleasePacket({ commit, publicAncestor, out, candidates, evidence, observedSource }) {
-  const source = await sourceFacts(commit, publicAncestor, observedSource);
-  const outDir = await preparePacketOutputDir(out);
+async function loadPacketTargets(root) {
+  return loadReleaseTargets(path.join(root, "release", "targets.json"), {
+    burnedFile: path.join(root, "release", "burned-versions.json"),
+    cliPackageFile: path.join(root, "packages", "cli", "package.json"),
+  });
+}
+
+async function loadBurnLedger(root) {
+  const ledger = exactKeys(await readJson(path.join(root, "release", "burned-versions.json"), "burn ledger"), "burn ledger", ["schema", "semantics", "burned"]);
+  if (!Array.isArray(ledger.burned)) packetError("burn ledger burned must be an array");
+  for (const entry of ledger.burned) {
+    exactKeys(entry, "burn ledger entry", ["version", "reason"]);
+    requireString("burn ledger version", entry.version);
+    requireString("burn ledger reason", entry.reason);
+  }
+  return ledger.burned;
+}
+
+function checksumLine(file) {
+  return `${file.slice("sha256:".length)}  ${PACKET_FILE}\n`;
+}
+
+async function observedCheckout(root) {
+  try {
+    const [head, status] = await Promise.all([
+      execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root }),
+      execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root }),
+    ]);
+    return { commit: head.stdout.trim(), dirty: status.stdout.length > 0 };
+  } catch (error) {
+    packetError(`cannot inspect verification checkout: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+export async function createReleasePacket({ commit, publicAncestor, out, candidates, evidence, observedSource, root = repoRoot, retainedVerifier = verifyRetainedTarball }) {
   if (!candidates || Object.keys(candidates).length !== CANDIDATE_IDS.length || CANDIDATE_IDS.some((id) => !candidates[id])) {
     packetError("create requires exactly four named candidate slots");
   }
   if (!evidence || Object.keys(evidence).length !== EVIDENCE.length || EVIDENCE.some(([id]) => !evidence[id])) {
     packetError("create requires every fixed evidence slot exactly once");
   }
-  const candidateRows = {};
-  for (const id of CANDIDATE_IDS) candidateRows[id] = await collectCandidate(id, candidates[id], outDir, source);
-  const evidenceRows = [];
-  for (const [id] of EVIDENCE) evidenceRows.push(await collectEvidence(id, evidence[id], outDir, source));
-  const targets = await loadReleaseTargets();
-  const tuples = Object.fromEntries(CANDIDATE_IDS.map((id) => [id, targets.allowed_tuples[id]]));
-  const burns = (await readJson(path.join(repoRoot, "release", "burned-versions.json"), "burn ledger")).burned
-    .filter((entry) => entry.version === "0.1.0-pre.10");
-  if (burns.length !== 1) packetError("burn ledger must contain exactly one nonpublished pre.10 burn");
-  const packet = {
-    schema: REVIEW_PACKET_SCHEMA,
-    source,
-    generator: {
-      entrypoint: "scripts/release-packet.mjs",
-      entrypoint_sha256: await fileSha256(path.join(repoRoot, "scripts", "release-packet.mjs")),
-      input_manifest_sha256: await fileSha256(path.join(repoRoot, "release", "review-packet-inputs.json")),
-      source_inputs: await sourceInputDigests(),
-    },
-    tuples,
-    burns,
-    candidates: candidateRows,
-    external_evidence: evidenceRows,
-    inventory: await inventory(outDir),
-  };
-  await writeFile(path.join(outDir, PACKET_FILE), canonicalJson(packet));
-  await writeFile(path.join(outDir, DIGEST_FILE), `${await fileSha256(path.join(outDir, PACKET_FILE))}  ${PACKET_FILE}\n`);
-  return { outDir, packet };
+  const source = await sourceFacts(commit, publicAncestor, observedSource, root);
+  const outDir = await preparePacketOutputDir(out);
+  const targets = await loadPacketTargets(root);
+  const staged = await stagePacketOutput(outDir);
+  try {
+    const candidateRows = {};
+    for (const id of CANDIDATE_IDS) {
+      candidateRows[id] = await collectCandidate(id, candidates[id], staged, source, { targets, root, retainedVerifier });
+    }
+    const evidenceRows = [];
+    for (const [id] of EVIDENCE) evidenceRows.push(await collectEvidence(id, evidence[id], staged, source));
+    const packet = {
+      schema: REVIEW_PACKET_SCHEMA,
+      source,
+      generator: {
+        entrypoint: "scripts/release-packet.mjs",
+        entrypoint_sha256: await fileSha256(path.join(root, "scripts", "release-packet.mjs")),
+        input_manifest_sha256: await fileSha256(path.join(root, "release", "review-packet-inputs.json")),
+        source_inputs: await sourceInputDigests(root),
+      },
+      tuples: Object.fromEntries(CANDIDATE_IDS.map((id) => [id, targets.allowed_tuples[id]])),
+      burns: await loadBurnLedger(root),
+      candidates: candidateRows,
+      external_evidence: evidenceRows,
+      inventory: await inventory(staged),
+    };
+    await writeFile(path.join(staged, PACKET_FILE), canonicalJson(packet));
+    await writeFile(path.join(staged, DIGEST_FILE), checksumLine(await fileSha256(path.join(staged, PACKET_FILE))));
+    await installPacketOutput(staged, outDir);
+    return { outDir, packet };
+  } catch (error) {
+    await rm(staged, { recursive: true, force: true });
+    throw error;
+  }
 }
 
-export async function verifyReleasePacket({ packet: packetFile, root = repoRoot }) {
+export async function verifyReleasePacket({ packet: packetFile, root = repoRoot, retainedVerifier = verifyRetainedTarball, observedSource }) {
   const packetPath = path.resolve(packetFile);
   const outDir = path.dirname(packetPath);
   if (path.basename(packetPath) !== PACKET_FILE) packetError(`packet path must end in ${PACKET_FILE}`);
   const text = await readFile(packetPath, "utf8");
-  const packet = requireObject("packet", await readJson(packetPath, "packet"));
+  const packet = exactKeys(await readJson(packetPath, "packet"), "packet", ["schema", "source", "generator", "tuples", "burns", "candidates", "external_evidence", "inventory"]);
   if (packet.schema !== REVIEW_PACKET_SCHEMA || canonicalJson(packet) !== text) packetError("packet is not canonical release-packet JSON");
   const digest = await readFile(path.join(outDir, DIGEST_FILE), "utf8");
-  if (digest !== `${await fileSha256(packetPath)}  ${PACKET_FILE}\n`) packetError("detached packet digest mismatch");
-  const source = requireObject("packet source", packet.source);
+  if (digest !== checksumLine(await fileSha256(packetPath))) packetError("detached packet digest mismatch");
+  const source = exactKeys(packet.source, "packet source", ["commit", "tree", "public_ancestor", "public_is_ancestor", "dirty"]);
   requireString("packet R", source.commit, COMMIT);
   requireString("packet P", source.public_ancestor, COMMIT);
   if (source.public_is_ancestor !== true || source.dirty !== false) packetError("packet source facts are incomplete");
-  const observedTree = (await execFileAsync("git", ["rev-parse", `${source.commit}^{tree}`], { cwd: root })).stdout.trim();
+  const checkout = observedSource ?? await observedCheckout(root);
+  if (checkout.commit !== source.commit || checkout.dirty !== false) packetError("packet source does not match a clean verification checkout");
+  const observedTree = (await execFileAsync("git", ["rev-parse", "HEAD^{tree}"], { cwd: root })).stdout.trim();
   if (source.tree !== observedTree) packetError("packet source tree differs from checkout");
   try {
     await execFileAsync("git", ["merge-base", "--is-ancestor", source.public_ancestor, source.commit], { cwd: root });
   } catch {
     packetError("packet public ancestor is not an ancestor of packet R");
   }
+  const generator = exactKeys(packet.generator, "packet generator", ["entrypoint", "entrypoint_sha256", "input_manifest_sha256", "source_inputs"]);
+  if (generator.entrypoint !== "scripts/release-packet.mjs") packetError("packet generator entrypoint mismatch");
   const expectedInputs = await sourceInputDigests(root);
   if (JSON.stringify(packet.generator?.source_inputs) !== JSON.stringify(expectedInputs)) packetError("packet source input digests differ from checkout");
-  if (packet.generator?.entrypoint_sha256 !== await fileSha256(path.join(root, "scripts", "release-packet.mjs"))) packetError("packet generator digest differs from checkout");
-  if (packet.generator?.input_manifest_sha256 !== await fileSha256(path.join(root, "release", "review-packet-inputs.json"))) packetError("packet input manifest digest differs from checkout");
+  if (generator.entrypoint_sha256 !== await fileSha256(path.join(root, "scripts", "release-packet.mjs"))) packetError("packet generator digest differs from checkout");
+  if (generator.input_manifest_sha256 !== await fileSha256(path.join(root, "release", "review-packet-inputs.json"))) packetError("packet input manifest digest differs from checkout");
   const actualInventory = await inventory(outDir);
+  if (!Array.isArray(packet.inventory)) packetError("packet inventory must be an array");
+  for (const row of packet.inventory) {
+    exactKeys(row, "packet inventory row", ["path", "sha256", "bytes"]);
+    literalPath("packet inventory path", row.path);
+    requireString("packet inventory digest", row.sha256, SHA256);
+    if (!Number.isSafeInteger(row.bytes) || row.bytes < 0) packetError("packet inventory bytes must be a non-negative integer");
+  }
   if (JSON.stringify(packet.inventory) !== JSON.stringify(actualInventory)) packetError("packet inventory differs from retained files");
   const paths = new Set(packet.inventory.map((row) => row.path));
   if (paths.has(PACKET_FILE) || paths.has(DIGEST_FILE)) packetError("packet must not inventory itself or its detached digest");
   if (!packet.candidates || JSON.stringify(Object.keys(packet.candidates).sort()) !== JSON.stringify([...CANDIDATE_IDS].sort())) packetError("packet must contain exactly four candidate slots");
-  const targets = await loadReleaseTargets(path.join(root, "release", "targets.json"));
+  const targets = await loadPacketTargets(root);
   const expectedTuples = Object.fromEntries(CANDIDATE_IDS.map((id) => [id, targets.allowed_tuples[id]]));
   if (JSON.stringify(packet.tuples) !== JSON.stringify(expectedTuples)) packetError("packet tuple authority differs from release targets");
   for (const id of CANDIDATE_IDS) {
     const row = packet.candidates[id];
+    exactKeys(row, `packet candidate ${id}`, ["slot", "target", "package", "version", "tag", "manifest", "tarball"]);
+    if (row.slot !== id || row.target !== id) packetError(`packet candidate ${id} slot mismatch`);
     if (row?.manifest !== `candidates/${id}/candidate.json`) packetError(`packet candidate ${id} manifest path mismatch`);
     const candidatePath = path.join(outDir, row?.manifest ?? "");
     const candidate = requireObject(`packet candidate ${id}`, await readJson(candidatePath, `packet candidate ${id}`));
@@ -413,15 +529,20 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot 
     if (candidate.schema !== RELEASE_CANDIDATE_SCHEMA || candidate.target !== id || candidate.source?.commit !== source.commit || candidate.source?.dirty !== false) packetError(`packet candidate ${id} source/schema mismatch`);
     const target = targets.targets[id];
     if (!target || candidate.package?.name !== target.package.name || candidate.version !== packet.tuples?.[id]?.version || candidate.tag !== packet.tuples?.[id]?.tag) packetError(`packet candidate ${id} tuple mismatch`);
+    if (row.package !== candidate.package.name || row.version !== candidate.version || row.tag !== candidate.tag) packetError(`packet candidate ${id} summary mismatch`);
     assertAllowedTuple(targets, { target: id, packageName: candidate.package.name, version: candidate.version, tag: candidate.tag });
     if (row.tarball !== `candidates/${id}/${tarballFilename(target, candidate.version)}`) packetError(`packet candidate ${id} tarball path mismatch`);
     if (candidate.tarball?.filename !== path.basename(tarballPath) || candidate.tarball.sha256 !== await fileSha256(tarballPath)) packetError(`packet candidate ${id} tarball mismatch`);
+    try {
+      await retainedVerifier({ tarball: tarballPath, manifest: candidatePath, targetsPath: path.join(root, "release", "targets.json") });
+    } catch (error) {
+      packetError(`packet candidate ${id} retained-tarball proof failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   if (!Array.isArray(packet.external_evidence) || packet.external_evidence.length !== EVIDENCE.length) packetError("packet evidence slots are incomplete");
-  const evidenceById = new Map(packet.external_evidence.map((row) => [row.category, row]));
-  if (evidenceById.size !== EVIDENCE.length || EVIDENCE.some(([id]) => !evidenceById.has(id))) packetError("packet evidence categories are not exact");
-  for (const [id, destination] of EVIDENCE) {
-    const row = evidenceById.get(id);
+  for (const [index, [id, destination]] of EVIDENCE.entries()) {
+    const row = exactKeys(packet.external_evidence[index], `packet evidence ${id}`, ["category", "schema", "path", "sha256", "bytes"]);
+    if (row.category !== id) packetError("packet evidence categories are not exact");
     if (row.path !== `evidence/${destination}`) packetError(`packet evidence ${id} path mismatch`);
     if (row.schema !== EVIDENCE_SCHEMAS[id]) packetError(`packet evidence ${id} schema mismatch`);
     const file = path.join(outDir, row.path);
@@ -433,9 +554,7 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot 
       if (row.schema !== parsed.schema) packetError(`packet evidence ${id} schema mismatch`);
     }
   }
-  const burns = (await readJson(path.join(root, "release", "burned-versions.json"), "burn ledger")).burned
-    .filter((entry) => entry.version === "0.1.0-pre.10");
-  if (JSON.stringify(packet.burns) !== JSON.stringify(burns) || burns.length !== 1) packetError("packet pre.10 burn mismatch");
+  if (JSON.stringify(packet.burns) !== JSON.stringify(await loadBurnLedger(root))) packetError("packet burn ledger mismatch");
   return packet;
 }
 

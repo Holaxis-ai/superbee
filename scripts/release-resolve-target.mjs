@@ -1,3 +1,4 @@
+import { appendFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -72,7 +73,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
   resolveTargetFacts(args)
     .then(async (facts) => {
       if (args.githubOutput) {
-        const { appendFile } = await import("node:fs/promises");
         await appendFile(args.githubOutput, renderGithubOutput(facts));
       }
       if (args.json || !args.githubOutput) console.log(JSON.stringify(facts));

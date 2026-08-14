@@ -19,6 +19,8 @@ const DIRECTORY_SEGMENT = /^@?[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
 
 export const DEFAULT_RELEASE_TARGETS_PATH = path.join(repoRoot, "release", "targets.json");
+export const DEFAULT_BURNED_VERSIONS_PATH = path.join(repoRoot, "release", "burned-versions.json");
+const DEFAULT_CLI_PACKAGE_PATH = path.join(repoRoot, "packages", "cli", "package.json");
 
 export function assertTargetId(targetId) {
   if (typeof targetId !== "string" || !TARGET_ID.test(targetId)) {
@@ -122,7 +124,7 @@ function normalizeTuple(raw, id) {
   return { id, target: targetId, package: raw.package, version, tag, outcome, production };
 }
 
-export function normalizeReleaseTargets(raw) {
+export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("release target manifest must be an object");
   if (raw.schema !== RELEASE_TARGET_SCHEMA) throw new Error(`release target manifest schema ${JSON.stringify(raw.schema)} != ${RELEASE_TARGET_SCHEMA}`);
   const functionalSuccessorFloor = assertVersion(raw.functional_successor_floor);
@@ -142,6 +144,9 @@ export function normalizeReleaseTargets(raw) {
     if (normalized.production && !target.allow_production) throw new Error(`release tuple ${id} marks non-production target as production`);
     if (!normalized.production && (normalized.package === "@holaxis/aslite" || normalized.package === "superbee")) {
       throw new Error(`rehearsal tuple ${id} must not target production package ${normalized.package}`);
+    }
+    if (burnedVersions.includes(normalized.version)) {
+      throw new Error(`release tuple ${id} uses burned version ${normalized.version}`);
     }
     allowedTuples[id] = normalized;
   }
@@ -164,9 +169,42 @@ export function normalizeReleaseTargets(raw) {
   };
 }
 
-export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH) {
+async function loadBurnedVersions(file) {
   const raw = JSON.parse(await readFile(file, "utf8"));
-  return normalizeReleaseTargets(raw);
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.burned)) {
+    throw new Error("burned-versions declaration requires burned: []");
+  }
+  const versions = [];
+  for (const entry of raw.burned) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.version !== "string" || typeof entry.reason !== "string" || entry.reason.trim() === "") {
+      throw new Error("each burned-versions entry requires version and non-empty reason");
+    }
+    assertVersion(entry.version);
+    if (versions.includes(entry.version)) throw new Error(`burned version ${entry.version} is declared twice`);
+    versions.push(entry.version);
+  }
+  return versions;
+}
+
+async function assertCheckedInCliVersion(manifest, file) {
+  const cli = JSON.parse(await readFile(file, "utf8"));
+  const successor = manifest.allowed_tuples.successor;
+  if (cli?.name !== successor.package || cli?.version !== successor.version) {
+    throw new Error(
+      `packages/cli/package.json must declare successor ${successor.package}@${successor.version}; observed ${cli?.name ?? "unknown"}@${cli?.version ?? "unknown"}`,
+    );
+  }
+}
+
+export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH, {
+  burnedFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_BURNED_VERSIONS_PATH : null,
+  cliPackageFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_CLI_PACKAGE_PATH : null,
+} = {}) {
+  const raw = JSON.parse(await readFile(file, "utf8"));
+  const burnedVersions = burnedFile ? await loadBurnedVersions(burnedFile) : [];
+  const manifest = normalizeReleaseTargets(raw, { burnedVersions });
+  if (cliPackageFile) await assertCheckedInCliVersion(manifest, cliPackageFile);
+  return manifest;
 }
 
 /** Lazy synchronous compatibility helper for legacy pure release emitters; never runs at import time. */

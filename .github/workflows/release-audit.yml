@@ -12,7 +12,7 @@ name: Release policy audit
 #   20 -> registry unreachable/unhealthy: policy NOT evaluated -> loud warning, job stays green
 #   anything else -> policy violation or audit defect -> red
 #
-# No npm ci: the script imports only node builtins + scripts/release-state.mjs.
+# No npm ci: the script imports only node builtins and local release-state/targets helpers.
 on:
   pull_request:
   push:
@@ -40,7 +40,7 @@ jobs:
       - name: Audit live registry state against the declared release phase
         run: |
           set +e
-          node scripts/release-audit-tags.mjs
+          npm run release:audit-tags
           code=$?
           set -e
           if [ "$code" -eq 20 ]; then

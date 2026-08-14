@@ -6,8 +6,9 @@
 //      computed by scripts/release-state.mjs `resolveTags` — the one policy authority;
 //   b. version scheme: pre-stable publishes are `A.B.0-pre.N` with N contiguous from 1 and
 //      publish times monotone in N (decisions/version-update-contract §1);
-//   c. source-vs-registry drift: packages/cli/package.json must be the newest published
-//      version (pre-release-prep) or one sane increment ahead (staged-prep).
+//   c. source-vs-registry drift: the validated bridge tuple must be the newest published
+//      version (pre-release-prep) or one sane increment ahead (staged-prep). The checked-in CLI
+//      separately declares the successor coordinate, so it must not be compared to bridge history.
 //
 // NETWORK vs VIOLATION is structural, not textual: unreachable/unhealthy registry throws
 // NetworkUnavailableError -> exit 20 (CI turns that into a loud neutral skip); a policy
@@ -19,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveTags } from "./release-state.mjs";
+import { loadReleaseTargets } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
@@ -567,7 +569,14 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(`release-audit: VIOLATION[burned_declaration]: ${error.message}`);
     return EXIT_VIOLATION;
   }
-  const cliManifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
+  let bridgeVersion;
+  try {
+    const targets = await loadReleaseTargets();
+    bridgeVersion = targets.allowed_tuples.bridge.version;
+  } catch (error) {
+    console.error(`release-audit: VIOLATION[release_targets]: ${error instanceof Error ? error.message : String(error)}`);
+    return EXIT_VIOLATION;
+  }
 
   let registry;
   if (registryJson) {
@@ -580,7 +589,7 @@ export async function main(argv = process.argv.slice(2)) {
     return EXIT_VIOLATION;
   }
 
-  const result = auditRegistryState({ declaration, sourceVersion: cliManifest.version, registry, burnedVersions });
+  const result = auditRegistryState({ declaration, sourceVersion: bridgeVersion, registry, burnedVersions });
   console.log(`release-audit: package ${PACKAGE}`);
   console.log(`release-audit: facts ${JSON.stringify(result.facts)}`);
   for (const note of result.notes) console.log(`release-audit: note: ${note}`);

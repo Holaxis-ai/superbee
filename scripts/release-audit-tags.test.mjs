@@ -471,17 +471,17 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   const passing = path.join(scratch, "passing.json");
   const violating = path.join(scratch, "violating.json");
   const repoRoot = path.dirname(path.dirname(scriptFile));
-  const cliVersion = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8")).version;
-  // Derive a scheme-consistent published set from the ACTUAL source version so this test keeps
-  // passing across future version bumps (the audit reads the real package.json + phase and
-  // burned-versions files — so the synthesized registry must not publish a declared burn).
+  const bridgeVersion = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8")).allowed_tuples.bridge.version;
+  // Derive a scheme-consistent published set from the bridge tuple so this test keeps passing
+  // across future version bumps. The audit queries bridge history; source CLI identity is the
+  // independently validated successor tuple.
   const committedBurns = readBurnedDeclaration(
     JSON.parse(await readFile(path.join(repoRoot, "release", "burned-versions.json"), "utf8").catch(() => "null")),
   );
-  const line = /^(\d+)\.(\d+)\.0-pre\.(\d+)$/.exec(cliVersion);
+  const line = /^(\d+)\.(\d+)\.0-pre\.(\d+)$/.exec(bridgeVersion);
   const versions = (line
     ? Array.from({ length: Number(line[3]) }, (_, i) => `${line[1]}.${line[2]}.0-pre.${i + 1}`)
-    : [cliVersion]).filter((v) => !committedBurns.includes(v));
+    : [bridgeVersion]).filter((v) => !committedBurns.includes(v));
   const publishedTip = versions.at(-1);
   assert.ok(
     publishedTip && versions.includes(publishedTip) && !committedBurns.includes(publishedTip),
@@ -601,11 +601,11 @@ test("the COMMITTED burned-versions declaration parses and admits the current so
   const committed = JSON.parse(await readFile(path.join(repoRoot, "release", "burned-versions.json"), "utf8"));
   const burned = readBurnedDeclaration(committed);
   assert.ok(burned.includes("0.1.0-pre.4"), "the pre.4 burn that motivated this mechanism is declared");
-  const manifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
+  const targets = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
   // Fixture mirrors the live registry at build time: 0.1.0-pre.8 published 2026-08-11 (the first
   // release through the staged machinery), pre.4..pre.7 burned. Update alongside real publishes.
   const published = ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.8"];
-  const drift = checkSourceDrift(manifest.version, published, burned);
+  const drift = checkSourceDrift(targets.allowed_tuples.bridge.version, published, burned);
   assert.deepEqual(drift.violations, []);
 });
 
