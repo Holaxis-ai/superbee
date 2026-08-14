@@ -482,9 +482,14 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   const versions = (line
     ? Array.from({ length: Number(line[3]) }, (_, i) => `${line[1]}.${line[2]}.0-pre.${i + 1}`)
     : [cliVersion]).filter((v) => !committedBurns.includes(v));
+  const publishedTip = versions.at(-1);
+  assert.ok(
+    publishedTip && versions.includes(publishedTip) && !committedBurns.includes(publishedTip),
+    "synthetic dist-tags must point to an included published version, never a declared burn",
+  );
   const time = Object.fromEntries(versions.map((v, i) => [v, new Date(Date.UTC(2026, 6, 1 + i)).toISOString()]));
-  await writeFile(passing, JSON.stringify({ "dist-tags": { latest: cliVersion, next: cliVersion }, versions, time }));
-  await writeFile(violating, JSON.stringify({ "dist-tags": { latest: "0.0.1", next: cliVersion }, versions, time }));
+  await writeFile(passing, JSON.stringify({ "dist-tags": { latest: publishedTip, next: publishedTip }, versions, time }));
+  await writeFile(violating, JSON.stringify({ "dist-tags": { latest: "0.0.1", next: publishedTip }, versions, time }));
 
   const pass = await runAudit(["--registry-json", passing]);
   assert.equal(pass.code, 0, pass.stderr);
