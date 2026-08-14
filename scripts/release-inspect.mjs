@@ -25,7 +25,7 @@ import { stageDownloadFilenameFor } from "./release-receipts.mjs";
 import { canonicalPayloadBytes, canonicalReceiptPayload, parseReceiptFile, receiptAssetName, SIGN_NAMESPACE } from "./release-ordering.mjs";
 import { allowedSignerPrincipals } from "./release-verify-ordering.mjs";
 import { executeRecoveryTransaction, normalizeAssetTriple, normalizeSlot, runRecoveryBatch, sha256Bytes } from "./release-inspect-recovery.mjs";
-import { RELEASE_CANDIDATE_SCHEMA, DEFAULT_TARGETS, assertWorkflowContract, targetFromPackageName } from "./release-targets.mjs";
+import { RELEASE_CANDIDATE_SCHEMA, assertWorkflowContract, defaultReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -272,7 +272,7 @@ function createProductionDependencies(overrides = {}) {
 
   function candidateTarget(candidate, row) {
     const targetId = candidate?.target ?? row.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name) ?? "bridge";
-    const target = DEFAULT_TARGETS[targetId];
+    const target = defaultReleaseTargets()[targetId];
     if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
     if (row.target !== undefined && row.target !== target.id) fail(`candidate target ${target.id} does not match requested target ${row.target}`);
     if (candidate?.package?.name !== undefined && candidate.package.name !== target.package.name) {

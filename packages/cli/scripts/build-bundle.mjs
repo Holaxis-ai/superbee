@@ -78,6 +78,10 @@ export async function buildCliBundle(outfile, options) {
   if (!isStrictSemver(functionalVersionFloor)) {
     throw new Error("buildCliBundle requires a strict SemVer functionalVersionFloor");
   }
+  const updatePolicy = options?.updatePolicy;
+  if (!updatePolicy || typeof updatePolicy !== "object" || typeof updatePolicy.enabled !== "boolean") {
+    throw new Error("buildCliBundle requires an explicit updatePolicy.enabled boolean");
+  }
   if (
     !(source?.commit === null || (typeof source?.commit === "string" && /^[a-f0-9]{40}$/.test(source.commit))) ||
     !(source?.dirty === null || typeof source?.dirty === "boolean")
@@ -120,6 +124,7 @@ export async function buildCliBundle(outfile, options) {
     define: {
       __SUPERBEE_BUILD_IDENTITY__: JSON.stringify(identity),
       __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__: JSON.stringify(functionalVersionFloor),
+      __SUPERBEE_UPDATE_POLICY__: JSON.stringify(updatePolicy),
     },
     // Resolve the workspace deps to their TypeScript source so no dist pre-build is needed.
     alias: {

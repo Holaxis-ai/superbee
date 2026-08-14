@@ -4,7 +4,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
-import { loadReleaseTargets, normalizeReleaseTargets } from "./release-targets.mjs";
+import { loadReleaseTargets, normalizeReleaseTargets, updatePolicyForTarget } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -26,6 +26,14 @@ test("parseResolveTargetArgs accepts a tag or target and defaults to the release
   });
 });
 
+test("update policy is explicit per target and fails closed for identity-only rehearsals", async () => {
+  const manifest = await loadReleaseTargets();
+  assert.deepEqual(updatePolicyForTarget(manifest.targets.bridge), { enabled: true });
+  assert.deepEqual(updatePolicyForTarget(manifest.targets.successor), { enabled: true });
+  assert.deepEqual(updatePolicyForTarget(manifest.targets["rehearsal-approve"]), { enabled: false });
+  assert.deepEqual(updatePolicyForTarget(undefined), { enabled: false });
+});
+
 test("resolveTargetFacts returns the allowlisted tuple and policy tag", async () => {
   assert.deepEqual(await resolveTargetFacts({ target: "successor", tag: "v0.1.0-pre.11" }), {
     target: "successor",
@@ -37,14 +45,22 @@ test("resolveTargetFacts returns the allowlisted tuple and policy tag", async ()
   });
 });
 
-test("the functional successor floor is the reviewed successor tuple version", async () => {
+test("the functional successor floor is independently reviewed and remains at or below the successor tuple", async () => {
   const manifest = await loadReleaseTargets();
-  assert.equal(manifest.functional_successor_floor, "0.1.0-pre.11");
   assert.equal(manifest.functional_successor_floor, manifest.allowed_tuples.successor.version);
+
+  const laterSuccessor = {
+    ...manifest,
+    allowed_tuples: {
+      ...manifest.allowed_tuples,
+      successor: { ...manifest.allowed_tuples.successor, version: "0.1.0-pre.12", tag: "v0.1.0-pre.12" },
+    },
+  };
+  assert.equal(normalizeReleaseTargets(laterSuccessor).functional_successor_floor, manifest.functional_successor_floor);
 
   assert.throws(
     () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: "0.1.0-pre.12" }),
-    /must equal the reviewed successor tuple version 0\.1\.0-pre\.11/,
+    /must be at or above functional successor floor/,
   );
   assert.throws(
     () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: undefined }),

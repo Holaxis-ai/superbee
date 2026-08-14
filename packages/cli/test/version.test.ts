@@ -96,6 +96,16 @@ test("the BUILT CLI exposes the exact complete envelope in JSON and TOON", () =>
   assert.match(toon.stdout, new RegExp(`version: ${pkgVersion.replaceAll(".", "\\.")}`));
 });
 
+test("the built local artifact fails closed before registry I/O when no production update policy is baked", () => {
+  const checked = runCli(cliBin, ["version", "--check", "--json"]);
+  assert.equal(checked.status, 1, checked.stderr);
+  const output = JSON.parse(checked.stdout) as { check: { status: string; command: string | null; verify: string[]; unavailable: { code: string } | null } };
+  assert.equal(output.check.status, "unavailable");
+  assert.equal(output.check.unavailable?.code, "policy_disabled");
+  assert.equal(output.check.command, null);
+  assert.deepEqual(output.check.verify, []);
+});
+
 test("a real loader-driven source launch identifies and hashes src/index.ts, not an imported helper", () => {
   const sourceEntry = path.resolve(cliPackageRoot, "src/index.ts");
   const loader = path.resolve(cliPackageRoot, "test/ts-loader.mjs");
@@ -211,6 +221,26 @@ test("build flavor is mandatory and unsupported distribution channels are reject
         functionalVersionFloor,
       );
     }
+    await assert.rejects(
+      () => buildCliBundle(path.join(dir, "missing-policy.mjs"), {
+        artifactChannel: "local-dev",
+        functionalVersionFloor: "0.1.0-pre.11",
+        source: { commit: null, dirty: null },
+      }),
+      /requires an explicit updatePolicy.enabled boolean/,
+    );
+    const disabled = path.join(dir, "policy-disabled.mjs");
+    const enabled = path.join(dir, "policy-enabled.mjs");
+    for (const [outfile, updatePolicy] of [[disabled, { enabled: false }], [enabled, { enabled: true }]] as const) {
+      await buildCliBundle(outfile, {
+        artifactChannel: "local-dev",
+        functionalVersionFloor: "0.1.0-pre.11",
+        updatePolicy,
+        source: { commit: null, dirty: null },
+      });
+    }
+    assert.match(readFileSync(disabled, "utf8"), /enabled: false/);
+    assert.match(readFileSync(enabled, "utf8"), /enabled: true/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

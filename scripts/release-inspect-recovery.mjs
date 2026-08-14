@@ -7,6 +7,7 @@ import { constants as fsConstants } from "node:fs";
 import { chmod, link, lstat, mkdir, open, readFile, rename, rm, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
+import { isStrictSemver } from "./strict-semver.mjs";
 
 export const SLOT_SCHEMA = "aslite.receipt-recovery-slot.v1";
 export const JOURNAL_SCHEMA = "aslite.receipt-recovery-journal.v1";
@@ -14,7 +15,6 @@ export const OWNER_SCHEMA = "aslite.receipt-recovery-owner.v1";
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const STAGE_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const ACTOR = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const RECEIPT_NAME = /^receipt-(inspected|approved)-[a-f0-9-]+\.json$/i;
@@ -55,7 +55,7 @@ export function normalizeSlot(input) {
     draft_release_id: String(positiveId("draft release id", input?.draft_release_id)),
     tag: exactString("tag", input?.tag, /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/),
     stage_id: exactString("stage id", input?.stage_id, STAGE_ID),
-    version: exactString("version", input?.version, SEMVER),
+    version: strictVersion(input?.version),
     tarball_sha256: exactString("tarball SHA-256", input?.tarball_sha256, SHA256),
     decision,
     receipt_name: exactString("receipt name", input?.receipt_name, RECEIPT_NAME),
@@ -63,6 +63,11 @@ export function normalizeSlot(input) {
   if (slot.tag !== `v${slot.version}`) fail(`tag ${slot.tag} does not match version ${slot.version}`);
   if (slot.receipt_name !== `receipt-${decision}-${slot.stage_id}.json`) fail("receipt name does not match decision/stage id");
   return slot;
+}
+
+function strictVersion(value) {
+  if (typeof value !== "string" || !isStrictSemver(value)) fail("invalid version");
+  return value;
 }
 
 export function canonicalSlotKey(input) {

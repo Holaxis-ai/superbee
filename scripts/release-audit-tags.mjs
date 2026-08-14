@@ -19,6 +19,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { resolveTags } from "./release-state.mjs";
+import { isStrictSemver } from "./strict-semver.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.dirname(path.dirname(scriptPath));
@@ -47,6 +48,7 @@ const SEMVER =
   /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 function parseSemver(version) {
+  if (!isStrictSemver(version)) return null;
   const m = SEMVER.exec(version);
   if (!m) return null;
   return {

@@ -15,13 +15,14 @@ function result(status: UpdateCheckResult["status"] = "current"): UpdateCheckRes
   const unavailable = status === "unavailable";
   const upgrade = status === "upgrade_available";
   const rollback = status === "rollback_available";
+  const successorNotReady = status === "successor_not_ready";
   const actionable = upgrade || rollback;
-  const selectedVersion = upgrade ? "0.1.0-pre.4" : rollback ? "0.1.0-pre.2" : "0.1.0-pre.3";
+  const selectedVersion = upgrade ? "0.1.0-pre.4" : rollback || successorNotReady ? "0.1.0-pre.2" : "0.1.0-pre.3";
   return {
     schema: UPDATE_CHECK_SCHEMA,
     track: "latest",
     status,
-    relation: unavailable ? "unknown" : upgrade ? "selected_newer" : rollback ? "selected_older" : "equal",
+    relation: unavailable ? "unknown" : upgrade ? "selected_newer" : rollback ? "selected_older" : successorNotReady ? "selected_older" : "equal",
     checked_at: CHECKED_AT,
     running_version: "0.1.0-pre.3",
     selected_version: unavailable ? null : selectedVersion,
@@ -88,7 +89,7 @@ test("version --check renders identity plus the exact check and keeps successful
 });
 
 test("only unavailable uses exit 1; every compared state remains exit 0", async () => {
-  for (const status of ["current", "deprecated", "upgrade_available", "rollback_available"] as const) {
+  for (const status of ["current", "deprecated", "successor_not_ready", "upgrade_available", "rollback_available"] as const) {
     const exitCodes: number[] = [];
     await versionCommand(["--check", "--json"], {
       stdout: () => {},

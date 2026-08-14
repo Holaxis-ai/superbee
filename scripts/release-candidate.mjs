@@ -22,8 +22,9 @@ import {
   DEFAULT_RELEASE_TARGETS_PATH,
   RELEASE_CANDIDATE_SCHEMA,
   assertAllowedTuple,
+  assertTargetId,
   loadReleaseTargets,
-  resolveReleaseTarget,
+  updatePolicyForTarget,
 } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -167,7 +168,8 @@ export async function createReleaseCandidate({
 }) {
   const version = tag.slice(1);
   const targetManifest = await loadReleaseTargets(targetManifestPath);
-  const target = await resolveReleaseTarget(targetId, { manifestPath: targetManifestPath });
+  const target = targetManifest.targets[assertTargetId(targetId)];
+  if (!target) throw new Error(`release target ${targetId} is not listed in ${targetManifestPath}`);
   assertAllowedTuple(targetManifest, { target: target.id, packageName: target.package.name, version, tag });
   // Never trust a caller-supplied SHA or invented clean-tree claim. Production callers always use
   // the observed Git facts; sourceFacts is injectable only so the build-once unit test can remain
@@ -184,6 +186,7 @@ export async function createReleaseCandidate({
     source: { commit, dirty: false },
     packageIdentity: { name: target.package.name, version },
     releaseManifest: targetManifest,
+    updatePolicy: updatePolicyForTarget(target),
   });
 
   // PACK ONCE — the single npm pack of this transaction. --ignore-scripts so no lifecycle hook can

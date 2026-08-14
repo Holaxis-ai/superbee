@@ -109,12 +109,12 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
 })}\n`;
 
 function successfulCheck(
-  status: "current" | "deprecated" | "upgrade_available" | "rollback_available" =
+  status: "current" | "deprecated" | "successor_not_ready" | "upgrade_available" | "rollback_available" =
     "upgrade_available",
 ): UpdateCheckResult {
   const actionable = status === "upgrade_available" || status === "rollback_available";
   const selected =
-    status === "rollback_available" ? "0.1.0-pre.2" : actionable ? SELECTED : RUNNING;
+    status === "rollback_available" || status === "successor_not_ready" ? "0.1.0-pre.2" : actionable ? SELECTED : RUNNING;
   return {
     schema: "superbee.update-check.v1",
     track: "latest",
@@ -124,6 +124,8 @@ function successfulCheck(
         ? "selected_newer"
         : status === "rollback_available"
           ? "selected_older"
+          : status === "successor_not_ready"
+            ? "selected_older"
           : "equal",
     checked_at: CHECKED_AT,
     running_version: RUNNING,
@@ -255,6 +257,7 @@ test("strict cache parser accepts every successful status and projects only acti
   for (const status of [
     "current",
     "deprecated",
+    "successor_not_ready",
     "upgrade_available",
     "rollback_available",
   ] as const) {
@@ -265,7 +268,7 @@ test("strict cache parser accepts every successful status and projects only acti
     });
     assert.deepEqual(parsed, check, status);
     const notice = projectUpdateNotice(parsed);
-    if (status === "current") {
+    if (status === "current" || status === "successor_not_ready") {
       assert.equal(notice, undefined);
     } else {
       assert.deepEqual(notice, {

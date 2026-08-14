@@ -1,7 +1,8 @@
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertStrictSemver } from "./strict-semver.mjs";
+import { assertStrictSemver, compareStrictSemver } from "./strict-semver.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -147,9 +148,12 @@ export function normalizeReleaseTargets(raw) {
   if (allowedTuples.bridge?.version && allowedTuples.successor?.version && allowedTuples.bridge.version === allowedTuples.successor.version) {
     throw new Error("bridge and successor versions must differ because v<version> tags are immutable");
   }
-  if (allowedTuples.successor?.version !== functionalSuccessorFloor) {
+  if (!allowedTuples.successor?.version) {
+    throw new Error("release target manifest requires a strict SemVer successor tuple version");
+  }
+  if (compareStrictSemver(allowedTuples.successor.version, functionalSuccessorFloor) === -1) {
     throw new Error(
-      `functional successor floor ${functionalSuccessorFloor} must equal the reviewed successor tuple version ${allowedTuples.successor?.version ?? "<missing>"}`,
+      `reviewed successor tuple version ${allowedTuples.successor.version} must be at or above functional successor floor ${functionalSuccessorFloor}`,
     );
   }
   return {
@@ -165,12 +169,13 @@ export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH) {
   return normalizeReleaseTargets(raw);
 }
 
-// The checked-in manifest is the release authority. Keeping a hand-maintained in-code subset
-// caused declared rehearsal targets to disappear after candidate creation.
-export const DEFAULT_TARGETS = Object.freeze((await loadReleaseTargets()).targets);
+/** Lazy synchronous compatibility helper for legacy pure release emitters; never runs at import time. */
+export function defaultReleaseTargets() {
+  return Object.freeze(normalizeReleaseTargets(JSON.parse(readFileSync(DEFAULT_RELEASE_TARGETS_PATH, "utf8"))).targets);
+}
 
-export function targetFromPackageName(packageName) {
-  const matches = Object.values(DEFAULT_TARGETS).filter((target) => target.package.name === packageName);
+export function targetFromPackageName(packageName, targets = defaultReleaseTargets()) {
+  const matches = Object.values(targets).filter((target) => target.package.name === packageName);
   return matches.length === 1 ? matches[0].id : null;
 }
 
@@ -179,6 +184,12 @@ export function assertWorkflowContract(target, workflowContract = "full") {
     throw new Error(`release target ${target?.id ?? "<unknown>"} requires workflow contract ${workflowContract}`);
   }
   return target;
+}
+
+/** Explicit build-time policy: only reviewed production targets may consult superbee. */
+export function updatePolicyForTarget(target) {
+  if (!target || target.allow_production !== true) return { enabled: false };
+  return { enabled: true };
 }
 
 export async function resolveReleaseTarget(targetId, { manifestPath = DEFAULT_RELEASE_TARGETS_PATH } = {}) {

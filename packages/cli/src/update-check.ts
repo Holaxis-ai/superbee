@@ -1,3 +1,10 @@
+import {
+  compareStrictSemver,
+  parseStrictSemver,
+  type ParsedStrictSemver,
+} from "../../../scripts/strict-semver.mjs";
+export { compareStrictSemver, parseStrictSemver } from "../../../scripts/strict-semver.mjs";
+
 export const UPDATE_CHECK_SCHEMA = "superbee.update-check.v1";
 export const UPDATE_CHECK_ENDPOINT = "https://registry.npmjs.org/superbee";
 export const UPDATE_CHECK_ACCEPT = "application/vnd.npm.install-v1+json";
@@ -5,16 +12,17 @@ export const UPDATE_CHECK_TIMEOUT_MS = 2_000;
 export const UPDATE_CHECK_MAX_BYTES = 1_048_576;
 
 declare const __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__: unknown;
+declare const __SUPERBEE_UPDATE_POLICY__: unknown;
 
 const PACKAGE_NAME = "superbee";
 const MAX_METADATA_LENGTH = 4_096;
-const MAX_SEMVER_LENGTH = 256;
 
 export type ReleaseTrack = "latest" | "next";
 export type UpdateCheckStatus =
   | "unavailable"
   | "deprecated"
   | "current"
+  | "successor_not_ready"
   | "upgrade_available"
   | "rollback_available";
 export type UpdateCheckRelation = "unknown" | "equal" | "selected_newer" | "selected_older";
@@ -26,7 +34,8 @@ export type UpdateUnavailableCode =
   | "malformed"
   | "tag_missing"
   | "successor_not_ready"
-  | "selected_deprecated";
+  | "selected_deprecated"
+  | "policy_disabled";
 
 export interface UpdateCheckUnavailable {
   code: UpdateUnavailableCode;
@@ -48,73 +57,25 @@ export interface UpdateCheckResult {
   unavailable: UpdateCheckUnavailable | null;
 }
 
-interface ParsedSemver {
-  major: string;
-  minor: string;
-  patch: string;
-  prerelease: string[] | null;
-}
+export type { ParsedStrictSemver };
 
-const STRICT_SEMVER =
-  /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
-
-export function parseStrictSemver(value: string): ParsedSemver | undefined {
-  if (value.length > MAX_SEMVER_LENGTH) return undefined;
-  const match = STRICT_SEMVER.exec(value);
-  if (!match) return undefined;
-  const prerelease = match[4]?.split(".") ?? null;
-  if (prerelease?.some((part) => /^[0-9]+$/.test(part) && part.length > 1 && part.startsWith("0"))) {
-    return undefined;
-  }
-  return { major: match[1]!, minor: match[2]!, patch: match[3]!, prerelease };
-}
-
-function compareNumericIdentifiers(left: string, right: string): -1 | 0 | 1 {
-  if (left.length !== right.length) return left.length < right.length ? -1 : 1;
-  if (left === right) return 0;
-  return left < right ? -1 : 1;
-}
-
-/** Compare strict SemVer precedence. Build metadata is intentionally ignored. */
-export function compareStrictSemver(left: string, right: string): -1 | 0 | 1 | undefined {
-  const a = parseStrictSemver(left);
-  const b = parseStrictSemver(right);
-  if (!a || !b) return undefined;
-  for (const key of ["major", "minor", "patch"] as const) {
-    const compared = compareNumericIdentifiers(a[key], b[key]);
-    if (compared !== 0) return compared;
-  }
-  if (a.prerelease === null || b.prerelease === null) {
-    if (a.prerelease === b.prerelease) return 0;
-    return a.prerelease === null ? 1 : -1;
-  }
-  const length = Math.max(a.prerelease.length, b.prerelease.length);
-  for (let i = 0; i < length; i += 1) {
-    const leftPart = a.prerelease[i];
-    const rightPart = b.prerelease[i];
-    if (leftPart === undefined) return -1;
-    if (rightPart === undefined) return 1;
-    if (leftPart === rightPart) continue;
-    const leftNumeric = /^[0-9]+$/.test(leftPart);
-    const rightNumeric = /^[0-9]+$/.test(rightPart);
-    if (leftNumeric && rightNumeric) return compareNumericIdentifiers(leftPart, rightPart);
-    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
-    return leftPart < rightPart ? -1 : 1;
-  }
-  return 0;
-}
-
-export function bakedFunctionalVersionFloor(): string {
-  if (typeof __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__ === "undefined") {
-    throw new Error("functional successor version floor is not baked into this CLI artifact");
-  }
+export function bakedFunctionalVersionFloor(): string | undefined {
+  if (typeof __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__ === "undefined") return undefined;
   if (
     typeof __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__ !== "string" ||
     !parseStrictSemver(__SUPERBEE_FUNCTIONAL_VERSION_FLOOR__)
   ) {
-    throw new Error("baked functional successor version floor is not valid strict SemVer");
+    return undefined;
   }
   return __SUPERBEE_FUNCTIONAL_VERSION_FLOOR__;
+}
+
+export function bakedUpdatePolicy(): { enabled: boolean } {
+  const policy = record(typeof __SUPERBEE_UPDATE_POLICY__ === "undefined" ? undefined : __SUPERBEE_UPDATE_POLICY__);
+  if (policy?.enabled === true) {
+    return { enabled: true };
+  }
+  return { enabled: false };
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -260,26 +221,6 @@ export function selectSupportedRelease(input: {
     running_deprecated: runningDeprecated,
     selected_integrity: integrity,
   };
-  if (compareStrictSemver(selectedVersion, functionalVersionFloor)! < 0) {
-    return unavailable(
-      runningVersion,
-      track,
-      checkedAt,
-      "successor_not_ready",
-      `npm ${track} dist-tag selects a release below the functional successor floor`,
-      known,
-    );
-  }
-  if (selectedDeprecation.value !== null && selectedVersion !== runningVersion) {
-    return unavailable(
-      runningVersion,
-      track,
-      checkedAt,
-      "selected_deprecated",
-      `npm ${track} dist-tag selects a deprecated release`,
-      known,
-    );
-  }
   if (selectedVersion === runningVersion) {
     return {
       schema: UPDATE_CHECK_SCHEMA,
@@ -293,6 +234,35 @@ export function selectSupportedRelease(input: {
       verify: [],
       unavailable: null,
     };
+  }
+
+  const floorComparison = compareStrictSemver(selectedVersion, functionalVersionFloor);
+  if (floorComparison === undefined) return malformed(runningVersion, track, checkedAt);
+  if (floorComparison < 0) {
+    const comparison = compareStrictSemver(selectedVersion, runningVersion);
+    if (comparison === undefined) return malformed(runningVersion, track, checkedAt);
+    return {
+      schema: UPDATE_CHECK_SCHEMA,
+      track,
+      status: "successor_not_ready",
+      relation: comparison === 0 ? "equal" : comparison > 0 ? "selected_newer" : "selected_older",
+      checked_at: checkedAt,
+      running_version: runningVersion,
+      ...known,
+      command: null,
+      verify: [],
+      unavailable: null,
+    };
+  }
+  if (selectedDeprecation.value !== null) {
+    return unavailable(
+      runningVersion,
+      track,
+      checkedAt,
+      "selected_deprecated",
+      `npm ${track} dist-tag selects a deprecated release`,
+      known,
+    );
   }
 
   const comparison = compareStrictSemver(selectedVersion, runningVersion);
@@ -448,6 +418,7 @@ export async function fetchSupportedReleasePackument(
 export interface SupportedReleaseCheckDeps extends PackumentFetchDeps {
   now?: () => Date;
   functionalVersionFloor?: string;
+  updatePolicy?: { enabled: boolean };
 }
 
 /** Fetch and select the exact release named by the requested public npm track. */
@@ -458,8 +429,27 @@ export async function checkSupportedRelease(
   if (!parseStrictSemver(input.runningVersion)) {
     throw new Error("running package version is not valid strict SemVer");
   }
-  const fetched = await fetchSupportedReleasePackument(deps);
   const checkedAt = (deps.now ?? (() => new Date()))().toISOString();
+  if (!(deps.updatePolicy ?? bakedUpdatePolicy()).enabled) {
+    return unavailable(
+      input.runningVersion,
+      input.track,
+      checkedAt,
+      "policy_disabled",
+      "supported-release checks are disabled for this build target",
+    );
+  }
+  const functionalVersionFloor = deps.functionalVersionFloor ?? bakedFunctionalVersionFloor();
+  if (!functionalVersionFloor) {
+    return unavailable(
+      input.runningVersion,
+      input.track,
+      checkedAt,
+      "policy_disabled",
+      "supported-release policy is unavailable for this build target",
+    );
+  }
+  const fetched = await fetchSupportedReleasePackument(deps);
   if (!fetched.ok) {
     return unavailable(
       input.runningVersion,
@@ -474,6 +464,6 @@ export async function checkSupportedRelease(
     track: input.track,
     runningVersion: input.runningVersion,
     checkedAt,
-    functionalVersionFloor: deps.functionalVersionFloor ?? bakedFunctionalVersionFloor(),
+    functionalVersionFloor,
   });
 }

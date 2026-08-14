@@ -15,6 +15,7 @@ import {
   selectSupportedRelease,
   type ReleaseTrack,
 } from "../src/update-check.js";
+import { isStrictSemver } from "../../../scripts/strict-semver.mjs";
 
 const CHECKED_AT = "2026-08-05T12:00:00.000Z";
 const INTEGRITY = `sha512-${Buffer.alloc(64).toString("base64")}`;
@@ -83,6 +84,9 @@ test("strict SemVer parsing and precedence cover prereleases without numeric ove
     assert.equal(parseStrictSemver(invalid), undefined, invalid);
   }
   assert.equal(parseStrictSemver(`1.2.3-${"a".repeat(257)}`), undefined);
+  for (const value of ["1.2.3", "01.2.3", "1.2.3-01", `1.2.3-${"a".repeat(257)}`]) {
+    assert.equal(Boolean(parseStrictSemver(value)), isStrictSemver(value), value);
+  }
   const precedence: Array<[string, string, -1 | 0 | 1]> = [
     ["0.1.0-pre.2", "0.1.0-pre.3", -1],
     ["1.0.0-alpha", "1.0.0-alpha.1", -1],
@@ -172,8 +176,8 @@ test("the bridge suppresses placeholder and below-floor successor guidance", () 
       checkedAt: CHECKED_AT,
       functionalVersionFloor: "0.1.0-pre.11",
     });
-    assert.equal(result.status, "unavailable", selectedVersion);
-    assert.equal(result.unavailable?.code, "successor_not_ready", selectedVersion);
+    assert.equal(result.status, "successor_not_ready", selectedVersion);
+    assert.equal(result.unavailable, null, selectedVersion);
     assert.equal(result.selected_version, selectedVersion);
     assert.equal(result.command, null, selectedVersion);
     assert.deepEqual(result.verify, [], selectedVersion);
@@ -188,6 +192,25 @@ test("the bridge suppresses placeholder and below-floor successor guidance", () 
   });
   assert.equal(floor.status, "upgrade_available");
   assert.equal(floor.command, "npm install --global superbee@0.1.0-pre.11");
+});
+
+test("below-floor successor state is quiet while current and deprecated bridge state remains visible", () => {
+  const current = selectSupportedRelease({
+    packument: packument("0.1.0-pre.10", { runningVersion: "0.1.0-pre.10" }),
+    track: "latest", runningVersion: "0.1.0-pre.10", checkedAt: CHECKED_AT, functionalVersionFloor: "0.1.0-pre.11",
+  });
+  assert.equal(current.status, "current");
+  const deprecated = selectSupportedRelease({
+    packument: packument("0.1.0-pre.10", { runningVersion: "0.1.0-pre.10", selectedEntry: entry("0.1.0-pre.10", { deprecated: "replace now" }) }),
+    track: "latest", runningVersion: "0.1.0-pre.10", checkedAt: CHECKED_AT, functionalVersionFloor: "0.1.0-pre.11",
+  });
+  assert.equal(deprecated.status, "deprecated");
+  const rollback = selectSupportedRelease({
+    packument: packument("0.1.0-pre.11", { runningVersion: "0.1.0-pre.12" }),
+    track: "latest", runningVersion: "0.1.0-pre.12", checkedAt: CHECKED_AT, functionalVersionFloor: "0.1.0-pre.11",
+  });
+  assert.equal(rollback.status, "rollback_available");
+  assert.equal(rollback.command, "npm install --global superbee@0.1.0-pre.11");
 });
 
 test("missing and malformed registry policy fail closed with no install command", () => {
@@ -489,7 +512,7 @@ test("tag movement is observed per invocation and never persisted as preference"
       status: 200,
       headers: { "content-type": "application/json" },
     });
-  const deps = { fetchImpl, now: () => new Date(CHECKED_AT), functionalVersionFloor: "0.1.0-pre.2" };
+  const deps = { fetchImpl, now: () => new Date(CHECKED_AT), functionalVersionFloor: "0.1.0-pre.2", updatePolicy: { enabled: true } };
   const first = await checkSupportedRelease({ runningVersion: "0.1.0-pre.3", track: "latest" }, deps);
   selected = "0.1.0-pre.2";
   const second = await checkSupportedRelease({ runningVersion: "0.1.0-pre.3", track: "latest" }, deps);
@@ -505,6 +528,7 @@ test("transport failures retain the complete structured check shape", async () =
     {
       now: () => new Date(CHECKED_AT),
       functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
+      updatePolicy: { enabled: true },
       fetchImpl: async () => {
         throw new TypeError("offline with private diagnostic details");
       },
@@ -524,4 +548,20 @@ test("transport failures retain the complete structured check shape", async () =
     verify: [],
     unavailable: { code: "offline", message: "npm registry could not be reached" },
   });
+});
+
+test("disabled policy does not fetch or emit production guidance", async () => {
+  let fetches = 0;
+  const result = await checkSupportedRelease(
+    { runningVersion: "0.1.0-pre.10", track: "latest" },
+    { now: () => new Date(CHECKED_AT), updatePolicy: { enabled: false }, fetchImpl: async () => {
+      fetches += 1;
+      throw new Error("must not fetch");
+    } },
+  );
+  assert.equal(fetches, 0);
+  assert.equal(result.status, "unavailable");
+  assert.equal(result.unavailable?.code, "policy_disabled");
+  assert.equal(result.command, null);
+  assert.deepEqual(result.verify, []);
 });

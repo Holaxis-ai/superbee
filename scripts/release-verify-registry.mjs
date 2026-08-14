@@ -10,14 +10,14 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { fileSha256, sanitizedNpmEnvironment } from "./verify-npm-package.mjs";
-import { DEFAULT_TARGETS, REGISTRY_PROOF_SCHEMA, assertWorkflowContract, targetFromPackageName } from "./release-targets.mjs";
+import { REGISTRY_PROOF_SCHEMA, assertWorkflowContract, defaultReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
+import { isStrictSemver } from "./strict-semver.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
-const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?$/;
 
 function targetFor(targetId = "bridge") {
-  const target = DEFAULT_TARGETS[targetId];
+  const target = defaultReleaseTargets()[targetId];
   if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
   return assertWorkflowContract(target);
 }
@@ -91,7 +91,7 @@ export function assertRegistryCandidate({ candidate, packReceipt, packumentDist,
 
 export async function verifyRegistry({ target: targetId = "bridge", version, manifest, out }) {
   const target = targetFor(targetId);
-  if (!SEMVER.test(version)) throw new Error(`invalid --version ${version}`);
+  if (!isStrictSemver(version)) throw new Error(`invalid --version ${version}`);
   const candidate = parseJson(await readFile(manifest, "utf8"), "candidate manifest");
   if (candidate.version !== version) throw new Error(`candidate version ${candidate.version} != requested ${version}`);
   if (candidate.target !== target.id || candidate.package?.name !== target.package.name) {
