@@ -241,7 +241,7 @@
       "treatment": "rename-to-superbee",
       "owner": "build-graph",
       "reason": "AC-06/AC-07 require monorepo and artifact identity to become Superbee",
-      "line": 6858
+      "line": 6859
     },
     {
       "file": "package-lock.json",
@@ -252,7 +252,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 6859
+      "line": 6860
     },
     {
       "file": "packages/board-git/src/porcelain.ts",
@@ -1297,7 +1297,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 28
+      "line": 30
     },
     {
       "file": "scripts/release-candidate.mjs",
