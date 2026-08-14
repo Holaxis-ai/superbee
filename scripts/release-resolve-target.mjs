@@ -63,7 +63,7 @@ export function renderGithubOutput(facts) {
   ].join("\n") + "\n";
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   const args = parseResolveTargetArgs(process.argv.slice(2));
   resolveTargetFacts(args)
     .then(async (facts) => {

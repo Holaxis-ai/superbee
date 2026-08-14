@@ -248,21 +248,23 @@ export async function createReleaseCandidate({
   return { candidate, tarballPath, manifestPath, outDir };
 }
 
-if (await isMainModule(import.meta.url)) {
-  try {
-    const args = parseCandidateArgs(process.argv.slice(2));
-    const result = await createReleaseCandidate(args);
-    if (args.json) {
-      console.log(JSON.stringify(result.candidate));
-    } else {
-      const t = result.candidate.tarball;
-      console.log(
-        `release candidate ${result.candidate.tag}: ${t.filename} ${t.sha256} (${t.size} bytes) retained at ` +
-          `${path.relative(repoRoot, result.tarballPath)}; manifest ${path.relative(repoRoot, result.manifestPath)}`,
-      );
-    }
-  } catch (error) {
+async function main(argv = process.argv.slice(2)) {
+  const args = parseCandidateArgs(argv);
+  const result = await createReleaseCandidate(args);
+  if (args.json) {
+    console.log(JSON.stringify(result.candidate));
+  } else {
+    const t = result.candidate.tarball;
+    console.log(
+      `release candidate ${result.candidate.tag}: ${t.filename} ${t.sha256} (${t.size} bytes) retained at ` +
+        `${path.relative(repoRoot, result.tarballPath)}; manifest ${path.relative(repoRoot, result.manifestPath)}`,
+    );
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
     console.error(error instanceof Error ? error.stack : error);
     process.exitCode = 1;
-  }
+  });
 }

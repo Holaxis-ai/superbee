@@ -485,7 +485,7 @@ export async function main(argv, dependencyOverrides = {}) {
   return batch;
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     const result = await main(process.argv.slice(2));
     for (const row of result.rows) if (row.status === "failed") console.error(row.error);

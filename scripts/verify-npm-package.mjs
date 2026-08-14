@@ -1076,25 +1076,27 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   });
 }
 
-if (await isMainModule(import.meta.url)) {
-  try {
-    const args = parseVerificationArgs(process.argv.slice(2));
-    const result =
-      args.mode === "tarball"
-        ? await verifyRetainedTarball({ tarball: args.tarball, manifest: args.manifest })
-        : await verifyNpmPackage({ mode: args.mode });
-    if (args.json) {
-      console.log(JSON.stringify(result));
-    } else {
-      const source = result.identity.identity.source;
-      console.log(
-        `verified ${result.mode} ${result.package}: ${result.files} files, zero runtime dependencies, ` +
-          `bins ${result.bins.join("/")}, source commit=${source.commit ?? "unknown"} dirty=${source.dirty ?? "unknown"}, ` +
-          "offline workflow passed",
-      );
-    }
-  } catch (error) {
+async function main(argv = process.argv.slice(2)) {
+  const args = parseVerificationArgs(argv);
+  const result =
+    args.mode === "tarball"
+      ? await verifyRetainedTarball({ tarball: args.tarball, manifest: args.manifest })
+      : await verifyNpmPackage({ mode: args.mode });
+  if (args.json) {
+    console.log(JSON.stringify(result));
+  } else {
+    const source = result.identity.identity.source;
+    console.log(
+      `verified ${result.mode} ${result.package}: ${result.files} files, zero runtime dependencies, ` +
+        `bins ${result.bins.join("/")}, source commit=${source.commit ?? "unknown"} dirty=${source.dirty ?? "unknown"}, ` +
+        "offline workflow passed",
+    );
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
     console.error(error instanceof Error ? error.stack : error);
     process.exitCode = 1;
-  }
+  });
 }

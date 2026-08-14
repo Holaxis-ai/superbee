@@ -1,7 +1,8 @@
 import { build } from "esbuild";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isMainModule } from "../../../scripts/is-main-module.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = resolve(here, "..");
@@ -49,6 +50,18 @@ export async function buildMcpViewHtml() {
   return html;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+function parseBuildViewArgs(argv) {
+  if (argv.length !== 0) throw new Error("usage: build-view.mjs");
+}
+
+async function main(argv = process.argv.slice(2)) {
+  parseBuildViewArgs(argv);
   await buildMcpViewHtml();
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = error instanceof Error && error.message === "usage: build-view.mjs" ? 2 : 1;
+  });
 }

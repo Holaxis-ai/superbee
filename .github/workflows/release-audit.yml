@@ -12,7 +12,8 @@ name: Release policy audit
 #   20 -> registry unreachable/unhealthy: policy NOT evaluated -> loud warning, job stays green
 #   anything else -> policy violation or audit defect -> red
 #
-# No npm ci: the script imports only node builtins + scripts/release-state.mjs.
+# No npm ci: this read-only audit executes the checked-in source entrypoint directly and imports
+# only repository source modules plus Node builtins; it does not need installed package deps.
 on:
   pull_request:
   push:

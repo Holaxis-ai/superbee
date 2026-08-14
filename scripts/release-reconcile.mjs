@@ -36,7 +36,7 @@ function arg(argv, flag) {
   return value;
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     const argv = process.argv.slice(2);
     const to = arg(argv, "--to");

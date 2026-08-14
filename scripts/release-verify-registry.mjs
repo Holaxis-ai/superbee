@@ -181,7 +181,7 @@ export async function verifyRegistry({ target: targetId = "bridge", version, man
   }
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   verifyRegistry({
     target: arg(process.argv.slice(2), "--target", false) ?? "bridge",
     version: arg(process.argv.slice(2), "--version"),

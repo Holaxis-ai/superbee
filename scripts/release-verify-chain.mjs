@@ -100,7 +100,7 @@ export async function main(argv) {
   throw new Error("usage: release-verify-chain.mjs stage-id|capture-draft|verify-finalizer ...");
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.stack : error);
     process.exitCode = 1;

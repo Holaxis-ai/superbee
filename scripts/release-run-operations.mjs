@@ -68,7 +68,7 @@ export function operationsFor(op, argv) {
   }
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   try {
     const argv = process.argv.slice(2);
     const op = arg(argv, "--op", true);

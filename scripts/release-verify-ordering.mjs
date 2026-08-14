@@ -279,7 +279,7 @@ export async function main(argv) {
   throw new Error("usage: release-verify-ordering.mjs assets|verify|plan|apply|final ...");
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

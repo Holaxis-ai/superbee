@@ -97,8 +97,7 @@ export function renderReceiptMarkdown(built) {
   return lines.join("\n");
 }
 
-if (await isMainModule(import.meta.url)) {
-  const argv = process.argv.slice(2);
+export async function main(argv = process.argv.slice(2)) {
   const built = buildReceipt({
     runId: arg(argv, "--run-id"),
     artifactId: arg(argv, "--artifact-id"),
@@ -119,4 +118,11 @@ if (await isMainModule(import.meta.url)) {
   const jsonOut = arg(argv, "--json-out", false);
   if (jsonOut) await writeFile(jsonOut, `${JSON.stringify(built.receipt, null, 2)}\n`);
   console.log(renderReceiptMarkdown(built));
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
 }

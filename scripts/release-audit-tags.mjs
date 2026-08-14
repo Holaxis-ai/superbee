@@ -593,7 +593,7 @@ export async function main(argv = process.argv.slice(2)) {
   return EXIT_PASS;
 }
 
-if (await isMainModule(import.meta.url)) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => {
       process.exitCode = code;
