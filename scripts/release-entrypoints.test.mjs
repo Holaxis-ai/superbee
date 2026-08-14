@@ -13,24 +13,38 @@ const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const representativeCli = path.join(repoRoot, "scripts", "release-resolve-target.mjs");
 const secondEntrypoint = path.join(repoRoot, "scripts", "rename-literal-inventory.mjs");
-const OWNED_SOURCE_DIRECTORIES = [
+const OWNED_SOURCE_SURFACE_DIRECTORIES = [
   "scripts",
   "packages/cli/scripts",
   "packages/mcp-app/scripts",
 ];
-const OWNED_PACKAGE_ENTRYPOINTS = [
+const OWNED_SOURCE_SURFACE_EXTRAS = [
   "packages/cli/build.mjs",
+];
+const PACKAGE_SCRIPT_AUTHORITY_FILES = [
+  "package.json",
+  "packages/cli/package.json",
+  "packages/mcp-app/package.json",
+];
+const EXPLICIT_OPERATOR_EXECUTABLE_PATHS = [
+  "scripts/migrate-legacy-view-names.mjs",
+  "scripts/rename-literal-inventory.mjs",
+  "scripts/release-inspect.mjs",
+  "scripts/release-reconcile.mjs",
 ];
 const LEGACY_MAIN_GUARD_PATTERNS = [
   /process\.argv\[1\][\s\S]{0,200}fileURLToPath\(import\.meta\.url\)/,
   /import\.meta\.url\s*===\s*pathToFileURL\(process\.argv\[1\]\s*\?\?\s*""\)\.href/,
 ];
 const SHARED_MAIN_GUARD_PATTERN = /\bisMainModule\(import\.meta\.url\b/;
+const NODE_SOURCE_ENTRYPOINT_PATTERN = /\bnode\s+(?:"([^"\n]+?\.mjs)"|'([^'\n]+?\.mjs)'|([^\s"'`()|&;]+?\.mjs))/g;
+const MAX_BUFFER = 20 * 1024 * 1024;
 const DEFAULT_ENV = {
   ...process.env,
   ASLITE_NO_UPDATE_CHECK: "1",
   AGENTSTATE_LITE_NO_AUTOPULL: "1",
 };
+let coreDistBuildPromise;
 
 const OWNED_ENTRYPOINT_PROBES = [
   {
@@ -39,12 +53,20 @@ const OWNED_ENTRYPOINT_PROBES = [
     expected: { code: 1, stderr: /usage: buildCli\(local-dev\|npm-package\)/ },
   },
   {
+    relativePath: "packages/cli/scripts/gen-skill.mjs",
+    args: () => ["--unexpected"],
+    expected: { code: 2, stderr: /usage: node scripts\/gen-skill\.mjs \[--check\]/ },
+  },
+  {
     relativePath: "packages/mcp-app/scripts/build-view.mjs",
     args: () => ["--unexpected"],
     expected: { code: 2, stderr: /usage: build-view\.mjs/ },
   },
   {
     relativePath: "scripts/migrate-legacy-view-names.mjs",
+    setup: async () => {
+      await ensureCoreDistPrerequisite();
+    },
     args: () => [],
     expected: { code: 2, stderr: /usage: node scripts\/migrate-legacy-view-names\.mjs --dir/ },
   },
@@ -65,6 +87,11 @@ const OWNED_ENTRYPOINT_PROBES = [
       );
     },
     expected: { code: 0, stdout: /score n\/a \(no mutants\)/ },
+  },
+  {
+    relativePath: "scripts/prepublish-guard.mjs",
+    args: () => [],
+    expected: { code: 1, stderr: /prepublishOnly refused:/ },
   },
   {
     relativePath: "scripts/rename-literal-inventory.mjs",
@@ -131,30 +158,86 @@ const OWNED_ENTRYPOINT_PROBES = [
   },
 ];
 
-const OWNED_ENTRYPOINT_PATHS = OWNED_ENTRYPOINT_PROBES.map(({ relativePath }) => relativePath).sort();
+const POSITIVE_EXECUTABLE_ENTRYPOINT_PATHS = OWNED_ENTRYPOINT_PROBES.map(({ relativePath }) => relativePath).sort();
 
-async function readOwnedEntrypointSources() {
+function toPosixRelative(absolutePath) {
+  return path.relative(repoRoot, absolutePath).split(path.sep).join("/");
+}
+
+async function readOwnedSourceModules() {
   const owned = [];
-  for (const relativeDir of OWNED_SOURCE_DIRECTORIES) {
+  for (const relativeDir of OWNED_SOURCE_SURFACE_DIRECTORIES) {
     const directory = path.join(repoRoot, relativeDir);
     const entries = (await readdir(directory))
       .filter((entry) => entry.endsWith(".mjs") && !entry.endsWith(".test.mjs"))
       .map((entry) => path.posix.join(relativeDir, entry));
     owned.push(...entries);
   }
-  owned.push(...OWNED_PACKAGE_ENTRYPOINTS);
+  owned.push(...OWNED_SOURCE_SURFACE_EXTRAS);
   return owned.sort();
 }
 
-async function discoverGuardedEntrypoints() {
-  const discovered = [];
-  for (const relativePath of await readOwnedEntrypointSources()) {
-    const source = await readFile(path.join(repoRoot, relativePath), "utf8");
-    if (SHARED_MAIN_GUARD_PATTERN.test(source) || LEGACY_MAIN_GUARD_PATTERNS.some((pattern) => pattern.test(source))) {
-      discovered.push(relativePath);
+function parseNodeEntrypoints(text, baseDirectory) {
+  const discovered = new Set();
+  for (const match of text.matchAll(NODE_SOURCE_ENTRYPOINT_PATTERN)) {
+    const rawPath = match[1] ?? match[2] ?? match[3];
+    if (!rawPath) continue;
+    discovered.add(toPosixRelative(path.resolve(baseDirectory, rawPath)));
+  }
+  return discovered;
+}
+
+async function deriveDeclaredExecutableEntrypoints(ownedSourceModules) {
+  const ownedSet = new Set(ownedSourceModules);
+  const declared = new Set();
+
+  for (const relativePath of PACKAGE_SCRIPT_AUTHORITY_FILES) {
+    const packageJsonPath = path.join(repoRoot, relativePath);
+    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    for (const command of Object.values(packageJson.scripts ?? {})) {
+      if (typeof command !== "string") continue;
+      for (const entrypoint of parseNodeEntrypoints(command, path.dirname(packageJsonPath))) {
+        if (ownedSet.has(entrypoint)) declared.add(entrypoint);
+      }
     }
   }
-  return discovered.sort();
+
+  const workflowDirectory = path.join(repoRoot, ".github", "workflows");
+  for (const workflowFile of (await readdir(workflowDirectory)).filter((name) => name.endsWith(".yml"))) {
+    const workflowPath = path.join(workflowDirectory, workflowFile);
+    const text = (await readFile(workflowPath, "utf8"))
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    for (const entrypoint of parseNodeEntrypoints(text, repoRoot)) {
+      if (ownedSet.has(entrypoint)) declared.add(entrypoint);
+    }
+  }
+
+  return [...declared].sort();
+}
+
+async function deriveExecutableAuthority() {
+  const ownedSourceModules = await readOwnedSourceModules();
+  const declaredExecutableEntrypoints = await deriveDeclaredExecutableEntrypoints(ownedSourceModules);
+  const positiveExecutableEntrypoints = [...new Set([...declaredExecutableEntrypoints, ...EXPLICIT_OPERATOR_EXECUTABLE_PATHS])].sort();
+  const positiveSet = new Set(positiveExecutableEntrypoints);
+  const pureModuleCandidates = ownedSourceModules.filter((relativePath) => !positiveSet.has(relativePath));
+  return {
+    ownedSourceModules,
+    declaredExecutableEntrypoints,
+    positiveExecutableEntrypoints,
+    pureModuleCandidates,
+  };
+}
+
+async function ensureCoreDistPrerequisite() {
+  coreDistBuildPromise ??= execFileAsync("npm", ["run", "build", "--workspace=@superbee/core"], {
+    cwd: repoRoot,
+    env: DEFAULT_ENV,
+    maxBuffer: MAX_BUFFER,
+  });
+  await coreDistBuildPromise;
 }
 
 async function createLinkedEntrypointFixture(t, relativePath) {
@@ -171,7 +254,7 @@ async function runNodeModule(modulePath, args, cwd) {
     const { stdout, stderr } = await execFileAsync(process.execPath, [modulePath, ...args], {
       cwd,
       env: DEFAULT_ENV,
-      maxBuffer: 20 * 1024 * 1024,
+      maxBuffer: MAX_BUFFER,
     });
     return { code: 0, stdout, stderr };
   } catch (error) {
@@ -192,17 +275,67 @@ function assertResultMatches(relativePath, result, expected) {
   if (expected.stderr) assert.match(result.stderr, expected.stderr, `${relativePath}: stderr`);
 }
 
-test("repository-wide guarded entrypoint discovery matches the behavioral probe manifest", async () => {
-  const discovered = await discoverGuardedEntrypoints();
-  assert.deepEqual(discovered, OWNED_ENTRYPOINT_PATHS);
+test("positive executable authority comes from declarations plus explicit operator entries", async () => {
+  const authority = await deriveExecutableAuthority();
 
-  for (const relativePath of discovered) {
+  assert.deepEqual(authority.positiveExecutableEntrypoints, POSITIVE_EXECUTABLE_ENTRYPOINT_PATHS);
+  assert.deepEqual(
+    authority.ownedSourceModules,
+    [...authority.positiveExecutableEntrypoints, ...authority.pureModuleCandidates].sort(),
+  );
+  assert.deepEqual(authority.declaredExecutableEntrypoints, [
+    "packages/cli/build.mjs",
+    "packages/cli/scripts/gen-skill.mjs",
+    "packages/mcp-app/scripts/build-view.mjs",
+    "scripts/mutation-survivors.mjs",
+    "scripts/prepublish-guard.mjs",
+    "scripts/release-audit-tags.mjs",
+    "scripts/release-candidate.mjs",
+    "scripts/release-emit-receipt.mjs",
+    "scripts/release-resolve-target.mjs",
+    "scripts/release-run-operations.mjs",
+    "scripts/release-verify-chain.mjs",
+    "scripts/release-verify-ordering.mjs",
+    "scripts/release-verify-registry.mjs",
+    "scripts/verify-npm-package.mjs",
+  ]);
+
+  for (const relativePath of authority.positiveExecutableEntrypoints) {
     const source = await readFile(path.join(repoRoot, relativePath), "utf8");
     assert.match(source, SHARED_MAIN_GUARD_PATTERN, relativePath);
-    assert.doesNotMatch(source, /await isMainModule\(import\.meta\.url\)/, `${relativePath} should not use entrypoint-only top-level await`);
+    assert.doesNotMatch(
+      source,
+      /await isMainModule\(import\.meta\.url\)/,
+      `${relativePath} should not use entrypoint-only top-level await`,
+    );
     for (const pattern of LEGACY_MAIN_GUARD_PATTERNS) {
       assert.doesNotMatch(source, pattern, `${relativePath} should not carry a local main guard`);
     }
+  }
+});
+
+test("pure-module complement imports inertly and carries no entrypoint authority", async (t) => {
+  const { pureModuleCandidates } = await deriveExecutableAuthority();
+
+  for (const relativePath of pureModuleCandidates) {
+    const source = await readFile(path.join(repoRoot, relativePath), "utf8");
+    assert.doesNotMatch(source, SHARED_MAIN_GUARD_PATTERN, `${relativePath} should not use the shared main guard`);
+    for (const pattern of LEGACY_MAIN_GUARD_PATTERNS) {
+      assert.doesNotMatch(source, pattern, `${relativePath} should not carry a local main guard`);
+    }
+
+    const { scratch, directPath } = await createLinkedEntrypointFixture(t, relativePath);
+    const runnerPath = path.join(scratch, `pure-import-${path.basename(relativePath)}`);
+    await writeFile(
+      runnerPath,
+      `import ${JSON.stringify(pathToFileURL(directPath).href)};\nprocess.stdout.write("IMPORTED\\n");\n`,
+    );
+    const imported = await runNodeModule(runnerPath, [], scratch);
+    assert.deepEqual(
+      imported,
+      { code: 0, stdout: "IMPORTED\n", stderr: "" },
+      `${relativePath}: pure-module complement must import inertly`,
+    );
   }
 });
 
@@ -288,7 +421,7 @@ test("library-bearing entrypoints remain synchronously requireable when Node sup
   }
 });
 
-test("every owned guarded entrypoint behaves the same directly and through a symlink from a non-repository cwd", async (t) => {
+test("every positive executable behaves the same directly and through a symlink from a non-repository cwd", async (t) => {
   for (const probe of OWNED_ENTRYPOINT_PROBES) {
     const { scratch, directPath, linkedPath } = await createLinkedEntrypointFixture(t, probe.relativePath);
     await probe.setup?.({ scratch });
@@ -302,9 +435,10 @@ test("every owned guarded entrypoint behaves the same directly and through a sym
   }
 });
 
-test("every owned guarded entrypoint imports without running main", async (t) => {
+test("every positive executable imports without running main", async (t) => {
   for (const probe of OWNED_ENTRYPOINT_PROBES) {
     const { scratch, directPath } = await createLinkedEntrypointFixture(t, probe.relativePath);
+    await probe.setup?.({ scratch });
     const runnerPath = path.join(scratch, `import-${path.basename(probe.relativePath)}`);
     await writeFile(
       runnerPath,
