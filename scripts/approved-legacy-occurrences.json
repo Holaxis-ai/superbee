@@ -1297,7 +1297,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 27
+      "line": 28
     },
     {
       "file": "scripts/release-candidate.mjs",
@@ -1308,7 +1308,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 33
+      "line": 34
     },
     {
       "file": "scripts/release-candidate.mjs",
@@ -1319,7 +1319,7 @@
       "treatment": "preserve-for-bridge-target",
       "owner": "release-policy",
       "reason": "the frozen package bridge and release recovery state retain explicit legacy identifiers",
-      "line": 34
+      "line": 35
     },
     {
       "file": "scripts/release-inspect-recovery.mjs",
@@ -1330,7 +1330,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 11
+      "line": 12
     },
     {
       "file": "scripts/release-inspect-recovery.mjs",
@@ -1341,7 +1341,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 12
+      "line": 13
     },
     {
       "file": "scripts/release-inspect-recovery.mjs",
@@ -1352,7 +1352,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 13
+      "line": 14
     },
     {
       "file": "scripts/release-inspect.mjs",
@@ -1418,7 +1418,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 15
+      "line": 16
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1429,7 +1429,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 16
+      "line": 17
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1440,7 +1440,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 20
+      "line": 21
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1451,7 +1451,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 36
+      "line": 37
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1462,7 +1462,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 37
+      "line": 38
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1473,7 +1473,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 128
+      "line": 134
     },
     {
       "file": "scripts/release-verify-ordering.mjs",
