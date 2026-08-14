@@ -39,6 +39,19 @@ const LEGACY_MAIN_GUARD_PATTERNS = [
 const SHARED_MAIN_GUARD_PATTERN = /\bisMainModule\(import\.meta\.url\b/;
 const NODE_SOURCE_ENTRYPOINT_PATTERN = /\bnode\s+(?:"([^"\n]+?\.mjs)"|'([^'\n]+?\.mjs)'|([^\s"'`()|&;]+?\.mjs))/g;
 const MAX_BUFFER = 20 * 1024 * 1024;
+const PURE_IMPORT_PERMISSION_FLAGS = [
+  "--permission",
+  `--allow-fs-read=${repoRoot}`,
+];
+const DISALLOWED_MUTATION_PERMISSION_FLAG_PREFIXES = [
+  "--allow-fs-write",
+  "--allow-child-process",
+  "--allow-worker",
+  "--allow-net",
+  "--allow-addons",
+  "--allow-wasi",
+  "--allow-inspector",
+];
 const DEFAULT_ENV = {
   ...process.env,
   ASLITE_NO_UPDATE_CHECK: "1",
@@ -249,9 +262,19 @@ async function createLinkedEntrypointFixture(t, relativePath) {
   return { scratch, directPath, linkedPath };
 }
 
-async function runNodeModule(modulePath, args, cwd) {
+async function createRepoScratchDirectory(t, prefix = ".tmp-entrypoint-permission-") {
+  const scratch = await mkdtemp(path.join(repoRoot, prefix));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  return scratch;
+}
+
+function buildPureImportNodeArgs(runnerPath) {
+  return [...PURE_IMPORT_PERMISSION_FLAGS, runnerPath];
+}
+
+async function runNodeProcess(nodeArgs, cwd) {
   try {
-    const { stdout, stderr } = await execFileAsync(process.execPath, [modulePath, ...args], {
+    const { stdout, stderr } = await execFileAsync(process.execPath, nodeArgs, {
       cwd,
       env: DEFAULT_ENV,
       maxBuffer: MAX_BUFFER,
@@ -267,6 +290,10 @@ async function runNodeModule(modulePath, args, cwd) {
     }
     throw error;
   }
+}
+
+async function runNodeModule(modulePath, args, cwd, { nodeArgs = [] } = {}) {
+  return runNodeProcess([...nodeArgs, modulePath, ...args], cwd);
 }
 
 function assertResultMatches(relativePath, result, expected) {
@@ -314,6 +341,78 @@ test("positive executable authority comes from declarations plus explicit operat
   }
 });
 
+test("pure import runner requires the Node permission boundary and grants no mutation capabilities", async (t) => {
+  const scratch = await createRepoScratchDirectory(t);
+  const runnerPath = path.join(scratch, "permission-introspect.mjs");
+  await writeFile(
+    runnerPath,
+    `process.stdout.write(JSON.stringify({
+  execArgv: process.execArgv,
+  permissionApi: typeof process.permission?.has,
+  permissions: {
+    repoRead: process.permission?.has("fs.read", ${JSON.stringify(repoRoot)}),
+    cwdRead: process.permission?.has("fs.read", process.cwd()),
+    cwdWrite: process.permission?.has("fs.write", process.cwd()),
+    child: process.permission?.has("child"),
+    worker: process.permission?.has("worker"),
+    net: process.permission?.has("net"),
+    addons: process.permission?.has("addons"),
+    wasi: process.permission?.has("wasi"),
+    inspector: process.permission?.has("inspector"),
+  },
+}));\n`,
+  );
+
+  const result = await runNodeProcess(buildPureImportNodeArgs(runnerPath), scratch);
+  assert.equal(result.code, 0, "pure import runner must execute under a supported Node permission model");
+  assert.equal(result.stderr, "");
+
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.permissionApi, "function", "runtime must expose process.permission.has under the pure import boundary");
+  assert.deepEqual(payload.execArgv.slice(0, PURE_IMPORT_PERMISSION_FLAGS.length), PURE_IMPORT_PERMISSION_FLAGS);
+  for (const prefix of DISALLOWED_MUTATION_PERMISSION_FLAG_PREFIXES) {
+    assert.equal(
+      payload.execArgv.some((value) => value === prefix || value.startsWith(`${prefix}=`)),
+      false,
+      `pure import runner must not grant ${prefix}`,
+    );
+  }
+  assert.deepEqual(payload.permissions, {
+    repoRead: true,
+    cwdRead: true,
+    cwdWrite: false,
+    child: false,
+    worker: false,
+    net: false,
+    addons: false,
+    wasi: false,
+    inspector: false,
+  });
+});
+
+test("pure import runner denies silent filesystem mutation before the sentinel", async (t) => {
+  const scratch = await createRepoScratchDirectory(t);
+  const markerPath = path.join(scratch, "silent-marker.txt");
+  const probePath = path.join(scratch, "silent-write-probe.mjs");
+  const runnerPath = path.join(scratch, "silent-write-runner.mjs");
+  await writeFile(
+    probePath,
+    `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(markerPath)}, "laundered\\n");\n`,
+  );
+  await writeFile(
+    runnerPath,
+    `import ${JSON.stringify(pathToFileURL(probePath).href)};
+process.stdout.write("IMPORTED\\n");\n`,
+  );
+
+  const result = await runNodeProcess(buildPureImportNodeArgs(runnerPath), scratch);
+  assert.equal(result.code, 1, "silent mutation must fail under the pure import permission boundary");
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /ERR_ACCESS_DENIED|FileSystemWrite|--allow-fs-write/);
+  await assert.rejects(readFile(markerPath, "utf8"), /ENOENT/);
+});
+
 test("pure-module complement imports inertly and carries no entrypoint authority", async (t) => {
   const { pureModuleCandidates } = await deriveExecutableAuthority();
 
@@ -324,13 +423,14 @@ test("pure-module complement imports inertly and carries no entrypoint authority
       assert.doesNotMatch(source, pattern, `${relativePath} should not carry a local main guard`);
     }
 
-    const { scratch, directPath } = await createLinkedEntrypointFixture(t, relativePath);
+    const scratch = await createRepoScratchDirectory(t);
+    const directPath = path.join(repoRoot, relativePath);
     const runnerPath = path.join(scratch, `pure-import-${path.basename(relativePath)}`);
     await writeFile(
       runnerPath,
       `import ${JSON.stringify(pathToFileURL(directPath).href)};\nprocess.stdout.write("IMPORTED\\n");\n`,
     );
-    const imported = await runNodeModule(runnerPath, [], scratch);
+    const imported = await runNodeProcess(buildPureImportNodeArgs(runnerPath), scratch);
     assert.deepEqual(
       imported,
       { code: 0, stdout: "IMPORTED\n", stderr: "" },
