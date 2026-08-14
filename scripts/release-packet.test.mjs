@@ -136,6 +136,9 @@ test("the closure rejects dynamic, unresolved, escaping, and unsupported imports
     await assert.rejects(staticPacketClosure({ root, entries: ["package.mjs"] }), /non-relative/);
     await writeFile(path.join(root, "commonjs.mjs"), 'import "./x.cjs";\n');
     await assert.rejects(staticPacketClosure({ root, entries: ["commonjs.mjs"] }), /extension/);
+    await writeFile(path.join(root, "create-require.mjs"), 'import { createRequire } from "node:module";\nconst require = createRequire(import.meta.url);\nrequire("./hidden.cjs");\n');
+    await writeFile(path.join(root, "hidden.cjs"), "module.exports = true;\n");
+    await assert.rejects(staticPacketClosure({ root, entries: ["create-require.mjs"] }), /CommonJS interop/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -144,7 +147,7 @@ test("the closure rejects dynamic, unresolved, escaping, and unsupported imports
 test("the closure includes commented side-effect imports and static re-exports", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-lexer-"));
   try {
-    await writeFile(path.join(root, "entry.mjs"), 'import/* reviewer regression */ "./hidden.mjs"; export { value } from "./re-exported.mjs";\n');
+    await writeFile(path.join(root, "entry.mjs"), "const banner = \"import { createRequire } from 'node:module';\"; import/* reviewer regression */ \"./hidden.mjs\"; export { value } from \"./re-exported.mjs\";\n");
     await writeFile(path.join(root, "hidden.mjs"), "export const hidden = true;\n");
     await writeFile(path.join(root, "re-exported.mjs"), "export const value = true;\n");
     assert.deepEqual(await staticPacketClosure({ root, entries: ["entry.mjs"] }), ["entry.mjs", "hidden.mjs", "re-exported.mjs"]);

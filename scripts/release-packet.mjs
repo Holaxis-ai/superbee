@@ -5,6 +5,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } f
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { init, parse } from "es-module-lexer";
 
 import { currentSourceFacts } from "../packages/cli/scripts/build-bundle.mjs";
 import { fileSha256, verifyRetainedTarball } from "./verify-npm-package.mjs";
@@ -26,7 +27,7 @@ const RELEASE_WORKFLOWS = [
   ".github/workflows/release-finalize.yml",
   ".github/workflows/release-audit.yml",
 ];
-const EXTERNAL_IMPORTS = new Set(["esbuild", "pako"]); // Directly declared and lockfile-pinned build dependencies.
+const EXTERNAL_IMPORTS = new Set(["es-module-lexer", "esbuild", "pako"]); // Directly declared and lockfile-pinned build dependencies.
 const EVIDENCE = [
   ["planning-heads", "planning-heads.json"],
   ["registry-snapshot", "registry-snapshot.json"],
@@ -53,6 +54,8 @@ const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9@._/-]+$/;
 const REF = /^refs\/(?:heads|tags|notes)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+await init;
 
 export function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -123,23 +126,21 @@ function resolveInput(root, relative, label = relative) {
 }
 
 function localStaticImports(source, relative) {
-  // The authority deliberately accepts only the small literal ESM grammar used by its tracked
-  // entrypoints. Unsupported syntax fails closed instead of silently narrowing the closure.
-  if (/\b(?:import|export)\s+(?:[^;]*?\bfrom\s+)?["'](?:file:|#|\/)/.test(source)) {
-    packetError(`${relative} has unsupported non-relative import`);
+  let imports;
+  try {
+    [imports] = parse(source);
+  } catch (error) {
+    packetError(`${relative} is not parseable ESM: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const stripped = source.replace(/\/\*[\s\S]*?\*\/|(^|[^:])\/\/[^\n]*/gm, "$1");
-  if (/\bimport\s*\(/.test(stripped)) packetError(`${relative} contains a dynamic import`);
-  if (/\b(?:import|export)\b[^;]*\b(?:with|assert)\s*\{/.test(stripped)) {
-    packetError(`${relative} has an import attribute`);
+  const staticImports = [];
+  for (const imported of imports) {
+    if (imported.d === -2) continue; // import.meta is not a module edge.
+    if (imported.d >= 0) packetError(`${relative} contains a dynamic import`);
+    if (imported.a >= 0) packetError(`${relative} has an import attribute`);
+    if (typeof imported.n !== "string") packetError(`${relative} has an unsupported import declaration`);
+    staticImports.push(imported.n);
   }
-  const imports = [];
-  for (const match of stripped.matchAll(/\bimport\s+(["'])([^"']+)\1\s*;?/g)) imports.push(match[2]);
-  for (const match of stripped.matchAll(/\bimport\s+(?!["'])[\s\S]*?\bfrom\s+(["'])([^"']+)\1\s*;?/g)) imports.push(match[2]);
-  for (const match of stripped.matchAll(/\bexport\s+(?:\{[\s\S]*?\}|\*)\s+from\s+(["'])([^"']+)\1\s*;?/g)) imports.push(match[2]);
-  const keywordScan = stripped.replace(/(['"`])(?:\\[\s\S]|(?!\1)[\s\S])*\1/g, '""');
-  if (/\bimport\b(?!\s*(?:["']|[\w*$,{])|\.)/.test(keywordScan)) packetError(`${relative} has an unsupported import declaration`);
-  return imports;
+  return staticImports;
 }
 
 function resolveEsmImport(from, specifier) {
@@ -161,6 +162,9 @@ export async function staticPacketClosure({ root = repoRoot, entries = SOURCE_EN
     found.add(relative);
     const text = await readFile(file, "utf8");
     for (const specifier of localStaticImports(text, relative)) {
+      if (specifier === "node:module") {
+        packetError(`${relative} has unsupported CommonJS interop import node:module`);
+      }
       if (specifier.startsWith("node:")) continue;
       if (!specifier.startsWith(".")) {
         if (!EXTERNAL_IMPORTS.has(specifier)) packetError(`${relative} has unsupported non-relative import ${specifier}`);
