@@ -13,7 +13,7 @@ import path from "node:path";
 
 import { FilesystemBackend } from "./backend.js";
 import { normalizeV01DocumentForWrite } from "./document-write-policy.js";
-import { isUsableTimestamp, MalformedDocumentError, stringifyWithData } from "./frontmatter.js";
+import { isUsableTimestamp, MalformedDocumentError, parseMarkdown, stringifyWithData } from "./frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "./index-marker.js";
 import { parseLinksFromDoc } from "./links.js";
 import {
@@ -58,6 +58,14 @@ export interface WriteResult {
 /** @internal Resolve the backend a bundle operation should use (defaults to a filesystem adapter). */
 export function backendFor(bundle: Bundle): StorageBackend {
   return bundle.backend ?? new FilesystemBackend(bundle.root);
+}
+
+/** Read the bundle-root OKF edition without assuming a filesystem-backed bundle. */
+export async function readBundleOkfVersion(bundle: Bundle): Promise<string | undefined> {
+  const index = await backendFor(bundle).readReserved("", "index.md");
+  if (!index) return undefined;
+  const value = parseMarkdown(index.content, "index.md").frontmatter.okf_version;
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
 // ── bundle lifecycle ──────────────────────────────────────────────────────────

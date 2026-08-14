@@ -15,6 +15,7 @@ import {
   query,
   queryEdges,
   queryHeads,
+  readBundleOkfVersion,
   readDocVersioned,
   writeDocVersioned,
 } from "../src/bundle.js";
@@ -114,6 +115,22 @@ test("initBundle rejects unsupported authoring-version claims before touching th
     assert.equal(reopened?.content, existingIndex, "opening a newer external bundle must not rewrite or reject it");
   } finally {
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("readBundleOkfVersion reads the root edition through filesystem and memory backends", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-version-read-"));
+  try {
+    const filesystemBundle = await initBundle(root);
+    assert.equal(await readBundleOkfVersion(filesystemBundle), "0.1");
+
+    const backend = new MemoryBackend();
+    const memory = { root: "mem://versioned", backend };
+    assert.equal(await readBundleOkfVersion(memory), undefined);
+    await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# External\n");
+    assert.equal(await readBundleOkfVersion(memory), "0.2");
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

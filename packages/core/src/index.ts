@@ -48,6 +48,7 @@ export type {
 // ── Contract functions ────────────────────────────────────────────────────────
 export {
   initBundle,
+  readBundleOkfVersion,
   resolveOkfAuthoringVersion,
   SUPPORTED_OKF_AUTHORING_VERSIONS,
   writeDoc,

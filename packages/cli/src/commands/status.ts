@@ -26,6 +26,8 @@ import {
   isTerminal,
   listBlobs,
   loadKinds,
+  readBundleOkfVersion,
+  type KindRegistry,
   type OkfDocument,
   parseLinksFromDoc,
   query,
@@ -135,6 +137,9 @@ Category semantics (one line each):
                       'entry', or 'id+entry'. Fix by moving the doc under a registry prefix /
                       pointing 'entry' at a real 'views/…' key. Same presence rule as
                       'dangling_view_entries'.
+  okf_upgrade        Present only when a v0.1 bundle declares workflow 'status' values that
+                      collide with OKF v0.2's lifecycle vocabulary. The bundle remains supported;
+                      this is migration-readiness guidance, never an automatic rewrite.
   legacy_naming      FINDING: the legacy View names are no longer accepted by the runtime — a
                       doc typed 'Page' (the legacy name for the 'View' kind) does not register
                       at all, and a legacy 'bridge:' capability field grants nothing (the doc
@@ -190,9 +195,42 @@ function cap(rows: Record<string, unknown>[], limit: number): Capped {
  */
 const FRONTMATTER_VIOLATION_CODES = new Set(["KIND_FIELD_MISSING", "KIND_FIELD_VALUE", "KIND_FIELD_ARITY"]);
 
+const OKF_V02_LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
+
 /** A doc's `type` field, or "" when absent/non-string — the ONE place this coercion happens. */
 function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
+}
+
+function okfV02WorkflowStatusCollisions(
+  registry: KindRegistry,
+  docs: OkfDocument[],
+): Record<string, unknown>[] {
+  const affectedByKind = new Map<string, number>();
+  for (const doc of docs) {
+    const value = doc.frontmatter.status;
+    if (typeof value !== "string" || value === "" || OKF_V02_LIFECYCLE_STATUSES.has(value)) continue;
+    const type = docType(doc);
+    affectedByKind.set(type, (affectedByKind.get(type) ?? 0) + 1);
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  for (const kind of [...registry.kinds.values()].sort((a, b) => a.governs.localeCompare(b.governs))) {
+    const declaresStatus =
+      kind.fields.required.includes("status") || kind.fields.optional.includes("status");
+    if (!declaresStatus) continue;
+    const incompatibleValues = (kind.fields.values.status ?? []).filter(
+      (value) => !OKF_V02_LIFECYCLE_STATUSES.has(value),
+    );
+    if (incompatibleValues.length === 0) continue;
+    rows.push({
+      kind: kind.governs,
+      convention: kind.id,
+      incompatible_values: incompatibleValues,
+      affected_documents: affectedByKind.get(kind.governs) ?? 0,
+    });
+  }
+  return rows;
 }
 
 export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}): Promise<void> {
@@ -237,7 +275,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   // crashing the health report — a health report that can't run because one doc is broken is the
   // opposite of useful; the broken doc IS the headline finding.
   const malformedRows: Record<string, unknown>[] = [];
-  const [registry, docs, legacyBlobKeys, viewBlobKeys] = await Promise.all([
+  const [registry, docs, legacyBlobKeys, viewBlobKeys, okfVersion] = await Promise.all([
     loadKinds(bundle),
     query(bundle, {}, { onSkip: (s) => malformedRows.push({ id: s.id, reason: s.reason }) }),
     // legacy_naming audit (below): blob keys still under the legacy pages/ prefix — one extra
@@ -246,6 +284,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     // dangling_view_entries (below): the views/ half of the entry-key existence set (the pages/
     // half is the legacy listing above — the only two prefixes a valid entry key can name).
     listBlobs(bundle, VIEW_ENTRY_PREFIX),
+    readBundleOkfVersion(bundle),
   ]);
   const byId = new Set(docs.map((d) => d.id));
   // `id -> doc`, for the link-type-violation check's target-doc-type lookup below (never a second
@@ -491,6 +530,8 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   );
   const danglingViewEntries = cap(danglingViewEntryRows, limit);
   const invalidViewRegistrations = cap(invalidRegistrationRows, limit);
+  const okfV02StatusCollisionRows =
+    okfVersion === "0.1" ? okfV02WorkflowStatusCollisions(registry, docs) : [];
 
   const out: Record<string, unknown> = {
     docs: docs.length,
@@ -526,6 +567,31 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   if (viewTypedCount > 0) {
     out.dangling_view_entries = danglingViewEntries.total;
     out.invalid_view_registrations = invalidViewRegistrations.total;
+  }
+  if (okfV02StatusCollisionRows.length > 0) {
+    const statusFieldKinds = cap(okfV02StatusCollisionRows, limit);
+    const affectedDocuments = okfV02StatusCollisionRows.reduce(
+      (total, row) => total + Number(row.affected_documents ?? 0),
+      0,
+    );
+    out.okf_upgrade = {
+      current_version: "0.1",
+      target_version: "0.2",
+      readiness: "blocked",
+      blocker: "workflow_status_collision",
+      recommended_logical_field: "progress_status",
+      status_field_kinds: statusFieldKinds.total,
+      affected_documents: affectedDocuments,
+      status_field_rows: statusFieldKinds,
+      note:
+        "This bundle remains a supported OKF v0.1 bundle. Do not change index.md to 0.2 yet: " +
+        "OKF v0.2 reserves top-level status for draft|stable|deprecated, while the listed kinds " +
+        "use it for workflow state.",
+      help: [
+        "Model workflow progress as logical progress_status across conventions, documents, Views, and saved queries before changing okf_version.",
+        "Superbee does not currently perform this multi-file migration automatically.",
+      ],
+    };
   }
   // Row-list blocks are omitted when empty (matching `kinds`/`doc write`'s existing omit-if-empty
   // convention) so a clean bundle's report stays a short summary, not nine empty categories.
