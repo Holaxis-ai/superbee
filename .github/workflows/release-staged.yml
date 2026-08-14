@@ -6,7 +6,8 @@ name: Staged release (candidate -> draft -> stage)
 #
 # Fail-closed live gate: GitHub auto-creates a referenced environment without protection, so the
 # environment name alone is not a disarm mechanism. P5S must configure the protected `release`
-# environment AND set its ASLITE_RELEASE_LIVE_ENABLED variable to exactly `true`. Live dispatches
+# environment AND set its SUPERBEE_RELEASE_LIVE_ENABLED variable to exactly `true`. The legacy
+# ASLITE_RELEASE_LIVE_ENABLED name remains accepted for the bridge transition; conflicts fail closed. Live dispatches
 # also have to run from the exact v* tag ref. Missing either control makes every mutation fail.
 on:
   push:
@@ -156,7 +157,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          SUPERBEE_RELEASE_LIVE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
+          ASLITE_RELEASE_LIVE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
           TAG: ${{ needs.candidate.outputs.tag }}
           TARBALL_FILENAME: ${{ needs.candidate.outputs.tarball_filename }}
           TARBALL_SHA256: ${{ needs.candidate.outputs.tarball_sha256 }}
@@ -165,7 +167,7 @@ jobs:
           set -euo pipefail
           FILE="$ARTIFACT_DIR/$TARBALL_FILENAME"
           if [ "$MODE" = "live" ]; then
-            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
+            node scripts/release-env.mjs require-live
             # A DRAFT release is not addressable by tag: the tag-addressed release endpoint
             # returns only PUBLISHED releases (a draft carries no tag ref — its URL is
             # untagged-...). Resolve the draft by numeric id from the releases LIST, which does
@@ -244,7 +246,8 @@ jobs:
       - name: Stage the literal retained tarball
         id: stage
         env:
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          SUPERBEE_RELEASE_LIVE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
+          ASLITE_RELEASE_LIVE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
           TARBALL_FILENAME: ${{ needs.candidate.outputs.tarball_filename }}
           POLICY_TAG: ${{ needs.candidate.outputs.policy_tag }}
         run: |
@@ -254,7 +257,7 @@ jobs:
           # resolution (test-pinned; reproduced against npm locally and in live run 31499362043).
           TARBALL="./$ARTIFACT_DIR/$TARBALL_FILENAME"
           if [ "$MODE" = "live" ]; then
-            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
+            node scripts/release-env.mjs require-live
             npm stage publish "$TARBALL" --tag "$POLICY_TAG" --provenance --json | tee stage.json
             STAGE_ID="$(node scripts/release-verify-chain.mjs stage-id --file stage.json)"
             echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"

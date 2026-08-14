@@ -278,8 +278,9 @@ test("untrusted GitHub expressions are never interpolated directly into shell sc
 
 test("live mode fails closed without an explicit P5S environment enablement variable", () => {
   for (const [name, jobs] of [["draft", extractJobs(staged).draft], ["stage", extractJobs(staged).stage], ["registry", extractJobs(finalize)["registry-verify"]], ["finalize", extractJobs(finalize).finalize]]) {
-    assert.match(jobs, /vars\.ASLITE_RELEASE_LIVE_ENABLED/, `${name} must bind the environment enablement variable`);
-    assert.match(jobs, /test "\$LIVE_RELEASE_ENABLED" = "true"/, `${name} must fail unless explicitly enabled`);
+    assert.match(jobs, /SUPERBEE_RELEASE_LIVE_ENABLED: \$\{\{ vars\.SUPERBEE_RELEASE_LIVE_ENABLED \}\}/, `${name} must bind the canonical environment enablement variable`);
+    assert.match(jobs, /ASLITE_RELEASE_LIVE_ENABLED: \$\{\{ vars\.ASLITE_RELEASE_LIVE_ENABLED \}\}/, `${name} must bind the legacy transition variable separately`);
+    assert.match(jobs, /node scripts\/release-env\.mjs require-live/, `${name} must reject absent, non-true, or conflicting enablement`);
   }
 });
 

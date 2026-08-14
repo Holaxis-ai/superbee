@@ -11,7 +11,8 @@ name: Finalize release (separately dispatched)
 # write-capable job then deletes only planned asset IDs, replaces status/body evidence, re-queries
 # the draft, and proves the exact retained id/name/digest inventory before publication.
 #
-# P5S must protect the `release` environment and set ASLITE_RELEASE_LIVE_ENABLED=true there. GitHub
+# P5S must protect the `release` environment and set SUPERBEE_RELEASE_LIVE_ENABLED=true there. The
+# legacy ASLITE_RELEASE_LIVE_ENABLED name remains accepted for the bridge transition; conflicts fail closed. GitHub
 # auto-creates missing environments without protection, so absence of that explicit variable always
 # fails closed even if someone dispatches with mode=live.
 on:
@@ -255,13 +256,14 @@ jobs:
 
       - name: Verify registry bytes, signatures, provenance, install, and build identity
         env:
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          SUPERBEE_RELEASE_LIVE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
+          ASLITE_RELEASE_LIVE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
           VERSION: ${{ inputs.version }}
           TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then
-            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
+            node scripts/release-env.mjs require-live
             node scripts/release-verify-registry.mjs --target "$TARGET" --version "$VERSION" \
               --manifest "$ARTIFACT_DIR/candidate.json" --out registry-proof.json
           else
@@ -370,11 +372,12 @@ jobs:
       - name: Apply ID-only cleanup, retry-safe status --clobber, and owned body normalization
         env:
           GH_TOKEN: ${{ github.token }}
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          SUPERBEE_RELEASE_LIVE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
+          ASLITE_RELEASE_LIVE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then
-            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
+            node scripts/release-env.mjs require-live
           fi
           node scripts/release-verify-ordering.mjs apply --mode "$MODE" --plan publication-plan.json \
             --repo "$GITHUB_REPOSITORY" --out-dir publication-out
