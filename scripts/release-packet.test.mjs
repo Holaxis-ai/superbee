@@ -122,6 +122,18 @@ test("the closure rejects dynamic, unresolved, and escaping local imports", asyn
   }
 });
 
+test("the closure includes commented side-effect imports and static re-exports", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-lexer-"));
+  try {
+    await writeFile(path.join(root, "entry.mjs"), 'import/* reviewer regression */ "./hidden.mjs"; export { value } from "./re-exported.mjs";\n');
+    await writeFile(path.join(root, "hidden.mjs"), "export const hidden = true;\n");
+    await writeFile(path.join(root, "re-exported.mjs"), "export const value = true;\n");
+    assert.deepEqual(await staticPacketClosure({ root, entries: ["entry.mjs"] }), ["entry.mjs", "hidden.mjs", "re-exported.mjs"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("packet creation retains exactly four slots with detached self-free digest and verifies offline", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-"));
   try {

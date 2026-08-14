@@ -5,6 +5,7 @@ import { cp, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/prom
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
+import { init, parse } from "es-module-lexer";
 
 import { currentSourceFacts } from "../packages/cli/scripts/build-bundle.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
@@ -47,6 +48,8 @@ const EVIDENCE_SCHEMAS = Object.freeze({
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9@._/-]+$/;
+
+await init;
 
 export function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
@@ -108,14 +111,18 @@ function resolveInput(root, relative, label = relative) {
 }
 
 function localStaticImports(source, relative) {
-  if (/\bimport\s*\(/.test(source)) packetError(`${relative} contains a dynamic import`);
-  const imports = [];
-  const pattern = /\b(?:import|export)\s+(?:[\s\S]*?\s+from\s+)?["']([^"']+)["']/g;
-  for (const match of source.matchAll(pattern)) {
-    const specifier = match[1];
-    if (specifier.startsWith(".")) imports.push(specifier);
+  let imports;
+  try {
+    [imports] = parse(source);
+  } catch (error) {
+    packetError(`${relative} is not parseable ESM: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return imports;
+  const staticImports = [];
+  for (const imported of imports) {
+    if (imported.d >= 0) packetError(`${relative} contains a dynamic import`);
+    if (typeof imported.n === "string" && imported.n.startsWith(".")) staticImports.push(imported.n);
+  }
+  return staticImports;
 }
 
 function resolveEsmImport(from, specifier) {
