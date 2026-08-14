@@ -7,14 +7,13 @@ export const LEGACY_RELEASE_TARBALL = "ASLITE_RELEASE_TARBALL";
 export const SUPERBEE_RELEASE_MANIFEST = "SUPERBEE_RELEASE_MANIFEST";
 export const LEGACY_RELEASE_MANIFEST = "ASLITE_RELEASE_MANIFEST";
 
-function normalized(value) {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
+function present(value) {
+  return value === undefined || value === "" ? undefined : value;
 }
 
 export function resolveCompatibleReleaseEnv({ canonicalName, legacyName, env = process.env }) {
-  const canonical = normalized(env[canonicalName]);
-  const legacy = normalized(env[legacyName]);
+  const canonical = present(env[canonicalName]);
+  const legacy = present(env[legacyName]);
   if (canonical !== undefined && legacy !== undefined && canonical !== legacy) {
     throw new Error(`conflicting release settings: ${canonicalName} and ${legacyName} differ`);
   }

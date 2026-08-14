@@ -22,7 +22,7 @@ test("release settings prefer the canonical Superbee name while accepting an equ
   for (const env of [
     { [SUPERBEE_RELEASE_LIVE_ENABLED]: "true" },
     { [LEGACY_RELEASE_LIVE_ENABLED]: "true" },
-    { [SUPERBEE_RELEASE_LIVE_ENABLED]: " true ", [LEGACY_RELEASE_LIVE_ENABLED]: "true" },
+    { [SUPERBEE_RELEASE_LIVE_ENABLED]: "true", [LEGACY_RELEASE_LIVE_ENABLED]: "true" },
   ]) {
     assert.equal(resolveCompatibleReleaseEnv({
       canonicalName: SUPERBEE_RELEASE_LIVE_ENABLED,
@@ -41,10 +41,19 @@ test("release settings fail closed on absence, non-true enablement, or an old/ne
   }), undefined);
   assert.throws(() => requireLiveReleaseEnabled({}), /SUPERBEE_RELEASE_LIVE_ENABLED=true/);
   assert.throws(() => requireLiveReleaseEnabled({ [SUPERBEE_RELEASE_LIVE_ENABLED]: "false" }), /not explicitly live-enabled/);
+  assert.throws(() => requireLiveReleaseEnabled({ [SUPERBEE_RELEASE_LIVE_ENABLED]: " true " }), /not explicitly live-enabled/);
+  assert.throws(() => requireLiveReleaseEnabled({ [SUPERBEE_RELEASE_LIVE_ENABLED]: "   " }), /not explicitly live-enabled/);
   assert.throws(
     () => requireLiveReleaseEnabled({
       [SUPERBEE_RELEASE_LIVE_ENABLED]: "true",
       [LEGACY_RELEASE_LIVE_ENABLED]: "false",
+    }),
+    /SUPERBEE_RELEASE_LIVE_ENABLED and ASLITE_RELEASE_LIVE_ENABLED differ/,
+  );
+  assert.throws(
+    () => requireLiveReleaseEnabled({
+      [SUPERBEE_RELEASE_LIVE_ENABLED]: "true",
+      [LEGACY_RELEASE_LIVE_ENABLED]: " true ",
     }),
     /SUPERBEE_RELEASE_LIVE_ENABLED and ASLITE_RELEASE_LIVE_ENABLED differ/,
   );
