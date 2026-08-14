@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   createReleasePacket,
@@ -211,10 +211,13 @@ test("packet creation and verification accept a clean detached source checkout",
   const sourceRoot = path.join(root, "source");
   try {
     execFileSync("git", ["worktree", "add", "--detach", sourceRoot, head], { cwd: repoRoot, stdio: "pipe" });
+    await mkdir(path.join(sourceRoot, "node_modules"), { recursive: true });
+    await cp(path.join(repoRoot, "node_modules", "es-module-lexer"), path.join(sourceRoot, "node_modules", "es-module-lexer"), { recursive: true });
+    const isolatedPacket = await import(`${pathToFileURL(path.join(sourceRoot, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`);
     const input = await fixture(root);
     const out = path.join(root, "packet");
-    await createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
-    await verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
+    await isolatedPacket.createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
+    await isolatedPacket.verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
     await writeFile(path.join(sourceRoot, "ambient-untracked"), "must reject\n");
     await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier }), /clean verification checkout/);
   } finally {

@@ -472,7 +472,14 @@ async function observedCheckout(root) {
       execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root }),
       execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"], { cwd: root }),
     ]);
-    return { commit: head.stdout.trim(), dirty: status.stdout.length > 0 };
+    const records = status.stdout.split("\n").filter(Boolean);
+    const nodeModules = records.includes("!! node_modules/");
+    let dirty = records.some((record) => record !== "!! node_modules/");
+    if (nodeModules) {
+      const info = await lstat(path.join(root, "node_modules")).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) dirty = true;
+    }
+    return { commit: head.stdout.trim(), dirty };
   } catch (error) {
     packetError(`cannot inspect verification checkout: ${error instanceof Error ? error.message : String(error)}`);
   }
