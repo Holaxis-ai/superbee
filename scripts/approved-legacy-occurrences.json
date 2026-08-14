@@ -1484,7 +1484,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 68
+      "line": 66
     },
     {
       "file": "scripts/release-verify-registry.mjs",
@@ -1495,7 +1495,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 101
+      "line": 99
     },
     {
       "file": "scripts/verify-npm-package.mjs",

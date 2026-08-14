@@ -6,9 +6,8 @@
 // The workflow supplies the full prepared/draft/staged chain and --json-out stage-receipt.json;
 // stdout remains the human-readable step summary.
 import { writeFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { STABLE_MCP_LAUNCH_GUIDANCE } from "../packages/cli/src/integration-guidance.js";
+import { isMainModule } from "./is-main-module.mjs";
 import {
   inspectionInstructions,
   rejectOperation,
@@ -18,8 +17,6 @@ import {
 } from "./release-operations.mjs";
 import { receiptEmissionCommands } from "./release-ordering.mjs";
 import { buildStageReceipt } from "./release-receipts.mjs";
-
-const scriptPath = fileURLToPath(import.meta.url);
 
 function arg(argv, flag, required = true) {
   const at = argv.indexOf(flag);
@@ -100,7 +97,7 @@ export function renderReceiptMarkdown(built) {
   return lines.join("\n");
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (await isMainModule(import.meta.url)) {
   const argv = process.argv.slice(2);
   const built = buildReceipt({
     runId: arg(argv, "--run-id"),

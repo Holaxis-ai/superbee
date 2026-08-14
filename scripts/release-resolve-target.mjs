@@ -1,6 +1,4 @@
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { isMainModule } from "./is-main-module.mjs";
 import {
   DEFAULT_RELEASE_TARGETS_PATH,
   assertTagForVersion,
@@ -9,8 +7,6 @@ import {
   resolveAllowedTupleByTarget,
   resolveAllowedTupleByTag,
 } from "./release-targets.mjs";
-
-const scriptPath = fileURLToPath(import.meta.url);
 
 function arg(argv, flag, required = true) {
   const at = argv.indexOf(flag);
@@ -67,7 +63,7 @@ export function renderGithubOutput(facts) {
   ].join("\n") + "\n";
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (await isMainModule(import.meta.url)) {
   const args = parseResolveTargetArgs(process.argv.slice(2));
   resolveTargetFacts(args)
     .then(async (facts) => {

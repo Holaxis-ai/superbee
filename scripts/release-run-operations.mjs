@@ -8,13 +8,11 @@
 // Usage: node scripts/release-run-operations.mjs --op <name> [op args] [--execute]
 //   ops: reject|approve|secondary-tag|remove-secondary-tag|rollback|registry-verify|promote|immutable-release
 import { execFile } from "node:child_process";
-import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "./is-main-module.mjs";
 import * as ops from "./release-operations.mjs";
 
 const execFileAsync = promisify(execFile);
-const scriptPath = fileURLToPath(import.meta.url);
 
 function arg(argv, flag, required = false) {
   const at = argv.indexOf(flag);
@@ -70,7 +68,7 @@ export function operationsFor(op, argv) {
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (await isMainModule(import.meta.url)) {
   try {
     const argv = process.argv.slice(2);
     const op = arg(argv, "--op", true);

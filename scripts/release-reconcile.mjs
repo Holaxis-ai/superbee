@@ -9,11 +9,8 @@
 //
 // Usage: node scripts/release-reconcile.mjs --to <state> --receipt <file|-> [--ledger <file|->]
 import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { isMainModule } from "./is-main-module.mjs";
 import { reconcile, ReleaseStateError } from "./release-state.mjs";
-
-const scriptPath = fileURLToPath(import.meta.url);
 
 async function readSource(source) {
   if (!source) return null;
@@ -39,7 +36,7 @@ function arg(argv, flag) {
   return value;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (await isMainModule(import.meta.url)) {
   try {
     const argv = process.argv.slice(2);
     const to = arg(argv, "--to");

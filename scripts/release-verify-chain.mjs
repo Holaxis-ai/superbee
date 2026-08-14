@@ -3,14 +3,12 @@
 // passed as quoted argv by the workflows, preventing expression-to-shell script injection.
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import { fileSha256 } from "./verify-npm-package.mjs";
+import { isMainModule } from "./is-main-module.mjs";
 import { parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 import { parseStagePublishJson, verifyFinalizerChain } from "./release-receipts.mjs";
 import { assertWorkflowContract, defaultReleaseTargets, tarballFilename } from "./release-targets.mjs";
-
-const scriptPath = fileURLToPath(import.meta.url);
 
 function arg(argv, flag) {
   const at = argv.indexOf(flag);
@@ -102,7 +100,7 @@ export async function main(argv) {
   throw new Error("usage: release-verify-chain.mjs stage-id|capture-draft|verify-finalizer ...");
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (await isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.stack : error);
     process.exitCode = 1;
