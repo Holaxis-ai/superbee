@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +10,7 @@ import {
   createReleasePacket,
   preparePacketOutputDir,
   staticPacketClosure,
+  trackedSourceFiles,
   validatePacketInputManifest,
   validateRefAssertionsEnvelope,
   verifyReleasePacket,
@@ -105,6 +106,26 @@ test("the committed packet-input manifest is the exact static closure plus expli
   }
 });
 
+test("tracked source manifest is complete, sorted, and rooted in regular Git-index files", async () => {
+  const rows = await trackedSourceFiles();
+  assert.ok(rows.length > 0);
+  assert.deepEqual(rows, [...rows].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)));
+  assert.ok(rows.some((row) => row.path === "scripts/release-packet.mjs"));
+});
+
+test("tracked source manifest rejects Git-index symlinks", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-index-"));
+  try {
+    execFileSync("git", ["init", "--quiet"], { cwd: root, stdio: "pipe" });
+    await writeFile(path.join(root, "real.mjs"), "export const value = true;\n");
+    await symlink("real.mjs", path.join(root, "linked.mjs"));
+    execFileSync("git", ["add", "real.mjs", "linked.mjs"], { cwd: root, stdio: "pipe" });
+    await assert.rejects(trackedSourceFiles(root), /unsupported git index mode/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("the packet-input manifest rejects missing, extra, and escaping rows", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-manifest-"));
   try {
@@ -172,11 +193,32 @@ test("packet creation retains exactly four slots with detached self-free digest 
     assert.deepEqual(Object.keys(result.packet.candidates).sort(), ["bridge", "rehearsal-approve", "rehearsal-reject", "successor"]);
     assert.ok(!JSON.stringify(result.packet).includes("release-packet.sha256"));
     assert.equal((await readdir(out)).includes(".superbee-release-packet-owned-v1"), false, "distributed packet must carry no deletion marker");
+    assert.ok(result.packet.source_files.some((row) => row.path === "scripts/release-packet.mjs"));
     execFileSync("shasum", ["-a", "256", "-c", "release-packet.sha256"], { cwd: out, stdio: "pipe" });
     await verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } });
+    await rewritePacket(out, (packet) => { packet.source_files[0].sha256 = `sha256:${"0".repeat(64)}`; });
+    await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } }), /source files differ/);
+    await rewritePacket(out, (packet) => { packet.source_files = result.packet.source_files; });
     await writeFile(path.join(out, "evidence", "settings-recheck.json"), "tampered\n");
     await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } }), /inventory differs/);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packet creation and verification accept a clean detached source checkout", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-detached-"));
+  const sourceRoot = path.join(root, "source");
+  try {
+    execFileSync("git", ["worktree", "add", "--detach", sourceRoot, head], { cwd: repoRoot, stdio: "pipe" });
+    const input = await fixture(root);
+    const out = path.join(root, "packet");
+    await createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
+    await verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
+    await writeFile(path.join(sourceRoot, "ambient-untracked"), "must reject\n");
+    await assert.rejects(verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier }), /clean verification checkout/);
+  } finally {
+    execFileSync("git", ["worktree", "remove", "--force", sourceRoot], { cwd: repoRoot, stdio: "pipe" });
     await rm(root, { recursive: true, force: true });
   }
 });

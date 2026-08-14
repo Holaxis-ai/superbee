@@ -7,7 +7,6 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { init, parse } from "es-module-lexer";
 
-import { currentSourceFacts } from "../packages/cli/scripts/build-bundle.mjs";
 import { fileSha256, verifyRetainedTarball } from "./verify-npm-package.mjs";
 import { RELEASE_CANDIDATE_SCHEMA, assertAllowedTuple, loadReleaseTargets, tarballFilename } from "./release-targets.mjs";
 
@@ -228,10 +227,12 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
   return { paths, closure, explicit, workflowEntries };
 }
 
-async function sourceFacts(commit, publicAncestor, observed = currentSourceFacts(), root = repoRoot) {
+async function sourceFacts(commit, publicAncestor, observed, root = repoRoot) {
   requireString("commit", commit, COMMIT);
   requireString("public ancestor", publicAncestor, COMMIT);
-  if (observed.commit !== commit || observed.dirty !== false) packetError("create requires clean checked-out HEAD equal to --commit");
+  const facts = observed ?? await observedCheckout(root);
+  if (!observed) await assertDetachedCheckout(root);
+  if (facts.commit !== commit || facts.dirty !== false) packetError("create requires clean checked-out HEAD equal to --commit");
   const tree = (await execFileAsync("git", ["rev-parse", `${commit}^{tree}`], { cwd: root })).stdout.trim();
   try {
     await execFileAsync("git", ["merge-base", "--is-ancestor", publicAncestor, commit], { cwd: root });
@@ -241,10 +242,10 @@ async function sourceFacts(commit, publicAncestor, observed = currentSourceFacts
   return { commit, tree, public_ancestor: publicAncestor, public_is_ancestor: true, dirty: false };
 }
 
-export async function preparePacketOutputDir(requested) {
+export async function preparePacketOutputDir(requested, root = repoRoot) {
   const out = path.resolve(requested);
-  const root = path.parse(out).root;
-  if (out === root || out === repoRoot || repoRoot.startsWith(`${out}${path.sep}`) || out.startsWith(`${repoRoot}${path.sep}`)) {
+  const filesystemRoot = path.parse(out).root;
+  if (out === filesystemRoot || out === root || root.startsWith(`${out}${path.sep}`) || out.startsWith(`${root}${path.sep}`)) {
     throw new Error(`unsafe --out target: ${out}`);
   }
   let entries = [];
@@ -401,6 +402,48 @@ async function sourceInputDigests(root = repoRoot) {
   return Promise.all(paths.map(async (relative) => ({ path: relative, sha256: await fileSha256(resolveInput(root, relative)) }))).then((rows) => rows.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)));
 }
 
+function codePointOrder(a, b) {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function parseIndexRecord(record) {
+  const tab = record.indexOf(0x09);
+  if (tab === -1) packetError("git index record is missing its path separator");
+  const header = record.subarray(0, tab).toString("ascii");
+  const match = /^(100644|100755) ([0-9a-f]{40}) 0$/.exec(header);
+  if (!match) packetError(`unsupported git index mode or stage: ${header}`);
+  const pathBytes = record.subarray(tab + 1);
+  const relative = pathBytes.toString("utf8");
+  if (!Buffer.from(relative, "utf8").equals(pathBytes)) packetError("git index path is not valid UTF-8");
+  literalPath("git index path", relative);
+  return relative;
+}
+
+export async function trackedSourceFiles(root = repoRoot) {
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync("git", ["ls-files", "-s", "-z"], { cwd: root, encoding: "buffer" }));
+  } catch (error) {
+    packetError(`cannot read git index: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  const rows = [];
+  let start = 0;
+  for (let end = bytes.indexOf(0, start); end !== -1; end = bytes.indexOf(0, start)) {
+    const relative = parseIndexRecord(bytes.subarray(start, end));
+    const file = resolveInput(root, relative, "git index path");
+    const info = await regularFile(file, `tracked source ${relative}`);
+    rows.push({ path: relative, sha256: await fileSha256(file), bytes: info.size });
+    start = end + 1;
+  }
+  if (start !== bytes.length) packetError("git index output is not NUL terminated");
+  const sorted = [...rows].sort((a, b) => codePointOrder(a.path, b.path));
+  if (sorted.length === 0 || new Set(rows.map((row) => row.path)).size !== rows.length) {
+    packetError("git index paths must be non-empty and unique");
+  }
+  return sorted;
+}
+
 async function loadPacketTargets(root) {
   return loadReleaseTargets(path.join(root, "release", "targets.json"), {
     burnedFile: path.join(root, "release", "burned-versions.json"),
@@ -427,12 +470,22 @@ async function observedCheckout(root) {
   try {
     const [head, status] = await Promise.all([
       execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root }),
-      execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: root }),
+      execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"], { cwd: root }),
     ]);
     return { commit: head.stdout.trim(), dirty: status.stdout.length > 0 };
   } catch (error) {
     packetError(`cannot inspect verification checkout: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+async function assertDetachedCheckout(root) {
+  try {
+    await execFileAsync("git", ["symbolic-ref", "-q", "HEAD"], { cwd: root });
+  } catch (error) {
+    if (error?.code === 1) return;
+    packetError(`cannot determine checkout attachment: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  packetError("packet source checkout must be detached");
 }
 
 export async function createReleasePacket({ commit, publicAncestor, out, candidates, evidence, observedSource, root = repoRoot, retainedVerifier = verifyRetainedTarball }) {
@@ -443,7 +496,7 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
     packetError("create requires every fixed evidence slot exactly once");
   }
   const source = await sourceFacts(commit, publicAncestor, observedSource, root);
-  const outDir = await preparePacketOutputDir(out);
+  const outDir = await preparePacketOutputDir(out, root);
   const targets = await loadPacketTargets(root);
   const staged = await stagePacketOutput(outDir);
   try {
@@ -462,6 +515,7 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
         input_manifest_sha256: await fileSha256(path.join(root, "release", "review-packet-inputs.json")),
         source_inputs: await sourceInputDigests(root),
       },
+      source_files: await trackedSourceFiles(root),
       tuples: Object.fromEntries(CANDIDATE_IDS.map((id) => [id, targets.allowed_tuples[id]])),
       burns: await loadBurnLedger(root),
       candidates: candidateRows,
@@ -483,7 +537,7 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
   const outDir = path.dirname(packetPath);
   if (path.basename(packetPath) !== PACKET_FILE) packetError(`packet path must end in ${PACKET_FILE}`);
   const text = await readFile(packetPath, "utf8");
-  const packet = exactKeys(await readJson(packetPath, "packet"), "packet", ["schema", "source", "generator", "tuples", "burns", "candidates", "external_evidence", "inventory"]);
+  const packet = exactKeys(await readJson(packetPath, "packet"), "packet", ["schema", "source", "generator", "source_files", "tuples", "burns", "candidates", "external_evidence", "inventory"]);
   if (packet.schema !== REVIEW_PACKET_SCHEMA || canonicalJson(packet) !== text) packetError("packet is not canonical release-packet JSON");
   const digest = await readFile(path.join(outDir, DIGEST_FILE), "utf8");
   if (digest !== checksumLine(await fileSha256(packetPath))) packetError("detached packet digest mismatch");
@@ -492,6 +546,7 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
   requireString("packet P", source.public_ancestor, COMMIT);
   if (source.public_is_ancestor !== true || source.dirty !== false) packetError("packet source facts are incomplete");
   const checkout = observedSource ?? await observedCheckout(root);
+  if (!observedSource) await assertDetachedCheckout(root);
   if (checkout.commit !== source.commit || checkout.dirty !== false) packetError("packet source does not match a clean verification checkout");
   const observedTree = (await execFileAsync("git", ["rev-parse", "HEAD^{tree}"], { cwd: root })).stdout.trim();
   if (source.tree !== observedTree) packetError("packet source tree differs from checkout");
@@ -506,6 +561,14 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
   if (JSON.stringify(packet.generator?.source_inputs) !== JSON.stringify(expectedInputs)) packetError("packet source input digests differ from checkout");
   if (generator.entrypoint_sha256 !== await fileSha256(path.join(root, "scripts", "release-packet.mjs"))) packetError("packet generator digest differs from checkout");
   if (generator.input_manifest_sha256 !== await fileSha256(path.join(root, "release", "review-packet-inputs.json"))) packetError("packet input manifest digest differs from checkout");
+  if (!Array.isArray(packet.source_files)) packetError("packet source files must be an array");
+  for (const row of packet.source_files) {
+    exactKeys(row, "packet source file", ["path", "sha256", "bytes"]);
+    literalPath("packet source file path", row.path);
+    requireString("packet source file digest", row.sha256, SHA256);
+    if (!Number.isSafeInteger(row.bytes) || row.bytes < 0) packetError("packet source file bytes must be a non-negative integer");
+  }
+  if (JSON.stringify(packet.source_files) !== JSON.stringify(await trackedSourceFiles(root))) packetError("packet source files differ from checkout");
   const actualInventory = await inventory(outDir);
   if (!Array.isArray(packet.inventory)) packetError("packet inventory must be an array");
   for (const row of packet.inventory) {
@@ -583,13 +646,21 @@ function option(argv, flag) {
   return value;
 }
 
+function optionalOption(argv, flag) {
+  const at = argv.indexOf(flag);
+  if (at === -1) return undefined;
+  const value = argv[at + 1];
+  if (!value || value.startsWith("--")) throw new Error(`missing ${flag}`);
+  return path.resolve(value);
+}
+
 export function parsePacketArgs(argv) {
   const [command, ...rest] = argv;
   if (command === "create") return {
     command, commit: option(rest, "--commit"), publicAncestor: option(rest, "--public-ancestor"), out: option(rest, "--out"),
-    candidates: parsePairs(rest, "--candidate", CANDIDATE_IDS), evidence: parsePairs(rest, "--evidence", EVIDENCE.map(([id]) => id)),
+    candidates: parsePairs(rest, "--candidate", CANDIDATE_IDS), evidence: parsePairs(rest, "--evidence", EVIDENCE.map(([id]) => id)), root: optionalOption(rest, "--root"),
   };
-  if (command === "verify") return { command, packet: option(rest, "--packet") };
+  if (command === "verify") return { command, packet: option(rest, "--packet"), root: optionalOption(rest, "--root") };
   throw new Error("usage: release-packet.mjs create|verify ...");
 }
 
