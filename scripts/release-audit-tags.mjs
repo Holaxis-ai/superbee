@@ -1,14 +1,7 @@
-// Registry-observing release-policy audit (`npm run release:audit-tags`). Fetches the live
-// packument for @holaxis/aslite (dist-tags + versions + publish times) and FAILS when the
-// registry contradicts the ratified release policy:
-//
-//   a. dist-tag state for the phase declared in release/phase.json, with the expected tags
-//      computed by scripts/release-state.mjs `resolveTags` — the one policy authority;
-//   b. version scheme: pre-stable publishes are `A.B.0-pre.N` with N contiguous from 1 and
-//      publish times monotone in N (decisions/version-update-contract §1);
-//   c. source-vs-registry drift: the validated bridge tuple must be the newest published
-//      version (pre-release-prep) or one sane increment ahead (staged-prep). The checked-in CLI
-//      separately declares the successor coordinate, so it must not be compared to bridge history.
+// Registry-observing release-policy audit (`npm run release:audit-tags`). It requires one explicit
+// coordinate and immutable reviewed policy file, then compares the live package's exact dist-tags,
+// reviewed candidate presence, and checked-in stable tip to that policy. Bridge and Superbee have
+// independent lifecycles; the retired release/phase.json is never release authority.
 //
 // NETWORK vs VIOLATION is structural, not textual: unreachable/unhealthy registry throws
 // NetworkUnavailableError -> exit 20 (CI turns that into a loud neutral skip); a policy
@@ -34,6 +27,7 @@ export const EXIT_USAGE = 2;
 export const EXIT_NETWORK = 20;
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
+const COORDINATES = new Set(["bridge", "superbee"]);
 
 export const PHASES = ["at_rest", "staged", "approved", "promoted", "failed"];
 
@@ -92,6 +86,161 @@ export function compareSemver(a, b) {
 
 function violation(code, message) {
   return { code, message };
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactKeys(value, keys, label) {
+  if (!isRecord(value) || JSON.stringify(Object.keys(value).sort()) !== JSON.stringify([...keys].sort())) {
+    throw new Error(`${label} has unexpected shape`);
+  }
+  return value;
+}
+
+function policyTuple(value, label) {
+  exactKeys(value, ["target", "package", "version", "tag"], label);
+  if (typeof value.target !== "string" || typeof value.package !== "string" || !parseSemver(value.version) || value.tag !== `v${value.version}`) {
+    throw new Error(`${label} has invalid target/package/version/tag`);
+  }
+  return value;
+}
+
+function policyTags(value, label) {
+  exactKeys(value, ["latest", "next"], label);
+  if (typeof value.latest !== "string" || (value.next !== null && typeof value.next !== "string")) {
+    throw new Error(`${label} requires string latest and string|null next`);
+  }
+  return value;
+}
+
+/** Parse immutable policy input for one registry coordinate. It never encodes mutable progress. */
+export function parseCoordinatePolicy(raw, { coordinate }) {
+  if (!COORDINATES.has(coordinate)) throw new Error(`unknown coordinate ${JSON.stringify(coordinate)}`);
+  if (!isRecord(raw) || raw.coordinate !== coordinate) throw new Error(`policy coordinate must be ${coordinate}`);
+  if (coordinate === "bridge") {
+    exactKeys(raw, ["schema", "coordinate", "package", "baseline", "bridge", "legal_states"], "bridge policy");
+    if (raw.schema !== "superbee.bridge-policy.v1" || raw.package !== "@holaxis/aslite") throw new Error("bridge policy has invalid schema or package");
+    const baseline = policyTags(raw.baseline, "bridge policy baseline");
+    const bridge = policyTuple(raw.bridge, "bridge policy bridge");
+    if (bridge.target !== "bridge" || bridge.package !== raw.package) throw new Error("bridge policy bridge target/package mismatch");
+    const expected = ["before_bridge", "bridge_staged", "bridge_settled", "bridge_failed"];
+    if (!Array.isArray(raw.legal_states) || raw.legal_states.length !== expected.length) throw new Error("bridge policy legal states are incomplete");
+    const states = raw.legal_states.map((state) => {
+      exactKeys(state, ["id", "tags", "bridge"], "bridge policy state");
+      if (!expected.includes(state.id) || !["present", "absent"].includes(state.bridge)) throw new Error("bridge policy state is invalid");
+      return { ...state, tags: policyTags(state.tags, `bridge policy state ${state.id} tags`) };
+    });
+    if (new Set(states.map((state) => state.id)).size !== states.length || expected.some((id) => !states.some((state) => state.id === id))) {
+      throw new Error("bridge policy legal states are not exact");
+    }
+    const byId = Object.fromEntries(states.map((state) => [state.id, state]));
+    const exactState = (id, latest, next, presence) => (
+      byId[id].tags.latest === latest && byId[id].tags.next === next && byId[id].bridge === presence
+    );
+    if (
+      !exactState("before_bridge", baseline.latest, baseline.next, "absent") ||
+      !exactState("bridge_staged", baseline.latest, bridge.version, "present") ||
+      !exactState("bridge_settled", bridge.version, bridge.version, "present") ||
+      !exactState("bridge_failed", baseline.latest, baseline.next, "present")
+    ) {
+      throw new Error("bridge policy legal state transitions do not match baseline and bridge tuple");
+    }
+    return { ...raw, baseline, bridge, legal_states: states };
+  }
+
+  exactKeys(raw, ["schema", "coordinate", "package", "placeholder", "stable", "preview", "completion", "legal_states"], "superbee policy");
+  if (raw.schema !== "superbee.cutover-policy.v1" || raw.package !== "superbee") throw new Error("superbee policy has invalid schema or package");
+  const placeholder = policyTags(raw.placeholder, "superbee placeholder");
+  if (placeholder.latest !== "0.0.1" || placeholder.next !== null) throw new Error("superbee placeholder must explicitly be latest=0.0.1 with next absent");
+  const stable = policyTuple(raw.stable, "superbee stable");
+  const preview = policyTuple(raw.preview, "superbee preview");
+  if (stable.target !== "successor-stable" || stable.package !== raw.package || preview.target !== "successor-preview" || preview.package !== raw.package) {
+    throw new Error("superbee policy tuple target/package mismatch");
+  }
+  const expected = ["before_cutover", "stable_staged", "stable_promoted", "preview_staged_or_settled", "stable_failed", "preview_failed"];
+  if (!Array.isArray(raw.legal_states) || raw.legal_states.length !== expected.length) throw new Error("superbee policy legal states are incomplete");
+  const states = raw.legal_states.map((state) => {
+    exactKeys(state, ["id", "tags", "stable", "preview"], "superbee policy state");
+    if (!expected.includes(state.id) || !["present", "absent"].includes(state.stable) || !["present", "absent"].includes(state.preview)) {
+      throw new Error("superbee policy state is invalid");
+    }
+    return { ...state, tags: policyTags(state.tags, `superbee policy state ${state.id} tags`) };
+  });
+  if (new Set(states.map((state) => state.id)).size !== states.length || expected.some((id) => !states.some((state) => state.id === id))) {
+    throw new Error("superbee policy legal states are not exact");
+  }
+  const completion = exactKeys(raw.completion, ["state", "tags", "stable", "preview"], "superbee policy completion");
+  if (completion.state !== "settled" || !["present", "absent"].includes(completion.stable) || !["present", "absent"].includes(completion.preview)) {
+    throw new Error("superbee policy completion state is invalid");
+  }
+  const completionTags = policyTags(completion.tags, "superbee policy completion tags");
+  if (completionTags.latest !== stable.version || completionTags.next !== preview.version || completion.stable !== "present" || completion.preview !== "present") {
+    throw new Error("superbee policy completion must require stable latest and preview next");
+  }
+  return { ...raw, placeholder, stable, preview, completion: { ...completion, tags: completionTags }, legal_states: states };
+}
+
+function hasVersion(registry, version) {
+  return registry.versions.includes(version);
+}
+
+function exactObservedTags(observed, expected) {
+  return observed?.latest === expected.latest && (observed?.next ?? null) === expected.next && Object.keys(observed ?? {}).every((tag) => tag === "latest" || tag === "next");
+}
+
+function policyStateMatches(coordinate, policy, registry, state) {
+  if (!exactObservedTags(registry.distTags, state.tags)) return false;
+  if (coordinate === "bridge") return hasVersion(registry, policy.bridge.version) === (state.bridge === "present");
+  return hasVersion(registry, policy.stable.version) === (state.stable === "present") && hasVersion(registry, policy.preview.version) === (state.preview === "present");
+}
+
+/** Resolve a named legal state or the policy's explicit completion gate. */
+export function resolveRequiredPolicyState(policy, requireState) {
+  if (!requireState) return null;
+  if (policy.completion?.state === requireState) return { id: requireState, ...policy.completion };
+  const legal = policy.legal_states.find((state) => state.id === requireState);
+  if (legal) return legal;
+  throw new Error(`unknown required policy state ${JSON.stringify(requireState)}`);
+}
+
+/** Audit one coordinate against its immutable reviewed policy and no mutable source phase. */
+export function auditCoordinateRegistryState({ coordinate, policy, registry, checkedInVersion, requireState }) {
+  const violations = [];
+  if (coordinate !== policy.coordinate) return { violations: [violation("coordinate_mismatch", `requested ${coordinate} but policy is ${policy.coordinate}`)], notes: [], facts: {} };
+  // The checked-in manifest is intentionally stable-only. Tuple identity, not this value, governs
+  // bridge and preview audits; retaining it as a fact makes that reviewed-tip rule observable.
+  if (checkedInVersion !== "0.1.0") violations.push(violation("reviewed_tip_drift", `checked-in CLI must remain 0.1.0, got ${checkedInVersion}`));
+  const matches = policy.legal_states.filter((state) => policyStateMatches(coordinate, policy, registry, state));
+  if (matches.length !== 1) {
+    violations.push(violation("tags_off_policy", `registry tags/version presence match ${matches.length} legal ${coordinate} states`));
+  }
+  const required = resolveRequiredPolicyState(policy, requireState);
+  if (required && !policyStateMatches(coordinate, policy, registry, required)) {
+    violations.push(violation("required_state", `observed ${matches[0]?.id ?? "no_legal_state"} but required ${required.id}`));
+  }
+  return {
+    violations,
+    notes: [],
+    facts: { coordinate, package: policy.package, checked_in_version: checkedInVersion, legal_state: matches[0]?.id ?? null, required_state: requireState ?? null, dist_tags: registry.distTags },
+  };
+}
+
+function assertPolicyTuple(policyTupleValue, tuple, label) {
+  for (const key of ["target", "package", "version", "tag"]) {
+    if (policyTupleValue[key] !== tuple[key]) throw new Error(`${label} ${key} ${policyTupleValue[key]} != reviewed tuple ${tuple[key]}`);
+  }
+}
+
+export function assertCoordinatePolicyAuthority(policy, targets) {
+  if (policy.coordinate === "bridge") {
+    assertPolicyTuple(policy.bridge, targets.allowed_tuples.bridge, "bridge policy");
+    return { package: policy.package, targetIds: ["bridge"] };
+  }
+  assertPolicyTuple(policy.stable, targets.allowed_tuples["successor-stable"], "superbee stable policy");
+  assertPolicyTuple(policy.preview, targets.allowed_tuples["successor-preview"], "superbee preview policy");
+  return { package: policy.package, targetIds: ["successor-stable", "successor-preview"] };
 }
 
 /**
@@ -218,7 +367,7 @@ function newestOf(versions) {
  * the priors (the at-rest known-good: newest published, excluding an in-flight candidate) and the
  * policy state machine maps (kind, phase, candidate, priors) -> expected tags.
  */
-export function expectedTagState({ declaration, versions, observedTags }) {
+export function expectedTagState({ declaration, versions, observedTags, packageName = PACKAGE }) {
   const notes = [];
   const violations = [];
   const stable = versions.filter((v) => parseSemver(v)?.prerelease.length === 0);
@@ -226,7 +375,7 @@ export function expectedTagState({ declaration, versions, observedTags }) {
 
   if (declaration.phase === "at_rest") {
     if (versions.length === 0) {
-      violations.push(violation("package_unpublished", `${PACKAGE} has no published versions`));
+      violations.push(violation("package_unpublished", `${packageName} has no published versions`));
       return { expected: null, notes, violations };
     }
     if (!stableReached) {
@@ -397,7 +546,7 @@ export function checkSourceDrift(sourceVersion, versions, burnedVersions = []) {
  * The pure audit over one registry snapshot. Returns { violations, notes, facts }; empty
  * violations means the registry, phase declaration, and source agree with policy.
  */
-export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [] }) {
+export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [], packageName = PACKAGE }) {
   const { distTags, versions, time } = registry;
   const violations = [];
   const notes = [];
@@ -405,7 +554,7 @@ export function auditRegistryState({ declaration, sourceVersion, registry, burne
   violations.push(...checkVersionScheme(versions, time, burnedVersions));
   violations.push(...checkDeclarationConsistency(declaration, sourceVersion));
 
-  const tagState = expectedTagState({ declaration, versions, observedTags: distTags });
+  const tagState = expectedTagState({ declaration, versions, observedTags: distTags, packageName });
   violations.push(...tagState.violations);
   notes.push(...tagState.notes);
   if (tagState.expected) {
@@ -518,21 +667,20 @@ export function parsePackument(body) {
   };
 }
 
-async function readPhaseDeclaration(phaseFile) {
+async function readCoordinatePolicy(policyFile, coordinate) {
   let raw;
   try {
-    raw = await readFile(phaseFile, "utf8");
+    raw = await readFile(policyFile, "utf8");
   } catch (error) {
-    if (error?.code === "ENOENT") return parsePhaseDeclaration(null);
-    throw error;
+    throw new Error(`${policyFile} is required: ${error.message}`);
   }
   let parsed;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    throw new Error(`${phaseFile} is not valid JSON: ${error.message}`);
+    throw new Error(`${policyFile} is not valid JSON: ${error.message}`);
   }
-  return parsePhaseDeclaration(parsed);
+  return parseCoordinatePolicy(parsed, { coordinate });
 }
 
 function arg(argv, flag) {
@@ -544,40 +692,29 @@ function arg(argv, flag) {
 }
 
 export async function main(argv = process.argv.slice(2)) {
-  const phaseFile = arg(argv, "--phase-file") ?? path.join(repoRoot, "release", "phase.json");
-  const burnedFile = arg(argv, "--burned-file") ?? path.join(repoRoot, "release", "burned-versions.json");
+  const coordinate = arg(argv, "--coordinate");
+  const policyFile = arg(argv, "--policy-file");
+  const requireState = arg(argv, "--require-state");
   const registryJson = arg(argv, "--registry-json"); // replay hatch: audit a captured payload
-  const registryUrl = arg(argv, "--registry-url") ?? REGISTRY_URL; // test hatch for the network path
-
-  let declaration;
-  try {
-    declaration = await readPhaseDeclaration(phaseFile);
-  } catch (error) {
-    console.error(`release-audit: VIOLATION[phase_declaration]: ${error.message}`);
-    return EXIT_VIOLATION;
+  if (!coordinate || !policyFile) {
+    console.error("release-audit: VIOLATION[usage]: --coordinate and --policy-file are required");
+    return EXIT_USAGE;
   }
-  let burnedVersions;
+  let targets;
+  let policy;
+  let authority;
   try {
-    let burnedRaw = null;
-    try {
-      burnedRaw = JSON.parse(await readFile(burnedFile, "utf8"));
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-    burnedVersions = readBurnedDeclaration(burnedRaw);
+    targets = await loadReleaseTargets();
+    policy = await readCoordinatePolicy(policyFile, coordinate);
+    authority = assertCoordinatePolicyAuthority(policy, targets);
+    resolveRequiredPolicyState(policy, requireState);
   } catch (error) {
-    console.error(`release-audit: VIOLATION[burned_declaration]: ${error.message}`);
-    return EXIT_VIOLATION;
+    const message = error instanceof Error ? error.message : String(error);
+    const usage = message.startsWith("unknown required policy state");
+    console.error(`release-audit: ${usage ? "USAGE" : "VIOLATION"}[coordinate_policy]: ${message}`);
+    return usage ? EXIT_USAGE : EXIT_VIOLATION;
   }
-  let bridgeVersion;
-  try {
-    const targets = await loadReleaseTargets();
-    bridgeVersion = targets.allowed_tuples.bridge.version;
-  } catch (error) {
-    console.error(`release-audit: VIOLATION[release_targets]: ${error instanceof Error ? error.message : String(error)}`);
-    return EXIT_VIOLATION;
-  }
-
+  const registryUrl = arg(argv, "--registry-url") ?? `https://registry.npmjs.org/${encodeURIComponent(authority.package)}`; // test hatch for the network path
   let registry;
   if (registryJson) {
     registry = parsePackument(JSON.parse(await readFile(registryJson, "utf8")));
@@ -585,12 +722,18 @@ export async function main(argv = process.argv.slice(2)) {
     registry = await fetchRegistryState({ url: registryUrl });
   }
   if (registry.missing) {
-    console.error(`release-audit: VIOLATION[package_missing]: registry has no packument for ${PACKAGE}`);
+    console.error(`release-audit: VIOLATION[package_missing]: registry has no packument for ${authority.package}`);
     return EXIT_VIOLATION;
   }
 
-  const result = auditRegistryState({ declaration, sourceVersion: bridgeVersion, registry, burnedVersions });
-  console.log(`release-audit: package ${PACKAGE}`);
+  const result = auditCoordinateRegistryState({
+    coordinate,
+    policy,
+    registry,
+    checkedInVersion: targets.allowed_tuples["successor-stable"].version,
+    requireState,
+  });
+  console.log(`release-audit: package ${authority.package}`);
   console.log(`release-audit: facts ${JSON.stringify(result.facts)}`);
   for (const note of result.notes) console.log(`release-audit: note: ${note}`);
   if (result.violations.length > 0) {
@@ -598,7 +741,7 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(`release-audit: FAIL (${result.violations.length} violation${result.violations.length === 1 ? "" : "s"})`);
     return EXIT_VIOLATION;
   }
-  console.log("release-audit: PASS — registry dist-tags, version scheme, and source version agree with policy");
+  console.log("release-audit: PASS — registry dist-tags, reviewed version presence, and checked-in stable tip agree with policy");
   return EXIT_PASS;
 }
 

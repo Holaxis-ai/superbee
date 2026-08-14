@@ -10,7 +10,6 @@ import {
   RELEASE_STAGE_RECEIPT_SCHEMA,
   stageDownloadFilenameForTarget,
   tarballFilename as releaseTarballFilename,
-  targetFromPackageName,
 } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
@@ -80,8 +79,8 @@ export function parseStagePublishJson(text) {
 }
 
 /** npm stage download chooses this filename; the command has no --out option. */
-export function stageDownloadFilename(version, stageId) {
-  return stageDownloadFilenameForTarget(defaultReleaseTargets().bridge, version, stageId);
+export function stageDownloadFilename(targetId, version, stageId) {
+  return stageDownloadFilenameFor(targetId, version, stageId);
 }
 
 export function stageDownloadFilenameFor(targetId, version, stageId) {
@@ -93,7 +92,8 @@ export function stageDownloadFilenameFor(targetId, version, stageId) {
 }
 
 function resolveTargetFromFields(fields) {
-  const targetId = fields.target ?? targetFromPackageName(fields.packageName) ?? "bridge";
+  const targetId = fields.target;
+  if (!targetId) fail("stage receipt requires an explicit target");
   const target = defaultReleaseTargets()[targetId];
   if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
   if (fields.packageName !== undefined && fields.packageName !== target.package.name) {
@@ -103,8 +103,9 @@ function resolveTargetFromFields(fields) {
 }
 
 function resolveTargetFromCandidate(candidate, prepared = {}) {
-  const targetId = candidate?.target ?? prepared.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name);
-  const target = defaultReleaseTargets()[targetId ?? "bridge"];
+  const targetId = candidate?.target ?? prepared.target;
+  if (!targetId || (candidate?.target && prepared.target && candidate.target !== prepared.target)) fail("candidate and receipt require the same explicit target");
+  const target = defaultReleaseTargets()[targetId];
   if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
   return assertWorkflowContract(target);
 }

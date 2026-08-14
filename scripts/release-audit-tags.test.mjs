@@ -19,6 +19,9 @@ import {
   parsePhaseDeclaration,
   readBurnedDeclaration,
   saneSuccessors,
+  auditCoordinateRegistryState,
+  parseCoordinatePolicy,
+  resolveRequiredPolicyState,
 } from "./release-audit-tags.mjs";
 
 // Fixture mirroring the live registry at build time. No test hits the network.
@@ -40,6 +43,125 @@ const AT_REST = { phase: "at_rest", kind: null, version: null };
 function codes(result) {
   return result.violations.map((v) => v.code).sort();
 }
+
+const SUPERBEE_POLICY = {
+  schema: "superbee.cutover-policy.v1",
+  coordinate: "superbee",
+  package: "superbee",
+  placeholder: { latest: "0.0.1", next: null },
+  stable: { target: "successor-stable", package: "superbee", version: "0.1.0", tag: "v0.1.0" },
+  preview: { target: "successor-preview", package: "superbee", version: "0.1.1-pre.1", tag: "v0.1.1-pre.1" },
+  completion: { state: "settled", tags: { latest: "0.1.0", next: "0.1.1-pre.1" }, stable: "present", preview: "present" },
+  legal_states: [
+    { id: "before_cutover", tags: { latest: "0.0.1", next: null }, stable: "absent", preview: "absent" },
+    { id: "stable_staged", tags: { latest: "0.0.1", next: "0.1.0" }, stable: "present", preview: "absent" },
+    { id: "stable_promoted", tags: { latest: "0.1.0", next: "0.1.0" }, stable: "present", preview: "absent" },
+    { id: "preview_staged_or_settled", tags: { latest: "0.1.0", next: "0.1.1-pre.1" }, stable: "present", preview: "present" },
+    { id: "stable_failed", tags: { latest: "0.0.1", next: null }, stable: "present", preview: "absent" },
+    { id: "preview_failed", tags: { latest: "0.1.0", next: "0.1.0" }, stable: "present", preview: "present" },
+  ],
+};
+
+const BRIDGE_POLICY = {
+  schema: "superbee.bridge-policy.v1",
+  coordinate: "bridge",
+  package: "@holaxis/aslite",
+  baseline: { latest: "0.1.0-pre.8", next: "0.1.0-pre.8" },
+  bridge: { target: "bridge", package: "@holaxis/aslite", version: "0.1.0-pre.11", tag: "v0.1.0-pre.11" },
+  legal_states: [
+    { id: "before_bridge", tags: { latest: "0.1.0-pre.8", next: "0.1.0-pre.8" }, bridge: "absent" },
+    { id: "bridge_staged", tags: { latest: "0.1.0-pre.8", next: "0.1.0-pre.11" }, bridge: "present" },
+    { id: "bridge_settled", tags: { latest: "0.1.0-pre.11", next: "0.1.0-pre.11" }, bridge: "present" },
+    { id: "bridge_failed", tags: { latest: "0.1.0-pre.8", next: "0.1.0-pre.8" }, bridge: "present" },
+  ],
+};
+
+function superbeeRegistry(distTags, versions = ["0.0.1"]) {
+  return { distTags, versions, time: Object.fromEntries(versions.map((version) => [version, "2026-08-14T00:00:00.000Z"])) };
+}
+
+test("immutable bridge policy covers baseline, staged, settled, and failed publication states", () => {
+  const policy = parseCoordinatePolicy(BRIDGE_POLICY, { coordinate: "bridge" });
+  for (const [name, registry] of [
+    ["before_bridge", registryFixture({ distTags: { latest: "0.1.0-pre.8", next: "0.1.0-pre.8" }, versions: ["0.1.0-pre.8"] })],
+    ["bridge_staged", registryFixture({ distTags: { latest: "0.1.0-pre.8", next: "0.1.0-pre.11" }, versions: ["0.1.0-pre.8", "0.1.0-pre.11"] })],
+    ["bridge_settled", registryFixture({ distTags: { latest: "0.1.0-pre.11", next: "0.1.0-pre.11" }, versions: ["0.1.0-pre.8", "0.1.0-pre.11"] })],
+    ["bridge_failed", registryFixture({ distTags: { latest: "0.1.0-pre.8", next: "0.1.0-pre.8" }, versions: ["0.1.0-pre.8", "0.1.0-pre.11"] })],
+  ]) {
+    const result = auditCoordinateRegistryState({ coordinate: "bridge", policy, registry, checkedInVersion: "0.1.0" });
+    assert.deepEqual(result.violations, [], name);
+    assert.equal(result.facts.legal_state, name);
+  }
+});
+
+test("bridge completion requires the settled state and rejects malformed lifecycle policy", () => {
+  const policy = parseCoordinatePolicy(BRIDGE_POLICY, { coordinate: "bridge" });
+  const staged = auditCoordinateRegistryState({
+    coordinate: "bridge", policy, requireState: "bridge_settled", checkedInVersion: "0.1.0",
+    registry: registryFixture({ distTags: { latest: "0.1.0-pre.8", next: "0.1.0-pre.11" }, versions: ["0.1.0-pre.8", "0.1.0-pre.11"] }),
+  });
+  assert.deepEqual(codes(staged), ["required_state"]);
+  const settled = auditCoordinateRegistryState({
+    coordinate: "bridge", policy, requireState: "bridge_settled", checkedInVersion: "0.1.0",
+    registry: registryFixture({ distTags: { latest: "0.1.0-pre.11", next: "0.1.0-pre.11" }, versions: ["0.1.0-pre.8", "0.1.0-pre.11"] }),
+  });
+  assert.deepEqual(settled.violations, []);
+  const malformed = structuredClone(BRIDGE_POLICY);
+  malformed.legal_states.find((state) => state.id === "bridge_staged").tags.latest = "0.1.0-pre.11";
+  assert.throws(() => parseCoordinatePolicy(malformed, { coordinate: "bridge" }), /transitions/);
+});
+
+test("immutable Superbee policy accepts each exact serial tag state without source-version inference", () => {
+  const policy = parseCoordinatePolicy(SUPERBEE_POLICY, { coordinate: "superbee" });
+  for (const [name, registry] of [
+    ["before", superbeeRegistry({ latest: "0.0.1" })],
+    ["stable staged", superbeeRegistry({ latest: "0.0.1", next: "0.1.0" }, ["0.0.1", "0.1.0"])],
+    ["stable promoted", superbeeRegistry({ latest: "0.1.0", next: "0.1.0" }, ["0.0.1", "0.1.0"])],
+    ["preview final", superbeeRegistry({ latest: "0.1.0", next: "0.1.1-pre.1" }, ["0.0.1", "0.1.0", "0.1.1-pre.1"])],
+    ["stable failure", superbeeRegistry({ latest: "0.0.1" }, ["0.0.1", "0.1.0"])],
+    ["preview failure", superbeeRegistry({ latest: "0.1.0", next: "0.1.0" }, ["0.0.1", "0.1.0", "0.1.1-pre.1"])],
+  ]) {
+    const result = auditCoordinateRegistryState({ coordinate: "superbee", policy, registry, checkedInVersion: "0.1.0" });
+    assert.deepEqual(result.violations, [], name);
+  }
+});
+
+test("Superbee immutable policy rejects unavailable placeholder, preview on latest, and unlisted next", () => {
+  const policy = parseCoordinatePolicy(SUPERBEE_POLICY, { coordinate: "superbee" });
+  for (const registry of [
+    superbeeRegistry({}),
+    superbeeRegistry({ latest: "0.1.1-pre.1", next: "0.1.1-pre.1" }, ["0.0.1", "0.1.0", "0.1.1-pre.1"]),
+    superbeeRegistry({ latest: "0.1.0", next: "0.1.0-pre.1" }, ["0.0.1", "0.1.0"]),
+  ]) {
+    assert.ok(auditCoordinateRegistryState({ coordinate: "superbee", policy, registry, checkedInVersion: "0.1.0" }).violations.length > 0);
+  }
+});
+
+test("require-state settled accepts only the policy-declared completion facts", () => {
+  const policy = parseCoordinatePolicy(SUPERBEE_POLICY, { coordinate: "superbee" });
+  assert.equal(resolveRequiredPolicyState(policy, "settled").id, "settled");
+  const settled = auditCoordinateRegistryState({
+    coordinate: "superbee", policy, requireState: "settled", checkedInVersion: "0.1.0",
+    registry: superbeeRegistry({ latest: "0.1.0", next: "0.1.1-pre.1" }, ["0.0.1", "0.1.0", "0.1.1-pre.1"]),
+  });
+  assert.deepEqual(settled.violations, []);
+  for (const [name, registry] of [
+    ["preview_failed", superbeeRegistry({ latest: "0.1.0", next: "0.1.0" }, ["0.0.1", "0.1.0", "0.1.1-pre.1"])],
+    ["before_cutover", superbeeRegistry({ latest: "0.0.1" })],
+    ["stable_promoted", superbeeRegistry({ latest: "0.1.0", next: "0.1.0" }, ["0.0.1", "0.1.0"])],
+  ]) {
+    const result = auditCoordinateRegistryState({ coordinate: "superbee", policy, requireState: "settled", checkedInVersion: "0.1.0", registry });
+    assert.deepEqual(codes(result), ["required_state"], name);
+    assert.match(result.violations[0].message, new RegExp(`observed ${name} .* required settled`));
+  }
+  assert.throws(() => resolveRequiredPolicyState(policy, "not-a-state"), /unknown required policy state/);
+});
+
+test("coordinate policy rejects cross-coordinate tuples and bridge/Superbee package drift", () => {
+  assert.throws(() => parseCoordinatePolicy({ ...SUPERBEE_POLICY, coordinate: "bridge" }, { coordinate: "superbee" }), /coordinate/);
+  assert.throws(() => parseCoordinatePolicy({ ...SUPERBEE_POLICY, stable: { ...SUPERBEE_POLICY.stable, target: "bridge" } }, { coordinate: "superbee" }), /target/);
+  assert.throws(() => parseCoordinatePolicy({ ...SUPERBEE_POLICY, package: "@holaxis/aslite" }, { coordinate: "superbee" }), /package/);
+});
 
 test("current live reality passes: at_rest, latest==next==pre.3, source pre.3", () => {
   const result = auditRegistryState({ declaration: AT_REST, sourceVersion: "0.1.0-pre.3", registry: registryFixture() });
@@ -472,6 +594,7 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   const violating = path.join(scratch, "violating.json");
   const repoRoot = path.dirname(path.dirname(scriptFile));
   const bridgeVersion = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8")).allowed_tuples.bridge.version;
+  const bridgePolicy = path.join(repoRoot, "release", "bridge-phase.json");
   // Derive a scheme-consistent published set from the bridge tuple so this test keeps passing
   // across future version bumps. The audit queries bridge history; source CLI identity is the
   // independently validated successor tuple.
@@ -491,22 +614,24 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   await writeFile(passing, JSON.stringify({ "dist-tags": { latest: publishedTip, next: publishedTip }, versions, time }));
   await writeFile(violating, JSON.stringify({ "dist-tags": { latest: "0.0.1", next: publishedTip }, versions, time }));
 
-  const pass = await runAudit(["--registry-json", passing]);
+  const pass = await runAudit(["--coordinate", "bridge", "--policy-file", bridgePolicy, "--registry-json", passing]);
   assert.equal(pass.code, 0, pass.stderr);
   assert.match(pass.stdout, /release-audit: PASS/);
 
-  const fail = await runAudit(["--registry-json", violating]);
+  const fail = await runAudit(["--coordinate", "bridge", "--policy-file", bridgePolicy, "--registry-json", violating]);
   assert.equal(fail.code, 1, fail.stderr);
-  assert.match(fail.stderr, /VIOLATION\[latest_off_policy\]/);
+  assert.match(fail.stderr, /VIOLATION\[tags_off_policy\]/);
 
   // Closed loopback port: connection refused is a NETWORK condition, never a red.
-  const network = await runAudit(["--registry-url", "http://127.0.0.1:1/@holaxis%2faslite"]);
+  const network = await runAudit(["--coordinate", "bridge", "--policy-file", bridgePolicy, "--registry-url", "http://127.0.0.1:1/@holaxis%2faslite"]);
   assert.equal(network.code, 20, network.stderr);
   assert.match(network.stderr, /release-audit: NETWORK/);
 });
 
 test("CLI exit 20 on valid-JSON but malformed packument payloads", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "aslite-release-audit-malformed-"));
+  const repoRoot = path.dirname(path.dirname(scriptFile));
+  const bridgePolicy = path.join(repoRoot, "release", "bridge-phase.json");
   const payloads = {
     "null-body.json": "null",
     "empty-object.json": "{}",
@@ -516,10 +641,20 @@ test("CLI exit 20 on valid-JSON but malformed packument payloads", async () => {
   for (const [name, payload] of Object.entries(payloads)) {
     const file = path.join(scratch, name);
     await writeFile(file, payload);
-    const run = await runAudit(["--registry-json", file]);
+    const run = await runAudit(["--coordinate", "bridge", "--policy-file", bridgePolicy, "--registry-json", file]);
     assert.equal(run.code, 20, `${name}: ${run.stderr}`);
     assert.match(run.stderr, /release-audit: NETWORK/, name);
   }
+});
+
+test("CLI rejects unknown required policy state before registry observation", async () => {
+  const repoRoot = path.dirname(path.dirname(scriptFile));
+  const run = await runAudit([
+    "--coordinate", "superbee", "--policy-file", path.join(repoRoot, "release", "superbee-cutover.json"),
+    "--require-state", "unknown-state", "--registry-url", "http://127.0.0.1:1/superbee",
+  ]);
+  assert.equal(run.code, 2, run.stderr);
+  assert.match(run.stderr, /unknown required policy state/);
 });
 
 // --- semver compare (the audit's ordering primitive) ---

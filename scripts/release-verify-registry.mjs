@@ -10,13 +10,14 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import { fileSha256, sanitizedNpmEnvironment } from "./verify-npm-package.mjs";
-import { REGISTRY_PROOF_SCHEMA, assertWorkflowContract, defaultReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
+import { REGISTRY_PROOF_SCHEMA, assertWorkflowContract, defaultReleaseTargets } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
 
-function targetFor(targetId = "bridge") {
+function targetFor(targetId) {
+  if (!targetId) throw new Error("registry proof requires an explicit target");
   const target = defaultReleaseTargets()[targetId];
   if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
   return assertWorkflowContract(target);
@@ -48,7 +49,11 @@ function parseJson(text, label) {
   }
 }
 
-export function assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity, target = targetFor(candidate?.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name) ?? "bridge") }) {
+export function assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity, target: targetId }) {
+  const target = targetFor(targetId);
+  if (candidate?.target !== target.id || candidate?.package?.name !== target.package.name) {
+    throw new Error(`candidate target/package ${candidate?.target ?? "<missing>"}/${candidate?.package?.name ?? "<missing>"} != ${target.id}/${target.package.name}`);
+  }
   if (packReceipt.name !== target.package.name) throw new Error(`registry package ${packReceipt.name} != ${target.package.name}`);
   if (packReceipt.version !== candidate.version) {
     throw new Error(`registry version ${packReceipt.version} != candidate ${candidate.version}`);
@@ -89,7 +94,7 @@ export function assertRegistryCandidate({ candidate, packReceipt, packumentDist,
   }
 }
 
-export async function verifyRegistry({ target: targetId = "bridge", version, manifest, out }) {
+export async function verifyRegistry({ target: targetId, version, manifest, out }) {
   const target = targetFor(targetId);
   if (!isStrictSemver(version)) throw new Error(`invalid --version ${version}`);
   const candidate = parseJson(await readFile(manifest, "utf8"), "candidate manifest");
@@ -159,7 +164,7 @@ export async function verifyRegistry({ target: targetId = "bridge", version, man
       "installed version --json",
     );
     await execFileAsync(process.execPath, [entrypoint, "mcp", "--help"], { env: commandEnv });
-    assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity, target });
+    assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity, target: target.id });
 
     const proof = {
       schema: REGISTRY_PROOF_SCHEMA,
@@ -185,7 +190,7 @@ export async function verifyRegistry({ target: targetId = "bridge", version, man
 
 if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
   verifyRegistry({
-    target: arg(process.argv.slice(2), "--target", false) ?? "bridge",
+    target: arg(process.argv.slice(2), "--target"),
     version: arg(process.argv.slice(2), "--version"),
     manifest: arg(process.argv.slice(2), "--manifest"),
     out: arg(process.argv.slice(2), "--out", false),

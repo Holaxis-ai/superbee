@@ -27,6 +27,31 @@ function arg(argv, flag, required = false) {
   return value;
 }
 
+function args(argv, flag) {
+  const values = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== flag) continue;
+    const value = argv[index + 1];
+    if (value === undefined || value.startsWith("--")) throw new Error(`missing value for ${flag}`);
+    values.push(value);
+  }
+  return values;
+}
+
+function tagAssignments(argv, flag) {
+  const result = {};
+  for (const value of args(argv, flag)) {
+    const separator = value.indexOf("=");
+    if (separator <= 0 || separator !== value.lastIndexOf("=") || separator === value.length - 1) {
+      throw new Error(`${flag} must be TAG=VERSION`);
+    }
+    const tag = value.slice(0, separator);
+    if (Object.hasOwn(result, tag)) throw new Error(`duplicate ${flag} for ${tag}`);
+    result[tag] = value.slice(separator + 1);
+  }
+  return result;
+}
+
 /**
  * Resolve an op name + flags to the ordered list of { argv, command } for that op. Pure — the
  * emitter validates every interpolated value, so an injection-shaped input throws HERE, before any
@@ -39,29 +64,35 @@ export function operationsFor(op, argv) {
     case "approve":
       return [ops.approveOperation({ stageId: arg(argv, "--stage-id", true) })];
     case "secondary-tag":
-      return [ops.secondaryTagOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag", true), target: arg(argv, "--target") ?? "bridge" })];
+      return [ops.secondaryTagOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag", true), target: arg(argv, "--target", true) })];
     case "remove-secondary-tag":
-      return [ops.removeSecondaryTagOperation({ tag: arg(argv, "--tag", true), target: arg(argv, "--target") ?? "bridge" })];
+      return [ops.removeSecondaryTagOperation({ tag: arg(argv, "--tag", true), target: arg(argv, "--target", true) })];
     case "rollback": {
       const r = ops.rollbackOperation({
         failedVersion: arg(argv, "--failed-version", true),
-        priorVersion: arg(argv, "--prior-version", true),
-        track: arg(argv, "--track") ?? "next",
-        target: arg(argv, "--target") ?? "bridge",
-        recoveryTarget: arg(argv, "--recovery-target") ?? arg(argv, "--target") ?? "bridge",
+        restoreTags: tagAssignments(argv, "--restore-tag"),
+        removeTags: args(argv, "--remove-tag"),
+        target: arg(argv, "--target", true),
+        recoveryTarget: arg(argv, "--recovery-target") ?? arg(argv, "--target", true),
+        recoveryVersion: arg(argv, "--recovery-version"),
       });
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }
     case "registry-verify": {
-      const r = ops.registryVerifyOperations({ version: arg(argv, "--version", true), target: arg(argv, "--target") ?? "bridge" });
+      const r = ops.registryVerifyOperations({ version: arg(argv, "--version", true), target: arg(argv, "--target", true) });
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }
     case "promote":
-      return [ops.promoteOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag") ?? "latest", target: arg(argv, "--target") ?? "bridge" })];
+      return [ops.promoteOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag") ?? "latest", target: arg(argv, "--target", true) })];
     case "immutable-release": {
+      const githubLatest = arg(argv, "--github-latest", true);
+      if (githubLatest !== "true" && githubLatest !== "false") {
+        throw new Error("--github-latest must be true or false");
+      }
       const r = ops.immutableReleaseOperations({
         releaseId: arg(argv, "--release-id", true),
         tag: `v${ops.assertVersion(arg(argv, "--version", true))}`,
+        githubLatest: githubLatest === "true",
       });
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }

@@ -8,6 +8,7 @@ const SHA = "sha256:" + "a".repeat(64);
 // Immutable receipts for a full happy-path transaction. Each state carries exactly its required
 // identifiers; later states re-assert nothing they must not.
 const prepared = {
+  target: "bridge",
   version: "0.1.0-pre.4",
   tag: "v0.1.0-pre.4",
   source_commit: "b".repeat(40),

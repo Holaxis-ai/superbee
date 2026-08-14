@@ -1,3 +1,4 @@
+import { realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 export const SUPERBEE_RELEASE_LIVE_ENABLED = "SUPERBEE_RELEASE_LIVE_ENABLED";
@@ -53,7 +54,7 @@ function main(argv) {
   requireLiveReleaseEnabled();
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+if (process.argv[1] && await realpath(process.argv[1]).catch(() => process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     main(process.argv.slice(2));
   } catch (error) {

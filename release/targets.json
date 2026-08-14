@@ -2,10 +2,10 @@
   "schema": "superbee.release-targets.v1",
   "semantics": {
     "what": "Finite release target and version allowlist for the Superbee rename cutover. The release adapter must reject any target/package/version/tag tuple not listed here before OIDC, draft creation, staging, registry verification, or publication.",
-    "tag_contract": "Release tags keep the historical v<version> shape. Bridge, successor, and rehearsal are disambiguated by the reviewed target/package/version tuple, not by tag prefixes.",
-    "production_control": "Non-production rehearsal tuples must never use @holaxis/aslite or superbee. Bridge and successor versions must differ because v<version> tags are immutable."
+    "tag_contract": "Release tags keep the historical v<version> shape. Bridge, stable successor, preview successor, and rehearsal are disambiguated by the reviewed target/package/version tuple, not by tag prefixes.",
+    "production_control": "Non-production rehearsal tuples must never use @holaxis/aslite or superbee. Every reviewed tuple has a distinct immutable tag and explicit npm/GitHub publication policy."
   },
-  "functional_successor_floor": "0.1.0-pre.12",
+  "functional_successor_floor": "0.1.0",
   "targets": {
     "bridge": {
       "package": {
@@ -22,7 +22,23 @@
       "expected_commands": ["aslite", "agentstate-lite"],
       "preferred_command": "aslite"
     },
-    "successor": {
+    "successor-stable": {
+      "package": {
+        "name": "superbee",
+        "directory": ["superbee"]
+      },
+      "artifact": "dist/superbee.mjs",
+      "bins": {
+        "superbee": "dist/superbee.mjs",
+        "aslite": "dist/superbee.mjs",
+        "agentstate-lite": "dist/superbee.mjs"
+      },
+      "tarball_basename": "superbee",
+      "allow_production": true,
+      "expected_commands": ["superbee", "aslite", "agentstate-lite"],
+      "preferred_command": "superbee"
+    },
+    "successor-preview": {
       "package": {
         "name": "superbee",
         "directory": ["superbee"]
@@ -76,15 +92,26 @@
       "version": "0.1.0-pre.11",
       "tag": "v0.1.0-pre.11",
       "outcome": "publish",
-      "production": true
+      "production": true,
+      "publication": { "npm_tag": "next", "npm_promote_tag": "latest", "github_latest": false }
     },
-    "successor": {
-      "target": "successor",
+    "successor-stable": {
+      "target": "successor-stable",
       "package": "superbee",
-      "version": "0.1.0-pre.12",
-      "tag": "v0.1.0-pre.12",
+      "version": "0.1.0",
+      "tag": "v0.1.0",
       "outcome": "publish",
-      "production": true
+      "production": true,
+      "publication": { "npm_tag": "next", "npm_promote_tag": "latest", "github_latest": true }
+    },
+    "successor-preview": {
+      "target": "successor-preview",
+      "package": "superbee",
+      "version": "0.1.1-pre.1",
+      "tag": "v0.1.1-pre.1",
+      "outcome": "publish",
+      "production": true,
+      "publication": { "npm_tag": "next", "npm_promote_tag": null, "github_latest": false }
     },
     "rehearsal-reject": {
       "target": "rehearsal-reject",
@@ -92,7 +119,8 @@
       "version": "0.0.0-rename-reject.20260812",
       "tag": "v0.0.0-rename-reject.20260812",
       "outcome": "reject",
-      "production": false
+      "production": false,
+      "publication": { "npm_tag": null, "npm_promote_tag": null, "github_latest": false }
     },
     "rehearsal-approve": {
       "target": "rehearsal-approve",
@@ -100,7 +128,8 @@
       "version": "0.0.0-rename-approve.20260812",
       "tag": "v0.0.0-rename-approve.20260812",
       "outcome": "approve",
-      "production": false
+      "production": false,
+      "publication": { "npm_tag": null, "npm_promote_tag": null, "github_latest": false }
     }
   }
 }

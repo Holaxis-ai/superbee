@@ -17,8 +17,8 @@ on:
       target:
         description: "Release target from release/targets.json"
         type: choice
-        options: ["successor", "bridge", "rehearsal-reject", "rehearsal-approve"]
-        default: "successor"
+        options: ["successor-stable", "successor-preview", "bridge", "rehearsal-reject", "rehearsal-approve"]
+        default: "successor-stable"
       mode:
         description: "dry-run (default) prints operations; live stages through the release environment"
         type: choice
@@ -68,7 +68,7 @@ jobs:
             TAG="$GITHUB_REF_NAME"
             node scripts/release-resolve-target.mjs --tag "$TAG" --github-output "$GITHUB_OUTPUT"
           else
-            TARGET="${INPUT_TARGET:-successor}"
+            TARGET="${INPUT_TARGET:-successor-stable}"
             FACTS="$(node scripts/release-resolve-target.mjs --target "$TARGET" --json)"
             TAG="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).tag)' "$FACTS")"
             node scripts/release-resolve-target.mjs --target "$TARGET" --github-output "$GITHUB_OUTPUT"

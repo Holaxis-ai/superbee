@@ -24,7 +24,7 @@
 // earlier key ONLY with the identical value (cross-check below); it may never mint a new value for
 // a key already fixed.
 const STATE_RECEIPT_FIELDS = {
-  prepared: ["version", "tag", "source_commit", "run_id", "artifact_id", "artifact_digest", "tarball_sha256", "integrity"],
+  prepared: ["target", "version", "tag", "source_commit", "run_id", "artifact_id", "artifact_digest", "tarball_sha256", "integrity"],
   draft_prepared: ["draft_release_id", "asset_ids", "asset_digest"],
   staged: ["stage_id", "stage_tag"],
   inspected: ["actor", "inspected_at", "observed_sha256"],
@@ -210,8 +210,9 @@ export function resolveTags({ kind, phase, version, priorLatest, priorNext }) {
         // The default stays known-good; next is the explicit, not-passively-advertised preview.
         return { latest: priorLatest, next: version };
       case "promoted":
-        // After proof + promotion, latest == next is restored to the new version.
-        return { latest: version, next: version };
+        // Before first stable, preview remains the default. Once stable exists, preview advances
+        // only next; latest remains the independently approved stable coordinate.
+        return priorLatest.includes("-") ? { latest: version, next: version } : { latest: priorLatest, next: version };
       case "failed":
         return { latest: priorLatest, next: priorNext, deprecate: version };
       default:

@@ -26,9 +26,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const runOps = path.join(repoRoot, "scripts", "release-run-operations.mjs");
 const SHA = "sha256:" + "a".repeat(64);
 const BARE = "a".repeat(64);
+const BRIDGE = { target: "bridge" };
 
 test("inspection instructions emit the exact stage download + SHA-256 compare", () => {
-  const i = inspectionInstructions({ stageId: "stage-1", tarballSha256: SHA, version: "0.1.0-pre.4" });
+  const i = inspectionInstructions({ ...BRIDGE, stageId: "stage-1", tarballSha256: SHA, version: "0.1.0-pre.4" });
   const downloaded = "./holaxis-aslite-0.1.0-pre.4-stage-1.tgz";
   assert.equal(i.steps[0], "npm stage download stage-1");
   assert.equal(i.steps[1], `shasum -a 256 ${downloaded}`);
@@ -53,13 +54,13 @@ test("reject/approve return a shell-free argv plus display and require 2fa", () 
 });
 
 test("secondary tag operations target the scoped package (argv + display)", () => {
-  const add = secondaryTagOperation({ version: "0.1.0-pre.4", tag: "next" });
+  const add = secondaryTagOperation({ ...BRIDGE, version: "0.1.0-pre.4", tag: "next" });
   assert.deepEqual(add.argv, ["npm", "dist-tag", "add", "@holaxis/aslite@0.1.0-pre.4", "next"]);
   assert.equal(add.command, "npm dist-tag add @holaxis/aslite@0.1.0-pre.4 next");
-  assert.equal(removeSecondaryTagOperation({ tag: "next" }).command, "npm dist-tag rm @holaxis/aslite next");
+  assert.equal(removeSecondaryTagOperation({ ...BRIDGE, tag: "next" }).command, "npm dist-tag rm @holaxis/aslite next");
   assert.equal(
-    secondaryTagOperation({ target: "successor", version: "0.1.0-pre.11", tag: "next" }).command,
-    "npm dist-tag add superbee@0.1.0-pre.11 next",
+    secondaryTagOperation({ target: "successor-preview", version: "0.1.1-pre.1", tag: "next" }).command,
+    "npm dist-tag add superbee@0.1.1-pre.1 next",
   );
 });
 
@@ -70,8 +71,8 @@ test("identity-only rehearsal targets cannot render full release operations", ()
   );
 });
 
-test("rollback restores the prior track and deprecates with the recovery command as the message", () => {
-  const r = rollbackOperation({ failedVersion: "0.1.0-pre.4", priorVersion: "0.1.0-pre.3", track: "next" });
+test("rollback restores or removes exact prior tag state and names a working recovery", () => {
+  const r = rollbackOperation({ ...BRIDGE, failedVersion: "0.1.0-pre.4", restoreTags: { next: "0.1.0-pre.3" } });
   assert.deepEqual(r.argvs[0], ["npm", "dist-tag", "add", "@holaxis/aslite@0.1.0-pre.3", "next"]);
   // The deprecate message is ONE argv element (no shell word-splitting), carrying the recovery.
   assert.equal(r.argvs[1][0], "npm");
@@ -80,32 +81,64 @@ test("rollback restores the prior track and deprecates with the recovery command
   assert.match(r.argvs[1][3], /npm install --global @holaxis\/aslite@0\.1\.0-pre\.3/);
   assert.equal(r.recovery_command, "npm install --global @holaxis/aslite@0.1.0-pre.3");
   const successor = rollbackOperation({
-    target: "successor",
-    recoveryTarget: "bridge",
-    failedVersion: "0.1.0-pre.11",
-    priorVersion: "0.1.0-pre.10",
+    target: "successor-preview",
+    recoveryTarget: "successor-stable",
+    failedVersion: "0.1.1-pre.1",
+    restoreTags: { next: "0.1.0" },
+    recoveryVersion: "0.1.0",
   });
-  assert.equal(successor.argvs[1][2], "superbee@0.1.0-pre.11");
-  assert.equal(successor.recovery_command, "npm install --global @holaxis/aslite@0.1.0-pre.10");
+  assert.equal(successor.argvs[1][2], "superbee@0.1.1-pre.1");
+  assert.equal(successor.recovery_command, "npm install --global superbee@0.1.0");
+  const firstStable = rollbackOperation({
+    target: "successor-stable",
+    recoveryTarget: "bridge",
+    failedVersion: "0.1.0",
+    removeTags: ["next"],
+    recoveryVersion: "0.1.0-pre.11",
+  });
+  assert.equal(firstStable.argvs[0].join(" "), "npm dist-tag rm superbee next");
+  assert.ok(!firstStable.commands.some((command) => command.includes("superbee@0.0.1")), "placeholder is not presented as a rollback target");
+  assert.equal(firstStable.recovery_command, "npm install --global @holaxis/aslite@0.1.0-pre.11");
+  const promotedStable = rollbackOperation({
+    target: "successor-stable",
+    recoveryTarget: "bridge",
+    failedVersion: "0.1.0",
+    restoreTags: { latest: "0.0.1" },
+    removeTags: ["next"],
+    recoveryVersion: "0.1.0-pre.11",
+  });
+  assert.deepEqual(promotedStable.argvs.slice(0, 2), [
+    ["npm", "dist-tag", "add", "superbee@0.0.1", "latest"],
+    ["npm", "dist-tag", "rm", "superbee", "next"],
+  ]);
+  assert.match(promotedStable.argvs[2][3], /install @holaxis\/aslite@0\.1\.0-pre\.11/);
+  assert.throws(
+    () => rollbackOperation({ target: "successor-stable", recoveryTarget: "bridge", failedVersion: "0.1.0", removeTags: ["next"] }),
+    /explicit recovery version/,
+  );
+  assert.throws(
+    () => rollbackOperation({ ...BRIDGE, failedVersion: "0.1.0-pre.4", restoreTags: { next: "0.1.0-pre.3" }, removeTags: ["next"] }),
+    /cannot be restored and removed/,
+  );
 });
 
 test("registry instructions are read-only and delegate strict proof to the verifier", () => {
-  const v = registryVerifyOperations({ version: "0.1.0-pre.4" });
+  const v = registryVerifyOperations({ ...BRIDGE, version: "0.1.0-pre.4" });
   assert.ok(v.commands.includes("npm view @holaxis/aslite@0.1.0-pre.4 dist.integrity dist.shasum --json"));
   assert.ok(v.commands.includes("npm pack @holaxis/aslite@0.1.0-pre.4 --json --ignore-scripts"));
   assert.match(v.workflow_proof, /release-verify-registry\.mjs/);
   assert.ok(!v.commands.some((c) => c.includes("audit signatures --package")), "npm has no audit signatures --package option");
   assert.ok(!v.commands.some((c) => /dist-tag|publish|deprecate|stage (approve|reject)/.test(c)));
-  assert.match(registryVerifyOperations({ target: "successor", version: "0.1.0-pre.11" }).workflow_proof, /--target successor/);
+  assert.match(registryVerifyOperations({ target: "successor-preview", version: "0.1.1-pre.1" }).workflow_proof, /--target successor-preview/);
 });
 
 test("promote and immutable release name the exact version/tag/release id", () => {
-  assert.equal(promoteOperation({ version: "0.1.0", tag: "latest" }).command, "npm dist-tag add @holaxis/aslite@0.1.0 latest");
+  assert.equal(promoteOperation({ ...BRIDGE, version: "0.1.0", tag: "latest" }).command, "npm dist-tag add @holaxis/aslite@0.1.0 latest");
   assert.equal(
-    promoteOperation({ target: "successor", version: "0.1.0-pre.11", tag: "latest" }).command,
-    "npm dist-tag add superbee@0.1.0-pre.11 latest",
+    promoteOperation({ target: "successor-stable", version: "0.1.0", tag: "latest" }).command,
+    "npm dist-tag add superbee@0.1.0 latest",
   );
-  const rel = immutableReleaseOperations({ releaseId: "rel-42", tag: "v0.1.0" });
+  const rel = immutableReleaseOperations({ releaseId: "rel-42", tag: "v0.1.0", githubLatest: true });
   assert.ok(rel.commands[0].includes("releases/rel-42"));
   assert.ok(rel.commands[1].includes("-f draft=false"));
 });
@@ -115,11 +148,11 @@ test("injection-shaped version / id / stage-id / tag are refused, not interpolat
   const injections = [
     () => rejectOperation({ stageId: "nope; touch ./INJECTED_PROOF; true" }),
     () => approveOperation({ stageId: "$(touch x)" }),
-    () => secondaryTagOperation({ version: "0.1.0; rm -rf /", tag: "next" }),
-    () => secondaryTagOperation({ version: "0.1.0", tag: "next && echo bad" }),
-    () => promoteOperation({ version: "0.1.0 | cat", tag: "latest" }),
-    () => rollbackOperation({ failedVersion: "0.1.0`id`", priorVersion: "0.1.0" }),
-    () => registryVerifyOperations({ version: "0.1.0\nid" }),
+    () => secondaryTagOperation({ ...BRIDGE, version: "0.1.0; rm -rf /", tag: "next" }),
+    () => secondaryTagOperation({ ...BRIDGE, version: "0.1.0", tag: "next && echo bad" }),
+    () => promoteOperation({ ...BRIDGE, version: "0.1.0 | cat", tag: "latest" }),
+    () => rollbackOperation({ ...BRIDGE, failedVersion: "0.1.0`id`", restoreTags: { next: "0.1.0" } }),
+    () => registryVerifyOperations({ ...BRIDGE, version: "0.1.0\nid" }),
     () => immutableReleaseOperations({ releaseId: "rel; curl evil", tag: "v0.1.0" }),
   ];
   for (const attempt of injections) {
@@ -151,23 +184,23 @@ test("flag-shaped values are refused at every operation entry point", () => {
   const attempts = [
     () => rejectOperation({ stageId: "--registry=evil" }),
     () => approveOperation({ stageId: "-v" }),
-    () => secondaryTagOperation({ version: "0.1.0", tag: "--otp=0" }),
-    () => removeSecondaryTagOperation({ tag: "--" }),
-    () => rollbackOperation({ failedVersion: "0.1.0", priorVersion: "0.0.9", track: "-next" }),
-    () => promoteOperation({ version: "0.1.0", tag: "-latest" }),
-    () => inspectionInstructions({ stageId: "-s", tarballSha256: SHA, version: "0.1.0" }),
+    () => secondaryTagOperation({ ...BRIDGE, version: "0.1.0", tag: "--otp=0" }),
+    () => removeSecondaryTagOperation({ ...BRIDGE, tag: "--" }),
+    () => rollbackOperation({ ...BRIDGE, failedVersion: "0.1.0", removeTags: ["-next"] }),
+    () => promoteOperation({ ...BRIDGE, version: "0.1.0", tag: "-latest" }),
+    () => inspectionInstructions({ ...BRIDGE, stageId: "-s", tarballSha256: SHA, version: "0.1.0" }),
     () => immutableReleaseOperations({ releaseId: "--jq", tag: "v0.1.0" }),
     () => immutableReleaseOperations({ releaseId: "rel-1", tag: "-v0.1.0" }),
   ];
   for (const attempt of attempts) {
-    assert.throws(attempt, /invalid (stageId|tag|track|releaseId)/);
+    assert.throws(attempt, /invalid (stageId|tag|rollback tag|releaseId)/);
   }
 });
 
 test("missing required arguments fail closed", () => {
   assert.throws(() => rejectOperation({}), /invalid stageId/);
-  assert.throws(() => secondaryTagOperation({ version: "1.0.0" }), /invalid tag/);
-  assert.throws(() => rollbackOperation({ failedVersion: "1.0.0" }), /invalid version/);
+  assert.throws(() => secondaryTagOperation({ ...BRIDGE, version: "1.0.0" }), /invalid tag/);
+  assert.throws(() => rollbackOperation({ ...BRIDGE, failedVersion: "1.0.0" }), /at least one tag/);
   assert.throws(() => immutableReleaseOperations({ releaseId: "r" }), /invalid tag/);
 });
 
@@ -176,13 +209,33 @@ test("operationsFor resolves each op to the same argv + display strings", () => 
     { argv: ["npm", "stage", "reject", "s1"], command: "npm stage reject s1", requires_2fa: true },
   ]);
   assert.deepEqual(
-    operationsFor("registry-verify", ["--version", "0.1.0"]).map((o) => o.command),
-    registryVerifyOperations({ version: "0.1.0" }).commands,
+    operationsFor("registry-verify", ["--target", "bridge", "--version", "0.1.0"]).map((o) => o.command),
+    registryVerifyOperations({ ...BRIDGE, version: "0.1.0" }).commands,
   );
-  assert.deepEqual(operationsFor("immutable-release", ["--version", "0.1.0", "--release-id", "rel-9"]).map((o) => o.argv), [
+  assert.deepEqual(operationsFor("immutable-release", ["--version", "0.1.0", "--release-id", "rel-9", "--github-latest", "true"]).map((o) => o.argv), [
     ["gh", "api", "repos/{owner}/{repo}/releases/rel-9", "--jq", ".draft, .tag_name, .id"],
     ["gh", "api", "-X", "PATCH", "repos/{owner}/{repo}/releases/rel-9", "-f", "draft=false", "-f", "make_latest=true"],
   ]);
+  assert.deepEqual(
+    operationsFor("rollback", [
+      "--target", "successor-stable", "--failed-version", "0.1.0", "--remove-tag", "next",
+      "--recovery-target", "bridge", "--recovery-version", "0.1.0-pre.11",
+    ]).map((o) => o.command),
+    [
+      "npm dist-tag rm superbee next",
+      "npm deprecate superbee@0.1.0 \"superseded - install @holaxis/aslite@0.1.0-pre.11 (npm install --global @holaxis/aslite@0.1.0-pre.11)\"",
+    ],
+  );
+  assert.deepEqual(
+    operationsFor("rollback", [
+      "--target", "successor-preview", "--failed-version", "0.1.1-pre.1",
+      "--restore-tag", "next=0.1.0", "--recovery-target", "successor-stable", "--recovery-version", "0.1.0",
+    ]).map((o) => o.command),
+    [
+      "npm dist-tag add superbee@0.1.0 next",
+      "npm deprecate superbee@0.1.1-pre.1 \"superseded - install superbee@0.1.0 (npm install --global superbee@0.1.0)\"",
+    ],
+  );
   assert.throws(() => operationsFor("bogus", []), /unknown op/);
 });
 

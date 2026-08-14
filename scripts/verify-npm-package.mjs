@@ -7,12 +7,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { DEFAULT_RELEASE_TARGETS_PATH, defaultReleaseTargets, loadReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
+import { DEFAULT_RELEASE_TARGETS_PATH, defaultReleaseTargets, loadReleaseTargets } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-const SUCCESSOR_TARGET = defaultReleaseTargets().successor;
+const SUCCESSOR_TARGET = defaultReleaseTargets()["successor-stable"];
 const SUCCESSOR_PACKAGE_NAME = SUCCESSOR_TARGET.package.name;
 const SUCCESSOR_INSTALL_ROOT = SUCCESSOR_TARGET.package.directory;
 const SUCCESSOR_ARTIFACT = SUCCESSOR_TARGET.artifact;
@@ -1032,8 +1032,12 @@ export async function verifyRetainedTarball({ tarball, manifest, targetsPath = D
   });
   const actualSha = await fileSha256(tarballPath);
   const recorded = parseJson(await readFile(path.resolve(manifest), "utf8"), "candidate manifest");
-  const targetId = recorded?.target ?? targetFromPackageName(recorded?.package?.name ?? recorded?.build_identity?.package?.name) ?? "successor";
-  const targetManifest = await loadReleaseTargets(targetsPath, { cliPackageFile: null });
+  const targetId = recorded?.target;
+  if (!targetId) throw new Error("candidate manifest requires an explicit target");
+  const targetManifest = await loadReleaseTargets(targetsPath, {
+    burnedFile: path.join(path.dirname(targetsPath), "burned-versions.json"),
+    cliPackageFile: null,
+  });
   if (recorded?.agreement?.release_targets_sha256) {
     assert.equal(
       await fileSha256(targetsPath),

@@ -1,9 +1,8 @@
 name: Release policy audit
 
 # Registry-observing enforcement of the release conventions (decisions/version-update-contract):
-# scripts/release-audit-tags.mjs compares the LIVE npm state of @holaxis/aslite (dist-tags,
-# published versions, publish times) plus packages/cli/package.json against the policy encoded in
-# scripts/release-state.mjs `resolveTags` and the phase declared in release/phase.json.
+# scripts/release-audit-tags.mjs compares each LIVE npm coordinate against its immutable reviewed
+# policy file. Bridge and Superbee have independent coordinates and no mutable source phase.
 #
 # Deliberately a SEPARATE workflow, NOT part of the offline `npm run check` chain: ordinary gates
 # run with the network off (local-first), and this audit is only meaningful online. The
@@ -37,14 +36,21 @@ jobs:
         with:
           node-version: 26
 
-      - name: Audit live registry state against the declared release phase
+      - name: Audit live registry state against immutable coordinate policies
         run: |
           set +e
-          npm run release:audit-tags
-          code=$?
+          npm run release:audit-tags -- --coordinate bridge --policy-file release/bridge-phase.json
+          bridge_code=$?
+          npm run release:audit-tags -- --coordinate superbee --policy-file release/superbee-cutover.json
+          superbee_code=$?
           set -e
-          if [ "$code" -eq 20 ]; then
+          if [ "$bridge_code" -ne 0 ] && [ "$bridge_code" -ne 20 ]; then
+            exit "$bridge_code"
+          fi
+          if [ "$superbee_code" -ne 0 ] && [ "$superbee_code" -ne 20 ]; then
+            exit "$superbee_code"
+          fi
+          if [ "$bridge_code" -eq 20 ] || [ "$superbee_code" -eq 20 ]; then
             echo "::warning title=release-audit neutral::npm registry unreachable - release-policy audit did NOT run (network condition, not a policy violation)"
             exit 0
           fi
-          exit "$code"

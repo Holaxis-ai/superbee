@@ -33,7 +33,7 @@ function arg(argv, flag, required = true) {
 }
 
 export function buildReceipt(fields) {
-  const { stageId, version, policyTag, tarballSha256, draftReleaseId, target = "bridge" } = fields;
+  const { stageId, version, policyTag, tarballSha256, draftReleaseId, target } = fields;
   const receipt = buildStageReceipt(fields);
   const inspection = inspectionInstructions({ stageId, tarballSha256, version, target });
   return {
@@ -107,7 +107,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
     artifactId: arg(argv, "--artifact-id"),
     artifactDigest: arg(argv, "--artifact-digest"),
     stageId: arg(argv, "--stage-id"),
-    target: arg(argv, "--target", false) ?? "bridge",
+    target: arg(argv, "--target"),
     version: arg(argv, "--version"),
     tag: arg(argv, "--tag"),
     sourceCommit: arg(argv, "--source-commit"),

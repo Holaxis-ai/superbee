@@ -62,7 +62,8 @@ async function verifyChain(argv) {
   const receiptPath = arg(argv, "--receipt");
   const candidate = await jsonFile(candidatePath);
   const receipt = await jsonFile(receiptPath);
-  const target = defaultReleaseTargets()[candidate.target ?? receipt.prepared?.target ?? "bridge"];
+  if (!candidate?.target || !receipt?.prepared?.target || candidate.target !== receipt.prepared.target) fail("candidate and receipt must carry the same explicit target");
+  const target = defaultReleaseTargets()[candidate.target];
   if (!target) throw new Error(`unknown release target ${JSON.stringify(candidate.target ?? receipt.prepared?.target)}`);
   const expectedFilename = tarballFilename(assertWorkflowContract(target), candidate.version);
   if (candidate.tarball?.filename !== expectedFilename || path.basename(candidate.tarball.filename) !== candidate.tarball.filename) {

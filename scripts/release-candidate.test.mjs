@@ -132,6 +132,7 @@ test("verifyRetainedTarball fails closed when the tarball bytes do not match the
     await writeFile(
       manifestPath,
       JSON.stringify({
+        target: "bridge",
         tarball: { sha256: "sha256:" + "0".repeat(64) }, // deliberately wrong
         build_identity: { artifact: { channel: "npm-package" } },
       }),
@@ -168,6 +169,25 @@ test("verifyRetainedTarball fails closed when the recorded release-target agreem
       verifyRetainedTarball({ tarball: fakeTgz, manifest: manifestPath }),
       /release-target agreement/,
     );
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
+test("custom-root retained verification binds the sibling burn ledger", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-custom-burn-"));
+  try {
+    const targets = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
+    targets.allowed_tuples["successor-preview"].version = "0.1.0-pre.10";
+    targets.allowed_tuples["successor-preview"].tag = "v0.1.0-pre.10";
+    const targetsPath = path.join(scratch, "targets.json");
+    await writeFile(targetsPath, JSON.stringify(targets));
+    await writeFile(path.join(scratch, "burned-versions.json"), JSON.stringify({ burned: [{ version: "0.1.0-pre.10", reason: "burned fixture" }] }));
+    const tarball = path.join(scratch, "candidate.tgz");
+    await writeFile(tarball, "not a tarball\n");
+    const manifest = path.join(scratch, "candidate.json");
+    await writeFile(manifest, JSON.stringify({ target: "successor-preview", tarball: { sha256: await fileSha256(tarball) } }));
+    await assert.rejects(verifyRetainedTarball({ tarball, manifest, targetsPath }), /uses burned version/);
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

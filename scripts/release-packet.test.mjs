@@ -19,6 +19,9 @@ import { fileSha256 } from "./verify-npm-package.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
+// Pre-cutover transfer evidence preserves existing public history. Candidate/rehearsal tags are
+// reserved in targets.json but do not exist until later human-authorized release work.
+const transferRefs = ["refs/heads/main", "refs/notes/review", "refs/tags/v0.1.0-pre.10"].sort();
 const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
 const parent = head; // CI intentionally checks out depth one; synthetic P may equal R in unit fixtures.
 const syntheticRetainedVerifier = async () => ({ verified: "synthetic" });
@@ -39,16 +42,16 @@ function refs(schema, extras = {}) {
     public_ancestor_P: parent,
     private_R: head,
     held_board_ref: "refs/heads/board",
-    allowed_refs: ["refs/heads/main", "refs/notes/review", "refs/tags/v0.1.0-pre.11"],
+    allowed_refs: transferRefs,
     required_categories: ["main", "notes", "tags"],
-    ...(schema === "superbee.ref-assertions.v1" ? { observed_refs: ["refs/heads/main", "refs/notes/review", "refs/tags/v0.1.0-pre.11"] } : {}),
+    ...(schema === "superbee.ref-assertions.v1" ? { observed_refs: transferRefs } : {}),
     ...extras,
   };
 }
 
 async function fixture(root) {
   const candidates = {};
-  for (const id of ["bridge", "successor", "rehearsal-reject", "rehearsal-approve"]) {
+  for (const id of ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"]) {
     const tuple = targetManifest.allowed_tuples[id];
     const target = targetManifest.targets[id];
     const dir = path.join(root, "input", id);
@@ -91,7 +94,7 @@ async function fixture(root) {
   await writeFile(evidence["refs-recheck"], JSON.stringify(refs("superbee.ref-assertions.v1")));
   await writeFile(evidence["settings-baseline"], "opaque settings baseline\n");
   await writeFile(evidence["settings-recheck"], "opaque settings recheck\n");
-  await writeFile(evidence["transfer-bundle"], "opaque transfer bundle\n");
+  await writeFile(evidence["transfer-bundle"], "# opaque git bundle retained by digest only\n");
   await writeFile(evidence["transfer-allowlist"], JSON.stringify(refs("superbee.transfer-allowlist.v1")));
   await writeFile(evidence["cutover-script"], "#!/bin/sh\n# operator-owned, non-executing artifact\n");
   return { candidates, evidence };
@@ -101,6 +104,8 @@ test("the committed packet-input manifest is the exact static closure plus expli
   const result = await validatePacketInputManifest();
   assert.ok(result.paths.includes("scripts/release-packet.mjs"));
   assert.ok(result.paths.includes("packages/cli/scripts/prepare-bundle-inputs.mjs"));
+  assert.ok(result.paths.includes("release/bridge-phase.json"));
+  assert.ok(result.paths.includes("release/superbee-cutover.json"));
   for (const script of ["release-run-operations", "release-resolve-target", "release-verify-ordering", "release-verify-registry", "release-emit-receipt", "release-audit-tags"]) {
     assert.ok(result.paths.includes(`scripts/${script}.mjs`), `manifest must retain workflow-reached ${script}`);
   }
@@ -177,7 +182,7 @@ test("the closure includes commented side-effect imports and static re-exports",
   }
 });
 
-test("packet creation retains exactly four slots with detached self-free digest and verifies offline", async () => {
+test("packet creation retains exactly five slots with detached self-free digest and verifies offline", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-"));
   try {
     const input = await fixture(root);
@@ -190,7 +195,7 @@ test("packet creation retains exactly four slots with detached self-free digest 
       observedSource: { commit: head, dirty: false },
       retainedVerifier: syntheticRetainedVerifier,
     });
-    assert.deepEqual(Object.keys(result.packet.candidates).sort(), ["bridge", "rehearsal-approve", "rehearsal-reject", "successor"]);
+    assert.deepEqual(Object.keys(result.packet.candidates).sort(), ["bridge", "rehearsal-approve", "rehearsal-reject", "successor-preview", "successor-stable"]);
     assert.ok(!JSON.stringify(result.packet).includes("release-packet.sha256"));
     assert.equal((await readdir(out)).includes(".superbee-release-packet-owned-v1"), false, "distributed packet must carry no deletion marker");
     assert.ok(result.packet.source_files.some((row) => row.path === "scripts/release-packet.mjs"));
@@ -206,7 +211,11 @@ test("packet creation retains exactly four slots with detached self-free digest 
   }
 });
 
-test("packet creation and verification accept a clean detached source checkout", async () => {
+test("packet creation and verification accept a clean detached source checkout", async (t) => {
+  if (execFileSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" }).trim()) {
+    t.skip("requires the test source to be committed before creating its exact detached checkout");
+    return;
+  }
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-detached-"));
   const sourceRoot = path.join(root, "source");
   try {
@@ -238,6 +247,41 @@ test("packet creation rejects transfer of the held board ref", async () => {
       createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, "packet"), ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier }),
       /must not be transferable/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("transfer authority cross-attests pre-cutover history without requiring future candidate tags", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-transfer-"));
+  const create = async (input, suffix) => createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, suffix), ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier });
+  try {
+    for (const [name, mutate, expected] of [
+      ["omitted", async (input) => {
+        const value = JSON.parse(await readFile(input.evidence["refs-baseline"], "utf8"));
+        value.allowed_refs = value.allowed_refs.map((ref) => ref === "refs/tags/v0.1.0-pre.10" ? "refs/tags/v0.1.0-pre.9" : ref).sort();
+        value.observed_refs = value.allowed_refs;
+        await writeFile(input.evidence["refs-baseline"], JSON.stringify(value));
+      }, /allowed refs differ/],
+      ["drift", async (input) => {
+        const value = JSON.parse(await readFile(input.evidence["refs-recheck"], "utf8"));
+        value.allowed_refs = [...value.allowed_refs, "refs/tags/v0.1.0-pre.9"].sort();
+        value.observed_refs = value.allowed_refs;
+        await writeFile(input.evidence["refs-recheck"], JSON.stringify(value));
+      }, /allowed refs differ/],
+      ["future-tag", async (input) => {
+        for (const id of ["refs-baseline", "refs-recheck", "transfer-allowlist"]) {
+          const value = JSON.parse(await readFile(input.evidence[id], "utf8"));
+          value.allowed_refs = [...value.allowed_refs, "refs/tags/v0.1.0"].sort();
+          if (value.observed_refs) value.observed_refs = value.allowed_refs;
+          await writeFile(input.evidence[id], JSON.stringify(value));
+        }
+      }, /reserved candidate tag/],
+    ]) {
+      const input = await fixture(path.join(root, name));
+      await mutate(input);
+      await assert.rejects(create(input, `packet-${name}`), expected);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

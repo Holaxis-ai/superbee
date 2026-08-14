@@ -1,0 +1,34 @@
+{
+  "schema": "superbee.bridge-policy.v1",
+  "coordinate": "bridge",
+  "package": "@holaxis/aslite",
+  "baseline": { "latest": "0.1.0-pre.8", "next": "0.1.0-pre.8" },
+  "bridge": {
+    "target": "bridge",
+    "package": "@holaxis/aslite",
+    "version": "0.1.0-pre.11",
+    "tag": "v0.1.0-pre.11"
+  },
+  "legal_states": [
+    {
+      "id": "before_bridge",
+      "tags": { "latest": "0.1.0-pre.8", "next": "0.1.0-pre.8" },
+      "bridge": "absent"
+    },
+    {
+      "id": "bridge_staged",
+      "tags": { "latest": "0.1.0-pre.8", "next": "0.1.0-pre.11" },
+      "bridge": "present"
+    },
+    {
+      "id": "bridge_settled",
+      "tags": { "latest": "0.1.0-pre.11", "next": "0.1.0-pre.11" },
+      "bridge": "present"
+    },
+    {
+      "id": "bridge_failed",
+      "tags": { "latest": "0.1.0-pre.8", "next": "0.1.0-pre.8" },
+      "bridge": "present"
+    }
+  ]
+}

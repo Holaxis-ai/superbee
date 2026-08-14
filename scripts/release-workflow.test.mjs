@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const staged = readFileSync(path.join(repoRoot, ".github", "workflows", "release-staged.yml"), "utf8");
 const finalize = readFileSync(path.join(repoRoot, ".github", "workflows", "release-finalize.yml"), "utf8");
+const audit = readFileSync(path.join(repoRoot, ".github", "workflows", "release-audit.yml"), "utf8");
 const verifyOrdering = readFileSync(path.join(repoRoot, "scripts", "release-verify-ordering.mjs"), "utf8");
 
 // Split a workflow's `jobs:` mapping into { jobName -> rawJobText } using the 2-space job-header
@@ -37,6 +38,28 @@ function extractJobs(text) {
   for (const [k, v] of Object.entries(jobs)) out[k] = v.join("\n");
   return out;
 }
+
+test("audit workflow invokes each immutable coordinate policy exactly once", () => {
+  const calls = audit.match(/npm run release:audit-tags -- --coordinate /g) ?? [];
+  assert.equal(calls.length, 2);
+  assert.match(audit, /--coordinate bridge --policy-file release\/bridge-phase\.json/);
+  assert.match(audit, /--coordinate superbee --policy-file release\/superbee-cutover\.json/);
+  assert.doesNotMatch(audit, /--target /);
+  assert.doesNotMatch(audit, /release\/phase\.json/);
+});
+
+test("each production finalizer proves its immutable terminal registry state", () => {
+  const finalizeJob = extractJobs(finalize).finalize;
+  const promoteAt = finalizeJob.indexOf("--op promote");
+  const auditAt = finalizeJob.indexOf("--require-state settled");
+  const releaseAt = finalizeJob.indexOf("--op immutable-release");
+  assert.ok(promoteAt !== -1 && auditAt !== -1 && releaseAt !== -1);
+  assert.ok(promoteAt < auditAt && auditAt < releaseAt, "promote -> settled audit -> immutable GitHub release");
+  assert.match(finalizeJob, /--coordinate bridge --policy-file release\/bridge-phase\.json --require-state bridge_settled/);
+  assert.match(finalizeJob, /--coordinate superbee --policy-file release\/superbee-cutover\.json --require-state stable_promoted/);
+  assert.match(finalizeJob, /--coordinate superbee --policy-file release\/superbee-cutover\.json --require-state settled/);
+  assert.doesNotMatch(audit, /--require-state/);
+});
 
 // Extract the `permissions:` block of a job into { scope -> value }.
 function permissionsOf(jobText) {

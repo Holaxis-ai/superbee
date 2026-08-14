@@ -19,6 +19,7 @@ const CANDIDATE_ARTIFACT_DIGEST = "sha256:" + "c".repeat(64);
 const RECEIPT_ARTIFACT_DIGEST = "sha256:" + "d".repeat(64);
 const INTEGRITY = "sha512-YWJjZA==";
 const TARBALL = `holaxis-aslite-${VERSION}.tgz`;
+const TARGET = "bridge";
 
 test("npm 11.15 stage JSON yields exactly one validated UUID stageId", () => {
   assert.equal(parseStagePublishJson(JSON.stringify({ "@holaxis/aslite": { stageId: STAGE_ID } })), STAGE_ID);
@@ -32,7 +33,7 @@ test("npm 11.15 stage JSON yields exactly one validated UUID stageId", () => {
 });
 
 test("stage download uses npm's deterministic filename and no invented --out path", () => {
-  assert.equal(stageDownloadFilename(VERSION, STAGE_ID), `holaxis-aslite-${VERSION}-${STAGE_ID}.tgz`);
+  assert.equal(stageDownloadFilename(TARGET, VERSION, STAGE_ID), `holaxis-aslite-${VERSION}-${STAGE_ID}.tgz`);
 });
 
 test("declared rehearsal targets resolve from the manifest but cannot enter the full stage receipt chain", () => {
@@ -119,6 +120,7 @@ test("finalizer accepts only a fully matching candidate/artifact/stage/draft cha
 test("stage summary and retained JSON are emitted from the same v2 receipt", () => {
   const f = fixture();
   const built = buildReceipt({
+    target: TARGET,
     runId: "100",
     artifactId: "101",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -143,6 +145,7 @@ test("stage summary and retained JSON are emitted from the same v2 receipt", () 
 test("stage summary carries the bounded stable MCP launch migration guidance", () => {
   const f = fixture();
   const built = buildReceipt({
+    target: TARGET,
     runId: "100",
     artifactId: "101",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -211,6 +214,7 @@ const ACTION_BARE_DIGEST = "c".repeat(64);
 
 test("a bare hex artifact digest (the actions/upload-artifact output shape) is canonicalized", () => {
   const receipt = buildStageReceipt({
+    target: TARGET,
     runId: "100",
     artifactId: "101",
     artifactDigest: ACTION_BARE_DIGEST,
@@ -245,6 +249,7 @@ test("canonicalization does not weaken the digest guard", () => {
   for (const bad of ["sha256:" + "z".repeat(64), "c".repeat(63), "c".repeat(65), "sha256:", "", null]) {
     assert.throws(
       () => buildStageReceipt({
+        target: TARGET,
         runId: "100", artifactId: "101", artifactDigest: bad, stageId: STAGE_ID, version: VERSION,
         tag: `v${VERSION}`, sourceCommit: COMMIT, policyTag: "next", tarballSha256: TARBALL_SHA,
         tarballFilename: TARBALL, integrity: INTEGRITY, manifestSha256: MANIFEST_SHA,
@@ -263,6 +268,7 @@ test("canonicalization does not weaken the digest guard", () => {
 // full dry-run field shape from the failed run, through markdown rendering.
 test("buildReceipt completes for a DRY RUN (sentinel stage id) end to end", () => {
   const built = buildReceipt({
+    target: TARGET,
     runId: "31445190599",
     artifactId: "9082708155",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -291,6 +297,7 @@ test("buildReceipt completes for a DRY RUN (sentinel stage id) end to end", () =
 test("a live receipt still refuses a non-UUID, non-sentinel stage id", () => {
   assert.throws(
     () => buildReceipt({
+      target: TARGET,
       runId: "100", artifactId: "101", artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
       stageId: "not-a-uuid", version: VERSION, tag: `v${VERSION}`, sourceCommit: COMMIT,
       policyTag: "next", tarballSha256: TARBALL_SHA, tarballFilename: TARBALL,

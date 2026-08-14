@@ -12,7 +12,8 @@
 import { assertWorkflowContract, defaultReleaseTargets, stageDownloadFilenameForTarget } from "./release-targets.mjs";
 import { assertStrictSemver } from "./strict-semver.mjs";
 
-function targetFor(targetId = "bridge") {
+function targetFor(targetId) {
+  if (!targetId) throw new Error("release operation requires an explicit target");
   const target = defaultReleaseTargets()[targetId];
   if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
   return assertWorkflowContract(target);
@@ -55,7 +56,7 @@ function op(argv, extra = {}) {
 }
 
 /** `npm stage download <id>` + local SHA-256 compare — the mandatory pre-approval inspection. */
-export function inspectionInstructions({ stageId, tarballSha256, version, target = "bridge" }) {
+export function inspectionInstructions({ stageId, tarballSha256, version, target }) {
   const releaseTarget = targetFor(target);
   assertToken("stageId", stageId);
   assertSha256(tarballSha256);
@@ -86,32 +87,49 @@ export function approveOperation({ stageId }) {
 }
 
 /** Move a secondary dist-tag (e.g. float `next` to a prerelease candidate). */
-export function secondaryTagOperation({ version, tag, target = "bridge" }) {
+export function secondaryTagOperation({ version, tag, target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }
 
 /** Remove a stale secondary tag (e.g. drop `next` once stable makes it redundant). */
-export function removeSecondaryTagOperation({ tag, target = "bridge" }) {
+export function removeSecondaryTagOperation({ tag, target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "rm", releaseTarget.package.name, assertToken("tag", tag)]);
 }
 
 /**
- * Post-approval failure recovery (§5): restore the failed track to the prior known-good version and
- * deprecate the failed version WITH the recovery command as the message. Returns argvs + display
+ * Post-approval failure recovery (§5): restore or remove every affected dist-tag, then deprecate
+ * the failed version WITH the working recovery command as the message. Returns argvs + display
  * commands.
  */
-export function rollbackOperation({ failedVersion, priorVersion, track = "next", target = "bridge", recoveryTarget = target }) {
+export function rollbackOperation({ failedVersion, restoreTags = {}, removeTags = [], target, recoveryTarget = target, recoveryVersion }) {
   const releaseTarget = targetFor(target);
   const recovery = targetFor(recoveryTarget);
   assertVersion(failedVersion);
-  assertVersion(priorVersion);
-  assertToken("track", track);
-  const recoveryCommand = `npm install --global ${recovery.package.name}@${priorVersion}`;
+  if (!restoreTags || typeof restoreTags !== "object" || Array.isArray(restoreTags)) throw new Error("rollback restore tags must be an object");
+  if (!Array.isArray(removeTags)) throw new Error("rollback remove tags must be an array");
+  const restore = Object.entries(restoreTags).sort(([a], [b]) => a.localeCompare(b));
+  const remove = [...removeTags].sort();
+  if (restore.length + remove.length === 0) throw new Error("rollback requires at least one tag restore or removal");
+  if (new Set(remove).size !== remove.length) throw new Error("rollback remove tags must be unique");
+  const allowedTags = new Set(["latest", "next"]);
+  for (const [tag, version] of restore) {
+    if (!allowedTags.has(tag)) throw new Error(`invalid rollback tag: ${JSON.stringify(tag)}`);
+    assertVersion(version);
+  }
+  for (const tag of remove) {
+    if (!allowedTags.has(tag)) throw new Error(`invalid rollback tag: ${JSON.stringify(tag)}`);
+    if (Object.hasOwn(restoreTags, tag)) throw new Error(`rollback tag ${tag} cannot be restored and removed`);
+  }
+  const resolvedRecoveryVersion = recoveryVersion ?? (recoveryTarget === target && restore.length === 1 ? restore[0][1] : undefined);
+  if (!resolvedRecoveryVersion) throw new Error("cross-target rollback requires an explicit recovery version");
+  assertVersion(resolvedRecoveryVersion);
+  const recoveryCommand = `npm install --global ${recovery.package.name}@${resolvedRecoveryVersion}`;
   const argvs = [
-    ["npm", "dist-tag", "add", `${recovery.package.name}@${priorVersion}`, track],
-    ["npm", "deprecate", `${releaseTarget.package.name}@${failedVersion}`, `superseded - install ${recovery.package.name}@${priorVersion} (${recoveryCommand})`],
+    ...restore.map(([tag, version]) => ["npm", "dist-tag", "add", `${releaseTarget.package.name}@${version}`, tag]),
+    ...remove.map((tag) => ["npm", "dist-tag", "rm", releaseTarget.package.name, tag]),
+    ["npm", "deprecate", `${releaseTarget.package.name}@${failedVersion}`, `superseded - install ${recovery.package.name}@${resolvedRecoveryVersion} (${recoveryCommand})`],
   ];
   return { argvs, commands: argvs.map(displayCommand), recovery_command: recoveryCommand };
 }
@@ -120,7 +138,7 @@ export function rollbackOperation({ failedVersion, priorVersion, track = "next",
  * Human-readable registry inspection commands. The strict integrity/signature/provenance/install
  * proof is performed by release-verify-registry.mjs in the separately dispatched finalizer.
  */
-export function registryVerifyOperations({ version, target = "bridge" }) {
+export function registryVerifyOperations({ version, target }) {
   const releaseTarget = targetFor(target);
   assertVersion(version);
   const coord = `${releaseTarget.package.name}@${version}`;
@@ -137,7 +155,7 @@ export function registryVerifyOperations({ version, target = "bridge" }) {
 }
 
 /** Interactive dist-tag promotion after registry proof (§5 promoted). */
-export function promoteOperation({ version, tag = "latest", target = "bridge" }) {
+export function promoteOperation({ version, tag = "latest", target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }
@@ -146,13 +164,14 @@ export function promoteOperation({ version, tag = "latest", target = "bridge" })
  * Immutable-release finalization (§5 final): publish the PREPARED GitHub draft (never create a new
  * one) after re-verifying its identity. Returns argvs + display commands.
  */
-export function immutableReleaseOperations({ releaseId, tag }) {
+export function immutableReleaseOperations({ releaseId, tag, githubLatest }) {
   assertToken("releaseId", releaseId);
   assertToken("tag", tag);
+  if (typeof githubLatest !== "boolean") throw new Error("immutable release requires explicit GitHub latest policy");
   const releasePath = `repos/{owner}/{repo}/releases/${releaseId}`;
   const argvs = [
     ["gh", "api", releasePath, "--jq", ".draft, .tag_name, .id"],
-    ["gh", "api", "-X", "PATCH", releasePath, "-f", "draft=false", "-f", "make_latest=true"],
+    ["gh", "api", "-X", "PATCH", releasePath, "-f", "draft=false", "-f", `make_latest=${githubLatest ? "true" : "false"}`],
   ];
   return { argvs, commands: argvs.map(displayCommand), tag };
 }

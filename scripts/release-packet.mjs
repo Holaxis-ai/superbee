@@ -1,7 +1,7 @@
 // Generic, offline release-review packet authority. Provider state enters only as retained bytes
 // plus the deliberately small normalized ref assertions checked below.
 import { execFile } from "node:child_process";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -19,7 +19,7 @@ export const REF_ASSERTIONS_SCHEMA = "superbee.ref-assertions.v1";
 export const TRANSFER_ALLOWLIST_SCHEMA = "superbee.transfer-allowlist.v1";
 const PACKET_FILE = "release-packet.json";
 const DIGEST_FILE = "release-packet.sha256";
-const CANDIDATE_IDS = ["bridge", "successor", "rehearsal-reject", "rehearsal-approve"];
+const CANDIDATE_IDS = ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"];
 const SOURCE_ENTRYPOINTS = ["scripts/release-packet.mjs", "scripts/release-candidate.mjs", "scripts/release-verify-chain.mjs"];
 const RELEASE_WORKFLOWS = [
   ".github/workflows/release-staged.yml",
@@ -53,6 +53,13 @@ const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9@._/-]+$/;
 const REF = /^refs\/(?:heads|tags|notes)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+const ALLOWED_IGNORED_BUILD_OUTPUTS = new Set([
+  "node_modules/",
+  "packages/cli/dist/",
+  "packages/cli/src/generated/",
+  "packages/mcp-app/dist/",
+  "packages/mcp-app/src/generated/",
+]);
 
 await init;
 
@@ -125,6 +132,9 @@ function resolveInput(root, relative, label = relative) {
 }
 
 function localStaticImports(source, relative) {
+  if (relative.endsWith(".js") && (/\brequire\s*\(/.test(source) || /\bmodule\.exports\b|\bexports\./.test(source))) {
+    packetError(`${relative} has unsupported CommonJS require edge`);
+  }
   let imports;
   try {
     [imports] = parse(source);
@@ -214,7 +224,7 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
   const workflowEntries = await workflowReleaseEntrypoints(root);
   const closure = await staticPacketClosure({ root, entries: [...SOURCE_ENTRYPOINTS, ...workflowEntries] });
   const explicit = [
-    "release/review-packet-inputs.json", "release/targets.json", "release/burned-versions.json", "release/phase.json",
+    "release/review-packet-inputs.json", "release/targets.json", "release/burned-versions.json", "release/bridge-phase.json", "release/superbee-cutover.json",
     ...RELEASE_WORKFLOWS, ".github/release-allowed-signers",
     "package.json", "package-lock.json", "packages/cli/package.json", "packages/cli/SKILL.md",
   ];
@@ -360,6 +370,23 @@ export function validateRefAssertionsEnvelope(value, { publicAncestor, privateCo
   return envelope;
 }
 
+function reservedCandidateTagRefs(targets) {
+  return new Set(Object.values(targets.allowed_tuples).map((tuple) => `refs/tags/${tuple.tag}`));
+}
+
+function validateTransferAuthority({ baseline, recheck, allowlist, source, targets }) {
+  for (const [label, value, isAllowlist] of [["refs baseline", baseline, false], ["refs recheck", recheck, false], ["transfer allowlist", allowlist, true]]) {
+    validateRefAssertionsEnvelope(value, { publicAncestor: source.public_ancestor, privateCommit: source.commit, allowlist: isAllowlist });
+  }
+  const expected = baseline.allowed_refs;
+  if (JSON.stringify(recheck.allowed_refs) !== JSON.stringify(expected) || JSON.stringify(allowlist.allowed_refs) !== JSON.stringify(expected)) {
+    packetError("transfer baseline/recheck/allowlist allowed refs differ");
+  }
+  for (const ref of reservedCandidateTagRefs(targets)) {
+    if (expected.includes(ref)) packetError(`pre-cutover transferable refs already contain reserved candidate tag ${ref}`);
+  }
+}
+
 async function collectEvidence(id, sourceFile, outDir, source) {
   const found = EVIDENCE.find(([name]) => name === id);
   if (!found) packetError(`unknown evidence category ${id}`);
@@ -466,17 +493,19 @@ function checksumLine(file) {
   return `${file.slice("sha256:".length)}  ${PACKET_FILE}\n`;
 }
 
-async function observedCheckout(root) {
+export async function observedCheckout(root) {
   try {
     const [head, status] = await Promise.all([
       execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root }),
       execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"], { cwd: root }),
     ]);
     const records = status.stdout.split("\n").filter(Boolean);
-    const nodeModules = records.includes("!! node_modules/");
-    let dirty = records.some((record) => record !== "!! node_modules/");
-    if (nodeModules) {
-      const info = await lstat(path.join(root, "node_modules")).catch(() => null);
+    let dirty = false;
+    for (const record of records) {
+      if (!record.startsWith("!! ")) { dirty = true; continue; }
+      const relative = record.slice(3);
+      if (!ALLOWED_IGNORED_BUILD_OUTPUTS.has(relative)) { dirty = true; continue; }
+      const info = await lstat(path.join(root, relative)).catch(() => null);
       if (!info?.isDirectory() || info.isSymbolicLink()) dirty = true;
     }
     return { commit: head.stdout.trim(), dirty };
@@ -497,7 +526,7 @@ async function assertDetachedCheckout(root) {
 
 export async function createReleasePacket({ commit, publicAncestor, out, candidates, evidence, observedSource, root = repoRoot, retainedVerifier = verifyRetainedTarball }) {
   if (!candidates || Object.keys(candidates).length !== CANDIDATE_IDS.length || CANDIDATE_IDS.some((id) => !candidates[id])) {
-    packetError("create requires exactly four named candidate slots");
+    packetError("create requires exactly five named candidate slots");
   }
   if (!evidence || Object.keys(evidence).length !== EVIDENCE.length || EVIDENCE.some(([id]) => !evidence[id])) {
     packetError("create requires every fixed evidence slot exactly once");
@@ -513,6 +542,12 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
     }
     const evidenceRows = [];
     for (const [id] of EVIDENCE) evidenceRows.push(await collectEvidence(id, evidence[id], staged, source));
+    validateTransferAuthority({
+      baseline: await readJson(evidence["refs-baseline"], "refs baseline"),
+      recheck: await readJson(evidence["refs-recheck"], "refs recheck"),
+      allowlist: await readJson(evidence["transfer-allowlist"], "transfer allowlist"),
+      source, targets,
+    });
     const packet = {
       schema: REVIEW_PACKET_SCHEMA,
       source,
@@ -587,7 +622,7 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
   if (JSON.stringify(packet.inventory) !== JSON.stringify(actualInventory)) packetError("packet inventory differs from retained files");
   const paths = new Set(packet.inventory.map((row) => row.path));
   if (paths.has(PACKET_FILE) || paths.has(DIGEST_FILE)) packetError("packet must not inventory itself or its detached digest");
-  if (!packet.candidates || JSON.stringify(Object.keys(packet.candidates).sort()) !== JSON.stringify([...CANDIDATE_IDS].sort())) packetError("packet must contain exactly four candidate slots");
+  if (!packet.candidates || JSON.stringify(Object.keys(packet.candidates).sort()) !== JSON.stringify([...CANDIDATE_IDS].sort())) packetError("packet must contain exactly five candidate slots");
   const targets = await loadPacketTargets(root);
   const expectedTuples = Object.fromEntries(CANDIDATE_IDS.map((id) => [id, targets.allowed_tuples[id]]));
   if (JSON.stringify(packet.tuples) !== JSON.stringify(expectedTuples)) packetError("packet tuple authority differs from release targets");
@@ -628,6 +663,12 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
       if (row.schema !== parsed.schema) packetError(`packet evidence ${id} schema mismatch`);
     }
   }
+  validateTransferAuthority({
+    baseline: await readJson(path.join(outDir, "evidence", "refs-baseline.json"), "refs baseline"),
+    recheck: await readJson(path.join(outDir, "evidence", "refs-recheck.json"), "refs recheck"),
+    allowlist: await readJson(path.join(outDir, "evidence", "transfer-allowlist.json"), "transfer allowlist"),
+    source, targets,
+  });
   if (JSON.stringify(packet.burns) !== JSON.stringify(await loadBurnLedger(root))) packetError("packet burn ledger mismatch");
   return packet;
 }
@@ -668,10 +709,10 @@ export function parsePacketArgs(argv) {
     candidates: parsePairs(rest, "--candidate", CANDIDATE_IDS), evidence: parsePairs(rest, "--evidence", EVIDENCE.map(([id]) => id)), root: optionalOption(rest, "--root"),
   };
   if (command === "verify") return { command, packet: option(rest, "--packet"), root: optionalOption(rest, "--root") };
-  throw new Error("usage: release-packet.mjs create|verify ...");
+  throw new Error("usage: npm run release:packet -- create|verify ...");
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (process.argv[1] && await realpath(process.argv[1]).catch(() => path.resolve(process.argv[1])) === scriptPath) {
   try {
     const args = parsePacketArgs(process.argv.slice(2));
     const result = args.command === "create" ? await createReleasePacket(args) : await verifyReleasePacket(args);

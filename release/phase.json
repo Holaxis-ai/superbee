@@ -1,13 +1,5 @@
 {
-  "schema": "aslite.release-phase.v1",
-  "phase": "at_rest",
-  "kind": null,
-  "version": null,
-  "semantics": {
-    "what": "Declared release-transaction phase for @holaxis/aslite. Read by scripts/release-audit-tags.mjs (npm run release:audit-tags), which computes the expected npm dist-tag state for this phase via scripts/release-state.mjs resolveTags and fails CI when the live registry disagrees.",
-    "phase": "One of at_rest | staged | approved | promoted | failed. An absent file means at_rest. At rest before 0.1.0, policy requires latest == next == newest published prerelease.",
-    "kind": "Required outside at_rest: prerelease | stable — the kind of the in-flight release transaction. null at rest.",
-    "version": "Required outside at_rest: the exact candidate version the transaction is about. null at rest.",
-    "lifecycle": "Changing this file is a reviewed commit. Flip it to staged in the release-preparation PR, advance it through the transaction, and return it to at_rest only once the registry reflects the settled tag state. After a post-approval failure, stay in failed until the replacement release restores latest == next == newest supported."
-  }
+  "schema": "superbee.retired-phase.v1",
+  "retired": true,
+  "semantics": "Retired compatibility record. No release audit reads this file: bridge and Superbee audits require their separate immutable policy files and explicit coordinates."
 }

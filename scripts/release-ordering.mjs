@@ -214,6 +214,7 @@ function stageReceiptEvents(stageReceipt) {
     {
       to: "prepared",
       receipt: {
+        target: prepared.target,
         version: prepared.version,
         tag: prepared.tag,
         source_commit: prepared.source_commit,

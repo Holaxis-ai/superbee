@@ -1,0 +1,62 @@
+{
+  "schema": "superbee.cutover-policy.v1",
+  "coordinate": "superbee",
+  "package": "superbee",
+  "placeholder": { "latest": "0.0.1", "next": null },
+  "stable": {
+    "target": "successor-stable",
+    "package": "superbee",
+    "version": "0.1.0",
+    "tag": "v0.1.0"
+  },
+  "preview": {
+    "target": "successor-preview",
+    "package": "superbee",
+    "version": "0.1.1-pre.1",
+    "tag": "v0.1.1-pre.1"
+  },
+  "completion": {
+    "state": "settled",
+    "tags": { "latest": "0.1.0", "next": "0.1.1-pre.1" },
+    "stable": "present",
+    "preview": "present"
+  },
+  "legal_states": [
+    {
+      "id": "before_cutover",
+      "tags": { "latest": "0.0.1", "next": null },
+      "stable": "absent",
+      "preview": "absent"
+    },
+    {
+      "id": "stable_staged",
+      "tags": { "latest": "0.0.1", "next": "0.1.0" },
+      "stable": "present",
+      "preview": "absent"
+    },
+    {
+      "id": "stable_promoted",
+      "tags": { "latest": "0.1.0", "next": "0.1.0" },
+      "stable": "present",
+      "preview": "absent"
+    },
+    {
+      "id": "preview_staged_or_settled",
+      "tags": { "latest": "0.1.0", "next": "0.1.1-pre.1" },
+      "stable": "present",
+      "preview": "present"
+    },
+    {
+      "id": "stable_failed",
+      "tags": { "latest": "0.0.1", "next": null },
+      "stable": "present",
+      "preview": "absent"
+    },
+    {
+      "id": "preview_failed",
+      "tags": { "latest": "0.1.0", "next": "0.1.0" },
+      "stable": "present",
+      "preview": "present"
+    }
+  ]
+}

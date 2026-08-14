@@ -4,7 +4,10 @@ import test from "node:test";
 import { assertRegistryCandidate } from "./release-verify-registry.mjs";
 
 const SHA = "sha256:" + "a".repeat(64);
+const target = "bridge";
 const candidate = {
+  target,
+  package: { name: "@holaxis/aslite" },
   version: "0.1.0-pre.4",
   source: { commit: "b".repeat(40), dirty: false },
   tarball: { sha256: SHA, shasum: "c".repeat(40), integrity: "sha512-YWJjZA==" },
@@ -35,26 +38,41 @@ const installedIdentity = {
 
 test("registry proof requires packument, bytes, and installed identity to match candidate", () => {
   assert.doesNotThrow(() =>
-    assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity }),
+    assertRegistryCandidate({ target, candidate, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity }),
   );
 });
 
 test("registry proof fails closed on each independent mismatch", () => {
   assert.throws(
-    () => assertRegistryCandidate({ candidate, packReceipt: { ...packReceipt, integrity: "sha512-bad" }, packumentDist, tarballSha256: SHA, installedIdentity }),
+    () => assertRegistryCandidate({ target, candidate, packReceipt: { ...packReceipt, integrity: "sha512-bad" }, packumentDist, tarballSha256: SHA, installedIdentity }),
     /registry integrity/,
   );
   assert.throws(
-    () => assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256: "sha256:" + "0".repeat(64), installedIdentity }),
+    () => assertRegistryCandidate({ target, candidate, packReceipt, packumentDist, tarballSha256: "sha256:" + "0".repeat(64), installedIdentity }),
     /tarball SHA-256/,
   );
   assert.throws(
-    () => assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity: { identity: { ...installedIdentity.identity, source: { commit: "e".repeat(40), dirty: false } } } }),
+    () => assertRegistryCandidate({ target, candidate, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity: { identity: { ...installedIdentity.identity, source: { commit: "e".repeat(40), dirty: false } } } }),
     /source identity/,
   );
   assert.throws(
-    () => assertRegistryCandidate({ candidate, packReceipt, packumentDist: { ...packumentDist, attestations: undefined }, tarballSha256: SHA, installedIdentity }),
+    () => assertRegistryCandidate({ target, candidate, packReceipt, packumentDist: { ...packumentDist, attestations: undefined }, tarballSha256: SHA, installedIdentity }),
     /no npm-hosted SLSA provenance/,
+  );
+});
+
+test("registry proof resolves the explicit target internally and rejects candidate coordinate drift", () => {
+  assert.throws(
+    () => assertRegistryCandidate({ target: "successor-stable", candidate, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity }),
+    /candidate target\/package/,
+  );
+  assert.throws(
+    () => assertRegistryCandidate({ target: "bridge", candidate: { ...candidate, target: "successor-stable" }, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity }),
+    /candidate target\/package/,
+  );
+  assert.throws(
+    () => assertRegistryCandidate({ target: "unknown", candidate, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity }),
+    /invalid release target/,
   );
 });
 

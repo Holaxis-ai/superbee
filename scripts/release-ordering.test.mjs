@@ -54,6 +54,7 @@ function sha256Bytes(bytes) {
 function stageReceiptFor(version) {
   const tarball = `holaxis-aslite-${version}.tgz`;
   return buildStageReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: "sha256:" + "c".repeat(64),
@@ -528,7 +529,7 @@ test("publication executor is empirically mutation-free in dry-run and live uses
     chmodSync(ghStub, 0o755);
     const dryPublish = spawnSync(process.execPath, [
       path.join(repoRoot, "scripts", "release-run-operations.mjs"),
-      "--op", "immutable-release", "--version", PRE, "--release-id", "300",
+      "--op", "immutable-release", "--version", PRE, "--release-id", "300", "--github-latest", "false",
     ], {
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASLITE_TEST_PUBLISH_LOG: publishLog },

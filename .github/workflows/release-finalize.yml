@@ -42,8 +42,8 @@ on:
       target:
         description: "Release target from release/targets.json"
         type: choice
-        options: ["successor", "bridge", "rehearsal-reject", "rehearsal-approve"]
-        default: "successor"
+        options: ["successor-stable", "successor-preview", "bridge", "rehearsal-reject", "rehearsal-approve"]
+        default: "successor-stable"
       mode:
         description: "dry-run (default) verifies/prints; live verifies registry + publishes draft"
         type: choice
@@ -390,13 +390,33 @@ jobs:
           TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
+          GITHUB_LATEST="$(node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --json | node -e 'process.stdin.on("data", b => process.stdout.write(String(JSON.parse(b).github_latest)))')"
+          NPM_PROMOTE_TAG="$(node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --json | node -e 'process.stdin.on("data", b => process.stdout.write(String(JSON.parse(b).npm_promote_tag || "")))')"
           if [ "$MODE" = "live" ]; then
             gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > final-draft-release.json
             node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
               --plan publication-plan.json --out final-publication-proof.json
+            if [ -n "$NPM_PROMOTE_TAG" ]; then
+              node scripts/release-run-operations.mjs --op promote --target "$TARGET" --version "$VERSION" --tag "$NPM_PROMOTE_TAG" --execute
+            fi
+            case "$TARGET" in
+              bridge)
+                npm run release:audit-tags -- --coordinate bridge --policy-file release/bridge-phase.json --require-state bridge_settled
+                ;;
+              successor-stable)
+                npm run release:audit-tags -- --coordinate superbee --policy-file release/superbee-cutover.json --require-state stable_promoted
+                ;;
+              successor-preview)
+                npm run release:audit-tags -- --coordinate superbee --policy-file release/superbee-cutover.json --require-state settled
+                ;;
+              *)
+                echo "::error::unsupported production finalizer target $TARGET"
+                exit 1
+                ;;
+            esac
             node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --execute
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --github-latest "$GITHUB_LATEST" --execute
           else
             node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID"
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --github-latest "$GITHUB_LATEST"
           fi
