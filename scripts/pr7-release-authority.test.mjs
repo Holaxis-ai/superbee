@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { observedCheckout, staticPacketClosure } from "./release-packet.mjs";
 import { immutableReleaseOperations, promoteOperation, rollbackOperation } from "./release-operations.mjs";
+import { operationsFor } from "./release-run-operations.mjs";
 import { resolveTargetFacts } from "./release-resolve-target.mjs";
 import { resolveTags } from "./release-state.mjs";
 import { reconcile } from "./release-state.mjs";
@@ -59,6 +60,25 @@ test("target-sensitive operations require a target and preview cannot become Git
   assert.throws(() => promoteOperation({ version: "0.1.0", tag: "latest" }), /target/);
   assert.equal(promoteOperation({ target: "successor-stable", version: "0.1.0", tag: "latest" }).command, "npm dist-tag add superbee@0.1.0 latest");
   assert.ok(immutableReleaseOperations({ releaseId: "rel-1", tag: "v0.1.1-pre.1", githubLatest: false }).commands[1].includes("make_latest=false"));
+});
+
+test("live operation adapter rejects caller-selected release policy", () => {
+  assert.throws(
+    () => operationsFor("promote", ["--target", "successor-stable", "--version", "9.9.9"]),
+    /differs from reviewed successor-stable version/,
+  );
+  assert.throws(
+    () => operationsFor("promote", ["--target", "successor-stable", "--version", "0.1.0", "--tag", "next"]),
+    /unexpected operation argument "--tag"/,
+  );
+  assert.throws(
+    () => operationsFor("immutable-release", ["--target", "successor-preview", "--version", "0.1.1-pre.1", "--release-id", "42", "--github-latest", "true"]),
+    /unexpected operation argument "--github-latest"/,
+  );
+  assert.match(
+    operationsFor("immutable-release", ["--target", "successor-preview", "--version", "0.1.1-pre.1", "--release-id", "42"])[1].command,
+    /make_latest=false/,
+  );
 });
 
 test("a post-stable preview settles next without moving latest", () => {

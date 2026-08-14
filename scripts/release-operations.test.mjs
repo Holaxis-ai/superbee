@@ -209,17 +209,20 @@ test("operationsFor resolves each op to the same argv + display strings", () => 
     { argv: ["npm", "stage", "reject", "s1"], command: "npm stage reject s1", requires_2fa: true },
   ]);
   assert.deepEqual(
-    operationsFor("registry-verify", ["--target", "bridge", "--version", "0.1.0"]).map((o) => o.command),
-    registryVerifyOperations({ ...BRIDGE, version: "0.1.0" }).commands,
+    operationsFor("registry-verify", ["--target", "bridge", "--version", "0.1.0-pre.11"]).map((o) => o.command),
+    registryVerifyOperations({ ...BRIDGE, version: "0.1.0-pre.11" }).commands,
   );
-  assert.deepEqual(operationsFor("immutable-release", ["--version", "0.1.0", "--release-id", "rel-9", "--github-latest", "true"]).map((o) => o.argv), [
+  assert.deepEqual(operationsFor("immutable-release", ["--target", "successor-stable", "--version", "0.1.0", "--release-id", "rel-9"]).map((o) => o.argv), [
     ["gh", "api", "repos/{owner}/{repo}/releases/rel-9", "--jq", ".draft, .tag_name, .id"],
     ["gh", "api", "-X", "PATCH", "repos/{owner}/{repo}/releases/rel-9", "-f", "draft=false", "-f", "make_latest=true"],
   ]);
+  assert.match(
+    operationsFor("immutable-release", ["--target", "successor-preview", "--version", "0.1.1-pre.1", "--release-id", "rel-10"])[1].command,
+    /make_latest=false/,
+  );
   assert.deepEqual(
     operationsFor("rollback", [
-      "--target", "successor-stable", "--failed-version", "0.1.0", "--remove-tag", "next",
-      "--recovery-target", "bridge", "--recovery-version", "0.1.0-pre.11",
+      "--target", "successor-stable", "--from-state", "stable_staged",
     ]).map((o) => o.command),
     [
       "npm dist-tag rm superbee next",
@@ -228,8 +231,7 @@ test("operationsFor resolves each op to the same argv + display strings", () => 
   );
   assert.deepEqual(
     operationsFor("rollback", [
-      "--target", "successor-preview", "--failed-version", "0.1.1-pre.1",
-      "--restore-tag", "next=0.1.0", "--recovery-target", "successor-stable", "--recovery-version", "0.1.0",
+      "--target", "successor-preview", "--from-state", "preview_staged_or_settled",
     ]).map((o) => o.command),
     [
       "npm dist-tag add superbee@0.1.0 next",
@@ -237,6 +239,68 @@ test("operationsFor resolves each op to the same argv + display strings", () => 
     ],
   );
   assert.throws(() => operationsFor("bogus", []), /unknown op/);
+});
+
+test("executable operations derive publication and rollback policy from reviewed tuples", () => {
+  assert.equal(
+    operationsFor("promote", ["--target", "successor-stable", "--version", "0.1.0"])[0].command,
+    "npm dist-tag add superbee@0.1.0 latest",
+  );
+  assert.throws(
+    () => operationsFor("promote", ["--target", "successor-stable", "--version", "9.9.9"]),
+    /differs from reviewed successor-stable version/,
+  );
+  assert.throws(
+    () => operationsFor("promote", ["--target", "successor-stable", "--version", "0.1.0", "--tag", "next"]),
+    /unexpected operation argument "--tag"/,
+  );
+  assert.throws(
+    () => operationsFor("promote", ["--target", "successor-preview", "--version", "0.1.1-pre.1"]),
+    /has no npm promotion/,
+  );
+  assert.throws(
+    () => operationsFor("immutable-release", ["--target", "successor-preview", "--version", "0.1.1-pre.1", "--release-id", "rel-10", "--github-latest", "true"]),
+    /unexpected operation argument "--github-latest"/,
+  );
+  assert.throws(
+    () => operationsFor("immutable-release", ["--target", "successor-stable", "--version", "0.1.0", "--version", "9.9.9", "--release-id", "rel-9"]),
+    /duplicate operation flag --version/,
+  );
+
+  assert.deepEqual(
+    operationsFor("rollback", ["--target", "successor-stable", "--from-state", "stable_promoted"]).map((operation) => operation.command),
+    [
+      "npm dist-tag add superbee@0.0.1 latest",
+      "npm dist-tag rm superbee next",
+      "npm deprecate superbee@0.1.0 \"superseded - install @holaxis/aslite@0.1.0-pre.11 (npm install --global @holaxis/aslite@0.1.0-pre.11)\"",
+    ],
+  );
+  assert.deepEqual(
+    operationsFor("rollback", ["--target", "bridge", "--from-state", "bridge_settled"]).map((operation) => operation.command),
+    [
+      "npm dist-tag add @holaxis/aslite@0.1.0-pre.8 latest",
+      "npm dist-tag add @holaxis/aslite@0.1.0-pre.8 next",
+      "npm deprecate @holaxis/aslite@0.1.0-pre.11 \"superseded - install @holaxis/aslite@0.1.0-pre.8 (npm install --global @holaxis/aslite@0.1.0-pre.8)\"",
+    ],
+  );
+  assert.throws(
+    () => operationsFor("rollback", ["--target", "successor-stable", "--from-state", "stable_failed"]),
+    /does not allow --from-state/,
+  );
+  assert.throws(
+    () => operationsFor("rollback", ["--target", "successor-stable", "--from-state", "stable_staged", "--restore-tag", "latest=9.9.9"]),
+    /unexpected operation argument "--restore-tag"/,
+  );
+});
+
+test("human npm stage decisions can be rendered but never auto-executed", async () => {
+  await assert.rejects(
+    execFileAsync(process.execPath, [runOps, "--op", "approve", "--stage-id", "stage-1", "--execute"]),
+    (error) => {
+      assert.match(String(error.stderr ?? error.message), /requires a human npm 2FA command/);
+      return true;
+    },
+  );
 });
 
 // ── SECURITY (empirical): --execute with an injection-shaped stage id creates NO marker file ──

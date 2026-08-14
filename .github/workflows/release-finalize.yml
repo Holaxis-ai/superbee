@@ -390,14 +390,13 @@ jobs:
           TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
-          GITHUB_LATEST="$(node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --json | node -e 'process.stdin.on("data", b => process.stdout.write(String(JSON.parse(b).github_latest)))')"
           NPM_PROMOTE_TAG="$(node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --json | node -e 'process.stdin.on("data", b => process.stdout.write(String(JSON.parse(b).npm_promote_tag || "")))')"
           if [ "$MODE" = "live" ]; then
             gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > final-draft-release.json
             node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
               --plan publication-plan.json --out final-publication-proof.json
             if [ -n "$NPM_PROMOTE_TAG" ]; then
-              node scripts/release-run-operations.mjs --op promote --target "$TARGET" --version "$VERSION" --tag "$NPM_PROMOTE_TAG" --execute
+              node scripts/release-run-operations.mjs --op promote --target "$TARGET" --version "$VERSION" --execute
             fi
             case "$TARGET" in
               bridge)
@@ -415,8 +414,8 @@ jobs:
                 ;;
             esac
             node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --github-latest "$GITHUB_LATEST" --execute
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --execute
           else
             node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --github-latest "$GITHUB_LATEST"
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID"
           fi

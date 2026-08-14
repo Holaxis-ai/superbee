@@ -61,6 +61,21 @@ test("each production finalizer proves its immutable terminal registry state", (
   assert.doesNotMatch(audit, /--require-state/);
 });
 
+test("finalizer delegates publication policy to the exact-target executor", () => {
+  const finalizeJob = extractJobs(finalize).finalize;
+  const promote = finalizeJob.match(/release-run-operations\.mjs --op promote[^\n]*/g) ?? [];
+  const immutable = finalizeJob.match(/release-run-operations\.mjs --op immutable-release[\s\S]*?(?:--execute|\n\s*fi)/g) ?? [];
+  assert.equal(promote.length, 1);
+  assert.match(promote[0], /--target "\$TARGET" --version "\$VERSION" --execute/);
+  assert.doesNotMatch(promote[0], /--tag/);
+  assert.equal(immutable.length, 2);
+  for (const invocation of immutable) {
+    assert.match(invocation, /--target "\$TARGET" --version "\$VERSION" --release-id "\$DRAFT_RELEASE_ID"/);
+    assert.doesNotMatch(invocation, /--github-latest/);
+  }
+  assert.doesNotMatch(finalizeJob, /GITHUB_LATEST=/);
+});
+
 // Extract the `permissions:` block of a job into { scope -> value }.
 function permissionsOf(jobText) {
   const lines = jobText.split("\n");

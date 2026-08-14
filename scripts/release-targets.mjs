@@ -195,8 +195,7 @@ export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
   };
 }
 
-async function loadBurnedVersions(file) {
-  const raw = JSON.parse(await readFile(file, "utf8"));
+function normalizeBurnedVersions(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.burned)) {
     throw new Error("burned-versions declaration requires burned: []");
   }
@@ -210,6 +209,10 @@ async function loadBurnedVersions(file) {
     versions.push(entry.version);
   }
   return versions;
+}
+
+async function loadBurnedVersions(file) {
+  return normalizeBurnedVersions(JSON.parse(await readFile(file, "utf8")));
 }
 
 async function assertCheckedInCliVersion(manifest, file) {
@@ -233,9 +236,16 @@ export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH, {
   return manifest;
 }
 
-/** Lazy synchronous compatibility helper for legacy pure release emitters; never runs at import time. */
+/** Lazy synchronous authority for pure release emitters; never runs at import time. */
+export function defaultReleaseManifest() {
+  const raw = JSON.parse(readFileSync(DEFAULT_RELEASE_TARGETS_PATH, "utf8"));
+  const burned = normalizeBurnedVersions(JSON.parse(readFileSync(DEFAULT_BURNED_VERSIONS_PATH, "utf8")));
+  return Object.freeze(normalizeReleaseTargets(raw, { burnedVersions: burned }));
+}
+
+/** Lazy synchronous compatibility helper for pure release emitters; never runs at import time. */
 export function defaultReleaseTargets() {
-  return Object.freeze(normalizeReleaseTargets(JSON.parse(readFileSync(DEFAULT_RELEASE_TARGETS_PATH, "utf8"))).targets);
+  return Object.freeze(defaultReleaseManifest().targets);
 }
 
 export function assertWorkflowContract(target, workflowContract = "full") {

@@ -529,7 +529,7 @@ test("publication executor is empirically mutation-free in dry-run and live uses
     chmodSync(ghStub, 0o755);
     const dryPublish = spawnSync(process.execPath, [
       path.join(repoRoot, "scripts", "release-run-operations.mjs"),
-      "--op", "immutable-release", "--version", PRE, "--release-id", "300", "--github-latest", "false",
+      "--op", "immutable-release", "--target", "successor-preview", "--version", "0.1.1-pre.1", "--release-id", "300",
     ], {
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASLITE_TEST_PUBLISH_LOG: publishLog },
