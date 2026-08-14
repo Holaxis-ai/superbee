@@ -52,14 +52,14 @@ test("reject/approve return a shell-free argv plus display and require 2fa", () 
   });
 });
 
-test("secondary tag operations target the scoped package (argv + display)", () => {
+test("secondary tag operations target the bridge and successor packages (argv + display)", () => {
   const add = secondaryTagOperation({ version: "0.1.0-pre.4", tag: "next" });
   assert.deepEqual(add.argv, ["npm", "dist-tag", "add", "@holaxis/aslite@0.1.0-pre.4", "next"]);
   assert.equal(add.command, "npm dist-tag add @holaxis/aslite@0.1.0-pre.4 next");
   assert.equal(removeSecondaryTagOperation({ tag: "next" }).command, "npm dist-tag rm @holaxis/aslite next");
   assert.equal(
-    secondaryTagOperation({ target: "successor", version: "0.1.0-pre.11", tag: "next" }).command,
-    "npm dist-tag add superbee@0.1.0-pre.11 next",
+    secondaryTagOperation({ target: "successor-preview", version: "0.1.1-pre.1", tag: "next" }).command,
+    "npm dist-tag add superbee@0.1.1-pre.1 next",
   );
 });
 
@@ -80,13 +80,13 @@ test("rollback restores the prior track and deprecates with the recovery command
   assert.match(r.argvs[1][3], /npm install --global @holaxis\/aslite@0\.1\.0-pre\.3/);
   assert.equal(r.recovery_command, "npm install --global @holaxis/aslite@0.1.0-pre.3");
   const successor = rollbackOperation({
-    target: "successor",
+    target: "successor-preview",
     recoveryTarget: "bridge",
-    failedVersion: "0.1.0-pre.11",
-    priorVersion: "0.1.0-pre.10",
+    failedVersion: "0.1.1-pre.1",
+    priorVersion: "0.1.0-pre.11",
   });
-  assert.equal(successor.argvs[1][2], "superbee@0.1.0-pre.11");
-  assert.equal(successor.recovery_command, "npm install --global @holaxis/aslite@0.1.0-pre.10");
+  assert.equal(successor.argvs[1][2], "superbee@0.1.1-pre.1");
+  assert.equal(successor.recovery_command, "npm install --global @holaxis/aslite@0.1.0-pre.11");
 });
 
 test("registry instructions are read-only and delegate strict proof to the verifier", () => {
@@ -96,14 +96,14 @@ test("registry instructions are read-only and delegate strict proof to the verif
   assert.match(v.workflow_proof, /release-verify-registry\.mjs/);
   assert.ok(!v.commands.some((c) => c.includes("audit signatures --package")), "npm has no audit signatures --package option");
   assert.ok(!v.commands.some((c) => /dist-tag|publish|deprecate|stage (approve|reject)/.test(c)));
-  assert.match(registryVerifyOperations({ target: "successor", version: "0.1.0-pre.11" }).workflow_proof, /--target successor/);
+  assert.match(registryVerifyOperations({ target: "successor-preview", version: "0.1.1-pre.1" }).workflow_proof, /--target successor-preview/);
 });
 
 test("promote and immutable release name the exact version/tag/release id", () => {
   assert.equal(promoteOperation({ version: "0.1.0", tag: "latest" }).command, "npm dist-tag add @holaxis/aslite@0.1.0 latest");
   assert.equal(
-    promoteOperation({ target: "successor", version: "0.1.0-pre.11", tag: "latest" }).command,
-    "npm dist-tag add superbee@0.1.0-pre.11 latest",
+    promoteOperation({ target: "successor-stable", version: "0.1.0", tag: "latest" }).command,
+    "npm dist-tag add superbee@0.1.0 latest",
   );
   const rel = immutableReleaseOperations({ releaseId: "rel-42", tag: "v0.1.0" });
   assert.ok(rel.commands[0].includes("releases/rel-42"));

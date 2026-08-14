@@ -8,11 +8,18 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isMainModule } from "./is-main-module.mjs";
-import { DEFAULT_RELEASE_TARGETS_PATH, defaultReleaseTargets, loadReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
+import {
+  DEFAULT_RELEASE_TARGETS_PATH,
+  RELEASE_CANDIDATE_SCHEMA,
+  assertAllowedTuple,
+  defaultReleaseTargets,
+  loadReleaseTargets,
+  tarballFilename,
+} from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SUCCESSOR_TARGET = defaultReleaseTargets().successor;
+const SUCCESSOR_TARGET = defaultReleaseTargets()["successor-stable"];
 const SUCCESSOR_PACKAGE_NAME = SUCCESSOR_TARGET.package.name;
 const SUCCESSOR_INSTALL_ROOT = SUCCESSOR_TARGET.package.directory;
 const SUCCESSOR_ARTIFACT = SUCCESSOR_TARGET.artifact;
@@ -1019,7 +1026,7 @@ export async function verifyNpmPackage({ mode }) {
  * manifest is supplied its recorded SHA-256 must equal the tarball's actual bytes, so a swapped
  * or rebuilt artifact fails closed here before it can be staged.
  */
-export async function verifyRetainedTarball({ tarball, manifest }) {
+export async function verifyRetainedTarball({ tarball, manifest, targetsPath = DEFAULT_RELEASE_TARGETS_PATH }) {
   const tarballPath = path.resolve(tarball);
   // The manifest is MANDATORY (QA finding #2): it is the only thing that ties these exact bytes to
   // the staged candidate. Without it we could only prove "some valid npm-package tarball", which is
@@ -1032,11 +1039,15 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   });
   const actualSha = await fileSha256(tarballPath);
   const recorded = parseJson(await readFile(path.resolve(manifest), "utf8"), "candidate manifest");
-  const targetId = recorded?.target ?? targetFromPackageName(recorded?.package?.name ?? recorded?.build_identity?.package?.name) ?? "successor";
-  const targetManifest = await loadReleaseTargets(DEFAULT_RELEASE_TARGETS_PATH);
+  const targetId = recorded?.target;
+  if (!targetId) throw new Error("candidate manifest requires an explicit target");
+  const targetManifest = await loadReleaseTargets(targetsPath, {
+    burnedFile: path.join(path.dirname(targetsPath), "burned-versions.json"),
+    cliPackageFile: null,
+  });
   if (recorded?.agreement?.release_targets_sha256) {
     assert.equal(
-      await fileSha256(DEFAULT_RELEASE_TARGETS_PATH),
+      await fileSha256(targetsPath),
       recorded.agreement.release_targets_sha256,
       "candidate manifest release-target agreement does not match release/targets.json",
     );
@@ -1049,12 +1060,25 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
     recordedSha,
     `retained tarball SHA-256 ${actualSha} does not match candidate manifest ${recordedSha ?? "<missing>"}`,
   );
+  assert.equal(recorded?.schema, RELEASE_CANDIDATE_SCHEMA, "retained candidate manifest schema mismatch");
+  const tuple = assertAllowedTuple(targetManifest, {
+    target: targetId,
+    packageName: recorded?.package?.name,
+    version: recorded?.version,
+    tag: recorded?.tag,
+  });
+  assert.equal(recorded?.tarball?.version, tuple.version, "candidate tarball version does not match the reviewed tuple");
+  assert.equal(recorded?.tarball?.filename, path.basename(tarballPath), "candidate tarball filename does not match the retained file");
+  assert.equal(recorded.tarball.filename, tarballFilename(target, tuple.version), "candidate tarball filename does not match the reviewed tuple");
+  assert.deepEqual(recorded?.build_identity?.package, { name: tuple.package, version: tuple.version }, "candidate build identity package does not match the reviewed tuple");
+  assert.deepEqual(recorded?.build_identity?.source, recorded?.source, "candidate build identity source does not match candidate source");
+  assert.deepEqual(recorded?.build_identity?.compatibility_contracts, recorded?.compatibility_contracts, "candidate compatibility contracts do not agree");
   assert.equal(
-    recorded?.build_identity?.artifact?.channel ?? "npm-package",
+    recorded?.build_identity?.artifact?.channel,
     "npm-package",
     "a retained release candidate must carry the npm-package artifact channel",
   );
-  return runInstalledProof({
+  const proof = await runInstalledProof({
     mode: "tarball",
     target,
     // A retained release candidate is always an npm-package build; the identity proof enforces it.
@@ -1074,6 +1098,18 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
       };
     },
   });
+  const expectedPackage = { name: tuple.package, version: tuple.version };
+  assert.equal(proof.package, `${tuple.package}@${tuple.version}`, "installed package coordinate does not match the reviewed tuple");
+  assert.deepEqual(proof?.identity?.identity?.package, expectedPackage, "embedded package identity does not match the reviewed tuple");
+  assert.deepEqual(proof?.identity?.identity?.source, recorded.build_identity.source, "embedded source identity does not match the candidate build identity");
+  assert.equal(proof?.identity?.identity?.artifact?.channel, recorded.build_identity.artifact.channel, "embedded artifact channel does not match the candidate build identity");
+  assert.equal(proof?.identity?.identity?.artifact?.sha256, recorded.build_identity.artifact.sha256, "embedded artifact digest does not match the candidate build identity");
+  assert.deepEqual(
+    proof?.identity?.identity?.compatibility_contracts,
+    recorded.build_identity.compatibility_contracts,
+    "embedded compatibility contracts do not match the candidate build identity",
+  );
+  return proof;
 }
 
 async function main(argv = process.argv.slice(2)) {

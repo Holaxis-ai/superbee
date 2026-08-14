@@ -1005,11 +1005,11 @@ test("approval inspection verifies the successor package coordinate from candida
     const tarballSha = `sha256:${"d".repeat(64)}`;
     const candidateBytes = Buffer.from(JSON.stringify({
       schema: "superbee.release-candidate.v1",
-      target: "successor",
+      target: "successor-preview",
       package: { name: "superbee" },
-      tag: "v0.1.0-pre.11",
-      version: "0.1.0-pre.11",
-      tarball: { version: "0.1.0-pre.11", sha256: tarballSha, integrity: "sha512-c3VwZXJiZWU=" },
+      tag: "v0.1.1-pre.1",
+      version: "0.1.1-pre.1",
+      tarball: { version: "0.1.1-pre.1", sha256: tarballSha, integrity: "sha512-c3VwZXJiZWU=" },
     }));
     const candidate = { id: 22, name: "candidate.json", digest: digest(candidateBytes), uploader: { login: "github-actions[bot]" } };
     const commands = [];
@@ -1020,7 +1020,7 @@ test("approval inspection verifies the successor package coordinate from candida
       if (command === "gh" && args[0] === "api" && args.includes("--paginate")) return JSON.stringify([[candidate]]);
       if (command === "gh" && args[0] === "api" && args.includes("repos/Holaxis-ai/superbee-rename-mirror/releases/300")) {
         return JSON.stringify({
-          id: 300, draft: true, tag_name: "v0.1.0-pre.11",
+          id: 300, draft: true, tag_name: "v0.1.1-pre.1",
           upload_url: "https://uploads.github.com/repos/Holaxis-ai/superbee-rename-mirror/releases/300/assets{?name,label}",
         });
       }
@@ -1028,7 +1028,7 @@ test("approval inspection verifies the successor package coordinate from candida
       if (command === "gh" && args.join(" ") === "api --hostname github.com user --jq .login") return "briand-ai\n";
       if (command === "gh" && args[0] === "auth") return "token\n";
       if (command === "npm" && args[0] === "view") {
-        assert.deepEqual(args, ["view", "superbee@0.1.0-pre.11", "dist", "--json"]);
+        assert.deepEqual(args, ["view", "superbee@0.1.1-pre.1", "dist", "--json"]);
         return JSON.stringify({ integrity: "sha512-c3VwZXJiZWU=" });
       }
       if (command === "ssh-keygen") return execFileSync(command, args, options);
@@ -1047,10 +1047,10 @@ test("approval inspection verifies the successor package coordinate from candida
 
     const result = await inspectMain([
       "--stage-id", STAGE_ID,
-      "--version", "0.1.0-pre.11",
+      "--version", "0.1.1-pre.1",
       "--draft-release-id", "300",
       "--decision", "approved",
-      "--target", "successor",
+      "--target", "successor-preview",
       "--key", signer.keyPath,
       "--repo", "Holaxis-ai/superbee-rename-mirror",
       "--allowed-signers", allowedPath,
@@ -1058,7 +1058,7 @@ test("approval inspection verifies the successor package coordinate from candida
       "--dry-run",
     ], { run, request, now: () => "2026-08-09T11:00:00Z" });
     assert.deepEqual(result.rows.map((row) => row.status), ["uploaded"]);
-    assert.ok(commands.some((item) => item.command === "npm" && item.args[1] === "superbee@0.1.0-pre.11"));
+    assert.ok(commands.some((item) => item.command === "npm" && item.args[1] === "superbee@0.1.1-pre.1"));
     assert.equal(requests.some((item) => item.method === "POST"), false, "dry-run still emits no upload");
   } finally {
     rmSync(h.root, { recursive: true, force: true });

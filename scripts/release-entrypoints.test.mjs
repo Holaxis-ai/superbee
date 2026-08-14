@@ -31,6 +31,7 @@ const EXPLICIT_OPERATOR_EXECUTABLE_PATHS = [
   "scripts/migrate-legacy-view-names.mjs",
   "scripts/rename-literal-inventory.mjs",
   "scripts/release-inspect.mjs",
+  "scripts/release-packet.mjs",
   "scripts/release-reconcile.mjs",
 ];
 const LEGACY_MAIN_GUARD_PATTERNS = [
@@ -131,6 +132,11 @@ const OWNED_ENTRYPOINT_PROBES = [
     relativePath: "scripts/release-inspect.mjs",
     args: () => ["--unknown"],
     expected: { code: 1, stderr: /unknown argument "--unknown"/ },
+  },
+  {
+    relativePath: "scripts/release-packet.mjs",
+    args: () => [],
+    expected: { code: 1, stderr: /usage: npm run release:packet/ },
   },
   {
     relativePath: "scripts/release-reconcile.mjs",
@@ -382,6 +388,7 @@ test("positive executable authority comes from declarations plus explicit operat
     "scripts/release-audit-tags.mjs",
     "scripts/release-candidate.mjs",
     "scripts/release-emit-receipt.mjs",
+    "scripts/release-packet.mjs",
     "scripts/release-resolve-target.mjs",
     "scripts/release-run-operations.mjs",
     "scripts/release-verify-chain.mjs",

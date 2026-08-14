@@ -1,4 +1,7 @@
+import { appendFile } from "node:fs/promises";
+
 import { isMainModule } from "./is-main-module.mjs";
+
 import {
   DEFAULT_RELEASE_TARGETS_PATH,
   assertTagForVersion,
@@ -43,7 +46,9 @@ export async function resolveTargetFacts({ target: targetId, tag, manifest: mani
     package: target.package.name,
     version: tuple.version,
     tag: tuple.tag,
-    policy_tag: tuple.version.includes("-") ? "next" : "latest",
+    policy_tag: tuple.publication.npm_tag,
+    npm_promote_tag: tuple.publication.npm_promote_tag,
+    github_latest: tuple.publication.github_latest,
     workflow_contract: target.workflow_contract,
   };
 }
@@ -59,6 +64,8 @@ export function renderGithubOutput(facts) {
     outputLine("version", facts.version),
     outputLine("tag", facts.tag),
     outputLine("policy_tag", facts.policy_tag),
+    outputLine("npm_promote_tag", facts.npm_promote_tag ?? ""),
+    outputLine("github_latest", facts.github_latest),
     outputLine("workflow_contract", facts.workflow_contract),
   ].join("\n") + "\n";
 }
@@ -68,7 +75,6 @@ if (isMainModule(import.meta.url)) {
   resolveTargetFacts(args)
     .then(async (facts) => {
       if (args.githubOutput) {
-        const { appendFile } = await import("node:fs/promises");
         await appendFile(args.githubOutput, renderGithubOutput(facts));
       }
       if (args.json || !args.githubOutput) console.log(JSON.stringify(facts));

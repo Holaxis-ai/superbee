@@ -17,8 +17,11 @@ const TARGET_ID = /^[a-z][a-z0-9-]*$/;
 const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const DIRECTORY_SEGMENT = /^@?[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
+const REVIEWED_TARGET_IDS = ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"];
 
 export const DEFAULT_RELEASE_TARGETS_PATH = path.join(repoRoot, "release", "targets.json");
+export const DEFAULT_BURNED_VERSIONS_PATH = path.join(repoRoot, "release", "burned-versions.json");
+const DEFAULT_CLI_PACKAGE_PATH = path.join(repoRoot, "packages", "cli", "package.json");
 
 export function assertTargetId(targetId) {
   if (typeof targetId !== "string" || !TARGET_ID.test(targetId)) {
@@ -88,7 +91,7 @@ function normalizeTarget(raw, id) {
   if (id === "bridge" && Object.hasOwn(target.bins, "superbee")) {
     throw new Error("bridge release target must not own the superbee bin");
   }
-  if (id === "successor" && !Object.hasOwn(target.bins, "superbee")) {
+  if (id.startsWith("successor-") && !Object.hasOwn(target.bins, "superbee")) {
     throw new Error("successor release target must own the superbee bin");
   }
   if (typeof target.tarball_basename !== "string" || !TOKEN.test(target.tarball_basename)) {
@@ -119,10 +122,23 @@ function normalizeTuple(raw, id) {
   const outcome = raw.outcome;
   if (!["reject", "approve", "publish"].includes(outcome)) throw new Error(`release tuple ${id} has invalid outcome`);
   const production = raw.production === true;
-  return { id, target: targetId, package: raw.package, version, tag, outcome, production };
+  const publication = raw.publication;
+  if (!publication || typeof publication !== "object" || Array.isArray(publication) || Object.keys(publication).sort().join(",") !== "github_latest,npm_promote_tag,npm_tag") {
+    throw new Error(`release tuple ${id} requires explicit publication policy`);
+  }
+  if (publication.npm_tag !== null && !["latest", "next"].includes(publication.npm_tag)) {
+    throw new Error(`release tuple ${id} has invalid npm publication tag`);
+  }
+  if (publication.npm_promote_tag !== null && !["latest", "next"].includes(publication.npm_promote_tag)) {
+    throw new Error(`release tuple ${id} has invalid npm promotion tag`);
+  }
+  if (typeof publication.github_latest !== "boolean") throw new Error(`release tuple ${id} has invalid GitHub latest policy`);
+  if (outcome === "publish" && publication.npm_tag === null) throw new Error(`published release tuple ${id} requires an npm publication tag`);
+  if (outcome !== "publish" && publication.npm_tag !== null) throw new Error(`non-publish release tuple ${id} must not set an npm publication tag`);
+  return { id, target: targetId, package: raw.package, version, tag, outcome, production, publication: { npm_tag: publication.npm_tag, npm_promote_tag: publication.npm_promote_tag, github_latest: publication.github_latest } };
 }
 
-export function normalizeReleaseTargets(raw) {
+export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("release target manifest must be an object");
   if (raw.schema !== RELEASE_TARGET_SCHEMA) throw new Error(`release target manifest schema ${JSON.stringify(raw.schema)} != ${RELEASE_TARGET_SCHEMA}`);
   const functionalSuccessorFloor = assertVersion(raw.functional_successor_floor);
@@ -130,7 +146,9 @@ export function normalizeReleaseTargets(raw) {
   if (!targetsRaw || typeof targetsRaw !== "object" || Array.isArray(targetsRaw)) throw new Error("release target manifest requires targets");
   const targets = {};
   for (const [id, target] of Object.entries(targetsRaw)) targets[id] = normalizeTarget(target, id);
-  for (const id of ["bridge", "successor"]) if (!targets[id]) throw new Error(`release target manifest missing ${id}`);
+  if (JSON.stringify(Object.keys(targets).sort()) !== JSON.stringify([...REVIEWED_TARGET_IDS].sort())) {
+    throw new Error("release target manifest must contain exactly the five reviewed targets");
+  }
   const tuplesRaw = raw.allowed_tuples;
   if (!tuplesRaw || typeof tuplesRaw !== "object" || Array.isArray(tuplesRaw)) throw new Error("release target manifest requires allowed_tuples");
   const allowedTuples = {};
@@ -143,17 +161,32 @@ export function normalizeReleaseTargets(raw) {
     if (!normalized.production && (normalized.package === "@holaxis/aslite" || normalized.package === "superbee")) {
       throw new Error(`rehearsal tuple ${id} must not target production package ${normalized.package}`);
     }
+    if (burnedVersions.includes(normalized.version)) {
+      throw new Error(`release tuple ${id} uses burned version ${normalized.version}`);
+    }
     allowedTuples[id] = normalized;
   }
-  if (allowedTuples.bridge?.version && allowedTuples.successor?.version && allowedTuples.bridge.version === allowedTuples.successor.version) {
-    throw new Error("bridge and successor versions must differ because v<version> tags are immutable");
+  if (JSON.stringify(Object.keys(allowedTuples).sort()) !== JSON.stringify([...REVIEWED_TARGET_IDS].sort())) {
+    throw new Error("release target manifest must contain exactly the five reviewed tuples");
   }
-  if (!allowedTuples.successor?.version) {
-    throw new Error("release target manifest requires a strict SemVer successor tuple version");
+  const publicationPolicy = {
+    bridge: { npm_tag: "next", npm_promote_tag: "latest", github_latest: false },
+    "successor-stable": { npm_tag: "next", npm_promote_tag: "latest", github_latest: true },
+    "successor-preview": { npm_tag: "next", npm_promote_tag: null, github_latest: false },
+    "rehearsal-reject": { npm_tag: null, npm_promote_tag: null, github_latest: false },
+    "rehearsal-approve": { npm_tag: null, npm_promote_tag: null, github_latest: false },
+  };
+  for (const id of REVIEWED_TARGET_IDS) {
+    if (JSON.stringify(allowedTuples[id].publication) !== JSON.stringify(publicationPolicy[id])) {
+      throw new Error(`release tuple ${id} publication policy differs from the reviewed cutover contract`);
+    }
   }
-  if (compareStrictSemver(allowedTuples.successor.version, functionalSuccessorFloor) === -1) {
+  const versions = Object.values(allowedTuples).map((tuple) => tuple.version);
+  const tags = Object.values(allowedTuples).map((tuple) => tuple.tag);
+  if (new Set(versions).size !== versions.length || new Set(tags).size !== tags.length) throw new Error("reviewed release tuple versions and tags must be pairwise distinct");
+  if (compareStrictSemver(allowedTuples["successor-stable"].version, functionalSuccessorFloor) === -1) {
     throw new Error(
-      `reviewed successor tuple version ${allowedTuples.successor.version} must be at or above functional successor floor ${functionalSuccessorFloor}`,
+      `reviewed stable successor tuple version ${allowedTuples["successor-stable"].version} must be at or above functional successor floor ${functionalSuccessorFloor}`,
     );
   }
   return {
@@ -164,16 +197,60 @@ export function normalizeReleaseTargets(raw) {
   };
 }
 
-export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH) {
+function normalizeBurnedVersions(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.burned)) {
+    throw new Error("burned-versions declaration requires burned: []");
+  }
+  const versions = [];
+  for (const entry of raw.burned) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || typeof entry.version !== "string" || typeof entry.reason !== "string" || entry.reason.trim() === "") {
+      throw new Error("each burned-versions entry requires version and non-empty reason");
+    }
+    assertVersion(entry.version);
+    if (versions.includes(entry.version)) throw new Error(`burned version ${entry.version} is declared twice`);
+    versions.push(entry.version);
+  }
+  return versions;
+}
+
+async function loadBurnedVersions(file) {
+  return normalizeBurnedVersions(JSON.parse(await readFile(file, "utf8")));
+}
+
+async function assertCheckedInCliVersion(manifest, file) {
+  const cli = JSON.parse(await readFile(file, "utf8"));
+  const successor = manifest.allowed_tuples["successor-stable"];
+  if (cli?.name !== successor.package || cli?.version !== successor.version) {
+    throw new Error(
+      `packages/cli/package.json must declare successor ${successor.package}@${successor.version}; observed ${cli?.name ?? "unknown"}@${cli?.version ?? "unknown"}`,
+    );
+  }
+}
+
+export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH, {
+  burnedFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_BURNED_VERSIONS_PATH : null,
+  cliPackageFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_CLI_PACKAGE_PATH : null,
+} = {}) {
   const raw = JSON.parse(await readFile(file, "utf8"));
-  return normalizeReleaseTargets(raw);
+  const burnedVersions = burnedFile ? await loadBurnedVersions(burnedFile) : [];
+  const manifest = normalizeReleaseTargets(raw, { burnedVersions });
+  if (cliPackageFile) await assertCheckedInCliVersion(manifest, cliPackageFile);
+  return manifest;
 }
 
-/** Lazy synchronous compatibility helper for legacy pure release emitters; never runs at import time. */
+/** Lazy synchronous authority for pure release emitters; never runs at import time. */
+export function defaultReleaseManifest() {
+  const raw = JSON.parse(readFileSync(DEFAULT_RELEASE_TARGETS_PATH, "utf8"));
+  const burned = normalizeBurnedVersions(JSON.parse(readFileSync(DEFAULT_BURNED_VERSIONS_PATH, "utf8")));
+  return Object.freeze(normalizeReleaseTargets(raw, { burnedVersions: burned }));
+}
+
+/** Lazy synchronous compatibility helper for pure release emitters; never runs at import time. */
 export function defaultReleaseTargets() {
-  return Object.freeze(normalizeReleaseTargets(JSON.parse(readFileSync(DEFAULT_RELEASE_TARGETS_PATH, "utf8"))).targets);
+  return Object.freeze(defaultReleaseManifest().targets);
 }
 
+/** Compatibility lookup only: shared package names intentionally remain ambiguous. */
 export function targetFromPackageName(packageName, targets = defaultReleaseTargets()) {
   const matches = Object.values(targets).filter((target) => target.package.name === packageName);
   return matches.length === 1 ? matches[0].id : null;
