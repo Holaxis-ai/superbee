@@ -7,24 +7,24 @@ description: A durable outcome or body of work that groups related Tasks and pre
 fields:
   required:
     - title
-    - status
+    - progress_status
   optional:
     - description
   values:
-    status:
+    progress_status:
       - active
       - paused
       - archived
   value_descriptions:
-    status:
+    progress_status:
       active: The Project is currently being pursued.
       paused: Work is intentionally suspended but may resume.
       archived: The Project is no longer active and is retained for context.
   terminal:
-    status:
+    progress_status:
       - archived
   descriptions:
-    status: Whether the Project is active work, intentionally paused, or archived.
+    progress_status: Whether the Project is active work, intentionally paused, or archived.
     description: A concise statement of the Project's intended outcome or scope.
 expects_inbound:
   part of: Task

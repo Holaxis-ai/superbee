@@ -536,16 +536,24 @@ export class BridgeService {
       return { reply: ok(request.id, request.bridge, request.type, result) };
     }
     if (request.type === "read" || request.type === "read-versioned") {
-      const result = await readDocVersioned(this.options.bundle, request.docId);
+      const [result, registry, okfVersion] = await Promise.all([
+        readDocVersioned(this.options.bundle, request.docId),
+        loadKinds(this.options.bundle),
+        readBundleOkfVersion(this.options.bundle),
+      ]);
       if (Buffer.byteLength(result.doc.body, "utf8") > MAX_DOCUMENT_BODY_BYTES) {
         return { reply: fail(request.id, request.bridge, "TOO_LARGE", "the document body exceeded the 1 MiB View limit") };
       }
+      const kind = registry.kinds.get(String(result.doc.frontmatter.type ?? ""));
+      const projectedDoc = kind
+        ? { ...result.doc, frontmatter: projectLogicalKindFields(okfVersion, kind, result.doc.frontmatter) }
+        : result.doc;
       return {
         reply: ok(
           request.id,
           request.bridge,
           request.type,
-          request.type === "read" ? result.doc : result,
+          request.type === "read" ? projectedDoc : { ...result, doc: projectedDoc },
         ),
       };
     }

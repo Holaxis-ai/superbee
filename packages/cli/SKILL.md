@@ -56,7 +56,7 @@ initialize response reports the same running release. Superbee does not scan or 
 - `superbee doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--remote <url>]`
   — Write a generic OKF concept document
 - `superbee doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]`
-  — Patch given fields (incl. kind-declared fields like --status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version
+  — Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version
 - `superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]`
   — Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting
 - `superbee doc history <id> [--limit <n>] [--remote <url>]`
@@ -391,7 +391,7 @@ cat "$REFS/views/references/view-authoring-v0.md"
   file, then pass it to `doc update <id> --body-file <file> --expected-version <receipt-version>`.
   The body-out receipt's version comes from the same read, so this is a safe CAS edit cycle.
 - Mutations are idempotent: re-writing a doc or re-adding an existing link is a no-op (exit 0).
-- `new` and `doc update` accept a kind's declared fields as `--<field> <value>` (e.g. `--status done`);
+- `new` and `doc update` accept a kind's declared fields as `--<field> <value>` (e.g. `--progress_status done`);
   an unknown field or an out-of-enum value is rejected (exit 2). Run `kinds` to see a kind's fields.
 - `hook install` registers a SessionStart hook (Claude Code, Codex, OpenCode) that runs
   `session-start`: a quick best-effort pull of the shared board, then the home view — so a new

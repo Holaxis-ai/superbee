@@ -256,7 +256,7 @@ test("schema-deferred new preserves valid dynamic-field ordering", () => {
   const bundle = join(scratch, "bundle");
   const init = run(["init", "--dir", bundle, "--recipe", "work-tracking"], scratch);
   assert.equal(init.status, 0, init.stdout + init.stderr);
-  const created = run(["new", "Task", "--status", "todo", "valid-interspersed", "--title", "Valid", "--dir", bundle], scratch);
+  const created = run(["new", "Task", "--progress_status", "todo", "valid-interspersed", "--title", "Valid", "--dir", bundle], scratch);
   assert.equal(created.status, 0, created.stdout + created.stderr);
   assert.ok(existsSync(join(bundle, "tasks/valid-interspersed.md")));
 });

@@ -13,22 +13,22 @@ link_descriptions:
   reviews task: Implementation work whose scope or result informs the judgment.
   reviews roadmap item: The strategic commitment affected by the judgment.
 fields:
-  required: [title, status, reviewer, requested_by, question]
+  required: [title, progress_status, reviewer, requested_by, question]
   optional: [decision_summary, decided_at]
   values:
-    status: [requested, in_review, changes_requested, approved, canceled]
+    progress_status: [requested, in_review, changes_requested, approved, canceled]
   value_descriptions:
-    status:
+    progress_status:
       requested: Ready for the reviewer; no review is yet in progress.
       in_review: The reviewer is actively considering the request.
       changes_requested: Work must be addressed before another decision.
       approved: The reviewer accepted the proposal; terminal for this request.
       canceled: The requester withdrew the request; terminal for this request.
   terminal:
-    status: [approved, canceled]
+    progress_status: [approved, canceled]
   descriptions:
     title: A concise label for the review outcome being sought.
-    status: The persisted review lifecycle state, not an activity update.
+    progress_status: The persisted review lifecycle state, not an activity update.
     reviewer: The human expected to make the judgment; coordination metadata, not authorization.
     requested_by: The human accountable for the scope and evidence supplied.
     question: The exact judgment the reviewer is being asked to make.

@@ -15,7 +15,7 @@ pages:
 
 Installs the portable Task and Project data model plus a live board over that model. Tasks may stand
 alone or link to an optional Project, and may declare dependencies on other Tasks. The board lets a
-human filter and inspect the same data agents use, then propose status, priority, assignee, and due
+human filter and inspect the same data agents use, then propose workflow state, priority, assignee, and due
 date changes through trusted shell confirmation.
 
 This definitions-only package carries no Task or Project instances. Installing it gives an empty,

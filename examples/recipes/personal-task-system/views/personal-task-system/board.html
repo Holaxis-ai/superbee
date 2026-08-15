@@ -148,14 +148,14 @@
     if(pri==="none"&&f.priority)return false;if(pri!=="all"&&pri!=="none"&&f.priority!==pri)return false;
     return true;
   }).sort(sortTasks)}
-  function card(task){var f=fm(task),projectId=projectsByTask[task.id],project=projects[projectId],due=dateLabel(f.due),action=primary(f.status),deps=dependenciesByTask[task.id]||[];
+  function card(task){var f=fm(task),projectId=projectsByTask[task.id],project=projects[projectId],due=dateLabel(f.due),action=primary(f.progress_status),deps=dependenciesByTask[task.id]||[];
     var html='<article class="card" data-task="'+esc(task.id)+'"><div class="card-top"><span class="priority '+esc(f.priority||"")+'" title="'+esc(f.priority||"unprioritized")+'"></span><span class="id">'+esc(task.id)+'</span></div><h3>'+esc(f.title||task.id)+'</h3><div class="meta">';
     if(projectId)html+='<span class="chip project">'+esc(project&&fm(project).title||projectId)+'</span>';
     if(f.assignee)html+='<span class="chip">'+esc(f.assignee)+'</span>';
     if(due.text)html+='<span class="chip'+(due.overdue?' overdue':'')+'">'+esc(due.text)+'</span>';
     html+='</div>';
     if(deps.length)html+='<div class="dependency">Depends on '+deps.length+' task'+(deps.length===1?'':'s')+'</div>';
-    html+='<div class="actions">';if(action)html+='<button class="primary" data-field="status" data-value="'+action.value+'"'+(busy?' disabled':'')+'>'+action.label+'</button>';
+    html+='<div class="actions">';if(action)html+='<button class="primary" data-field="progress_status" data-value="'+action.value+'"'+(busy?' disabled':'')+'>'+action.label+'</button>';
     html+='<details class="edit"><summary>Quick edit</summary><div class="edit-panel">'+
       '<label>Priority<select data-edit="priority"><option value="high"'+(f.priority==='high'?' selected':'')+'>High</option><option value="medium"'+(f.priority==='medium'?' selected':'')+'>Medium</option><option value="low"'+(f.priority==='low'?' selected':'')+'>Low</option></select></label>'+
       '<button data-save="priority"'+(busy?' disabled':'')+'>Propose priority</button>'+
@@ -165,7 +165,7 @@
   }
   function render(){var rows=filtered();summary.textContent=tasks.length+' tasks · '+Object.keys(projects).length+' projects · changes update live';
     if(!tasks.length){board.innerHTML='<div class="empty board-empty"><strong>No tasks yet</strong>Ask your agent to create a Task; it will appear here live.</div>';return;}
-    var html='';columns.forEach(function(column){var matches=rows.filter(function(task){return fm(task).status===column.status});html+='<section class="column"><div class="column-head"><h2>'+column.label+'</h2><span class="count">'+matches.length+'</span></div><div class="cards">';
+    var html='';columns.forEach(function(column){var matches=rows.filter(function(task){return fm(task).progress_status===column.status});html+='<section class="column"><div class="column-head"><h2>'+column.label+'</h2><span class="count">'+matches.length+'</span></div><div class="cards">';
       if(matches.length)matches.forEach(function(task){html+=card(task)});else html+='<div class="empty">Nothing here</div>';html+='</div></section>';});board.innerHTML=html;
     board.querySelectorAll('[data-field]').forEach(function(button){button.addEventListener('click',function(){void change(button.closest('.card').dataset.task,button.dataset.field,button.dataset.value)})});
     board.querySelectorAll('[data-save]').forEach(function(button){button.addEventListener('click',function(){var cardEl=button.closest('.card'),field=button.dataset.save,input=cardEl.querySelector('[data-edit="'+field+'"]');if(input.value)void change(cardEl.dataset.task,field,input.value);else showToast('Enter a value before proposing the change.',true)})});

@@ -414,7 +414,7 @@ function renderNotesSection(extraBullets: string[] = []): string[] {
   lines.push("  The body-out receipt's version comes from the same read, so this is a safe CAS edit cycle.");
   lines.push("- Mutations are idempotent: re-writing a doc or re-adding an existing link is a no-op (exit 0).");
   lines.push(
-    "- `new` and `doc update` accept a kind's declared fields as `--<field> <value>` (e.g. `--status done`);",
+    "- `new` and `doc update` accept a kind's declared fields as `--<field> <value>` (e.g. `--progress_status done`);",
   );
   lines.push("  an unknown field or an out-of-enum value is rejected (exit 2). Run `kinds` to see a kind's fields.");
   lines.push(

@@ -240,6 +240,8 @@ export {
   kindInputFieldNames,
   readKindField,
   projectLogicalKindFields,
+  projectKindForAuthoring,
+  projectKindValidationWarnings,
   validateAgainstKind,
   defaultTimestampAndValidateAgainstRegistry,
   freshnessHorizonMs,

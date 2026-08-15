@@ -247,9 +247,29 @@ test("promote .md: parses the file and writes a REAL concept doc through the eng
     assert.equal(stored.frontmatter.type, "Spec");
     assert.equal(stored.frontmatter.title, "Auth");
     assert.match(stored.body, /Body\./);
-    assert.match(String(stored.frontmatter.timestamp), /^\d{4}-\d\d-\d\dT/); // defaulted
+    assert.equal(stored.frontmatter.timestamp, undefined);
+    assert.equal(stored.frontmatter.generated, undefined);
   } finally {
     await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test("promote .md: an explicit legacy bundle retains legacy timestamp normalization", async () => {
+  const dir = await tempDir();
+  const work = await tempDir();
+  try {
+    await initBundle(dir, { okfVersion: "0.1" });
+    const file = path.join(work, "legacy.md");
+    await writeFile(file, "---\ntype: Spec\ntitle: Legacy\n---\n\n# Legacy\n");
+
+    await runPromote([file, "--doc-key", "specs/legacy.md", "--dir", dir]);
+
+    const stored = await readDoc({ root: dir }, "specs/legacy");
+    assert.match(String(stored.frontmatter.timestamp), /^\d{4}-\d\d-\d\dT/);
+    assert.equal(stored.frontmatter.generated, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
     await rm(work, { recursive: true, force: true });
   }
 });

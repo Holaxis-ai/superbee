@@ -17,7 +17,7 @@ test("built CLI new persists prototype-looking options as exact own properties a
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-new-built-"));
   try {
     const bundle: Bundle = { root: dir };
-    await initBundle(dir);
+    await initBundle(dir, { okfVersion: "0.1" });
     const cases = [
       { field: "__proto__", args: ["--__proto__", "proto-value"], expected: "proto-value", values: ["proto-value"] },
       { field: "constructor", args: ["--constructor=ctor-value"], expected: "ctor-value", values: ["ctor-value"] },
@@ -61,7 +61,7 @@ test("built CLI new accepts logical progress_status while preserving v0.1 status
   const dir = await mkdtemp(path.join(tmpdir(), "superbee-progress-new-"));
   try {
     const bundle: Bundle = { root: dir };
-    await initBundle(dir);
+    await initBundle(dir, { okfVersion: "0.1" });
     await writeDoc(bundle, {
       id: "conventions/task",
       frontmatter: {
@@ -85,7 +85,7 @@ test("built CLI new accepts logical progress_status while preserving v0.1 status
     );
     assert.equal(result.status, 0, `stdout=${result.stdout} stderr=${result.stderr}`);
     const receipt = JSON.parse(result.stdout) as Record<string, unknown>;
-    assert.deepEqual(receipt.field_coordinates, [{ logical_field: "progress_status", stored_as: "status" }]);
+    assert.equal(receipt.field_coordinates, undefined);
     const saved = await readDoc(bundle, "tasks/logical");
     assert.equal(saved.frontmatter.status, "todo");
     assert.equal(Object.hasOwn(saved.frontmatter, "progress_status"), false);
@@ -96,7 +96,8 @@ test("built CLI new accepts logical progress_status while preserving v0.1 status
       { encoding: "utf8" },
     );
     assert.equal(duplicate.status, 2, `stdout=${duplicate.stdout} stderr=${duplicate.stderr}`);
-    assert.match(duplicate.stdout, /same stored field 'status'/);
+    assert.match(duplicate.stdout, /'progress_status' was supplied more than once/);
+    assert.doesNotMatch(duplicate.stdout, /--status|stored field/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -116,15 +117,52 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
         path: "tasks/",
         fields: {
           required: ["title", "superbee_progress_status"],
-          optional: ["status"],
+          optional: ["status", "priority"],
           values: {
             superbee_progress_status: ["todo", "done"],
             status: ["draft", "stable", "deprecated"],
+            priority: ["high"],
           },
         },
       },
       body: "",
     });
+    const help = spawnSync("node", [cliBin, "new", "Task", "--help", "--dir", dir], { encoding: "utf8" });
+    assert.equal(help.status, 0, `stdout=${help.stdout} stderr=${help.stderr}`);
+    assert.match(help.stdout, /--progress_status <v>  required/);
+    assert.doesNotMatch(help.stdout, /superbee_progress_status|stored as/);
+
+    const missingProgress = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "missing-progress", "--title", "Missing", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
+    assert.match(missingProgress.stdout, /progress_status/);
+    assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
+
+    for (const duplicateFields of [
+      ["--progress_status", "todo", "--superbee_progress_status", "done"],
+      ["--superbee_progress_status", "todo", "--progress_status", "done"],
+    ]) {
+      const duplicate = spawnSync(
+        "node",
+        [cliBin, "new", "Task", `duplicate-${duplicateFields[0]!.includes("superbee") ? "raw" : "logical"}`, "--title", "Duplicate", ...duplicateFields, "--dir", dir, "--json"],
+        { encoding: "utf8" },
+      );
+      assert.equal(duplicate.status, 2, `stdout=${duplicate.stdout} stderr=${duplicate.stderr}`);
+      assert.match(duplicate.stdout, /'progress_status' was supplied more than once/);
+      assert.doesNotMatch(duplicate.stdout, /superbee_progress_status/);
+    }
+
+    const literalValue = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "literal-value", "--title", "Literal", "--progress_status", "todo", "--priority", "superbee_progress_status", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(literalValue.status, 2, `stdout=${literalValue.stdout} stderr=${literalValue.stderr}`);
+    assert.match(literalValue.stdout, /'priority' value 'superbee_progress_status'/);
+
     const result = spawnSync(
       "node",
       [cliBin, "new", "Task", "v02", "--title", "V02", "--progress_status", "todo", "--status", "stable", "--dir", dir, "--json"],
@@ -138,6 +176,7 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(Object.hasOwn(saved.frontmatter, "timestamp"), false);
     assert.equal(Object.hasOwn(saved.frontmatter, "actor"), false);
     assert.equal(Object.hasOwn(saved.frontmatter, "generated"), false);
+    assert.equal((JSON.parse(result.stdout) as Record<string, unknown>).field_coordinates, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

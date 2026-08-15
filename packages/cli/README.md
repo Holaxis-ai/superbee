@@ -25,7 +25,7 @@ superbee
 superbee recipes
 superbee init --create-only --recipe work-tracking --dir .agentstate-lite
 superbee new "Task" first-task --title "Plan the first change" \
-  --status todo --actor quickstart-agent --dir .agentstate-lite
+  --progress_status todo --actor quickstart-agent --dir .agentstate-lite
 superbee --dir .agentstate-lite
 ```
 

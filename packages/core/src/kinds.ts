@@ -211,6 +211,62 @@ export function projectLogicalKindFields(
   return projected;
 }
 
+/**
+ * Project a parsed Kind convention into Superbee's authoring vocabulary. Stored convention bytes
+ * remain untouched; product-facing schema/help surfaces use this view so an edition-specific
+ * workflow coordinate never becomes something an author has to learn.
+ */
+export function projectKindForAuthoring(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+): KindConvention {
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  if (!progress) return kind;
+  const projectField = (field: string): string =>
+    field === progress.storageField ? progress.logicalField : field;
+  const projectRecord = <T>(record: Record<string, T>): Record<string, T> => {
+    const projected: Record<string, T> = {};
+    for (const [field, value] of Object.entries(record)) {
+      setOwn(projected, projectField(field), value);
+    }
+    return projected;
+  };
+  return {
+    ...kind,
+    fields: {
+      required: kind.fields.required.map(projectField),
+      optional: kind.fields.optional.map(projectField),
+      values: projectRecord(kind.fields.values),
+      valueDescriptions: kind.fields.valueDescriptions
+        ? projectRecord(kind.fields.valueDescriptions)
+        : undefined,
+      terminal: projectRecord(kind.fields.terminal),
+      descriptions: projectRecord(kind.fields.descriptions),
+    },
+  };
+}
+
+/** Project Kind-validation findings into the same authoring vocabulary as the Kind schema. */
+export function projectKindValidationWarnings(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+  warnings: ValidationWarning[],
+): ValidationWarning[] {
+  const progress = progressStatusCoordinate(okfVersion, kind);
+  if (!progress) return warnings;
+  const stored = `'${progress.storageField}'`;
+  const logical = `'${progress.logicalField}'`;
+  return warnings.map((warning) => warning.field === progress.storageField
+    ? {
+        ...warning,
+        field: progress.logicalField,
+        // Core's Kind warnings name the field first. Replace that one coordinate only; a later
+        // occurrence may be the user's literal value and must remain byte-truthful.
+        message: warning.message.replace(stored, logical),
+      }
+    : warning);
+}
+
 /** True for a plain YAML/JSON map (excludes arrays, `null`, dates, and other object instances). */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;

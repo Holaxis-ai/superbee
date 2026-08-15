@@ -12,7 +12,16 @@
 // over `--dir` and `--remote` alike (it is just a doc read + write). Idempotent: adding an
 // already-declared field, or removing an absent one, is a no-op that exits 0.
 import { parseArgs } from "node:util";
-import { loadKinds, RESERVED_KIND_FIELD_NAMES, type Frontmatter } from "@superbee/core";
+import {
+  loadKinds,
+  PROGRESS_STATUS_FIELD,
+  progressStatusStorageField,
+  projectKindForAuthoring,
+  readBundleOkfVersion,
+  resolveKindFieldCoordinate,
+  RESERVED_KIND_FIELD_NAMES,
+  type Frontmatter,
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";
@@ -133,19 +142,19 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
   }
   const kindName = selection.payload!.kindName?.trim();
   const action = selection.payload!.action;
-  const fieldName = selection.payload!.fieldName?.trim();
+  const requestedFieldName = selection.payload!.fieldName?.trim();
   if (!kindName) {
     throw new CliError("USAGE", 'kind field requires a "<Kind>"', { help: helpHint });
   }
-  if (!fieldName) {
+  if (!requestedFieldName) {
     throw new CliError("USAGE", `kind field "${kindName}" ${action} requires a <name>`, { help: helpHint });
   }
   // Reject new collisions, but keep `remove` available as the supported migration path for a
   // convention authored before a name became reserved.
-  if (action === "add" && RESERVED_FIELD_NAMES.has(fieldName)) {
+  if (action === "add" && RESERVED_FIELD_NAMES.has(requestedFieldName)) {
     throw new CliError(
       "USAGE",
-      `'${fieldName}' is reserved by the CLI and cannot be added as a kind field.`,
+      `'${requestedFieldName}' is reserved by the CLI and cannot be added as a kind field.`,
       { help: helpHint },
     );
   }
@@ -172,7 +181,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
   }
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
-  const registry = await loadKinds(bundle);
+  const [registry, okfVersion] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
   const target = registry.kinds.get(kindName);
   if (!target) {
     const known = [...registry.kinds.keys()].sort();
@@ -184,6 +193,13 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
       { help: `${cliInvocation()} kinds` },
     );
   }
+  const existingCoordinate = resolveKindFieldCoordinate(okfVersion, target, requestedFieldName);
+  const preparedEdition = okfVersion?.trim() || "0.1";
+  const fieldName = existingCoordinate?.storageField ?? (
+    requestedFieldName === PROGRESS_STATUS_FIELD
+      ? (progressStatusStorageField(okfVersion) ?? requestedFieldName)
+      : requestedFieldName
+  );
 
   // Edit the governing convention doc's RAW frontmatter.fields, preserving
   // governs/path/sections/timestamp/body. `target.id` is the convention's own concept id.
@@ -211,7 +227,14 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
     strict: false, // this command EDITS the schema itself — it never validates against one
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor: values.actor?.trim(),
-    buildCandidate: (existingDoc) => {
+    buildCandidate: (existingDoc, context) => {
+      if (context.okfVersion !== preparedEdition) {
+        throw new CliError(
+          "STALE_HEAD",
+          `the bundle format changed while editing the '${kindName}' kind — rerun against the current bundle`,
+          { help: `${cliInvocation()} kinds` },
+        );
+      }
       const existing = existingDoc!;
       const fm = existing.frontmatter;
 
@@ -350,16 +373,21 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
   const changed = result.changed ?? false;
   // Report the RESULTING schema (reload so the derived KindConvention reflects the write).
   const after = changed ? (await loadKinds(bundle)).kinds.get(kindName) : target;
+  const authoringAfter = after ? projectKindForAuthoring(okfVersion, after) : undefined;
   const receipt: Record<string, unknown> = {
     kind: kindName,
     changed,
     action,
-    field: fieldName,
+    field: requestedFieldName,
     convention: target.id,
-    required: after?.fields.required ?? computedRequired,
-    optional: after?.fields.optional ?? computedOptional,
+    required: authoringAfter?.fields.required ?? computedRequired.map((field) =>
+      field === fieldName ? requestedFieldName : field,
+    ),
+    optional: authoringAfter?.fields.optional ?? computedOptional.map((field) =>
+      field === fieldName ? requestedFieldName : field,
+    ),
   };
-  const resultValues = after?.fields.values ?? computedValues;
+  const resultValues = authoringAfter?.fields.values ?? computedValues;
   if (Object.keys(resultValues).length > 0) receipt.values = resultValues;
   receipt.help = [`${cliInvocation()} kinds`];
   stdout(render(receipt, resolveMode(values)));

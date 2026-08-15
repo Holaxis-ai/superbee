@@ -67,7 +67,7 @@ Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
 isn't in the bundle — informational, since OKF permits links to not-yet-written knowledge; external
 links are excluded entirely), an orphan scan (concept docs with zero inbound links from OTHER
-concept docs), a freshness sweep over OKF v0.2 'stale_after' dates and kinds that declare a horizon
+concept docs), a freshness sweep over standard 'stale_after' dates and kinds that declare a horizon
 (an elapsed absolute date or exceeded horizon is 'stale'; a horizon-governed doc with no usable
 meaningful-change time is counted 'no_timestamp'), and two graph lints over any declared
 'links'/'expects_inbound' vocabulary (see
@@ -101,7 +101,7 @@ Category semantics (one line each):
                       not content, and nothing is expected to cite them — so they are NOT
                       special-cased out of the count or the rows; the 'type' column on each row is
                       how you tell schema from content at a glance.
-  stale              An OKF v0.2 doc on/after its 'stale_after' date, or a governed doc whose
+  stale              A doc on/after its standard 'stale_after' date, or a governed doc whose
                       meaningful-change time is older than its kind's freshness horizon.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
@@ -139,8 +139,8 @@ Category semantics (one line each):
                       'entry', or 'id+entry'. Fix by moving the doc under a registry prefix /
                       pointing 'entry' at a real 'views/…' key. Same presence rule as
                       'dangling_view_entries'.
-  okf_upgrade        Present only when a v0.1 bundle declares workflow 'status' values that
-                      collide with OKF v0.2's lifecycle vocabulary. The bundle remains supported;
+  okf_upgrade        Present only when a legacy bundle declares workflow 'status' values that
+                      collide with the current standard lifecycle vocabulary. The bundle remains supported;
                       this is migration-readiness guidance, never an automatic rewrite.
   legacy_naming      FINDING: the legacy View names are no longer accepted by the runtime — a
                       doc typed 'Page' (the legacy name for the 'View' kind) does not register

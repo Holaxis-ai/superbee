@@ -21,6 +21,7 @@
 import { useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listAllHeads } from "../api/client.js";
+import { fetchKindContext } from "../api/pages.js";
 import type { DocHead } from "../api/types.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { PAGE_TYPE_NAMES } from "../pages/registry.js";
@@ -28,6 +29,7 @@ import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import { mutationActorFromFrontmatter } from "@superbee/core/mutation-attribution";
+import { projectLogicalKindFields, type KindConvention } from "@superbee/core/kinds";
 
 /** How many rows the feed shows — recent pulse, not a history browser. */
 export const FEED_LIMIT = 8;
@@ -63,20 +65,27 @@ export function isFeedHead(head: DocHead): boolean {
 }
 
 /** Project heads into display rows: filtered, newest-first by `timestamp` (undated last), capped at {@link FEED_LIMIT}. Pure — the unit-tested core. */
-export function feedRows(heads: DocHead[]): FeedRow[] {
+export function feedRows(heads: DocHead[], okfVersion: string, kinds: readonly KindConvention[]): FeedRow[] {
+  const kindsByType = new Map(kinds.map((kind) => [kind.governs, kind]));
   return heads
     .filter(isFeedHead)
     .map((h) => {
+      const kindName = String(h.frontmatter.type ?? "Doc");
+      const kind = kindsByType.get(kindName);
+      const projected = kind
+        ? projectLogicalKindFields(okfVersion, kind, h.frontmatter)
+        : h.frontmatter;
       const timestamp = stringField(meaningfulChangeTimeValue(h.frontmatter));
       return {
         id: h.id,
         version: h.version,
-        kind: String(h.frontmatter.type ?? "Doc"),
+        kind: kindName,
         title: stringField(h.frontmatter.title) ?? h.id,
         actor: mutationActorFromFrontmatter(h.frontmatter),
-        // Read GENERICALLY off frontmatter — any kind that declares these gets them; no Task
-        // special-casing, and a bundle whose kinds declare neither renders exactly as before.
-        status: stringField(h.frontmatter.status),
+        // Workflow progress is Kind-aware and edition-neutral. In current bundles a lifecycle
+        // `status` is never mistaken for task progress; legacy bundles project their declared
+        // status coordinate through the same logical field.
+        status: stringField(projected.progress_status),
         assignee: stringField(h.frontmatter.assignee),
         when: formatWhen(timestamp),
         timestamp: timestamp ?? "",
@@ -99,7 +108,13 @@ export function freshIds(rows: FeedRow[], previous: Map<string, string> | null):
 
 export function ActivityFeed() {
   const queryClient = useQueryClient();
-  const feedQuery = useQuery({ queryKey: ["activity"], queryFn: () => listAllHeads({}) });
+  const feedQuery = useQuery({
+    queryKey: ["activity"],
+    queryFn: async () => {
+      const [heads, kindContext] = await Promise.all([listAllHeads({}), fetchKindContext()]);
+      return { heads, ...kindContext };
+    },
+  });
   const previousRef = useRef<Map<string, string> | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -124,7 +139,9 @@ export function ActivityFeed() {
     });
   }, [queryClient]);
 
-  const rows = feedRows(feedQuery.data ?? []);
+  const rows = feedQuery.data
+    ? feedRows(feedQuery.data.heads, feedQuery.data.okfVersion, feedQuery.data.kinds)
+    : [];
   const fresh = freshIds(rows, previousRef.current);
 
   // Snapshot AFTER computing freshness so the next data change diffs against this render's rows.

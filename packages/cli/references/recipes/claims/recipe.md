@@ -3,7 +3,7 @@ type: Recipe
 id: claims
 title: Claims
 version: 1.0.0
-summary: "Declares the Claim kind: event-lifecycle claims for data-derived numbers (status enum active/challenged/locked/deprecated, required provenance), composed entirely from lite primitives"
+summary: "Declares the Claim kind: event-lifecycle claims for data-derived numbers (progress_status enum active/challenged/locked/deprecated, required provenance), composed entirely from lite primitives"
 ---
 
 # Claims
@@ -13,7 +13,7 @@ ported from the holaxis-claims event-sourced JSONL system onto lite's native pri
 
 A claim is a `type: Claim` doc under `claims/<section>/`. Its **title carries the claim
 text with its specific numbers** ("759 tests pass across six workspaces" — not "the suite
-is green"). Its lifecycle is the validated `status` enum: `active` (filed, working
+is green"). Its lifecycle is the validated `progress_status` enum: `active` (filed, working
 hypothesis) → `challenged` (under independent verification) → `locked` (provenance chain
 verified end-to-end; only locked claims belong in final outputs) — or `deprecated` (facts
 changed; never delete, file a successor and link it). `reason` records how the number was
@@ -30,5 +30,5 @@ Everything composes from existing primitives — no claims engine:
 
 Rules of use (the discipline the schema cannot enforce): claims are the source of truth
 for numbers — a number in a document without a locked claim is unverified; weight by
-status; verify by re-running `evidence_command`, not by re-reading the claim; a locked
+progress status; verify by re-running `evidence_command`, not by re-reading the claim; a locked
 claim is never edited — deprecate it and file a successor.

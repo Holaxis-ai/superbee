@@ -1,8 +1,9 @@
 // `superbee artifact create <file> --title <title>` — the ONE command that owns the
 // produced-output sequence (designs/artifact-runtime Unit 1): derive a collision-safe id, promote
 // the bytes to `artifacts/<id>.html` (capturing the version in-process — the agent never sees a
-// hash), and create-only the `type: Artifact` record with `entry` + `entry_version` + `status:
-// active`. `--supersedes <id>` additionally flips the prior artifact to `superseded` and links this
+// hash), and create-only the `type: Artifact` record with `entry` + `entry_version` + logical
+// workflow state `active`. `--supersedes <id>` additionally flips the prior artifact to
+// `superseded` and links this
 // one `supersedes` it.
 //
 // Order is derive-id → promote → record (blob-FIRST is required: the blob's version is only known
@@ -18,7 +19,16 @@
 // the generic path (the reason `note` was deleted): it owns a fumble-prone multi-step sequence.
 import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
-import { loadKinds, queryHeads, listBlobs, readDoc, writeBlob, type Bundle, type Frontmatter } from "@superbee/core";
+import {
+  loadKinds,
+  progressStatusStorageField,
+  queryHeads,
+  listBlobs,
+  readDoc,
+  writeBlob,
+  type Bundle,
+  type Frontmatter,
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { mutateDoc } from "../mutate.js";
 import { boardPostPersistHook } from "../board-attribution.js";
@@ -37,7 +47,7 @@ Usage:
 
 'create' owns the whole sequence: it promotes <file>'s bytes under artifacts/, captures the version,
 derives a collision-safe id from the title, and writes the type:Artifact record (entry, entry_version,
-status: active). One command — no version hash to copy, no two-object dance.
+workflow state: active). One command — no version hash to copy, no two-object dance.
 
 Options:
   --title <title>       REQUIRED — the artifact's human title (and the basis for its id)
@@ -198,7 +208,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   }
 
   // 2. Create the record (create-only CAS; strict validation applies only if an Artifact convention is declared).
-  const frontmatter: Frontmatter = { type: "Artifact", title, status: "active", entry: entryKey, entry_version: entryVersion };
+  const frontmatter: Frontmatter = { type: "Artifact", title, entry: entryKey, entry_version: entryVersion };
   const description = (values.description as string | undefined)?.trim();
   if (description) frontmatter.description = description;
   let createdId: string;
@@ -214,7 +224,13 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
       actor,
       persistActor: true,
       onPersisted: boardPostPersistHook(bundle, actor),
-      buildCandidate: () => ({ frontmatter, body }),
+      buildCandidate: (_existing, context) => ({
+        frontmatter: {
+          ...frontmatter,
+          [progressStatusStorageField(context.okfVersion)!]: "active",
+        },
+        body,
+      }),
       errors: {
         // The id is free by construction (record + blob both checked), so this only fires on a race
         // with a concurrent writer. The catch below owns the orphaned-blob note uniformly.
@@ -252,15 +268,21 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
         actor,
         persistActor: true,
         onPersisted: boardPostPersistHook(bundle, actor),
-        buildCandidate: (existingDoc) => {
+        buildCandidate: (existingDoc, context) => {
           // patch mode guarantees the target exists; narrow it so the required Frontmatter.type carries over.
           if (!existingDoc) throw new CliError("NOT_FOUND", `'${supersedes}' does not exist`);
-          return { frontmatter: { ...existingDoc.frontmatter, status: "superseded" }, body: existingDoc.body };
+          return {
+            frontmatter: {
+              ...existingDoc.frontmatter,
+              [progressStatusStorageField(context.okfVersion)!]: "superseded",
+            },
+            body: existingDoc.body,
+          };
         },
         errors: {},
       });
     } catch (err) {
-      supersedeNote = `FAILED to mark '${supersedes}' superseded: ${err instanceof Error ? err.message : String(err)} — the new artifact and its 'supersedes' link are written; run '${cliInvocation()} doc update ${supersedes} --status superseded'.`;
+      supersedeNote = `FAILED to mark '${supersedes}' superseded: ${err instanceof Error ? err.message : String(err)} — the new artifact and its 'supersedes' link are written; inspect '${supersedes}' and retry the update using its declared workflow field.`;
     }
   }
 

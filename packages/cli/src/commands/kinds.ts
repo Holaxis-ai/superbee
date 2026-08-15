@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import {
   freshnessHorizonMs,
   loadKinds,
-  progressStatusCoordinate,
+  projectKindForAuthoring,
   readBundleOkfVersion,
   type KindConvention,
 } from "@superbee/core";
@@ -29,10 +29,10 @@ kind's purpose, required/optional fields and their descriptions, allowed enum va
 sections, and an optional freshness horizon. See 'superbee new --help' to create an
 instance of a declared kind.
 
-Rows also expose logical_fields when Superbee provides a version-aware authoring alias. In
-particular, progress_status reports the concrete frontmatter key used by this bundle edition.
+Rows use Superbee's logical authoring vocabulary. For example, workflow state is always named
+progress_status even when a legacy bundle stores that value under an older coordinate.
 
-Declaring a kind convention (frontmatter keys core reads — everything else is unread prose):
+Kind schema vocabulary (the product-facing projection; raw document reads remain raw):
   governs              string   required — the 'type' value this convention governs
   title                string   optional — display title (defaults to governs)
   description          string   optional — the kind's purpose and intended use
@@ -46,7 +46,7 @@ Declaring a kind convention (frontmatter keys core reads — everything else is 
                         map      enum field -> allowed value -> human guidance. Guidance only; it
                                  does not add transitions, guards, aliases, or validation behavior
   fields.terminal      map      field name -> subset of that field's values marking an instance
-                                 "done" (e.g. status: [done, canceled]). A field named here SHOULD
+                                 "done" (e.g. progress_status: [done, canceled]). A field named here SHOULD
                                  also be declared in fields.values (a coherence warning otherwise);
                                  a value named here that isn't one of that field's allowed values
                                  also warns. Drives 'list --open' (excludes terminal instances) and
@@ -90,6 +90,7 @@ export interface KindsCliDeps {
 
 /** Project one KindConvention into the flat row shape `kinds` renders. */
 function toRow(kind: KindConvention, okfVersion: string | undefined): Record<string, unknown> {
+  kind = projectKindForAuthoring(okfVersion, kind);
   const row: Record<string, unknown> = {
     governs: kind.governs,
     required: kind.fields.required,
@@ -119,15 +120,6 @@ function toRow(kind: KindConvention, okfVersion: string | undefined): Record<str
     row.horizon = kind.freshnessHorizon;
     const ms = freshnessHorizonMs(kind);
     if (ms !== undefined) row.horizon_ms = ms;
-  }
-  const progress = progressStatusCoordinate(okfVersion, kind);
-  if (progress) {
-    row.logical_fields = {
-      [progress.logicalField]: {
-        stored_as: progress.storageField,
-        author_with: `--${progress.logicalField}`,
-      },
-    };
   }
   return row;
 }

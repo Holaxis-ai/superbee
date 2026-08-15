@@ -27,9 +27,9 @@ node "$CLI" init --create-only --recipe work-tracking --dir "$BUNDLE" >/dev/null
 node "$CLI" recipe add roadmap --dir "$BUNDLE" >/dev/null
 node "$CLI" new Roadmap roadmap --title "Demo roadmap" --dir "$BUNDLE" >/dev/null
 node "$CLI" new "Roadmap Item" first-party-views --title "Try the first-party Views" \
-  --status active --sequence 1 --description "A small self-contained roadmap for this demo." \
+  --progress_status active --sequence 1 --description "A small self-contained roadmap for this demo." \
   --dir "$BUNDLE" >/dev/null
-node "$CLI" new Task open-the-view --title "Open the Roadmap View" --status todo \
+node "$CLI" new Task open-the-view --title "Open the Roadmap View" --progress_status todo \
   --dir "$BUNDLE" >/dev/null
 node "$CLI" link add roadmap roadmap-items/first-party-views --text contains --dir "$BUNDLE" >/dev/null
 node "$CLI" link add roadmap-items/first-party-views tasks/open-the-view --text contains --dir "$BUNDLE" >/dev/null
@@ -45,9 +45,9 @@ node "$CLI" promote "$HERE/pulse.html"                   --doc-key views/pulse.h
 node "$CLI" promote "$HERE/roadmap.html"                 --doc-key views/roadmap.html             --dir "$BUNDLE" >/dev/null
 node "$CLI" promote "$HERE/about.html"                   --doc-key views/about.html               --dir "$BUNDLE" >/dev/null
 
-# Discover a 'todo' task id to demo a live status change.
+# Discover a 'todo' task id to demo a live workflow-state change.
 TASK_ID="$(node "$CLI" list --type Task --dir "$BUNDLE" --json \
-  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const t=(j.docs||[]).find(d=>d.status==="todo");process.stdout.write(t?t.id:"")})')"
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const j=JSON.parse(s);const t=(j.docs||[]).find(d=>d.progress_status==="todo");process.stdout.write(t?t.id:"")})')"
 [ -n "$TASK_ID" ] || TASK_ID="tasks/<some-todo-task>"
 
 echo
@@ -67,12 +67,12 @@ echo "2) In a SECOND terminal, drive live updates against the SAME scratch bundl
 echo
 echo "   # move a task to done — watch a Roadmap item's rollup bar shift, and the row land fresh"
 echo "   # in Pulse's feed (~1s):"
-echo "   node $CLI doc update $TASK_ID --status done --dir $BUNDLE"
+echo "   node $CLI doc update $TASK_ID --progress_status done --dir $BUNDLE"
 echo
 echo "   # edit a view's HTML and save — watch the iframe HOT-RELOAD with the new bytes:"
 echo "   printf '\\n<!-- edited %s -->\\n' \"\$(date)\" >> $BUNDLE/views/pulse.html"
 echo
 echo "   # add a brand-new doc — watch it appear at the top of the Pulse feed:"
-echo "   node $CLI new Task tasks/demo-live --title 'Live demo task' --status todo --dir $BUNDLE"
+echo "   node $CLI new Task tasks/demo-live --title 'Live demo task' --progress_status todo --dir $BUNDLE"
 echo "──────────────────────────────────────────────────────────────────────────"
 echo "Scratch bundle (safe to delete): $SCRATCH"
