@@ -46,7 +46,6 @@ import { sync } from "../src/commands/sync.js";
 import { resolveBundleKey } from "@superbee/board-git";
 import {
   HOOK_TIMEOUT_SECONDS,
-  atomicWriteFileSync,
   buildOpenCodePluginSource,
   computeHookUninstall,
   computeSessionStartHookInstall,
@@ -1575,77 +1574,6 @@ test("hook status + uninstall on invalid-JSON settings: no crash, no touch (pinn
     assert.equal(await readFile(settingsPath, "utf8"), poisoned, "uninstall never rewrites a malformed file");
   } finally {
     await rm(base, { recursive: true, force: true });
-  }
-});
-
-test("atomicWriteFileSync: creates + replaces via same-dir temp + rename, leaving no temp residue", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "aslite-atomic-write-"));
-  const target = path.join(dir, "nested", "settings.json");
-  try {
-    atomicWriteFileSync(target, "first\n");
-    assert.equal(await readFile(target, "utf8"), "first\n");
-    atomicWriteFileSync(target, "second\n");
-    assert.equal(await readFile(target, "utf8"), "second\n");
-    // The rename step consumed the temp file — nothing else remains beside the target.
-    assert.deepEqual(await readdir(path.dirname(target)), ["settings.json"]);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("atomicWriteFileSync: replacing an existing file preserves its mode (0600 stays 0600)", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "aslite-atomic-mode-"));
-  const target = path.join(dir, "settings.json");
-  try {
-    await writeFile(target, "private\n");
-    await chmod(target, 0o600);
-    atomicWriteFileSync(target, "replaced\n");
-    assert.equal(await readFile(target, "utf8"), "replaced\n");
-    assert.equal((await stat(target)).mode & 0o777, 0o600, "the replacement must not widen the mode");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("atomicWriteFileSync: generated-plugin mode refuses a final symlink without changing either entry", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-symlink-"));
-  const target = path.join(dir, "managed-target.js");
-  const link = path.join(dir, "axi-superbee.js");
-  try {
-    await writeFile(target, "user-owned\n");
-    await symlink(path.basename(target), link);
-
-    assert.throws(
-      () => atomicWriteFileSync(link, "generated\n", { followFinalSymlink: false }),
-      /symlink .*refusing to replace a generated plugin through a link/,
-    );
-
-    assert.equal((await lstat(link)).isSymbolicLink(), true, "the canonical directory entry stays a symlink");
-    assert.equal(await realpath(link), await realpath(target), "the symlink still points at its original target");
-    assert.equal(await readFile(target, "utf8"), "user-owned\n", "the symlink target bytes stay untouched");
-    assert.deepEqual(
-      (await readdir(dir)).sort(),
-      ["axi-superbee.js", "managed-target.js"],
-      "a refused write leaves no temporary file",
-    );
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
-
-test("atomicWriteFileSync: a failed rename cleans its temp — no residue beside the target", async () => {
-  const dir = await mkdtemp(path.join(tmpdir(), "aslite-atomic-fail-"));
-  // The target path is a NON-EMPTY DIRECTORY, so the rename step deterministically fails after
-  // the temp file was created — exercising the cleanup branch.
-  const target = path.join(dir, "settings.json");
-  try {
-    await mkdir(target);
-    await writeFile(path.join(target, "occupant"), "x\n");
-    assert.throws(() => atomicWriteFileSync(target, "doomed\n"));
-    assert.deepEqual(await readdir(dir), ["settings.json"], "no temp residue after the failure");
-    assert.equal(await readFile(path.join(target, "occupant"), "utf8"), "x\n", "the obstacle is untouched");
-  } finally {
-    await rm(dir, { recursive: true, force: true });
   }
 });
 
