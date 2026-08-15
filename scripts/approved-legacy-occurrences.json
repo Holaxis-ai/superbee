@@ -1333,17 +1333,6 @@
       "line": 54
     },
     {
-      "file": "scripts/release-audit-tags.mjs",
-      "line_sha256": "191f24d28f3cc7701619733c7764b64dd9cda62788dfb27b54b11a613c6e966f",
-      "literal": "aslite",
-      "ordinal": 0,
-      "category": "release-artifact-or-schema",
-      "treatment": "bridge-or-successor-target-policy",
-      "owner": "release-policy",
-      "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 28
-    },
-    {
       "file": "scripts/release-candidate.mjs",
       "line_sha256": "1fd1e9375c7b624a457ca068e9e16324aabe467721ac0605b6c0da6f7bff3dc3",
       "literal": "aslite",

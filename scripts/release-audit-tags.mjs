@@ -1,17 +1,31 @@
-// Registry-observing release-policy audit (`npm run release:audit-tags`). Fetches the live
-// packument for @holaxis/aslite (dist-tags + versions + publish times) and FAILS when the
-// registry contradicts the ratified release policy:
+// The one registry-vs-policy authority. Two entry modes over the same derivation:
 //
-//   a. dist-tag state for the phase declared in release/phase.json, with the expected tags
-//      computed by scripts/release-state.mjs `resolveTags` — the one policy authority;
-//   b. version scheme: pre-stable publishes are `A.B.0-pre.N` with N contiguous from 1 and
-//      publish times monotone in N (decisions/version-update-contract §1);
-//   c. source-vs-registry drift: packages/cli/package.json must be the newest published
-//      version (pre-release-prep) or one sane increment ahead (staged-prep).
+//   `node scripts/release-audit-tags.mjs` (npm run release:audit-tags) — the scheduled audit of
+//   @holaxis/aslite. Fetches the live packument (dist-tags + versions + publish times) and FAILS
+//   when the registry contradicts the ratified release policy:
+//
+//     a. dist-tag state for the phase declared in release/phase.json. The PHASE MACHINE is
+//        scripts/release-state.mjs `resolveTags`; which dist-tags a version may ever carry is
+//        DERIVED from release/targets.json by `distTagDestiny` below. Those two compose and never
+//        overlap: the manifest decides eligibility, resolveTags decides the transient window.
+//     b. version scheme: pre-stable publishes are `A.B.0-pre.N` with N contiguous from 1 and
+//        publish times monotone in N (decisions/version-update-contract §1);
+//     c. source-vs-registry drift: packages/cli/package.json must be the newest published
+//        version (pre-release-prep) or one sane increment ahead (staged-prep).
+//
+//   `node scripts/release-audit-tags.mjs verify-promotion --target <id> --version <v> --mode <m>` —
+//   the finalizer's PRE-MUTATION precondition (.github/workflows/release-finalize.yml,
+//   target-authorized job). It proves the live registry already holds the dist-tag state the
+//   publication manifest declares for the version being finalized, BEFORE any job has mutated the
+//   draft release. The finalize workflow performs no npm registry write of its own: every npm write
+//   in this design is a 2FA operator action (`npm stage approve`, `npm dist-tag add`, both emitted
+//   by the stage receipt), so the workflow's job is to PROVE the declared state, not to produce it.
 //
 // NETWORK vs VIOLATION is structural, not textual: unreachable/unhealthy registry throws
-// NetworkUnavailableError -> exit 20 (CI turns that into a loud neutral skip); a policy
-// violation exits 1; usage errors exit 2. Deliberately NOT part of the offline `npm run check`
+// NetworkUnavailableError -> exit 20; a policy violation exits 1; usage errors exit 2. The two
+// callers read exit 20 differently — release-audit.yml turns it into a loud neutral skip (the audit
+// is a lint), release-finalize.yml treats every non-zero as fatal (a precondition that could not be
+// evaluated has not been met). The audit is deliberately NOT part of the offline `npm run check`
 // chain — ordinary gates run with the network off.
 
 import { readFile } from "node:fs/promises";
@@ -19,13 +33,22 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "./is-main-module.mjs";
+import { promoteOperation } from "./release-operations.mjs";
 import { resolveTags } from "./release-state.mjs";
+import { defaultReleaseManifest, loadReleaseTargets, resolveAllowedTupleByTarget } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
+export const REGISTRY_BASE_URL = "https://registry.npmjs.org";
+
+/** Packument URL for a package name; a scoped name's `/` is the escaped `%2f` the registry wants. */
+export function registryUrlFor(packageName) {
+  return `${REGISTRY_BASE_URL}/${packageName.replace("/", "%2f")}`;
+}
+
 export const PACKAGE = "@holaxis/aslite";
-export const REGISTRY_URL = "https://registry.npmjs.org/@holaxis%2faslite";
+export const REGISTRY_URL = registryUrlFor(PACKAGE);
 export const EXIT_PASS = 0;
 export const EXIT_VIOLATION = 1;
 export const EXIT_USAGE = 2;
@@ -212,11 +235,114 @@ function newestOf(versions) {
 }
 
 /**
- * Expected dist-tag state for the declared phase, computed via `resolveTags`. The audit derives
- * the priors (the at-rest known-good: newest published, excluding an in-flight candidate) and the
- * policy state machine maps (kind, phase, candidate, priors) -> expected tags.
+ * DIST-TAG DESTINY — the single derivation that keeps publication policy and audit policy from
+ * drifting. `release/targets.json` is the one place a human declares where a version lands: a
+ * tuple's `npm_tag` is the dist-tag the stage publishes it under and `npm_promote_tag` is the one
+ * finalize moves it to. Together those are the COMPLETE set of dist-tags that version may ever
+ * carry, so the audit does not restate the policy — it reads it.
+ *
+ * Returns `Map<version, Set<tag>>` covering only the declared tuples of `packageName`. A published
+ * version with no declared tuple predates the manifest and is unconstrained by it (see
+ * `mayHoldDistTag`), which is why adding this derivation cannot retroactively red the history.
  */
-export function expectedTagState({ declaration, versions, observedTags }) {
+export function distTagDestiny(manifest, packageName) {
+  const destiny = new Map();
+  for (const tuple of Object.values(manifest?.allowed_tuples ?? {})) {
+    if (tuple.package !== packageName) continue;
+    const declared = destiny.get(tuple.version) ?? new Set();
+    for (const tag of [tuple.publication?.npm_tag, tuple.publication?.npm_promote_tag]) {
+      if (typeof tag === "string") declared.add(tag);
+    }
+    destiny.set(tuple.version, declared);
+  }
+  return destiny;
+}
+
+const destinyCache = new Map();
+
+/**
+ * Destiny for the committed manifest. Reading the manifest is the DEFAULT rather than an opt-in so
+ * a caller that forgets to pass one still audits against real policy; an unreadable or invalid
+ * manifest throws here and the CLI turns that into a non-zero exit (fail closed, never "no
+ * constraint").
+ */
+export function defaultDistTagDestiny(packageName = PACKAGE) {
+  if (!destinyCache.has(packageName)) destinyCache.set(packageName, distTagDestiny(defaultReleaseManifest(), packageName));
+  return destinyCache.get(packageName);
+}
+
+/** May `version` carry `tag`? Versions the manifest does not declare are unconstrained by it. */
+export function mayHoldDistTag(destiny, version, tag) {
+  const declared = destiny.get(version);
+  return declared === undefined || declared.has(tag);
+}
+
+function describeDestiny(destiny, version) {
+  const declared = destiny.get(version);
+  if (declared === undefined) return "undeclared (predates the publication manifest)";
+  return declared.size === 0 ? "no dist-tag at all" : [...declared].sort().join("+");
+}
+
+/** The published versions the manifest permits to hold `tag`, newest last. */
+function eligibleFor(destiny, versions, tag) {
+  return versions.filter((version) => mayHoldDistTag(destiny, version, tag));
+}
+
+/**
+ * Registry state the publication manifest FORBIDS: a version sitting on a dist-tag it is never
+ * published or promoted to. Enforced in every mode — an unauthorized promotion is a live-registry
+ * fact, not a rehearsal condition.
+ */
+export function checkUnauthorizedDistTags({ destiny, version, distTags }) {
+  const violations = [];
+  for (const [tag, holder] of Object.entries(distTags ?? {})) {
+    if (holder !== version || mayHoldDistTag(destiny, version, tag)) continue;
+    violations.push(
+      violation(
+        "unauthorized_dist_tag",
+        `dist-tag ${tag} points at ${version}, which the publication manifest declares as ${describeDestiny(destiny, version)}`,
+      ),
+    );
+  }
+  return violations;
+}
+
+/**
+ * Registry state the publication manifest REQUIRES: every dist-tag a declared version is destined
+ * for must already point at it. Both halves of the destiny are operator actions gated by 2FA —
+ * `npm_tag` lands when the operator approves the stage, `npm_promote_tag` when the operator runs
+ * `npm dist-tag add` — so this is the finalizer's proof that the human half of the release
+ * completed, checked before the workflow mutates anything.
+ *
+ * Returns violations carrying the unmet `tag` so the caller can print the right remediation.
+ */
+export function checkDeclaredDistTags({ destiny, version, distTags }) {
+  const declared = destiny.get(version);
+  if (declared === undefined) return []; // undeclared version: the manifest requires nothing of it
+  const violations = [];
+  for (const tag of [...declared].sort()) {
+    const observed = distTags?.[tag];
+    if (observed === version) continue;
+    violations.push({
+      ...violation(
+        "declared_dist_tag_unmet",
+        `publication policy puts ${version} on dist-tag ${tag}, but the registry has ${tag}=${observed ?? "(unset)"}`,
+      ),
+      tag,
+    });
+  }
+  return violations;
+}
+
+/**
+ * Expected dist-tag state for the declared phase. Two authorities compose here, each owning exactly
+ * one thing: the PUBLICATION MANIFEST owns which dist-tags a version may ever carry (`destiny`), and
+ * `resolveTags` owns the transient window a transaction passes through. The priors handed to the
+ * phase machine are therefore the newest published version ELIGIBLE for each tag, not simply the
+ * newest published version — that is what lets a candidate published to `next` only leave `latest`
+ * where it is without the audit reading it as drift.
+ */
+export function expectedTagState({ declaration, versions, observedTags, destiny = defaultDistTagDestiny() }) {
   const notes = [];
   const violations = [];
   const stable = versions.filter((v) => parseSemver(v)?.prerelease.length === 0);
@@ -228,15 +354,33 @@ export function expectedTagState({ declaration, versions, observedTags }) {
       return { expected: null, notes, violations };
     }
     if (!stableReached) {
-      // Pre-stable at rest: latest == next == newest published prerelease (contract §1).
-      const rest = newestOf(versions);
-      return { expected: resolveTags({ kind: "prerelease", phase: "at_rest", priorLatest: rest, priorNext: rest }), notes, violations };
+      // Pre-stable at rest: latest == next == newest published prerelease (contract §1) — except
+      // that a version the manifest publishes to `next` only can never take `latest`, so each tag
+      // rests on the newest version eligible for it.
+      const restLatest = newestOf(eligibleFor(destiny, versions, "latest"));
+      const restNext = newestOf(eligibleFor(destiny, versions, "next"));
+      if (!restLatest) {
+        violations.push(violation("no_latest_eligible_version", `no published version of ${PACKAGE} is eligible to hold dist-tag latest under the publication manifest`));
+        return { expected: null, notes, violations };
+      }
+      if (restLatest !== restNext) {
+        notes.push(`latest rests on ${restLatest}: the publication manifest declares ${restNext} as ${describeDestiny(destiny, restNext)}`);
+      }
+      return { expected: resolveTags({ kind: "prerelease", phase: "at_rest", priorLatest: restLatest, priorNext: restNext }), notes, violations };
     }
-    // Post-stable at rest: latest is the newest stable; next only for a genuine newer preview.
-    const newestStable = newestOf(stable);
+    // Post-stable at rest: latest is the newest latest-eligible stable; next only for a genuine
+    // newer preview the manifest actually publishes to next.
+    const newestStable = newestOf(eligibleFor(destiny, stable, "latest"));
+    if (!newestStable) {
+      violations.push(violation("no_latest_eligible_version", `no published stable version of ${PACKAGE} is eligible to hold dist-tag latest under the publication manifest`));
+      return { expected: null, notes, violations };
+    }
     const observedNext = observedTags?.next;
     const genuinePreview =
-      observedNext && versions.includes(observedNext) && compareSemver(observedNext, newestStable) > 0
+      observedNext &&
+      versions.includes(observedNext) &&
+      mayHoldDistTag(destiny, observedNext, "next") &&
+      compareSemver(observedNext, newestStable) > 0
         ? observedNext
         : undefined;
     if (genuinePreview) notes.push(`next=${genuinePreview} accepted as a genuine published preview newer than latest`);
@@ -247,13 +391,15 @@ export function expectedTagState({ declaration, versions, observedTags }) {
     };
   }
 
-  // Transaction phases: priors = newest published excluding the candidate.
+  // Transaction phases: priors = newest published EXCLUDING the candidate, per tag.
   // Assumes npm staged-but-unapproved versions do NOT appear in the public packument; if npm
   // stage semantics differ, the candidate reads as published earlier and the tolerated staged
   // window simply lengthens — no other logic depends on the assumption.
   const { phase, kind, version } = declaration;
-  const prior = newestOf(versions.filter((v) => v !== version));
-  if (!prior) {
+  const priorVersions = versions.filter((v) => v !== version);
+  const priorLatest = newestOf(eligibleFor(destiny, priorVersions, "latest"));
+  const priorNext = newestOf(eligibleFor(destiny, priorVersions, "next"));
+  if (!priorLatest || !priorNext) {
     violations.push(violation("no_prior_release", `phase ${phase} declared but no published prior release exists to hold latest`));
     return { expected: null, notes, violations };
   }
@@ -265,21 +411,36 @@ export function expectedTagState({ declaration, versions, observedTags }) {
   let expected;
   if ((phase === "staged" || phase === "approved") && !candidatePublished) {
     // npm cannot point a dist-tag at an unpublished version: expect the at-rest prior state.
-    notes.push(`candidate ${version} not yet published; expecting tags to still hold the prior known-good ${prior}`);
-    expected = resolveTags({ kind, phase: "at_rest", priorLatest: prior, priorNext: prior });
+    notes.push(`candidate ${version} not yet published; expecting tags to still hold the prior known-good latest=${priorLatest} next=${priorNext}`);
+    expected = resolveTags({ kind, phase: "at_rest", priorLatest, priorNext });
   } else {
-    expected = resolveTags({ kind, phase, version, priorLatest: prior, priorNext: prior });
+    expected = resolveTags({ kind, phase, version, priorLatest, priorNext });
+  }
+  // A declared phase that would place the candidate on a dist-tag the manifest never gives it is a
+  // contradiction between two committed files, not a tolerable transition. Red it, and hold the
+  // expectation at the prior so the remaining comparison still says something useful.
+  for (const tag of ["latest", "next"]) {
+    if (expected[tag] !== version || mayHoldDistTag(destiny, version, tag)) continue;
+    violations.push(
+      violation(
+        "phase_contradicts_publication_policy",
+        `phase ${phase} expects dist-tag ${tag} to hold ${version}, but the publication manifest declares ${version} as ${describeDestiny(destiny, version)}`,
+      ),
+    );
+    expected = { ...expected, [tag]: tag === "latest" ? priorLatest : priorNext };
   }
   if (expected.deprecate) {
     notes.push(`policy expects ${expected.deprecate} to be deprecated (deprecation state is not observed by this audit)`);
   }
   // Transition tolerance: the tag flips (promotion, rollback restore) cannot land atomically with
   // the reviewed phase-file commit, so any phase of the DECLARED transaction is accepted; red only
-  // when the observed tags match NO transaction state (kind + candidate + priors fixed).
+  // when the observed tags match NO transaction state (kind + candidate + priors fixed). A state
+  // the publication manifest forbids is NOT tolerated — tolerance covers timing, never policy.
   const accepted = [];
   for (const p of [phase, "staged", "approved", "promoted", "failed"]) {
-    const t = resolveTags({ kind, phase: p, version, priorLatest: prior, priorNext: prior });
+    const t = resolveTags({ kind, phase: p, version, priorLatest, priorNext });
     if (!candidatePublished && (t.latest === version || t.next === version)) continue;
+    if (["latest", "next"].some((tag) => t[tag] === version && !mayHoldDistTag(destiny, version, tag))) continue;
     if (!accepted.some((a) => a.tags.latest === t.latest && a.tags.next === t.next)) {
       accepted.push({ phase: p, tags: { latest: t.latest, next: t.next } });
     }
@@ -395,7 +556,7 @@ export function checkSourceDrift(sourceVersion, versions, burnedVersions = []) {
  * The pure audit over one registry snapshot. Returns { violations, notes, facts }; empty
  * violations means the registry, phase declaration, and source agree with policy.
  */
-export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [] }) {
+export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [], destiny = defaultDistTagDestiny() }) {
   const { distTags, versions, time } = registry;
   const violations = [];
   const notes = [];
@@ -403,7 +564,7 @@ export function auditRegistryState({ declaration, sourceVersion, registry, burne
   violations.push(...checkVersionScheme(versions, time, burnedVersions));
   violations.push(...checkDeclarationConsistency(declaration, sourceVersion));
 
-  const tagState = expectedTagState({ declaration, versions, observedTags: distTags });
+  const tagState = expectedTagState({ declaration, versions, observedTags: distTags, destiny });
   violations.push(...tagState.violations);
   notes.push(...tagState.notes);
   if (tagState.expected) {
@@ -541,7 +702,101 @@ function arg(argv, flag) {
   return value;
 }
 
+function requiredArg(argv, flag) {
+  const value = arg(argv, flag);
+  if (value === undefined) throw new Error(`missing ${flag}`);
+  return value;
+}
+
+/**
+ * `verify-promotion` — the finalizer's PRE-MUTATION precondition. It answers one question about the
+ * live registry: has it reached the dist-tag state `release/targets.json` declares for the version
+ * being finalized? Running it in the finalizer's first job means a "no" costs nothing, because no
+ * job has touched the draft release yet.
+ *
+ * Two directions, enforced differently on purpose:
+ *   - FORBIDDEN state (a version holding a dist-tag the manifest never gives it) is enforced in
+ *     every mode — an unauthorized promotion is a live-registry fact, not a rehearsal condition;
+ *   - REQUIRED state (the declared `npm_promote_tag` already pointing at the version) is enforced in
+ *     live mode and reported in dry-run, where the version may legitimately not be published yet.
+ */
+export async function verifyPromotion(argv) {
+  let target;
+  let version;
+  let mode;
+  try {
+    target = requiredArg(argv, "--target");
+    version = requiredArg(argv, "--version");
+    mode = arg(argv, "--mode") ?? "dry-run";
+    if (mode !== "live" && mode !== "dry-run") throw new Error(`--mode must be live|dry-run, got ${JSON.stringify(mode)}`);
+  } catch (error) {
+    console.error(`release-audit: USAGE[verify-promotion]: ${error.message}`);
+    return EXIT_USAGE;
+  }
+  const registryJson = arg(argv, "--registry-json"); // replay hatch: verify a captured payload
+  const registryUrl = arg(argv, "--registry-url"); // test hatch for the network path
+  const manifestFile = arg(argv, "--targets-file");
+
+  const manifest = manifestFile ? await loadReleaseTargets(manifestFile) : await loadReleaseTargets();
+  const tuple = resolveAllowedTupleByTarget(manifest, { target });
+  if (tuple.version !== version) {
+    console.error(
+      `release-audit: VIOLATION[target_version_mismatch]: target ${target} is allowlisted at ${tuple.version}, not ${version}`,
+    );
+    return EXIT_VIOLATION;
+  }
+  const destiny = distTagDestiny(manifest, tuple.package);
+  const promoteTag = tuple.publication.npm_promote_tag;
+  const registry = registryJson
+    ? parsePackument(JSON.parse(await readFile(registryJson, "utf8")))
+    : await fetchRegistryState({ url: registryUrl ?? registryUrlFor(tuple.package) });
+
+  console.log(`release-audit: verify-promotion ${tuple.package}@${version} target=${target} mode=${mode}`);
+  if (registry.missing) {
+    if (mode === "live") {
+      console.error(`release-audit: VIOLATION[package_missing]: registry has no packument for ${tuple.package}`);
+      return EXIT_VIOLATION;
+    }
+    console.log(`release-audit: [dry-run] ${tuple.package} is not published yet; nothing can hold a dist-tag`);
+    return EXIT_PASS;
+  }
+  const distTags = registry.distTags;
+  console.log(
+    `release-audit: facts ${JSON.stringify({
+      package: tuple.package,
+      version,
+      promote_tag: promoteTag,
+      declared: describeDestiny(destiny, version),
+      dist_tags: distTags,
+    })}`,
+  );
+
+  const violations = checkUnauthorizedDistTags({ destiny, version, distTags });
+  const outstanding = checkDeclaredDistTags({ destiny, version, distTags });
+  if (mode === "live") {
+    violations.push(...outstanding);
+  } else {
+    for (const item of outstanding) console.log(`release-audit: [dry-run] live finalize would require: ${item.message}`);
+  }
+  if (violations.length > 0) {
+    for (const item of violations) console.error(`release-audit: VIOLATION[${item.code}]: ${item.message}`);
+    for (const item of outstanding) {
+      // Each unmet tag has one owner, and neither is the workflow. Print the exact remediation the
+      // operations authority emits so the operator never hand-assembles a registry-mutating command.
+      console.error(
+        item.tag === promoteTag
+          ? `release-audit: run the operator promotion (+2FA), then re-dispatch: ${promoteOperation({ version, tag: item.tag, target }).command}`
+          : `release-audit: dist-tag ${item.tag} is set by the staged publish — approve the stage (npm stage approve <stage-id>, +2FA) before finalizing`,
+      );
+    }
+    return EXIT_VIOLATION;
+  }
+  console.log(`release-audit: PASS — the registry holds the publication policy declared for ${tuple.package}@${version}`);
+  return EXIT_PASS;
+}
+
 export async function main(argv = process.argv.slice(2)) {
+  if (argv[0] === "verify-promotion") return verifyPromotion(argv.slice(1));
   const phaseFile = arg(argv, "--phase-file") ?? path.join(repoRoot, "release", "phase.json");
   const burnedFile = arg(argv, "--burned-file") ?? path.join(repoRoot, "release", "burned-versions.json");
   const registryJson = arg(argv, "--registry-json"); // replay hatch: audit a captured payload
