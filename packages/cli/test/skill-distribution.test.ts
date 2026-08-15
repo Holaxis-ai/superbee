@@ -214,7 +214,7 @@ test("npm Skill makes authoritative document presentation a first-class human-re
   assert.match(renderedNpm, /## Human review/);
   assert.match(renderedNpm, /call `show_document` with the exact\s+document ID/);
   assert.match(renderedNpm, /do not return only a filesystem path/);
-  assert.match(renderedNpm, /`superbee ui --open`.*fallback/s);
+  assert.match(renderedNpm, /`superbee doc open <id>`.*exact document/s);
 });
 
 test("the npm skill teaches only the bounded stable MCP PATH contract", () => {

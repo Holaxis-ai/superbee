@@ -14,8 +14,10 @@
 // stays in the foreground until SIGINT/SIGTERM close the listener cleanly.
 import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
+import { readDocVersioned, type Bundle } from "@superbee/core";
 import { createRouter } from "@superbee/server";
 import { openBundle, resolveRemoteFlag, resolveApiKeyEnv } from "../bundle.js";
+import { resolveConceptIdCliArgument } from "../concept-id.js";
 import { normalizeServer } from "../config.js";
 import { getApiKeyForOrigin } from "../credentials.js";
 import { bootUiServer as bootUiServerDefault, type UiServerHandle, type UiServerOptions } from "../ui/server.js";
@@ -26,6 +28,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { resolveActor } from "../actor.js";
+import { DOC_OPEN_USAGE, readErrorToCliError } from "./doc/common.js";
 
 export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
 
@@ -105,18 +108,68 @@ function stablePortFor(seed: string): number {
 }
 
 /** Map a raw `listen()` failure to a structured CliError — mirrors `serve.ts`'s `mapBootError` exactly. */
-function mapBootError(err: unknown, port: number): CliError {
+function mapBootError(err: unknown, port: number, commandPath = "ui"): CliError {
   if (err instanceof CliError) return err;
   if ((err as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
     return new CliError("RUNTIME", `port ${port} is already in use — something else is listening there`, {
-      help: `${cliInvocation()} ui --port 0 (ephemeral port), or pass a different --port`,
+      help: `${cliInvocation()} ${commandPath} --port 0 (ephemeral port), or pass a different --port`,
     });
   }
   const message = err instanceof Error ? err.message : String(err);
   return new CliError("RUNTIME", message);
 }
 
+type UiEntry = { kind: "launcher" } | { kind: "document" };
+
+const UI_PARSE_OPTIONS = {
+  dir: { type: "string" },
+  remote: { type: "string" },
+  port: { type: "string" },
+  actor: { type: "string" },
+  open: { type: "boolean" },
+  json: { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+interface ParsedUiArgs {
+  values: {
+    dir?: string;
+    remote?: string;
+    port?: string;
+    actor?: string;
+    open?: boolean;
+    json?: boolean;
+    help?: boolean;
+  };
+  positionals: string[];
+}
+
 export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise<void> {
+  const parsed = parseLeafOrUsage(
+    () => parseArgs({ args: argv, options: UI_PARSE_OPTIONS, allowPositionals: true }),
+    CLI_LEAVES.ui,
+  );
+  if (parsed.values.help) {
+    (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(UI_USAGE);
+    return;
+  }
+  await runUi(parsed, deps, { kind: "launcher" });
+}
+
+/** Open one exact document through the existing web DocPage; exported for the `doc open` adapter. */
+export async function openDocumentUi(argv: string[], deps: Partial<UiCliDeps> = {}): Promise<void> {
+  const parsed = parseLeafOrUsage(
+    () => parseArgs({ args: argv, options: UI_PARSE_OPTIONS, allowPositionals: true }),
+    CLI_LEAVES.docOpen,
+  );
+  if (parsed.values.help) {
+    (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(DOC_OPEN_USAGE);
+    return;
+  }
+  await runUi(parsed, deps, { kind: "document" });
+}
+
+async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliDeps>, entry: UiEntry): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const bootUiServer = deps.bootUiServer ?? bootUiServerDefault;
   const waitForShutdown = deps.waitForShutdown ?? defaultWaitForShutdown;
@@ -124,27 +177,8 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
   const writeUrlFile = deps.writeUrlFile ?? ((url: string) => writeUiUrlFile(url));
   const clearUrlFile = deps.clearUrlFile ?? ((url: string) => clearUiUrlFile(url));
 
-  const { values } = parseLeafOrUsage(
-    () =>
-      parseArgs({
-        args: argv,
-        options: {
-          dir: { type: "string" },
-          remote: { type: "string" },
-          port: { type: "string" },
-          actor: { type: "string" },
-          open: { type: "boolean" },
-          json: { type: "boolean" },
-          help: { type: "boolean", short: "h" },
-        },
-        allowPositionals: true,
-      }),
-    CLI_LEAVES.ui,
-  );
-  if (values.help) {
-    stdout(UI_USAGE);
-    return;
-  }
+  const rawDocumentId = entry.kind === "document" ? positionals[0]! : undefined;
+  const commandPath = entry.kind === "document" ? `doc open ${rawDocumentId}` : "ui";
 
   let port = 0; // rev 3.2: --port defaults to 0 (OS-assigned), unlike `serve`'s stable 4818 default
   const explicitPort = values.port !== undefined;
@@ -152,21 +186,22 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
     const raw = values.port.trim();
     if (!/^\d+$/.test(raw) || Number(raw) > 65535) {
       throw new CliError("USAGE", "--port must be an integer between 0 and 65535", {
-        help: `${cliInvocation()} ui --port <p>`,
+        help: `${cliInvocation()} ${commandPath} --port <p>`,
       });
     }
     port = Number(raw);
   }
 
   const remoteFlag = await resolveRemoteFlag(values.remote, values.dir);
-  const actor = resolveActor(values.actor, { help: `${cliInvocation()} ui --actor <name>` });
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} ${commandPath} --actor <name>` });
   let options: UiServerOptions;
   let rootLabel: string;
+  let bundle: Bundle;
 
   if (remoteFlag) {
     if (values.dir) {
       throw new CliError("USAGE", "--remote and --dir are mutually exclusive", {
-        help: `${cliInvocation()} ui --remote <url>`,
+        help: `${cliInvocation()} ${commandPath} --remote <url>`,
       });
     }
     let base: string;
@@ -177,7 +212,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
       origin = resolved.resource;
     } catch (err) {
       throw new CliError("USAGE", err instanceof Error ? err.message : String(err), {
-        help: `${cliInvocation()} ui --remote http://127.0.0.1:4818`,
+        help: `${cliInvocation()} ${commandPath} --remote http://127.0.0.1:4818`,
       });
     }
     const envKey = resolveApiKeyEnv();
@@ -185,14 +220,24 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
     // Registered Views, kind/edge reads, and the trusted bridge share the SAME semantic
     // RemoteBackend bundle every other engine-aware command uses over --remote; the SPA's /v0
     // transport path stays the raw proxy.
-    const bundle = await openBundle(undefined, remoteFlag);
+    bundle = await openBundle(undefined, remoteFlag);
     options = { mode: "remote", port, remoteBase: base, apiKey, bundle, actor };
     rootLabel = base;
   } else {
-    const bundle = await openBundle(values.dir);
+    bundle = await openBundle(values.dir);
     const router = createRouter(bundle);
     options = { mode: "dir", port, router, bundle, actor };
     rootLabel = bundle.root;
+  }
+
+  let documentId: string | undefined;
+  if (rawDocumentId !== undefined) {
+    documentId = await resolveConceptIdCliArgument(bundle, rawDocumentId);
+    try {
+      await readDocVersioned(bundle, documentId);
+    } catch (error) {
+      throw readErrorToCliError(error, documentId, values.remote);
+    }
   }
 
   // Tab-restart friendliness (tasks/ui-pages-spike): with no explicit --port, PREFER a stable
@@ -216,14 +261,20 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
       try {
         handle = await bootUiServer(options);
       } catch (err2) {
-        throw mapBootError(err2, 0);
+        throw mapBootError(err2, 0, commandPath);
       }
     } else {
-      throw mapBootError(err, options.port ?? port);
+      throw mapBootError(err, options.port ?? port, commandPath);
     }
   }
 
-  const url = `http://${handle.host}:${handle.port}/?token=${handle.token}`;
+  const launchUrl = new URL(`http://${handle.host}:${handle.port}/`);
+  launchUrl.searchParams.set("token", handle.token);
+  if (documentId !== undefined) {
+    launchUrl.searchParams.set("view", "doc");
+    launchUrl.searchParams.set("id", documentId);
+  }
+  const url = launchUrl.toString();
 
   // Record this run's tokenized URL for one-click re-entry after a restart (~/.agentstate/ui-url).
   // While this run lasts the file holds a LIVE credential — the URL embeds the session token —
@@ -239,6 +290,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
         url,
         mode: options.mode,
         root: rootLabel,
+        ...(documentId !== undefined ? { document: documentId } : {}),
         auth:
           "per-run session SECRET, minted fresh each boot; the first load exchanges the URL token for an HttpOnly, SameSite=Strict cookie. The current TOKENIZED URL — a live credential while this run lasts, since it embeds the token — is written to ~/.agentstate/ui-url (0600) for one-click re-entry and cleared on clean shutdown; a crash leaves only a stale URL whose token dies with this process (the secret rotates next boot)",
         help: [
@@ -252,7 +304,7 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
     ),
   );
 
-  if (values.open) openBrowser(url);
+  if (values.open || documentId !== undefined) openBrowser(url);
 
   // Stay in the foreground; SIGINT/SIGTERM (or the injected waitForShutdown) close the listener
   // cleanly and this resolves — exit 0. No request logs to stdout by default.

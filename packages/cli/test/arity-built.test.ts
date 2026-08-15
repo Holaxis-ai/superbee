@@ -53,6 +53,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     docWrite: simple(CLI_LEAVES.docWrite, ["doc", "write"], ["candidate"], ["--type", "Test", "--body", "body", ...dir]),
     docUpdate: simple(CLI_LEAVES.docUpdate, ["doc", "update"], ["existing"], ["--title", "Changed", ...dir]),
     docRead: simple(CLI_LEAVES.docRead, ["doc", "read"], ["existing"], ["--out", "-", ...dir], "stderr"),
+    docOpen: simple(CLI_LEAVES.docOpen, ["doc", "open"], ["existing"], dir),
     docHistory: simple(CLI_LEAVES.docHistory, ["doc", "history"], ["existing"], dir),
     docDelete: simple(CLI_LEAVES.docDelete, ["doc", "delete"], ["victim"], dir),
     list: simple(CLI_LEAVES.list, ["list"], [], dir),

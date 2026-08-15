@@ -6,13 +6,14 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:net";
 
 import { initBundle, writeDoc } from "@superbee/core";
 import { ui } from "../src/commands/ui.js";
+import { docOpen } from "../src/commands/doc/open.js";
 import { bootUiServer } from "../src/ui/server.js";
 import { CliError } from "../src/errors.js";
 import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../src/bundle-name.js";
@@ -46,6 +47,129 @@ test("ui --help: prints usage and does not boot a server", async () => {
   });
   assert.match(out, /superbee ui/);
   assert.equal(booted, false);
+});
+
+test("doc open --help: teaches the exact-document browser path and does not boot a server", async () => {
+  let out = "";
+  let booted = false;
+  await docOpen(["--help"], {
+    stdout: (s) => (out += s),
+    bootUiServer: async (opts) => {
+      booted = true;
+      return bootUiServer(opts);
+    },
+    waitForShutdown: () => Promise.resolve(),
+    openBrowser: () => {},
+  });
+  assert.match(out, /superbee doc open <id>/);
+  assert.match(out, /existing local web UI/);
+  assert.equal(booted, false);
+});
+
+test("doc open verifies and opens one exact document through the existing DocPage route", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  await writeDoc(
+    { root: dir },
+    { id: "docs/review", frontmatter: { type: "Doc", title: "Review me" }, body: "# Evidence" },
+  );
+  try {
+    let out = "";
+    let opened: string | undefined;
+    let resolveShutdown!: () => void;
+    const shutdown = new Promise<void>((resolve) => {
+      resolveShutdown = resolve;
+    });
+    const run = docOpen(["docs/review", "--dir", dir, "--port", "0", "--json"], {
+      stdout: (s) => (out += s),
+      bootUiServer,
+      waitForShutdown: () => shutdown,
+      openBrowser: (url) => {
+        opened = url;
+      },
+      writeUrlFile: async () => {},
+      clearUrlFile: async () => {},
+    });
+
+    while (!out) await new Promise((resolve) => setTimeout(resolve, 5));
+    const receipt = JSON.parse(out);
+    const url = new URL(receipt.url);
+    assert.equal(receipt.ui, "listening");
+    assert.equal(receipt.document, "docs/review");
+    assert.equal(url.searchParams.get("view"), "doc");
+    assert.equal(url.searchParams.get("id"), "docs/review");
+    assert.ok(url.searchParams.get("token"));
+    assert.equal(opened, receipt.url, "doc open opens without a redundant --open flag");
+    assert.equal((await fetch(receipt.url)).status, 200);
+
+    resolveShutdown();
+    await run;
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc open refuses a missing document before booting or opening misleading UI", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    let booted = false;
+    let opened = false;
+    await assert.rejects(
+      () =>
+        docOpen(["docs/missing", "--dir", dir], {
+          bootUiServer: async (opts) => {
+            booted = true;
+            return bootUiServer(opts);
+          },
+          waitForShutdown: () => Promise.resolve(),
+          openBrowser: () => {
+            opened = true;
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.code, "NOT_FOUND");
+        assert.match(error.message, /docs\/missing/);
+        return true;
+      },
+    );
+    assert.equal(booted, false);
+    assert.equal(opened, false);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc open refuses malformed Markdown before booting or opening misleading UI", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  await mkdir(path.join(dir, "docs"), { recursive: true });
+  await writeFile(path.join(dir, "docs", "broken.md"), "---\ntype: [\n---\n# Broken\n", "utf8");
+  try {
+    let booted = false;
+    let opened = false;
+    await assert.rejects(
+      () =>
+        docOpen(["docs/broken", "--dir", dir], {
+          bootUiServer: async (opts) => {
+            booted = true;
+            return bootUiServer(opts);
+          },
+          waitForShutdown: () => Promise.resolve(),
+          openBrowser: () => {
+            opened = true;
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.code, "RUNTIME");
+        assert.match(error.message, /malformed frontmatter/);
+        return true;
+      },
+    );
+    assert.equal(booted, false);
+    assert.equal(opened, false);
+  } finally {
+    await cleanup();
+  }
 });
 
 test("ui --port abc: USAGE (exit 2), not a bare parse crash", async () => {
