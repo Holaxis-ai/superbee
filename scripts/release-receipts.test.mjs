@@ -1,14 +1,24 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import {
   buildStageReceipt,
   parseStagePublishJson,
-  stageDownloadFilename,
+  stageDownloadFilenameFor,
   verifyFinalizerChain,
 } from "./release-receipts.mjs";
+import * as allReceipts from "./release-receipts.mjs";
 import { STABLE_MCP_LAUNCH_GUIDANCE } from "../packages/cli/src/integration-guidance.js";
 import { buildReceipt, renderReceiptMarkdown } from "./release-emit-receipt.mjs";
+import { defaultReleaseManifest, defaultReleaseTargets } from "./release-targets.mjs";
+
+const execFileAsync = promisify(execFile);
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const emitReceipt = path.join(repoRoot, "scripts", "release-emit-receipt.mjs");
 
 const STAGE_ID = "123e4567-e89b-42d3-a456-426614174000";
 const VERSION = "0.1.0-pre.4";
@@ -32,7 +42,17 @@ test("npm 11.15 stage JSON yields exactly one validated UUID stageId", () => {
 });
 
 test("stage download uses npm's deterministic filename and no invented --out path", () => {
-  assert.equal(stageDownloadFilename(VERSION, STAGE_ID), `holaxis-aslite-${VERSION}-${STAGE_ID}.tgz`);
+  assert.equal(stageDownloadFilenameFor("bridge", VERSION, STAGE_ID), `holaxis-aslite-${VERSION}-${STAGE_ID}.tgz`);
+  assert.equal(stageDownloadFilenameFor("successor-stable", "0.1.0", STAGE_ID), `superbee-0.1.0-${STAGE_ID}.tgz`);
+  // The bridge-hardcoded stageDownloadFilename(version, stageId) helper is gone: naming the
+  // downloaded tarball requires saying which package was staged.
+  for (const missing of [undefined, null, "", "shadow"]) {
+    assert.throws(
+      () => stageDownloadFilenameFor(missing, VERSION, STAGE_ID),
+      /release receipt verification failed/,
+      `must reject target ${JSON.stringify(missing)}`,
+    );
+  }
 });
 
 test("declared rehearsal targets resolve from the manifest but cannot enter the full stage receipt chain", () => {
@@ -146,6 +166,7 @@ test("finalizer accepts only a fully matching candidate/artifact/stage/draft cha
 test("stage summary and retained JSON are emitted from the same v2 receipt", () => {
   const f = fixture();
   const built = buildReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -170,6 +191,7 @@ test("stage summary and retained JSON are emitted from the same v2 receipt", () 
 test("stage summary carries the bounded stable MCP launch migration guidance", () => {
   const f = fixture();
   const built = buildReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -292,6 +314,7 @@ test("canonicalization does not weaken the digest guard", () => {
 // full dry-run field shape from the failed run, through markdown rendering.
 test("buildReceipt completes for a DRY RUN (sentinel stage id) end to end", () => {
   const built = buildReceipt({
+    target: "bridge",
     runId: "31445190599",
     artifactId: "9082708155",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
@@ -317,9 +340,179 @@ test("buildReceipt completes for a DRY RUN (sentinel stage id) end to end", () =
   assert.match(markdown, /dry-run-stage/);
 });
 
+// ── F7: the receipt's promote operation is the manifest's npm_promote_tag, never the stage tag ──
+// The finalize workflow promotes to `publication.npm_promote_tag`; the receipt is what a human
+// follows when that workflow fails. Building it from the stage tag (`publication.npm_tag`) told the
+// operator to re-apply the tag the package already holds while the workflow moved a different one.
+function receiptFieldsFor(target, version, tarballBasename, policyTag = "next") {
+  const tarball = `${tarballBasename}-${version}.tgz`;
+  return {
+    target,
+    runId: "100",
+    artifactId: "101",
+    artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
+    stageId: STAGE_ID,
+    version,
+    tag: `v${version}`,
+    sourceCommit: COMMIT,
+    policyTag,
+    tarballSha256: TARBALL_SHA,
+    tarballFilename: tarball,
+    integrity: INTEGRITY,
+    manifestSha256: MANIFEST_SHA,
+    draftReleaseId: "300",
+    draftAssets: [
+      { id: "201", name: tarball, digest: TARBALL_SHA },
+      { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
+    ],
+  };
+}
+
+test("the receipt promotes to the tuple's npm_promote_tag, not the stage tag the package holds", () => {
+  const built = buildReceipt(receiptFieldsFor("successor-stable", "0.1.0", "superbee"));
+  assert.equal(built.receipt.stage.tag, "next", "the stage tag is what npm published");
+  assert.equal(built.operations.promote.command, "npm dist-tag add superbee@0.1.0 latest");
+  assert.equal(built.operations.promote.requires_2fa, true);
+  assert.match(renderReceiptMarkdown(built), /npm dist-tag add superbee@0\.1\.0 latest/);
+});
+
+// Promotion has no automated credential (npm trusted publishing is publish-scoped), so this receipt
+// is the operator's ONLY instruction for it and must say on its face that nothing else will do it.
+test("the receipt presents promotion as a required operator action no workflow performs", () => {
+  const markdown = renderReceiptMarkdown(buildReceipt(receiptFieldsFor("successor-stable", "0.1.0", "superbee")));
+  assert.match(markdown, /REQUIRED operator action/);
+  assert.match(markdown, /no workflow performs this/);
+  assert.match(markdown, /requires 2FA/);
+  assert.ok(
+    markdown.indexOf("npm dist-tag add superbee@0.1.0 latest") > markdown.indexOf("REQUIRED operator action"),
+    "the command belongs under the operator-action heading",
+  );
+});
+
+test("the receipt omits promote entirely when the tuple declares npm_promote_tag: null", () => {
+  for (const [target, version, basename] of [
+    ["bridge", VERSION, "holaxis-aslite"],
+    ["successor-preview", "0.1.1-pre.1", "superbee"],
+  ]) {
+    const built = buildReceipt(receiptFieldsFor(target, version, basename));
+    // Absent, not empty and not a no-op command: the key does not exist at all.
+    assert.ok(!Object.hasOwn(built.operations, "promote"), `${target} must emit no promote operation`);
+    assert.ok(!JSON.stringify(built.operations).includes("dist-tag"), `${target} operations must carry no dist-tag command`);
+    const markdown = renderReceiptMarkdown(built);
+    assert.ok(!/npm dist-tag/.test(markdown), `${target} receipt must not tell the operator to move a dist-tag`);
+    assert.match(markdown, /declares no dist-tag promotion/);
+    assert.match(markdown, /No workflow promotes it and neither should you/);
+  }
+});
+
+// The class, not the probe: EVERY target declared in the manifest — including any added later.
+// A full-contract target's promotion comes from its own tuple; an identity-only rehearsal target
+// cannot produce a stage receipt at all, so it can never emit a promote command either.
+test("every declared target's receipt promotion equals its manifest tuple's npm_promote_tag", () => {
+  const manifest = defaultReleaseManifest();
+  const promotions = {};
+  for (const [id, target] of Object.entries(manifest.targets)) {
+    const tuple = manifest.allowed_tuples[id];
+    const fields = receiptFieldsFor(id, tuple.version, target.tarball_basename, tuple.publication.npm_tag ?? "next");
+    if (target.workflow_contract !== "full") {
+      assert.throws(() => buildReceipt(fields), /requires workflow contract full/, `${id} must not reach the receipt chain`);
+      promotions[id] = null;
+      continue;
+    }
+    const built = buildReceipt(fields);
+    const promoted = built.operations.promote ? built.operations.promote.argv.at(-1) : null;
+    assert.equal(promoted, tuple.publication.npm_promote_tag, `receipt promotion for ${id}`);
+    if (built.operations.promote) {
+      assert.equal(built.operations.promote.argv.at(-2), `${target.package.name}@${tuple.version}`);
+    }
+    promotions[id] = promoted;
+  }
+  assert.deepEqual(promotions, {
+    bridge: null,
+    "successor-stable": "latest",
+    "successor-preview": null,
+    "rehearsal-approve": null,
+    "rehearsal-reject": null,
+  });
+});
+
+// ── F8: no silent bridge redirect. The target decides which package the receipt names. ──
+// Enumerated from the module, not from a list of known offenders: any helper that can produce a
+// package-bound name without being told the target fails here.
+test("no exported receipt helper names a package tarball without an explicit target", () => {
+  const basenames = [...new Set(Object.values(defaultReleaseTargets()).map((target) => target.tarball_basename))];
+  for (const [name, exported] of Object.entries(allReceipts)) {
+    if (typeof exported !== "function") continue;
+    for (const args of [[VERSION, STAGE_ID], [{ version: VERSION, stageId: STAGE_ID }], [undefined, VERSION, STAGE_ID]]) {
+      let produced;
+      try {
+        produced = exported(...args);
+      } catch {
+        continue; // already fails closed
+      }
+      const rendered = JSON.stringify(produced ?? null);
+      for (const basename of basenames) {
+        assert.ok(!rendered.includes(basename), `${name} named ${basename} without an explicit target: ${rendered}`);
+      }
+    }
+  }
+});
+
+test("buildReceipt refuses to invent a target instead of emitting a bridge-shaped receipt", () => {
+  const { target, ...withoutTarget } = receiptFieldsFor("bridge", VERSION, "holaxis-aslite");
+  assert.equal(target, "bridge");
+  assert.throws(() => buildReceipt(withoutTarget), /requires an explicit target/);
+  // An unambiguous package name still resolves through the receipt's own resolver; `superbee` is
+  // ambiguous across the two successor targets and stays refused rather than defaulted.
+  assert.equal(buildReceipt({ ...withoutTarget, packageName: "@holaxis/aslite" }).receipt.prepared.target, "bridge");
+  assert.throws(
+    () => buildReceipt({ ...receiptFieldsFor("successor-stable", "0.1.0", "superbee"), target: undefined, packageName: "superbee" }),
+    /ambiguous across targets successor-preview, successor-stable/,
+  );
+});
+
+function emitReceiptArgs(extra) {
+  const tarball = `holaxis-aslite-${VERSION}.tgz`;
+  return [
+    emitReceipt,
+    "--run-id", "100",
+    "--artifact-id", "101",
+    "--artifact-digest", CANDIDATE_ARTIFACT_DIGEST,
+    "--stage-id", STAGE_ID,
+    "--version", VERSION,
+    "--tag", `v${VERSION}`,
+    "--source-commit", COMMIT,
+    "--policy-tag", "next",
+    "--tarball-sha256", TARBALL_SHA,
+    "--tarball-filename", tarball,
+    "--integrity", INTEGRITY,
+    "--manifest-sha256", MANIFEST_SHA,
+    "--draft-release-id", "300",
+    "--draft-assets-json", JSON.stringify([
+      { id: "201", name: tarball, digest: TARBALL_SHA },
+      { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
+    ]),
+    ...extra,
+  ];
+}
+
+test("release-emit-receipt.mjs without --target exits non-zero and prints no bridge receipt", async () => {
+  await assert.rejects(
+    execFileAsync(process.execPath, emitReceiptArgs([])),
+    (error) => {
+      assert.match(String(error.stderr ?? error.message), /missing --target/);
+      assert.ok(!String(error.stdout ?? "").includes("@holaxis/aslite"), "no bridge-shaped receipt may reach stdout");
+      return true;
+    },
+  );
+  const { stdout } = await execFileAsync(process.execPath, emitReceiptArgs(["--target", "bridge"]));
+  assert.match(stdout, /holaxis-aslite/);
+});
+
 test("a live receipt still refuses a non-UUID, non-sentinel stage id", () => {
   assert.throws(
     () => buildReceipt({
+      target: "bridge",
       runId: "100", artifactId: "101", artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
       stageId: "not-a-uuid", version: VERSION, tag: `v${VERSION}`, sourceCommit: COMMIT,
       policyTag: "next", tarballSha256: TARBALL_SHA, tarballFilename: TARBALL,

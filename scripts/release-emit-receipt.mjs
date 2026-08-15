@@ -12,7 +12,7 @@ import {
   inspectionInstructions,
   rejectOperation,
   approveOperation,
-  promoteOperation,
+  promoteOperationForTarget,
   registryVerifyOperations,
 } from "./release-operations.mjs";
 import { receiptEmissionCommands } from "./release-ordering.mjs";
@@ -30,9 +30,17 @@ function arg(argv, flag, required = true) {
 }
 
 export function buildReceipt(fields) {
-  const { stageId, version, policyTag, tarballSha256, draftReleaseId, target = "bridge" } = fields;
-  const receipt = buildStageReceipt({ ...fields, target });
+  const { stageId, version, tarballSha256, draftReleaseId } = fields;
+  const receipt = buildStageReceipt(fields);
+  // The receipt's own resolver is the ONE authority for which package this stage mutates, and it
+  // requires an explicit target (or an unambiguous package name). Every operator command below is
+  // built from the id it resolved, so a missing target can no longer produce a bridge-shaped
+  // receipt - bridge tarball filenames, bridge registry-verify - for a superbee stage.
+  const target = receipt.prepared.target;
   const inspection = inspectionInstructions({ stageId, tarballSha256, version, target });
+  // `publication.npm_promote_tag` may be null (bridge, preview, rehearsal): then there is no
+  // promotion to perform and the receipt carries no promote operation at all.
+  const promote = promoteOperationForTarget({ version, target });
   return {
     receipt,
     inspection,
@@ -41,7 +49,7 @@ export function buildReceipt(fields) {
       reject: rejectOperation({ stageId }),
       approve: approveOperation({ stageId }),
       registry_verify: registryVerifyOperations({ version, target }),
-      promote: promoteOperation({ version, tag: policyTag, target }),
+      ...(promote ? { promote } : {}),
       // The immutable-release (draft publish) operation is emitted later by the finalize workflow,
       // once a real draft release id exists — not premature at stage time with a placeholder.
     },
@@ -92,6 +100,30 @@ export function renderReceiptMarkdown(built) {
     operations.registry_verify.workflow_proof,
     "```",
     "",
+    // Promotion is an OPERATOR action: npm 11.15 trusted publishing is publish-scoped, so no
+    // workflow holds a credential for `npm dist-tag add`. This is the only instruction the operator
+    // gets for it, and it is built from the tuple's npm_promote_tag — the declared end state the
+    // release is checked against — so following it verbatim reaches exactly that state.
+    ...(operations.promote
+      ? [
+        "### Promotion (REQUIRED operator action — no workflow performs this)",
+        "",
+        "npm 11.15 trusted publishing is publish-scoped: `npm dist-tag add` exchanges no OIDC token, so",
+        "nothing promotes on your behalf. After the registry verification above, run this yourself",
+        "(requires 2FA). The release is not complete until the registry carries this tag:",
+        "",
+        "```sh",
+        operations.promote.command,
+        "```",
+      ]
+      : [
+        "### Promotion (none for this release)",
+        "",
+        "This release tuple declares no dist-tag promotion (`npm_promote_tag: null`): the tag npm",
+        "already carries is final. No workflow promotes it and neither should you — do NOT move a",
+        "dist-tag by hand.",
+      ]),
+    "",
     ...STABLE_MCP_LAUNCH_GUIDANCE.split("\n"),
   ];
   return lines.join("\n");
@@ -103,7 +135,8 @@ export async function main(argv = process.argv.slice(2)) {
     artifactId: arg(argv, "--artifact-id"),
     artifactDigest: arg(argv, "--artifact-digest"),
     stageId: arg(argv, "--stage-id"),
-    target: arg(argv, "--target", false) ?? "bridge",
+    // Required: the target decides which package the emitted receipt and operator commands name.
+    target: arg(argv, "--target"),
     version: arg(argv, "--version"),
     tag: arg(argv, "--tag"),
     sourceCommit: arg(argv, "--source-commit"),
