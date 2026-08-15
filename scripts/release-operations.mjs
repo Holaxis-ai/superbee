@@ -41,6 +41,12 @@ function assertSha256(value) {
   return value;
 }
 
+function assertBooleanish(name, value) {
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  throw new Error(`invalid ${name}: ${JSON.stringify(value)}`);
+}
+
 /** Shell-quote an argv element for DISPLAY only (never for execution). */
 function q(arg) {
   if (/^[A-Za-z0-9._@/:=,+-]+$/.test(arg)) return arg;
@@ -137,7 +143,7 @@ export function registryVerifyOperations({ version, target = "bridge" }) {
 }
 
 /** Interactive dist-tag promotion after registry proof (§5 promoted). */
-export function promoteOperation({ version, tag = "latest", target = "bridge" }) {
+export function promoteOperation({ version, tag, target = "bridge" }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }
@@ -146,13 +152,14 @@ export function promoteOperation({ version, tag = "latest", target = "bridge" })
  * Immutable-release finalization (§5 final): publish the PREPARED GitHub draft (never create a new
  * one) after re-verifying its identity. Returns argvs + display commands.
  */
-export function immutableReleaseOperations({ releaseId, tag }) {
+export function immutableReleaseOperations({ releaseId, tag, githubLatest }) {
   assertToken("releaseId", releaseId);
   assertToken("tag", tag);
+  const makeLatest = assertBooleanish("githubLatest", githubLatest);
   const releasePath = `repos/{owner}/{repo}/releases/${releaseId}`;
   const argvs = [
     ["gh", "api", releasePath, "--jq", ".draft, .tag_name, .id"],
-    ["gh", "api", "-X", "PATCH", releasePath, "-f", "draft=false", "-f", "make_latest=true"],
+    ["gh", "api", "-X", "PATCH", releasePath, "-f", "draft=false", "-f", `make_latest=${makeLatest}`],
   ];
   return { argvs, commands: argvs.map(displayCommand), tag };
 }

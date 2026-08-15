@@ -100,14 +100,16 @@ test("registry instructions are read-only and delegate strict proof to the verif
 });
 
 test("promote and immutable release name the exact version/tag/release id", () => {
-  assert.equal(promoteOperation({ version: "0.1.0", tag: "latest" }).command, "npm dist-tag add @holaxis/aslite@0.1.0 latest");
   assert.equal(
     promoteOperation({ target: "successor-stable", version: "0.1.0", tag: "latest" }).command,
     "npm dist-tag add superbee@0.1.0 latest",
   );
-  const rel = immutableReleaseOperations({ releaseId: "rel-42", tag: "v0.1.0" });
+  const rel = immutableReleaseOperations({ releaseId: "rel-42", tag: "v0.1.0", githubLatest: false });
   assert.ok(rel.commands[0].includes("releases/rel-42"));
   assert.ok(rel.commands[1].includes("-f draft=false"));
+  assert.ok(rel.commands[1].includes("make_latest=false"));
+  const latest = immutableReleaseOperations({ releaseId: "rel-43", tag: "v0.1.0", githubLatest: true });
+  assert.ok(latest.commands[1].includes("make_latest=true"));
 });
 
 // ── SECURITY: injection-shaped inputs are REJECTED at construction (no argv is ever built) ──
@@ -120,7 +122,7 @@ test("injection-shaped version / id / stage-id / tag are refused, not interpolat
     () => promoteOperation({ version: "0.1.0 | cat", tag: "latest" }),
     () => rollbackOperation({ failedVersion: "0.1.0`id`", priorVersion: "0.1.0" }),
     () => registryVerifyOperations({ version: "0.1.0\nid" }),
-    () => immutableReleaseOperations({ releaseId: "rel; curl evil", tag: "v0.1.0" }),
+    () => immutableReleaseOperations({ releaseId: "rel; curl evil", tag: "v0.1.0", githubLatest: true }),
   ];
   for (const attempt of injections) {
     assert.throws(attempt, /invalid (version|stageId|tag|releaseId)/);
@@ -156,8 +158,8 @@ test("flag-shaped values are refused at every operation entry point", () => {
     () => rollbackOperation({ failedVersion: "0.1.0", priorVersion: "0.0.9", track: "-next" }),
     () => promoteOperation({ version: "0.1.0", tag: "-latest" }),
     () => inspectionInstructions({ stageId: "-s", tarballSha256: SHA, version: "0.1.0" }),
-    () => immutableReleaseOperations({ releaseId: "--jq", tag: "v0.1.0" }),
-    () => immutableReleaseOperations({ releaseId: "rel-1", tag: "-v0.1.0" }),
+    () => immutableReleaseOperations({ releaseId: "--jq", tag: "v0.1.0", githubLatest: true }),
+    () => immutableReleaseOperations({ releaseId: "rel-1", tag: "-v0.1.0", githubLatest: true }),
   ];
   for (const attempt of attempts) {
     assert.throws(attempt, /invalid (stageId|tag|track|releaseId)/);
@@ -168,7 +170,9 @@ test("missing required arguments fail closed", () => {
   assert.throws(() => rejectOperation({}), /invalid stageId/);
   assert.throws(() => secondaryTagOperation({ version: "1.0.0" }), /invalid tag/);
   assert.throws(() => rollbackOperation({ failedVersion: "1.0.0" }), /invalid version/);
-  assert.throws(() => immutableReleaseOperations({ releaseId: "r" }), /invalid tag/);
+  assert.throws(() => promoteOperation({ version: "1.0.0" }), /invalid tag/);
+  assert.throws(() => immutableReleaseOperations({ releaseId: "r", githubLatest: true }), /invalid tag/);
+  assert.throws(() => immutableReleaseOperations({ releaseId: "r", tag: "v1.0.0" }), /invalid githubLatest/);
 });
 
 test("operationsFor resolves each op to the same argv + display strings", () => {
@@ -179,10 +183,11 @@ test("operationsFor resolves each op to the same argv + display strings", () => 
     operationsFor("registry-verify", ["--version", "0.1.0"]).map((o) => o.command),
     registryVerifyOperations({ version: "0.1.0" }).commands,
   );
-  assert.deepEqual(operationsFor("immutable-release", ["--version", "0.1.0", "--release-id", "rel-9"]).map((o) => o.argv), [
+  assert.deepEqual(operationsFor("immutable-release", ["--version", "0.1.0", "--release-id", "rel-9", "--github-latest", "false"]).map((o) => o.argv), [
     ["gh", "api", "repos/{owner}/{repo}/releases/rel-9", "--jq", ".draft, .tag_name, .id"],
-    ["gh", "api", "-X", "PATCH", "repos/{owner}/{repo}/releases/rel-9", "-f", "draft=false", "-f", "make_latest=true"],
+    ["gh", "api", "-X", "PATCH", "repos/{owner}/{repo}/releases/rel-9", "-f", "draft=false", "-f", "make_latest=false"],
   ]);
+  assert.throws(() => operationsFor("promote", ["--version", "0.1.0"]), /missing --tag/);
   assert.throws(() => operationsFor("bogus", []), /unknown op/);
 });
 

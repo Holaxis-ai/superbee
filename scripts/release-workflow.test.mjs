@@ -4,6 +4,8 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { loadReleaseTargets } from "./release-targets.mjs";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const staged = readFileSync(path.join(repoRoot, ".github", "workflows", "release-staged.yml"), "utf8");
 const finalize = readFileSync(path.join(repoRoot, ".github", "workflows", "release-finalize.yml"), "utf8");
@@ -51,6 +53,28 @@ function permissionsOf(jobText) {
     perms[m[1]] = m[2];
   }
   return perms;
+}
+
+function workflowTargetChoice(text) {
+  const lines = text.split("\n");
+  const at = lines.findIndex((line) => /^ {6}target:\s*$/.test(line));
+  assert.notEqual(at, -1, "workflow_dispatch target input must exist");
+  const result = { options: null, default: null };
+  for (let i = at + 1; i < lines.length; i++) {
+    if (!/^ {8}/.test(lines[i])) break;
+    const optionsMatch = /^ {8}options: \[(.*)\]\s*$/.exec(lines[i]);
+    if (optionsMatch) {
+      result.options = optionsMatch[1]
+        .split(",")
+        .map((entry) => entry.trim().replace(/^"|"$/g, ""));
+      continue;
+    }
+    const defaultMatch = /^ {8}default: "(.*)"\s*$/.exec(lines[i]);
+    if (defaultMatch) result.default = defaultMatch[1];
+  }
+  assert.ok(Array.isArray(result.options), "workflow_dispatch target input must declare options");
+  assert.equal(typeof result.default, "string", "workflow_dispatch target input must declare a default");
+  return result;
 }
 
 // Tokens that mean "a build or a pack happened here". The artifact NAME/dir `release-candidate` and
@@ -102,6 +126,17 @@ test("identity-only rehearsal targets stop after candidate verification", () => 
   assert.match(finalJobs["ordering-verified"], /needs: target-authorized/);
   assert.match(finalJobs["target-authorized"], /identity-only rehearsal targets have no finalization path/);
   assert.ok(!staged.includes("rehearsal-reject) TAG="), "workflow must not duplicate rehearsal tag literals outside the manifest");
+});
+
+test("workflow target choices enumerate the normalized manifest roster and keep a full-contract default", async () => {
+  const manifest = await loadReleaseTargets();
+  const expectedIds = Object.keys(manifest.targets);
+  for (const [name, text] of [["release-staged.yml", staged], ["release-finalize.yml", finalize]]) {
+    const choice = workflowTargetChoice(text);
+    assert.deepEqual(choice.options, expectedIds, `${name} target choices must match release/targets.json exactly`);
+    assert.ok(expectedIds.includes(choice.default), `${name} default target must exist in release/targets.json`);
+    assert.equal(manifest.targets[choice.default].workflow_contract, "full", `${name} default target must be dispatchable`);
+  }
 });
 
 test("the ordering gate runs BEFORE registry mutation and again before publication", () => {
@@ -241,6 +276,15 @@ test("the finalizer is separately dispatched and consumes every immutable ID", (
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.artifact_id \}\}/);
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.stage_receipt_artifact_id \}\}/);
   assert.ok((finalize.match(/release-verify-chain\.mjs verify-finalizer/g) ?? []).length === 3);
+});
+
+test("the finalizer consumes resolved publication facts for npm promotion and GitHub latest", () => {
+  const body = extractJobs(finalize).finalize;
+  assert.match(body, /release-resolve-target\.mjs --target "\$TARGET" --tag "v\$VERSION" --github-output "\$GITHUB_OUTPUT"/);
+  assert.match(body, /if \[ -n "\$NPM_PROMOTE_TAG" \]/, "finalize must gate dist-tag promotion on resolved manifest policy");
+  assert.match(body, /release-run-operations\.mjs --op promote/, "finalize must emit the manifest-defined dist-tag promotion");
+  assert.match(body, /--tag "\$NPM_PROMOTE_TAG"/, "finalize must promote the resolved npm tag");
+  assert.match(body, /--github-latest "\$GITHUB_LATEST"/, "finalize must publish with the resolved GitHub latest policy");
 });
 
 test("the staged workflow triggers on v* tags and on dry-run dispatch", () => {

@@ -55,11 +55,12 @@ export function operationsFor(op, argv) {
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }
     case "promote":
-      return [ops.promoteOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag") ?? "latest", target: arg(argv, "--target") ?? "bridge" })];
+      return [ops.promoteOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag", true), target: arg(argv, "--target") ?? "bridge" })];
     case "immutable-release": {
       const r = ops.immutableReleaseOperations({
         releaseId: arg(argv, "--release-id", true),
         tag: `v${ops.assertVersion(arg(argv, "--version", true))}`,
+        githubLatest: arg(argv, "--github-latest", true),
       });
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }

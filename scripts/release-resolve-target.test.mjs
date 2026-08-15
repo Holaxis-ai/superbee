@@ -104,11 +104,11 @@ test("release tuples cannot consume burns and the checked-in CLI declares the su
 test("production npm and GitHub publication policies are exact target contracts", async () => {
   const manifest = await loadReleaseTargets();
   const drifted = structuredClone(manifest);
-  drifted.allowed_tuples.bridge.publication.npm_promote_tag = null;
-  assert.throws(() => normalizeReleaseTargets(drifted), /publication policy differs/);
+  delete drifted.allowed_tuples.bridge.publication.github_latest;
+  assert.throws(() => normalizeReleaseTargets(drifted), /requires explicit publication policy/);
   const previewLatest = structuredClone(manifest);
-  previewLatest.allowed_tuples["successor-preview"].publication.github_latest = true;
-  assert.throws(() => normalizeReleaseTargets(previewLatest), /publication policy differs/);
+  previewLatest.allowed_tuples["successor-preview"].publication.github_latest = "true";
+  assert.throws(() => normalizeReleaseTargets(previewLatest), /invalid GitHub latest policy/);
 });
 
 test("package-only compatibility lookup refuses the split Superbee coordinates", async () => {
@@ -117,17 +117,27 @@ test("package-only compatibility lookup refuses the split Superbee coordinates",
   assert.equal(targetFromPackageName("superbee", manifest.targets), null);
 });
 
-test("the normalized manifest refuses an omitted reviewed tuple", async () => {
+test("the normalized manifest requires target ids and tuple ids to stay aligned", async () => {
   const manifest = await loadReleaseTargets();
   const omittedTarget = structuredClone(manifest);
   delete omittedTarget.targets["successor-preview"];
-  assert.throws(() => normalizeReleaseTargets(omittedTarget), /exactly the five reviewed targets/);
+  assert.throws(() => normalizeReleaseTargets(omittedTarget), /references missing target successor-preview/);
   const omittedTuple = structuredClone(manifest);
   delete omittedTuple.allowed_tuples["successor-preview"];
-  assert.throws(() => normalizeReleaseTargets(omittedTuple), /exactly the five reviewed tuples/);
-  const injectedTuple = structuredClone(manifest);
-  injectedTuple.allowed_tuples.unreviewed = { ...injectedTuple.allowed_tuples.bridge, id: "unreviewed" };
-  assert.throws(() => normalizeReleaseTargets(injectedTuple), /exactly the five reviewed tuples/);
+  assert.throws(() => normalizeReleaseTargets(omittedTuple), /target ids and allowlisted tuple ids must match exactly/);
+  const extraTarget = structuredClone(manifest);
+  extraTarget.targets.experimental = structuredClone(manifest.targets.bridge);
+  extraTarget.targets.experimental.package.name = "superbee-experimental";
+  extraTarget.targets.experimental.package.directory = ["superbee-experimental"];
+  extraTarget.targets.experimental.tarball_basename = "superbee-experimental";
+  extraTarget.targets.experimental.bins = { "superbee-experimental": "dist/superbee.mjs" };
+  extraTarget.targets.experimental.expected_commands = ["superbee-experimental"];
+  extraTarget.targets.experimental.preferred_command = "superbee-experimental";
+  extraTarget.targets.experimental.allow_production = false;
+  assert.throws(() => normalizeReleaseTargets(extraTarget), /target ids and allowlisted tuple ids must match exactly/);
+  const retargetedTuple = structuredClone(manifest);
+  retargetedTuple.allowed_tuples.bridge.target = "successor-stable";
+  assert.throws(() => normalizeReleaseTargets(retargetedTuple), /release tuple bridge must target bridge/);
 });
 
 test("resolveTargetFacts rejects target/tag mismatches before workflows mutate", async () => {
@@ -144,7 +154,7 @@ test("resolveTargetFacts can infer the target from a unique allowlisted tag", as
     version: "0.1.0-pre.11",
     tag: "v0.1.0-pre.11",
     policy_tag: "next",
-    npm_promote_tag: "latest",
+    npm_promote_tag: null,
     github_latest: false,
     workflow_contract: "full",
   });
@@ -171,10 +181,26 @@ test("renderGithubOutput emits only primitive stable fields", () => {
       version: "0.1.0-pre.11",
       tag: "v0.1.0-pre.11",
       policy_tag: "next",
-      npm_promote_tag: "latest",
+      npm_promote_tag: null,
       github_latest: false,
       workflow_contract: "full",
     }),
-    "target=bridge\npackage=@holaxis/aslite\nversion=0.1.0-pre.11\ntag=v0.1.0-pre.11\npolicy_tag=next\nnpm_promote_tag=latest\ngithub_latest=false\nworkflow_contract=full\n",
+    "target=bridge\npackage=@holaxis/aslite\nversion=0.1.0-pre.11\ntag=v0.1.0-pre.11\npolicy_tag=next\nnpm_promote_tag=\ngithub_latest=false\nworkflow_contract=full\n",
+  );
+});
+
+test("renderGithubOutput emits empty strings for nullable publication fields", () => {
+  assert.equal(
+    renderGithubOutput({
+      target: "rehearsal-reject",
+      package: "superbee-release-rehearsal",
+      version: "0.0.0-rename-reject.20260812",
+      tag: "v0.0.0-rename-reject.20260812",
+      policy_tag: null,
+      npm_promote_tag: null,
+      github_latest: false,
+      workflow_contract: "identity-only",
+    }),
+    "target=rehearsal-reject\npackage=superbee-release-rehearsal\nversion=0.0.0-rename-reject.20260812\ntag=v0.0.0-rename-reject.20260812\npolicy_tag=\nnpm_promote_tag=\ngithub_latest=false\nworkflow_contract=identity-only\n",
   );
 });

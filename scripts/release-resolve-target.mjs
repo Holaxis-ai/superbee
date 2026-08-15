@@ -54,7 +54,7 @@ export async function resolveTargetFacts({ target: targetId, tag, manifest: mani
 }
 
 function outputLine(key, value) {
-  return `${key}=${value}`;
+  return `${key}=${value ?? ""}`;
 }
 
 export function renderGithubOutput(facts) {
@@ -64,7 +64,7 @@ export function renderGithubOutput(facts) {
     outputLine("version", facts.version),
     outputLine("tag", facts.tag),
     outputLine("policy_tag", facts.policy_tag),
-    outputLine("npm_promote_tag", facts.npm_promote_tag ?? ""),
+    outputLine("npm_promote_tag", facts.npm_promote_tag),
     outputLine("github_latest", facts.github_latest),
     outputLine("workflow_contract", facts.workflow_contract),
   ].join("\n") + "\n";

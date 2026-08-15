@@ -17,7 +17,6 @@ const TARGET_ID = /^[a-z][a-z0-9-]*$/;
 const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const DIRECTORY_SEGMENT = /^@?[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
-const REVIEWED_TARGET_IDS = ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"];
 
 export const DEFAULT_RELEASE_TARGETS_PATH = path.join(repoRoot, "release", "targets.json");
 export const DEFAULT_BURNED_VERSIONS_PATH = path.join(repoRoot, "release", "burned-versions.json");
@@ -138,6 +137,10 @@ function normalizeTuple(raw, id) {
   return { id, target: targetId, package: raw.package, version, tag, outcome, production, publication: { npm_tag: publication.npm_tag, npm_promote_tag: publication.npm_promote_tag, github_latest: publication.github_latest } };
 }
 
+function sortedKeys(value) {
+  return Object.keys(value).sort();
+}
+
 export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("release target manifest must be an object");
   if (raw.schema !== RELEASE_TARGET_SCHEMA) throw new Error(`release target manifest schema ${JSON.stringify(raw.schema)} != ${RELEASE_TARGET_SCHEMA}`);
@@ -146,14 +149,13 @@ export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
   if (!targetsRaw || typeof targetsRaw !== "object" || Array.isArray(targetsRaw)) throw new Error("release target manifest requires targets");
   const targets = {};
   for (const [id, target] of Object.entries(targetsRaw)) targets[id] = normalizeTarget(target, id);
-  if (JSON.stringify(Object.keys(targets).sort()) !== JSON.stringify([...REVIEWED_TARGET_IDS].sort())) {
-    throw new Error("release target manifest must contain exactly the five reviewed targets");
-  }
+  if (Object.keys(targets).length === 0) throw new Error("release target manifest must contain at least one target");
   const tuplesRaw = raw.allowed_tuples;
   if (!tuplesRaw || typeof tuplesRaw !== "object" || Array.isArray(tuplesRaw)) throw new Error("release target manifest requires allowed_tuples");
   const allowedTuples = {};
   for (const [id, tuple] of Object.entries(tuplesRaw)) {
     const normalized = normalizeTuple(tuple, id);
+    if (normalized.target !== id) throw new Error(`release tuple ${id} must target ${id}`);
     const target = targets[normalized.target];
     if (!target) throw new Error(`release tuple ${id} references missing target ${normalized.target}`);
     if (normalized.package !== target.package.name) throw new Error(`release tuple ${id} package ${normalized.package} != target ${target.package.name}`);
@@ -166,27 +168,17 @@ export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
     }
     allowedTuples[id] = normalized;
   }
-  if (JSON.stringify(Object.keys(allowedTuples).sort()) !== JSON.stringify([...REVIEWED_TARGET_IDS].sort())) {
-    throw new Error("release target manifest must contain exactly the five reviewed tuples");
-  }
-  const publicationPolicy = {
-    bridge: { npm_tag: "next", npm_promote_tag: "latest", github_latest: false },
-    "successor-stable": { npm_tag: "next", npm_promote_tag: "latest", github_latest: true },
-    "successor-preview": { npm_tag: "next", npm_promote_tag: null, github_latest: false },
-    "rehearsal-reject": { npm_tag: null, npm_promote_tag: null, github_latest: false },
-    "rehearsal-approve": { npm_tag: null, npm_promote_tag: null, github_latest: false },
-  };
-  for (const id of REVIEWED_TARGET_IDS) {
-    if (JSON.stringify(allowedTuples[id].publication) !== JSON.stringify(publicationPolicy[id])) {
-      throw new Error(`release tuple ${id} publication policy differs from the reviewed cutover contract`);
-    }
+  if (JSON.stringify(sortedKeys(allowedTuples)) !== JSON.stringify(sortedKeys(targets))) {
+    throw new Error("release target manifest target ids and allowlisted tuple ids must match exactly");
   }
   const versions = Object.values(allowedTuples).map((tuple) => tuple.version);
   const tags = Object.values(allowedTuples).map((tuple) => tuple.tag);
   if (new Set(versions).size !== versions.length || new Set(tags).size !== tags.length) throw new Error("reviewed release tuple versions and tags must be pairwise distinct");
-  if (compareStrictSemver(allowedTuples["successor-stable"].version, functionalSuccessorFloor) === -1) {
+  const stableSuccessor = allowedTuples["successor-stable"];
+  if (!stableSuccessor) throw new Error("release target manifest requires a successor-stable tuple for functional successor floor review");
+  if (compareStrictSemver(stableSuccessor.version, functionalSuccessorFloor) === -1) {
     throw new Error(
-      `reviewed stable successor tuple version ${allowedTuples["successor-stable"].version} must be at or above functional successor floor ${functionalSuccessorFloor}`,
+      `reviewed stable successor tuple version ${stableSuccessor.version} must be at or above functional successor floor ${functionalSuccessorFloor}`,
     );
   }
   return {

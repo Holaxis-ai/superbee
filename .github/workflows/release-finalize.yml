@@ -41,8 +41,8 @@ on:
       target:
         description: "Release target from release/targets.json"
         type: choice
-        options: ["successor", "bridge", "rehearsal-reject", "rehearsal-approve"]
-        default: "successor"
+        options: ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"]
+        default: "successor-stable"
       mode:
         description: "dry-run (default) verifies/prints; live verifies registry + publishes draft"
         type: choice
@@ -379,21 +379,42 @@ jobs:
           node scripts/release-verify-ordering.mjs apply --mode "$MODE" --plan publication-plan.json \
             --repo "$GITHUB_REPOSITORY" --out-dir publication-out
 
+      - name: Resolve final publication policy facts
+        id: facts
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --github-output "$GITHUB_OUTPUT"
+
       - name: Re-query and prove exact final inventory and owned body before publication
         env:
           GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
           TARGET: ${{ inputs.target }}
+          NPM_PROMOTE_TAG: ${{ steps.facts.outputs.npm_promote_tag }}
+          GITHUB_LATEST: ${{ steps.facts.outputs.github_latest }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then
             gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > final-draft-release.json
             node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
               --plan publication-plan.json --out final-publication-proof.json
+            if [ -n "$NPM_PROMOTE_TAG" ]; then
+              node scripts/release-run-operations.mjs --op promote \
+                --target "$TARGET" --version "$VERSION" --tag "$NPM_PROMOTE_TAG" --execute
+            fi
             node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" --execute
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
+              --github-latest "$GITHUB_LATEST" --execute
           else
+            if [ -n "$NPM_PROMOTE_TAG" ]; then
+              node scripts/release-run-operations.mjs --op promote \
+                --target "$TARGET" --version "$VERSION" --tag "$NPM_PROMOTE_TAG"
+            fi
             node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID"
+              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
+              --github-latest "$GITHUB_LATEST"
           fi
