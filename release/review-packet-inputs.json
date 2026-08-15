@@ -19,6 +19,7 @@
     "packages/cli/src/integration-guidance.js",
     "packages/mcp-app/scripts/build-view.mjs",
     "release/burned-versions.json",
+    "release/cutover-contract.json",
     "release/phase.json",
     "release/review-packet-inputs.json",
     "release/targets.json",

@@ -403,6 +403,7 @@ test("positive executable authority comes from declarations plus explicit operat
     "scripts/release-publication-policy.mjs",
     "scripts/release-resolve-target.mjs",
     "scripts/release-run-operations.mjs",
+    "scripts/release-settings-capture.mjs",
     "scripts/release-verify-chain.mjs",
     "scripts/release-verify-ordering.mjs",
     "scripts/release-verify-registry.mjs",
