@@ -31,7 +31,19 @@ const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encodin
 const parent = head; // CI intentionally checks out depth one; synthetic P may equal R in unit fixtures.
 // A tag this repository actually holds, so the packet's live ref binding is exercised against real
 // repository state rather than an invented name.
-const liveTagRef = execFileSync("git", ["for-each-ref", "--count=1", "--format=%(refname)", "refs/tags"], { cwd: repoRoot, encoding: "utf8" }).trim();
+// CI checks out at depth one and fetches no tags, so this repository may genuinely hold none.
+// The packet enumerates the creating repository's real refs, so the premise has to be true rather
+// than mocked: create a fixture tag and remove it on exit when there is nothing to borrow.
+let liveTagRef = execFileSync("git", ["for-each-ref", "--count=1", "--format=%(refname)", "refs/tags"], { cwd: repoRoot, encoding: "utf8" }).trim();
+if (!liveTagRef) {
+  liveTagRef = "refs/tags/v0.0.0-packet-fixture";
+  execFileSync("git", ["-C", repoRoot, "update-ref", liveTagRef, head], { stdio: "pipe" });
+  process.on("exit", () => {
+    try {
+      execFileSync("git", ["-C", repoRoot, "update-ref", "-d", liveTagRef], { stdio: "pipe" });
+    } catch {}
+  });
+}
 const syntheticRetainedVerifier = async ({ manifest }) => {
   const candidate = JSON.parse(await readFile(manifest, "utf8"));
   const packageIdentity = { name: candidate.package.name, version: candidate.version };
@@ -52,11 +64,15 @@ const syntheticRetainedVerifier = async ({ manifest }) => {
 async function buildTransferBundle(bundleFile, { mainCommit = head, tagCommit, extraTags = [] } = {}) {
   const source = path.join(path.dirname(bundleFile), `transfer-repo-${path.basename(bundleFile)}`);
   await rm(source, { recursive: true, force: true });
-  execFileSync("git", ["init", "--quiet", "--bare", "--template=", source], { stdio: "pipe" });
-  execFileSync("git", ["-C", source, "fetch", "--quiet", "--no-tags", repoRoot, `${mainCommit}:refs/heads/main`], { stdio: "pipe" });
+  // Clone rather than init+fetch: CI checks out at depth one, and fetching FROM a shallow
+  // repository is rejected with "shallow roots are not allowed to be updated" — a warning that
+  // exits 0, so the ref is silently never created and the failure surfaces lines later. A bare
+  // clone copies the objects and every ref regardless of the source's depth.
+  execFileSync("git", ["clone", "--quiet", "--bare", repoRoot, source], { stdio: "pipe" });
+  execFileSync("git", ["-C", source, "update-ref", "refs/heads/main", mainCommit], { stdio: "pipe" });
   const refs = ["refs/heads/main"];
   if (tagCommit === undefined) {
-    execFileSync("git", ["-C", source, "fetch", "--quiet", "--no-tags", repoRoot, `${liveTagRef}:${liveTagRef}`], { stdio: "pipe" });
+    // The clone already carries the repository's tags; naming it here is what puts it in the bundle.
     refs.push(liveTagRef);
   } else {
     execFileSync("git", ["-C", source, "update-ref", liveTagRef, tagCommit], { stdio: "pipe" });
