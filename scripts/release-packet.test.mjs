@@ -7,8 +7,10 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
+  REVIEW_PACKET_SCHEMA,
   createReleasePacket,
   observedCheckout,
+  parsePacketArgs,
   preparePacketOutputDir,
   staticPacketClosure,
   trackedSourceFiles,
@@ -23,6 +25,7 @@ const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", 
 // Pre-cutover transfer evidence preserves existing public history. Candidate/rehearsal tags are
 // reserved in targets.json but do not exist until later human-authorized release work.
 const transferRefs = ["refs/heads/main", "refs/notes/review", "refs/tags/v0.1.0-pre.10"].sort();
+const gitAuthorArgs = ["-c", "user.name=packet-test", "-c", "user.email=packet-test@example.invalid"];
 const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
 const parent = head; // CI intentionally checks out depth one; synthetic P may equal R in unit fixtures.
 const syntheticRetainedVerifier = async ({ manifest }) => {
@@ -33,6 +36,25 @@ const syntheticRetainedVerifier = async ({ manifest }) => {
     identity: { identity: { package: packageIdentity } },
   };
 };
+
+async function writeTransferBundle(bundleFile, refs = transferRefs) {
+  const root = path.join(path.dirname(bundleFile), "transfer-repo");
+  await rm(root, { recursive: true, force: true });
+  await mkdir(root, { recursive: true });
+  execFileSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: root, stdio: "pipe" });
+  await writeFile(path.join(root, "tracked.txt"), "transfer evidence\n");
+  execFileSync("git", ["add", "tracked.txt"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", [...gitAuthorArgs, "commit", "--quiet", "-m", "transfer"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["branch", "board"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["tag", "v0.1.0-pre.10"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", [...gitAuthorArgs, "notes", "--ref", "review", "add", "-m", "transfer review", "HEAD"], { cwd: root, stdio: "pipe" });
+  for (const ref of refs) {
+    if (!ref.startsWith("refs/tags/")) continue;
+    const tag = ref.slice("refs/tags/".length);
+    if (tag !== "v0.1.0-pre.10") execFileSync("git", ["tag", tag], { cwd: root, stdio: "pipe" });
+  }
+  execFileSync("git", ["bundle", "create", bundleFile, ...refs], { cwd: root, stdio: "pipe" });
+}
 
 async function rewritePacket(out, mutate) {
   const packetPath = path.join(out, "release-packet.json");
@@ -100,66 +122,27 @@ async function fixture(root) {
   await writeFile(evidence["registry-snapshot"], "opaque registry snapshot\n");
   await writeFile(evidence["refs-baseline"], JSON.stringify(refs("superbee.ref-assertions.v1")));
   await writeFile(evidence["refs-recheck"], JSON.stringify(refs("superbee.ref-assertions.v1")));
-  await writeFile(evidence["settings-baseline"], "opaque settings baseline\n");
-  await writeFile(evidence["settings-recheck"], "opaque settings recheck\n");
-  await writeFile(evidence["transfer-bundle"], "# opaque git bundle retained by digest only\n");
+  await writeFile(evidence["settings-baseline"], JSON.stringify({ schema: "superbee.release-settings.v1", visibility: "private", npm: { provenance: true } }));
+  await writeFile(evidence["settings-recheck"], JSON.stringify({ schema: "superbee.release-settings.v1", visibility: "private", npm: { provenance: true } }));
+  await writeTransferBundle(evidence["transfer-bundle"]);
   await writeFile(evidence["transfer-allowlist"], JSON.stringify(refs("superbee.transfer-allowlist.v1")));
   await writeFile(evidence["cutover-script"], "#!/bin/sh\n# operator-owned, non-executing artifact\n");
   return { candidates, evidence };
 }
 
 async function ignoredCheckout(root) {
-  const prefixes = [
-    "node_modules/",
-    "packages/board-git/dist/",
-    "packages/cli/dist/",
-    "packages/cli/src/generated/",
-    "packages/core/dist/",
-    "packages/markdown-renderer/dist/",
-    "packages/mcp-app/dist/",
-    "packages/mcp-app/src/generated/",
-    "packages/server/dist/",
-    "packages/ui-server/dist/",
-    "packages/ui/dist/",
-    "packages/ui/node_modules/",
-    "packages/view-runtime/dist/",
-    "release-candidate/",
-  ];
-  await writeFile(path.join(root, ".gitignore"), `${prefixes.join("\n")}\n*.tgz\npackages/ui/test-results/\n`);
+  await writeFile(path.join(root, ".gitignore"), await readFile(path.join(repoRoot, ".gitignore"), "utf8"));
   await writeFile(path.join(root, "tracked.txt"), "tracked\n");
   execFileSync("git", ["init", "--quiet"], { cwd: root, stdio: "pipe" });
   execFileSync("git", ["add", ".gitignore", "tracked.txt"], { cwd: root, stdio: "pipe" });
-  execFileSync("git", ["-c", "user.name=packet-test", "-c", "user.email=packet-test@example.invalid", "commit", "--quiet", "-m", "fixture"], { cwd: root, stdio: "pipe" });
-  return prefixes;
-}
-
-async function addCandidateTagToRetainedEvidence(out, tag) {
-  const packetPath = path.join(out, "release-packet.json");
-  const packet = JSON.parse(await readFile(packetPath, "utf8"));
-  for (const id of ["refs-baseline", "refs-recheck", "transfer-allowlist"]) {
-    const evidenceRow = packet.external_evidence.find((row) => row.category === id);
-    const file = path.join(out, evidenceRow.path);
-    const value = JSON.parse(await readFile(file, "utf8"));
-    value.allowed_refs = [...value.allowed_refs, `refs/tags/${tag}`].sort();
-    if (value.observed_refs) value.observed_refs = value.allowed_refs;
-    await writeFile(file, `${JSON.stringify(value)}\n`);
-    const bytes = await readFile(file);
-    const sha256 = await fileSha256(file);
-    evidenceRow.sha256 = sha256;
-    evidenceRow.bytes = bytes.length;
-    const inventoryRow = packet.inventory.find((row) => row.path === evidenceRow.path);
-    inventoryRow.sha256 = sha256;
-    inventoryRow.bytes = bytes.length;
-  }
-  await writeFile(packetPath, `${JSON.stringify(packet, null, 2)}\n`);
-  const sha = await fileSha256(packetPath);
-  await writeFile(path.join(out, "release-packet.sha256"), `${sha.slice("sha256:".length)}  release-packet.json\n`);
+  execFileSync("git", [...gitAuthorArgs, "commit", "--quiet", "-m", "fixture"], { cwd: root, stdio: "pipe" });
 }
 
 test("the committed packet-input manifest is the exact static closure plus explicit inputs", async () => {
   const result = await validatePacketInputManifest();
   assert.ok(result.paths.includes("scripts/release-packet.mjs"));
   assert.ok(result.paths.includes("packages/cli/scripts/prepare-bundle-inputs.mjs"));
+  assert.ok(result.paths.includes("scripts/prepublish-guard.mjs"), "manifest must retain the publish lifecycle guard");
   assert.ok(!result.paths.includes("release/bridge-phase.json"));
   assert.ok(!result.paths.includes("release/superbee-cutover.json"));
   for (const script of ["release-run-operations", "release-resolve-target", "release-verify-ordering", "release-verify-registry", "release-emit-receipt", "release-audit-tags"]) {
@@ -187,10 +170,16 @@ test("tracked source manifest rejects Git-index symlinks", async () => {
   }
 });
 
-test("observed checkout allows exactly the normal generated-output roots", async () => {
+test("observed checkout allows the deterministic outputs from the normal npm run check path", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-ignored-"));
   try {
-    for (const prefix of await ignoredCheckout(root)) {
+    await ignoredCheckout(root);
+    for (const prefix of [
+      "packages/ui/playwright-report/",
+      "packages/ui/blob-report/",
+      "packages/ui/test-results/",
+      "packages/mcp-app/test-results/",
+    ]) {
       await mkdir(path.join(root, prefix), { recursive: true });
       await writeFile(path.join(root, prefix, ".marker"), "generated\n");
       assert.deepEqual(await observedCheckout(root), {
@@ -208,12 +197,12 @@ test("observed checkout rejects ignored output smuggling and names every offende
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-smuggle-"));
   try {
     await ignoredCheckout(root);
-    await writeFile(path.join(root, "stray.tgz"), "smuggled tarball\n");
-    await mkdir(path.join(root, "packages", "ui", "test-results"), { recursive: true });
-    await writeFile(path.join(root, "packages", "ui", "test-results", "result.txt"), "smuggled test output\n");
+    await writeFile(path.join(root, ".DS_Store"), "Finder noise\n");
+    await mkdir(path.join(root, "packages", "core", "reports"), { recursive: true });
+    await writeFile(path.join(root, "packages", "core", "reports", "mutation.html"), "smuggled mutation report\n");
     await assert.rejects(
       observedCheckout(root),
-      /checkout has disallowed ignored paths: packages\/ui\/test-results\/, stray\.tgz; allowed generated-output prefixes:/,
+      /checkout has disallowed ignored paths: \.DS_Store, packages\/core\/reports\/; allowed generated-output prefixes:/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -284,6 +273,7 @@ test("packet creation retains exactly five slots with detached self-free digest 
       observedSource: { commit: head, dirty: false },
       retainedVerifier: syntheticRetainedVerifier,
     });
+    assert.equal(result.packet.schema, REVIEW_PACKET_SCHEMA);
     assert.deepEqual(Object.keys(result.packet.candidates).sort(), Object.keys(targetManifest.allowed_tuples).sort());
     assert.ok(!JSON.stringify(result.packet).includes("release-packet.sha256"));
     assert.equal((await readdir(out)).includes(".superbee-release-packet-owned-v1"), false, "distributed packet must carry no deletion marker");
@@ -318,8 +308,12 @@ test("packet creation and verification accept a clean detached source checkout",
     await isolatedPacket.verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
     await writeFile(path.join(sourceRoot, "ambient-untracked"), "must reject\n");
     await assert.rejects(
-      verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier }),
+      isolatedPacket.verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier }),
       /checkout has non-ignored changes: \?\? ambient-untracked/,
+    );
+    await assert.rejects(
+      verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier }),
+      /same checkout as --root|foreign checkout/i,
     );
   } finally {
     execFileSync("git", ["worktree", "remove", "--force", sourceRoot], { cwd: repoRoot, stdio: "pipe" });
@@ -344,6 +338,20 @@ test("packet creation rejects transfer of the held board ref", async () => {
   }
 });
 
+test("packet creation rejects a retained transfer bundle whose actual heads differ from the reviewed allowlist", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-bundle-heads-"));
+  try {
+    const input = await fixture(root);
+    await writeTransferBundle(input.evidence["transfer-bundle"], ["refs/heads/board"]);
+    await assert.rejects(
+      createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, "packet"), ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier }),
+      /transfer bundle.*allowed refs|actual heads/i,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("transfer authority cross-attests pre-cutover history without requiring future candidate tags", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-transfer-"));
   const create = async (input, suffix) => createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, suffix), ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier });
@@ -362,13 +370,15 @@ test("transfer authority cross-attests pre-cutover history without requiring fut
         await writeFile(input.evidence["refs-recheck"], JSON.stringify(value));
       }, /allowed refs differ/],
       ["future-tag", async (input) => {
+        const protectedTag = targetManifest.allowed_tuples["successor-stable"].tag;
         for (const id of ["refs-baseline", "refs-recheck", "transfer-allowlist"]) {
           const value = JSON.parse(await readFile(input.evidence[id], "utf8"));
-          value.allowed_refs = [...value.allowed_refs, "refs/tags/v0.1.0"].sort();
+          value.allowed_refs = [...value.allowed_refs, `refs/tags/${protectedTag}`].sort();
           if (value.observed_refs) value.observed_refs = value.allowed_refs;
           await writeFile(input.evidence[id], JSON.stringify(value));
         }
-      }, /pre-cutover packet cannot be created or verified after candidate tag exists/],
+        await writeTransferBundle(input.evidence["transfer-bundle"], [...transferRefs, `refs/tags/${protectedTag}`].sort());
+      }, /pre-cutover packet.*protected release tag|protected release tag present/i],
     ]) {
       const input = await fixture(path.join(root, name));
       await mutate(input);
@@ -405,19 +415,32 @@ test("transfer authority uses retained bytes after an evidence source changes", 
   }
 });
 
-test("packet verification rejects every reserved candidate tag after cutover", async () => {
+test("packet creation records pre-cutover lifecycle semantics while verification remains a retained-packet audit", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-post-cutover-"));
   try {
-    for (const tuple of Object.values(targetManifest.allowed_tuples)) {
-      const input = await fixture(path.join(root, tuple.target));
-      const out = path.join(root, tuple.target, "packet");
-      await createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier });
-      await addCandidateTagToRetainedEvidence(out, tuple.tag);
-      await assert.rejects(
-        verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } }),
-        new RegExp(`pre-cutover packet cannot be created or verified after candidate tag exists: refs/tags/${tuple.tag}`),
-      );
-    }
+    const input = await fixture(root);
+    const out = path.join(root, "packet");
+    const created = await createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier });
+    assert.deepEqual(created.packet.lifecycle, {
+      creation_topology: "pre-cutover-transfer",
+      verification_scope: "retained-packet-audit",
+      protected_release_tag_refs: Object.values(targetManifest.allowed_tuples).map((tuple) => `refs/tags/${tuple.tag}`).sort(),
+    });
+    await verifyReleasePacket({ packet: path.join(out, "release-packet.json"), retainedVerifier: syntheticRetainedVerifier, observedSource: { commit: head, dirty: false } });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packet creation rejects settings drift even when both settings files are internally valid JSON", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-settings-"));
+  try {
+    const input = await fixture(root);
+    await writeFile(input.evidence["settings-recheck"], JSON.stringify({ schema: "superbee.release-settings.v1", visibility: "public", npm: { provenance: true } }));
+    await assert.rejects(
+      createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, "packet"), ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier }),
+      /settings baseline.*recheck differ|settings drift/i,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -450,6 +473,13 @@ test("packet output creation refuses every non-empty directory", async () => {
   } finally {
     await rm(out, { recursive: true, force: true });
   }
+});
+
+test("packet argument parsing rejects unknown flags", () => {
+  assert.throws(
+    () => parsePacketArgs(["verify", "--packet", "release-packet.json", "--bogus"]),
+    /unknown argument|usage/i,
+  );
 });
 
 test("packet verification binds to the clean checked-out HEAD and verified summary fields", async () => {

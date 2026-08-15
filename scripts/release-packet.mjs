@@ -15,18 +15,35 @@ import { RELEASE_CANDIDATE_SCHEMA, assertAllowedTuple, loadReleaseTargets, tarba
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
 export const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-export const REVIEW_PACKET_SCHEMA = "superbee.release-packet.v1";
+export const REVIEW_PACKET_SCHEMA = "superbee.release-packet.v2";
 export const REVIEW_PACKET_INPUTS_SCHEMA = "superbee.review-packet-inputs.v1";
 export const REF_ASSERTIONS_SCHEMA = "superbee.ref-assertions.v1";
 export const TRANSFER_ALLOWLIST_SCHEMA = "superbee.transfer-allowlist.v1";
 const PACKET_FILE = "release-packet.json";
 const DIGEST_FILE = "release-packet.sha256";
-const SOURCE_ENTRYPOINTS = ["scripts/release-packet.mjs", "scripts/release-candidate.mjs", "scripts/release-verify-chain.mjs"];
+const SOURCE_ENTRYPOINTS = ["scripts/release-packet.mjs"];
 const RELEASE_WORKFLOWS = [
   ".github/workflows/release-staged.yml",
   ".github/workflows/release-finalize.yml",
   ".github/workflows/release-audit.yml",
 ];
+const RELEASE_EXECUTION_TOPOLOGY = Object.freeze({
+  packageScripts: Object.freeze({
+    "package.json": Object.freeze(["release:candidate", "release:audit-tags"]),
+    "packages/cli/package.json": Object.freeze(["prepublishOnly"]),
+  }),
+  directEntrypoints: Object.freeze([
+    "scripts/release-packet.mjs",
+    "scripts/release-candidate.mjs",
+    "scripts/release-verify-chain.mjs",
+    "scripts/release-emit-receipt.mjs",
+    "scripts/release-resolve-target.mjs",
+    "scripts/release-verify-ordering.mjs",
+    "scripts/release-verify-registry.mjs",
+    "scripts/release-run-operations.mjs",
+    "scripts/release-audit-tags.mjs",
+  ]),
+});
 const EXTERNAL_IMPORTS = new Set(["es-module-lexer", "esbuild", "pako"]); // Directly declared and lockfile-pinned build dependencies.
 const EVIDENCE = [
   ["planning-heads", "planning-heads.json"],
@@ -44,9 +61,9 @@ const EVIDENCE_SCHEMAS = Object.freeze({
   "registry-snapshot": "opaque",
   "refs-baseline": REF_ASSERTIONS_SCHEMA,
   "refs-recheck": REF_ASSERTIONS_SCHEMA,
-  "settings-baseline": "opaque",
-  "settings-recheck": "opaque",
-  "transfer-bundle": "opaque",
+  "settings-baseline": "json",
+  "settings-recheck": "json",
+  "transfer-bundle": "git-bundle",
   "transfer-allowlist": TRANSFER_ALLOWLIST_SCHEMA,
   "cutover-script": "opaque",
 });
@@ -54,7 +71,7 @@ const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9@._/-]+$/;
 const REF = /^refs\/(?:heads|tags|notes)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-const NORMAL_IGNORED_OUTPUT_PREFIXES = Object.freeze([
+const NORMAL_CHECK_OUTPUT_PREFIXES = Object.freeze([
   "node_modules/",
   "packages/board-git/dist/",
   "packages/cli/dist/",
@@ -64,9 +81,13 @@ const NORMAL_IGNORED_OUTPUT_PREFIXES = Object.freeze([
   "packages/mcp-app/dist/",
   "packages/mcp-app/src/generated/",
   "packages/server/dist/",
+  "packages/mcp-app/test-results/",
   "packages/ui-server/dist/",
+  "packages/ui/blob-report/",
   "packages/ui/dist/",
   "packages/ui/node_modules/",
+  "packages/ui/playwright-report/",
+  "packages/ui/test-results/",
   "packages/view-runtime/dist/",
   "release-candidate/",
 ]);
@@ -75,6 +96,12 @@ await init;
 
 export function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function canonicalizeJsonValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalizeJsonValue);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalizeJsonValue(value[key])]));
 }
 
 function packetError(message) {
@@ -133,6 +160,10 @@ function parseJsonBytes(bytes, label) {
   } catch (error) {
     packetError(`${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+function sameJsonValue(left, right) {
+  return JSON.stringify(canonicalizeJsonValue(left)) === JSON.stringify(canonicalizeJsonValue(right));
 }
 
 async function regularFile(file, label = file) {
@@ -215,22 +246,23 @@ export async function staticPacketClosure({ root = repoRoot, entries = SOURCE_EN
   return [...found].sort();
 }
 
-async function workflowReleaseEntrypoints(root) {
-  const direct = new Set();
-  const packageScripts = new Set();
-  for (const relative of RELEASE_WORKFLOWS) {
-    const text = await readFile(resolveInput(root, relative), "utf8");
-    for (const match of text.matchAll(/\bnode\s+(scripts\/[A-Za-z0-9_-]+\.mjs)\b/g)) direct.add(match[1]);
-    for (const match of text.matchAll(/\bnpm\s+run\s+(release:[A-Za-z0-9:_-]+)\b/g)) packageScripts.add(match[1]);
-  }
-  if (packageScripts.size > 0) {
-    const packageJson = requireObject("root package.json", await readJson(resolveInput(root, "package.json"), "root package.json"));
-    const scripts = requireObject("root package scripts", packageJson.scripts);
-    for (const name of packageScripts) {
+function resolveNodeScriptCommand(command, label, baseDirectory = ".") {
+  const matched = /^node\s+((?:\.\.\/|\.\/)?[A-Za-z0-9_./-]+\.mjs)$/.exec(command);
+  if (!matched) packetError(`${label} must be one literal node <path>.mjs command`);
+  const relative = path.posix.normalize(path.posix.join(baseDirectory, matched[1]));
+  return literalPath(`${label} entrypoint`, relative);
+}
+
+async function releaseReachableEntrypoints(root) {
+  const direct = new Set(RELEASE_EXECUTION_TOPOLOGY.directEntrypoints);
+  for (const [relative, names] of Object.entries(RELEASE_EXECUTION_TOPOLOGY.packageScripts)) {
+    const packageJson = requireObject(relative, await readJson(resolveInput(root, relative), relative));
+    const scripts = requireObject(`${relative} scripts`, packageJson.scripts);
+    const baseDirectory = path.posix.dirname(relative);
+    for (const name of names) {
       const command = scripts[name];
-      const matched = typeof command === "string" ? /^node\s+(scripts\/[A-Za-z0-9_-]+\.mjs)$/.exec(command) : null;
-      if (!matched) packetError(`workflow package script ${name} must be one literal node scripts/*.mjs command`);
-      direct.add(matched[1]);
+      if (typeof command !== "string") packetError(`${relative} script ${name} must be a string`);
+      direct.add(resolveNodeScriptCommand(command, `${relative} script ${name}`, baseDirectory));
     }
   }
   return [...direct].sort();
@@ -243,8 +275,8 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
   for (const relative of paths) {
     resolveInput(root, literalPath("packet input manifest path", relative));
   }
-  const workflowEntries = await workflowReleaseEntrypoints(root);
-  const closure = await staticPacketClosure({ root, entries: [...SOURCE_ENTRYPOINTS, ...workflowEntries] });
+  const workflowEntries = await releaseReachableEntrypoints(root);
+  const closure = await staticPacketClosure({ root, entries: workflowEntries });
   const explicit = [
     "release/review-packet-inputs.json", "release/targets.json", "release/burned-versions.json",
     ...RELEASE_WORKFLOWS, ".github/release-allowed-signers",
@@ -257,6 +289,13 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
     packetError(`packet input manifest closure differs (missing: ${missing.join(",") || "none"}; extra: ${extra.join(",") || "none"})`);
   }
   return { paths, closure, explicit, workflowEntries };
+}
+
+function assertExecutionRoot(root, label) {
+  const requested = path.resolve(root);
+  if (requested !== repoRoot) {
+    packetError(`${label} must execute from the same checkout as --root; run ${path.join(requested, "scripts", "release-packet.mjs")}`);
+  }
 }
 
 async function sourceFacts(commit, publicAncestor, observed, root = repoRoot) {
@@ -402,10 +441,59 @@ export function validateRefAssertionsEnvelope(value, { publicAncestor, privateCo
 }
 
 function reservedCandidateTagRefs(targets) {
-  return new Set(Object.values(targets.allowed_tuples).map((tuple) => `refs/tags/${tuple.tag}`));
+  return [...new Set(Object.values(targets.allowed_tuples).map((tuple) => `refs/tags/${tuple.tag}`))].sort();
 }
 
-function validateTransferAuthority({ baseline, recheck, allowlist, source, targets }) {
+function packetLifecycle(targets) {
+  return {
+    creation_topology: "pre-cutover-transfer",
+    verification_scope: "retained-packet-audit",
+    protected_release_tag_refs: reservedCandidateTagRefs(targets),
+  };
+}
+
+function validatePacketLifecycle(value, targets) {
+  const lifecycle = exactKeys(value, "packet lifecycle", ["creation_topology", "verification_scope", "protected_release_tag_refs"]);
+  if (lifecycle.creation_topology !== "pre-cutover-transfer") packetError("packet lifecycle creation_topology must be pre-cutover-transfer");
+  if (lifecycle.verification_scope !== "retained-packet-audit") packetError("packet lifecycle verification_scope must be retained-packet-audit");
+  if (JSON.stringify(refSet("packet lifecycle protected release tags", lifecycle.protected_release_tag_refs)) !== JSON.stringify(packetLifecycle(targets).protected_release_tag_refs)) {
+    packetError("packet lifecycle protected release tags differ from release targets");
+  }
+  return lifecycle;
+}
+
+async function transferBundleHeads(bundleFile) {
+  await regularFile(bundleFile, "transfer bundle");
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync("git", ["bundle", "list-heads", bundleFile], { encoding: "utf8" }));
+  } catch (error) {
+    packetError(`transfer bundle is not a valid git bundle: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const refs = [];
+  for (const line of stdout.split("\n").filter(Boolean)) {
+    const [, , ref = ""] = /^([a-f0-9]{40})\s+(\S+)$/.exec(line) ?? [];
+    if (!ref) packetError(`transfer bundle list-heads output is malformed: ${JSON.stringify(line)}`);
+    requireString("transfer bundle ref", ref, REF);
+    if (ref.includes("//") || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".")) {
+      packetError(`invalid transfer bundle ref: ${JSON.stringify(ref)}`);
+    }
+    refs.push(ref);
+  }
+  const sorted = [...new Set(refs)].sort();
+  if (sorted.length !== refs.length) packetError("transfer bundle actual heads must be unique");
+  return sorted;
+}
+
+function parseSettingsEvidence(bytes, label) {
+  return requireObject(label, parseJsonBytes(bytes, label));
+}
+
+function validateSettingsAuthority({ baseline, recheck }) {
+  if (!sameJsonValue(baseline, recheck)) packetError("settings baseline and recheck differ");
+}
+
+async function validateTransferAuthority({ baseline, recheck, allowlist, bundleFile, source, targets, mode }) {
   for (const [label, value, isAllowlist] of [["refs baseline", baseline, false], ["refs recheck", recheck, false], ["transfer allowlist", allowlist, true]]) {
     validateRefAssertionsEnvelope(value, { publicAncestor: source.public_ancestor, privateCommit: source.commit, allowlist: isAllowlist });
   }
@@ -413,8 +501,12 @@ function validateTransferAuthority({ baseline, recheck, allowlist, source, targe
   if (JSON.stringify(recheck.allowed_refs) !== JSON.stringify(expected) || JSON.stringify(allowlist.allowed_refs) !== JSON.stringify(expected)) {
     packetError("transfer baseline/recheck/allowlist allowed refs differ");
   }
+  const actualHeads = await transferBundleHeads(bundleFile);
+  if (JSON.stringify(actualHeads) !== JSON.stringify(expected)) {
+    packetError(`transfer bundle actual heads differ from allowed refs (allowed: ${expected.join(",")}; actual: ${actualHeads.join(",")})`);
+  }
   for (const ref of reservedCandidateTagRefs(targets)) {
-    if (expected.includes(ref)) packetError(`pre-cutover packet cannot be created or verified after candidate tag exists: ${ref}`);
+    if (actualHeads.includes(ref)) packetError(`${mode === "create" ? "pre-cutover packet creation" : "retained packet audit"} found protected release tag present in transfer bundle: ${ref}`);
   }
 }
 
@@ -438,6 +530,12 @@ async function collectEvidence(id, sourceFile, outDir, source) {
     if (parsed.schema !== "superbee.planning-heads.v1") packetError("planning heads schema is not superbee.planning-heads.v1");
     for (const name of ["plan", "contract", "successor_coordinate_decision"]) requireString(`planning heads ${name}`, parsed[name], SHA256);
     row.schema = parsed.schema;
+  } else if (id === "settings-baseline" || id === "settings-recheck") {
+    parsed = parseSettingsEvidence(bytes, `evidence ${id}`);
+    row.schema = "json";
+  } else if (id === "transfer-bundle") {
+    await transferBundleHeads(path.join(outDir, relative));
+    row.schema = "git-bundle";
   }
   return { row, parsed };
 }
@@ -545,14 +643,14 @@ export async function observedCheckout(root) {
   for (const record of records) {
     if (!record.startsWith("!! ")) { nonIgnored.push(record); continue; }
     const relative = record.slice(3);
-    const prefix = NORMAL_IGNORED_OUTPUT_PREFIXES.find((candidate) => relative === candidate || relative.startsWith(candidate));
+    const prefix = NORMAL_CHECK_OUTPUT_PREFIXES.find((candidate) => relative === candidate || relative.startsWith(candidate));
     if (!prefix) { disallowedIgnored.push(relative); continue; }
     const info = await lstat(path.join(root, prefix)).catch(() => null);
     if (!info?.isDirectory() || info.isSymbolicLink()) invalidAllowedRoots.add(prefix);
   }
   if (nonIgnored.length > 0) packetError(`checkout has non-ignored changes: ${nonIgnored.sort().join(", ")}`);
   if (disallowedIgnored.length > 0) {
-    packetError(`checkout has disallowed ignored paths: ${disallowedIgnored.sort().join(", ")}; allowed generated-output prefixes: ${NORMAL_IGNORED_OUTPUT_PREFIXES.join(", ")}`);
+    packetError(`checkout has disallowed ignored paths: ${disallowedIgnored.sort().join(", ")}; allowed generated-output prefixes: ${NORMAL_CHECK_OUTPUT_PREFIXES.join(", ")}`);
   }
   if (invalidAllowedRoots.size > 0) packetError(`allowed generated-output root is not a real directory: ${[...invalidAllowedRoots].sort().join(", ")}`);
   return { commit: head.stdout.trim(), dirty: false };
@@ -569,6 +667,7 @@ async function assertDetachedCheckout(root) {
 }
 
 export async function createReleasePacket({ commit, publicAncestor, out, candidates, evidence, observedSource, root = repoRoot, retainedVerifier = verifyRetainedTarball, onEvidenceCaptured }) {
+  assertExecutionRoot(root, "create");
   const targets = await loadPacketTargets(root);
   const candidateIds = Object.keys(targets.allowed_tuples);
   if (!candidates || Object.keys(candidates).length !== candidateIds.length || candidateIds.some((id) => !candidates[id])) {
@@ -593,15 +692,22 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
       capturedEvidence[id] = captured.parsed;
       await onEvidenceCaptured?.(id);
     }
-    validateTransferAuthority({
+    await validateTransferAuthority({
       baseline: capturedEvidence["refs-baseline"],
       recheck: capturedEvidence["refs-recheck"],
       allowlist: capturedEvidence["transfer-allowlist"],
+      bundleFile: path.join(staged, "evidence", "transfer-bundle"),
       source, targets,
+      mode: "create",
+    });
+    validateSettingsAuthority({
+      baseline: capturedEvidence["settings-baseline"],
+      recheck: capturedEvidence["settings-recheck"],
     });
     const packet = {
       schema: REVIEW_PACKET_SCHEMA,
       source,
+      lifecycle: packetLifecycle(targets),
       generator: {
         entrypoint: "scripts/release-packet.mjs",
         entrypoint_sha256: await fileSha256(path.join(root, "scripts", "release-packet.mjs")),
@@ -626,11 +732,12 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
 }
 
 export async function verifyReleasePacket({ packet: packetFile, root = repoRoot, retainedVerifier = verifyRetainedTarball, observedSource }) {
+  assertExecutionRoot(root, "verify");
   const packetPath = path.resolve(packetFile);
   const outDir = path.dirname(packetPath);
   if (path.basename(packetPath) !== PACKET_FILE) packetError(`packet path must end in ${PACKET_FILE}`);
   const text = await readFile(packetPath, "utf8");
-  const packet = exactKeys(await readJson(packetPath, "packet"), "packet", ["schema", "source", "generator", "source_files", "tuples", "burns", "candidates", "external_evidence", "inventory"]);
+  const packet = exactKeys(await readJson(packetPath, "packet"), "packet", ["schema", "source", "lifecycle", "generator", "source_files", "tuples", "burns", "candidates", "external_evidence", "inventory"]);
   if (packet.schema !== REVIEW_PACKET_SCHEMA || canonicalJson(packet) !== text) packetError("packet is not canonical release-packet JSON");
   const digest = await readFile(path.join(outDir, DIGEST_FILE), "utf8");
   if (digest !== checksumLine(await fileSha256(packetPath))) packetError("detached packet digest mismatch");
@@ -674,6 +781,7 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
   const paths = new Set(packet.inventory.map((row) => row.path));
   if (paths.has(PACKET_FILE) || paths.has(DIGEST_FILE)) packetError("packet must not inventory itself or its detached digest");
   const targets = await loadPacketTargets(root);
+  validatePacketLifecycle(packet.lifecycle, targets);
   const candidateIds = Object.keys(targets.allowed_tuples);
   if (!packet.candidates || JSON.stringify(Object.keys(packet.candidates).sort()) !== JSON.stringify([...candidateIds].sort())) packetError("packet candidate slots differ from release targets");
   const expectedTuples = Object.fromEntries(candidateIds.map((id) => [id, targets.allowed_tuples[id]]));
@@ -717,62 +825,128 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
       validateRefAssertionsEnvelope(parsed, { publicAncestor: source.public_ancestor, privateCommit: source.commit, allowlist: id === "transfer-allowlist" });
       if (row.schema !== parsed.schema) packetError(`packet evidence ${id} schema mismatch`);
       retainedEvidence[id] = parsed;
+    } else if (id === "settings-baseline" || id === "settings-recheck") {
+      retainedEvidence[id] = parseSettingsEvidence(bytes, `packet evidence ${id}`);
+    } else if (id === "transfer-bundle") {
+      await transferBundleHeads(file);
     }
   }
-  validateTransferAuthority({
+  await validateTransferAuthority({
     baseline: retainedEvidence["refs-baseline"],
     recheck: retainedEvidence["refs-recheck"],
     allowlist: retainedEvidence["transfer-allowlist"],
+    bundleFile: path.join(outDir, "evidence", "transfer-bundle"),
     source, targets,
+    mode: "verify",
+  });
+  validateSettingsAuthority({
+    baseline: retainedEvidence["settings-baseline"],
+    recheck: retainedEvidence["settings-recheck"],
   });
   if (JSON.stringify(packet.burns) !== JSON.stringify(await loadBurnLedger(root))) packetError("packet burn ledger mismatch");
   return packet;
 }
 
-function parsePairs(argv, flag, allowed) {
-  const values = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    if (argv[index] !== flag) continue;
-    const value = argv[index + 1];
-    if (!value || !value.includes("=")) throw new Error(`missing ${flag} name=path`);
-    const [name, ...parts] = value.split("=");
-    if ((allowed && !allowed.includes(name)) || values[name] || parts.length === 0 || !parts.join("=")) throw new Error(`invalid ${flag} ${value}`);
-    values[name] = parts.join("=");
-    index += 1;
-  }
-  return values;
-}
-
-function option(argv, flag) {
-  const at = argv.indexOf(flag);
-  const value = at === -1 ? undefined : argv[at + 1];
-  if (!value || value.startsWith("--")) throw new Error(`missing ${flag}`);
-  return value;
-}
-
-function optionalOption(argv, flag) {
-  const at = argv.indexOf(flag);
-  if (at === -1) return undefined;
-  const value = argv[at + 1];
-  if (!value || value.startsWith("--")) throw new Error(`missing ${flag}`);
-  return path.resolve(value);
-}
-
 export function parsePacketArgs(argv) {
   const [command, ...rest] = argv;
-  if (command === "create") return {
-    command, commit: option(rest, "--commit"), publicAncestor: option(rest, "--public-ancestor"), out: option(rest, "--out"),
-    candidates: parsePairs(rest, "--candidate"), evidence: parsePairs(rest, "--evidence", EVIDENCE.map(([id]) => id)), root: optionalOption(rest, "--root"),
+  const nextValue = (index, flag) => {
+    const value = rest[index + 1];
+    if (!value || value.startsWith("--")) throw new Error(`missing ${flag}`);
+    return value;
   };
-  if (command === "verify") return { command, packet: option(rest, "--packet"), root: optionalOption(rest, "--root") };
+  if (command === "create") {
+    const parsed = { command, candidates: {}, evidence: {} };
+    for (let index = 0; index < rest.length; index += 1) {
+      const flag = rest[index];
+      switch (flag) {
+        case "--commit":
+          parsed.commit = nextValue(index, flag);
+          index += 1;
+          break;
+        case "--public-ancestor":
+          parsed.publicAncestor = nextValue(index, flag);
+          index += 1;
+          break;
+        case "--out":
+          parsed.out = nextValue(index, flag);
+          index += 1;
+          break;
+        case "--root":
+          parsed.root = path.resolve(nextValue(index, flag));
+          index += 1;
+          break;
+        case "--candidate":
+        case "--evidence": {
+          const value = nextValue(index, flag);
+          if (!value.includes("=")) throw new Error(`missing ${flag} name=path`);
+          const [name, ...parts] = value.split("=");
+          const target = flag === "--candidate" ? parsed.candidates : parsed.evidence;
+          const allowed = flag === "--evidence" ? EVIDENCE.map(([id]) => id) : undefined;
+          if (!name || parts.length === 0 || !parts.join("=") || target[name] || (allowed && !allowed.includes(name))) {
+            throw new Error(`invalid ${flag} ${value}`);
+          }
+          target[name] = parts.join("=");
+          index += 1;
+          break;
+        }
+        default:
+          throw new Error(`unknown argument ${JSON.stringify(flag)}`);
+      }
+    }
+    if (!parsed.commit || !parsed.publicAncestor || !parsed.out) throw new Error("usage: npm run release:packet -- create --commit <sha> --public-ancestor <sha> --out <dir> [--candidate name=path]... [--evidence name=path]... [--root <dir>]");
+    return parsed;
+  }
+  if (command === "verify") {
+    const parsed = { command };
+    for (let index = 0; index < rest.length; index += 1) {
+      const flag = rest[index];
+      if (flag === "--packet") {
+        parsed.packet = nextValue(index, flag);
+        index += 1;
+        continue;
+      }
+      if (flag === "--root") {
+        parsed.root = path.resolve(nextValue(index, flag));
+        index += 1;
+        continue;
+      }
+      throw new Error(`unknown argument ${JSON.stringify(flag)}`);
+    }
+    if (!parsed.packet) throw new Error("missing --packet");
+    return parsed;
+  }
   throw new Error("usage: npm run release:packet -- create|verify ...");
+}
+
+async function runBoundToRoot(args, argv) {
+  if (!args.root || args.root === repoRoot) return false;
+  const targetScript = path.join(args.root, "scripts", "release-packet.mjs");
+  await regularFile(targetScript, `--root packet script ${targetScript}`);
+  try {
+    const { stdout, stderr } = await execFileAsync(process.execPath, [targetScript, ...argv], {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    if (stdout) process.stdout.write(stdout);
+    if (stderr) process.stderr.write(stderr);
+  } catch (error) {
+    if (typeof error?.stdout === "string" && error.stdout) process.stdout.write(error.stdout);
+    if (typeof error?.stderr === "string" && error.stderr) process.stderr.write(error.stderr);
+    process.exitCode = Number.isInteger(error?.code) ? error.code : 1;
+  }
+  return true;
 }
 
 if (isMainModule(import.meta.url)) {
   try {
-    const args = parsePacketArgs(process.argv.slice(2));
+    const argv = process.argv.slice(2);
+    const args = parsePacketArgs(argv);
+    if (await runBoundToRoot(args, argv)) process.exitCode ??= 0;
+    else {
     const result = args.command === "create" ? await createReleasePacket(args) : await verifyReleasePacket(args);
     console.log(args.command === "create" ? `release packet created: ${result.outDir}` : `release packet verified: ${args.packet}`);
+    }
   } catch (error) {
     console.error(error instanceof Error ? error.stack : error);
     process.exitCode = 1;

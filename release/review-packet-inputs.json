@@ -19,6 +19,7 @@
     "release/review-packet-inputs.json",
     "release/targets.json",
     "scripts/is-main-module.mjs",
+    "scripts/prepublish-guard.mjs",
     "scripts/release-audit-tags.mjs",
     "scripts/release-candidate.mjs",
     "scripts/release-emit-receipt.mjs",
