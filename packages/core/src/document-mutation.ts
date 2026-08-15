@@ -10,6 +10,7 @@
 
 import { InvalidInputError } from "./errors.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
+import { persistMutationActor } from "./mutation-attribution.js";
 import { defaultTimestampAndValidateAgainstRegistry, validateAgainstKind } from "./kinds.js";
 import { versionedMutation } from "./mutation.js";
 import { VersionConflict } from "./versioning.js";
@@ -90,7 +91,7 @@ export interface MutateDocumentOptions {
   compareTimestamp?: boolean;
   /** Advisory backend-history attribution, applied only when a write occurs. */
   actor?: string;
-  /** Also persist the advisory actor in document frontmatter after no-op detection. */
+  /** Also persist the advisory actor in the edition-appropriate frontmatter field after no-op detection. */
   persistActor?: boolean;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
   expectedVersion?: Version;
@@ -150,15 +151,19 @@ function attributeCandidate(
   candidate: DocumentMutationCandidate,
   actor: string | undefined,
   persistActor: boolean,
-  okfVersion: string,
+  okfVersion: "0.1" | "0.2",
   registry: KindRegistry,
 ): DocumentMutationCandidate {
-  if (!persistActor || actor === undefined) return candidate;
-  if (okfVersion === "0.2") {
-    const kind = registry.kinds.get(String(candidate.frontmatter.type));
-    if (!kind?.fields.required.includes("actor")) return candidate;
-  }
-  return { ...candidate, frontmatter: { ...candidate.frontmatter, actor } };
+  if (!persistActor) return candidate;
+  const kind = registry.kinds.get(String(candidate.frontmatter.type));
+  return {
+    ...candidate,
+    frontmatter: persistMutationActor(candidate.frontmatter, {
+      actor,
+      okfVersion,
+      kindRequiresActor: kind?.fields.required.includes("actor") ?? false,
+    }),
+  };
 }
 
 /**

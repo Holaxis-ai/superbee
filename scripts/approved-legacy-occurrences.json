@@ -263,7 +263,7 @@
       "treatment": "preserve-internal-non-user-facing-name",
       "owner": "runtime-owner",
       "reason": "temporary scratch names are private implementation namespaces, not product guidance",
-      "line": 1222
+      "line": 1227
     },
     {
       "file": "packages/cli/package.json",

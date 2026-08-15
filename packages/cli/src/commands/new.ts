@@ -45,9 +45,9 @@
 // field literally named `actor` is unreachable AS A KIND-FIELD FLAG via `new` — core's
 // `RESERVED_FIELD_NAMES` does not reserve `actor`, but the CLI already treats it as reserved on
 // every other mutation surface, so this is consistent, not a regression (still listed in a
-// "declared:" hint). Since the actor-attribution fix, the control flag ITSELF persists
-// `frontmatter.actor` (see the write below), so a kind declaring `actor` is satisfiable after all
-// — through the control flag, with control semantics (blank-value guard, trim).
+// "declared:" hint). The control flag persists edition-appropriate mutation attribution and also
+// satisfies an explicitly required `actor` Kind field, with control semantics (blank-value guard,
+// trim).
 import { parseArgs } from "node:util";
 import { promises as fs } from "node:fs";
 import {
@@ -96,9 +96,9 @@ Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
-  --actor <name>         Attribute this write: persisted as the doc's own 'actor' frontmatter field
-                         (the per-doc attribution sync and its receipts read) and recorded in version
-                         history by a persisting backend. Precedence: --actor > SUPERBEE_ACTOR >
+  --actor <name>         Attribute this write in the edition-appropriate advisory field ('actor'
+                         in v0.1; 'superbee_updated_by' in v0.2) used by per-doc sync receipts, and
+                         in version history for a persisting backend. Precedence: --actor > SUPERBEE_ACTOR >
                          legacy AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or
                          environment value is a USAGE error (exit 2).
   --body <markdown>     Use inline Markdown as the complete initial body. Mutually exclusive with

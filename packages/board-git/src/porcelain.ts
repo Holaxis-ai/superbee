@@ -56,7 +56,12 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { conceptIdFromPath, isReservedFile, parseMarkdown } from "@superbee/core";
+import {
+  conceptIdFromPath,
+  isReservedFile,
+  mutationActorFromFrontmatter,
+  parseMarkdown,
+} from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
 
 /** The dedicated branch that carries ONLY the bundle (its root IS the bundle root). */
@@ -1024,7 +1029,7 @@ export function enrichDocChange(
   if (shown.status === 0) {
     try {
       const { frontmatter } = parseMarkdown(shown.stdout, relPath);
-      actor = fmString(frontmatter.actor);
+      actor = mutationActorFromFrontmatter(frontmatter) ?? UNKNOWN;
       kind = fmString(frontmatter.type);
       const t = fmString(frontmatter.title);
       if (t !== UNKNOWN) title = t;
