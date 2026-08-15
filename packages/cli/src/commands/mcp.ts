@@ -28,7 +28,7 @@ Options:
                         AGENTSTATE_LITE_ACTOR remains supported)
   -h, --help            Show this help
 
-The experimental server uses stdio. Use show_document with an exact document ID to display its
+The server uses stdio. Use show_document with an exact document ID to display its
 authoritative Markdown in Superbee's fixed reader without executable View approval. Use show_view
 to provide an exact registered View ID and launch its current HTML unchanged through the shared
 View bridge, after trusted-shell approval of those exact bytes. Or the agent can launch standard
