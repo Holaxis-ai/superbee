@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -139,7 +140,7 @@ async function replayFile(name, body) {
   return file;
 }
 
-const BRIDGE = ["--target", "bridge", "--version", bridgeTuple.version];
+const BRIDGE = ["--target", "bridge", "--version", bridgeTuple.version, "--attempts", "1"];
 
 test("CLI: the settled post-cutover registry passes in both modes", async () => {
   const file = await replayFile("settled.json", packument(settledDistTags()));
@@ -203,7 +204,7 @@ test("CLI: an unpublished package is fatal in live and tolerated in dry-run", as
 
 test("CLI: identity mismatches and usage errors are distinct non-zero exits", async () => {
   const file = await replayFile("settled2.json", packument(settledDistTags()));
-  const mismatch = await runVerify(["--target", "bridge", "--version", "9.9.9", "--mode", "live", "--registry-json", file]);
+  const mismatch = await runVerify(["--target", "bridge", "--version", "9.9.9", "--mode", "live", "--registry-json", file, "--attempts", "1"]);
   assert.equal(mismatch.code, 1, mismatch.stderr);
   assert.match(mismatch.stderr, /VIOLATION\[target_version_mismatch\]/);
 
@@ -212,6 +213,9 @@ test("CLI: identity mismatches and usage errors are distinct non-zero exits", as
     ["--target", "bridge"],
     ["--version", "0.1.0"],
     [...identity, "--mode", "sideways"],
+    [...identity, "--attempts", "0"],
+    [...identity, "--delay-ms", "-1"],
+    [...identity, "--attempts"],
   ]) {
     const run = await runVerify(args);
     assert.equal(run.code, 2, `${args.join(" ")}: ${run.stderr}`);
@@ -230,4 +234,111 @@ test("CLI: an unreachable registry is exit 20 — could NOT evaluate, never 'pol
   const run = await runVerify([...BRIDGE, "--mode", "live", "--registry-url", "http://127.0.0.1:1/aslite"]);
   assert.equal(run.code, 20, run.stderr);
   assert.match(run.stderr, /NETWORK:.*could NOT be evaluated/);
+});
+
+// --- read-after-write lag: the reason the retry exists -----------------------------------------
+
+/** A registry that serves `stale` for the first `lagResponses` reads, then `fresh`. */
+async function laggingRegistry({ stale, fresh, lagResponses }) {
+  let served = 0;
+  const server = createServer((request, response) => {
+    served += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(served <= lagResponses ? stale : fresh));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  return {
+    url: `http://127.0.0.1:${port}/aslite`,
+    get served() {
+      return served;
+    },
+    close: () => new Promise((resolve) => server.close(resolve)),
+  };
+}
+
+test("CLI: a bounded retry absorbs registry read-after-write lag on the operator's promotion", async () => {
+  const registry = await laggingRegistry({
+    stale: packument({ latest: LIVE_AT_REST, next: LIVE_AT_REST }),
+    fresh: packument(settledDistTags()),
+    lagResponses: 2,
+  });
+  try {
+    const run = await runVerify([
+      "--target", "bridge", "--version", bridgeTuple.version, "--mode", "live",
+      "--registry-url", registry.url, "--attempts", "6", "--delay-ms", "1",
+    ]);
+    assert.equal(run.code, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, /declared dist-tags not visible yet/, "the lag must be reported, not silently absorbed");
+    assert.match(run.stdout, /"attempts_used":3/, "it must have taken three reads to see the operator's write");
+  } finally {
+    await registry.close();
+  }
+});
+
+test("CLI: exhausting the retry still FAILS CLOSED rather than passing", async () => {
+  const registry = await laggingRegistry({
+    stale: packument({ latest: LIVE_AT_REST, next: LIVE_AT_REST }),
+    fresh: packument(settledDistTags()),
+    lagResponses: Number.MAX_SAFE_INTEGER,
+  });
+  try {
+    const run = await runVerify([
+      "--target", "bridge", "--version", bridgeTuple.version, "--mode", "live",
+      "--registry-url", registry.url, "--attempts", "3", "--delay-ms", "1",
+    ]);
+    assert.equal(run.code, 1, run.stdout);
+    assert.match(run.stderr, /VIOLATION\[declared_dist_tag_unmet\]/);
+    assert.equal(registry.served, 3, "every attempt must actually re-read the registry");
+  } finally {
+    await registry.close();
+  }
+});
+
+test("CLI: a FORBIDDEN dist-tag is never retried — it is not a timing condition", async () => {
+  const forbidden = ["latest", "next"].filter((tag) => !declaredTagsOf(bridgeTuple).has(tag))[0];
+  const violating = packument({ ...settledDistTags(), [forbidden]: bridgeTuple.version });
+  const registry = await laggingRegistry({ stale: violating, fresh: violating, lagResponses: 0 });
+  try {
+    const run = await runVerify([
+      "--target", "bridge", "--version", bridgeTuple.version, "--mode", "live",
+      "--registry-url", registry.url, "--attempts", "6", "--delay-ms", "1",
+    ]);
+    assert.equal(run.code, 1, run.stdout);
+    assert.match(run.stderr, /VIOLATION\[unauthorized_dist_tag\]/);
+    assert.equal(registry.served, 1, "a forbidden state must fail on the first read, not after six");
+  } finally {
+    await registry.close();
+  }
+});
+
+test("CLI: a transient registry outage is retried, then reported as network — never as policy", async () => {
+  let served = 0;
+  const server = createServer((request, response) => {
+    served += 1;
+    if (served <= 2) {
+      response.writeHead(503).end("unavailable");
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(packument(settledDistTags())));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    const run = await runVerify([
+      "--target", "bridge", "--version", bridgeTuple.version, "--mode", "live",
+      "--registry-url", `http://127.0.0.1:${port}/aslite`, "--attempts", "6", "--delay-ms", "1",
+    ]);
+    assert.equal(run.code, 0, `${run.stdout}${run.stderr}`);
+    assert.match(run.stdout, /registry unavailable .*retrying/);
+
+    const exhausted = await runVerify([
+      "--target", "bridge", "--version", bridgeTuple.version, "--mode", "live",
+      "--registry-url", "http://127.0.0.1:1/aslite", "--attempts", "2", "--delay-ms", "1",
+    ]);
+    assert.equal(exhausted.code, 20, exhausted.stderr);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

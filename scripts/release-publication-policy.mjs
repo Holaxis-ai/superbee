@@ -30,9 +30,13 @@
 //   1  -> policy violation: the registry contradicts release/targets.json
 //   2  -> usage error
 //   20 -> registry unreachable/unhealthy: the precondition could NOT be evaluated
-// A precondition that could not be evaluated has not been met, so the workflow treats 20 as fatal.
+// A precondition that could not be evaluated has not been met, so the workflow treats 20 as fatal —
+// but it is a DIFFERENT fatal from 1, and the operator is told which. Because this runs seconds after
+// an operator's `npm dist-tag add`, a bounded retry absorbs registry read-after-write lag before
+// concluding "not promoted"; it never retries a forbidden state, and it still fails closed.
 
 import { readFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { isMainModule } from "./is-main-module.mjs";
 import { promoteOperation } from "./release-operations.mjs";
@@ -45,6 +49,8 @@ export const EXIT_USAGE = 2;
 export const EXIT_NETWORK = 20;
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_BODY_BYTES = 20 * 1024 * 1024;
+const DEFAULT_ATTEMPTS = 6;
+const DEFAULT_DELAY_MS = 2000;
 
 /** Packument URL for a package name; a scoped name's `/` is the escaped `%2f` the registry wants. */
 export function registryUrlFor(packageName) {
@@ -102,7 +108,9 @@ export async function fetchRegistryState({ url, timeoutMs = FETCH_TIMEOUT_MS, fe
     response = await fetchImpl(url, {
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { accept: "application/json" },
+      // A precondition read that follows an operator's dist-tag write must not be served a stale
+      // CDN copy; revalidation is cheap and the bounded retry below covers what it does not.
+      headers: { accept: "application/json", "cache-control": "no-cache" },
     });
   } catch (error) {
     throw new NetworkUnavailableError(`registry request failed: ${error?.message ?? error}`);
@@ -240,6 +248,12 @@ function requiredArg(argv, flag) {
   return value;
 }
 
+function positiveInteger(value, flag, fallback) {
+  if (value === undefined) return fallback;
+  if (!/^\d+$/.test(value) || Number(value) < 1) throw new Error(`${flag} must be a positive integer, got ${JSON.stringify(value)}`);
+  return Number(value);
+}
+
 /** The one remediation renderer: each unmet dist-tag has exactly one owner, and it is never the workflow. */
 function remediationFor({ item, promoteTag, version, target }) {
   return item.tag === promoteTag
@@ -251,11 +265,15 @@ export async function verify(argv) {
   let target;
   let version;
   let mode;
+  let attempts;
+  let delayMs;
   try {
     target = requiredArg(argv, "--target");
     version = requiredArg(argv, "--version");
     mode = arg(argv, "--mode") ?? "dry-run";
     if (mode !== "live" && mode !== "dry-run") throw new Error(`--mode must be live|dry-run, got ${JSON.stringify(mode)}`);
+    attempts = positiveInteger(arg(argv, "--attempts"), "--attempts", DEFAULT_ATTEMPTS);
+    delayMs = positiveInteger(arg(argv, "--delay-ms"), "--delay-ms", DEFAULT_DELAY_MS);
   } catch (error) {
     console.error(`release-publication-policy: USAGE: ${error.message}`);
     return EXIT_USAGE;
@@ -277,45 +295,69 @@ export async function verify(argv) {
   const url = registryUrl ?? registryUrlFor(tuple.package);
   console.log(`release-publication-policy: verify ${tuple.package}@${version} target=${target} mode=${mode}`);
 
-  const registry = registryJson
-    ? parsePackument(JSON.parse(await readFile(registryJson, "utf8")))
-    : await fetchRegistryState({ url });
+  // Bounded retry over the ONE condition that is legitimately transient: the registry not yet
+  // reflecting an operator dist-tag write made moments ago. A forbidden state is never retried, and
+  // exhausting the attempts still fails closed.
+  for (let attempt = 1; ; attempt += 1) {
+    const last = attempt >= attempts;
+    let registry;
+    try {
+      registry = registryJson
+        ? parsePackument(JSON.parse(await readFile(registryJson, "utf8")))
+        : await fetchRegistryState({ url });
+    } catch (error) {
+      if (!(error instanceof NetworkUnavailableError) || last) throw error;
+      console.log(`release-publication-policy: registry unavailable (${error.message}); attempt ${attempt}/${attempts}, retrying`);
+      await delay(delayMs);
+      continue;
+    }
 
-  if (registry.missing) {
+    if (registry.missing) {
+      if (mode === "live") {
+        console.error(`release-publication-policy: VIOLATION[package_missing]: registry has no packument for ${tuple.package}`);
+        return EXIT_VIOLATION;
+      }
+      console.log(`release-publication-policy: [dry-run] ${tuple.package} is not published yet; nothing can hold a dist-tag`);
+      return EXIT_PASS;
+    }
+
+    const distTags = registry.distTags;
+    const forbidden = checkUnauthorizedDistTags({ destiny, version, distTags });
+    const outstanding = checkDeclaredDistTags({ destiny, version, distTags });
+
+    if (forbidden.length === 0 && outstanding.length > 0 && mode === "live" && !last) {
+      console.log(
+        `release-publication-policy: declared dist-tags not visible yet (${outstanding.map((item) => item.tag).join(", ")}); attempt ${attempt}/${attempts}, retrying in case the registry read lags the operator write`,
+      );
+      await delay(delayMs);
+      continue;
+    }
+
+    console.log(
+      `release-publication-policy: facts ${JSON.stringify({
+        package: tuple.package,
+        version,
+        promote_tag: promoteTag,
+        declared: describeDestiny(destiny, version),
+        dist_tags: distTags,
+        attempts_used: attempt,
+      })}`,
+    );
+
+    const violations = [...forbidden];
     if (mode === "live") {
-      console.error(`release-publication-policy: VIOLATION[package_missing]: registry has no packument for ${tuple.package}`);
+      violations.push(...outstanding);
+    } else {
+      for (const item of outstanding) console.log(`release-publication-policy: [dry-run] live finalize would require: ${item.message}`);
+    }
+    if (violations.length > 0) {
+      for (const item of violations) console.error(`release-publication-policy: VIOLATION[${item.code}]: ${item.message}`);
+      for (const item of outstanding) console.error(`release-publication-policy: ${remediationFor({ item, promoteTag, version, target })}`);
       return EXIT_VIOLATION;
     }
-    console.log(`release-publication-policy: [dry-run] ${tuple.package} is not published yet; nothing can hold a dist-tag`);
+    console.log(`release-publication-policy: PASS — the registry holds the publication policy declared for ${tuple.package}@${version}`);
     return EXIT_PASS;
   }
-
-  const distTags = registry.distTags;
-  const forbidden = checkUnauthorizedDistTags({ destiny, version, distTags });
-  const outstanding = checkDeclaredDistTags({ destiny, version, distTags });
-  console.log(
-    `release-publication-policy: facts ${JSON.stringify({
-      package: tuple.package,
-      version,
-      promote_tag: promoteTag,
-      declared: describeDestiny(destiny, version),
-      dist_tags: distTags,
-    })}`,
-  );
-
-  const violations = [...forbidden];
-  if (mode === "live") {
-    violations.push(...outstanding);
-  } else {
-    for (const item of outstanding) console.log(`release-publication-policy: [dry-run] live finalize would require: ${item.message}`);
-  }
-  if (violations.length > 0) {
-    for (const item of violations) console.error(`release-publication-policy: VIOLATION[${item.code}]: ${item.message}`);
-    for (const item of outstanding) console.error(`release-publication-policy: ${remediationFor({ item, promoteTag, version, target })}`);
-    return EXIT_VIOLATION;
-  }
-  console.log(`release-publication-policy: PASS — the registry holds the publication policy declared for ${tuple.package}@${version}`);
-  return EXIT_PASS;
 }
 
 export async function main(argv = process.argv.slice(2)) {

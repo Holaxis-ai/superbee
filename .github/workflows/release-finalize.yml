@@ -115,14 +115,29 @@ jobs:
           TARGET: ${{ inputs.target }}
           VERSION: ${{ inputs.version }}
         run: |
-          set -euo pipefail
+          set -uo pipefail
           # The npm side of the release is the operator's, with 2FA (see the credential model at the
           # top of this file). This proves it landed while nothing has been mutated yet: a version
           # missing its declared dist-tag, or sitting on one the manifest never gives it, stops the
           # finalizer here rather than between two irreversible steps. The script prints the exact
           # operator command for whichever half is missing.
+          #
+          # Both failures are fatal — an unevaluated precondition has not been met — but they are
+          # DIFFERENT failures and the operator is told which, so a registry outage is never read as
+          # "the release is off policy". The script's own bounded retry has already absorbed registry
+          # read-after-write lag before either verdict is reached.
+          set +e
           node scripts/release-publication-policy.mjs verify \
             --target "$TARGET" --version "$VERSION" --mode "$MODE"
+          code=$?
+          set -e
+          if [ "$code" -eq 0 ]; then exit 0; fi
+          if [ "$code" -eq 20 ]; then
+            echo "::error title=precondition not evaluated::npm registry unreachable - publication policy could NOT be checked. NOTHING has been mutated; re-dispatch when the registry is reachable."
+          else
+            echo "::error title=publication policy not met::the registry does not hold the state release/targets.json declares for this target. NOTHING has been mutated; run the operator command printed above (+2FA), then re-dispatch."
+          fi
+          exit "$code"
 
   ordering-verified:
     name: approved — signed operator receipt ordering gate
