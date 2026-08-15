@@ -100,15 +100,15 @@ export function renderReceiptMarkdown(built) {
     operations.registry_verify.workflow_proof,
     "```",
     "",
-    // Promotion is an OPERATOR action: npm's trusted publishing is publish-scoped, so no workflow
-    // holds a credential for `npm dist-tag add`. This command is the only instruction the operator
+    // Promotion is an OPERATOR action: npm 11.15 trusted publishing is publish-scoped, so no
+    // workflow holds a credential for `npm dist-tag add`. This is the only instruction the operator
     // gets for it, and it is built from the tuple's npm_promote_tag — the declared end state the
     // release is checked against — so following it verbatim reaches exactly that state.
     ...(operations.promote
       ? [
         "### Promotion (REQUIRED operator action — no workflow performs this)",
         "",
-        "npm's trusted publishing is publish-scoped: `npm dist-tag add` exchanges no OIDC token, so",
+        "npm 11.15 trusted publishing is publish-scoped: `npm dist-tag add` exchanges no OIDC token, so",
         "nothing promotes on your behalf. After the registry verification above, run this yourself",
         "(requires 2FA). The release is not complete until the registry carries this tag:",
         "",

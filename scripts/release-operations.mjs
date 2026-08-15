@@ -158,8 +158,8 @@ export function registryVerifyOperations({ version, target }) {
 }
 
 /**
- * Interactive dist-tag promotion after registry proof (§5 promoted). npm's trusted publishing is
- * publish-scoped — `npm dist-tag add` performs no OIDC token exchange — so this is an OPERATOR
+ * Interactive dist-tag promotion after registry proof (§5 promoted). npm 11.15 trusted publishing
+ * is publish-scoped — `npm dist-tag add` performs no OIDC token exchange — so this is an OPERATOR
  * action with 2FA, like `npm stage approve`, never something a workflow can run for them.
  */
 export function promoteOperation({ version, tag, target }) {
