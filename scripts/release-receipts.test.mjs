@@ -390,8 +390,9 @@ test("the receipt presents promotion as a required operator action no workflow p
 });
 
 test("the receipt omits promote entirely when the tuple declares npm_promote_tag: null", () => {
+  // The bridge now declares `latest`, so successor-preview is the remaining publishing tuple that
+  // promotes to nothing. The sibling test asserts the derived value for EVERY target.
   for (const [target, version, basename] of [
-    ["bridge", VERSION, "holaxis-aslite"],
     ["successor-preview", "0.1.1-pre.1", "superbee"],
   ]) {
     const built = buildReceipt(receiptFieldsFor(target, version, basename));
@@ -428,7 +429,7 @@ test("every declared target's receipt promotion equals its manifest tuple's npm_
     promotions[id] = promoted;
   }
   assert.deepEqual(promotions, {
-    bridge: null,
+    bridge: "latest",
     "successor-stable": "latest",
     "successor-preview": null,
     "rehearsal-approve": null,

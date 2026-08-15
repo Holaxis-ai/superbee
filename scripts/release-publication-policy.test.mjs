@@ -141,6 +141,8 @@ async function replayFile(name, body) {
 }
 
 const BRIDGE = ["--target", "bridge", "--version", bridgeTuple.version, "--attempts", "1"];
+const previewTuple = committedManifest.allowed_tuples["successor-preview"];
+const PREVIEW = ["--target", "successor-preview", "--version", previewTuple.version, "--attempts", "1"];
 
 test("CLI: the settled post-cutover registry passes in both modes", async () => {
   const file = await replayFile("settled.json", packument(settledDistTags()));
@@ -180,13 +182,16 @@ test("CLI: the failure names the exact operator command for the tag that is unme
   }
 });
 
+// Bridge now declares both `next` and `latest`, so it forbids nothing and cannot host this
+// scenario. successor-preview publishes to `next` and never promotes, so `latest` remains
+// unauthorized for it — the tuple this case needs. The guard below is what caught the swap.
 test("CLI: an unauthorized dist-tag is fatal in EVERY mode — it is policy, not timing", async () => {
-  const forbidden = ["latest", "next"].filter((tag) => !declaredTagsOf(bridgeTuple).has(tag));
-  assert.ok(forbidden.length > 0, "the bridge tuple must forbid at least one dist-tag for this scenario to exist");
+  const forbidden = ["latest", "next"].filter((tag) => !declaredTagsOf(previewTuple).has(tag));
+  assert.ok(forbidden.length > 0, "the chosen tuple must forbid at least one dist-tag for this scenario to exist");
   for (const tag of forbidden) {
-    const file = await replayFile(`forbidden-${tag}.json`, packument({ ...settledDistTags(), [tag]: bridgeTuple.version }));
+    const file = await replayFile(`forbidden-${tag}.json`, packument({ ...settledDistTags(), [tag]: previewTuple.version }));
     for (const mode of ["live", "dry-run"]) {
-      const run = await runVerify([...BRIDGE, "--mode", mode, "--registry-json", file]);
+      const run = await runVerify([...PREVIEW, "--mode", mode, "--registry-json", file]);
       assert.equal(run.code, 1, `${mode}/${tag}: ${run.stdout}${run.stderr}`);
       assert.match(run.stderr, /VIOLATION\[unauthorized_dist_tag\]/);
     }

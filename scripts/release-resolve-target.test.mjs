@@ -417,7 +417,7 @@ test("resolveTargetFacts can infer the target from a unique allowlisted tag", as
     version: "0.1.0-pre.11",
     tag: "v0.1.0-pre.11",
     policy_tag: "next",
-    npm_promote_tag: null,
+    npm_promote_tag: "latest",
     github_latest: false,
     workflow_contract: "full",
   });

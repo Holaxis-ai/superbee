@@ -717,8 +717,12 @@ test("F2: the expectation tracks the manifest in BOTH directions, not a value th
 
 test("F2: a candidate sitting on a dist-tag the manifest never gives it is RED", async () => {
   const candidate = bridgeTuple.version;
-  const forbidden = ["latest", "next"].filter((tag) => !declaredTagsOf(bridgeTuple).has(tag));
-  assert.ok(forbidden.length > 0, "the bridge tuple must forbid at least one dist-tag for this scenario to exist");
+  // The committed bridge tuple now declares BOTH dist-tags, so it forbids none and can no longer
+  // express this scenario. The rule under test belongs to the derivation, not to the bridge's
+  // current policy, so state the forbidden destiny explicitly: a next-only candidate on `latest`.
+  const destiny = destinyOf(candidate, ["next"]);
+  const forbidden = ["latest", "next"].filter((tag) => !destiny.get(candidate).has(tag));
+  assert.ok(forbidden.length > 0, "the chosen destiny must forbid at least one dist-tag for this scenario to exist");
   const registry = postBridgeRegistry();
   for (const tag of forbidden) {
     const result = auditRegistryState({
@@ -726,6 +730,7 @@ test("F2: a candidate sitting on a dist-tag the manifest never gives it is RED",
       sourceVersion: candidate,
       registry: { ...registry, distTags: { ...registry.distTags, [tag]: candidate } },
       burnedVersions: await committedBurns(),
+      destiny,
     });
     assert.ok(codes(result).includes(`${tag}_off_policy`), `promoting ${candidate} to ${tag} against the manifest must be red, got ${codes(result).join(",")}`);
   }

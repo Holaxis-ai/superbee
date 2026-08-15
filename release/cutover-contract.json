@@ -9,7 +9,7 @@
   "reviewed_at": "2026-08-15",
   "review": "PR #9 remediation, finding F6: roster and publication policy need an authority a manifest edit alone cannot satisfy.",
   "targets": {
-    "bridge": { "policy_sha256": "sha256:b66bb497f106e141cc5ecedb4ef4f54cdffd24838648d1d028407503cf0663d3" },
+    "bridge": { "policy_sha256": "sha256:4f63928fb332e1d2d08e34d71725b3ae5d9128349cd1c1b428a88c79cde1259a" },
     "successor-stable": { "policy_sha256": "sha256:1e2023ac6134dc87c3a6863a3157dea92f6b33196ee8b984d07ba6fe1d283bdd" },
     "successor-preview": { "policy_sha256": "sha256:dde6b982f17a12ab0e19f306e5387998aa910ceeae0121f2c1981c5e30347052" },
     "rehearsal-reject": { "policy_sha256": "sha256:014c15d5f3e143b794db52d7f7f228651615fc36a674edc987a66d8d30037b25" },
