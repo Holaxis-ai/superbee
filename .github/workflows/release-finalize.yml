@@ -14,6 +14,16 @@ name: Finalize release (separately dispatched)
 # P5S must protect the `release` environment and set ASLITE_RELEASE_LIVE_ENABLED=true there. GitHub
 # auto-creates missing environments without protection, so absence of that explicit variable always
 # fails closed even if someone dispatches with mode=live.
+#
+# CREDENTIAL MODEL — this workflow holds NO npm write credential and performs no npm registry write.
+# Every npm write in the release is a 2FA operator action emitted by the stage receipt: `npm stage
+# approve` puts the version on its npm_tag, and `npm dist-tag add` moves it to its npm_promote_tag.
+# The workflow's job is to PROVE the operator's half landed, not to perform it. That is not a
+# convenience: npm's trusted publishing exchanges the GitHub OIDC token inside `npm publish` only
+# (npm 11.15.0, lib/utils/oidc.js has exactly one call site, lib/commands/publish.js), so no amount
+# of id-token/registry-url wiring authenticates `npm dist-tag add`, and the alternative is a
+# long-lived npm token this design deliberately does not hold. The proof runs in target-authorized,
+# the FIRST job, so a registry that has not reached the declared state costs nothing to discover.
 on:
   workflow_dispatch:
     inputs:
@@ -62,11 +72,11 @@ env:
 
 jobs:
   # Every cheap precondition lives HERE, in the first job, which holds contents:read and runs no
-  # mutating command: resolving the manifest's publication facts and refusing identity-only targets.
-  # Downstream jobs consume the resolved facts as job outputs, so nothing re-derives policy after a
-  # mutation has landed.
+  # mutating command: resolving the manifest's publication facts, refusing identity-only targets,
+  # and proving the registry already holds the declared dist-tag state. Downstream jobs consume the
+  # resolved facts as job outputs, so nothing re-derives policy after a mutation has landed.
   target-authorized:
-    name: target-authorized — resolve publication policy BEFORE any mutation
+    name: target-authorized — resolve policy and prove the registry BEFORE any mutation
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -99,6 +109,19 @@ jobs:
           set -euo pipefail
           test "$WORKFLOW_CONTRACT" = "full" \
             || { echo "::error::identity-only rehearsal targets have no finalization path"; exit 1; }
+
+      - name: Prove the registry already holds the declared publication policy
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # The npm side of the release is the operator's, with 2FA (see the credential model at the
+          # top of this file). This proves it landed while nothing has been mutated yet: a version
+          # missing its declared dist-tag, or sitting on one the manifest never gives it, stops the
+          # finalizer here rather than between two irreversible steps.
+          node scripts/release-audit-tags.mjs verify-promotion \
+            --target "$TARGET" --version "$VERSION" --mode "$MODE"
 
   ordering-verified:
     name: approved — signed operator receipt ordering gate
@@ -400,13 +423,24 @@ jobs:
           node scripts/release-verify-ordering.mjs apply --mode "$MODE" --plan publication-plan.json \
             --repo "$GITHUB_REPOSITORY" --out-dir publication-out
 
+      - name: Re-prove the declared publication policy immediately before publication
+        env:
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # target-authorized proved this before anything was mutated; dist-tags can move between
+          # jobs (an operator rollback mid-run), so the pre-publish re-check mirrors the ordering
+          # gate. Still a pure read: this job holds no npm credential and writes nothing to npm.
+          node scripts/release-audit-tags.mjs verify-promotion \
+            --target "$TARGET" --version "$VERSION" --mode "$MODE"
+
       - name: Re-query and prove exact final inventory and owned body before publication
         env:
           GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
           TARGET: ${{ inputs.target }}
-          NPM_PROMOTE_TAG: ${{ needs.target-authorized.outputs.npm_promote_tag }}
           GITHUB_LATEST: ${{ needs.target-authorized.outputs.github_latest }}
         run: |
           set -euo pipefail
@@ -414,18 +448,10 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > final-draft-release.json
             node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
               --plan publication-plan.json --out final-publication-proof.json
-            if [ -n "$NPM_PROMOTE_TAG" ]; then
-              node scripts/release-run-operations.mjs --op promote \
-                --target "$TARGET" --version "$VERSION" --tag "$NPM_PROMOTE_TAG" --execute
-            fi
             node scripts/release-run-operations.mjs --op immutable-release \
               --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
               --github-latest "$GITHUB_LATEST" --execute
           else
-            if [ -n "$NPM_PROMOTE_TAG" ]; then
-              node scripts/release-run-operations.mjs --op promote \
-                --target "$TARGET" --version "$VERSION" --tag "$NPM_PROMOTE_TAG"
-            fi
             node scripts/release-run-operations.mjs --op immutable-release \
               --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
               --github-latest "$GITHUB_LATEST"

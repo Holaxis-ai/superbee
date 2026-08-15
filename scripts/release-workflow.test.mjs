@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { operationsFor } from "./release-run-operations.mjs";
 import { loadReleaseTargets } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -92,6 +93,51 @@ const MUTATING_TOKENS = [
   "npm stage approve", "npm stage reject", "npm publish", "npm dist-tag",
   "release-verify-ordering.mjs apply", "--execute",
 ];
+
+// npm subcommands that read the registry or nothing at all. Everything else — including a
+// subcommand nobody has classified yet — is treated as a registry WRITE that needs credentials.
+// The unknown case falling into the auth branch is the point: this list can only widen by review.
+const NPM_NON_WRITING_SUBCOMMANDS = new Set([
+  "view", "pack", "ping", "install", "ci", "run", "exec", "config", "audit", "help", "--version", "-v",
+]);
+
+/** Every flag `release-run-operations.mjs` reads, with a value each emitter accepts. */
+const OPERATION_SAMPLE_ARGV = [
+  "--stage-id", "stage1",
+  "--version", "0.1.0",
+  "--tag", "latest",
+  "--target", "bridge",
+  "--track", "next",
+  "--failed-version", "0.1.0",
+  "--prior-version", "0.0.1",
+  "--recovery-target", "bridge",
+  "--release-id", "1",
+  "--github-latest", "true",
+];
+
+/** Logical shell commands in a `run:` block: comments dropped, backslash continuations joined. */
+function shellCommands(runBlock) {
+  return runBlock
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n")
+    .replace(/\\\n\s*/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** Does this argv write to the npm registry (and therefore need credentials)? Fails closed. */
+function needsRegistryAuth(argv) {
+  return argv[0] === "npm" && !NPM_NON_WRITING_SUBCOMMANDS.has(argv[1]);
+}
+
+/** Does this job supply npm registry credentials — OIDC trusted publishing or a token? */
+function declaresNpmCredentials(jobText) {
+  const perms = permissionsOf(jobText) ?? {};
+  const oidc = perms["id-token"] === "write" && /registry-url:/.test(jobText);
+  return oidc || /NODE_AUTH_TOKEN|NPM_TOKEN|_authToken/.test(jobText);
+}
 
 /** `needs:` of a job, in both the scalar and the list form. */
 function needsOf(jobText) {
@@ -308,6 +354,7 @@ test("F12: publication policy is resolved and proved in a non-mutating job, upst
 
   assert.match(gate, /release-resolve-target\.mjs --target "\$TARGET" --tag "v\$VERSION" --github-output "\$GITHUB_OUTPUT"/,
     "the manifest facts are resolved in the first job");
+  assert.match(gate, /release-audit-tags\.mjs verify-promotion/, "the registry precondition runs in the first job");
   assert.deepEqual(permissionsOf(jobs["target-authorized"]), { contents: "read" }, "the precondition job cannot write anything");
 
   // Every job that mutates must be reachable FROM target-authorized through `needs:`, so no mutation
@@ -334,6 +381,68 @@ test("F12: publication policy is resolved and proved in a non-mutating job, upst
   }
   assert.match(jobs.finalize, /needs\.target-authorized\.outputs\.github_latest/, "finalize publishes with the pre-resolved GitHub latest policy");
   assert.match(jobs.finalize, /--github-latest "\$GITHUB_LATEST"/);
+});
+
+// F1 — the promote step ran `npm dist-tag add` in a job with no npm credentials, AFTER the ordering
+// `apply` step had already rewritten the draft. Under `set -euo pipefail` that leaves npm published
+// and the GitHub release stranded as a draft. The class this pins is not "the promote step": it is
+// "a registry-authenticated command in a job that cannot authenticate". Which operations authenticate
+// is resolved through the real emitter (`operationsFor`), so a new op is classified automatically.
+test("F1: no workflow job runs a registry-authenticated command without credentials for it", () => {
+  const seen = { authenticated: 0, viaOperationsCli: 0 };
+  for (const [workflow, text] of [["release-staged.yml", staged], ["release-finalize.yml", finalize]]) {
+    for (const [name, body] of Object.entries(extractJobs(text))) {
+      const credentialed = declaresNpmCredentials(body);
+      for (const command of runBlocks(body).flatMap(shellCommands)) {
+        // (a) operations executed through the release CLI, resolved by the emitter itself.
+        if (command.includes("release-run-operations.mjs") && command.includes("--execute")) {
+          const op = /--op\s+(\S+)/.exec(command)?.[1];
+          assert.ok(op, `${workflow}:${name} runs the operations CLI without --op: ${command}`);
+          seen.viaOperationsCli += 1;
+          for (const { argv } of operationsFor(op, OPERATION_SAMPLE_ARGV)) {
+            if (!needsRegistryAuth(argv)) continue;
+            seen.authenticated += 1;
+            assert.ok(credentialed, `${workflow}:${name} executes --op ${op} -> \`${argv.join(" ")}\`, which needs npm credentials the job does not declare`);
+          }
+        }
+        // (b) npm invoked directly in the shell.
+        for (const [, subcommand] of command.matchAll(/\bnpm\s+([A-Za-z][A-Za-z-]*|--version)/g)) {
+          if (NPM_NON_WRITING_SUBCOMMANDS.has(subcommand)) continue;
+          seen.authenticated += 1;
+          assert.ok(credentialed, `${workflow}:${name} runs \`npm ${subcommand}\`, which needs npm credentials the job does not declare`);
+        }
+      }
+    }
+  }
+  assert.ok(seen.viaOperationsCli > 0, "the scan must actually reach the operations CLI invocations");
+  assert.ok(seen.authenticated > 0, "the scan must actually classify at least one authenticated command (the stage publish)");
+});
+
+test("F1: the dist-tag promotion is operator-owned, and the finalizer proves it instead of performing it", () => {
+  const jobs = extractJobs(finalize);
+  // No job may EXECUTE the promote: this workflow holds no npm write credential by design.
+  for (const [name, body] of Object.entries(jobs)) {
+    for (const command of runBlocks(body).flatMap(shellCommands)) {
+      assert.ok(
+        !(command.includes("--op promote") && command.includes("--execute")),
+        `job ${name} must not execute the dist-tag promotion; it is a 2FA operator action: ${command}`,
+      );
+    }
+  }
+  // What replaces it is a proof, run before any mutation and again immediately before publication.
+  assert.match(jobs["target-authorized"], /release-audit-tags\.mjs verify-promotion/);
+  const body = jobs.finalize;
+  const proofAt = body.indexOf("release-audit-tags.mjs verify-promotion");
+  const publishAt = body.indexOf("release-run-operations.mjs --op immutable-release");
+  assert.notEqual(proofAt, -1, "finalize must re-prove the declared publication policy before publishing");
+  assert.ok(proofAt < publishAt, "the re-proof must precede the GitHub release publication");
+  // Both placements traverse the same adapter in dry-run rather than being skipped there.
+  for (const [name, job] of [["target-authorized", jobs["target-authorized"]], ["finalize", body]]) {
+    const proof = runBlocks(job)
+      .flatMap(shellCommands)
+      .find((command) => command.includes("release-audit-tags.mjs verify-promotion"));
+    assert.ok(proof?.includes('--mode "$MODE"'), `${name}'s proof must run in both modes, got ${JSON.stringify(proof)}`);
+  }
 });
 
 test("the staged workflow triggers on v* tags and on dry-run dispatch", () => {
