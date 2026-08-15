@@ -83,7 +83,7 @@ after a matching `change` event, refetch instead of treating old HTML as current
 means renderer safety limits truncated or collapsed part of the input.
 
 - `type` / `prefix` — server-side facets (a bundle-relative id prefix, a frontmatter `type`).
-- `field` — a client-side `key=value` filter; comma-separated values are OR (`status=todo,blocked`).
+- `field` — a client-side `key=value` filter; comma-separated values are OR (`progress_status=todo,blocked`).
   Scalar and array-valued fields use the same string-coerced membership rule as CLI `list`.
 - `open` — drop terminal rows, derived from the BUNDLE'S OWN kind conventions exactly like
   `list --open`: a row is dropped iff the convention governing its `type` declares the row's

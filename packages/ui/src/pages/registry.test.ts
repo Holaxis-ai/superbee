@@ -54,6 +54,19 @@ describe("Page registry authority", () => {
     expect(parseRegisteredPage("notes/about", fm)).toBeNull();
   });
 
+  it("projects edition-neutral mutation attribution with shared precedence and trimming", () => {
+    const base = { type: "View", title: "About", entry: "views/about.html" };
+    expect(parseRegisteredPage("views-registry/about", {
+      ...base,
+      superbee_updated_by: "  carol  ",
+      updated_by: "alice",
+      actor: "mike",
+    })?.actor).toBe("carol");
+    expect(parseRegisteredPage("views-registry/about", { ...base, updated_by: " alice ", actor: "mike" })?.actor).toBe("alice");
+    expect(parseRegisteredPage("views-registry/about", { ...base, actor: " mike " })?.actor).toBe("mike");
+    expect(parseRegisteredPage("views-registry/about", base)?.actor).toBeUndefined();
+  });
+
   it("accepts type View over the views-registry//views/ namespaces with the same strictness", () => {
     const fm = { type: "View", title: "Board", entry: "views/board.html", access: "bundle-read" };
     expect(parseRegisteredPage("views-registry/board", fm)).toMatchObject({

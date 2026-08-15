@@ -605,6 +605,10 @@ async function runInstalledProof(spec) {
     });
     await stat(path.join(bundle, "index.md"));
     await stat(quickstartMarker);
+    assert.match(await readFile(path.join(bundle, "index.md"), "utf8"), /okf_version: ['"]?0\.2['"]?/);
+    const defaultTaskConvention = await readFile(path.join(bundle, "conventions", "task.md"), "utf8");
+    assert.match(defaultTaskConvention, /superbee_progress_status/);
+    assert.doesNotMatch(defaultTaskConvention, /^\s*status:/m);
 
     // The same installed guard must refuse to turn the new quickstart workspace into an
     // open-or-modify path. Execute the emitted command again, byte for byte, and pin the whole
@@ -736,7 +740,7 @@ async function runInstalledProof(spec) {
           "first-task",
           "--title",
           "Plan the first change",
-          "--status",
+          "--progress_status",
           "todo",
           "--actor",
           "quickstart-agent",
@@ -751,10 +755,48 @@ async function runInstalledProof(spec) {
       (await runCli(target.preferred_command, ["doc", "read", "tasks/first-task", "--dir", bundle, "--json"])).stdout,
       "read attributed quickstart Task",
     );
-    assert.equal(createdTask.actor, "quickstart-agent", "the literal quickstart Task must retain attribution");
+    assert.equal(
+      createdTask.superbee_updated_by,
+      "quickstart-agent",
+      "the literal quickstart Task must retain current-format attribution",
+    );
     assert.equal(createdTask.title, "Plan the first change", "the verifier must execute the documented Task command");
+    const rawDefaultTask = await readFile(path.join(bundle, "tasks", "first-task.md"), "utf8");
+    assert.match(rawDefaultTask, /^superbee_progress_status: todo$/m);
+    assert.match(rawDefaultTask, /^superbee_updated_by: quickstart-agent$/m);
+    assert.doesNotMatch(rawDefaultTask, /^status:/m);
+    assert.doesNotMatch(rawDefaultTask, /^actor:/m);
+    assert.doesNotMatch(rawDefaultTask, /^timestamp:/m);
+    parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "doc",
+          "update",
+          "tasks/first-task",
+          "--progress_status",
+          "done",
+          "--actor",
+          "quickstart-agent",
+          "--dir",
+          bundle,
+          "--json",
+        ])
+      ).stdout,
+      "update default Task",
+    );
     const listed = parseJson(
-      (await runCli(target.preferred_command, ["list", "--type", "Task", "--dir", bundle, "--json"])).stdout,
+      (
+        await runCli(target.preferred_command, [
+          "list",
+          "--type",
+          "Task",
+          "--field",
+          "progress_status=done",
+          "--dir",
+          bundle,
+          "--json",
+        ])
+      ).stdout,
       "list",
     );
     assert.ok(
@@ -774,83 +816,58 @@ async function runInstalledProof(spec) {
       "productive quickstart status",
     );
     assert.equal(productiveStatus.kind_warnings, 0, "the attributed Task must keep the quickstart bundle kind-clean");
-
-    // Exact installed-artifact proof for the additive OKF v0.2 authoring path. The default
-    // quickstart above deliberately remains v0.1 until the separate default-adoption unit.
-    const v02Bundle = path.join(scratch, "explicit-v02-bundle");
+    const taskHistory = parseJson(
+      (await runCli(target.preferred_command, ["doc", "history", "tasks/first-task", "--dir", bundle, "--json"])).stdout,
+      "default Task history",
+    );
+    assert.ok(taskHistory.versions[0].actor, "local history must expose its backend principal");
+    // The old edition remains an explicit compatibility path, and reopening it through ordinary
+    // init must preserve its declared edition and installed definitions byte for byte.
+    const legacyBundle = path.join(scratch, "explicit-legacy-bundle");
     parseJson(
       (
         await runCli(target.preferred_command, [
           "init",
           "--create-only",
           "--okf-version",
-          "0.2",
+          "0.1",
           "--recipe",
           "work-tracking",
           "--dir",
-          v02Bundle,
+          legacyBundle,
           "--json",
         ])
       ).stdout,
-      "installed explicit v0.2 init",
+      "installed explicit legacy init",
     );
-    assert.match(await readFile(path.join(v02Bundle, "index.md"), "utf8"), /okf_version: ['"]?0\.2['"]?/);
-    const v02Convention = await readFile(path.join(v02Bundle, "conventions", "task.md"), "utf8");
-    assert.match(v02Convention, /superbee_progress_status/);
-    assert.doesNotMatch(v02Convention, /^\s*status:/m);
-    assert.doesNotMatch(v02Convention, /^timestamp:/m);
+    const legacyIndex = await readFile(path.join(legacyBundle, "index.md"), "utf8");
+    const legacyConvention = await readFile(path.join(legacyBundle, "conventions", "task.md"), "utf8");
+    assert.match(legacyIndex, /okf_version: ['"]?0\.1['"]?/);
+    assert.match(legacyConvention, /^\s*- status$/m);
+    assert.doesNotMatch(legacyConvention, /superbee_progress_status/);
     parseJson(
       (
         await runCli(target.preferred_command, [
-          "new",
-          "Task",
-          "v02-task",
-          "--title",
-          "Prove installed v0.2 authoring",
-          "--progress_status",
-          "todo",
+          "init",
           "--dir",
-          v02Bundle,
+          legacyBundle,
+          "--recipe",
+          "work-tracking",
           "--json",
         ])
       ).stdout,
-      "installed v0.2 Task create",
+      "reopen installed legacy bundle",
     );
-    parseJson(
-      (
-        await runCli(target.preferred_command, [
-          "doc",
-          "update",
-          "tasks/v02-task",
-          "--progress_status",
-          "done",
-          "--dir",
-          v02Bundle,
-          "--json",
-        ])
-      ).stdout,
-      "installed v0.2 Task update",
+    assert.equal(
+      await readFile(path.join(legacyBundle, "index.md"), "utf8"),
+      legacyIndex,
+      "ordinary reopen must preserve the legacy root claim",
     );
-    const v02Task = await readFile(path.join(v02Bundle, "tasks", "v02-task.md"), "utf8");
-    assert.match(v02Task, /^superbee_progress_status: done$/m);
-    assert.doesNotMatch(v02Task, /^status:/m);
-    assert.doesNotMatch(v02Task, /^timestamp:/m);
-    const v02List = parseJson(
-      (
-        await runCli(target.preferred_command, [
-          "list",
-          "--type",
-          "Task",
-          "--field",
-          "progress_status=done",
-          "--dir",
-          v02Bundle,
-          "--json",
-        ])
-      ).stdout,
-      "installed v0.2 logical progress query",
+    assert.equal(
+      await readFile(path.join(legacyBundle, "conventions", "task.md"), "utf8"),
+      legacyConvention,
+      "ordinary reopen must preserve legacy recipe definitions",
     );
-    assert.equal(v02List.count, 1, "the installed v0.2 bundle must query logical workflow progress");
 
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
     assert.match(installedReadme, /init --create-only --recipe work-tracking/);
@@ -1034,12 +1051,15 @@ async function runInstalledProof(spec) {
       files: contractReceipt.files.length,
       bins: Object.keys(manifest.bin),
       workflow: [
-        "quickstart: home -> recipes -> init --create-only work-tracking -> attributed Task -> home/status",
+        "quickstart: home -> recipes -> current-format init -> attributed Task create/update -> query/home/status/history",
         "recipes",
         "init --create-only",
         "new",
+        "doc update",
         "doc read",
+        "doc history",
         "list",
+        "explicit legacy init/reopen",
         "skill install/status/uninstall",
         "hook install/uninstall",
       ],

@@ -3,6 +3,9 @@
 import {
   defaultTimestampAndValidateAgainstRegistry,
   KindConformanceError,
+  projectKindForAuthoring,
+  projectKindValidationWarnings,
+  progressStatusStorageField,
   type ConceptId,
   type KindConvention,
   type KindRegistry,
@@ -28,6 +31,7 @@ function buildCompletingUpdateCommand(
   id: ConceptId,
   violations: ValidationWarning[],
   kind: KindConvention | undefined,
+  okfVersion?: "0.1" | "0.2",
 ): string | undefined {
   if (!kind) return undefined;
   const declaredFields = new Set([...kind.fields.required, ...kind.fields.optional]);
@@ -39,7 +43,8 @@ function buildCompletingUpdateCommand(
     seen.add(field);
     const allowed = kind.fields.values[field];
     const placeholder = allowed && allowed.length > 0 ? `<${allowed.join("|")}>` : "<value>";
-    flags.push(`--${field} ${placeholder}`);
+    const authoringField = field === progressStatusStorageField(okfVersion) ? "progress_status" : field;
+    flags.push(`--${authoringField} ${placeholder}`);
   }
   if (flags.length === 0) return undefined;
   return `${cliInvocation()} doc update ${id} ${flags.join(" ")}`;
@@ -63,10 +68,18 @@ export function kindConformanceCliError(
   docExists: boolean,
 ): CliError {
   const kind = registry.kinds.get(error.governs);
-  const completing = docExists ? buildCompletingUpdateCommand(error.id, error.violations, kind) : undefined;
-  return new CliError("USAGE", error.message, {
+  const authoringKind = kind ? projectKindForAuthoring(error.okfVersion, kind) : undefined;
+  const authoringViolations = kind
+    ? projectKindValidationWarnings(error.okfVersion, kind, error.violations)
+    : error.violations;
+  const completing = docExists
+    ? buildCompletingUpdateCommand(error.id, authoringViolations, authoringKind, error.okfVersion)
+    : undefined;
+  const message = `'${error.id}' does not satisfy the '${error.governs}' kind: ` +
+    authoringViolations.map((warning) => warning.message).join("; ");
+  return new CliError("USAGE", message, {
     help: completing ?? fallbackHelp,
-    details: { violations: error.violations },
+    details: { violations: authoringViolations },
   });
 }
 

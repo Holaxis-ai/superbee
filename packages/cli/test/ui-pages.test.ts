@@ -343,10 +343,10 @@ async function bootPagesServer(): Promise<{ handle: UiServerHandle; origin: stri
       links: { "depends on": "Task" },
       link_descriptions: { "depends on": "A prerequisite task that must be completed first." },
       fields: {
-        required: ["title", "status"],
-        values: { status: ["todo", "done", "canceled"] },
-        terminal: { status: ["done", "canceled"] },
-        descriptions: { title: "A concise summary.", status: "Current state." },
+        required: ["title", "superbee_progress_status"],
+        values: { superbee_progress_status: ["todo", "done", "canceled"] },
+        terminal: { superbee_progress_status: ["done", "canceled"] },
+        descriptions: { title: "A concise summary.", superbee_progress_status: "Current state." },
       },
     },
     body: "# Task",
@@ -358,10 +358,10 @@ async function bootPagesServer(): Promise<{ handle: UiServerHandle; origin: stri
       title: "Claim",
       governs: "Claim",
       fields: {
-        required: ["title", "status"],
-        values: { status: ["active", "challenged", "locked", "deprecated"] },
+        required: ["title", "superbee_progress_status"],
+        values: { superbee_progress_status: ["active", "challenged", "locked", "deprecated"] },
         value_descriptions: {
-          status: {
+          superbee_progress_status: {
             active: "Supported, but still open to revision.",
             challenged: "Contrary evidence or reasoning requires resolution.",
             locked: "Verified at the required standard for downstream reliance.",
@@ -716,18 +716,20 @@ test("kinds endpoint: session-gated, serves core's loadKinds registry (ONE regis
           valueDescriptions: Record<string, Record<string, string>>;
         };
       }[];
+      okfVersion: string;
     };
+    assert.equal(body.okfVersion, "0.2");
     const task = body.kinds.find((k) => k.governs === "Task");
     assert.ok(task, "the bundle's Task convention is in the served registry");
-    assert.deepEqual(task.fields.terminal, { status: ["done", "canceled"] });
+    assert.deepEqual(task.fields.terminal, { superbee_progress_status: ["done", "canceled"] });
     assert.equal(task.description, "A unit of work.");
     assert.deepEqual(task.linkDescriptions, {
       "depends on": "A prerequisite task that must be completed first.",
     });
-    assert.deepEqual(task.fields.descriptions, { title: "A concise summary.", status: "Current state." });
+    assert.deepEqual(task.fields.descriptions, { title: "A concise summary.", superbee_progress_status: "Current state." });
     const claim = body.kinds.find((kind) => kind.governs === "Claim");
     assert.deepEqual(claim?.fields.valueDescriptions, {
-      status: {
+      superbee_progress_status: {
         active: "Supported, but still open to revision.",
         challenged: "Contrary evidence or reasoning requires resolution.",
         locked: "Verified at the required standard for downstream reliance.",

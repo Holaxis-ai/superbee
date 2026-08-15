@@ -52,7 +52,7 @@ async function withActorEnv<T>(value: string | undefined, run: () => Promise<T>)
 /** A fresh temp OKF bundle with `concepts/a` and `concepts/b`, both stamped at OLD_TS. */
 async function makeFixtureBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-link-test-"));
-  const bundle = await initBundle(dir);
+  const bundle = await initBundle(dir, { okfVersion: "0.1" });
   await writeDoc(bundle, {
     id: "concepts/a",
     frontmatter: { type: "Concept", title: "A", timestamp: OLD_TS },

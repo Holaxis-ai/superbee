@@ -7,13 +7,13 @@ description: A discrete next action that a person or agent can prioritize, own, 
 fields:
   required:
     - title
-    - status
+    - progress_status
   optional:
     - priority
     - assignee
     - due
   values:
-    status:
+    progress_status:
       - todo
       - in_progress
       - blocked
@@ -24,7 +24,7 @@ fields:
       - medium
       - low
   value_descriptions:
-    status:
+    progress_status:
       todo: Ready to be worked but not yet started.
       in_progress: Someone is actively advancing the Task.
       blocked: The Task cannot proceed until a named dependency or condition changes.
@@ -35,11 +35,11 @@ fields:
       medium: Normal planned work without exceptional urgency.
       low: Optional or opportunistic work that may wait behind higher priorities.
   terminal:
-    status:
+    progress_status:
       - done
       - canceled
   descriptions:
-    status: Current lifecycle state of the work.
+    progress_status: Current lifecycle state of the work.
     priority: Relative importance; absence means unprioritized.
     assignee: Advisory identity responsible for the next action; not authentication or authorization.
     due: Target calendar date, authored as YYYY-MM-DD.

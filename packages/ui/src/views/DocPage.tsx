@@ -22,13 +22,26 @@ import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
 import { renderMarkdown } from "@superbee/markdown-renderer";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
+import {
+  mutationActorFromFrontmatter,
+  SUPERBEE_UPDATED_BY_FIELD,
+} from "@superbee/core/mutation-attribution";
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
 /** Frontmatter fields the header card shows as chips: kind-DECLARED fields with scalar values (status and friends), excluding the standard identity fields the card already presents. */
-const STANDARD_FIELDS = new Set(["type", "title", "actor", "timestamp", "description", "tags"]);
+const STANDARD_FIELDS = new Set([
+  "type",
+  "title",
+  "actor",
+  "updated_by",
+  SUPERBEE_UPDATED_BY_FIELD,
+  "timestamp",
+  "description",
+  "tags",
+]);
 
 export function DocPage({ docId }: { docId: string }) {
   const queryClient = useQueryClient();
@@ -109,7 +122,7 @@ export function DocPage({ docId }: { docId: string }) {
   const fm = doc.frontmatter;
   const kind = String(fm.type ?? "Doc");
   const title = stringField(fm.title) ?? doc.id;
-  const actor = stringField(fm.actor);
+  const actor = mutationActorFromFrontmatter(fm);
   const when = formatWhen(stringField(meaningfulChangeTimeValue(fm)));
   // Chips show the KIND-DECLARED fields present on this doc (required first, then optional) —
   // mechanism in the shell, meaning from the bundle's own conventions. An ungoverned doc shows

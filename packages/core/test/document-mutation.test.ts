@@ -9,7 +9,7 @@ import {
 } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { validateAgainstKind } from "../src/kinds.js";
-import { VersionConflict } from "../src/versioning.js";
+import { defaultActor, VersionConflict } from "../src/versioning.js";
 import type { KindConvention, KindRegistry } from "../src/kinds.js";
 import type { MutateDocumentOptions } from "../src/document-mutation.js";
 import type { Bundle, ConceptId, OkfDocument, Version, WriteOptions } from "../src/types.js";
@@ -176,7 +176,7 @@ test("semantic patch no-op ignores an auto-refreshed timestamp and returns the u
   assert.equal((await backend.versions("notes/a")).length, 1);
 });
 
-test("v0.2 mutation does not invent generated, timestamp, or actor metadata", async () => {
+test("v0.2 mutation persists portable mutation attribution without inventing generated, timestamp, or legacy actor metadata", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const result = await mutateDocument({
@@ -191,7 +191,11 @@ test("v0.2 mutation does not invent generated, timestamp, or actor metadata", as
     buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "body" }),
   });
 
-  assert.deepEqual(result.doc.frontmatter, { type: "Note", title: "A" });
+  assert.deepEqual(result.doc.frontmatter, {
+    type: "Note",
+    title: "A",
+    superbee_updated_by: "openai/codex",
+  });
   assert.equal((await backend.versions("notes/a"))[0]!.actor, "openai/codex");
 });
 
@@ -402,6 +406,7 @@ test("v0.2 bundle-local Kinds may explicitly retain required timestamp and actor
   });
   assert.equal(result.doc.frontmatter.timestamp, "2026-08-14T12:00:00Z");
   assert.equal(result.doc.frontmatter.actor, "openai/codex");
+  assert.equal(result.doc.frontmatter.superbee_updated_by, "openai/codex");
 });
 
 test("strict kind rejection is typed, happens after timestamp defaulting, and performs no write", async () => {
@@ -661,6 +666,63 @@ test("persistActor without an actor does not synthesize an actor field", async (
   });
 
   assert.equal(Object.prototype.hasOwnProperty.call(result.doc.frontmatter, "actor"), false);
+});
+
+test("v0.2 persistActor without an actor does not synthesize either attribution spelling", async () => {
+  const backend = new MemoryBackend();
+  const result = await mutateDocument({
+    bundle: await v02BundleFor(backend),
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    persistActor: true,
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "body" }),
+  });
+
+  assert.equal(Object.prototype.hasOwnProperty.call(result.doc.frontmatter, "actor"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result.doc.frontmatter, "superbee_updated_by"), false);
+});
+
+test("a real unattributed v0.2 mutation clears stale portable attribution while a no-op preserves bytes", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const created = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "alice",
+    persistActor: true,
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "before" }),
+  });
+
+  const noop = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    persistActor: true,
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: existing!.body }),
+  });
+  assert.equal(noop.changed, false);
+  assert.equal(noop.version, created.version);
+  assert.equal(noop.doc.frontmatter.superbee_updated_by, "alice");
+
+  const changed = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    persistActor: true,
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
+  });
+  assert.equal(changed.changed, true);
+  assert.equal(changed.doc.frontmatter.superbee_updated_by, undefined);
+  assert.equal((await backend.versions("notes/a"))[0]?.actor, defaultActor());
 });
 
 test("typed document mutation failures carry stable consumer-facing metadata", async () => {

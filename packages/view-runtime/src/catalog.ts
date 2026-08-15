@@ -5,6 +5,7 @@ import {
   type HeadResult,
 } from "@superbee/core";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
+import { mutationActorFromFrontmatter } from "@superbee/core/mutation-attribution";
 import {
   parseRegistration,
   resolveDeclaredAccess,
@@ -87,7 +88,7 @@ function projectCandidates(heads: readonly HeadResult[]): {
     }
     const declaredPresentation = presentation(head.frontmatter.presentation);
     const description = optionalString(head.frontmatter.description);
-    const actor = optionalString(head.frontmatter.actor);
+    const actor = mutationActorFromFrontmatter(head.frontmatter);
     const timestamp = optionalString(meaningfulChangeTimeValue(head.frontmatter));
     candidates.push({
       entry: registration.entry,

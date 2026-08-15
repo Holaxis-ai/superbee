@@ -85,19 +85,19 @@ function expectedTaskKind(): KindConvention {
     description: "A discrete next action that a person or agent can prioritize, own, advance, block, and complete.",
     path: "tasks/",
     fields: {
-      required: ["title", "status"],
+      required: ["title", "superbee_progress_status"],
       optional: ["priority", "assignee", "due"],
       values: {
-        status: ["todo", "in_progress", "blocked", "done", "canceled"],
+        superbee_progress_status: ["todo", "in_progress", "blocked", "done", "canceled"],
         priority: ["high", "medium", "low"],
       },
       valueDescriptions: {
-        status: TASK_STATUS_DESCRIPTIONS,
+        superbee_progress_status: TASK_STATUS_DESCRIPTIONS,
         priority: TASK_PRIORITY_DESCRIPTIONS,
       },
-      terminal: { status: ["done", "canceled"] },
+      terminal: { superbee_progress_status: ["done", "canceled"] },
       descriptions: {
-        status: "Current lifecycle state of the work.",
+        superbee_progress_status: "Current lifecycle state of the work.",
         priority: "Relative importance; absence means unprioritized.",
         assignee: "Advisory identity responsible for the next action; not authentication or authorization.",
         due: "Target calendar date, authored as YYYY-MM-DD.",
@@ -120,13 +120,13 @@ function expectedProjectKind(): KindConvention {
     description: "A durable outcome or body of work that groups related Tasks and preserves context across them.",
     path: "projects/",
     fields: {
-      required: ["title", "status"],
+      required: ["title", "superbee_progress_status"],
       optional: ["description"],
-      values: { status: ["active", "paused", "archived"] },
-      valueDescriptions: { status: PROJECT_STATUS_DESCRIPTIONS },
-      terminal: { status: ["archived"] },
+      values: { superbee_progress_status: ["active", "paused", "archived"] },
+      valueDescriptions: { superbee_progress_status: PROJECT_STATUS_DESCRIPTIONS },
+      terminal: { superbee_progress_status: ["archived"] },
       descriptions: {
-        status: "Whether the Project is active work, intentionally paused, or archived.",
+        superbee_progress_status: "Whether the Project is active work, intentionally paused, or archived.",
         description: "A concise statement of the Project's intended outcome or scope.",
       },
     },
@@ -193,16 +193,24 @@ test("Personal Task System parses strictly and installs its kinds plus interacti
     const task = rows.find((row) => row.governs === "Task")!;
     const project = rows.find((row) => row.governs === "Project")!;
     assert.deepEqual(task.value_descriptions, {
-      status: TASK_STATUS_DESCRIPTIONS,
+      progress_status: TASK_STATUS_DESCRIPTIONS,
       priority: TASK_PRIORITY_DESCRIPTIONS,
     });
-    assert.deepEqual(task.descriptions, expectedTaskKind().fields.descriptions);
+    assert.deepEqual(task.descriptions, {
+      progress_status: "Current lifecycle state of the work.",
+      priority: "Relative importance; absence means unprioritized.",
+      assignee: "Advisory identity responsible for the next action; not authentication or authorization.",
+      due: "Target calendar date, authored as YYYY-MM-DD.",
+    });
     assert.deepEqual(task.links, expectedTaskKind().links);
     assert.deepEqual(task.link_descriptions, expectedTaskKind().linkDescriptions);
     assert.equal(task.horizon, "30d");
     assert.ok(!("sections" in task), "Task has no required body headings");
-    assert.deepEqual(project.value_descriptions, { status: PROJECT_STATUS_DESCRIPTIONS });
-    assert.deepEqual(project.descriptions, expectedProjectKind().fields.descriptions);
+    assert.deepEqual(project.value_descriptions, { progress_status: PROJECT_STATUS_DESCRIPTIONS });
+    assert.deepEqual(project.descriptions, {
+      progress_status: "Whether the Project is active work, intentionally paused, or archived.",
+      description: "A concise statement of the Project's intended outcome or scope.",
+    });
     assert.deepEqual(project.expects_inbound, { "part of": "Task" });
     assert.equal(project.horizon, "180d");
     assert.ok(!("sections" in project), "Project has no required body headings");
@@ -242,7 +250,7 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
         status,
         "--title",
         `${status} project`,
-        "--status",
+        "--progress_status",
         status,
         "--dir",
         dir,
@@ -254,7 +262,7 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
       "todo",
       "--title",
       "Todo task",
-      "--status",
+      "--progress_status",
       "todo",
       "--priority",
       "high",
@@ -266,7 +274,7 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
       "in-progress",
       "--title",
       "In-progress task",
-      "--status",
+      "--progress_status",
       "in_progress",
       "--priority",
       "medium",
@@ -282,7 +290,7 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
       "blocked",
       "--title",
       "Blocked task",
-      "--status",
+      "--progress_status",
       "blocked",
       "--priority",
       "low",
@@ -294,7 +302,7 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
       "done",
       "--title",
       "Done task",
-      "--status",
+      "--progress_status",
       "done",
       "--dir",
       dir,
@@ -304,7 +312,7 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
       "canceled",
       "--title",
       "Canceled task",
-      "--status",
+      "--progress_status",
       "canceled",
       "--assignee",
       "example-agent",
@@ -317,7 +325,7 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
     const tasks = await query({ root: dir }, { type: "Task" });
     assert.equal(tasks.length, 5);
     assert.deepEqual(
-      tasks.map((doc) => doc.frontmatter.status).sort(),
+      tasks.map((doc) => doc.frontmatter.superbee_progress_status).sort(),
       ["blocked", "canceled", "done", "in_progress", "todo"],
     );
     assert.equal((await readDoc({ root: dir }, "tasks/done")).frontmatter.priority, undefined);
@@ -334,22 +342,22 @@ test("Personal Task System kinds strictly accept every v1 lifecycle shape and pr
 
     await assert.rejects(
       () =>
-        newCommand(["Task", "bad-status", "--title", "Bad status", "--status", "queued", "--dir", dir], {
+        newCommand(["Task", "bad-status", "--title", "Bad status", "--progress_status", "queued", "--dir", dir], {
           stdout: () => {},
         }),
-      (error: unknown) => error instanceof CliError && error.code === "USAGE" && /status/.test(error.message),
+      (error: unknown) => error instanceof CliError && error.code === "USAGE" && /progress_status/.test(error.message),
     );
     await assert.rejects(
       () =>
-        newCommand(["Project", "bad-status", "--title", "Bad status", "--status", "done", "--dir", dir], {
+        newCommand(["Project", "bad-status", "--title", "Bad status", "--progress_status", "done", "--dir", dir], {
           stdout: () => {},
         }),
-      (error: unknown) => error instanceof CliError && error.code === "USAGE" && /status/.test(error.message),
+      (error: unknown) => error instanceof CliError && error.code === "USAGE" && /progress_status/.test(error.message),
     );
     await assert.rejects(
       () =>
         newCommand(
-          ["Task", "private-field", "--title", "Unknown field", "--status", "todo", "--sensitivity", "private", "--dir", dir],
+          ["Task", "private-field", "--title", "Unknown field", "--progress_status", "todo", "--sensitivity", "private", "--dir", dir],
           { stdout: () => {} },
         ),
       (error: unknown) => error instanceof CliError && error.code === "USAGE" && /sensitivity/.test(error.message),

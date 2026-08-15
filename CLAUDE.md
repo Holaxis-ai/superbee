@@ -73,9 +73,9 @@ Watch-points that are easy to regress here:
 
 ### 2. OKF-conformance for bundles
 
-Every produced bundle must stay a valid OKF v0.1 or v0.2 Knowledge Bundle. New bundles default to
-v0.1 until the separately reviewed default-adoption unit lands; `init --okf-version 0.2` is the
-explicit v0.2 path:
+Every produced bundle must stay a valid OKF v0.1 or v0.2 Knowledge Bundle. Genuinely new bundles
+default to v0.2 without asking users to choose an edition; `init --okf-version 0.1` remains the
+explicit legacy-compatibility path. Existing bundles always retain their declared edition:
 
 - Frontmatter on every non-reserved `.md`, with a **required, non-empty `type`** (§9.2).
 - `index.md` / `log.md` are **reserved** at any directory level (§3.1); only the bundle-root
@@ -361,7 +361,7 @@ bundle-relative**.
   write-time scrub discipline covers vulnerability details, not just secrets.
 - **Records live on the PROJECT BUNDLE (the in-repo board at `.agentstate-lite/`) — the
   product tracks its own build.** Unit-close means: update `tasks/<unit>` (bare
-  `doc update tasks/<unit> --status …`, with the description carrying the record — what shipped, commit hash,
+  `doc update tasks/<unit> --progress_status …`, with the description carrying the record — what shipped, commit hash,
   honest caveats) and, when the shipped list or sequence changed, the bundle's `roadmap`
   doc. Plans are authored as bundle docs (`plans/<unit>`, `type: Plan`); research as
   `research/<topic>` (`type: Research`). Byte-channel moves (files ↔ bundle) go through

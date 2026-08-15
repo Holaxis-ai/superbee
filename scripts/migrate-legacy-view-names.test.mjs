@@ -48,7 +48,7 @@ async function makeFixtureBundle() {
   const { initBundle, writeDoc } = await core();
   const { loadPriorShippedViewConventions } = await script();
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-migrate-fixture-"));
-  const bundle = await initBundle(dir);
+  const bundle = await initBundle(dir, { okfVersion: "0.1" });
   const T = "2026-07-01T00:00:00.000Z";
   await writeDoc(bundle, {
     id: "pages-registry/dash",

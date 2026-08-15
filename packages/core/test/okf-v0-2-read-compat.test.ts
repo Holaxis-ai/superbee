@@ -166,6 +166,7 @@ test("OKF v0.2 fixture: a trusted mutation preserves external provenance, verifi
     assert.equal(result.doc.frontmatter.stale_after, "2026-12-31");
     assert.equal(result.doc.frontmatter.timestamp, undefined);
     assert.equal(result.doc.frontmatter.actor, undefined);
+    assert.equal(result.doc.frontmatter.superbee_updated_by, "openai/codex");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

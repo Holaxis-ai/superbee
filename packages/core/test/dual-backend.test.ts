@@ -565,10 +565,11 @@ test("pin: MemoryBackend list and listBlobs are lexicographically sorted regardl
 // kills: backend.ts:58:34 MethodExpression #10
 // kills: backend.ts:58:47 StringLiteral #11
 // kills: backend.ts:357:19 LogicalOperator #168
-test("pin: FilesystemBackend versions() derives actor from updated_by/actor with type+trim guards, else defaultActor", async () => {
+test("pin: FilesystemBackend versions() derives actor from the portable projection with type+trim guards, else defaultActor", async () => {
   await withFsBundle(async (bundle) => {
     const { writeFile } = await import("node:fs/promises");
     const cases: Array<[string, string, string]> = [
+      ["portable", 'superbee_updated_by: "  carol  "\nupdated_by: "alice"\nactor: "bob"', "carol"],
       ["a", 'updated_by: "alice"', "alice"],
       ["b", "updated_by: 42", defaultActor()],
       ["c", 'updated_by: "   "', defaultActor()],

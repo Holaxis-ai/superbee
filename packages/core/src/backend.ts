@@ -36,6 +36,7 @@ import {
 } from "./paths.js";
 import { InvalidInputError } from "./errors.js";
 import { withFilesystemMutationLock } from "./filesystem-lock.js";
+import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
@@ -318,7 +319,7 @@ export class FilesystemBackend implements StorageBackend {
       // `options.actor` is accepted for contract parity but NOT persisted here: the
       // filesystem keeps no history, and stamping it into frontmatter would both change
       // existing CLI output and diverge the document from other backends. `versions()`
-      // reports actor from an `updated_by`/`actor` frontmatter field if present, else a
+      // reports actor from the portable mutation-attribution projection if present, else a
       // local default — an honest degenerate answer. `options.agent` is likewise
       // accepted-but-not-persisted (this degenerate adapter records no agent at all).
       await atomicWrite(target, raw);
@@ -358,7 +359,7 @@ export class FilesystemBackend implements StorageBackend {
       return []; // no document ⇒ no history
     }
     const { frontmatter } = parseMarkdown(raw, pathFromConceptId(id));
-    const actor = firstString(frontmatter.updated_by, frontmatter.actor) ?? defaultActor();
+    const actor = mutationActorFromFrontmatter(frontmatter) ?? defaultActor();
     const timestamp = firstString(frontmatter.timestamp) ?? mtime.toISOString();
     // Single current revision: a plain filesystem retains no prior versions.
     return [{ version: versionOfBytes(raw), actor, timestamp }];

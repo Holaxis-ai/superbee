@@ -6,7 +6,7 @@
 // CASE-INSENSITIVELY, B6 (`report.MD` must route the same as `report.md`, or it would collide with
 // the blob-layer's own `.md` rejection and silently miss the concept-document namespace entirely)
 // — is a DOC: the FILE is parsed with core's ONE frontmatter parser (`parseMarkdown`) and written
-// through the ENGINE (`writeDocVersioned`; doc id = the key minus `.md`, via `conceptIdFromPath` —
+// through the shared mutation policy (doc id = the key minus `.md`, via `conceptIdFromPath` —
 // reserved-filename rejection and OKF §9.2 (non-empty `type`) come FREE from the engine, no
 // reimplementation here). A governing kind convention is validated exactly as `doc write` (the SAME
 // shared helper, B8 — warn-by-default, `--strict` rejects). Every OTHER key routes through
@@ -24,14 +24,14 @@
 //
 // A6/A9 context: for a LOCAL `--dir` bundle this is a convenience only — the files ARE the store
 // (local-first) — but routing a `.md` file through the engine still doubles as IMPORT+NORMALIZE
-// (frontmatter key order, a defaulted timestamp, kind validation), exactly as `doc write` would.
+// (frontmatter key order, edition-aware metadata policy, kind validation),
+// exactly as `doc write` would.
 // Over `--remote`, the verbs are load-bearing: there is no other way to get bytes into a served
 // bundle. Principle: commands are the control channel, files are the content channel.
 import { parseArgs } from "node:util";
 import { promises as fs } from "node:fs";
 import {
   writeBlob,
-  writeDocVersioned,
   parseMarkdown,
   conceptIdFromPath,
   loadKinds,
@@ -45,7 +45,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
-import { defaultTimestampAndValidateKind } from "../kind-write.js";
+import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 
 export const PROMOTE_USAGE = `superbee promote — move a local file's bytes into the store (the reverse of 'doc read --out')
@@ -200,24 +200,25 @@ async function promoteDoc(
   // the raw mixed-case key would silently fail to strip the extension.
   const canonicalPath = key.slice(0, -3) + ".md";
   const id = conceptIdFromPath(canonicalPath);
-  const candidate = { id, frontmatter, body };
-
   const registry = await loadKinds(bundle);
-  const warnings = defaultTimestampAndValidateKind(candidate, registry, {
-    strict: opts.strict,
-    helpOnReject: `${cliInvocation()} kinds`,
-    // I9: an omitted --expected-version is an EXPECT-ABSENT create (the doc does not yet exist); a
-    // present one implies the caller read the doc first to get that token, so it already exists.
-    docExists: opts.expectedVersion !== null,
-  });
-
-  // Scope decision (tasks/overwrite-monotone-ratchet): this route writes directly through
-  // writeDocVersioned, not core's mutateDocument overwrite branch — the monotone conformance
-  // ratchet does not apply here. promote's byte channel already demands an explicit
-  // --expected-version CAS token for an overwrite and offers --strict; that stays the guard.
-  let version: string;
+  let result;
   try {
-    ({ version } = await writeDocVersioned(bundle, candidate, { expectedVersion: opts.expectedVersion }));
+    result = await mutateDoc({
+      bundle,
+      id,
+      mode: opts.expectedVersion === null ? "create-only" : "patch",
+      onAbsent: "create",
+      registry,
+      remoteUrl,
+      strict: opts.strict,
+      helpOnKindReject: `${cliInvocation()} kinds`,
+      expectedVersion: opts.expectedVersion ?? undefined,
+      buildCandidate: () => ({ frontmatter, body }),
+      errors: {
+        alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
+        staleHead: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
+      },
+    });
   } catch (err) {
     throw promoteWriteErrorToCliError(err, key, file, remoteUrl);
   }
@@ -226,15 +227,15 @@ async function promoteDoc(
     promote: "written",
     route: "doc",
     key,
-    id: candidate.id,
-    type: candidate.frontmatter.type,
-    version,
+    id,
+    type: result.doc.frontmatter.type,
+    version: result.version,
     size_bytes: Buffer.byteLength(raw, "utf8"),
   };
-  if (warnings.length > 0) receipt.warnings = warnings;
+  if (result.warnings.length > 0) receipt.warnings = result.warnings;
   // Legacy-naming nudge (legacy-page.ts): the doc route is an authoring moment too — receipt-only,
   // never an error. The blob route has no frontmatter to inspect and stays untouched.
-  if (isLegacyPageDoc(candidate.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
+  if (isLegacyPageDoc(result.doc.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
   // A10: a ready-to-paste PULL hint closes the loop in the other direction.
   receipt.help = [`${cliInvocation()} pull --doc-key ${key} --out <path>`];
   stdout(render(receipt, mode));

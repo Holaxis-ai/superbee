@@ -10,6 +10,7 @@
 
 import { InvalidInputError } from "./errors.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
+import { persistMutationActor } from "./mutation-attribution.js";
 import { defaultTimestampAndValidateAgainstRegistry, validateAgainstKind } from "./kinds.js";
 import { versionedMutation } from "./mutation.js";
 import { VersionConflict } from "./versioning.js";
@@ -48,13 +49,20 @@ export class KindConformanceError extends InvalidInputError {
   readonly id: ConceptId;
   readonly governs: string;
   readonly violations: ValidationWarning[];
+  readonly okfVersion?: "0.1" | "0.2";
 
-  constructor(id: ConceptId, governs: string, violations: ValidationWarning[]) {
+  constructor(
+    id: ConceptId,
+    governs: string,
+    violations: ValidationWarning[],
+    okfVersion?: "0.1" | "0.2",
+  ) {
     super(`'${id}' does not satisfy the '${governs}' kind: ${violations.map((warning) => warning.message).join("; ")}`);
     this.name = "KindConformanceError";
     this.id = id;
     this.governs = governs;
     this.violations = violations;
+    this.okfVersion = okfVersion;
   }
 }
 
@@ -90,7 +98,7 @@ export interface MutateDocumentOptions {
   compareTimestamp?: boolean;
   /** Advisory backend-history attribution, applied only when a write occurs. */
   actor?: string;
-  /** Also persist the advisory actor in document frontmatter after no-op detection. */
+  /** Also persist the advisory actor in the edition-appropriate frontmatter field after no-op detection. */
   persistActor?: boolean;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
   expectedVersion?: Version;
@@ -150,15 +158,19 @@ function attributeCandidate(
   candidate: DocumentMutationCandidate,
   actor: string | undefined,
   persistActor: boolean,
-  okfVersion: string,
+  okfVersion: "0.1" | "0.2",
   registry: KindRegistry,
 ): DocumentMutationCandidate {
-  if (!persistActor || actor === undefined) return candidate;
-  if (okfVersion === "0.2") {
-    const kind = registry.kinds.get(String(candidate.frontmatter.type));
-    if (!kind?.fields.required.includes("actor")) return candidate;
-  }
-  return { ...candidate, frontmatter: { ...candidate.frontmatter, actor } };
+  if (!persistActor) return candidate;
+  const kind = registry.kinds.get(String(candidate.frontmatter.type));
+  return {
+    ...candidate,
+    frontmatter: persistMutationActor(candidate.frontmatter, {
+      actor,
+      okfVersion,
+      kindRequiresActor: kind?.fields.required.includes("actor") ?? false,
+    }),
+  };
 }
 
 /**
@@ -171,7 +183,7 @@ function validateCandidate(
   candidate: DocumentMutationCandidate,
   registry: KindRegistry,
   strict: boolean,
-  okfVersion: string,
+  okfVersion: "0.1" | "0.2",
   now: () => string,
 ): RegistryValidationResult {
   const result = defaultTimestampAndValidateAgainstRegistry(
@@ -180,7 +192,7 @@ function validateCandidate(
     { okfVersion, now },
   );
   if (strict && result.kind && result.warnings.length > 0) {
-    throw new KindConformanceError(id, result.kind.governs, result.warnings);
+    throw new KindConformanceError(id, result.kind.governs, result.warnings, okfVersion);
   }
   return result;
 }
@@ -295,11 +307,9 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         // warns on those), so this only ever fires on a REAL regression. Retyping to an
         // ungoverned type is a documented escape: an ungoverned candidate carries zero
         // warnings by construction, so the `warnings.length > 0` guard below never sees it.
-        // Scope: `promote`'s CAS-overwrite path (a different call site — direct
-        // `writeDocVersioned`, gated by its own `--expected-version`/`--strict`) is deliberately
-        // OUT of this rule; see its own comment.
+        // Every overwrite caller, including `promote`, inherits this rule from this shared boundary.
         if (!opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
-          throw new KindConformanceError(opts.id, validated.kind!.governs, warnings);
+          throw new KindConformanceError(opts.id, validated.kind!.governs, warnings, okfVersion);
         }
 
         return { action: "write", next: { id: opts.id, ...candidate }, result: undefined };

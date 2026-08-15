@@ -98,14 +98,14 @@ async function tempDir(): Promise<string> {
 /** A fresh temp OKF bundle (no kinds seeded). */
 async function makeBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
-  await initBundle(dir);
+  await initBundle(dir, { okfVersion: "0.1" });
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 
 /** A fresh bundle with the Context Note kind applied (mirrors `kinds.test.ts`'s helper). */
 async function makeSeededBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
-  await initBundle(dir);
+  await initBundle(dir, { okfVersion: "0.1" });
   await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
@@ -117,7 +117,7 @@ async function makeSeededBundle(): Promise<{ dir: string; cleanup: () => Promise
  */
 async function makeTaskBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
-  await initBundle(dir);
+  await initBundle(dir, { okfVersion: "0.1" });
   await writeDoc(
     { root: dir },
     {
@@ -1430,7 +1430,7 @@ test("doc update --strict: a kind refusal's help is a literal completing 'doc up
         assert.equal(err.exitCode, 2);
         assert.equal(
           err.help,
-          `${cliInvocation()} doc update tasks/x --title <value> --status <todo|in_progress|blocked|done|canceled>`,
+          `${cliInvocation()} doc update tasks/x --title <value> --progress_status <todo|in_progress|blocked|done|canceled>`,
         );
         return true;
       },
@@ -1459,7 +1459,7 @@ test("doc write --strict: a kind refusal OVERWRITING an EXISTING doc gets the sa
         assert.equal(err.exitCode, 2);
         assert.equal(
           err.help,
-          `${cliInvocation()} doc update tasks/z --status <todo|in_progress|blocked|done|canceled>`,
+          `${cliInvocation()} doc update tasks/z --progress_status <todo|in_progress|blocked|done|canceled>`,
         );
         return true;
       },
@@ -1586,7 +1586,7 @@ test("doc update: status transition via a kind-declared --<field> flag — the h
   }
 });
 
-test("doc update: logical --progress_status resolves to legacy v0.1 status and discloses storage", async () => {
+test("doc update: logical --progress_status resolves to legacy v0.1 storage without exposing it", async () => {
   const { dir, cleanup } = await makeTaskBundle();
   try {
     await writeDoc(
@@ -1594,7 +1594,7 @@ test("doc update: logical --progress_status resolves to legacy v0.1 status and d
       { id: "tasks/logical", frontmatter: { type: "Task", title: "Logical", status: "todo", timestamp: OLD_TS }, body: "" },
     );
     const result = await runDoc(["update", "tasks/logical", "--progress_status", "done", "--dir", dir]);
-    assert.deepEqual(result.field_coordinates, [{ logical_field: "progress_status", stored_as: "status" }]);
+    assert.equal(result.field_coordinates, undefined);
     const after = await readDoc({ root: dir }, "tasks/logical");
     assert.equal(after.frontmatter.status, "done");
     assert.equal(Object.hasOwn(after.frontmatter, "progress_status"), false);
@@ -1607,7 +1607,8 @@ test("doc update: logical --progress_status resolves to legacy v0.1 status and d
       (error: unknown) => {
         assert.ok(error instanceof CliError);
         assert.equal(error.code, "USAGE");
-        assert.match(error.message, /same stored field 'status'/);
+        assert.match(error.message, /'progress_status' was supplied more than once/);
+        assert.doesNotMatch(error.message, /--status|stored field/);
         return true;
       },
     );
@@ -1918,7 +1919,7 @@ test("doc write over a CONFORMING existing doc now REFUSES dropping a REQUIRED f
         // naming the dropped required field — docExists resolves true (the doc exists by construction).
         assert.equal(
           err.help,
-          `${cliInvocation()} doc update tasks/x --status <todo|in_progress|blocked|done|canceled>`,
+          `${cliInvocation()} doc update tasks/x --progress_status <todo|in_progress|blocked|done|canceled>`,
         );
         return true;
       },
@@ -3546,7 +3547,12 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   const historyHelp = await capture(["history", "--help"]);
   assert.match(historyHelp, /resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy\s+AGENTSTATE_LITE_ACTOR/);
   assert.match(historyHelp, /authenticated principal \(server-set, unforgeable\)/);
-  assert.match(historyHelp, /file's OS owner as the actor/);
+  assert.match(historyHelp, /compatible advisory attribution/);
+  assert.match(historyHelp, /falling back to\s+the local user identity/);
+
+  const updateHelp = await capture(["update", "--help"]);
+  assert.match(updateHelp, /bundle's compatible advisory field/);
+  assert.match(updateHelp, /applies the bundle's compatibility policy/);
 
   // The bare `doc --help` remains the family INDEX (lists every verb, points at per-verb help).
   const familyHelp = await capture(["--help"]);

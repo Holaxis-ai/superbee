@@ -25,6 +25,10 @@
       "types": "./dist/meaningful-change-time.d.ts",
       "default": "./dist/meaningful-change-time.js"
     },
+    "./mutation-attribution": {
+      "types": "./dist/mutation-attribution.d.ts",
+      "default": "./dist/mutation-attribution.js"
+    },
     "./page": {
       "types": "./dist/page.d.ts",
       "default": "./dist/page.js"

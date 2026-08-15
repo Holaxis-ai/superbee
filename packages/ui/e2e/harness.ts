@@ -56,6 +56,13 @@ export interface SeedTask {
   body: string;
 }
 
+/** Store test workflow state at the current bundle coordinate while keeping call-site fixtures readable. */
+function currentProgressFrontmatter(frontmatter: Frontmatter): Frontmatter {
+  if (!("status" in frontmatter)) return frontmatter;
+  const { status, ...rest } = frontmatter;
+  return { ...rest, superbee_progress_status: status };
+}
+
 export interface UiReceipt {
   ui: string;
   url: string;
@@ -189,7 +196,7 @@ export async function seedPagesBundle(seedTasks: SeedTask[]): Promise<string> {
   const examples = path.resolve(here, "../../../examples/views");
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-pages-e2e-"));
   await initBundle(dir);
-  // The Task convention makes `doc update --status` patchable (the live-update driver) and gives
+  // The Task convention makes logical `progress_status` patchable (the live-update driver) and gives
   // the Pulse/Roadmap pages their status badges — mirrors this repo's own board.
   await writeDoc(
     { root: dir },
@@ -201,24 +208,24 @@ export async function seedPagesBundle(seedTasks: SeedTask[]): Promise<string> {
         governs: "Task",
         path: "tasks/",
         fields: {
-          required: ["title", "status"],
+          required: ["title", "superbee_progress_status"],
           optional: ["priority", "assignee", "description"],
-          values: { status: ["todo", "in_progress", "blocked", "done", "canceled"] },
-          terminal: { status: ["done", "canceled"] },
+          values: { superbee_progress_status: ["todo", "in_progress", "blocked", "done", "canceled"] },
+          terminal: { superbee_progress_status: ["done", "canceled"] },
         },
       },
       body: "# Task",
     },
   );
   for (const task of seedTasks) {
-    await writeDoc({ root: dir }, { id: task.id, frontmatter: task.frontmatter, body: task.body });
+    await writeDoc({ root: dir }, { id: task.id, frontmatter: currentProgressFrontmatter(task.frontmatter), body: task.body });
   }
   // One Roadmap Item `contains`-linking every seeded task (relative link, sibling directory) — the
   // fixture the Roadmap page's `edges({ text: "contains" })` request and rollup bar render against.
   const containsLinks = seedTasks.map((t) => `[contains](../${t.id}.md)`).join("\n\n");
   await writeDoc(
     { root: dir },
-    { id: "roadmap-items/spike", frontmatter: { type: "Roadmap Item", title: "Spike work", status: "active" }, body: containsLinks },
+    { id: "roadmap-items/spike", frontmatter: { type: "Roadmap Item", title: "Spike work", superbee_progress_status: "active" }, body: containsLinks },
   );
   await writeDoc(
     { root: dir },
@@ -278,7 +285,7 @@ export async function seedPagesBundle(seedTasks: SeedTask[]): Promise<string> {
           if (event.source !== parent || event.data?.bridge !== 'v1') return;
           if (event.data.type === 'read-versioned:result') {
             version = event.data.result.version;
-            document.querySelector('#status').textContent = event.data.result.doc.frontmatter.status;
+            document.querySelector('#status').textContent = event.data.result.doc.frontmatter.progress_status;
             document.querySelector('#propose').disabled = false;
           }
           if (event.data.type === 'action.result') {
@@ -286,7 +293,7 @@ export async function seedPagesBundle(seedTasks: SeedTask[]): Promise<string> {
             if (event.data.result.status === 'committed') read();
           }
         });
-        document.querySelector('#propose').onclick = () => parent.postMessage({bridge:'v1',type:'action.propose',requestId:'finish',action:{kind:'document.set-field',docId:'tasks/alpha',field:'status',value:'done',expectedVersion:version}},'*');
+        document.querySelector('#propose').onclick = () => parent.postMessage({bridge:'v1',type:'action.propose',requestId:'finish',action:{kind:'document.set-field',docId:'tasks/alpha',field:'progress_status',value:'done',expectedVersion:version}},'*');
         read();
       </script>`),
     "text/html; charset=utf-8",
@@ -324,13 +331,13 @@ export async function bootUiOverPersonalTaskSystemBundle(): Promise<RunningUi & 
   execFileSync(process.execPath, [CLI_DIST, "recipe", "add", recipeDir, "--dir", dir, "--json"], { encoding: "utf8" });
   await writeDoc(
     { root: dir },
-    { id: "projects/launch", frontmatter: { type: "Project", title: "Product launch", status: "active" }, body: "" },
+    { id: "projects/launch", frontmatter: { type: "Project", title: "Product launch", superbee_progress_status: "active" }, body: "" },
   );
   await writeDoc(
     { root: dir },
     {
       id: "tasks/shape-message",
-      frontmatter: { type: "Task", title: "Shape launch message", status: "todo", priority: "high", assignee: "mike", due: "2026-08-01T00:00:00.000Z" },
+      frontmatter: { type: "Task", title: "Shape launch message", superbee_progress_status: "todo", priority: "high", assignee: "mike", due: "2026-08-01T00:00:00.000Z" },
       body: "[part of](../projects/launch.md)",
     },
   );
@@ -338,27 +345,27 @@ export async function bootUiOverPersonalTaskSystemBundle(): Promise<RunningUi & 
     { root: dir },
     {
       id: "tasks/build-demo",
-      frontmatter: { type: "Task", title: "Build product demo", status: "in_progress", priority: "medium", assignee: "brian" },
+      frontmatter: { type: "Task", title: "Build product demo", superbee_progress_status: "in_progress", priority: "medium", assignee: "brian" },
       body: "[part of](../projects/launch.md)\n\n[depends on](shape-message.md)",
     },
   );
   await writeDoc(
     { root: dir },
-    { id: "tasks/review-copy", frontmatter: { type: "Task", title: "Review landing copy", status: "blocked", priority: "low" }, body: "" },
+    { id: "tasks/review-copy", frontmatter: { type: "Task", title: "Review landing copy", superbee_progress_status: "blocked", priority: "low" }, body: "" },
   );
   await writeDoc(
     { root: dir },
-    { id: "tasks/archive-notes", frontmatter: { type: "Task", title: "Archive launch notes", status: "done" }, body: "" },
+    { id: "tasks/archive-notes", frontmatter: { type: "Task", title: "Archive launch notes", superbee_progress_status: "done" }, body: "" },
   );
   await writeDoc(
     { root: dir },
-    { id: "tasks/canceled-idea", frontmatter: { type: "Task", title: "Canceled launch idea", status: "canceled" }, body: "" },
+    { id: "tasks/canceled-idea", frontmatter: { type: "Task", title: "Canceled launch idea", superbee_progress_status: "canceled" }, body: "" },
   );
   await writeDoc(
     { root: dir },
     {
       id: "constructor",
-      frontmatter: { type: "Task", title: "Constructor-safe task", status: "todo" },
+      frontmatter: { type: "Task", title: "Constructor-safe task", superbee_progress_status: "todo" },
       body: "[depends on](tasks/shape-message.md)",
     },
   );

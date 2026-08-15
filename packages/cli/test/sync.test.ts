@@ -124,8 +124,8 @@ function docChange(partial: Partial<DocChange> & Pick<DocChange, "docId" | "verb
 /**
  * Author a board doc through the REAL CLI write path (`doc write … --actor <name> --dir <board>`)
  * — NOT the harness's `writeBoardDoc` engine hand-seeding. This is what pins actor attribution
- * end-to-end (PR#13 panel adjudication F): the CLI itself must persist `--actor` into frontmatter,
- * because frontmatter is the ONLY per-doc source sync's enrichment reads.
+ * end-to-end: the CLI itself must persist the edition-appropriate advisory attribution into
+ * frontmatter, because portable document bytes are the per-doc source sync enriches.
  */
 async function cliDocWrite(boardDir: string, id: string, args: string[]): Promise<void> {
   await doc(["write", id, ...args, "--dir", boardDir, "--json"], {
@@ -566,9 +566,8 @@ test("sync: actor attribution e2e — `doc write --actor alice` through the REAL
   const { homes, cleanup } = await tempHomes(2);
   const [homeA, homeB] = homes;
   try {
-    // NO harness hand-seeding: the doc's actor frontmatter must come from the CLI write path
-    // itself, or sync's per-doc enrichment (which reads ONLY frontmatter.actor) falls back to
-    // "unknown" everywhere — the exact PR#13 panel finding (adjudication F) this test pins closed.
+    // NO harness hand-seeding: the portable attribution must come from the CLI write path itself,
+    // or sync's per-doc enrichment falls back to "unknown" everywhere.
     await cliDocWrite(topo.a.board, "notes/attributed", [
       "--type", "Note", "--title", "Attributed note", "--body", "# hi\n", "--actor", "alice",
     ]);
@@ -590,6 +589,40 @@ test("sync: actor attribution e2e — `doc write --actor alice` through the REAL
     assert.match(b.out, /notes\/attributed/);
     assert.match(b.out, /alice/, "B's incoming row carries the author");
     assert.ok(!b.out.includes("unknown"), `no 'unknown' anywhere in B's incoming rows:\n${b.out}`);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: explicit v0.2 write keeps actor attribution without a legacy top-level actor", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await writeFile(
+      path.join(topo.a.board, "index.md"),
+      "---\nokf_version: '0.2'\n---\n# v0.2 board\n",
+      "utf8",
+    );
+    await cliDocWrite(topo.a.board, "notes/v02-attributed", [
+      "--type", "Note", "--title", "Attributed v0.2 note", "--body", "# hi\n", "--actor", "alice",
+    ]);
+
+    const stored = await readBoardFile(topo.a, "notes/v02-attributed.md");
+    assert.match(stored, /^superbee_updated_by: alice$/m);
+    assert.doesNotMatch(stored, /^actor:/m, "v0.2 bytes do not restore the legacy attribution field");
+
+    const a = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(a.err, undefined, a.err?.message);
+    assert.match(a.out, /actor: alice/);
+    assert.equal(git(topo.a.board, ["log", "-1", "--format=%s"]).trim(), "board: alice — added notes/v02-attributed");
+
+    const b = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
+    assert.equal(b.err, undefined, b.err?.message);
+    assert.match(b.out, /notes\/v02-attributed/);
+    assert.match(b.out, /alice/);
+    assert.ok(!b.out.includes("unknown"), `no unknown attribution in B's rows:\n${b.out}`);
   } finally {
     await cleanup();
     await topo.cleanup();

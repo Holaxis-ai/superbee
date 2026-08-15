@@ -109,10 +109,10 @@ const EXPECTED_CONTEXT_NOTE_FRONTMATTER = {
 
 // ── Row 1: built-in re-hosted ──────────────────────────────────────────────────────────────────
 
-test("v0.1 init materializes the context-notes guide and frontmatter consistently", async () => {
+test("explicit v0.1 init materializes the legacy context-notes guide and frontmatter consistently", async () => {
   const dir = await tempDir();
   try {
-    await init(["--dir", dir], { stdout: () => {} });
+    await init(["--dir", dir, "--okf-version", "0.1"], { stdout: () => {} });
     const raw = await readFile(path.join(dir, "conventions", "context-note.md"), "utf8");
     const { frontmatter, body } = parseMarkdown(raw);
     assert.equal(body, CONTEXT_NOTE_SEED_BODY);
@@ -125,10 +125,10 @@ test("v0.1 init materializes the context-notes guide and frontmatter consistentl
   }
 });
 
-test("explicit v0.2 init teaches an edition-correct workflow field in the default in-bundle authoring guide", async () => {
+test("default init teaches the current workflow field in the in-bundle authoring guide", async () => {
   const dir = await tempDir();
   try {
-    await init(["--dir", dir, "--okf-version", "0.2"], { stdout: () => {} });
+    await init(["--dir", dir], { stdout: () => {} });
     const raw = await readFile(path.join(dir, "conventions", "context-note.md"), "utf8");
     const { body } = parseMarkdown(raw);
 
@@ -358,8 +358,7 @@ test("recipe add work-tracking: applies the current built-in Task convention wit
 
     const raw = await readFile(path.join(dir, "conventions", "task.md"), "utf8");
     const { frontmatter, body } = parseMarkdown(raw);
-    const { timestamp, ...rest } = frontmatter;
-    assert.deepEqual(rest, {
+    assert.deepEqual(frontmatter, {
       type: CONVENTION_TYPE,
       title: "Task",
       governs: "Task",
@@ -367,13 +366,13 @@ test("recipe add work-tracking: applies the current built-in Task convention wit
       path: "tasks/",
       links: { "depends on": "Task" },
       fields: {
-        required: ["title", "status"],
+        required: ["title", "superbee_progress_status"],
         optional: ["priority", "assignee", "description"],
-        values: { status: ["todo", "in_progress", "blocked", "done", "canceled"] },
-        terminal: { status: ["done", "canceled"] },
+        values: { superbee_progress_status: ["todo", "in_progress", "blocked", "done", "canceled"] },
+        terminal: { superbee_progress_status: ["done", "canceled"] },
         descriptions: {
           title: "A concise human-readable summary of the work.",
-          status: "The task's current workflow state.",
+          superbee_progress_status: "The task's current workflow state.",
           priority: "Relative urgency used to order the work; follow the bundle's adopted priority scale.",
           assignee: "The person or agent currently responsible for the task.",
           description: "The task's scope, context, acceptance criteria, and other working details.",
@@ -381,8 +380,6 @@ test("recipe add work-tracking: applies the current built-in Task convention wit
       },
       freshness_horizon: "30d",
     });
-    assert.equal(typeof timestamp, "string");
-    assert.ok(!Number.isNaN(Date.parse(timestamp as string)), `expected a valid ISO timestamp, got ${timestamp}`);
     assert.equal(body, TASK_SEED_BODY);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -398,10 +395,10 @@ test("kinds: reports Task with required/optional/values/horizon after recipe add
     const registry = await loadKinds(bundle);
     const kind = registry.kinds.get("Task");
     assert.ok(kind);
-    assert.deepEqual(kind!.fields.required, ["title", "status"]);
+    assert.deepEqual(kind!.fields.required, ["title", "superbee_progress_status"]);
     assert.deepEqual(kind!.fields.optional, ["priority", "assignee", "description"]);
-    assert.deepEqual(kind!.fields.values.status, ["todo", "in_progress", "blocked", "done", "canceled"]);
-    assert.deepEqual(kind!.fields.terminal.status, ["done", "canceled"]);
+    assert.deepEqual(kind!.fields.values.superbee_progress_status, ["todo", "in_progress", "blocked", "done", "canceled"]);
+    assert.deepEqual(kind!.fields.terminal.superbee_progress_status, ["done", "canceled"]);
     assert.equal(
       kind!.description,
       "A concrete unit of work that can be claimed, prioritized, assigned, and completed.",
@@ -410,7 +407,7 @@ test("kinds: reports Task with required/optional/values/horizon after recipe add
       "assignee",
       "description",
       "priority",
-      "status",
+      "superbee_progress_status",
       "title",
     ]);
     assert.equal(kind!.path, "tasks/");
@@ -421,24 +418,24 @@ test("kinds: reports Task with required/optional/values/horizon after recipe add
   }
 });
 
-test("new Task <id> --title --status: creates under tasks/ and validates; an out-of-enum --status is rejected, no write", async () => {
+test("new Task <id> --title --progress_status: creates under tasks/ and validates; an out-of-enum value is rejected, no write", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);
     await recipe(["add", "work-tracking", "--dir", dir], { stdout: () => {} });
 
-    const created = await runJson(newCommand, ["Task", "demo", "--title", "Demo", "--status", "todo", "--dir", dir]);
+    const created = await runJson(newCommand, ["Task", "demo", "--title", "Demo", "--progress_status", "todo", "--dir", dir]);
     assert.equal(created.id, "tasks/demo");
     assert.equal(created.type, "Task");
 
-    const updated = await runJson(doc, ["update", "tasks/demo", "--status", "in_progress", "--dir", dir]);
+    const updated = await runJson(doc, ["update", "tasks/demo", "--progress_status", "in_progress", "--dir", dir]);
     assert.equal(updated.changed, true);
     const readAfter = await runJson(doc, ["read", "tasks/demo", "--dir", dir]);
-    assert.equal(readAfter.status, "in_progress");
+    assert.equal(readAfter.superbee_progress_status, "in_progress");
 
     await assert.rejects(
       () =>
-        doc(["update", "tasks/demo", "--status", "nope", "--dir", dir, "--json"], {
+        doc(["update", "tasks/demo", "--progress_status", "nope", "--dir", dir, "--json"], {
           stdout: () => {},
           readStdin: async () => undefined,
         }),
@@ -446,13 +443,13 @@ test("new Task <id> --title --status: creates under tasks/ and validates; an out
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");
         assert.equal(err.exitCode, 2);
-        assert.match(err.message, /status/);
+        assert.match(err.message, /progress_status/);
         return true;
       },
     );
-    // the rejected update must not have written — status stays 'in_progress'.
+    // the rejected update must not have written — progress stays 'in_progress'.
     const readAfterReject = await runJson(doc, ["read", "tasks/demo", "--dir", dir]);
-    assert.equal(readAfterReject.status, "in_progress");
+    assert.equal(readAfterReject.superbee_progress_status, "in_progress");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -468,17 +465,17 @@ test("kind-lint neutrality: a work-tracking Task written with --actor persists t
     // trips no kind warning (validateAgainstKind is not a top-level-key linter; OKF §9 permits
     // undeclared frontmatter). The `status` assertion below pins the same neutrality on the bundle lint.
     const created = await runJson(newCommand, [
-      "Task", "attributed", "--title", "Attributed", "--status", "todo", "--actor", "alice", "--dir", dir,
+      "Task", "attributed", "--title", "Attributed", "--progress_status", "todo", "--actor", "alice", "--dir", dir,
     ]);
     assert.equal(created.id, "tasks/attributed");
     assert.equal("warnings" in created, false, "no kind warnings on the create receipt");
 
     // A kind-field patch (strict path) with --actor: still green, and the actor is OVERWRITTEN.
-    const updated = await runJson(doc, ["update", "tasks/attributed", "--status", "in_progress", "--actor", "bob", "--dir", dir]);
+    const updated = await runJson(doc, ["update", "tasks/attributed", "--progress_status", "in_progress", "--actor", "bob", "--dir", dir]);
     assert.equal(updated.changed, true);
     assert.equal("warnings" in updated, false, "no kind warnings on the update receipt");
     const read = await runJson(doc, ["read", "tasks/attributed", "--dir", dir]);
-    assert.equal(read.actor, "bob", "the update's --actor superseded the create's");
+    assert.equal(read.superbee_updated_by, "bob", "the update's attribution superseded the create's");
 
     const health = await runJson(status, ["--dir", dir]);
     assert.equal(health.kind_warnings, 0, "the undeclared 'actor' frontmatter key must trip NO kind lint");
@@ -530,21 +527,18 @@ test("recipe add roadmap: applies conventions/roadmap.md AND conventions/roadmap
 
     const roadmapRaw = await readFile(path.join(dir, "conventions", "roadmap.md"), "utf8");
     const roadmapParsed = parseMarkdown(roadmapRaw);
-    const { timestamp: ts1, ...roadmapRest } = roadmapParsed.frontmatter;
-    assert.deepEqual(roadmapRest, {
+    assert.deepEqual(roadmapParsed.frontmatter, {
       type: CONVENTION_TYPE,
       title: "Roadmap",
       governs: "Roadmap",
       links: { contains: "Roadmap Item" },
       fields: { required: ["title"], optional: [] },
     });
-    assert.ok(!Number.isNaN(Date.parse(ts1 as string)), `expected a valid ISO timestamp, got ${ts1}`);
     assert.equal(roadmapParsed.body, ROADMAP_SEED_BODY);
 
     const itemRaw = await readFile(path.join(dir, "conventions", "roadmap-item.md"), "utf8");
     const itemParsed = parseMarkdown(itemRaw);
-    const { timestamp: ts2, ...itemRest } = itemParsed.frontmatter;
-    assert.deepEqual(itemRest, {
+    assert.deepEqual(itemParsed.frontmatter, {
       type: CONVENTION_TYPE,
       title: "Roadmap Item",
       governs: "Roadmap Item",
@@ -552,13 +546,12 @@ test("recipe add roadmap: applies conventions/roadmap.md AND conventions/roadmap
       links: { contains: "Task" },
       link_descriptions: { contains: "Tasks whose delivery is governed by this roadmap commitment." },
       fields: {
-        required: ["title", "status"],
+        required: ["title", "superbee_progress_status"],
         optional: ["description", "sequence"],
-        values: { status: ["queued", "active", "done"] },
-        terminal: { status: ["done"] },
+        values: { superbee_progress_status: ["queued", "active", "done"] },
+        terminal: { superbee_progress_status: ["done"] },
       },
     });
-    assert.ok(!Number.isNaN(Date.parse(ts2 as string)), `expected a valid ISO timestamp, got ${ts2}`);
     assert.equal(itemParsed.body, ROADMAP_ITEM_SEED_BODY);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -585,10 +578,10 @@ test("kinds: reports Roadmap + Roadmap Item with contains guidance and the item 
     assert.deepEqual(itemKind!.linkDescriptions, {
       contains: "Tasks whose delivery is governed by this roadmap commitment.",
     });
-    assert.deepEqual(itemKind!.fields.required, ["title", "status"]);
+    assert.deepEqual(itemKind!.fields.required, ["title", "superbee_progress_status"]);
     assert.deepEqual(itemKind!.fields.optional, ["description", "sequence"]);
-    assert.deepEqual(itemKind!.fields.values.status, ["queued", "active", "done"]);
-    assert.deepEqual(itemKind!.fields.terminal, { status: ["done"] }, "Roadmap Item declares done as terminal (Brian's ruling)");
+    assert.deepEqual(itemKind!.fields.values.superbee_progress_status, ["queued", "active", "done"]);
+    assert.deepEqual(itemKind!.fields.terminal, { superbee_progress_status: ["done"] }, "Roadmap Item declares done as terminal (Brian's ruling)");
     assert.deepEqual(roadmapKind!.fields.terminal, {}, "the spine has no status field, so nothing is terminal");
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -601,9 +594,9 @@ test("roadmap terminal consumer: a done Roadmap Item hides from list --open; que
     await initBundle(dir);
     await recipe(["add", "roadmap", "--dir", dir], { stdout: () => {} });
     const T = "2026-07-01T00:00:00.000Z";
-    await writeDoc({ root: dir }, { id: "roadmap-items/queued", frontmatter: { type: "Roadmap Item", title: "Queued", status: "queued", timestamp: T }, body: "" });
-    await writeDoc({ root: dir }, { id: "roadmap-items/active", frontmatter: { type: "Roadmap Item", title: "Active", status: "active", timestamp: T }, body: "" });
-    await writeDoc({ root: dir }, { id: "roadmap-items/shipped", frontmatter: { type: "Roadmap Item", title: "Shipped", status: "done", timestamp: T }, body: "" });
+    await writeDoc({ root: dir }, { id: "roadmap-items/queued", frontmatter: { type: "Roadmap Item", title: "Queued", superbee_progress_status: "queued" }, body: "" });
+    await writeDoc({ root: dir }, { id: "roadmap-items/active", frontmatter: { type: "Roadmap Item", title: "Active", superbee_progress_status: "active" }, body: "" });
+    await writeDoc({ root: dir }, { id: "roadmap-items/shipped", frontmatter: { type: "Roadmap Item", title: "Shipped", superbee_progress_status: "done" }, body: "" });
 
     let out = "";
     await list(["--type", "Roadmap Item", "--open", "--dir", dir, "--json"], { stdout: (s) => (out += s) });
@@ -800,7 +793,7 @@ test("pairing chain: the documented pull → edit → promote steps in the roadm
     assert.deepEqual(registry.kinds.get("Task")!.expectsInbound, { contains: "Roadmap Item" });
 
     // An unowned task trips the lint …
-    await runJson(newCommand, ["Task", "demo", "--title", "Demo", "--status", "todo", "--dir", dir]);
+    await runJson(newCommand, ["Task", "demo", "--title", "Demo", "--progress_status", "todo", "--dir", dir]);
     const unowned = await runJson(status, ["--dir", dir]);
     assert.equal(unowned.missing_expected_links, 1);
     const rows = (unowned.missing_expected_links_rows as { rows: Array<Record<string, unknown>> }).rows;
@@ -808,7 +801,7 @@ test("pairing chain: the documented pull → edit → promote steps in the roadm
     assert.deepEqual(rows[0]!.missing, ["contains"]);
 
     // … and an owning Roadmap Item's typed `contains` link clears it.
-    await runJson(newCommand, ["Roadmap Item", "item-1", "--title", "Item 1", "--status", "active", "--dir", dir]);
+    await runJson(newCommand, ["Roadmap Item", "item-1", "--title", "Item 1", "--progress_status", "active", "--dir", dir]);
     await runJson(link, ["add", "roadmap-items/item-1", "tasks/demo", "--text", "contains", "--dir", dir]);
     const owned = await runJson(status, ["--dir", dir]);
     assert.equal(owned.missing_expected_links, 0);
@@ -863,7 +856,8 @@ test("recipe add <path>: an EXTERNAL recipe folder loads via filesRecipeSource -
 test("applyRecipe carries serialized Claim lifecycle descriptions through the ordinary recipe path", async () => {
   const dir = await tempDir();
   try {
-    await initBundle(dir);
+    // This fixture intentionally exercises the legacy physical `status` coordinate.
+    await initBundle(dir, { okfVersion: "0.1" });
     const claim: KindConvention = {
       id: "conventions/claim",
       title: "Claim",
@@ -1027,7 +1021,7 @@ test("portable Review Workflow: clean-room install carries Kinds, a View, and it
     const reviewKind = registry.kinds.get("Review Request");
     assert.ok(reviewKind);
     assert.match(reviewKind!.description ?? "", /durable request/);
-    assert.match(reviewKind!.fields.valueDescriptions.status?.approved ?? "", /terminal/);
+    assert.match(reviewKind!.fields.valueDescriptions.superbee_progress_status?.approved ?? "", /terminal/);
 
     const pageKind = registry.kinds.get("View");
     assert.ok(pageKind);
@@ -1058,7 +1052,7 @@ test("portable Review Workflow: clean-room install carries Kinds, a View, and it
       "portable-check",
       "--title",
       "Portable check",
-      "--status",
+      "--progress_status",
       "requested",
       "--reviewer",
       "Brian",
@@ -1077,7 +1071,7 @@ test("portable Review Workflow: clean-room install carries Kinds, a View, and it
           "invalid-state",
           "--title",
           "Invalid",
-          "--status",
+          "--progress_status",
           "invented",
           "--reviewer",
           "Brian",
@@ -1627,8 +1621,8 @@ test("SHIPPED example recipe (examples/recipes/claims): applies cleanly, declare
     const registry = await loadKinds(bundle);
     const claim = registry.kinds.get("Claim");
     assert.ok(claim, "the Claim kind must be declared after applying the shipped example recipe");
-    assert.deepEqual(claim!.fields.required, ["title", "status", "reason"]);
-    assert.deepEqual(claim!.fields.values?.status, ["active", "challenged", "locked", "deprecated"]);
+    assert.deepEqual(claim!.fields.required, ["title", "superbee_progress_status", "reason"]);
+    assert.deepEqual(claim!.fields.values?.superbee_progress_status, ["active", "challenged", "locked", "deprecated"]);
     assert.deepEqual(claim!.links, { supersedes: "Claim" }, "the example recipe declares the supersession edge type");
 
     const again = await runJson(recipe, ["add", SHIPPED_CLAIMS_RECIPE, "--dir", dir]);

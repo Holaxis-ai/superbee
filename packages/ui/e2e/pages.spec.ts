@@ -166,8 +166,8 @@ test("a bundle-propose View can change one governed scalar only after trusted-sh
     await expect(frame.locator("#result")).toHaveText("committed");
     await expect(frame.locator("#status")).toHaveText("done");
     const persisted = JSON.parse(execFileSync(process.execPath, [CLI_DIST, "doc", "read", "tasks/alpha", "--dir", ui.dir, "--json"], { encoding: "utf8" }));
-    expect(persisted.status).toBe("done");
-    expect(persisted.actor).toBe("e2e/human");
+    expect(persisted.superbee_progress_status).toBe("done");
+    expect(persisted.superbee_updated_by).toBe("e2e/human");
   } finally {
     await ui.cleanup();
   }
@@ -300,7 +300,7 @@ test("P1: an SSE outage self-heals — a change made while the stream was down a
     await page.waitForTimeout(500); // let the client notice the drop
 
     // The change happens DURING the outage — its SSE frame is lost for good.
-    execFileSync(process.execPath, [CLI_DIST, "doc", "update", "tasks/alpha", "--status", "done", "--dir", dir], {
+    execFileSync(process.execPath, [CLI_DIST, "doc", "update", "tasks/alpha", "--progress_status", "done", "--dir", dir], {
       stdio: "ignore",
     });
 
@@ -404,7 +404,7 @@ test("a status change streams live into the open page (roadmap rollup updates, n
     await expect(spike.locator(".roll .count")).toHaveText("0/2 done");
 
     // Flip alpha to done on disk via the CLI — the ui server's fs.watch picks it up and pushes over SSE.
-    execFileSync(process.execPath, [CLI_DIST, "doc", "update", "tasks/alpha", "--status", "done", "--dir", ui.dir], {
+    execFileSync(process.execPath, [CLI_DIST, "doc", "update", "tasks/alpha", "--progress_status", "done", "--dir", ui.dir], {
       stdio: "ignore",
     });
 

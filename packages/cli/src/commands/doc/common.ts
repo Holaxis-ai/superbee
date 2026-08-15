@@ -47,7 +47,8 @@ Options:
   --description <d>    One-sentence summary
   --resource <uri>     Canonical URI of the underlying asset
   --tag <t>            A tag (repeatable)
-  --timestamp <iso>    ISO-8601 last-change time (default: now)
+  --timestamp <iso>    Explicit legacy-compatible ISO-8601 last-change time. Current bundles use
+                       their standard generated.at clock automatically.
   --body <s>           Markdown body inline
   --body-file <path>   Read the markdown body from a file (else: piped stdin)
   --blank-body         Required to deliberately overwrite an EXISTING doc's non-empty body with an
@@ -65,11 +66,11 @@ Options:
   --strict             If a kind convention governs --type, reject (exit 2) instead of writing with
                        warnings when the doc does not satisfy it (default: warn-and-write, exit 0 —
                        see 'superbee kinds')
-  --actor <name>       Attribute this write: persisted as the doc's own 'actor' frontmatter field
-                       (the per-doc attribution sync and its receipts read) and recorded in version
-                       history by a persisting backend. Note doc write is a FULL replace: omitting
-                       both --actor and the supported actor environment variables on an overwrite
-                       drops any existing actor field (reported in dropped_fields). Precedence:
+  --actor <name>       Attribute this write using the bundle's compatible advisory field, used by
+                       per-doc sync receipts and version history for a persisting backend. Note doc
+                       write is a FULL replace:
+                       omitting both --actor and the supported actor environment variables on an
+                       overwrite drops any existing attribution field (reported in dropped_fields). Precedence:
                        --actor > SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. A
                        present-but-blank flag or environment value is a USAGE error (exit 2).
 ${COMMON_OPTIONS}
@@ -108,11 +109,12 @@ Options:
                          a new body that still contains the same link(s) — the ordinary read-edit-
                          update cycle — never needs this flag. SHORT-TERM guard — see 'link add'/
                          'link show' to manage links.
-  --keep-timestamp       Preserve the existing timestamp (default: refresh to now, since a patch is
-                         a meaningful change — matches 'link add's policy)
+  --keep-timestamp       Preserve an existing legacy compatibility timestamp. Current bundles use
+                         their standard generated.at clock automatically.
   --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
                          writing with warnings (default: warn-and-write, exit 0)
-  --<field> <value>      Set a kind-declared field of the doc's type (e.g. --status done). The field
+  --<field> <value>      Set a kind-declared field of the doc's type (e.g. --progress_status done).
+                         The field
                          MUST be declared by the kind governing the doc's type — run 'superbee
                          kinds' to see them. An unknown field, or an out-of-enum value, is rejected
                          (exit 2, no write). Use 'doc write' to rewrite the whole doc if you must set
@@ -121,19 +123,19 @@ Options:
                          (from a prior read/write/history receipt) — a conflict is STALE_HEAD (exit
                          5), NOT retried. Omit for a normal (auto-retrying) update. A present-but-
                          blank value is a USAGE error (exit 2), not "no CAS".
-  --actor <name>         Attribute a substantive patch: sets the doc's 'actor' frontmatter field
-                         (overwriting a previous actor) and threads to version history (see 'doc
-                         history'). Precedence: --actor > SUPERBEE_ACTOR > legacy
-                         AGENTSTATE_LITE_ACTOR > absent. With neither source, the existing actor is
-                         preserved. Attribution is not a
-                         patch by itself and cannot turn an identical patch into a write. A
+  --actor <name>         Attribute a substantive patch using the bundle's compatible advisory field
+                         and thread it to version history (see 'doc history'). Precedence: --actor >
+                         SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. Without a source,
+                         Superbee applies the bundle's compatibility policy. An identical no-op
+                         preserves exact bytes. Attribution is
+                         not a patch by itself and cannot turn an identical patch into a write. A
                          present-but-blank flag or environment value is a USAGE error (exit 2).
 
 Passing NO patchable field at all is a USAGE error (exit 2) — there is nothing to do.
 ${COMMON_OPTIONS}
 
 Examples:
-  superbee doc update tasks/42 --status done
+  superbee doc update tasks/42 --progress_status done
   superbee doc update concepts/auth --title "Auth v2" --expected-version sha256:...
 `;
 
@@ -143,7 +145,7 @@ Usage:
   superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -)] [options]
 
 The default (no --out/--body-out) render shows EVERY frontmatter field — the standard keys plus any
-kind-declared fields like status/priority — and truncates a large body (pointing at --out).
+kind-declared fields like progress_status/priority — and truncates a large body (pointing at --out).
 
 Options:
   --out <path>         Write the doc's raw markdown bytes to a file (bypasses context).
@@ -196,11 +198,9 @@ Lists version + actor + timestamp (and agent, when recorded) per revision, with 
 history-keeping backend (a remote deployment) returns the full chain and its real per-write
 attribution; on an AUTH'D remote, actor is your authenticated principal (server-set, unforgeable)
 and agent is the resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy
-AGENTSTATE_LITE_ACTOR. A local
---dir bundle keeps no history, so it returns just the single current revision and reports the
-file's OS owner as the actor (the filesystem backend keeps no per-write advisory actor label in
-history; the doc's own 'actor' frontmatter field — persisted from the same sources — is where
-per-doc attribution lives). The newest version is the token to
+AGENTSTATE_LITE_ACTOR. A local --dir bundle keeps no history, so it returns just the single current
+revision. Its actor is resolved from the doc's compatible advisory attribution, falling back to
+the local user identity when none is present. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
 Options:

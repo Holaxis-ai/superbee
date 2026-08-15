@@ -129,6 +129,7 @@ test("save on OKF v0.2 preserves storage attribution without inventing legacy do
   const registry = await readDocVersioned(f.bundle, saved.viewId);
   assert.equal(Object.hasOwn(registry.doc.frontmatter, "timestamp"), false);
   assert.equal(Object.hasOwn(registry.doc.frontmatter, "actor"), false);
+  assert.equal(registry.doc.frontmatter.superbee_updated_by, "openai/codex");
   assert.equal(Object.hasOwn(registry.doc.frontmatter, "generated"), false);
   assert.equal((await docVersions(f.bundle, saved.viewId))[0]?.actor, "openai/codex");
 });
