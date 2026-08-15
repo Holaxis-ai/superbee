@@ -53,6 +53,7 @@ function sha256Bytes(bytes) {
 function stageReceiptFor(version, policyTag = "next") {
   const tarball = `holaxis-aslite-${version}.tgz`;
   return buildStageReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: "sha256:" + "c".repeat(64),
