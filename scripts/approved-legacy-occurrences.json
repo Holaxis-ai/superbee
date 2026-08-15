@@ -945,7 +945,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command and installer recognition remain supported while Superbee is canonical",
-      "line": 537
+      "line": 556
     },
     {
       "file": "packages/cli/src/skill-render.ts",
@@ -956,7 +956,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 537
+      "line": 556
     },
     {
       "file": "packages/cli/src/skill-render.ts",
@@ -967,7 +967,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command and installer recognition remain supported while Superbee is canonical",
-      "line": 571
+      "line": 590
     },
     {
       "file": "packages/cli/src/skill-render.ts",
@@ -978,7 +978,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 571
+      "line": 590
     },
     {
       "file": "packages/cli/src/update-orientation.ts",
