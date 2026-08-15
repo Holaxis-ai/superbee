@@ -116,9 +116,10 @@ test("built CLI: init accepts its supported authoring version and rejects false 
   const { binDir, env } = await makeBinOnPath();
 
   try {
-    for (const [name, versionArgs] of [
-      ["default", []],
-      ["explicit", ["--okf-version", "0.1"]],
+    for (const [name, versionArgs, expectedVersion] of [
+      ["default", [], "0.1"],
+      ["explicit-v01", ["--okf-version", "0.1"], "0.1"],
+      ["explicit-v02", ["--okf-version", "0.2"], "0.2"],
     ] as const) {
       const target = path.join(sandbox, name);
       const result = run(["init", "--dir", target, "--recipe", "none", ...versionArgs, "--json"], {
@@ -126,11 +127,13 @@ test("built CLI: init accepts its supported authoring version and rejects false 
         env,
       });
       assert.equal(result.status, 0, result.stdout + result.stderr);
-      assert.match(await readFile(path.join(target, "index.md"), "utf8"), /okf_version: ['"]?0\.1['"]?/);
+      assert.match(
+        await readFile(path.join(target, "index.md"), "utf8"),
+        new RegExp(`okf_version: ['"]?${expectedVersion.replace(".", "\\.")}['"]?`),
+      );
     }
 
     for (const [name, requested, extraArgs] of [
-      ["v02", "0.2", []],
       ["future", "9.4", ["--create-only"]],
       ["blank", "", ["--create-only"]],
     ] as const) {
@@ -141,10 +144,65 @@ test("built CLI: init accepts its supported authoring version and rejects false 
       );
       assert.equal(result.status, 2, result.stdout + result.stderr);
       assert.match(result.stdout, /code: USAGE/);
-      assert.match(result.stdout, /author 0\.1/);
-      assert.match(result.stdout, /read or transport/);
+      assert.match(result.stdout, /author 0\.1 and 0\.2/);
+      assert.match(result.stdout, /read or transported/);
       assert.equal(existsSync(target), false, `unsupported version ${JSON.stringify(requested)} must not create its target`);
     }
+  } finally {
+    await rm(sandbox, { recursive: true, force: true });
+    await rm(binDir, { recursive: true, force: true });
+  }
+});
+
+test("built CLI: explicit v0.2 init materializes workflow recipes and logical progress end to end", async () => {
+  const sandbox = await tempDir("superbee-init-v02-journey-");
+  const target = path.join(sandbox, "bundle");
+  const { binDir, env } = await makeBinOnPath();
+
+  try {
+    const initialized = run(
+      ["init", "--dir", target, "--okf-version", "0.2", "--recipe", "work-tracking", "--json"],
+      { cwd: sandbox, env },
+    );
+    assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
+
+    const taskConvention = await readFile(path.join(target, "conventions", "task.md"), "utf8");
+    assert.match(taskConvention, /superbee_progress_status/);
+    assert.doesNotMatch(taskConvention, /^\s*status:/m);
+    assert.doesNotMatch(taskConvention, /^timestamp:/m, "v0.2 recipe definitions do not invent the legacy clock");
+
+    const created = run(
+      ["new", "Task", "first", "--title", "First", "--progress_status", "todo", "--dir", target, "--json"],
+      { cwd: sandbox, env },
+    );
+    assert.equal(created.status, 0, created.stdout + created.stderr);
+    const task = await readFile(path.join(target, "tasks", "first.md"), "utf8");
+    assert.match(task, /^superbee_progress_status: todo$/m);
+    assert.doesNotMatch(task, /^status:/m);
+    assert.doesNotMatch(task, /^timestamp:/m);
+
+    const updated = run(
+      ["doc", "update", "tasks/first", "--progress_status", "done", "--dir", target, "--json"],
+      { cwd: sandbox, env },
+    );
+    assert.equal(updated.status, 0, updated.stdout + updated.stderr);
+
+    const listed = run(
+      ["list", "--type", "Task", "--field", "progress_status=done", "--dir", target, "--json"],
+      { cwd: sandbox, env },
+    );
+    assert.equal(listed.status, 0, listed.stdout + listed.stderr);
+    assert.equal((JSON.parse(listed.stdout) as { count: number }).count, 1);
+
+    const roadmap = run(["recipe", "add", "roadmap", "--dir", target, "--json"], { cwd: sandbox, env });
+    assert.equal(roadmap.status, 0, roadmap.stdout + roadmap.stderr);
+    const roadmapItem = await readFile(path.join(target, "conventions", "roadmap-item.md"), "utf8");
+    assert.match(roadmapItem, /superbee_progress_status/);
+    assert.doesNotMatch(roadmapItem, /^\s*status:/m);
+
+    const health = run(["status", "--dir", target, "--json"], { cwd: sandbox, env });
+    assert.equal(health.status, 0, health.stdout + health.stderr);
+    assert.equal("okf_upgrade" in JSON.parse(health.stdout), false);
   } finally {
     await rm(sandbox, { recursive: true, force: true });
     await rm(binDir, { recursive: true, force: true });

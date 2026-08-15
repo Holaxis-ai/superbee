@@ -260,6 +260,25 @@ test("list --field status=done: filters to matching docs only, count matches", a
   }
 });
 
+test("list exposes declared v0.1 workflow status through logical progress_status filters and projections", async () => {
+  const { dir, cleanup } = await makeTwoKindBundle();
+  try {
+    const result = await runJson([
+      "--type", "Task",
+      "--field", "progress_status=todo,doing",
+      "--fields", "progress_status,priority",
+      "--dir", dir,
+    ]);
+    assert.equal(result.count, 2);
+    const rows = result.docs as Array<Record<string, unknown>>;
+    assert.deepEqual(rows.map((row) => row.id), ["tasks/a", "tasks/b"]);
+    assert.deepEqual(rows.map((row) => row.progress_status), ["todo", "doing"]);
+    assert.deepEqual(rows.map((row) => row.priority), ["high", "low"]);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("list --field (repeatable): ANDed — intersection of both conditions", async () => {
   const { dir, cleanup } = await makeTwoKindBundle();
   try {

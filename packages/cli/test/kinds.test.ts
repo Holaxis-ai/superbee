@@ -120,6 +120,12 @@ test("kinds: conditionally projects kind, field, and enum-value descriptions", a
     assert.equal(described.description, "A kind with agent-readable guidance.");
     assert.deepEqual(described.descriptions, { title: "A concise summary.", status: "Current state." });
     assert.deepEqual(described.value_descriptions, { status: { draft: "Still open to revision." } });
+    assert.deepEqual(described.logical_fields, {
+      progress_status: { stored_as: "status", author_with: "--progress_status" },
+    });
+    let help = "";
+    await newCommand(["Described", "--help", "--dir", dir], { stdout: (chunk) => (help += chunk) });
+    assert.match(help, /--progress_status <v>  stored as 'status'/);
     const note = rows.find((row) => row.governs === "Context Note");
     assert.ok(note);
     assert.ok(!("description" in note));

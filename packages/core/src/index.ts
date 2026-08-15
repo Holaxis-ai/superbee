@@ -1,7 +1,7 @@
 /**
  * `@superbee/core` — the OKF store engine.
  *
- * An **Open Knowledge Format (OKF v0.1, Draft)** *Knowledge Bundle* is a
+ * An **Open Knowledge Format (OKF v0.1 or v0.2)** *Knowledge Bundle* is a
  * directory tree of UTF-8 markdown files, each carrying a YAML frontmatter block
  * (delimited by `---` lines) plus a markdown body. Every non-reserved `.md` file
  * is a *Concept*; its *Concept ID* is the file path minus `.md`
@@ -10,7 +10,7 @@
  * The FILESYSTEM is the source of truth by default, but storage is routed through
  * a pluggable {@link StorageBackend} (default: {@link FilesystemBackend}). This
  * module implements bundle I/O, standard-markdown cross-links (never wikilinks),
- * derived backlinks, freshness derived from `timestamp`, and reserved-file
+ * derived backlinks, freshness derived from the edition's meaningful-change clock, and reserved-file
  * (`index.md`/`log.md`) handling. Human-facing bundle Pages consume this engine through the
  * reference server's narrow browser bridge (read-only v0 plus shell-confirmed local proposals).
  *
@@ -48,7 +48,9 @@ export type {
 // ── Contract functions ────────────────────────────────────────────────────────
 export {
   initBundle,
+  readBundleOkfVersion,
   resolveOkfAuthoringVersion,
+  DEFAULT_OKF_AUTHORING_VERSION,
   SUPPORTED_OKF_AUTHORING_VERSIONS,
   writeDoc,
   readDoc,
@@ -138,6 +140,7 @@ export {
 } from "./document-mutation.js";
 export type {
   DocumentMutationCandidate,
+  DocumentMutationContext,
   DocumentMutationMode,
   DocumentMutationResult,
   MutateDocumentOptions,
@@ -221,7 +224,15 @@ export { InvalidInputError } from "./errors.js";
 export {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
+  PROGRESS_STATUS_FIELD,
+  SUPERBEE_PROGRESS_STATUS_FIELD,
   RESERVED_KIND_FIELD_NAMES,
+  progressStatusStorageField,
+  progressStatusCoordinate,
+  resolveKindFieldCoordinate,
+  kindInputFieldNames,
+  readKindField,
+  projectLogicalKindFields,
   validateAgainstKind,
   defaultTimestampAndValidateAgainstRegistry,
   freshnessHorizonMs,
@@ -231,7 +242,13 @@ export {
   isTerminal,
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
-export type { KindConvention, KindFields, KindRegistry, RegistryValidationResult } from "./kinds.js";
+export type {
+  KindConvention,
+  KindFieldCoordinate,
+  KindFields,
+  KindRegistry,
+  RegistryValidationResult,
+} from "./kinds.js";
 
 // Ported MIME utilities (holaxis-agentstate `packages/schemas/src/content-type.ts`).
 // `resolveContentType` is the ONE place a blob's content-type is resolved (explicit

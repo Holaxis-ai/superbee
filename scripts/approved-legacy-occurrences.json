@@ -1638,7 +1638,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 802
+      "line": 879
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1649,7 +1649,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 804
+      "line": 881
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1660,7 +1660,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 819
+      "line": 896
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1671,7 +1671,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 891
+      "line": 968
     }
   ]
 }

@@ -1,8 +1,10 @@
 import {
   applyQuerySelectionFilters,
   loadKinds,
+  projectLogicalKindFields,
   queryEdges,
   queryHeads,
+  readBundleOkfVersion,
   readDocVersioned,
   type Bundle,
   type HeadResult,
@@ -513,8 +515,24 @@ export class BridgeService {
         ...(request.params.type ? { type: request.params.type } : {}),
         ...(request.params.prefix ? { prefix: request.params.prefix } : {}),
       });
-      const kinds = request.params.open ? (await loadKinds(this.options.bundle)).kinds : new Map();
-      const result = boundedRows(rows, request.params, [...kinds.values()]);
+      // Every View query is a product-facing projection, including untyped feeds such as Pulse.
+      // Resolve logical Kind fields here once so durable web and MCP Views never need to know the
+      // physical coordinate selected by a bundle edition.
+      const [registry, okfVersion] = await Promise.all([
+        loadKinds(this.options.bundle),
+        readBundleOkfVersion(this.options.bundle),
+      ]);
+      const result = boundedRows(
+        rows,
+        { ...request.params, okfVersion },
+        [...registry.kinds.values()],
+      );
+      result.rows = result.rows.map((row) => {
+        const kind = registry.kinds.get(String(row.frontmatter.type ?? ""));
+        return kind
+          ? { ...row, frontmatter: projectLogicalKindFields(okfVersion, kind, row.frontmatter) }
+          : row;
+      });
       return { reply: ok(request.id, request.bridge, request.type, result) };
     }
     if (request.type === "read" || request.type === "read-versioned") {

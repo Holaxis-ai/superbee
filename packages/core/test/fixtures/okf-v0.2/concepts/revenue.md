@@ -5,10 +5,10 @@ description: Revenue recognized for the current reporting month.
 status: stable
 generated:
   at: 2026-07-28T12:34:56Z
-  by: https://producer.example/agents/finance
+  by: finance_agent/1.0
 verified:
   - at: 2026-07-29T09:15:00Z
-    by: https://producer.example/people/reviewer
+    by: human:reviewer
     method: human-review
 sources:
   - resource: https://warehouse.example/revenue

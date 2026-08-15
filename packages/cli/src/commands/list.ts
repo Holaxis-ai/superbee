@@ -14,9 +14,9 @@
 //     the minimal schema — so an agent sees e.g. a Task's status/priority without knowing to pass
 //     --fields. Activation requires ALL of: --type given, --fields absent, the type is governed, and
 //     the kind declares at least one non-excluded field. An unscoped list, or a type-scoped list of an
-//     UNGOVERNED type, keeps the minimal schema byte-for-byte — loadKinds is only even called when the
-//     first two conditions hold, so an unscoped/--fields query (and every conventions-free bundle) does
-//     ZERO extra registry work. `--fields` ALWAYS overrides (an explicit projection wins).
+//     UNGOVERNED type, keeps the minimal schema byte-for-byte. The registry is otherwise loaded only
+//     for `--open` or the version-aware logical `progress_status` field, so ordinary unscoped/explicit
+//     projections retain the lean path. `--fields` ALWAYS overrides (an explicit projection wins).
 //   - `--field key=value` filter (Fork B, repeatable, ANDed): a generic core QueryFilter facet (any
 //     kind, any field), not CLI-side — so it rides the engine's one filter locus over --remote for
 //     free, same as the existing type/tags facets (applied to pushed-down heads, never bodies).
@@ -34,7 +34,17 @@
 //     an ungoverned type, a kind with no terminal declaration, or a doc missing the field are all
 //     INCLUDED (not-terminal is the semantic, never a hardcoded status string).
 import { parseArgs } from "node:util";
-import { queryHeads, loadKinds, isTerminal, matchesFilter, type KindRegistry, type QueryFilter } from "@superbee/core";
+import {
+  PROGRESS_STATUS_FIELD,
+  queryHeads,
+  loadKinds,
+  isTerminal,
+  matchesFilter,
+  readBundleOkfVersion,
+  readKindField,
+  type KindRegistry,
+  type QueryFilter,
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -82,6 +92,8 @@ Options:
 A --type-scoped query of a kind-governed type projects that kind's declared fields as columns
 ({id, title, ...fields}) instead of the minimal schema; --fields overrides. An unscoped query, or a
 query of an ungoverned type, always keeps the minimal {id,type,title,timestamp} schema.
+Use the logical field name progress_status when querying workflow state across OKF editions;
+Superbee resolves it through each document's declared Kind without changing stored frontmatter.
 `;
 
 export interface ListCliDeps {
@@ -137,6 +149,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   // last-one-wins (matching the pre-existing single-value behavior), whichever variant it lands as.
   const singleFields: Record<string, string> = {};
   const orFieldSets: Record<string, string[]> = {};
+  let progressFieldSet: string[] | undefined;
   if (values.field && values.field.length > 0) {
     for (const entry of values.field) {
       const eq = entry.indexOf("=");
@@ -167,7 +180,11 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
           { help: `${cliInvocation()} list --field status=todo,in_progress` },
         );
       }
-      if (members.length > 1) {
+      if (key === PROGRESS_STATUS_FIELD) {
+        progressFieldSet = members;
+        delete singleFields[key];
+        delete orFieldSets[key];
+      } else if (members.length > 1) {
         orFieldSets[key] = members;
         delete singleFields[key];
       } else {
@@ -223,6 +240,15 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     registryCache ??= await loadKinds(bundle);
     return registryCache;
   };
+  let okfVersionLoaded = false;
+  let okfVersionCache: string | undefined;
+  const getOkfVersion = async (): Promise<string | undefined> => {
+    if (!okfVersionLoaded) {
+      okfVersionCache = await readBundleOkfVersion(bundle);
+      okfVersionLoaded = true;
+    }
+    return okfVersionCache;
+  };
 
   // OR-within-field post-filter for every multi-member --field (comma
   // sets). AND across fields (a doc must satisfy EVERY field's set), each field itself OR'd across
@@ -231,6 +257,19 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   // change (the single-member case above already rode the real push-down).
   for (const [field, members] of Object.entries(orFieldSets)) {
     docs = docs.filter((d) => members.some((m) => matchesFilter(d, { fields: { [field]: m } })));
+  }
+  if (progressFieldSet) {
+    const registry = await getRegistry();
+    const okfVersion = await getOkfVersion();
+    docs = docs.filter((doc) => {
+      const kind = registry.kinds.get(String(doc.frontmatter.type ?? ""));
+      if (!kind) return false;
+      const raw = readKindField(okfVersion, kind, doc.frontmatter, PROGRESS_STATUS_FIELD);
+      const actual = raw === undefined || raw === null
+        ? []
+        : (Array.isArray(raw) ? raw : [raw]).map((value) => String(value));
+      return progressFieldSet!.some((value) => actual.includes(value));
+    });
   }
 
   // --open excludes a doc whose own kind declares a terminal
@@ -266,6 +305,10 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     return typeof s === "string" && s.length > COLUMN_CELL_CAP ? s.slice(0, COLUMN_CELL_CAP) + "…" : s;
   };
 
+  const logicalProjectionRequested = extraFields.includes(PROGRESS_STATUS_FIELD);
+  const projectionRegistry = logicalProjectionRequested ? await getRegistry() : undefined;
+  const projectionVersion = logicalProjectionRequested ? await getOkfVersion() : undefined;
+
   const projectMinimal = (d: (typeof docs)[number]): Record<string, unknown> => {
     const row: Record<string, unknown> = {
       id: d.id,
@@ -278,7 +321,14 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     };
     // The `--fields` hatch caps each cell the SAME way kind columns do — a long field (e.g.
     // `--fields description`) is truncated per row rather than dumped in full.
-    for (const f of extraFields) row[f] = cell((d.frontmatter as Record<string, unknown>)[f]);
+    for (const f of extraFields) {
+      if (f === PROGRESS_STATUS_FIELD && projectionRegistry) {
+        const kind = projectionRegistry.kinds.get(String(d.frontmatter.type ?? ""));
+        row[f] = cell(kind ? readKindField(projectionVersion, kind, d.frontmatter, f) : undefined);
+      } else {
+        row[f] = cell((d.frontmatter as Record<string, unknown>)[f]);
+      }
+    }
     return row;
   };
 

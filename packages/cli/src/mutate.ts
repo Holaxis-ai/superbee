@@ -14,6 +14,7 @@ import {
   type Bundle,
   type ConceptId,
   type DocumentMutationCandidate,
+  type DocumentMutationContext,
   type DocumentMutationMode,
   type Frontmatter,
   type KindRegistry,
@@ -46,7 +47,10 @@ export interface MutateDocOptions {
   strict: boolean;
   /** Fallback `help` for a kind rejection whose violations name no completable field (see `kindConformanceCliError`). */
   helpOnKindReject: string;
-  buildCandidate: (existing: OkfDocument | undefined) => MutateCandidate | Promise<MutateCandidate>;
+  buildCandidate: (
+    existing: OkfDocument | undefined,
+    context: DocumentMutationContext,
+  ) => MutateCandidate | Promise<MutateCandidate>;
   onAbsent?: "fail" | "create";
   maxAttempts?: number;
   compareTimestamp?: boolean;

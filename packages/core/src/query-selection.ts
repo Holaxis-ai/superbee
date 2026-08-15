@@ -4,7 +4,12 @@
  * Storage-facing `type`/`prefix` filtering stays in `queryHeads`; this helper owns the
  * field-set, declared-terminal, honest-count, and limit projection used after those rows arrive.
  */
-import { isTerminal, type KindConvention } from "./kinds.js";
+import {
+  PROGRESS_STATUS_FIELD,
+  isTerminal,
+  readKindField,
+  type KindConvention,
+} from "./kinds.js";
 import { matchesFilter } from "./query-filter.js";
 import type { Frontmatter } from "./types.js";
 
@@ -14,6 +19,8 @@ export interface QuerySelectionParams {
   field?: string;
   open?: boolean;
   limit?: number;
+  /** Bundle-root OKF edition, used only for declaration-driven logical field aliases. */
+  okfVersion?: string;
 }
 
 export function applyQuerySelectionFilters<
@@ -24,6 +31,7 @@ export function applyQuerySelectionFilters<
   kinds: KindConvention[] = [],
 ): { rows: T[]; count: number } {
   let out = rows;
+  const byGoverns = new Map(kinds.map((kind) => [kind.governs, kind]));
   if (params.field) {
     const eq = params.field.indexOf("=");
     if (eq > 0) {
@@ -33,13 +41,21 @@ export function applyQuerySelectionFilters<
         .split(",")
         .map((value) => value.trim())
         .filter(Boolean);
-      out = out.filter((row) =>
-        values.some((value) => matchesFilter(row, { fields: { [key]: value } })),
-      );
+      out = out.filter((row) => {
+        if (key !== PROGRESS_STATUS_FIELD) {
+          return values.some((value) => matchesFilter(row, { fields: { [key]: value } }));
+        }
+        const kind = byGoverns.get(String(row.frontmatter.type ?? ""));
+        if (!kind) return false;
+        const raw = readKindField(params.okfVersion, kind, row.frontmatter, key);
+        const actual = raw === undefined || raw === null
+          ? []
+          : (Array.isArray(raw) ? raw : [raw]).map((value) => String(value));
+        return values.some((value) => actual.includes(value));
+      });
     }
   }
   if (params.open) {
-    const byGoverns = new Map(kinds.map((kind) => [kind.governs, kind]));
     out = out.filter((row) => {
       const kind = byGoverns.get(String(row.frontmatter.type ?? ""));
       return !kind || !isTerminal(kind, row.frontmatter);

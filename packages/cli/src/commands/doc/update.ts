@@ -1,8 +1,13 @@
 // `doc update <id>` — the field-level PATCH verb; see `../doc.ts`'s header comment for the full
-// rationale (Fork 1/Fork 2 of `plans/kind-aware-doc-surface.md`).
+// rationale (Fork 1/Fork 2 of `plans/kind-aware-doc-surface.md`). Dynamic fields also accept the
+// version-aware logical aliases declared by core's Kind field-coordinate policy.
 import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
-import { loadKinds, type Frontmatter } from "@superbee/core";
+import {
+  loadKinds,
+  resolveKindFieldCoordinate,
+  type Frontmatter,
+} from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -302,6 +307,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // A patch touching ONLY standard fields keeps the pre-existing warn-by-default behavior (--strict
   // still opts in). See the plan's Fork 2 for the full rationale.
   const strict = p.strict || p.kindFields.size > 0;
+  let fieldCoordinates: Array<{ logical_field: string; stored_as: string }> = [];
 
   // "patch" mode, onAbsent: "fail": `mutateDoc` does the versioned-read -> build -> idempotency ->
   // validate -> CAS-write-with-bounded-retry itself (the exact shape `link add` proved for this
@@ -322,7 +328,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
     onPersisted: boardPostPersistHook(bundle, actor),
-    buildCandidate: async (existingDoc) => {
+    buildCandidate: async (existingDoc, context) => {
       const existing = existingDoc!;
       const nextFrontmatter: Frontmatter = { ...existing.frontmatter };
       if (p.title !== undefined) nextFrontmatter.title = p.title;
@@ -332,11 +338,12 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       // Actor attribution is applied by `mutateDoc` only after this candidate has proven
       // substantive. The spread preserves the previous actor on a no-op; ambient attribution can
       // never turn an identical patch into a write.
-      // `timestamp` means "last meaningful change" (OKF + VISION); a patch IS one, so refresh it by
-      // default — `--keep-timestamp` opts back into preserving the existing value (mirrors `link
-      // add`). `mutateDoc`'s ignoring-timestamp idempotency check decides whether this refreshed
-      // value ever reaches disk (a true no-op patch discards it, same as before this refactor).
-      if (!p.keepTimestamp) nextFrontmatter.timestamp = new Date().toISOString();
+      // v0.1's legacy meaningful-change clock is refreshed here; v0.2's `generated.at` clock is
+      // owned centrally by `mutateDocument` so every trusted write surface advances it identically.
+      // `--keep-timestamp` remains the v0.1 compatibility escape hatch.
+      if (context.okfVersion !== "0.2" && !p.keepTimestamp) {
+        nextFrontmatter.timestamp = new Date().toISOString();
+      }
 
       let nextBody = existing.body;
       if (p.body !== undefined) nextBody = p.body;
@@ -380,7 +387,13 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
           );
         }
         const declared = [...kind.fields.required, ...kind.fields.optional];
-        const unknown = [...p.kindFields.keys()].filter((f) => !declared.includes(f));
+        const resolvedFields = new Map<string, ReturnType<typeof resolveKindFieldCoordinate>>();
+        for (const field of p.kindFields.keys()) {
+          resolvedFields.set(field, resolveKindFieldCoordinate(context.okfVersion, kind, field));
+        }
+        const unknown = [...resolvedFields.entries()]
+          .filter(([, coordinate]) => coordinate === undefined)
+          .map(([field]) => field);
         if (unknown.length > 0) {
           throw new CliError(
             "USAGE",
@@ -391,8 +404,23 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             { help: `${cliInvocation()} kinds` },
           );
         }
+        const suppliedByStorageField = new Map<string, string>();
+        fieldCoordinates = [];
         for (const [field, vals] of p.kindFields) {
-          nextFrontmatter[field] = vals.length === 1 ? vals[0] : vals;
+          const coordinate = resolvedFields.get(field)!;
+          const previous = suppliedByStorageField.get(coordinate.storageField);
+          if (previous) {
+            throw new CliError(
+              "USAGE",
+              `--${previous} and --${field} address the same stored field '${coordinate.storageField}'; pass only one`,
+              { help: `${cliInvocation()} doc update ${id} --${coordinate.logicalField} <value>` },
+            );
+          }
+          suppliedByStorageField.set(coordinate.storageField, field);
+          if (coordinate.storageField !== field) {
+            fieldCoordinates.push({ logical_field: field, stored_as: coordinate.storageField });
+          }
+          nextFrontmatter[coordinate.storageField] = vals.length === 1 ? vals[0] : vals;
         }
       }
 
@@ -421,6 +449,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     // subsequent `--expected-version` compare-and-swap.
     version: result.version,
   };
+  if (fieldCoordinates.length > 0) receipt.field_coordinates = fieldCoordinates;
   if (result.warnings.length > 0) receipt.warnings = result.warnings;
   // Legacy-naming nudge (legacy-page.ts): fires on the RESULT doc's type at an authoring moment
   // only — never blocks, never on reads.

@@ -26,6 +26,9 @@ import {
   isTerminal,
   listBlobs,
   loadKinds,
+  MalformedDocumentError,
+  readBundleOkfVersion,
+  type KindRegistry,
   type OkfDocument,
   parseLinksFromDoc,
   query,
@@ -64,9 +67,10 @@ Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
 isn't in the bundle — informational, since OKF permits links to not-yet-written knowledge; external
 links are excluded entirely), an orphan scan (concept docs with zero inbound links from OTHER
-concept docs), a freshness sweep over kinds that declare a horizon (a governed doc older than it is
-'stale'; a governed doc with no usable timestamp — missing OR malformed — is counted
-'no_timestamp'), and two graph lints over any declared 'links'/'expects_inbound' vocabulary (see
+concept docs), a freshness sweep over OKF v0.2 'stale_after' dates and kinds that declare a horizon
+(an elapsed absolute date or exceeded horizon is 'stale'; a horizon-governed doc with no usable
+meaningful-change time is counted 'no_timestamp'), and two graph lints over any declared
+'links'/'expects_inbound' vocabulary (see
 'kinds --help'): edges violating a declared typed-edge type ('link_type_violations') and kind
 instances missing a declared inbound expectation ('missing_expected_links'), plus two lints over
 the bundle's View surface (legacy locations included; the legacy 'Page' kind name no longer
@@ -97,8 +101,8 @@ Category semantics (one line each):
                       not content, and nothing is expected to cite them — so they are NOT
                       special-cased out of the count or the rows; the 'type' column on each row is
                       how you tell schema from content at a glance.
-  stale              A governed doc (its type has a declared kind with a freshness horizon) whose
-                      timestamp is older than that horizon.
+  stale              An OKF v0.2 doc on/after its 'stale_after' date, or a governed doc whose
+                      meaningful-change time is older than its kind's freshness horizon.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
   registry_warnings  Malformed convention docs THEMSELVES (loadKinds' own warnings) — a problem in
@@ -135,6 +139,9 @@ Category semantics (one line each):
                       'entry', or 'id+entry'. Fix by moving the doc under a registry prefix /
                       pointing 'entry' at a real 'views/…' key. Same presence rule as
                       'dangling_view_entries'.
+  okf_upgrade        Present only when a v0.1 bundle declares workflow 'status' values that
+                      collide with OKF v0.2's lifecycle vocabulary. The bundle remains supported;
+                      this is migration-readiness guidance, never an automatic rewrite.
   legacy_naming      FINDING: the legacy View names are no longer accepted by the runtime — a
                       doc typed 'Page' (the legacy name for the 'View' kind) does not register
                       at all, and a legacy 'bridge:' capability field grants nothing (the doc
@@ -146,9 +153,9 @@ Category semantics (one line each):
                       prefixes — those LOCATIONS remain recognized; relocation is a separate
                       open decision. Omitted when the bundle carries none of the above.
 
-This is a whole-bundle read (one registry load + one query + two prefix-scoped blob listings,
-batched) — acceptable for an explicitly batch-analysis command; over --remote it is one
-whole-bundle fetch, not a per-doc round trip.
+This is a whole-bundle read (one registry load + one query + one root-index read + two
+prefix-scoped blob listings, batched) — acceptable for an explicitly batch-analysis command;
+over --remote it remains a bounded set of requests, not a per-doc round trip.
 
 Exit is ALWAYS 0 once the analysis runs: findings are reports, not errors. (A --fail-on-findings CI
 flag is a recorded future item, not built here.)
@@ -190,9 +197,51 @@ function cap(rows: Record<string, unknown>[], limit: number): Capped {
  */
 const FRONTMATTER_VIOLATION_CODES = new Set(["KIND_FIELD_MISSING", "KIND_FIELD_VALUE", "KIND_FIELD_ARITY"]);
 
+const OKF_V02_LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
+
 /** A doc's `type` field, or "" when absent/non-string — the ONE place this coercion happens. */
 function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
+}
+
+function okfV02WorkflowStatusCollisions(
+  registry: KindRegistry,
+  docs: OkfDocument[],
+): Record<string, unknown>[] {
+  const affectedByKind = new Map<string, number>();
+  const observedValuesByKind = new Map<string, Set<string>>();
+  for (const doc of docs) {
+    const value = doc.frontmatter.status;
+    if (value === undefined || (typeof value === "string" && OKF_V02_LIFECYCLE_STATUSES.has(value))) continue;
+    const type = docType(doc);
+    affectedByKind.set(type, (affectedByKind.get(type) ?? 0) + 1);
+    const display = typeof value === "string" ? value : `<${Array.isArray(value) ? "array" : typeof value}>`;
+    const observed = observedValuesByKind.get(type) ?? new Set<string>();
+    observed.add(display);
+    observedValuesByKind.set(type, observed);
+  }
+
+  const rows: Record<string, unknown>[] = [];
+  for (const kind of [...registry.kinds.values()].sort((a, b) => a.governs.localeCompare(b.governs))) {
+    const declaresStatus =
+      kind.fields.required.includes("status") || kind.fields.optional.includes("status");
+    if (!declaresStatus) continue;
+    const declaredValues = kind.fields.values.status;
+    const incompatibleValues = (declaredValues ?? []).filter(
+      (value) => !OKF_V02_LIFECYCLE_STATUSES.has(value),
+    );
+    const affectedDocuments = affectedByKind.get(kind.governs) ?? 0;
+    if (declaredValues !== undefined && incompatibleValues.length === 0 && affectedDocuments === 0) continue;
+    rows.push({
+      kind: kind.governs,
+      convention: kind.id,
+      declaration: declaredValues === undefined ? "unbounded" : "enumerated",
+      incompatible_values: incompatibleValues,
+      observed_incompatible_values: [...(observedValuesByKind.get(kind.governs) ?? [])].sort(),
+      affected_documents: affectedDocuments,
+    });
+  }
+  return rows;
 }
 
 export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}): Promise<void> {
@@ -237,7 +286,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   // crashing the health report — a health report that can't run because one doc is broken is the
   // opposite of useful; the broken doc IS the headline finding.
   const malformedRows: Record<string, unknown>[] = [];
-  const [registry, docs, legacyBlobKeys, viewBlobKeys] = await Promise.all([
+  const [registry, docs, legacyBlobKeys, viewBlobKeys, okfVersionRead] = await Promise.all([
     loadKinds(bundle),
     query(bundle, {}, { onSkip: (s) => malformedRows.push({ id: s.id, reason: s.reason }) }),
     // legacy_naming audit (below): blob keys still under the legacy pages/ prefix — one extra
@@ -246,7 +295,15 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     // dangling_view_entries (below): the views/ half of the entry-key existence set (the pages/
     // half is the legacy listing above — the only two prefixes a valid entry key can name).
     listBlobs(bundle, VIEW_ENTRY_PREFIX),
+    readBundleOkfVersion(bundle)
+      .then((version) => ({ version }))
+      .catch((error: unknown) => {
+        if (!(error instanceof MalformedDocumentError)) throw error;
+        return { version: undefined, malformed: { id: "index.md", reason: error.message } };
+      }),
   ]);
+  if ("malformed" in okfVersionRead) malformedRows.unshift(okfVersionRead.malformed);
+  const okfVersion = okfVersionRead.version;
   const byId = new Set(docs.map((d) => d.id));
   // `id -> doc`, for the link-type-violation check's target-doc-type lookup below (never a second
   // per-edge query — the doc is already in hand from the ONE `query(bundle)` above).
@@ -339,21 +396,27 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     if (!inbound.has(doc.id)) orphanRows.push({ id: doc.id, type: docType(doc) });
   }
 
-  // Freshness sweep: only over kinds that declare a horizon (feeding the EXISTING
-  // `FreshnessOptions.maxAgeMs` via `freshness()` itself — no forked verdict logic).
+  // One freshness authority handles both standard v0.2 `stale_after` and optional Kind horizons.
   const now = new Date();
   const staleRows: Record<string, unknown>[] = [];
   const noTimestampRows: Record<string, unknown>[] = [];
   for (const doc of docs) {
     const kind = registry.kinds.get(docType(doc));
-    if (!kind) continue;
-    const horizonMs = freshnessHorizonMs(kind);
-    if (horizonMs === undefined) continue;
-    const result = freshness(doc, { maxAgeMs: horizonMs, now });
-    if (result.verdict === "empty") {
+    const horizonMs = kind ? freshnessHorizonMs(kind) : undefined;
+    const staleAfter = okfVersion === "0.2" && typeof doc.frontmatter.stale_after === "string"
+      ? doc.frontmatter.stale_after
+      : undefined;
+    if (horizonMs === undefined && staleAfter === undefined) continue;
+    const result = freshness(doc, { maxAgeMs: horizonMs, now, okfVersion });
+    if (result.verdict === "empty" && horizonMs !== undefined) {
       noTimestampRows.push({ id: doc.id, type: docType(doc) });
     } else if (result.verdict === "stale") {
-      staleRows.push({ id: doc.id, age_ms: result.ageMs, horizon_ms: horizonMs });
+      staleRows.push({
+        id: doc.id,
+        ...(result.ageMs === undefined ? {} : { age_ms: result.ageMs }),
+        ...(horizonMs === undefined ? {} : { horizon_ms: horizonMs }),
+        ...(staleAfter === undefined ? {} : { stale_after: staleAfter }),
+      });
     }
   }
 
@@ -491,6 +554,8 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   );
   const danglingViewEntries = cap(danglingViewEntryRows, limit);
   const invalidViewRegistrations = cap(invalidRegistrationRows, limit);
+  const okfV02StatusCollisionRows =
+    okfVersion === "0.1" ? okfV02WorkflowStatusCollisions(registry, docs) : [];
 
   const out: Record<string, unknown> = {
     docs: docs.length,
@@ -526,6 +591,32 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   if (viewTypedCount > 0) {
     out.dangling_view_entries = danglingViewEntries.total;
     out.invalid_view_registrations = invalidViewRegistrations.total;
+  }
+  if (okfV02StatusCollisionRows.length > 0) {
+    const statusFieldKinds = cap(okfV02StatusCollisionRows, limit);
+    const affectedDocuments = okfV02StatusCollisionRows.reduce(
+      (total, row) => total + Number(row.affected_documents ?? 0),
+      0,
+    );
+    out.okf_upgrade = {
+      current_version: "0.1",
+      target_version: "0.2",
+      readiness: "blocked",
+      blocker: "workflow_status_collision",
+      recommended_logical_field: "progress_status",
+      status_field_kinds: statusFieldKinds.total,
+      affected_documents: affectedDocuments,
+      status_field_rows: statusFieldKinds,
+      note:
+        "This bundle remains a supported OKF v0.1 bundle. Superbee can author and mutate v0.2, " +
+        "but changing index.md alone is not a migration: " +
+        "OKF v0.2 reserves top-level status for draft|stable|deprecated, while the listed kinds " +
+        "use it for workflow state.",
+      help: [
+        "Model workflow progress as logical progress_status across conventions, documents, Views, and saved queries before changing okf_version.",
+        "Superbee does not currently perform this multi-file migration automatically.",
+      ],
+    };
   }
   // Row-list blocks are omitted when empty (matching `kinds`/`doc write`'s existing omit-if-empty
   // convention) so a clean bundle's report stays a short summary, not nine empty categories.

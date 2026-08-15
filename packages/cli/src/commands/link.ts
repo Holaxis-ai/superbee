@@ -4,11 +4,10 @@
 // DERIVED by reversing the resolved link graph, never stored. `link add <from> <to>` appends a
 // markdown link to `<from>`'s body in the bundle-RELATIVE form (`../<to>.md` — the form VISION, the
 // OKF samples, and the reference graph builder use — via core `relativeHref`), then rewrites the doc.
-// `timestamp` means "last meaningful change" (OKF + VISION); appending a cross-link IS one, so by
-// default `link add` REFRESHES `frontmatter.timestamp` to now() on the outgoing write (freshness must
-// see the change) — `--keep-timestamp` opts back into core `writeDoc`'s normal preserve-if-present
-// behavior. The idempotent no-op path (source already carries the same target + exact text) never
-// touches the timestamp: re-adding that same semantic edge is a true no-op. `link show <id>` reports
+// Appending a cross-link is a meaningful change: v0.1 refreshes `frontmatter.timestamp` by default
+// (`--keep-timestamp` preserves it), while v0.2 advances `generated.at` through the shared mutation
+// service without inventing legacy metadata. The idempotent no-op path (source already carries the
+// same target + exact text) advances neither clock. `link show <id>` reports
 // the concept's
 // outbound links (core `parseLinks`) and its "cited by" set (core `backlinks`), each row carrying
 // the citing/cited link's `text` — the only relationship-type signal OKF's untyped edges carry.
@@ -30,9 +29,6 @@
 import { parseArgs } from "node:util";
 import {
   readDoc,
-  readDocVersioned,
-  writeDocVersioned,
-  versionedMutation,
   parseLinks,
   backlinks,
   queryEdges,
@@ -41,9 +37,9 @@ import {
   isReservedFile,
   pathFromConceptId,
   loadKinds,
-  VersionConflict,
   type Bundle,
   type EdgeFilter,
+  type KindRegistry,
   type Link,
   type OkfDocument,
   type Version,
@@ -59,6 +55,7 @@ import { cliInvocation } from "../invocation.js";
 import { collectLinkDeclarations } from "../link-types.js";
 import { resolveActor } from "../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../concept-id.js";
+import { mutateDoc } from "../mutate.js";
 
 /** The common flags every `link` subcommand accepts — appended to each verb's focused help. */
 const LINK_COMMON_OPTIONS = `Common options:
@@ -200,8 +197,8 @@ function docType(doc: OkfDocument): string {
 async function lintLinkType(
   bundle: Bundle,
   args: { sourceType: string; text: string; to: string; remoteUrl?: string },
+  registry: KindRegistry,
 ): Promise<ValidationWarning[]> {
-  const registry = await loadKinds(bundle);
   const declarations = collectLinkDeclarations(registry);
   if (declarations.size === 0) return [];
 
@@ -386,92 +383,68 @@ export async function addLink(
     );
   }
 
-  // Versioned-read + compare-and-swap-write, riding the shared `versionedMutation` primitive
-  // (core's ONE independently retryable read-decide-CAS boundary — CLAUDE.md gate 3, the same one
-  // document mutation uses): read the source WITH its version, check
-  // idempotency, then write the appended link CONDITIONAL on that version. On a `VersionConflict`
-  // (a concurrent writer moved the doc between our read and write), `decide` re-runs — re-reading
-  // and re-checking idempotency (the racing write may have added this very link → converge to
-  // `changed:false`) — within a small bounded budget.
-  let lastSource: OkfDocument | undefined;
-  let savedDoc: OkfDocument | undefined;
+  // Link addition is an ordinary body patch through the shared document mutation service. That
+  // service owns CAS/retry, edition-aware clocks, actor persistence, no-op receipts, and Kind
+  // validation; this command owns only the markdown-link candidate and graph guidance.
+  const registry = await loadKinds(bundle);
   let sourceTypeAtWrite = "";
+  const mutation = await mutateDoc({
+    bundle,
+    id: from,
+    mode: "patch",
+    onAbsent: "fail",
+    registry,
+    strict: false,
+    helpOnKindReject: `${cliInvocation()} kinds`,
+    remoteUrl: opts.remoteUrl,
+    actor: opts.actor,
+    persistActor: true,
+    maxAttempts: LINK_ADD_MAX_ATTEMPTS,
+    buildCandidate: (source, context) => {
+      const existing = source!;
+      sourceTypeAtWrite = docType(existing);
+      // Link text is the relationship-type signal, so identity is target + exact text. Re-adding
+      // that edge is a no-op; different text to the same target is a distinct semantic edge.
+      const already = parseLinks(bundle, existing).some((l) => l.to === normalizedTo && l.text === text);
+      if (already) return { frontmatter: { ...existing.frontmatter }, body: existing.body };
 
-  try {
-    const outcome = await versionedMutation<OkfDocument, { changed: boolean }>({
-      read: async () => {
-        try {
-          const { doc, version } = await readDocVersioned(bundle, from);
-          return { state: doc, version };
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
-            throw new CliError("NOT_FOUND", `no source concept at id '${from}'`, {
-              help: `${cliInvocation()} list`,
-            });
-          }
-          // classifyBundleError passes an already-classified CliError through unchanged (e.g. a
-          // transport-error RUNTIME from a wrapped --remote fetchImpl, see bundle.ts) and maps a
-          // RemoteError by its own code instead of collapsing everything into USAGE.
-          throw classifyBundleError(err, opts.remoteUrl);
-        }
-      },
-      decide: (source) => {
-        lastSource = source;
-        // Link text is the relationship-type signal, so identity is target + exact text. Re-adding
-        // that edge is a no-op; different text to the same target is a distinct semantic edge.
-        const already = parseLinks(bundle, source!).some((l) => l.to === normalizedTo && l.text === text);
-        if (already) return { action: "done", result: { changed: false } };
+      const trimmed = existing.body.replace(/\s*$/, "");
+      const nextBody = `${trimmed}${trimmed ? "\n\n" : ""}[${text}](${href})\n`;
+      const nextFrontmatter = { ...existing.frontmatter };
+      // v0.1 retains link add's historical explicit clock refresh. v0.2's `generated.at` is
+      // advanced centrally by mutateDocument, and top-level timestamp/actor stay untouched.
+      if (context.okfVersion !== "0.2" && !opts.keepTimestamp) {
+        nextFrontmatter.timestamp = new Date().toISOString();
+      }
+      return { frontmatter: nextFrontmatter, body: nextBody };
+    },
+    errors: {
+      notFound: () => new CliError("NOT_FOUND", `no source concept at id '${from}'`, {
+        help: `${cliInvocation()} list`,
+      }),
+      staleHead: (error) => new CliError("STALE_HEAD", error.message, {
+        help: `${cliInvocation()} link add ${from} ${to}`,
+      }),
+    },
+  });
 
-        const trimmed = source!.body.replace(/\s*$/, "");
-        const nextBody = `${trimmed}${trimmed ? "\n\n" : ""}[${text}](${href})\n`;
-        // Refresh `timestamp` to now() by default — adding a cross-link is a meaningful change and
-        // freshness must reflect it — unless `keepTimestamp` asks to preserve the source's existing
-        // value. Recomputed every attempt (`decide` re-runs against each fresh read) so a slow
-        // retry still lands a timestamp taken at write time, not at the first read.
-        const nextFrontmatter = { ...source!.frontmatter };
-        if (!opts.keepTimestamp) nextFrontmatter.timestamp = new Date().toISOString();
-        if (opts.actor !== undefined) nextFrontmatter.actor = opts.actor;
-        sourceTypeAtWrite = docType(source!);
-        return {
-          action: "write",
-          next: { ...source!, frontmatter: nextFrontmatter, body: nextBody },
-          result: { changed: true },
-        };
-      },
-      write: async (next, expectedVersion) => {
-        try {
-          const { doc: saved, version } = await writeDocVersioned(bundle, next, {
-            expectedVersion,
-            actor: opts.actor,
-          });
-          savedDoc = saved;
-          return version;
-        } catch (err) {
-          if (err instanceof VersionConflict) throw err; // let the primitive retry/exhaust
-          // The boundary owns the taxonomy: a RemoteError keeps its server-derived code, a
-          // genuine I/O failure (ENOSPC/EACCES) lands RUNTIME — never a blind USAGE.
-          throw classifyBundleError(err, opts.remoteUrl);
-        }
-      },
-      maxAttempts: LINK_ADD_MAX_ATTEMPTS,
-    });
-
-    if (!outcome.wrote) {
-      return { from: lastSource!.id, normalizedTo, href, text, changed: false, version: outcome.version! };
-    }
+  if (!mutation.changed) {
+    return { from: mutation.doc.id, normalizedTo, href, text, changed: false, version: mutation.version };
+  }
     // Write-time type-conformance lint (graph lints unit) + target-existence honesty (link-add-
     // target-honesty unit) — both warn-only, never blocking: the link is already written by the
-    // time either runs. Both are skipped entirely on the idempotent no-op path above (a true
-    // no-op performs no registry load and no checks — one convention, not a special case per
-    // warning kind).
+    // time either runs. Both post-write checks are skipped entirely on the idempotent no-op path.
     let warnings: ValidationWarning[];
     try {
+      // Keep advisory linting post-write and independently fallible: a successful mutation must
+      // retain its truthful receipt even when the current convention registry cannot be read.
+      const postWriteRegistry = await loadKinds(bundle);
       warnings = await lintLinkType(bundle, {
         sourceType: sourceTypeAtWrite,
         text,
         to: normalizedTo,
         remoteUrl: opts.remoteUrl,
-      });
+      }, postWriteRegistry);
       const absent = await targetAbsentWarning(bundle, normalizedTo, opts.remoteUrl);
       if (absent) warnings.push(absent);
     } catch (err) {
@@ -489,23 +462,14 @@ export async function addLink(
       ];
     }
     return {
-      from: savedDoc!.id,
+      from: mutation.doc.id,
       normalizedTo,
       href,
       text,
       changed: true,
-      version: outcome.version!,
+      version: mutation.version,
       warnings: warnings.length > 0 ? warnings : undefined,
     };
-  } catch (err) {
-    if (err instanceof VersionConflict) {
-      // Exhausted the retry budget: surface as a CONFLICT (exit 5) with a re-run fixing command.
-      throw new CliError("STALE_HEAD", err.message, {
-        help: `${cliInvocation()} link add ${from} ${to}`,
-      });
-    }
-    throw err; // already classified (the read/write closures' own classify, or the NOT_FOUND above)
-  }
 }
 
 async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<void> {

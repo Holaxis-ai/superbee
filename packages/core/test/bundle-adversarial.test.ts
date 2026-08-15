@@ -15,13 +15,20 @@ import {
   query,
   queryEdges,
   queryHeads,
+  readBundleOkfVersion,
   readDocVersioned,
   writeDocVersioned,
 } from "../src/bundle.js";
 import { InvalidInputError } from "../src/errors.js";
-import { normalizeV01DocumentForWrite } from "../src/document-write-policy.js";
+import {
+  applyV02MutationMetadata,
+  isOkfActor,
+  normalizeV01DocumentForWrite,
+  normalizeV02DocumentForWrite,
+  v02MeaningfulContentChanged,
+} from "../src/document-write-policy.js";
 import { mutateDocument } from "../src/document-mutation.js";
-import { parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
+import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "../src/index-marker.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { VersionConflict, versionOfBytes } from "../src/versioning.js";
@@ -47,6 +54,47 @@ function memoryBundle(root = "mem://bundle"): Bundle {
 function doc(id: ConceptId, frontmatter: OkfDocument["frontmatter"], body = ""): OkfDocument {
   return { id, frontmatter, body };
 }
+
+test("v0.2 write policy is non-inventing, preserves verification, and owns only generated.at", () => {
+  const existing = doc("notes/a", {
+    type: "Note",
+    title: "Before",
+    generated: { at: "2026-08-01T00:00:00Z", by: "https://legacy.example/producer" },
+    verified: [{ at: "2026-08-02T00:00:00Z", by: "human:reviewer" }],
+    stale_after: "2026-12-31",
+  }, "body");
+  const normalized = normalizeV02DocumentForWrite(
+    doc("notes/new", { type: "Note", title: "New" }, "body"),
+    "Note",
+  );
+  assert.deepEqual(normalized.frontmatter, { type: "Note", title: "New" });
+
+  const changed = applyV02MutationMetadata({
+    existing,
+    candidate: { frontmatter: { type: "Note", title: "After", stale_after: "2026-12-31" }, body: "body" },
+    meaningfulChangeAt: "2026-08-03T00:00:00Z",
+  });
+  assert.deepEqual(changed.frontmatter.generated, {
+    at: "2026-08-03T00:00:00Z",
+    by: "https://legacy.example/producer",
+  });
+  assert.deepEqual(changed.frontmatter.verified, existing.frontmatter.verified);
+  assert.equal(changed.frontmatter.stale_after, "2026-12-31");
+
+  const verificationOnly = applyV02MutationMetadata({
+    existing,
+    candidate: {
+      frontmatter: { ...existing.frontmatter, verified: [{ at: "2026-08-04T00:00:00Z", by: "human:two" }] },
+      body: existing.body,
+    },
+    meaningfulChangeAt: "2026-08-05T00:00:00Z",
+  });
+  assert.equal((verificationOnly.frontmatter.generated as { at: string }).at, "2026-08-01T00:00:00Z");
+  assert.equal(v02MeaningfulContentChanged(existing, verificationOnly), false);
+  assert.equal(isOkfActor("human:mike"), true);
+  assert.equal(isOkfActor("superbee/1.0.0"), true);
+  assert.equal(isOkfActor("https://legacy.example/producer"), false);
+});
 
 test("initBundle writes one deterministic root index with expect-absent CAS and preserves it thereafter", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-init-contract-"));
@@ -92,15 +140,19 @@ test("initBundle writes one deterministic root index with expect-absent CAS and 
 test("initBundle rejects unsupported authoring-version claims before touching the target", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "okf-init-version-guard-"));
   try {
-    for (const requested of ["0.2", "9.4", ""]) {
+    const supported = path.join(parent, "supported-v02");
+    await initBundle(supported, { okfVersion: "0.2" });
+    assert.match(await readFile(path.join(supported, "index.md"), "utf8"), /okf_version: ['"]?0\.2['"]?/);
+
+    for (const requested of ["9.4", ""]) {
       const root = path.join(parent, requested || "blank");
       await assert.rejects(
         () => initBundle(root, { okfVersion: requested }),
         (error: unknown) =>
           error instanceof InvalidInputError &&
           error.message.includes(`'${requested}'`) &&
-          /author 0\.1/.test(error.message) &&
-          /read or transport/.test(error.message),
+          /author 0\.1 and 0\.2/.test(error.message) &&
+          /read or transported/.test(error.message),
       );
       assert.equal(existsSync(root), false, `unsupported version ${JSON.stringify(requested)} must not create its target`);
     }
@@ -111,9 +163,27 @@ test("initBundle rejects unsupported authoring-version claims before touching th
     await writeFile(path.join(existing, "index.md"), existingIndex);
     await initBundle(existing);
     const reopened = await new FilesystemBackend(existing).readReserved("", "index.md");
-    assert.equal(reopened?.content, existingIndex, "opening a newer external bundle must not rewrite or reject it");
+    assert.equal(reopened?.content, existingIndex, "opening an existing v0.2 bundle must not rewrite it");
   } finally {
     await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("readBundleOkfVersion reads the root edition through filesystem and memory backends", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "okf-version-read-"));
+  try {
+    const filesystemBundle = await initBundle(root);
+    assert.equal(await readBundleOkfVersion(filesystemBundle), "0.1");
+
+    const backend = new MemoryBackend();
+    const memory = { root: "mem://versioned", backend };
+    assert.equal(await readBundleOkfVersion(memory), undefined);
+    await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# External\n");
+    assert.equal(await readBundleOkfVersion(memory), "0.2");
+    await backend.writeReserved("", "index.md", "---\nokf_version: [\n---\n# Broken\n");
+    await assert.rejects(() => readBundleOkfVersion(memory), MalformedDocumentError);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

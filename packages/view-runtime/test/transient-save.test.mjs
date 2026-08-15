@@ -113,6 +113,26 @@ test("save persists exact transient bytes and creates a separately authorized du
   assert.equal(repeated.registryVersion, saved.registryVersion);
 });
 
+test("save on OKF v0.2 preserves storage attribution without inventing legacy document metadata", async () => {
+  const f = fixture();
+  await f.bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  await approve(f);
+
+  const saved = await saveTransientView(
+    f.bundle,
+    f.launches,
+    f.authorizations,
+    { launchId: f.launch.launchId, viewId: "views-registry/v02-proof" },
+    { actor: "openai/codex", now: "2026-08-02T19:30:00.000Z" },
+  );
+
+  const registry = await readDocVersioned(f.bundle, saved.viewId);
+  assert.equal(Object.hasOwn(registry.doc.frontmatter, "timestamp"), false);
+  assert.equal(Object.hasOwn(registry.doc.frontmatter, "actor"), false);
+  assert.equal(Object.hasOwn(registry.doc.frontmatter, "generated"), false);
+  assert.equal((await docVersions(f.bundle, saved.viewId))[0]?.actor, "openai/codex");
+});
+
 test("save requires process-local approval before writing either durable resource", async () => {
   const f = fixture();
   await assert.rejects(

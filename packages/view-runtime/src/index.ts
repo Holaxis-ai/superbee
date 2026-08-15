@@ -6,8 +6,10 @@ import {
   blobVersion,
   loadKinds,
   mutateDocument,
+  readBundleOkfVersion,
   readBlob,
   readDocVersioned,
+  resolveKindFieldCoordinate,
   validateAgainstKind,
   versionOfBytes,
   type Bundle,
@@ -669,6 +671,7 @@ export interface ActionConfirmation {
   };
   target: { docId: string; title: string; kind: string; version: Version };
   field: string;
+  storageField?: string;
   before: ActionScalar | null;
   after: ActionScalar;
   actor: string;
@@ -682,6 +685,7 @@ export interface ActionTerminalResult {
   action: "document.set-field";
   docId?: string;
   field?: string;
+  storageField?: string;
   changed?: boolean;
   version?: Version;
   warnings?: ValidationWarning[];
@@ -706,6 +710,8 @@ interface PendingApproval {
   expiresAt: number;
   launchId: string;
   action: DocumentSetFieldAction;
+  storageField: string;
+  okfVersion: string | undefined;
   timestamp: string;
   targetTitle: string;
   targetType: string;
@@ -714,6 +720,8 @@ interface PendingApproval {
   kindVersion: Version;
   kindDigest: Version;
 }
+
+class ActionBundleEditionChanged extends Error {}
 
 const DEFAULT_APPROVAL_TTL_MS = 120_000;
 const DEFAULT_MAX_APPROVALS = 128;
@@ -787,18 +795,23 @@ export class TrustedActionService {
     }
 
     let registry: Awaited<ReturnType<typeof loadKinds>>;
+    let okfVersion: string | undefined;
     try {
-      registry = await loadKinds(this.bundle);
+      [registry, okfVersion] = await Promise.all([
+        loadKinds(this.bundle),
+        readBundleOkfVersion(this.bundle),
+      ]);
     } catch (error) {
       return { status: "failed", action: "document.set-field", message: error instanceof Error ? error.message : String(error) };
     }
     const targetType = String(target.doc.frontmatter.type ?? "");
     const kind = registry.kinds.get(targetType);
     if (!kind) return rejected(`document '${action.docId}' is not governed by a declared Kind`);
-    if (!kind.fields.required.includes(action.field) && !kind.fields.optional.includes(action.field)) {
+    const fieldCoordinate = resolveKindFieldCoordinate(okfVersion, kind, action.field);
+    if (!fieldCoordinate) {
       return rejected(`field '${action.field}' is not declared by the '${kind.governs}' Kind`);
     }
-    const beforeRaw = target.doc.frontmatter[action.field];
+    const beforeRaw = target.doc.frontmatter[fieldCoordinate.storageField];
     let before: ActionScalar | null;
     if (beforeRaw === undefined || beforeRaw === null) {
       before = null;
@@ -813,6 +826,9 @@ export class TrustedActionService {
         action: "document.set-field",
         docId: action.docId,
         field: action.field,
+        ...(fieldCoordinate.storageField !== action.field
+          ? { storageField: fieldCoordinate.storageField }
+          : {}),
         changed: false,
         version: target.version,
         confirmed: false,
@@ -827,9 +843,13 @@ export class TrustedActionService {
 
     const timestamp = new Date(this.now()).toISOString();
     const candidate = ownRecord(target.doc.frontmatter);
-    setOwn(candidate, action.field, action.value);
-    setOwn(candidate, "timestamp", timestamp);
-    setOwn(candidate, "actor", actor);
+    setOwn(candidate, fieldCoordinate.storageField, action.value);
+    if (okfVersion !== "0.2" || kind.fields.required.includes("timestamp")) {
+      setOwn(candidate, "timestamp", timestamp);
+    }
+    if (okfVersion !== "0.2" || kind.fields.required.includes("actor")) {
+      setOwn(candidate, "actor", actor);
+    }
     const violations = validateAgainstKind({ id: action.docId, frontmatter: candidate, body: target.doc.body }, kind);
     if (violations.length > 0) return rejected(violations.map((warning) => warning.message).join("; "));
 
@@ -849,6 +869,8 @@ export class TrustedActionService {
       expiresAt,
       launchId,
       action,
+      storageField: fieldCoordinate.storageField,
+      okfVersion,
       timestamp,
       targetTitle: typeof target.doc.frontmatter.title === "string" ? target.doc.frontmatter.title : action.docId,
       targetType,
@@ -871,6 +893,9 @@ export class TrustedActionService {
         },
         target: { docId: action.docId, title: this.pending.get(token)!.targetTitle, kind: targetType, version: target.version },
         field: action.field,
+        ...(fieldCoordinate.storageField !== action.field
+          ? { storageField: fieldCoordinate.storageField }
+          : {}),
         before,
         after: action.value,
         actor,
@@ -907,9 +932,19 @@ export class TrustedActionService {
           actualVersion: target.version,
         };
       }
-      const registry = await loadKinds(this.bundle);
+      const [registry, okfVersion] = await Promise.all([
+        loadKinds(this.bundle),
+        readBundleOkfVersion(this.bundle),
+      ]);
+      if (okfVersion !== pending.okfVersion) {
+        return { status: "revoked", action: "document.set-field", message: "the bundle OKF edition changed" };
+      }
       const kind = registry.kinds.get(pending.targetType);
       if (!kind || kind.id !== pending.kindId) return { status: "revoked", action: "document.set-field", message: "the governing Kind changed" };
+      const fieldCoordinate = resolveKindFieldCoordinate(okfVersion, kind, pending.action.field);
+      if (!fieldCoordinate || fieldCoordinate.storageField !== pending.storageField) {
+        return { status: "revoked", action: "document.set-field", message: "the governing Kind field mapping changed" };
+      }
       const currentKindVersion = (await readDocVersioned(this.bundle, kind.id)).version;
       if (currentKindVersion !== pending.kindVersion || kindDigest(kind) !== pending.kindDigest) {
         return { status: "revoked", action: "document.set-field", message: "the governing Kind changed" };
@@ -931,11 +966,17 @@ export class TrustedActionService {
         actor: this.actor!.trim(),
         persistActor: true,
         expectedVersion: pending.action.expectedVersion,
-        buildCandidate: (existing) => {
+        now: () => pending.timestamp,
+        buildCandidate: (existing, context) => {
           if (!existing) throw new DocumentNotFoundError(pending.action.docId);
+          if (context.okfVersion !== (pending.okfVersion ?? "0.1")) {
+            throw new ActionBundleEditionChanged("the bundle OKF edition changed");
+          }
           const frontmatter = ownRecord(existing.frontmatter);
-          setOwn(frontmatter, pending.action.field, pending.action.value);
-          setOwn(frontmatter, "timestamp", pending.timestamp);
+          setOwn(frontmatter, pending.storageField, pending.action.value);
+          if (context.okfVersion !== "0.2" || kind.fields.required.includes("timestamp")) {
+            setOwn(frontmatter, "timestamp", pending.timestamp);
+          }
           return { frontmatter, body: existing.body };
         },
       });
@@ -944,6 +985,9 @@ export class TrustedActionService {
         action: "document.set-field",
         docId: pending.action.docId,
         field: pending.action.field,
+        ...(pending.storageField !== pending.action.field
+          ? { storageField: pending.storageField }
+          : {}),
         changed: result.changed,
         version: result.version,
         warnings: result.warnings,
@@ -971,6 +1015,9 @@ export class TrustedActionService {
       }
       if (error instanceof KindConformanceError) {
         return { status: "rejected", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error.message };
+      }
+      if (error instanceof ActionBundleEditionChanged) {
+        return { status: "revoked", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error.message };
       }
       return { status: "failed", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error instanceof Error ? error.message : String(error) };
     }

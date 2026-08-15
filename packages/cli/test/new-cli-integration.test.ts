@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,93 @@ test("built CLI new persists prototype-looking options as exact own properties a
       assert.match(missing.stdout, new RegExp(entry.field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       await assert.rejects(() => readDoc(bundle, missingId));
     }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("built CLI new accepts logical progress_status while preserving v0.1 status storage", async () => {
+  assert.ok(existsSync(cliBin), "root npm run build must create the built CLI before this proof runs");
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-progress-new-"));
+  try {
+    const bundle: Bundle = { root: dir };
+    await initBundle(dir);
+    await writeDoc(bundle, {
+      id: "conventions/task",
+      frontmatter: {
+        type: CONVENTION_TYPE,
+        governs: "Task",
+        path: "tasks/",
+        fields: {
+          required: ["title", "status"],
+          optional: [],
+          values: { status: ["todo", "done"] },
+        },
+        timestamp: T,
+      },
+      body: "",
+    });
+
+    const result = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "logical", "--title", "Logical", "--progress_status", "todo", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `stdout=${result.stdout} stderr=${result.stderr}`);
+    const receipt = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.deepEqual(receipt.field_coordinates, [{ logical_field: "progress_status", stored_as: "status" }]);
+    const saved = await readDoc(bundle, "tasks/logical");
+    assert.equal(saved.frontmatter.status, "todo");
+    assert.equal(Object.hasOwn(saved.frontmatter, "progress_status"), false);
+
+    const duplicate = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "duplicate", "--title", "Duplicate", "--status", "todo", "--progress_status", "done", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(duplicate.status, 2, `stdout=${duplicate.stdout} stderr=${duplicate.stderr}`);
+    assert.match(duplicate.stdout, /same stored field 'status'/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("built CLI new maps logical progress_status to the producer-qualified v0.2 coordinate", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-progress-v02-new-"));
+  try {
+    const bundle: Bundle = { root: dir };
+    await initBundle(dir);
+    await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n", "utf8");
+    await writeDoc(bundle, {
+      id: "conventions/task",
+      frontmatter: {
+        type: CONVENTION_TYPE,
+        governs: "Task",
+        path: "tasks/",
+        fields: {
+          required: ["title", "superbee_progress_status"],
+          optional: ["status"],
+          values: {
+            superbee_progress_status: ["todo", "done"],
+            status: ["draft", "stable", "deprecated"],
+          },
+        },
+      },
+      body: "",
+    });
+    const result = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "v02", "--title", "V02", "--progress_status", "todo", "--status", "stable", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, `stdout=${result.stdout} stderr=${result.stderr}`);
+    const saved = await readDoc(bundle, "tasks/v02");
+    assert.equal(saved.frontmatter.superbee_progress_status, "todo");
+    assert.equal(saved.frontmatter.status, "stable");
+    assert.equal(Object.hasOwn(saved.frontmatter, "progress_status"), false);
+    assert.equal(Object.hasOwn(saved.frontmatter, "timestamp"), false);
+    assert.equal(Object.hasOwn(saved.frontmatter, "actor"), false);
+    assert.equal(Object.hasOwn(saved.frontmatter, "generated"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

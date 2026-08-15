@@ -1148,6 +1148,53 @@ test("doc update: patches ONE field, preserving the body and every other field v
   }
 });
 
+test("doc update on an explicit v0.2 bundle advances generated.at without inventing legacy metadata", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n", "utf8");
+    await writeDoc(
+      { root: dir },
+      {
+        id: "concepts/a",
+        frontmatter: {
+          type: "Concept",
+          title: "Old",
+          generated: { at: OLD_TS, by: "https://legacy.example/producer" },
+          verified: [{ at: "2026-07-01T00:00:00Z", by: "human:reviewer" }],
+        },
+        body: "Body.",
+      },
+    );
+
+    const before = Date.now();
+    const changed = await runDoc([
+      "update",
+      "concepts/a",
+      "--title",
+      "New",
+      "--actor",
+      "openai/codex",
+      "--dir",
+      dir,
+    ]);
+    assert.equal(changed.changed, true);
+    const after = await readDoc({ root: dir }, "concepts/a");
+    const generated = after.frontmatter.generated as { at: string; by: string };
+    assert.ok(Date.parse(generated.at) >= before);
+    assert.equal(generated.by, "https://legacy.example/producer");
+    assert.deepEqual(after.frontmatter.verified, [{ at: "2026-07-01T00:00:00Z", by: "human:reviewer" }]);
+    assert.equal(after.frontmatter.timestamp, undefined);
+    assert.equal(after.frontmatter.actor, undefined);
+
+    const unchangedAt = generated.at;
+    const noop = await runDoc(["update", "concepts/a", "--title", "New", "--dir", dir]);
+    assert.equal(noop.changed, false);
+    assert.equal(((await readDoc({ root: dir }, "concepts/a")).frontmatter.generated as { at: string }).at, unchangedAt);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("doc update --tag: REPLACES the whole tag set, not adds to it", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
@@ -1534,6 +1581,36 @@ test("doc update: status transition via a kind-declared --<field> flag — the h
     // No silent data loss (F1 class): title and priority survive untouched.
     assert.equal(after.frontmatter.title, "Ship it");
     assert.equal(after.frontmatter.priority, "high");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc update: logical --progress_status resolves to legacy v0.1 status and discloses storage", async () => {
+  const { dir, cleanup } = await makeTaskBundle();
+  try {
+    await writeDoc(
+      { root: dir },
+      { id: "tasks/logical", frontmatter: { type: "Task", title: "Logical", status: "todo", timestamp: OLD_TS }, body: "" },
+    );
+    const result = await runDoc(["update", "tasks/logical", "--progress_status", "done", "--dir", dir]);
+    assert.deepEqual(result.field_coordinates, [{ logical_field: "progress_status", stored_as: "status" }]);
+    const after = await readDoc({ root: dir }, "tasks/logical");
+    assert.equal(after.frontmatter.status, "done");
+    assert.equal(Object.hasOwn(after.frontmatter, "progress_status"), false);
+
+    await assert.rejects(
+      () => doc(
+        ["update", "tasks/logical", "--status", "todo", "--progress_status", "done", "--dir", dir, "--json"],
+        { readStdin: async () => undefined },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.code, "USAGE");
+        assert.match(error.message, /same stored field 'status'/);
+        return true;
+      },
+    );
   } finally {
     await cleanup();
   }

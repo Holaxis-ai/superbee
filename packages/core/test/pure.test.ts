@@ -201,6 +201,18 @@ test("freshness: empty / fresh / stale-by-age / stale-by-dependency", () => {
   const old = freshness(mk("2026-06-01T12:00:00Z"), { now, maxAgeMs: 24 * 3600_000 });
   assert.equal(old.verdict, "stale");
 
+  const v02 = freshness({
+    id: "x",
+    frontmatter: {
+      type: "T",
+      timestamp: "2026-06-01T12:00:00Z",
+      generated: { at: "2026-07-01T11:00:00Z", by: "producer/1" },
+    },
+    body: "",
+  }, { now, maxAgeMs: 2 * 3600_000 });
+  assert.equal(v02.verdict, "fresh");
+  assert.equal(v02.ageMs, 3600_000);
+
   const dep = freshness(mk("2026-07-01T10:00:00Z"), {
     now,
     dependsOn: ["2026-07-01T11:00:00Z"], // dependency newer than the note
@@ -209,7 +221,59 @@ test("freshness: empty / fresh / stale-by-age / stale-by-dependency", () => {
   assert.match(dep.reason ?? "", /dependency/);
 });
 
-test("meaningful change time lookup returns the exact v0.1 timestamp value", () => {
+test("freshness: OKF v0.2 stale_after is an absolute date and does not change v0.1 semantics", () => {
+  const doc: OkfDocument = {
+    id: "x",
+    frontmatter: { type: "T", stale_after: "2026-07-01" },
+    body: "",
+  };
+
+  const before = freshness(doc, { okfVersion: "0.2", now: new Date(2026, 5, 30, 23, 59, 59) });
+  assert.equal(before.verdict, "empty");
+
+  const onDate = freshness(doc, { okfVersion: "0.2", now: new Date(2026, 6, 1, 0, 0, 0) });
+  assert.equal(onDate.verdict, "stale");
+  assert.equal(onDate.ageMs, undefined);
+  assert.match(onDate.reason ?? "", /stale_after 2026-07-01/);
+
+  assert.equal(
+    freshness(doc, { okfVersion: "0.1", now: new Date("2026-07-02T00:00:00Z") }).verdict,
+    "empty",
+  );
+  assert.equal(
+    freshness({ ...doc, frontmatter: { ...doc.frontmatter, stale_after: "2026-02-31" } }, {
+      okfVersion: "0.2",
+      now: new Date("2026-07-02T00:00:00Z"),
+    }).verdict,
+    "empty",
+  );
+});
+
+test("freshness: stale_after uses the caller's local calendar day rather than UTC", () => {
+  const previous = process.env.TZ;
+  process.env.TZ = "America/New_York";
+  try {
+    const doc: OkfDocument = {
+      id: "x",
+      frontmatter: { type: "T", stale_after: "2026-07-01" },
+      body: "",
+    };
+    assert.equal(
+      freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T00:30:00Z") }).verdict,
+      "empty",
+      "June 30 at 20:30 local must not become stale merely because UTC has crossed midnight",
+    );
+    assert.equal(
+      freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T04:00:00Z") }).verdict,
+      "stale",
+    );
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+});
+
+test("meaningful change time lookup prefers v0.2 generated.at and falls back to v0.1 timestamp", () => {
   const cases: Array<{ label: string; frontmatter: Record<string, unknown>; expected: unknown }> = [
     { label: "missing", frontmatter: { type: "T" }, expected: undefined },
     { label: "blank", frontmatter: { type: "T", timestamp: "   " }, expected: "   " },
@@ -219,6 +283,18 @@ test("meaningful change time lookup returns the exact v0.1 timestamp value", () 
   for (const row of cases) {
     assert.equal(meaningfulChangeTimeValue(row.frontmatter), row.expected, row.label);
   }
+  assert.equal(
+    meaningfulChangeTimeValue({
+      type: "T",
+      timestamp: "2026-07-01T12:00:00Z",
+      generated: { at: "2026-08-01T12:00:00Z", by: "producer/1" },
+    }),
+    "2026-08-01T12:00:00Z",
+  );
+  assert.equal(
+    meaningfulChangeTimeValue({ type: "T", timestamp: "legacy", generated: { by: "producer/1" } }),
+    "legacy",
+  );
 });
 
 test("content-type: extension inference + warning policy", () => {

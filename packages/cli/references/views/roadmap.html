@@ -130,9 +130,10 @@
   var openIds={}, freshIds=new Set();
   function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
   function fm(r){return r.frontmatter||{}}
+  function progress(f){return f.progress_status}
 
   function classify(it){
-    var s=fm(it).status;
+    var s=progress(fm(it));
     if(s==="active") return "active";
     if(s==="done"||s==="canceled") return "done";
     // queued: committed if it has a sequence, candidate if not
@@ -159,14 +160,14 @@
       list.forEach(function(it){
         var id=it.id, f=fm(it), open=openIds[id];
         var contained=(containsByItem[id]||[]);
-        var tstats=contained.map(function(tid){ var t=taskById[tid]; return t?fm(t).status:null; });
+        var tstats=contained.map(function(tid){ var t=taskById[tid]; return t?progress(fm(t)):null; });
         var done=tstats.filter(function(s){return s==="done"||s==="canceled"}).length;
         var prog=tstats.filter(function(s){return s==="in_progress"||s==="blocked"}).length;
         var total=contained.length;
         html+='<div class="item '+g.key+(open?" open":"")+(freshIds.has(id)?" fresh":"")+'" data-id="'+esc(id)+'">';
         html+='<div class="head" data-toggle="'+esc(id)+'"><span class="caret">&rsaquo;</span>'+
               '<span class="title">'+esc(f.title||id)+'</span>'+
-              '<span class="badge '+(g.key==="candidate"?"candidate":(f.status||"queued"))+'">'+(g.key==="candidate"?"candidate":esc(f.status||"queued"))+'</span></div>';
+              '<span class="badge '+(g.key==="candidate"?"candidate":(progress(f)||"queued"))+'">'+(g.key==="candidate"?"candidate":esc(progress(f)||"queued"))+'</span></div>';
         // rollup
         html+='<div class="roll">';
         if(total){ var wd=Math.round(done/total*100), wp=Math.round(prog/total*100);
@@ -176,7 +177,7 @@
         html+='</div>';
         // body
         html+='<div class="body"><div class="desc">'+esc(f.description||"—")+'</div><div class="tasks">';
-        contained.forEach(function(tid){ var t=taskById[tid]; var s=t?fm(t).status:"?";
+        contained.forEach(function(tid){ var t=taskById[tid]; var s=t?progress(fm(t)):"?";
           html+='<div class="task"><span class="tdot d-'+esc(s)+'"></span><span class="ttitle">'+esc(t?fm(t).title:tid)+'</span>'+
                 '<span class="badge st-'+esc(s)+'" style="background:transparent">'+esc(s)+'</span><span class="tid">'+esc(tid)+'</span></div>';
         });

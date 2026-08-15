@@ -198,6 +198,7 @@
     return typeColor[t];
   }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+  function progress(fm) { return fm.progress_status; }
   function rel(ts) {
     if (!ts) return "";
     var d = Date.now() - new Date(ts).getTime();
@@ -310,7 +311,7 @@
         lab.className = "group-label"; lab.textContent = g;
         feedEl.appendChild(lab);
       }
-      var t = r.frontmatter.type || "?", st = r.frontmatter.status;
+      var t = r.frontmatter.type || "?", st = progress(r.frontmatter);
       var btn = document.createElement("button");
       btn.className = "item" + (r.id === selId ? " sel" : "") + (freshIds.has(r.id) ? " fresh" : "");
       btn.dataset.id = r.id;
@@ -357,7 +358,7 @@
       var t = fm.type || "?";
       meta.innerHTML =
         '<span class="badge" style="color:' + colorFor(t) + ';background:color-mix(in srgb,' + colorFor(t) + ' 12%, transparent)">' + esc(t) + "</span>" +
-        (fm.status ? '<span class="badge st-' + esc(fm.status) + '">' + esc(fm.status) + "</span>" : "") +
+        (progress(fm) ? '<span class="badge st-' + esc(progress(fm)) + '">' + esc(progress(fm)) + "</span>" : "") +
         (fm.actor ? '<span class="badge">' + esc(fm.actor) + "</span>" : "") +
         '<span class="badge">' + (rel(fm.timestamp) || "undated") + "</span>";
       wrap.appendChild(meta);

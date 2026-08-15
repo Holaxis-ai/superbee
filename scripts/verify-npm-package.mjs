@@ -775,6 +775,83 @@ async function runInstalledProof(spec) {
     );
     assert.equal(productiveStatus.kind_warnings, 0, "the attributed Task must keep the quickstart bundle kind-clean");
 
+    // Exact installed-artifact proof for the additive OKF v0.2 authoring path. The default
+    // quickstart above deliberately remains v0.1 until the separate default-adoption unit.
+    const v02Bundle = path.join(scratch, "explicit-v02-bundle");
+    parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "init",
+          "--create-only",
+          "--okf-version",
+          "0.2",
+          "--recipe",
+          "work-tracking",
+          "--dir",
+          v02Bundle,
+          "--json",
+        ])
+      ).stdout,
+      "installed explicit v0.2 init",
+    );
+    assert.match(await readFile(path.join(v02Bundle, "index.md"), "utf8"), /okf_version: ['"]?0\.2['"]?/);
+    const v02Convention = await readFile(path.join(v02Bundle, "conventions", "task.md"), "utf8");
+    assert.match(v02Convention, /superbee_progress_status/);
+    assert.doesNotMatch(v02Convention, /^\s*status:/m);
+    assert.doesNotMatch(v02Convention, /^timestamp:/m);
+    parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "new",
+          "Task",
+          "v02-task",
+          "--title",
+          "Prove installed v0.2 authoring",
+          "--progress_status",
+          "todo",
+          "--dir",
+          v02Bundle,
+          "--json",
+        ])
+      ).stdout,
+      "installed v0.2 Task create",
+    );
+    parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "doc",
+          "update",
+          "tasks/v02-task",
+          "--progress_status",
+          "done",
+          "--dir",
+          v02Bundle,
+          "--json",
+        ])
+      ).stdout,
+      "installed v0.2 Task update",
+    );
+    const v02Task = await readFile(path.join(v02Bundle, "tasks", "v02-task.md"), "utf8");
+    assert.match(v02Task, /^superbee_progress_status: done$/m);
+    assert.doesNotMatch(v02Task, /^status:/m);
+    assert.doesNotMatch(v02Task, /^timestamp:/m);
+    const v02List = parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "list",
+          "--type",
+          "Task",
+          "--field",
+          "progress_status=done",
+          "--dir",
+          v02Bundle,
+          "--json",
+        ])
+      ).stdout,
+      "installed v0.2 logical progress query",
+    );
+    assert.equal(v02List.count, 1, "the installed v0.2 bundle must query logical workflow progress");
+
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
     assert.match(installedReadme, /init --create-only --recipe work-tracking/);
     assert.match(installedReadme, /bring source material or intent\s+to your agent/i);

@@ -109,7 +109,7 @@ const EXPECTED_CONTEXT_NOTE_FRONTMATTER = {
 
 // ── Row 1: built-in re-hosted ──────────────────────────────────────────────────────────────────
 
-test("init applies context-notes BYTE-IDENTICALLY: body matches CONTEXT_NOTE_SEED_BODY verbatim, frontmatter matches modulo timestamp", async () => {
+test("v0.1 init materializes the context-notes guide and frontmatter consistently", async () => {
   const dir = await tempDir();
   try {
     await init(["--dir", dir], { stdout: () => {} });
@@ -120,6 +120,24 @@ test("init applies context-notes BYTE-IDENTICALLY: body matches CONTEXT_NOTE_SEE
     assert.deepEqual(rest, EXPECTED_CONTEXT_NOTE_FRONTMATTER);
     assert.equal(typeof timestamp, "string");
     assert.ok(!Number.isNaN(Date.parse(timestamp as string)), `expected a valid ISO timestamp, got ${timestamp}`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("explicit v0.2 init teaches an edition-correct workflow field in the default in-bundle authoring guide", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", dir, "--okf-version", "0.2"], { stdout: () => {} });
+    const raw = await readFile(path.join(dir, "conventions", "context-note.md"), "utf8");
+    const { body } = parseMarkdown(raw);
+
+    assert.match(body, /required: \[title, superbee_progress_status\]/);
+    assert.match(body, /superbee_progress_status: \[planned, active, done\]/);
+    assert.doesNotMatch(body, /\bstatus: \[planned, active, done\]/);
+    assert.match(body, /timestamp.*explicit compatibility field/);
+    assert.match(body, /freshness_horizon.*Superbee Kind extension/);
+    assert.doesNotMatch(body, /\{\{superbee:progress_status\}\}/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -355,7 +373,7 @@ test("recipe add work-tracking: applies the current built-in Task convention wit
         terminal: { status: ["done", "canceled"] },
         descriptions: {
           title: "A concise human-readable summary of the work.",
-          status: "The task's current lifecycle state.",
+          status: "The task's current workflow state.",
           priority: "Relative urgency used to order the work; follow the bundle's adopted priority scale.",
           assignee: "The person or agent currently responsible for the task.",
           description: "The task's scope, context, acceptance criteria, and other working details.",

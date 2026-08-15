@@ -30,8 +30,9 @@
 // Phase 1 (lenient discovery): a `strict:false` parse over ONLY the control flags (dir/remote/
 // actor/json/help) extracts the leading `Kind` positional (and opens the bundle + loads the
 // registry). Phase 2 (authoritative): a STRICT `parseArgs` re-parse, built from the loaded kind's
-// declared fields (`{ type: "string", multiple: true }` each) PLUS the same control flags, is the
-// source of truth for every value, the `id`/`>2`-positionals check, and unknown-flag detection.
+// declared fields (`{ type: "string", multiple: true }` each), any version-aware logical aliases,
+// PLUS the same control flags, is the source of truth for every value, the
+// `id`/`>2`-positionals check, and unknown-flag detection.
 // This keeps `new` on the exact same parser shape as every other command (consistency was the
 // point) while still handling a kind's fields, which aren't known until the Kind is loaded.
 //
@@ -51,6 +52,10 @@ import { parseArgs } from "node:util";
 import { promises as fs } from "node:fs";
 import {
   loadKinds,
+  kindInputFieldNames,
+  progressStatusCoordinate,
+  readBundleOkfVersion,
+  resolveKindFieldCoordinate,
   type Frontmatter,
   type KindConvention,
   type KindRegistry,
@@ -248,7 +253,12 @@ function kindIdPlaceholder(kind: KindConvention | undefined, governs: string): s
  * body sections, and id path prefix an agent needs to author a VALID instance — without a separate
  * `kinds` round-trip (cold-start study: 2 testers had to cross-reference `kinds` before every `new`).
  */
-function renderKindHelp(kind: KindConvention, registry: KindRegistry, inv: string): string {
+function renderKindHelp(
+  kind: KindConvention,
+  registry: KindRegistry,
+  inv: string,
+  okfVersion: string | undefined,
+): string {
   const oneLine = (value: string) => value.trim().replace(/\s+/g, " ");
   const ownDescription = (record: Record<string, string> | undefined, key: string): string | undefined => {
     if (!record || !hasOwn(record, key) || typeof record[key] !== "string") return undefined;
@@ -259,6 +269,7 @@ function renderKindHelp(kind: KindConvention, registry: KindRegistry, inv: strin
   const req = [...new Set(kind.fields.required.filter(ordinary))];
   const required = new Set(req);
   const opt = [...new Set(kind.fields.optional.filter((field) => ordinary(field) && !required.has(field)))];
+  const progress = progressStatusCoordinate(okfVersion, kind);
   const fieldRows = [
     ...req.map((field) => ({ field, requirement: "required" })),
     ...opt.map((field) => ({ field, requirement: "optional" })),
@@ -317,11 +328,16 @@ function renderKindHelp(kind: KindConvention, registry: KindRegistry, inv: strin
         [...outboundLines, ...inboundLines].join("\n") +
         "\n"
       : "";
+  const logicalFieldBlock = progress
+    ? `Logical field alias:\n  --${progress.logicalField} <v>  stored as '${progress.storageField}' ` +
+      `(the declared --${progress.storageField} form remains accepted)\n`
+    : "";
   return (
     `${inv} new "${kind.governs}" <id> — create a ${kind.governs} instance\n\n` +
     (kind.description ? `Description:  ${kind.description}\n` : "") +
     `Fields (declared by the '${kind.governs}' kind convention):\n` +
     (fieldRows.length > 0 ? fieldRows.join("\n") + "\n" : "  (none)\n") +
+    logicalFieldBlock +
     `Required body headings (level 1; exact Markdown):\n${sectionLines}\n` +
     linksBlock +
     `${pathLine}\n\n` +
@@ -385,7 +401,10 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     }
     throw err;
   }
-  const registry = await loadKinds(bundle);
+  const [registry, okfVersion] = await Promise.all([
+    loadKinds(bundle),
+    readBundleOkfVersion(bundle),
+  ]);
   const kind = registry.kinds.get(kindName);
   if (!kind) {
     if (pre.values.help) {
@@ -402,7 +421,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     );
   }
   if (pre.values.help) {
-    stdout(renderKindHelp(kind, registry, cliInvocation()));
+    stdout(renderKindHelp(kind, registry, cliInvocation(), okfVersion));
     return;
   }
   // Scaffolding from the KNOWN SHIPPED
@@ -425,7 +444,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // field before this point (including `body` and `body-file`); only `actor` and `link` remain
   // command controls with intentional kind-aware behavior, so they are excluded here explicitly.
   const declaredFields = [...kind.fields.required, ...kind.fields.optional];
-  const fieldNames = declaredFields.filter((f) => f !== "actor" && f !== "link");
+  const fieldNames = kindInputFieldNames(okfVersion, kind).filter((f) => f !== "actor" && f !== "link");
   const fieldOptions = Object.fromEntries(
     fieldNames.map((f) => [f, { type: "string", multiple: true } as const]),
   );
@@ -519,10 +538,22 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   }
 
   const frontmatter: Frontmatter = { type: kind.governs };
+  const suppliedByStorageField = new Map<string, string>();
   for (const field of fieldNames) {
     const vals = dynamicValues.get(field);
     if (vals === undefined || vals.length === 0) continue;
-    setOwn(frontmatter, field, vals.length === 1 ? vals[0]! : vals);
+    const coordinate = resolveKindFieldCoordinate(okfVersion, kind, field);
+    if (!coordinate) continue;
+    const previous = suppliedByStorageField.get(coordinate.storageField);
+    if (previous) {
+      throw new CliError(
+        "USAGE",
+        `--${previous} and --${field} address the same stored field '${coordinate.storageField}'; pass only one`,
+        { help: `${cliInvocation()} new "${kind.governs}" <id> --${coordinate.logicalField} <value>` },
+      );
+    }
+    suppliedByStorageField.set(coordinate.storageField, field);
+    setOwn(frontmatter, coordinate.storageField, vals.length === 1 ? vals[0]! : vals);
   }
   // `mutateDoc` applies the resolved actor to frontmatter before strict validation, so the actor
   // control flag (or environment default) still satisfies a kind that declares actor as required.
@@ -558,7 +589,17 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     persistActor: true,
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.
     onPersisted: boardPostPersistHook(bundle, actor),
-    buildCandidate: () => ({ frontmatter, body }),
+    buildCandidate: (_existing, context) => {
+      const preparedEdition = okfVersion ?? "0.1";
+      if (context.okfVersion !== preparedEdition) {
+        throw new CliError(
+          "STALE_HEAD",
+          `the bundle OKF edition changed from '${preparedEdition}' to '${context.okfVersion}' while creating '${targetId}' — rerun the command against the current edition`,
+          { help: `${cliInvocation()} new "${kindName}" ${rawId}` },
+        );
+      }
+      return { frontmatter, body };
+    },
     errors: {
       alreadyExists: () =>
         new CliError(
@@ -580,6 +621,10 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     type: saved.frontmatter.type,
     timestamp: saved.frontmatter.timestamp ?? null,
   };
+  const fieldCoordinates = [...suppliedByStorageField.entries()]
+    .filter(([storageField, inputField]) => storageField !== inputField)
+    .map(([storageField, logicalField]) => ({ logical_field: logicalField, stored_as: storageField }));
+  if (fieldCoordinates.length > 0) receipt.field_coordinates = fieldCoordinates;
   // Registry warnings for THIS convention belong at the point of use too. In particular, a bundle
   // that previously declared `body` or `body-file` as a domain field must not have the now-reserved
   // controls silently reinterpret its command: the successful receipt carries the central rename
