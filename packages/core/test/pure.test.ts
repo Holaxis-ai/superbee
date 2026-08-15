@@ -221,6 +221,34 @@ test("freshness: empty / fresh / stale-by-age / stale-by-dependency", () => {
   assert.match(dep.reason ?? "", /dependency/);
 });
 
+test("freshness: OKF v0.2 stale_after is an absolute date and does not change v0.1 semantics", () => {
+  const doc: OkfDocument = {
+    id: "x",
+    frontmatter: { type: "T", stale_after: "2026-07-01" },
+    body: "",
+  };
+
+  const before = freshness(doc, { okfVersion: "0.2", now: new Date("2026-06-30T23:59:59Z") });
+  assert.equal(before.verdict, "empty");
+
+  const onDate = freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T00:00:00Z") });
+  assert.equal(onDate.verdict, "stale");
+  assert.equal(onDate.ageMs, undefined);
+  assert.match(onDate.reason ?? "", /stale_after 2026-07-01/);
+
+  assert.equal(
+    freshness(doc, { okfVersion: "0.1", now: new Date("2026-07-02T00:00:00Z") }).verdict,
+    "empty",
+  );
+  assert.equal(
+    freshness({ ...doc, frontmatter: { ...doc.frontmatter, stale_after: "2026-02-31" } }, {
+      okfVersion: "0.2",
+      now: new Date("2026-07-02T00:00:00Z"),
+    }).verdict,
+    "empty",
+  );
+});
+
 test("meaningful change time lookup prefers v0.2 generated.at and falls back to v0.1 timestamp", () => {
   const cases: Array<{ label: string; frontmatter: Record<string, unknown>; expected: unknown }> = [
     { label: "missing", frontmatter: { type: "T" }, expected: undefined },

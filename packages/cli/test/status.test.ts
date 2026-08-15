@@ -181,6 +181,35 @@ test("status: a conventions-free freshly-initialized bundle is equally clean", a
   }
 });
 
+test("status: v0.2 stale_after applies without a Kind horizon while v0.1 leaves the extension inert", async () => {
+  for (const okfVersion of ["0.1", "0.2"]) {
+    const dir = await tempDir();
+    try {
+      const bundle = okfVersion === "0.1"
+        ? await initBundle(dir)
+        : await (async (): Promise<Bundle> => {
+          await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n");
+          return { root: dir };
+        })();
+      await writeDoc(bundle, {
+        id: "concepts/expired",
+        frontmatter: { type: "Reference", stale_after: "2020-01-01" },
+        body: "",
+      });
+      const result = await runJson(["--dir", dir]);
+      assert.equal(result.stale, okfVersion === "0.2" ? 1 : 0);
+      if (okfVersion === "0.2") {
+        const stale = result.stale_docs as { rows: Record<string, unknown>[] };
+        assert.deepEqual(stale.rows, [{ id: "concepts/expired", stale_after: "2020-01-01" }]);
+      } else {
+        assert.equal("stale_docs" in result, false);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 // ── Conformance-debt byte-identity pin (tasks/status-conformance-debt, gate 2/3) ───────────────
 //
 // A conventions-free bundle's status output must stay BYTE-IDENTICAL after the new
