@@ -124,6 +124,22 @@ export async function initBundle(root: string, options: InitBundleOptions = {}):
 
 // ── concept documents ─────────────────────────────────────────────────────────
 
+function assertWritableConceptDocument(doc: OkfDocument): string {
+  assertSafeConceptId(doc.id);
+  const rel = pathFromConceptId(doc.id);
+  if (isReservedFile(rel)) {
+    throw new InvalidInputError(
+      `'${doc.id}' maps to a reserved file (${rel}); use the index/log accessors, not writeDoc.`,
+    );
+  }
+
+  const type = doc.frontmatter?.type;
+  if (typeof type !== "string" || type.trim() === "") {
+    throw new InvalidInputError(`OKF §9.2: frontmatter.type is required and must be non-empty (concept '${doc.id}').`);
+  }
+  return type;
+}
+
 /**
  * Atomically write (create or overwrite) a concept document to `<id>.md` and
  * surface the backend's {@link WriteResult} (the normalized document + its version
@@ -144,8 +160,11 @@ export async function writeDocVersioned(
   doc: OkfDocument,
   options?: WriteOptions,
 ): Promise<WriteResult> {
+  // Preserve the historical fail-before-I/O contract for malformed ids/types. Edition discovery
+  // is storage I/O and must not mask a caller error with an unrelated root-index failure.
+  const type = assertWritableConceptDocument(doc);
   const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
-  return writeDocVersionedForEdition(bundle, doc, okfVersion, options);
+  return persistDocForEdition(bundle, doc, type, okfVersion, options);
 }
 
 /** @internal Edition-pinned sibling used by mutation policy after it has read the root once. */
@@ -155,19 +174,17 @@ export async function writeDocVersionedForEdition(
   okfVersion: string,
   options?: WriteOptions,
 ): Promise<WriteResult> {
-  assertSafeConceptId(doc.id);
-  const rel = pathFromConceptId(doc.id);
-  if (isReservedFile(rel)) {
-    throw new InvalidInputError(
-      `'${doc.id}' maps to a reserved file (${rel}); use the index/log accessors, not writeDoc.`,
-    );
-  }
+  const type = assertWritableConceptDocument(doc);
+  return persistDocForEdition(bundle, doc, type, okfVersion, options);
+}
 
-  const type = doc.frontmatter?.type;
-  if (typeof type !== "string" || type.trim() === "") {
-    throw new InvalidInputError(`OKF §9.2: frontmatter.type is required and must be non-empty (concept '${doc.id}').`);
-  }
-
+async function persistDocForEdition(
+  bundle: Bundle,
+  doc: OkfDocument,
+  type: string,
+  okfVersion: string,
+  options?: WriteOptions,
+): Promise<WriteResult> {
   let saved: OkfDocument;
   if (okfVersion === "0.1") {
     const existingTimestamp = doc.frontmatter.timestamp;
