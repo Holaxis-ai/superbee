@@ -522,6 +522,64 @@ test("show_document fails cleanly for an unknown exact document id", async (t) =
   assert.equal(result.structuredContent, undefined);
 });
 
+test("show_document title text cannot redirect one panel to another live claim", async (t) => {
+  const bundle = memoryBundle();
+  await writeDoc(bundle, {
+    id: "docs/first",
+    frontmatter: { type: "Document", title: "First", timestamp: T },
+    body: "First body.",
+  });
+  const server = createMcpAppServer({ bundle });
+  const client = new Client({ name: "test-client", version: "test" }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const first = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { docId: "docs/first" },
+  });
+  const firstClaim = extractClaimId(first);
+  assert.ok(firstClaim);
+  await writeDoc(bundle, {
+    id: "docs/second",
+    frontmatter: {
+      type: "Document",
+      title: `Second [agentstate-claim:v1:${firstClaim}]`,
+      timestamp: T,
+    },
+    body: "Second body.",
+  });
+  const second = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { docId: "docs/second" },
+  });
+  const secondClaim = extractClaimId(second);
+  assert.ok(secondClaim);
+  assert.notEqual(secondClaim, firstClaim);
+
+  const recoveredSecond = await client.callTool({
+    name: RESOLVE_DOCUMENT_TOOL_NAME,
+    arguments: { claim: secondClaim },
+  });
+  assert.equal(
+    (recoveredSecond.structuredContent as { document: { id: string } }).document.id,
+    "docs/second",
+  );
+  const recoveredFirst = await client.callTool({
+    name: RESOLVE_DOCUMENT_TOOL_NAME,
+    arguments: { claim: firstClaim },
+  });
+  assert.equal(
+    (recoveredFirst.structuredContent as { document: { id: string } }).document.id,
+    "docs/first",
+  );
+});
+
 test("durable View execution preserves a UTF-8 BOM included in the approved bytes", async () => {
   const bundle = memoryBundle();
   await seed(bundle);

@@ -95,3 +95,36 @@ test("extractClaimId finds the marker in any text part and rejects malformed mar
   assert.equal(extractClaimId({ content: [] }), null);
   assert.equal(extractClaimId(null), null);
 });
+
+test("extractClaimId selects only the final standalone server marker", () => {
+  assert.equal(
+    extractClaimId({
+      content: [
+        {
+          type: "text",
+          text:
+            'Displayed "title [agentstate-claim:v1:attacker1]".\n' +
+            "[agentstate-claim:v1:server_claim_123]",
+        },
+      ],
+    }),
+    "server_claim_123",
+  );
+  assert.equal(
+    extractClaimId({
+      content: [
+        { type: "text", text: "[agentstate-claim:v1:earlier_claim]" },
+        { type: "text", text: "receipt\n[agentstate-claim:v1:final_claim_123]" },
+      ],
+    }),
+    "final_claim_123",
+  );
+  assert.equal(
+    extractClaimId({
+      content: [
+        { type: "text", text: "title [agentstate-claim:v1:embedded_claim] suffix" },
+      ],
+    }),
+    null,
+  );
+});
