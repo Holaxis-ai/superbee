@@ -1,7 +1,7 @@
 /**
  * `@superbee/core` — the OKF store engine.
  *
- * An **Open Knowledge Format (OKF v0.1, Draft)** *Knowledge Bundle* is a
+ * An **Open Knowledge Format (OKF v0.1 or v0.2)** *Knowledge Bundle* is a
  * directory tree of UTF-8 markdown files, each carrying a YAML frontmatter block
  * (delimited by `---` lines) plus a markdown body. Every non-reserved `.md` file
  * is a *Concept*; its *Concept ID* is the file path minus `.md`
@@ -50,6 +50,7 @@ export {
   initBundle,
   readBundleOkfVersion,
   resolveOkfAuthoringVersion,
+  DEFAULT_OKF_AUTHORING_VERSION,
   SUPPORTED_OKF_AUTHORING_VERSIONS,
   writeDoc,
   readDoc,
@@ -226,6 +227,7 @@ export {
   PROGRESS_STATUS_FIELD,
   SUPERBEE_PROGRESS_STATUS_FIELD,
   RESERVED_KIND_FIELD_NAMES,
+  progressStatusStorageField,
   progressStatusCoordinate,
   resolveKindFieldCoordinate,
   kindInputFieldNames,

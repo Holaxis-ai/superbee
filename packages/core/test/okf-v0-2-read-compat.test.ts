@@ -1,7 +1,7 @@
 /**
- * A hand-authored OKF v0.2 bundle pins AgentState Lite's permissive read/transport posture without
- * claiming v0.2 authoring support. These tests never mutate the fixture: they exercise the local
- * filesystem path and the reference router through RemoteBackend, then compare their projections.
+ * A hand-authored OKF v0.2 bundle pins the read/transport contract independently from Superbee's
+ * authoring path. These tests never mutate the fixture: they exercise the local filesystem path
+ * and the reference router through RemoteBackend, then compare their projections.
  */
 import test from "node:test";
 import assert from "node:assert/strict";

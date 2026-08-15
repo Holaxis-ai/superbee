@@ -53,6 +53,10 @@ manual data-entry workflow.
 
 `quickstart-agent` is an advisory example actor label; replace it with the actual agent identity.
 
+New bundles currently default to OKF v0.1. To start a v0.2 bundle explicitly, add
+`--okf-version 0.2` to `init`; built-in recipes then materialize their logical workflow fields at
+the v0.2 producer-qualified coordinate. This does not migrate an existing v0.1 bundle.
+
 The conventional `.agentstate-lite/` folder at the project root is discovered with zero
 config (the way git finds `.git`) — every command after setup runs bare from anywhere in
 the project tree. A bundle stays local until `sync --establish` explicitly shares it on the
@@ -161,8 +165,9 @@ settings — sync only ever appends commits to it.
   `examples/recipes/review-workflow` is a complete content-free cognitive ecosystem: a
   self-describing Review Request kind plus a generic live View, with no review instances.
 
-Bundles are valid [Open Knowledge Format v0.1](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-— plain markdown any conformant tool can read.
+Bundles are valid [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
+v0.1 or v0.2 — plain markdown any conformant tool can read. New bundles default to v0.1; explicit
+v0.2 creation is available with `init --okf-version 0.2`.
 
 ## What's solid
 

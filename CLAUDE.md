@@ -73,7 +73,9 @@ Watch-points that are easy to regress here:
 
 ### 2. OKF-conformance for bundles
 
-Every produced bundle must stay a valid OKF v0.1 Knowledge Bundle:
+Every produced bundle must stay a valid OKF v0.1 or v0.2 Knowledge Bundle. New bundles default to
+v0.1 until the separately reviewed default-adoption unit lands; `init --okf-version 0.2` is the
+explicit v0.2 path:
 
 - Frontmatter on every non-reserved `.md`, with a **required, non-empty `type`** (§9.2).
 - `index.md` / `log.md` are **reserved** at any directory level (§3.1); only the bundle-root
@@ -81,10 +83,10 @@ Every produced bundle must stay a valid OKF v0.1 Knowledge Bundle:
 - **Cross-links are relative** bundle-relative markdown links (the form the reference graph
   builder counts as edges); core still resolves absolute `/…md` too, but the CLI **emits
   relative**.
-- **Backlinks are derived**, never stored. **Freshness** is derived from the optional
-  `timestamp` field — and `timestamp` may arrive **unquoted** from external bundles, so it
-  is normalized to an ISO string at the one parse layer. Do not reintroduce string-only
-  timestamp guards upstream of that normalization.
+- **Backlinks are derived**, never stored. **Freshness** is derived from the edition's meaningful
+  change clock: v0.1 `timestamp`, or v0.2 `generated.at` when present. A v0.1 `timestamp` may arrive
+  **unquoted** from external bundles, so it is normalized to an ISO string at the one parse layer.
+  Do not reintroduce string-only timestamp guards upstream of that normalization.
 
 ### 3. Pluggable-core principle
 

@@ -601,7 +601,8 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
       affected_documents: affectedDocuments,
       status_field_rows: statusFieldKinds,
       note:
-        "This bundle remains a supported OKF v0.1 bundle. Do not change index.md to 0.2 yet: " +
+        "This bundle remains a supported OKF v0.1 bundle. Superbee can author and mutate v0.2, " +
+        "but changing index.md alone is not a migration: " +
         "OKF v0.2 reserves top-level status for draft|stable|deprecated, while the listed kinds " +
         "use it for workflow state.",
       help: [

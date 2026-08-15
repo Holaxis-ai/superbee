@@ -140,15 +140,19 @@ test("initBundle writes one deterministic root index with expect-absent CAS and 
 test("initBundle rejects unsupported authoring-version claims before touching the target", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "okf-init-version-guard-"));
   try {
-    for (const requested of ["0.2", "9.4", ""]) {
+    const supported = path.join(parent, "supported-v02");
+    await initBundle(supported, { okfVersion: "0.2" });
+    assert.match(await readFile(path.join(supported, "index.md"), "utf8"), /okf_version: ['"]?0\.2['"]?/);
+
+    for (const requested of ["9.4", ""]) {
       const root = path.join(parent, requested || "blank");
       await assert.rejects(
         () => initBundle(root, { okfVersion: requested }),
         (error: unknown) =>
           error instanceof InvalidInputError &&
           error.message.includes(`'${requested}'`) &&
-          /author 0\.1/.test(error.message) &&
-          /read or transport/.test(error.message),
+          /author 0\.1 and 0\.2/.test(error.message) &&
+          /read or transported/.test(error.message),
       );
       assert.equal(existsSync(root), false, `unsupported version ${JSON.stringify(requested)} must not create its target`);
     }
@@ -159,7 +163,7 @@ test("initBundle rejects unsupported authoring-version claims before touching th
     await writeFile(path.join(existing, "index.md"), existingIndex);
     await initBundle(existing);
     const reopened = await new FilesystemBackend(existing).readReserved("", "index.md");
-    assert.equal(reopened?.content, existingIndex, "opening a newer external bundle must not rewrite or reject it");
+    assert.equal(reopened?.content, existingIndex, "opening an existing v0.2 bundle must not rewrite it");
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
