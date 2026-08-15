@@ -121,12 +121,13 @@ Options:
                          (from a prior read/write/history receipt) — a conflict is STALE_HEAD (exit
                          5), NOT retried. Omit for a normal (auto-retrying) update. A present-but-
                          blank value is a USAGE error (exit 2), not "no CAS".
-  --actor <name>         Attribute a substantive patch: sets the doc's 'actor' frontmatter field
-                         (overwriting a previous actor) and threads to version history (see 'doc
-                         history'). Precedence: --actor > SUPERBEE_ACTOR > legacy
-                         AGENTSTATE_LITE_ACTOR > absent. With neither source, the existing actor is
-                         preserved. Attribution is not a
-                         patch by itself and cannot turn an identical patch into a write. A
+  --actor <name>         Attribute a substantive patch in the edition-appropriate advisory field
+                         ('actor' in v0.1; 'superbee_updated_by' in v0.2) and thread it to version
+                         history (see 'doc history'). Precedence: --actor > SUPERBEE_ACTOR > legacy
+                         AGENTSTATE_LITE_ACTOR > absent. Without a source, v0.1 preserves existing
+                         attribution; a real v0.2 mutation clears stale 'superbee_updated_by'. An
+                         identical no-op preserves exact bytes in either edition. Attribution is
+                         not a patch by itself and cannot turn an identical patch into a write. A
                          present-but-blank flag or environment value is a USAGE error (exit 2).
 
 Passing NO patchable field at all is a USAGE error (exit 2) — there is nothing to do.
@@ -196,11 +197,10 @@ Lists version + actor + timestamp (and agent, when recorded) per revision, with 
 history-keeping backend (a remote deployment) returns the full chain and its real per-write
 attribution; on an AUTH'D remote, actor is your authenticated principal (server-set, unforgeable)
 and agent is the resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy
-AGENTSTATE_LITE_ACTOR. A local
---dir bundle keeps no history, so it returns just the single current revision and reports the
-file's OS owner as the actor (the filesystem backend keeps no per-write advisory actor label in
-history; the doc's own 'actor' frontmatter field — persisted from the same sources — is where
-per-doc attribution lives). The newest version is the token to
+AGENTSTATE_LITE_ACTOR. A local --dir bundle keeps no history, so it returns just the single current
+revision. Its actor is resolved from the doc's edition-appropriate advisory attribution
+('superbee_updated_by' in v0.2, then compatibility 'updated_by'/'actor'), falling back to the
+file's OS owner when none is present. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
 Options:

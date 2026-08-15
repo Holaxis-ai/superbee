@@ -4,7 +4,7 @@ import type { Frontmatter } from "./types.js";
 export const SUPERBEE_UPDATED_BY_FIELD = "superbee_updated_by";
 
 function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+  return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
 /**

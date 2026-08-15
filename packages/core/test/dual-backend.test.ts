@@ -569,7 +569,7 @@ test("pin: FilesystemBackend versions() derives actor from the portable projecti
   await withFsBundle(async (bundle) => {
     const { writeFile } = await import("node:fs/promises");
     const cases: Array<[string, string, string]> = [
-      ["portable", 'superbee_updated_by: "carol"\nupdated_by: "alice"\nactor: "bob"', "carol"],
+      ["portable", 'superbee_updated_by: "  carol  "\nupdated_by: "alice"\nactor: "bob"', "carol"],
       ["a", 'updated_by: "alice"', "alice"],
       ["b", "updated_by: 42", defaultActor()],
       ["c", 'updated_by: "   "', defaultActor()],

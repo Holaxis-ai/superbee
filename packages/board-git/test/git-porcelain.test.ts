@@ -901,7 +901,7 @@ test("changesSince: producer-qualified mutation attribution wins over legacy act
     const cursor = boardHead(topo.b);
     await modifyBoardDoc(topo.a, "tasks/seed-one", {
       frontmatter: {
-        superbee_updated_by: "carol",
+        superbee_updated_by: "  carol  ",
         updated_by: "alice",
         actor: "mike",
       },
