@@ -54,6 +54,7 @@ import {
   loadKinds,
   kindInputFieldNames,
   progressStatusCoordinate,
+  projectKindForAuthoring,
   readBundleOkfVersion,
   resolveKindFieldCoordinate,
   type Frontmatter,
@@ -257,7 +258,6 @@ function renderKindHelp(
   kind: KindConvention,
   registry: KindRegistry,
   inv: string,
-  okfVersion: string | undefined,
 ): string {
   const oneLine = (value: string) => value.trim().replace(/\s+/g, " ");
   const ownDescription = (record: Record<string, string> | undefined, key: string): string | undefined => {
@@ -269,7 +269,6 @@ function renderKindHelp(
   const req = [...new Set(kind.fields.required.filter(ordinary))];
   const required = new Set(req);
   const opt = [...new Set(kind.fields.optional.filter((field) => ordinary(field) && !required.has(field)))];
-  const progress = progressStatusCoordinate(okfVersion, kind);
   const fieldRows = [
     ...req.map((field) => ({ field, requirement: "required" })),
     ...opt.map((field) => ({ field, requirement: "optional" })),
@@ -328,16 +327,11 @@ function renderKindHelp(
         [...outboundLines, ...inboundLines].join("\n") +
         "\n"
       : "";
-  const logicalFieldBlock = progress
-    ? `Logical field alias:\n  --${progress.logicalField} <v>  stored as '${progress.storageField}' ` +
-      `(the declared --${progress.storageField} form remains accepted)\n`
-    : "";
   return (
     `${inv} new "${kind.governs}" <id> — create a ${kind.governs} instance\n\n` +
     (kind.description ? `Description:  ${kind.description}\n` : "") +
     `Fields (declared by the '${kind.governs}' kind convention):\n` +
     (fieldRows.length > 0 ? fieldRows.join("\n") + "\n" : "  (none)\n") +
-    logicalFieldBlock +
     `Required body headings (level 1; exact Markdown):\n${sectionLines}\n` +
     linksBlock +
     `${pathLine}\n\n` +
@@ -421,7 +415,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     );
   }
   if (pre.values.help) {
-    stdout(renderKindHelp(kind, registry, cliInvocation(), okfVersion));
+    stdout(renderKindHelp(projectKindForAuthoring(okfVersion, kind), registry, cliInvocation()));
     return;
   }
   // Scaffolding from the KNOWN SHIPPED
@@ -443,7 +437,8 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // Phase 2 — strict, kind-aware, AUTHORITATIVE parse. Core strips every centrally-reserved kind
   // field before this point (including `body` and `body-file`); only `actor` and `link` remain
   // command controls with intentional kind-aware behavior, so they are excluded here explicitly.
-  const declaredFields = [...kind.fields.required, ...kind.fields.optional];
+  const authoringKind = projectKindForAuthoring(okfVersion, kind);
+  const declaredFields = [...authoringKind.fields.required, ...authoringKind.fields.optional];
   const fieldNames = kindInputFieldNames(okfVersion, kind).filter((f) => f !== "actor" && f !== "link");
   const fieldOptions = Object.fromEntries(
     fieldNames.map((f) => [f, { type: "string", multiple: true } as const]),
@@ -539,6 +534,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
 
   const frontmatter: Frontmatter = { type: kind.governs };
   const suppliedByStorageField = new Map<string, string>();
+  const progressCoordinate = progressStatusCoordinate(okfVersion, kind);
   for (const field of fieldNames) {
     const vals = dynamicValues.get(field);
     if (vals === undefined || vals.length === 0) continue;
@@ -546,10 +542,13 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     if (!coordinate) continue;
     const previous = suppliedByStorageField.get(coordinate.storageField);
     if (previous) {
+      const logicalField = coordinate.storageField === progressCoordinate?.storageField
+        ? progressCoordinate.logicalField
+        : coordinate.logicalField;
       throw new CliError(
         "USAGE",
-        `--${previous} and --${field} address the same stored field '${coordinate.storageField}'; pass only one`,
-        { help: `${cliInvocation()} new "${kind.governs}" <id> --${coordinate.logicalField} <value>` },
+        `--${previous} and --${field} address the same field '${logicalField}'; pass only one`,
+        { help: `${cliInvocation()} new "${kind.governs}" <id> --${logicalField} <value>` },
       );
     }
     suppliedByStorageField.set(coordinate.storageField, field);
@@ -621,10 +620,6 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     type: saved.frontmatter.type,
     timestamp: saved.frontmatter.timestamp ?? null,
   };
-  const fieldCoordinates = [...suppliedByStorageField.entries()]
-    .filter(([storageField, inputField]) => storageField !== inputField)
-    .map(([storageField, logicalField]) => ({ logical_field: logicalField, stored_as: storageField }));
-  if (fieldCoordinates.length > 0) receipt.field_coordinates = fieldCoordinates;
   // Registry warnings for THIS convention belong at the point of use too. In particular, a bundle
   // that previously declared `body` or `body-file` as a domain field must not have the now-reserved
   // controls silently reinterpret its command: the successful receipt carries the central rename

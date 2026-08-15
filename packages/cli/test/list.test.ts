@@ -779,7 +779,8 @@ test("hint: a minimal-schema result uniformly one GOVERNED kind advertises --typ
     assert.ok(hint, "expected a --type discovery hint");
     assert.match(hint!, /all 3 rows are 'Task'/);
     assert.match(hint!, /--type Task/);
-    assert.match(hint!, /status\/priority/);
+    assert.match(hint!, /progress_status\/priority/);
+    assert.doesNotMatch(hint!, /superbee_progress_status/);
   } finally {
     await cleanup();
   }

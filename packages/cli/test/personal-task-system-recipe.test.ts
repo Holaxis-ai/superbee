@@ -193,16 +193,24 @@ test("Personal Task System parses strictly and installs its kinds plus interacti
     const task = rows.find((row) => row.governs === "Task")!;
     const project = rows.find((row) => row.governs === "Project")!;
     assert.deepEqual(task.value_descriptions, {
-      superbee_progress_status: TASK_STATUS_DESCRIPTIONS,
+      progress_status: TASK_STATUS_DESCRIPTIONS,
       priority: TASK_PRIORITY_DESCRIPTIONS,
     });
-    assert.deepEqual(task.descriptions, expectedTaskKind().fields.descriptions);
+    assert.deepEqual(task.descriptions, {
+      progress_status: "Current lifecycle state of the work.",
+      priority: "Relative importance; absence means unprioritized.",
+      assignee: "Advisory identity responsible for the next action; not authentication or authorization.",
+      due: "Target calendar date, authored as YYYY-MM-DD.",
+    });
     assert.deepEqual(task.links, expectedTaskKind().links);
     assert.deepEqual(task.link_descriptions, expectedTaskKind().linkDescriptions);
     assert.equal(task.horizon, "30d");
     assert.ok(!("sections" in task), "Task has no required body headings");
-    assert.deepEqual(project.value_descriptions, { superbee_progress_status: PROJECT_STATUS_DESCRIPTIONS });
-    assert.deepEqual(project.descriptions, expectedProjectKind().fields.descriptions);
+    assert.deepEqual(project.value_descriptions, { progress_status: PROJECT_STATUS_DESCRIPTIONS });
+    assert.deepEqual(project.descriptions, {
+      progress_status: "Whether the Project is active work, intentionally paused, or archived.",
+      description: "A concise statement of the Project's intended outcome or scope.",
+    });
     assert.deepEqual(project.expects_inbound, { "part of": "Task" });
     assert.equal(project.horizon, "180d");
     assert.ok(!("sections" in project), "Project has no required body headings");

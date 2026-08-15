@@ -5,6 +5,8 @@ import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
 import {
   loadKinds,
+  progressStatusCoordinate,
+  projectKindForAuthoring,
   resolveKindFieldCoordinate,
   type Frontmatter,
 } from "@superbee/core";
@@ -307,7 +309,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // A patch touching ONLY standard fields keeps the pre-existing warn-by-default behavior (--strict
   // still opts in). See the plan's Fork 2 for the full rationale.
   const strict = p.strict || p.kindFields.size > 0;
-  let fieldCoordinates: Array<{ logical_field: string; stored_as: string }> = [];
 
   // "patch" mode, onAbsent: "fail": `mutateDoc` does the versioned-read -> build -> idempotency ->
   // validate -> CAS-write-with-bounded-retry itself (the exact shape `link add` proved for this
@@ -386,7 +387,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             { help: `${cliInvocation()} kinds` },
           );
         }
-        const declared = [...kind.fields.required, ...kind.fields.optional];
+        const authoringKind = projectKindForAuthoring(context.okfVersion, kind);
+        const progressCoordinate = progressStatusCoordinate(context.okfVersion, kind);
+        const declared = [...authoringKind.fields.required, ...authoringKind.fields.optional];
         const resolvedFields = new Map<string, ReturnType<typeof resolveKindFieldCoordinate>>();
         for (const field of p.kindFields.keys()) {
           resolvedFields.set(field, resolveKindFieldCoordinate(context.okfVersion, kind, field));
@@ -405,21 +408,20 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
           );
         }
         const suppliedByStorageField = new Map<string, string>();
-        fieldCoordinates = [];
         for (const [field, vals] of p.kindFields) {
           const coordinate = resolvedFields.get(field)!;
           const previous = suppliedByStorageField.get(coordinate.storageField);
           if (previous) {
+            const logicalField = coordinate.storageField === progressCoordinate?.storageField
+              ? progressCoordinate.logicalField
+              : coordinate.logicalField;
             throw new CliError(
               "USAGE",
-              `--${previous} and --${field} address the same stored field '${coordinate.storageField}'; pass only one`,
-              { help: `${cliInvocation()} doc update ${id} --${coordinate.logicalField} <value>` },
+              `--${previous} and --${field} address the same field '${logicalField}'; pass only one`,
+              { help: `${cliInvocation()} doc update ${id} --${logicalField} <value>` },
             );
           }
           suppliedByStorageField.set(coordinate.storageField, field);
-          if (coordinate.storageField !== field) {
-            fieldCoordinates.push({ logical_field: field, stored_as: coordinate.storageField });
-          }
           nextFrontmatter[coordinate.storageField] = vals.length === 1 ? vals[0] : vals;
         }
       }
@@ -449,7 +451,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     // subsequent `--expected-version` compare-and-swap.
     version: result.version,
   };
-  if (fieldCoordinates.length > 0) receipt.field_coordinates = fieldCoordinates;
   if (result.warnings.length > 0) receipt.warnings = result.warnings;
   // Legacy-naming nudge (legacy-page.ts): fires on the RESULT doc's type at an authoring moment
   // only — never blocks, never on reads.

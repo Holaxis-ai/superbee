@@ -307,9 +307,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         // warns on those), so this only ever fires on a REAL regression. Retyping to an
         // ungoverned type is a documented escape: an ungoverned candidate carries zero
         // warnings by construction, so the `warnings.length > 0` guard below never sees it.
-        // Scope: `promote`'s CAS-overwrite path (a different call site — direct
-        // `writeDocVersioned`, gated by its own `--expected-version`/`--strict`) is deliberately
-        // OUT of this rule; see its own comment.
+        // Every overwrite caller, including `promote`, inherits this rule from this shared boundary.
         if (!opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
           throw new KindConformanceError(opts.id, validated.kind!.governs, warnings, okfVersion);
         }

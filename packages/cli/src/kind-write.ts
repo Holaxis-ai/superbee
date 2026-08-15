@@ -3,6 +3,8 @@
 import {
   defaultTimestampAndValidateAgainstRegistry,
   KindConformanceError,
+  projectKindForAuthoring,
+  projectKindValidationWarnings,
   progressStatusStorageField,
   type ConceptId,
   type KindConvention,
@@ -66,12 +68,18 @@ export function kindConformanceCliError(
   docExists: boolean,
 ): CliError {
   const kind = registry.kinds.get(error.governs);
+  const authoringKind = kind ? projectKindForAuthoring(error.okfVersion, kind) : undefined;
+  const authoringViolations = kind
+    ? projectKindValidationWarnings(error.okfVersion, kind, error.violations)
+    : error.violations;
   const completing = docExists
-    ? buildCompletingUpdateCommand(error.id, error.violations, kind, error.okfVersion)
+    ? buildCompletingUpdateCommand(error.id, authoringViolations, authoringKind, error.okfVersion)
     : undefined;
-  return new CliError("USAGE", error.message, {
+  const message = `'${error.id}' does not satisfy the '${error.governs}' kind: ` +
+    authoringViolations.map((warning) => warning.message).join("; ");
+  return new CliError("USAGE", message, {
     help: completing ?? fallbackHelp,
-    details: { violations: error.violations },
+    details: { violations: authoringViolations },
   });
 }
 

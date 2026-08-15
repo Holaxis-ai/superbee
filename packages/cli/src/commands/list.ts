@@ -43,6 +43,7 @@ import {
   readBundleOkfVersion,
   readKindField,
   progressStatusCoordinate,
+  projectKindForAuthoring,
   type KindRegistry,
   type QueryFilter,
 } from "@superbee/core";
@@ -421,7 +422,8 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
       const registry = await getRegistry();
       const kind = registry.kinds.get(first);
       if (kind) {
-        const cols = [...new Set([...kind.fields.required, ...kind.fields.optional])].filter(
+        const authoringKind = projectKindForAuthoring(await getOkfVersion(), kind);
+        const cols = [...new Set([...authoringKind.fields.required, ...authoringKind.fields.optional])].filter(
           (f) => f !== "id" && f !== "title" && f !== "description",
         );
         if (cols.length > 0) {

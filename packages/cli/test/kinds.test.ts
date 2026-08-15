@@ -118,14 +118,15 @@ test("kinds: conditionally projects kind, field, and enum-value descriptions", a
     const described = rows.find((row) => row.governs === "Described");
     assert.ok(described);
     assert.equal(described.description, "A kind with agent-readable guidance.");
-    assert.deepEqual(described.descriptions, { title: "A concise summary.", status: "Current state." });
-    assert.deepEqual(described.value_descriptions, { status: { draft: "Still open to revision." } });
-    assert.deepEqual(described.logical_fields, {
-      progress_status: { stored_as: "status", author_with: "--progress_status" },
-    });
+    assert.deepEqual(described.optional, ["progress_status"]);
+    assert.deepEqual(described.values, { progress_status: ["draft", "done"] });
+    assert.deepEqual(described.descriptions, { title: "A concise summary.", progress_status: "Current state." });
+    assert.deepEqual(described.value_descriptions, { progress_status: { draft: "Still open to revision." } });
+    assert.equal(described.logical_fields, undefined);
     let help = "";
     await newCommand(["Described", "--help", "--dir", dir], { stdout: (chunk) => (help += chunk) });
-    assert.match(help, /--progress_status <v>  stored as 'status'/);
+    assert.match(help, /--progress_status <v>  optional/);
+    assert.doesNotMatch(help, /stored as|'status'|--status/);
     const note = rows.find((row) => row.governs === "Context Note");
     assert.ok(note);
     assert.ok(!("description" in note));
@@ -133,6 +134,45 @@ test("kinds: conditionally projects kind, field, and enum-value descriptions", a
     assert.ok(!("value_descriptions" in note));
   } finally {
     await cleanup();
+  }
+});
+
+test("kinds and new help keep current workflow storage behind the logical authoring schema", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir);
+    await writeDoc({ root: dir }, {
+      id: "conventions/task",
+      frontmatter: {
+        type: CONVENTION_TYPE,
+        governs: "Task",
+        fields: {
+          required: ["title", "superbee_progress_status"],
+          optional: [],
+          values: { superbee_progress_status: ["todo", "done"] },
+          descriptions: { superbee_progress_status: "Current workflow state." },
+          value_descriptions: { superbee_progress_status: { todo: "Not complete." } },
+          terminal: { superbee_progress_status: ["done"] },
+        },
+      },
+      body: "",
+    });
+    const result = await runJson(kinds, ["--dir", dir]);
+    const task = (result.kinds as Array<Record<string, unknown>>).find((row) => row.governs === "Task");
+    assert.ok(task);
+    assert.deepEqual(task.required, ["title", "progress_status"]);
+    assert.deepEqual(task.values, { progress_status: ["todo", "done"] });
+    assert.deepEqual(task.descriptions, { progress_status: "Current workflow state." });
+    assert.deepEqual(task.value_descriptions, { progress_status: { todo: "Not complete." } });
+    assert.deepEqual(task.terminal, { progress_status: ["done"] });
+    assert.doesNotMatch(JSON.stringify(task), /superbee_progress_status|stored_as/);
+
+    let help = "";
+    await newCommand(["Task", "--help", "--dir", dir], { stdout: (chunk) => (help += chunk) });
+    assert.match(help, /--progress_status <v>  required/);
+    assert.doesNotMatch(help, /superbee_progress_status|stored as/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -398,9 +438,9 @@ test('new "<Kind>" --help shows deterministic described field rows, not the gene
     assert.match(out, /create a Described instance/);
     assert.ok(out.indexOf("Description:  A guided record.") < out.indexOf("Fields (declared"));
     assert.match(out, /--title <v>  required — A concise summary\./);
-    assert.match(out, /--status <v>  optional; allowed: draft \| done — Current state\./);
+    assert.match(out, /--progress_status <v>  optional; allowed: draft \| done — Current state\./);
     assert.equal((out.match(/--title <v>/g) ?? []).length, 1);
-    assert.equal((out.match(/--status <v>/g) ?? []).length, 1);
+    assert.equal((out.match(/--progress_status <v>/g) ?? []).length, 1);
     assert.doesNotMatch(out, /--actor <v>/);
     assert.doesNotMatch(out, /--link <v>/);
     assert.match(out, /Required body headings \(level 1; exact Markdown\):\n  # Summary/);
@@ -446,7 +486,7 @@ test('new "Claim" --help explains the real lifecycle values while undescribed en
 
     let out = "";
     await newCommand(["Claim", "--help", "--dir", dir], { stdout: (chunk) => (out += chunk) });
-    assert.match(out, /--status <v>  required\n    allowed values:/);
+    assert.match(out, /--progress_status <v>  required\n    allowed values:/);
     assert.match(
       out,
       /- value: "active"\n        description: "Supported, but still open \| revision \(provisional\): evidence-led — not final\."/,
@@ -463,7 +503,7 @@ test('new "Claim" --help explains the real lifecycle values while undescribed en
     const discovery = await runJson(kinds, ["--dir", dir]);
     const claim = (discovery.kinds as Array<Record<string, unknown>>).find((row) => row.governs === "Claim");
     assert.deepEqual(claim?.value_descriptions, {
-      status: {
+      progress_status: {
         active: "Supported,\n but still open | revision (provisional): evidence-led — not final.",
         locked: "Verified (required): downstream | reliance — permitted.",
       },

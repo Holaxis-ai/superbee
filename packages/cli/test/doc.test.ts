@@ -1586,7 +1586,7 @@ test("doc update: status transition via a kind-declared --<field> flag — the h
   }
 });
 
-test("doc update: logical --progress_status resolves to legacy v0.1 status and discloses storage", async () => {
+test("doc update: logical --progress_status resolves to legacy v0.1 storage without exposing it", async () => {
   const { dir, cleanup } = await makeTaskBundle();
   try {
     await writeDoc(
@@ -1594,7 +1594,7 @@ test("doc update: logical --progress_status resolves to legacy v0.1 status and d
       { id: "tasks/logical", frontmatter: { type: "Task", title: "Logical", status: "todo", timestamp: OLD_TS }, body: "" },
     );
     const result = await runDoc(["update", "tasks/logical", "--progress_status", "done", "--dir", dir]);
-    assert.deepEqual(result.field_coordinates, [{ logical_field: "progress_status", stored_as: "status" }]);
+    assert.equal(result.field_coordinates, undefined);
     const after = await readDoc({ root: dir }, "tasks/logical");
     assert.equal(after.frontmatter.status, "done");
     assert.equal(Object.hasOwn(after.frontmatter, "progress_status"), false);
@@ -1607,7 +1607,7 @@ test("doc update: logical --progress_status resolves to legacy v0.1 status and d
       (error: unknown) => {
         assert.ok(error instanceof CliError);
         assert.equal(error.code, "USAGE");
-        assert.match(error.message, /same stored field 'status'/);
+        assert.match(error.message, /same field 'progress_status'/);
         return true;
       },
     );

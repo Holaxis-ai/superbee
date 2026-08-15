@@ -1040,7 +1040,7 @@ async function runInstalledProof(spec) {
       files: contractReceipt.files.length,
       bins: Object.keys(manifest.bin),
       workflow: [
-        "quickstart: home -> recipes -> current-format init -> attributed Task create/update -> query/home/status/history/sync",
+        "quickstart: home -> recipes -> current-format init -> attributed Task create/update -> query/home/status/history",
         "recipes",
         "init --create-only",
         "new",
@@ -1048,7 +1048,6 @@ async function runInstalledProof(spec) {
         "doc read",
         "doc history",
         "list",
-        "sync",
         "explicit legacy init/reopen",
         "skill install/status/uninstall",
         "hook install/uninstall",

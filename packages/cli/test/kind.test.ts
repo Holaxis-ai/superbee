@@ -77,6 +77,40 @@ test("kind field add --values sets an enum and preserves governs/path (whole-con
   }
 });
 
+test("kind field keeps progress_status logical while materializing the current storage coordinate", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-kind-progress-test-"));
+  try {
+    await initBundle(dir);
+    await writeDoc({ root: dir }, {
+      id: "conventions/task",
+      frontmatter: {
+        type: CONVENTION_TYPE,
+        governs: "Task",
+        fields: { required: ["title"], optional: [], values: {} },
+      },
+      body: "",
+    });
+    const added = await runKind([
+      "field", "Task", "add", "progress_status", "--required", "--values", "todo,done", "--dir", dir,
+    ]);
+    assert.equal(added.field, "progress_status");
+    assert.deepEqual(added.required, ["title", "progress_status"]);
+    assert.deepEqual(added.values, { progress_status: ["todo", "done"] });
+    assert.doesNotMatch(JSON.stringify(added), /superbee_progress_status|stored_as/);
+
+    const raw = await readDoc({ root: dir }, "conventions/task");
+    const fields = raw.frontmatter.fields as Record<string, unknown>;
+    assert.deepEqual(fields.required, ["title", "superbee_progress_status"]);
+    assert.deepEqual(fields.values, { superbee_progress_status: ["todo", "done"] });
+
+    const removed = await runKind(["field", "Task", "remove", "progress_status", "--dir", dir]);
+    assert.deepEqual(removed.required, ["title"]);
+    assert.equal(removed.values, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("kind field remove: drops the field; idempotent when already absent", async () => {
   const { dir, cleanup } = await seeded();
   try {
