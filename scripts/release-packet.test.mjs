@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -130,6 +131,36 @@ async function fixture(root) {
   return { candidates, evidence };
 }
 
+// A real checkout of exactly the files the packet manifest claims, indexed by real git, so the
+// derivation can be exercised against mutated workflows without touching the working repository.
+async function manifestFixture(root) {
+  const committed = JSON.parse(await readFile(path.join(repoRoot, "release", "review-packet-inputs.json"), "utf8"));
+  const workflows = (await readdir(path.join(repoRoot, ".github", "workflows")))
+    .filter((name) => name.endsWith(".yml"))
+    .map((name) => `.github/workflows/${name}`);
+  const workspaceManifests = (await readdir(path.join(repoRoot, "packages"), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => `packages/${entry.name}/package.json`);
+  const scriptModules = (await readdir(path.join(repoRoot, "scripts")))
+    .filter((name) => name.endsWith(".mjs") && !name.endsWith(".test.mjs"))
+    .map((name) => `scripts/${name}`);
+  for (const relative of [...new Set([...committed.paths, ...workflows, ...workspaceManifests, ...scriptModules])]) {
+    const from = path.join(repoRoot, relative);
+    if (!existsSync(from)) continue;
+    await mkdir(path.join(root, path.dirname(relative)), { recursive: true });
+    await cp(from, path.join(root, relative));
+  }
+  execFileSync("git", ["init", "--quiet"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+  return { manifestPath: path.join(root, "release", "review-packet-inputs.json") };
+}
+
+async function appendWorkflowStep(root, workflow, run) {
+  const file = path.join(root, ".github", "workflows", workflow);
+  await writeFile(file, `${await readFile(file, "utf8")}\n      - name: added by the test\n        run: ${run}\n`);
+  execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+}
+
 async function ignoredCheckout(root) {
   await writeFile(path.join(root, ".gitignore"), await readFile(path.join(repoRoot, ".gitignore"), "utf8"));
   await writeFile(path.join(root, "tracked.txt"), "tracked\n");
@@ -193,18 +224,72 @@ test("observed checkout allows the deterministic outputs from the normal npm run
   }
 });
 
-test("observed checkout rejects ignored output smuggling and names every offender", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-smuggle-"));
+// F4: the allowed-ignored set is whatever the repository's own tracked .gitignore files declare —
+// the class, not an enumerated prefix list. A checkout that has run `npm ci && npm run check` and
+// then hosted a normal agent session carries all of these, and every one of them is declared.
+test("observed checkout accepts the full ignored surface a real gate plus agent session leaves behind", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-ignored-surface-"));
   try {
     await ignoredCheckout(root);
-    await writeFile(path.join(root, ".DS_Store"), "Finder noise\n");
-    await mkdir(path.join(root, "packages", "core", "reports"), { recursive: true });
-    await writeFile(path.join(root, "packages", "core", "reports", "mutation.html"), "smuggled mutation report\n");
+    for (const relative of [
+      ".DS_Store",
+      ".claude/settings.local.json",
+      ".agentstate-lite/docs/note.md",
+      "docs/architecture.md",
+      "dist/bundle.mjs",
+      "node_modules/.package-lock.json",
+      "packages/core/reports/mutation/mutation.json",
+      "packages/cli/.stryker-tmp/sandbox/file.mjs",
+      "packages/cli/dist/superbee.mjs",
+      "packages/worker/dist/worker.mjs",
+      "packages/ui/playwright-report/index.html",
+      "release-candidate/superbee-0.1.0.tgz",
+      "stray-pack.tgz",
+    ]) {
+      await mkdir(path.join(root, path.dirname(relative)), { recursive: true });
+      await writeFile(path.join(root, relative), "generated\n");
+    }
+    assert.deepEqual(await observedCheckout(root), {
+      commit: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
+      dirty: false,
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("observed checkout rejects ignored content hidden by rules outside the tracked .gitignore set", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-smuggle-"));
+  const globalExcludes = `${root}-global-excludes`;
+  try {
+    await ignoredCheckout(root);
+    await writeFile(path.join(root, ".git", "info", "exclude"), "locally-hidden\n");
+    await writeFile(path.join(root, "locally-hidden"), "smuggled through .git/info/exclude\n");
     await assert.rejects(
       observedCheckout(root),
-      /checkout has disallowed ignored paths: \.DS_Store, packages\/core\/reports\/; allowed generated-output prefixes:/,
+      /ignored paths no tracked \.gitignore declares: locally-hidden \(\.git\/info\/exclude:1\)/,
     );
+    await rm(path.join(root, "locally-hidden"));
+
+    await writeFile(path.join(root, ".git", "info", "exclude"), "");
+    await writeFile(globalExcludes, "globally-hidden\n");
+    execFileSync("git", ["config", "core.excludesFile", globalExcludes], { cwd: root, stdio: "pipe" });
+    await writeFile(path.join(root, "globally-hidden"), "smuggled through a global excludes file\n");
+    await assert.rejects(
+      observedCheckout(root),
+      /ignored paths no tracked \.gitignore declares: globally-hidden \(/,
+    );
+    await rm(path.join(root, "globally-hidden"));
+
+    // An untracked nested .gitignore cannot launder content either: the file itself is an
+    // unreviewed working-tree change before its rules are ever consulted.
+    execFileSync("git", ["config", "--unset", "core.excludesFile"], { cwd: root, stdio: "pipe" });
+    await mkdir(path.join(root, "nested"), { recursive: true });
+    await writeFile(path.join(root, "nested", ".gitignore"), "hidden-by-nested\n");
+    await writeFile(path.join(root, "nested", "hidden-by-nested"), "smuggled through an untracked rule file\n");
+    await assert.rejects(observedCheckout(root), /non-ignored changes: \?\? nested\/\.gitignore/);
   } finally {
+    await rm(globalExcludes, { force: true });
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -222,6 +307,48 @@ test("the packet-input manifest rejects missing, extra, and escaping rows", asyn
     await assert.rejects(validatePacketInputManifest({ manifestPath: manifest }), /invalid/);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// F5: the reachable-entrypoint set is parsed out of the workflow files, across every workflow in
+// the directory — not a frozen constant that stops describing them the moment one is edited.
+test("the manifest closure follows every workflow file, package script hop, and command substitution", async () => {
+  const cases = [
+    ["a node invocation added to a non-release workflow", async (root) => {
+      await appendWorkflowStep(root, "ci-tests.yml", "node scripts/release-inspect.mjs");
+    }, /missing: [^;]*scripts\/release-inspect\.mjs/],
+    ["a node invocation added inside a command substitution", async (root) => {
+      await appendWorkflowStep(root, "release-audit.yml", 'FACTS="$(node scripts/release-reconcile.mjs --json)"');
+    }, /missing: [^;]*scripts\/release-reconcile\.mjs/],
+    ["a node invocation added through an entirely new workflow file", async (root) => {
+      await writeFile(path.join(root, ".github", "workflows", "extra.yml"),
+        "name: extra\non:\n  workflow_dispatch:\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node scripts/release-inspect-recovery.mjs\n");
+      execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+    }, /missing: [^;]*scripts\/release-inspect-recovery\.mjs/],
+    ["a node invocation added to a package script a workflow runs", async (root) => {
+      const file = path.join(root, "package.json");
+      const manifest = JSON.parse(await readFile(file, "utf8"));
+      manifest.scripts["mutation:survivors"] = "node scripts/rename-literal-inventory.mjs";
+      await writeFile(file, `${JSON.stringify(manifest, null, 2)}\n`);
+      execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+    }, /missing: [^;]*scripts\/rename-literal-inventory\.mjs/],
+    ["a node invocation whose script path is not statically resolvable", async (root) => {
+      await appendWorkflowStep(root, "release-staged.yml", 'node "$UNPINNED_SCRIPT"');
+    }, /unresolvable script path|unresolvable argument/],
+    ["a node invocation of a path that is neither tracked nor ignored", async (root) => {
+      await appendWorkflowStep(root, "release-finalize.yml", "node scripts/not-in-the-index.mjs");
+    }, /neither a tracked source file nor an ignored build output/],
+  ];
+  for (const [name, mutate, expected] of cases) {
+    const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-topology-"));
+    try {
+      const { manifestPath } = await manifestFixture(root);
+      await validatePacketInputManifest({ root, manifestPath });
+      await mutate(root);
+      await assert.rejects(validatePacketInputManifest({ root, manifestPath }), expected, name);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   }
 });
 
