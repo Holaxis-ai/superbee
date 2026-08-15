@@ -620,8 +620,11 @@ function describeRefMap(map) {
  */
 async function validateTransferAuthority({ baseline, recheck, allowlist, bundleFile, source, targets, repositoryRefs, mode }) {
   for (const [label, value, isAllowlist] of [["refs baseline", baseline, false], ["refs recheck", recheck, false], ["transfer allowlist", allowlist, true]]) {
-    validateRefAssertionsEnvelope(value, { publicAncestor: source.public_ancestor, privateCommit: source.commit, allowlist: isAllowlist });
-    if (!value) packetError(`${label} is missing`);
+    try {
+      validateRefAssertionsEnvelope(value, { publicAncestor: source.public_ancestor, privateCommit: source.commit, allowlist: isAllowlist });
+    } catch (error) {
+      packetError(`${label}: ${error instanceof Error ? error.message.replace("release packet verification failed: ", "") : String(error)}`);
+    }
   }
   const expected = baseline.allowed_refs;
   if (!sameJsonValue(recheck.allowed_refs, expected) || !sameJsonValue(allowlist.allowed_refs, expected)) {
@@ -780,6 +783,8 @@ async function attributeIgnoredPaths(root, relatives, trackedPaths) {
   const { error, stdout } = await new Promise((resolve) => {
     const child = execFile("git", ["check-ignore", "-v", "-z", "--stdin"], { cwd: root, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 },
       (failure, out) => resolve({ error: failure, stdout: out }));
+    // A git that exits before reading stdin would otherwise raise EPIPE as an unhandled error.
+    child.stdin.on("error", () => {});
     child.stdin.end(`${relatives.join("\0")}\0`);
   });
   // Exit 1 means "no input path is ignored" and still carries a well-formed (empty) report.

@@ -370,11 +370,9 @@ export function parseShellScript(text, label, fail) {
 
 function readDoubleQuoted(text, start, word, flushLiteral, appendLiteral, label, fail, commands) {
   let index = start;
-  let sawContent = false;
   for (; index < text.length; index += 1) {
     const character = text[index];
     if (character === '"') return index;
-    sawContent = true;
     if (character === "\\") {
       if (index + 1 >= text.length) fail(`${label} ends with a dangling backslash`);
       appendLiteral(text[index + 1]);
@@ -388,7 +386,6 @@ function readDoubleQuoted(text, start, word, flushLiteral, appendLiteral, label,
     }
     appendLiteral(character);
   }
-  if (!sawContent) fail(`${label} has an unterminated double-quoted string`);
   fail(`${label} has an unterminated double-quoted string`);
   return index;
 }
