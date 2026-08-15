@@ -1,0 +1,14 @@
+# Canonical author identities.
+#
+# Git records whatever identity a commit was made under. This file maps those to the person who
+# holds the work, so `git shortlog`, `git log`, GitHub's contributor views and blame all show one
+# canonical identity without rewriting any commit.
+#
+# `wp1-builder <wp1@example.invalid>` was a delegated build agent working under briand-ai during the
+# Superbee rename. The identity was synthetic and its address is in the reserved `.invalid` domain,
+# so it is neither a real contributor nor a reachable mailbox. Mapping it here attributes the work
+# correctly and keeps a placeholder address out of the contributor list, without changing commit
+# SHAs — history rewriting was considered and rejected, since it would invalidate every digest,
+# signed receipt, and review approval bound to those commits.
+
+briand-ai <briand@bittr.ai> <wp1@example.invalid>
