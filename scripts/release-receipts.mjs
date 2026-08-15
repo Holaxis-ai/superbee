@@ -3,7 +3,6 @@
 // can authorize registry or GitHub mutation.
 import { DRY_RUN_STAGE_ID, LIVE_STAGE_ID, parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 import {
-  assertWorkflowContract,
   defaultReleaseTargets,
   RELEASE_CANDIDATE_SCHEMA,
   RELEASE_FINALIZER_PROOF_SCHEMA,
@@ -79,17 +78,26 @@ export function parseStagePublishJson(text) {
   return id;
 }
 
-/** npm stage download chooses this filename; the command has no --out option. */
-export function stageDownloadFilename(version, stageId) {
-  return stageDownloadFilenameForTarget(defaultReleaseTargets().bridge, version, stageId);
-}
-
+/**
+ * npm stage download chooses this filename; the command has no --out option. The target is
+ * required: the basename comes from the target's own manifest entry, and the removed
+ * bridge-hardcoded variant of this helper named @holaxis/aslite's tarball for every caller.
+ */
 export function stageDownloadFilenameFor(targetId, version, stageId) {
   strictVersion("version", version);
   string("stage id", stageId, LIVE_STAGE_ID);
-  const target = defaultReleaseTargets()[targetId];
-  if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
-  return stageDownloadFilenameForTarget(assertWorkflowContract(target), version, stageId);
+  let target;
+  try {
+    target = resolveDeclaredTarget({
+      targetId,
+      targets: defaultReleaseTargets(),
+      context: "stage download target",
+      workflowContract: "full",
+    });
+  } catch (error) {
+    fail(error.message);
+  }
+  return stageDownloadFilenameForTarget(target, version, stageId);
 }
 
 function resolveTargetFromFields(fields) {

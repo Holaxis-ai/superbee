@@ -10,18 +10,27 @@
 // instructions, and the tests never drift.
 
 import {
-  assertWorkflowContract,
   defaultReleaseManifest,
   defaultReleaseTargets,
   resolveAllowedTupleByTarget,
+  resolveDeclaredTarget,
   stageDownloadFilenameForTarget,
 } from "./release-targets.mjs";
 import { assertStrictSemver } from "./strict-semver.mjs";
 
-function targetFor(targetId = "bridge") {
-  const target = defaultReleaseTargets()[targetId];
-  if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
-  return assertWorkflowContract(target);
+/**
+ * Which package an operation names is NEVER defaulted. A missing target used to resolve to the
+ * bridge, so a superbee rollback invoked without one silently emitted registry commands against
+ * @holaxis/aslite. The shared resolver fails closed on an absent, unknown, non-string, or
+ * identity-only target.
+ */
+function targetFor(targetId) {
+  return resolveDeclaredTarget({
+    targetId,
+    targets: defaultReleaseTargets(),
+    context: "release operation target",
+    workflowContract: "full",
+  });
 }
 
 // A safe token for ids/tags/filenames: alphanumerics and . _ - only, and NOT dash-leading — a
@@ -67,7 +76,7 @@ function op(argv, extra = {}) {
 }
 
 /** `npm stage download <id>` + local SHA-256 compare — the mandatory pre-approval inspection. */
-export function inspectionInstructions({ stageId, tarballSha256, version, target = "bridge" }) {
+export function inspectionInstructions({ stageId, tarballSha256, version, target }) {
   const releaseTarget = targetFor(target);
   assertToken("stageId", stageId);
   assertSha256(tarballSha256);
@@ -98,13 +107,13 @@ export function approveOperation({ stageId }) {
 }
 
 /** Move a secondary dist-tag (e.g. float `next` to a prerelease candidate). */
-export function secondaryTagOperation({ version, tag, target = "bridge" }) {
+export function secondaryTagOperation({ version, tag, target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }
 
 /** Remove a stale secondary tag (e.g. drop `next` once stable makes it redundant). */
-export function removeSecondaryTagOperation({ tag, target = "bridge" }) {
+export function removeSecondaryTagOperation({ tag, target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "rm", releaseTarget.package.name, assertToken("tag", tag)]);
 }
@@ -114,7 +123,7 @@ export function removeSecondaryTagOperation({ tag, target = "bridge" }) {
  * deprecate the failed version WITH the recovery command as the message. Returns argvs + display
  * commands.
  */
-export function rollbackOperation({ failedVersion, priorVersion, track = "next", target = "bridge", recoveryTarget = target }) {
+export function rollbackOperation({ failedVersion, priorVersion, track = "next", target, recoveryTarget = target }) {
   const releaseTarget = targetFor(target);
   const recovery = targetFor(recoveryTarget);
   assertVersion(failedVersion);
@@ -132,7 +141,7 @@ export function rollbackOperation({ failedVersion, priorVersion, track = "next",
  * Human-readable registry inspection commands. The strict integrity/signature/provenance/install
  * proof is performed by release-verify-registry.mjs in the separately dispatched finalizer.
  */
-export function registryVerifyOperations({ version, target = "bridge" }) {
+export function registryVerifyOperations({ version, target }) {
   const releaseTarget = targetFor(target);
   assertVersion(version);
   const coord = `${releaseTarget.package.name}@${version}`;
@@ -149,7 +158,7 @@ export function registryVerifyOperations({ version, target = "bridge" }) {
 }
 
 /** Interactive dist-tag promotion after registry proof (§5 promoted). */
-export function promoteOperation({ version, tag, target = "bridge" }) {
+export function promoteOperation({ version, tag, target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }

@@ -30,8 +30,13 @@ function arg(argv, flag, required = true) {
 }
 
 export function buildReceipt(fields) {
-  const { stageId, version, tarballSha256, draftReleaseId, target = "bridge" } = fields;
-  const receipt = buildStageReceipt({ ...fields, target });
+  const { stageId, version, tarballSha256, draftReleaseId } = fields;
+  const receipt = buildStageReceipt(fields);
+  // The receipt's own resolver is the ONE authority for which package this stage mutates, and it
+  // requires an explicit target (or an unambiguous package name). Every operator command below is
+  // built from the id it resolved, so a missing target can no longer produce a bridge-shaped
+  // receipt - bridge tarball filenames, bridge registry-verify - for a superbee stage.
+  const target = receipt.prepared.target;
   const inspection = inspectionInstructions({ stageId, tarballSha256, version, target });
   // `publication.npm_promote_tag` may be null (bridge, preview, rehearsal): then there is no
   // promotion to perform and the receipt carries no promote operation at all.
@@ -117,7 +122,8 @@ export async function main(argv = process.argv.slice(2)) {
     artifactId: arg(argv, "--artifact-id"),
     artifactDigest: arg(argv, "--artifact-digest"),
     stageId: arg(argv, "--stage-id"),
-    target: arg(argv, "--target", false) ?? "bridge",
+    // Required: the target decides which package the emitted receipt and operator commands name.
+    target: arg(argv, "--target"),
     version: arg(argv, "--version"),
     tag: arg(argv, "--tag"),
     sourceCommit: arg(argv, "--source-commit"),
