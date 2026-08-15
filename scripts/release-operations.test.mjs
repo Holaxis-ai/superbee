@@ -264,14 +264,17 @@ test("operationsFor requires --target for every op that mutates or names a packa
 // --target used to emit dist-tag + deprecate commands against @holaxis/aslite.
 test("rollback without --target emits nothing and names no package", () => {
   assert.throws(() => operationsFor("rollback", ["--failed-version", "0.1.0", "--prior-version", "0.0.9"]), /missing --target/);
+  // With --target and no --recovery-target, recovery stays on the failed package: both commands
+  // name superbee, where the bridge default used to put @holaxis/aslite on both.
   const explicit = operationsFor("rollback", ["--failed-version", "0.1.0", "--prior-version", "0.0.9", "--target", "successor-stable"]);
   assert.deepEqual(explicit.map((o) => o.command), [
     "npm dist-tag add superbee@0.0.9 next",
     'npm deprecate superbee@0.1.0 "superseded - install superbee@0.0.9 (npm install --global superbee@0.0.9)"',
   ]);
-  // --recovery-target defaults to the failed package's own target, not to the bridge.
+  // Recovering onto a different package stays possible, but only when the operator says so.
   const crossed = operationsFor("rollback", ["--failed-version", "0.1.0", "--prior-version", "0.1.0-pre.11", "--target", "successor-stable", "--recovery-target", "bridge"]);
   assert.match(crossed[0].command, /@holaxis\/aslite@0\.1\.0-pre\.11/);
+  assert.match(crossed[1].command, /npm deprecate superbee@0\.1\.0/);
 });
 
 // ── SECURITY (empirical): --execute with an injection-shaped stage id creates NO marker file ──
