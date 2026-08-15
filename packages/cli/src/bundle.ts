@@ -1,11 +1,12 @@
-// Bundle discovery for the `axi` CLI.
+// Bundle discovery for the Superbee CLI.
 //
-// Every OKF command operates on ONE Knowledge Bundle. Locally that's a directory tree rooted at
-// the folder that holds the reserved `index.md`; this module turns a `--dir <path>` flag (or the
-// cwd) into the `Bundle` handle the core engine consumes ({ root }). Discovery walks UP from the
-// cwd to the nearest ancestor containing `index.md`, mirroring how `git` finds `.git` — so an
-// agent can run `axi` from anywhere inside a bundle. `init` uses `resolveTargetDir` instead (it
-// CREATES the bundle, so the dir need not already exist).
+// Every OKF command operates on ONE Knowledge Bundle. Locally that's a directory tree; this module
+// turns a `--dir <path>` flag (or the cwd) into the `Bundle` handle the core engine consumes
+// ({ root }). An explicit existing directory is already an exact bundle boundary, so it does not
+// require OKF's optional root `index.md`. Ambient discovery still walks UP to the nearest reserved
+// `index.md`, mirroring how `git` finds `.git` — so an agent can run `superbee` from anywhere inside
+// an indexed bundle without making an index-less directory an ambient guess. `init` uses
+// `resolveTargetDir` instead (it CREATES the bundle, so the dir need not already exist).
 //
 // `--remote <url>` is the OTHER way to resolve a bundle: it produces a
 // `{ root: <url>, backend: RemoteBackend }` handle wired to a `docs/WIRE-PROTOCOL.md` v0 server
@@ -412,19 +413,18 @@ export async function resolveRemoteFlag(
   return undefined;
 }
 
-async function canonicalBundleRoot(
+async function canonicalDirectoryRoot(
   root: string,
   notFoundMessage: string,
   help: string,
 ): Promise<string> {
-  if (!(await exists(path.join(root, "index.md")))) {
-    throw new CliError("NOT_FOUND", notFoundMessage, { help });
-  }
   try {
-    return await fs.realpath(root);
+    const [canonicalRoot, info] = await Promise.all([fs.realpath(root), fs.stat(root)]);
+    if (!info.isDirectory()) throw new Error("target is not a directory");
+    return canonicalRoot;
   } catch {
-    // The target may have disappeared between validation and canonicalization. Keep that race in
-    // the same user-facing class as an initially missing bundle rather than leaking a raw fs error.
+    // The target may have disappeared between selection and canonicalization. Keep that race in
+    // the same user-facing class as an initially missing target rather than leaking a raw fs error.
     throw new CliError("NOT_FOUND", notFoundMessage, { help });
   }
 }
@@ -1175,17 +1175,30 @@ export async function resolveLocalBundleTarget(
   if (dirFlag !== undefined) {
     const requested = path.resolve(startDir, dirFlag);
     const conventional = path.join(requested, CONVENTIONAL_BUNDLE_DIR_NAME);
-    let root: string | null = null;
-    if (await exists(path.join(requested, "index.md"))) root = requested;
-    else if (await exists(path.join(conventional, "index.md"))) root = conventional;
+    // Preserve the established project-directory shorthand when its direct conventional bundle is
+    // indexed. Otherwise the requested directory itself is the exact boundary, even without the
+    // optional root index.md.
+    const root = (await exists(path.join(requested, "index.md")))
+      ? requested
+      : (await exists(path.join(conventional, "index.md")))
+        ? conventional
+        : requested;
 
-    if (root === null) {
-      // An explicit project directory may name its direct conventional bundle. A deeper typo must
-      // not silently retarget an ancestor, but existing discovery still prevents divergent init help.
+    try {
+      const canonicalRoot = await canonicalDirectoryRoot(
+        root,
+        `no local bundle directory at ${root}`,
+        `${cliInvocation()} init --dir ${dirFlag}`,
+      );
+      return { root, canonicalRoot, selectedBy: "explicit-dir" };
+    } catch (error) {
+      if (!(error instanceof CliError)) throw error;
+      // A typo must not silently retarget an ancestor, but existing discovery still prevents
+      // divergent init help when the requested target is unavailable or not a directory.
       const enclosing = await findBundleRoot(requested);
       throw new CliError(
         "NOT_FOUND",
-        `no OKF bundle at ${requested} (no index.md or ${CONVENTIONAL_BUNDLE_DIR_NAME}/index.md)`,
+        `no local bundle directory at ${requested}`,
         {
           help: enclosing
             ? `${cliInvocation()} <command> --dir ${enclosing}`
@@ -1193,20 +1206,15 @@ export async function resolveLocalBundleTarget(
         },
       );
     }
-
-    const canonicalRoot = await canonicalBundleRoot(
-      root,
-      `no OKF bundle at ${root} (no index.md)`,
-      `${cliInvocation()} init --dir ${root}`,
-    );
-    return { root, canonicalRoot, selectedBy: "explicit-dir" };
   }
 
   const binding = await resolveProjectBinding(startDir);
   if (binding) {
-    const canonicalRoot = await canonicalBundleRoot(
+    // A committed local binding is also an exact declared boundary. Like explicit --dir, it does
+    // not need the optional root index.md; malformed and unavailable targets still fail closed.
+    const canonicalRoot = await canonicalDirectoryRoot(
       binding.target,
-      `no OKF bundle at ${binding.target} (no index.md) — from project binding ${binding.file}`,
+      `no local bundle directory at ${binding.target} — from project binding ${binding.file}`,
       `${cliInvocation()} init --dir ${binding.target}`,
     );
     return {
@@ -1225,7 +1233,7 @@ export async function resolveLocalBundleTarget(
       { help: `${cliInvocation()} init --dir ${CONVENTIONAL_BUNDLE_DIR_NAME}` },
     );
   }
-  const canonicalRoot = await canonicalBundleRoot(
+  const canonicalRoot = await canonicalDirectoryRoot(
     discovered,
     `no OKF bundle at ${discovered} (no index.md)`,
     `${cliInvocation()} init --dir ${CONVENTIONAL_BUNDLE_DIR_NAME}`,
@@ -1236,11 +1244,13 @@ export async function resolveLocalBundleTarget(
 /**
  * Resolve the {@link Bundle} an OKF command should operate on: `--remote <url>` wins (mutually
  * exclusive with `--dir`, checked here — a USAGE error, exit 2, if both are given); otherwise the
- * existing filesystem discovery applies. With `--dir`, the requested directory must be a bundle
- * or contain one at its direct conventional child; it never selects an ancestor. Without either,
+ * existing filesystem discovery applies. With `--dir`, an existing requested directory is the
+ * exact bundle boundary even when OKF's optional root index is absent; an indexed direct
+ * conventional child keeps the established project-directory shorthand. It never selects an
+ * ancestor. Without either,
  * a committed `.agentstate.json` directory-type binding applies next (item 43 follow-on — see the
  * module header); only then does discovery walk up from the cwd. Throws a NOT_FOUND CliError (exit
- * 6) when no LOCAL bundle is found — the fixing command points at `axi init`.
+ * 6) when no LOCAL bundle is found — the fixing command points at `superbee init`.
  *
  * Callers pass `remoteFlag` through {@link resolveRemoteFlag} first, so any truthy value here is an
  * explicit `--remote` flag and the mutual-exclusion error below is unambiguous.

@@ -173,7 +173,7 @@ test("built npm CLI keeps MCP stdout byte-empty for usage and bundle startup fai
     },
     {
       name: "bundle resolution",
-      args: ["mcp", "--dir", root],
+      args: ["mcp", "--dir", path.join(root, "missing")],
       code: 6,
       envelopeCode: "NOT_FOUND",
     },

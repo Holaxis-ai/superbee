@@ -190,13 +190,13 @@ test("serve --help: prints usage and does not boot a server", async () => {
   assert.equal(booted, false);
 });
 
-test("serve --dir <not-a-bundle>: NOT_FOUND (exit 6), delegated from openBundle — not a raw crash", async () => {
-  // serve() opens the bundle before binding a socket; an empty/non-bundle dir must surface the
+test("serve --dir <missing>: NOT_FOUND (exit 6), delegated from openBundle — not a raw crash", async () => {
+  // serve() opens the bundle before binding a socket; an unavailable dir must surface the
   // same structured NOT_FOUND every other bundle command gives, not an unhandled error.
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-serve-empty-"));
   try {
     await assert.rejects(
-      () => serve(["--dir", dir], { bootServer, waitForShutdown: () => Promise.resolve() }),
+      () => serve(["--dir", path.join(dir, "missing")], { bootServer, waitForShutdown: () => Promise.resolve() }),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "NOT_FOUND");
