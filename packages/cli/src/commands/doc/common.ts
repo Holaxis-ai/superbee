@@ -65,11 +65,11 @@ Options:
   --strict             If a kind convention governs --type, reject (exit 2) instead of writing with
                        warnings when the doc does not satisfy it (default: warn-and-write, exit 0 —
                        see 'superbee kinds')
-  --actor <name>       Attribute this write: persisted as the doc's own 'actor' frontmatter field
-                       (the per-doc attribution sync and its receipts read) and recorded in version
-                       history by a persisting backend. Note doc write is a FULL replace: omitting
-                       both --actor and the supported actor environment variables on an overwrite
-                       drops any existing actor field (reported in dropped_fields). Precedence:
+  --actor <name>       Attribute this write in the edition-appropriate advisory field ('actor' in
+                       v0.1; 'superbee_updated_by' in v0.2) used by per-doc sync receipts, and in
+                       version history for a persisting backend. Note doc write is a FULL replace:
+                       omitting both --actor and the supported actor environment variables on an
+                       overwrite drops any existing attribution field (reported in dropped_fields). Precedence:
                        --actor > SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. A
                        present-but-blank flag or environment value is a USAGE error (exit 2).
 ${COMMON_OPTIONS}

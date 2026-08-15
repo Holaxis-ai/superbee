@@ -206,6 +206,13 @@ export type { RawLink } from "./links.js";
 export { parseTimestamp } from "./freshness.js";
 
 export {
+  SUPERBEE_UPDATED_BY_FIELD,
+  mutationActorFromFrontmatter,
+  persistMutationActor,
+} from "./mutation-attribution.js";
+export type { PersistMutationActorOptions } from "./mutation-attribution.js";
+
+export {
   parseMarkdown,
   stringifyDoc,
   stringifyWithData,

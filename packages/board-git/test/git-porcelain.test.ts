@@ -895,6 +895,32 @@ test("changesSince: actor comes from the doc's FRONTMATTER, never the commit sub
   }
 });
 
+test("changesSince: producer-qualified mutation attribution wins over legacy actor spellings", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    const cursor = boardHead(topo.b);
+    await modifyBoardDoc(topo.a, "tasks/seed-one", {
+      frontmatter: {
+        superbee_updated_by: "carol",
+        updated_by: "alice",
+        actor: "mike",
+      },
+      body: "# Seed one\n\nportable attribution\n",
+    });
+    commitBoard(topo.a, "board: wrong — updated tasks/seed-one", {
+      author: { name: "wrong", email: "wrong@example.invalid" },
+    });
+    pushBoard(topo.a);
+    assert.deepEqual(ffPull(topo.b.board), { updated: true });
+
+    const result = changesSince(topo.b.board, cursor);
+    assert.ok(result.ok);
+    assert.equal(result.changes[0]?.actor, "carol");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
 test("changesSince: created/updated/deleted enrichment (deletion attributed from the cursor snapshot)", async () => {
   const topo = await makeTwoCloneTopology();
   try {

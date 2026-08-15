@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { createRouter } from "@superbee/server";
 
-import { readDocVersioned } from "../src/bundle.js";
+import { docVersions, readDocVersioned } from "../src/bundle.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
@@ -138,5 +138,29 @@ test("v0.2 create, mutate, no-op, conflict, and final receipts agree across all 
     assert.equal(row.created, baseline.created, `${row.name} create version`);
     assert.equal(row.changed, baseline.changed, `${row.name} changed version`);
     assert.equal(row.final, baseline.final, `${row.name} final receipt`);
+  }
+});
+
+test("v0.2 mutation attribution agrees across retained history and the filesystem projection", async () => {
+  const adapters = await harnesses();
+  try {
+    for (const harness of adapters) {
+      const result = await mutateDocument({
+        bundle: harness.bundle,
+        id: "notes/attributed",
+        mode: "create-only",
+        registry: EMPTY_REGISTRY,
+        strict: false,
+        actor: "alice",
+        persistActor: true,
+        buildCandidate: () => ({ frontmatter: { type: "Note", title: "Attributed" }, body: "body\n" }),
+      });
+
+      assert.equal(result.doc.frontmatter.superbee_updated_by, "alice", harness.name);
+      assert.equal(result.doc.frontmatter.actor, undefined, harness.name);
+      assert.equal((await docVersions(harness.bundle, "notes/attributed"))[0]?.actor, "alice", harness.name);
+    }
+  } finally {
+    await Promise.all(adapters.map((harness) => harness.cleanup()));
   }
 });

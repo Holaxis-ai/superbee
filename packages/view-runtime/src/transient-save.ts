@@ -1,5 +1,6 @@
 import {
   VersionConflict,
+  SUPERBEE_UPDATED_BY_FIELD,
   loadKinds,
   mutateDocument,
   readBlob,
@@ -79,14 +80,19 @@ function transientViewEntry(viewId: string): string {
   return entry;
 }
 
-function withoutTimestamp(frontmatter: Frontmatter): Frontmatter {
-  const { timestamp: _timestamp, actor: _actor, ...rest } = frontmatter;
+function withoutMutationMetadata(frontmatter: Frontmatter): Frontmatter {
+  const {
+    timestamp: _timestamp,
+    actor: _actor,
+    [SUPERBEE_UPDATED_BY_FIELD]: _updatedBy,
+    ...rest
+  } = frontmatter;
   return rest as Frontmatter;
 }
 
 function sameSavedRegistration(existing: OkfDocument, desired: OkfDocument): boolean {
-  const existingFields = withoutTimestamp(existing.frontmatter);
-  const desiredFields = withoutTimestamp(desired.frontmatter);
+  const existingFields = withoutMutationMetadata(existing.frontmatter);
+  const desiredFields = withoutMutationMetadata(desired.frontmatter);
   const existingKeys = Object.keys(existingFields).sort();
   const desiredKeys = Object.keys(desiredFields).sort();
   return (
