@@ -51,7 +51,7 @@ async function runJson(argv: string[]): Promise<Record<string, unknown>> {
 async function makeTwoKindBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
   const bundle: Bundle = { root: dir };
-  await initBundle(dir);
+  await initBundle(dir, { okfVersion: "0.1" });
   await writeDoc(bundle, {
     id: "conventions/task",
     frontmatter: {
@@ -114,7 +114,7 @@ async function makeTwoKindBundle(): Promise<{ dir: string; cleanup: () => Promis
 
 // ── Fork A: kind-aware columns ──────────────────────────────────────────────────────────────────
 
-test("list --type Task: projects kind columns {id,title,status,priority} — description EXCLUDED, count present", async () => {
+test("list --type Task: projects logical progress_status columns — description EXCLUDED, count present", async () => {
   const { dir, cleanup } = await makeTwoKindBundle();
   try {
     const result = await runJson(["--type", "Task", "--dir", dir]);
@@ -122,10 +122,10 @@ test("list --type Task: projects kind columns {id,title,status,priority} — des
     const rows = result.docs as Array<Record<string, unknown>>;
     assert.equal(rows.length, 3);
     for (const row of rows) {
-      assert.deepEqual(Object.keys(row).sort(), ["id", "priority", "status", "title"]);
+      assert.deepEqual(Object.keys(row).sort(), ["id", "priority", "progress_status", "title"]);
     }
     const a = rows.find((r) => r.id === "tasks/a")!;
-    assert.equal(a.status, "todo");
+    assert.equal(a.progress_status, "todo");
     assert.equal(a.priority, "high");
     // Missing optional field on a row is "" (keeps every row's key set uniform, TOON-required).
     const c = rows.find((r) => r.id === "tasks/c")!;
@@ -370,8 +370,8 @@ test("list --type Task --field status=done: filter AND kind-aware columns compos
     const result = await runJson(["--type", "Task", "--field", "status=done", "--dir", dir]);
     assert.equal(result.count, 1);
     const rows = result.docs as Array<Record<string, unknown>>;
-    assert.deepEqual(Object.keys(rows[0]!).sort(), ["id", "priority", "status", "title"]);
-    assert.equal(rows[0]!.status, "done");
+    assert.deepEqual(Object.keys(rows[0]!).sort(), ["id", "priority", "progress_status", "title"]);
+    assert.equal(rows[0]!.progress_status, "done");
   } finally {
     await cleanup();
   }

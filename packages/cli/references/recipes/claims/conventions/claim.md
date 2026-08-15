@@ -8,14 +8,14 @@ links:
 fields:
   required:
     - title
-    - status
+    - progress_status
     - reason
   optional:
     - artifacts
     - evidence_command
     - evidence_commit
   values:
-    status:
+    progress_status:
       - active
       - challenged
       - locked
@@ -25,7 +25,7 @@ fields:
 # Claim
 
 A data-derived finding with provenance and a verification lifecycle. The `title` IS the
-claim: one sentence carrying the specific numbers. `status` is the lifecycle —
+claim: one sentence carrying the specific numbers. `progress_status` is the lifecycle —
 `active` (filed) → `challenged` (under independent check) → `locked` (verified
 end-to-end; citable in final outputs) — or `deprecated` (superseded; never deleted).
 `reason` says how the number was derived or why it changed. `evidence_command` is the

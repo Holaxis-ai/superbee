@@ -106,20 +106,33 @@ export async function resolvePageTarget(pageId: string): Promise<boolean> {
  * Feeds the bridge's `open` filter. Cached until {@link invalidateKinds}; errors yield an empty
  * registry (=> `open` filters nothing — `list --open`'s posture on a terminal-free bundle).
  */
-let kindsCache: Promise<KindConvention[]> | null = null;
+export interface KindContext {
+  kinds: KindConvention[];
+  /** Internal storage edition used to project stable product-level field names. */
+  okfVersion: string;
+}
 
-export function fetchKinds(): Promise<KindConvention[]> {
+let kindsCache: Promise<KindContext> | null = null;
+
+export function fetchKindContext(): Promise<KindContext> {
   kindsCache ??= (async () => {
     try {
       const res = await fetch("/__ui/kinds", { credentials: "same-origin" });
-      if (!res.ok) return [];
-      const body = (await res.json()) as { kinds?: KindConvention[] };
-      return Array.isArray(body.kinds) ? body.kinds : [];
+      if (!res.ok) return { kinds: [], okfVersion: "0.1" };
+      const body = (await res.json()) as { kinds?: KindConvention[]; okfVersion?: string };
+      return {
+        kinds: Array.isArray(body.kinds) ? body.kinds : [],
+        okfVersion: typeof body.okfVersion === "string" ? body.okfVersion : "0.1",
+      };
     } catch {
-      return [];
+      return { kinds: [], okfVersion: "0.1" };
     }
   })();
   return kindsCache;
+}
+
+export function fetchKinds(): Promise<KindConvention[]> {
+  return fetchKindContext().then(({ kinds }) => kinds);
 }
 
 /** Drop the cached kind registry when a `conventions/` doc moved (`ids` = changed+removed doc ids from a change event), or unconditionally when `ids` is omitted (the SSE-resync case: anything may have changed during the gap). */

@@ -77,7 +77,7 @@ export async function readBundleOkfVersion(bundle: Bundle): Promise<string | und
 export const SUPPORTED_OKF_AUTHORING_VERSIONS = ["0.1", "0.2"] as const;
 
 /** Product default for genuinely new bundles; separate from the supported-version set. */
-export const DEFAULT_OKF_AUTHORING_VERSION = "0.1";
+export const DEFAULT_OKF_AUTHORING_VERSION = "0.2";
 
 /** Resolve the default authoring version or reject a version this writer cannot produce. */
 export function resolveOkfAuthoringVersion(requested?: string): string {

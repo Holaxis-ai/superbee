@@ -7,7 +7,6 @@ links:
 fields:
   required:
     - title
-timestamp: '2026-07-07T19:50:00.000Z'
 ---
 # Roadmap
 

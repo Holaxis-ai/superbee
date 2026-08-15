@@ -17,7 +17,7 @@ test("built CLI new persists prototype-looking options as exact own properties a
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-new-built-"));
   try {
     const bundle: Bundle = { root: dir };
-    await initBundle(dir);
+    await initBundle(dir, { okfVersion: "0.1" });
     const cases = [
       { field: "__proto__", args: ["--__proto__", "proto-value"], expected: "proto-value", values: ["proto-value"] },
       { field: "constructor", args: ["--constructor=ctor-value"], expected: "ctor-value", values: ["ctor-value"] },
@@ -61,7 +61,7 @@ test("built CLI new accepts logical progress_status while preserving v0.1 status
   const dir = await mkdtemp(path.join(tmpdir(), "superbee-progress-new-"));
   try {
     const bundle: Bundle = { root: dir };
-    await initBundle(dir);
+    await initBundle(dir, { okfVersion: "0.1" });
     await writeDoc(bundle, {
       id: "conventions/task",
       frontmatter: {

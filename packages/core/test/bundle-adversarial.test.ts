@@ -173,7 +173,7 @@ test("readBundleOkfVersion reads the root edition through filesystem and memory 
   const root = await mkdtemp(path.join(tmpdir(), "okf-version-read-"));
   try {
     const filesystemBundle = await initBundle(root);
-    assert.equal(await readBundleOkfVersion(filesystemBundle), "0.1");
+    assert.equal(await readBundleOkfVersion(filesystemBundle), "0.2");
 
     const backend = new MemoryBackend();
     const memory = { root: "mem://versioned", backend };
@@ -199,7 +199,7 @@ test("initBundle swallows only the expect-absent VersionConflict from a winning 
     };
     const raced = await initBundle(root);
     const raw = (await new FilesystemBackend(raced.root).readReserved("", "index.md"))!;
-    assert.equal(parseMarkdown(raw.content).frontmatter.okf_version, "0.1", "the default version remains deterministic");
+    assert.equal(parseMarkdown(raw.content).frontmatter.okf_version, "0.2", "the default version remains deterministic");
 
     await rm(root, { recursive: true, force: true });
     FilesystemBackend.prototype.writeReserved = async function () {

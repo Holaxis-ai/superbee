@@ -96,9 +96,9 @@ Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
-  --actor <name>         Attribute this write in the edition-appropriate advisory field ('actor'
-                         in v0.1; 'superbee_updated_by' in v0.2) used by per-doc sync receipts, and
-                         in version history for a persisting backend. Precedence: --actor > SUPERBEE_ACTOR >
+  --actor <name>         Attribute this write using the bundle's compatible advisory field, used
+                         by per-doc sync receipts and version history for a persisting backend.
+                         Precedence: --actor > SUPERBEE_ACTOR >
                          legacy AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or
                          environment value is a USAGE error (exit 2).
   --body <markdown>     Use inline Markdown as the complete initial body. Mutually exclusive with

@@ -35,7 +35,7 @@ export interface MutateCandidate extends DocumentMutationCandidate {
 /** Structured CLI errors for the conflict shapes a verb can hit. */
 export interface MutateErrorHooks {
   notFound?: () => CliError;
-  alreadyExists?: () => CliError;
+  alreadyExists?: (err: VersionConflict) => CliError;
   staleHead?: (err: VersionConflict) => CliError;
 }
 
@@ -111,7 +111,7 @@ async function translateMutationError(error: unknown, opts: MutateDocOptions): P
   }
   if (error instanceof VersionConflict) {
     if (opts.mode === "create-only") {
-      throw opts.errors.alreadyExists?.() ?? new CliError("ALREADY_EXISTS", `'${opts.id}' already exists`);
+      throw opts.errors.alreadyExists?.(error) ?? new CliError("ALREADY_EXISTS", `'${opts.id}' already exists`);
     }
     throw opts.errors.staleHead?.(error) ?? new CliError("STALE_HEAD", error.message);
   }

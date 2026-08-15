@@ -181,7 +181,7 @@ export const CLI_COMMAND_GROUPS = [
         leaves: [publicLeaf("docUpdate", "doc update", one)],
         usage:
           "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]",
-        summary: "Patch given fields (incl. kind-declared fields like --status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
+        summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {
         id: "docRead",

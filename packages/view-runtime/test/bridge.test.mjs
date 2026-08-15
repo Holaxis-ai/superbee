@@ -263,13 +263,13 @@ for (const row of [
       bundle,
       launches: {
         async resolve(launchId) {
-          return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+          return launchId === "launch" ? { launchId, capability: "bundle-propose" } : null;
         },
         revoke() {},
       },
       config: async () => ({ root: null, name: "Test", mode: "test" }),
       renderDocument: ({ body }) => ({ html: body, bounded: false }),
-      allowActionProtocol: false,
+      allowActionProtocol: true,
     });
     const outcome = await bridge.handle("launch", {
       bridge: "v0",
@@ -290,6 +290,18 @@ for (const row of [
     });
     const task = untyped.reply?.result?.rows?.find((candidate) => candidate.id === "tasks/one");
     assert.equal(task?.frontmatter?.progress_status, "todo", "untyped View feeds receive the same projection");
+
+    for (const type of ["read", "read-versioned"]) {
+      const read = await bridge.handle("launch", {
+        bridge: type === "read" ? "v0" : "v1",
+        type,
+        id: `progress-${type}`,
+        docId: "tasks/one",
+      });
+      const doc = type === "read" ? read.reply?.result : read.reply?.result?.doc;
+      assert.equal(doc?.frontmatter?.progress_status, "todo", `${type} receives the same logical projection`);
+      assert.equal(doc?.frontmatter?.[row.field], "todo", `${type} preserves the raw coordinate`);
+    }
   });
 }
 
@@ -329,6 +341,14 @@ test("BridgeService never projects v0.2 lifecycle status as workflow progress", 
   const frontmatter = outcome.reply?.result?.rows?.[0]?.frontmatter;
   assert.equal(frontmatter?.status, "stable");
   assert.equal(Object.hasOwn(frontmatter ?? {}, "progress_status"), false);
+  const read = await bridge.handle("launch", {
+    bridge: "v0",
+    type: "read",
+    id: "lifecycle-read",
+    docId: "releases/one",
+  });
+  assert.equal(read.reply?.result?.frontmatter?.status, "stable");
+  assert.equal(Object.hasOwn(read.reply?.result?.frontmatter ?? {}, "progress_status"), false);
 });
 
 test("invalid v0 envelopes correlate only a bounded existing id and perform no launch work", async () => {

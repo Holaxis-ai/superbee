@@ -19,7 +19,7 @@ import {
   requestFromIncomingMessage,
   writeResponseToServerResponse,
 } from "@superbee/server";
-import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, type Bundle, type EdgeFilter } from "@superbee/core";
+import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, readBundleOkfVersion, type Bundle, type EdgeFilter } from "@superbee/core";
 import { parseRegistration } from "@superbee/core/page";
 import { isAllowedHost } from "./host.js";
 import { checkAuth, mintSessionSecret, sessionCookieHeader } from "./session.js";
@@ -399,12 +399,18 @@ async function workspacesSummary(options: UiServerOptions): Promise<WorkspaceSum
  */
 async function kindsResponse(options: UiServerOptions): Promise<Response> {
   let kinds: unknown[] = [];
+  let okfVersion = "0.1";
   try {
-    kinds = Array.from((await loadKinds(options.bundle)).kinds.values());
+    const [registry, version] = await Promise.all([
+      loadKinds(options.bundle),
+      readBundleOkfVersion(options.bundle),
+    ]);
+    kinds = Array.from(registry.kinds.values());
+    okfVersion = version ?? "0.1";
   } catch {
     kinds = [];
   }
-  return new Response(JSON.stringify({ kinds }), {
+  return new Response(JSON.stringify({ kinds, okfVersion }), {
     status: 200,
     headers: { "content-type": "application/json; charset=utf-8" },
   });

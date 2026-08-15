@@ -285,7 +285,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     throw new CliError(
       "USAGE",
       `doc update requires at least one field to patch (${DOC_UPDATE_FIELD_FLAGS.map((f) => `--${f}`).join("/")} ` +
-        `or a kind-declared --<field>, e.g. --status)` +
+        `or a kind-declared --<field>, e.g. --progress_status)` +
         // The same silent-stdin signal doc write's receipt carries (see write.ts): when the probe
         // timed out, "nothing to patch" may really mean "your piped body arrived too late".
         (stdinSilentTimeout ? `. Note: ${STDIN_SILENT_NOTE}.` : ""),

@@ -15,10 +15,12 @@ import { initBundle, writeBlob, writeDoc } from "@superbee/core";
 import { artifact, slugifyTitle, firstFreeId } from "../src/commands/artifact.js";
 import { openBundle } from "../src/bundle.js";
 
-async function makeBundle(): Promise<{ dir: string; html: string; cleanup: () => Promise<void> }> {
+async function makeBundle(
+  okfVersion?: "0.1" | "0.2",
+): Promise<{ dir: string; html: string; cleanup: () => Promise<void> }> {
   const top = await mkdtemp(path.join(tmpdir(), "aslite-artifact-"));
   const dir = path.join(top, "b");
-  await initBundle(dir); // seeds context-notes only — deliberately NO Artifact convention
+  await initBundle(dir, okfVersion ? { okfVersion } : undefined); // deliberately NO Artifact convention
   const html = path.join(top, "report.html");
   await writeFile(html, "<!doctype html><h1>hi</h1>");
   return { dir, html, cleanup: () => rm(top, { recursive: true, force: true }) };
@@ -75,7 +77,8 @@ test("create: one command promotes the blob + writes the record (no Artifact con
     assert.ok(existsSync(path.join(dir, "artifacts", "q3-analysis.html")), "blob written");
     const record = await readFile(path.join(dir, "artifacts", "q3-analysis.md"), "utf8");
     assert.match(record, /type: Artifact/);
-    assert.match(record, /status: active/);
+    assert.match(record, /superbee_progress_status: active/);
+    assert.doesNotMatch(record, /^status:/m);
     assert.match(record, /entry: artifacts\/q3-analysis\.html/);
     assert.match(record, /entry_version:/);
   } finally {
@@ -95,6 +98,18 @@ test("create: a second same-title artifact gets a collision-safe id", async () =
   }
 });
 
+test("create: an explicitly legacy bundle retains the legacy workflow coordinate", async () => {
+  const { dir, html, cleanup } = await makeBundle("0.1");
+  try {
+    await runJson(["create", html, "--title", "Legacy report", "--dir", dir, "--actor", "t"]);
+    const record = await readFile(path.join(dir, "artifacts", "legacy-report.md"), "utf8");
+    assert.match(record, /^status: active$/m);
+    assert.doesNotMatch(record, /superbee_progress_status:/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("create --supersedes: flips the prior to superseded and links this one 'supersedes' it", async () => {
   const { dir, html, cleanup } = await makeBundle();
   try {
@@ -104,7 +119,8 @@ test("create --supersedes: flips the prior to superseded and links this one 'sup
     assert.equal(v2.supersedes, "artifacts/report");
 
     const prior = await readFile(path.join(dir, "artifacts", "report.md"), "utf8");
-    assert.match(prior, /status: superseded/);
+    assert.match(prior, /superbee_progress_status: superseded/);
+    assert.doesNotMatch(prior, /^status:/m);
     const nu = await readFile(path.join(dir, "artifacts", "report-v2.md"), "utf8");
     // The supersedes edge is a same-directory relative body link carrying the declared verb.
     assert.match(nu, /\[supersedes\]\(report\.md\)/);
@@ -118,14 +134,17 @@ test("create --supersedes resolves path-style .md input before the exact storage
   try {
     await writeDoc({ root: dir }, {
       id: "artifacts/prior",
-      frontmatter: { type: "Artifact", status: "active" },
+      frontmatter: { type: "Artifact", superbee_progress_status: "active" },
       body: "",
     });
     const receipt = await runJson([
       "create", html, "--title", "Next", "--supersedes", "artifacts/prior.md", "--dir", dir, "--actor", "t",
     ]);
     assert.equal(receipt.supersedes, "artifacts/prior");
-    assert.match(await readFile(path.join(dir, "artifacts", "prior.md"), "utf8"), /status: superseded/);
+    assert.match(
+      await readFile(path.join(dir, "artifacts", "prior.md"), "utf8"),
+      /superbee_progress_status: superseded/,
+    );
     assert.match(await readFile(path.join(dir, "artifacts", "next.md"), "utf8"), /\[supersedes\]\(prior\.md\)/);
   } finally {
     await cleanup();

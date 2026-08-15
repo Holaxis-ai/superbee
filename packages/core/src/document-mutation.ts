@@ -49,13 +49,20 @@ export class KindConformanceError extends InvalidInputError {
   readonly id: ConceptId;
   readonly governs: string;
   readonly violations: ValidationWarning[];
+  readonly okfVersion?: "0.1" | "0.2";
 
-  constructor(id: ConceptId, governs: string, violations: ValidationWarning[]) {
+  constructor(
+    id: ConceptId,
+    governs: string,
+    violations: ValidationWarning[],
+    okfVersion?: "0.1" | "0.2",
+  ) {
     super(`'${id}' does not satisfy the '${governs}' kind: ${violations.map((warning) => warning.message).join("; ")}`);
     this.name = "KindConformanceError";
     this.id = id;
     this.governs = governs;
     this.violations = violations;
+    this.okfVersion = okfVersion;
   }
 }
 
@@ -176,7 +183,7 @@ function validateCandidate(
   candidate: DocumentMutationCandidate,
   registry: KindRegistry,
   strict: boolean,
-  okfVersion: string,
+  okfVersion: "0.1" | "0.2",
   now: () => string,
 ): RegistryValidationResult {
   const result = defaultTimestampAndValidateAgainstRegistry(
@@ -185,7 +192,7 @@ function validateCandidate(
     { okfVersion, now },
   );
   if (strict && result.kind && result.warnings.length > 0) {
-    throw new KindConformanceError(id, result.kind.governs, result.warnings);
+    throw new KindConformanceError(id, result.kind.governs, result.warnings, okfVersion);
   }
   return result;
 }
@@ -304,7 +311,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         // `writeDocVersioned`, gated by its own `--expected-version`/`--strict`) is deliberately
         // OUT of this rule; see its own comment.
         if (!opts.strict && existing && warnings.length > 0 && conforms(existing, opts.registry)) {
-          throw new KindConformanceError(opts.id, validated.kind!.governs, warnings);
+          throw new KindConformanceError(opts.id, validated.kind!.governs, warnings, okfVersion);
         }
 
         return { action: "write", next: { id: opts.id, ...candidate }, result: undefined };

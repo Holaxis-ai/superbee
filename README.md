@@ -40,7 +40,7 @@ replaces exact historical AgentState marketplace hooks rather than leaving two S
 superbee                                   # confirm that no bundle is selected yet
 superbee recipes                           # compare the workspace setups shipped offline
 superbee init --create-only --recipe work-tracking --dir .agentstate-lite
-superbee new "Task" first-task --title "Plan the first change" --status todo \
+superbee new "Task" first-task --title "Plan the first change" --progress_status todo \
   --actor quickstart-agent --dir .agentstate-lite
 superbee --dir .agentstate-lite            # see the Task in the live bundle summary
 ```
@@ -53,9 +53,9 @@ manual data-entry workflow.
 
 `quickstart-agent` is an advisory example actor label; replace it with the actual agent identity.
 
-New bundles currently default to OKF v0.1. To start a v0.2 bundle explicitly, add
-`--okf-version 0.2` to `init`; built-in recipes then materialize their logical workflow fields at
-the v0.2 producer-qualified coordinate. This does not migrate an existing v0.1 bundle.
+New bundles use Superbee's current portable format automatically. Existing older bundles remain
+supported in place; Superbee detects their declared format and applies compatibility behavior
+without requiring an ordinary-use migration.
 
 The conventional `.agentstate-lite/` folder at the project root is discovered with zero
 config (the way git finds `.git`) — every command after setup runs bare from anywhere in
@@ -92,9 +92,9 @@ Then, day to day:
 
 ```sh
 export SUPERBEE_ACTOR=claude           # optional default; per-command --actor wins
-superbee new "Task" ship-parser --title "Ship the parser" --status todo
+superbee new "Task" ship-parser --title "Ship the parser" --progress_status todo
 superbee list --type Task
-superbee doc update tasks/ship-parser --status in_progress
+superbee doc update tasks/ship-parser --progress_status in_progress
 superbee doc history tasks/ship-parser # who changed what, when
 superbee ui                            # the bundle, rendered — local server, no cloud
 superbee index generate                # optional: complete portable Markdown navigation
@@ -166,8 +166,8 @@ settings — sync only ever appends commits to it.
   self-describing Review Request kind plus a generic live View, with no review instances.
 
 Bundles are valid [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-v0.1 or v0.2 — plain markdown any conformant tool can read. New bundles default to v0.1; explicit
-v0.2 creation is available with `init --okf-version 0.2`.
+— plain markdown any conformant tool can read. Superbee writes the current format for new bundles
+and preserves existing legacy bundles without rewriting their declared edition.
 
 ## What's solid
 

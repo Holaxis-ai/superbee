@@ -9,14 +9,27 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { DocHead } from "../api/types.js";
+import type { KindConvention } from "@superbee/core/kinds";
 import { ActivityFeed, FEED_LIMIT, FEED_REFETCH_DEBOUNCE_MS, feedRows, freshIds } from "./ActivityFeed.js";
 import { listAllHeads } from "../api/client.js";
+import { fetchKindContext } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 vi.mock("../api/client.js", () => ({
   listAllHeads: vi.fn(async () => []),
+}));
+
+const LEGACY_KINDS: KindConvention[] = ["Task", "Errand", "Review Request"].map((governs) => ({
+  id: `conventions/${governs.toLowerCase().replaceAll(" ", "-")}`,
+  title: governs,
+  governs,
+  fields: { required: ["title", "status"], optional: ["assignee"], values: {}, terminal: {}, descriptions: {} },
+}));
+
+vi.mock("../api/pages.js", () => ({
+  fetchKindContext: vi.fn(async () => ({ okfVersion: "0.1", kinds: [] })),
 }));
 
 vi.mock("../pages/pageEvents.js", () => ({
@@ -40,7 +53,7 @@ describe("feedRows (pure projection)", () => {
       head("tasks/newer", { type: "Task", title: "Newer", timestamp: "2026-07-21T10:00:00Z" }),
       head("notes/undated", { type: "Context Note", title: "Undated" }),
     ];
-    const rows = feedRows(heads);
+    const rows = feedRows(heads, "0.1", LEGACY_KINDS);
     expect(rows.map((r) => r.id)).toEqual(["tasks/newer", "tasks/older", "notes/undated"]);
     expect(rows[0]).toMatchObject({ kind: "Task", title: "Newer" });
   });
@@ -62,6 +75,8 @@ describe("feedRows (pure projection)", () => {
           timestamp: `2026-07-23T1${i}:00:00Z`,
         }),
       ),
+      "0.1",
+      LEGACY_KINDS,
     );
     expect(rows).toHaveLength(KINDS_CARRYING_OWNERSHIP.length);
     for (const row of rows) {
@@ -73,10 +88,34 @@ describe("feedRows (pure projection)", () => {
     }
   });
 
+  it("shows current workflow progress without treating OKF lifecycle status as progress", () => {
+    const currentKind: KindConvention = {
+      id: "conventions/task",
+      title: "Task",
+      governs: "Task",
+      fields: {
+        required: ["title", "superbee_progress_status"],
+        optional: ["status"],
+        values: {},
+        terminal: {},
+        descriptions: {},
+      },
+    };
+    const [row] = feedRows([
+      head("tasks/current", {
+        type: "Task",
+        title: "Current",
+        status: "stable",
+        superbee_progress_status: "in_progress",
+      }),
+    ], "0.2", [currentKind]);
+    expect(row!.status).toBe("in_progress");
+  });
+
   it("omits the ownership fields a doc does not carry", () => {
     const [note] = feedRows([
       head("notes/y", { type: "Context Note", title: "A note", actor: "codex", timestamp: "2026-07-23T09:00:00Z" }),
-    ]);
+    ], "0.1", LEGACY_KINDS);
     expect(note!.assignee).toBeUndefined();
     expect(note!.status).toBeUndefined();
     expect(note!.actor).toBe("codex");
@@ -110,7 +149,7 @@ describe("feedRows (pure projection)", () => {
         title: "None",
         timestamp: "2026-07-23T09:00:00Z",
       }),
-    ]);
+    ], "0.1", LEGACY_KINDS);
 
     expect(rows.map(({ id, actor }) => ({ id, actor }))).toEqual([
       { id: "notes/v02", actor: "carol" },
@@ -124,7 +163,7 @@ describe("feedRows (pure projection)", () => {
     const heads = Array.from({ length: FEED_LIMIT + 3 }, (_, i) =>
       head(`docs/d${i}`, { type: "Doc", timestamp: `2026-07-0${(i % 9) + 1}T00:00:00Z` }),
     );
-    const rows = feedRows(heads);
+    const rows = feedRows(heads, "0.1", LEGACY_KINDS);
     expect(rows).toHaveLength(FEED_LIMIT);
     expect(rows[0]!.title).toBe(rows[0]!.id);
   });
@@ -134,7 +173,7 @@ describe("freshIds (pure change marking)", () => {
   const rows = feedRows([
     head("a", { type: "Doc", title: "A", timestamp: "2026-07-21T02:00:00Z" }, "v2"),
     head("b", { type: "Doc", title: "B", timestamp: "2026-07-21T01:00:00Z" }, "v1"),
-  ]);
+  ], "0.1", LEGACY_KINDS);
 
   it("marks nothing on first load (null previous)", () => {
     expect(freshIds(rows, null).size).toBe(0);
@@ -157,6 +196,7 @@ describe("ActivityFeed live contract", () => {
 
   beforeEach(() => {
     vi.mocked(listAllHeads).mockClear();
+    vi.mocked(fetchKindContext).mockResolvedValue({ okfVersion: "0.1", kinds: LEGACY_KINDS });
     vi.mocked(subscribeToChanges).mockImplementation((handler: (e: never) => void) => {
       changeHandler = handler as (e: unknown) => void;
       return () => {};

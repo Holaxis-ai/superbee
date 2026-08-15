@@ -1088,7 +1088,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 499
+      "line": 505
     },
     {
       "file": "packages/ui-server/src/server.ts",
@@ -1099,7 +1099,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 501
+      "line": 507
     },
     {
       "file": "packages/ui-server/src/session.ts",
@@ -1132,7 +1132,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 184
+      "line": 197
     },
     {
       "file": "packages/ui/src/api/pages.ts",
@@ -1143,7 +1143,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 195
+      "line": 208
     },
     {
       "file": "release/burned-versions.json",
@@ -1605,7 +1605,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 872
+      "line": 889
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1616,7 +1616,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 874
+      "line": 891
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1627,7 +1627,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 889
+      "line": 906
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1638,7 +1638,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 957
+      "line": 974
     }
   ]
 }

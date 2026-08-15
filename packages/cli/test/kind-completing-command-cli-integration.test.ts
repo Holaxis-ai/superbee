@@ -115,13 +115,13 @@ test("built CLI: a `doc update --strict` kind refusal's help is a literal comple
     assert.ok(help, `the refusal must carry a help fixing command; stdout=${refusal.stdout}`);
 
     // The help is a LITERAL, bare-bin-resolved completing command naming the violated field.
-    assert.equal(help, "superbee doc update tasks/x --status <todo|in_progress|blocked|done|canceled>");
+    assert.equal(help, "superbee doc update tasks/x --progress_status <todo|in_progress|blocked|done|canceled>");
 
     // Fill the placeholder(s) and execute the string VERBATIM (split on whitespace, spawn as
     // argv[0]/argv[1..]) via the real CLI — no hand-picked replacement flags, no reasonable
     // substitutions beyond filling the printed placeholder tokens.
     const filled = fillPlaceholders(help);
-    assert.equal(filled, "superbee doc update tasks/x --status todo");
+    assert.equal(filled, "superbee doc update tasks/x --progress_status todo");
     const [bin, ...argv] = filled.split(" ");
     assert.equal(bin, "superbee");
     const completing = run(argv, { cwd: dir, env });
@@ -170,7 +170,7 @@ test("built CLI: a `doc write --strict` kind refusal OVERWRITING an EXISTING doc
     assert.equal(refusal.status, 2, `expected USAGE exit 2, got ${refusal.status}: ${refusal.stdout}${refusal.stderr}`);
     const help = extractHelpLine(refusal.stdout);
     assert.ok(help, `the refusal must carry a help fixing command; stdout=${refusal.stdout}`);
-    assert.equal(help, "superbee doc update tasks/z --status <todo|in_progress|blocked|done|canceled>");
+    assert.equal(help, "superbee doc update tasks/z --progress_status <todo|in_progress|blocked|done|canceled>");
 
     const filled = fillPlaceholders(help);
     const [bin, ...argv] = filled.split(" ");

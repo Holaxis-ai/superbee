@@ -51,8 +51,8 @@ test("the Personal Task System board projects links live and commits a confirmed
     const persisted = JSON.parse(
       execFileSync(process.execPath, [CLI_DIST, "doc", "read", "tasks/shape-message", "--dir", ui.dir, "--json"], { encoding: "utf8" }),
     );
-    expect(persisted.status).toBe("in_progress");
-    expect(persisted.actor).toBe("e2e/human");
+    expect(persisted.superbee_progress_status).toBe("in_progress");
+    expect(persisted.superbee_updated_by).toBe("e2e/human");
   } finally {
     await ui.cleanup();
   }

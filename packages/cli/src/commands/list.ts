@@ -23,7 +23,7 @@
 //
 // Field-query semantics:
 //
-//   - Set membership on `--field`: a COMMA in the value is OR-within-that-field (`status=todo,
+//   - Set membership on `--field`: a COMMA in the value is OR-within-that-field (`progress_status=todo,
 //     in_progress`), AND unchanged across different `--field` flags/keys. A single-member value (no
 //     comma) still rides core's `QueryFilter.fields` push-down byte-identically; a multi-member value
 //     is READER-SIDE post-filtering over the (possibly still push-down-narrowed) result, reusing
@@ -42,6 +42,7 @@ import {
   matchesFilter,
   readBundleOkfVersion,
   readKindField,
+  progressStatusCoordinate,
   type KindRegistry,
   type QueryFilter,
 } from "@superbee/core";
@@ -63,19 +64,19 @@ Options:
   --tag <t>            Restrict to concepts carrying this tag (repeatable; ALL must match)
   --field <k=v>        Restrict to concepts whose frontmatter field k equals v (repeatable; ALL
                        flags/fields are ANDed). A COMMA in v is SET MEMBERSHIP (OR): --field
-                       status=todo,in_progress matches EITHER value on that one field. Array fields
+                       progress_status=todo,in_progress matches EITHER value on that one field. Array fields
                        still match on membership; values are string-coerced (so an unquoted YAML
                        number like priority: 1 matches --field priority=1). Comma is therefore the
                        set separator — a literal comma inside one value can no longer be expressed
                        via --field (ids/enum values don't carry commas in practice); an empty member
-                       (--field status=todo,,done) is a USAGE error.
+                       (--field progress_status=todo,,done) is a USAGE error.
   --prefix <p>         Restrict to concept ids starting with this bundle-relative prefix
   --fields <a,b,...>   Add extra frontmatter fields to each row (comma-separated; default schema is
                        id,type,title,timestamp). ALWAYS overrides kind-aware columns below. Each cell
                        is truncated to 80 chars — long content lives in \`doc read <id>\`.
   --open               Exclude concepts whose OWN kind declares a terminal set of field values
                        (see 'kinds --help') and whose frontmatter currently matches it (e.g. a Task
-                       whose status is 'done'/'canceled', if the Task kind declares that terminal
+                       whose progress_status is 'done'/'canceled', if the Task kind declares that terminal
                        set). Purely declaration-driven: an ungoverned type, a governed type with no
                        terminal declaration, or a doc missing the field are all INCLUDED. On a
                        bundle where NO kind declares a terminal set, --open filters nothing (a help
@@ -92,8 +93,8 @@ Options:
 A --type-scoped query of a kind-governed type projects that kind's declared fields as columns
 ({id, title, ...fields}) instead of the minimal schema; --fields overrides. An unscoped query, or a
 query of an ungoverned type, always keeps the minimal {id,type,title,timestamp} schema.
-Use the logical field name progress_status when querying workflow state across OKF editions;
-Superbee resolves it through each document's declared Kind without changing stored frontmatter.
+Use the logical field name progress_status when querying workflow state. Superbee resolves the
+bundle's compatible storage coordinate through each document's declared Kind.
 `;
 
 export interface ListCliDeps {
@@ -141,7 +142,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   // USAGE (exit 2). A comma in the value is the set-membership
   // separator (OR within that one field) — the value is split on "," into members (each taken
   // verbatim, not trimmed, same as before a comma existed, so a deliberately spaced member
-  // survives untouched); an EMPTY member (--field status=todo,,done, or a leading/trailing comma)
+  // survives untouched); an EMPTY member (--field progress_status=todo,,done, or a leading/trailing comma)
   // is USAGE, since it can never match anything and is almost certainly a typo. A single-member
   // value (no comma) is unchanged from before and rides core's `QueryFilter.fields` push-down
   // byte-identically; a multi-member value is collected into `orFieldSets` and post-filtered
@@ -156,7 +157,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
       const key = eq >= 0 ? entry.slice(0, eq).trim() : "";
       if (eq < 0 || key === "") {
         throw new CliError("USAGE", `--field expects key=value (got '${entry}')`, {
-          help: `${cliInvocation()} list --field status=done`,
+          help: `${cliInvocation()} list --field progress_status=done`,
         });
       }
       const rawValue = entry.slice(eq + 1);
@@ -171,13 +172,13 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
           throw new CliError(
             "USAGE",
             `--field ${key} has an empty value — expected --field ${key}=<value>, or comma-separated set membership --field ${key}=a,b`,
-            { help: `${cliInvocation()} list --field status=done` },
+            { help: `${cliInvocation()} list --field progress_status=done` },
           );
         }
         throw new CliError(
           "USAGE",
           `--field ${key} has an empty member in '${rawValue}' (comma is the set-membership separator — use 'a,b', not 'a,,b' or a leading/trailing comma)`,
-          { help: `${cliInvocation()} list --field status=todo,in_progress` },
+          { help: `${cliInvocation()} list --field progress_status=todo,in_progress` },
         );
       }
       if (key === PROGRESS_STATUS_FIELD) {
@@ -346,11 +347,15 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   const fieldsFlagGiven = values.fields !== undefined;
 
   let kindCols: string[] | undefined;
+  let kindProgressCoordinate: ReturnType<typeof progressStatusCoordinate>;
   if (!fieldsFlagGiven && filter.type && docs.length > 0) {
     const registry = await getRegistry(); // command-layer, loaded AT MOST once (gate 3)
     const kind = registry.kinds.get(filter.type);
     if (kind) {
-      const cols = [...new Set([...kind.fields.required, ...kind.fields.optional])].filter(
+      kindProgressCoordinate = progressStatusCoordinate(await getOkfVersion(), kind);
+      const cols = [...new Set([...kind.fields.required, ...kind.fields.optional].map((field) =>
+        field === kindProgressCoordinate?.storageField ? kindProgressCoordinate.logicalField : field,
+      ))].filter(
         (f) => f !== "id" && f !== "title" && f !== "description",
       );
       if (cols.length > 0) kindCols = cols;
@@ -364,7 +369,13 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
           id: d.id,
           title: typeof fm.title === "string" ? fm.title : (d.id.split("/").pop() ?? d.id),
         };
-        for (const c of kindCols!) row[c] = cell(fm[c]);
+        for (const c of kindCols!) {
+          row[c] = cell(
+            c === kindProgressCoordinate?.logicalField
+              ? fm[kindProgressCoordinate.storageField]
+              : fm[c],
+          );
+        }
         return row;
       })
     : docs.map(projectMinimal);

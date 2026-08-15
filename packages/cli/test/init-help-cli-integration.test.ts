@@ -117,7 +117,7 @@ test("built CLI: init accepts its supported authoring version and rejects false 
 
   try {
     for (const [name, versionArgs, expectedVersion] of [
-      ["default", [], "0.1"],
+      ["default", [], "0.2"],
       ["explicit-v01", ["--okf-version", "0.1"], "0.1"],
       ["explicit-v02", ["--okf-version", "0.2"], "0.2"],
     ] as const) {
@@ -154,16 +154,16 @@ test("built CLI: init accepts its supported authoring version and rejects false 
   }
 });
 
-test("built CLI: explicit v0.2 init materializes workflow recipes and logical progress end to end", async () => {
+test("built CLI: default init materializes current workflow recipes and logical progress end to end", async () => {
   const sandbox = await tempDir("superbee-init-v02-journey-");
   const target = path.join(sandbox, "bundle");
   const { binDir, env } = await makeBinOnPath();
 
   try {
-    const initialized = run(
-      ["init", "--dir", target, "--okf-version", "0.2", "--recipe", "work-tracking", "--json"],
-      { cwd: sandbox, env },
-    );
+    const initialized = run(["init", "--dir", target, "--recipe", "work-tracking", "--json"], {
+      cwd: sandbox,
+      env,
+    });
     assert.equal(initialized.status, 0, initialized.stdout + initialized.stderr);
 
     const taskConvention = await readFile(path.join(target, "conventions", "task.md"), "utf8");

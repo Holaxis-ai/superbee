@@ -65,7 +65,7 @@ async function runToon(argv: string[]): Promise<string> {
  */
 async function makeFixtureBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
-  const bundle = await initBundle(dir);
+  const bundle = await initBundle(dir, { okfVersion: "0.1" });
   const now = new Date().toISOString();
 
   await writeDoc(bundle, {
@@ -186,7 +186,7 @@ test("status: v0.2 stale_after applies without a Kind horizon while v0.1 leaves 
     const dir = await tempDir();
     try {
       const bundle = okfVersion === "0.1"
-        ? await initBundle(dir)
+        ? await initBundle(dir, { okfVersion: "0.1" })
         : await (async (): Promise<Bundle> => {
           await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n");
           return { root: dir };
@@ -415,7 +415,7 @@ test("status: fixture bundle exercises every finding class with the correct coun
 test("status: a v0.1 kind using only OKF v0.2 lifecycle status values has no upgrade blocker", async () => {
   const dir = await tempDir();
   try {
-    const bundle = await initBundle(dir);
+    const bundle = await initBundle(dir, { okfVersion: "0.1" });
     await writeDoc(bundle, {
       id: "conventions/lifecycle-note",
       frontmatter: {
@@ -447,7 +447,7 @@ test("status: actual incompatible values remain blockers when the status enum is
   for (const variant of ["unbounded", "lifecycle-only"] as const) {
     const dir = await tempDir();
     try {
-      const bundle = await initBundle(dir);
+      const bundle = await initBundle(dir, { okfVersion: "0.1" });
       await writeDoc(bundle, {
         id: "conventions/task",
         frontmatter: {

@@ -44,7 +44,7 @@ async function tempDir(): Promise<string> {
 /** A fresh bundle with the Context Note kind applied (mirrors `init`'s default `context-notes` recipe). */
 async function makeSeededBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
-  await initBundle(dir);
+  await initBundle(dir, { okfVersion: "0.1" });
   await applyRecipe({ root: dir }, CONTEXT_NOTES_RECIPE);
   return { dir, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
