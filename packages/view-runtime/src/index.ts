@@ -6,8 +6,10 @@ import {
   blobVersion,
   loadKinds,
   mutateDocument,
+  readBundleOkfVersion,
   readBlob,
   readDocVersioned,
+  resolveKindFieldCoordinate,
   validateAgainstKind,
   versionOfBytes,
   type Bundle,
@@ -669,6 +671,7 @@ export interface ActionConfirmation {
   };
   target: { docId: string; title: string; kind: string; version: Version };
   field: string;
+  storageField?: string;
   before: ActionScalar | null;
   after: ActionScalar;
   actor: string;
@@ -682,6 +685,7 @@ export interface ActionTerminalResult {
   action: "document.set-field";
   docId?: string;
   field?: string;
+  storageField?: string;
   changed?: boolean;
   version?: Version;
   warnings?: ValidationWarning[];
@@ -706,6 +710,8 @@ interface PendingApproval {
   expiresAt: number;
   launchId: string;
   action: DocumentSetFieldAction;
+  storageField: string;
+  okfVersion: string | undefined;
   timestamp: string;
   targetTitle: string;
   targetType: string;
@@ -787,18 +793,23 @@ export class TrustedActionService {
     }
 
     let registry: Awaited<ReturnType<typeof loadKinds>>;
+    let okfVersion: string | undefined;
     try {
-      registry = await loadKinds(this.bundle);
+      [registry, okfVersion] = await Promise.all([
+        loadKinds(this.bundle),
+        readBundleOkfVersion(this.bundle),
+      ]);
     } catch (error) {
       return { status: "failed", action: "document.set-field", message: error instanceof Error ? error.message : String(error) };
     }
     const targetType = String(target.doc.frontmatter.type ?? "");
     const kind = registry.kinds.get(targetType);
     if (!kind) return rejected(`document '${action.docId}' is not governed by a declared Kind`);
-    if (!kind.fields.required.includes(action.field) && !kind.fields.optional.includes(action.field)) {
+    const fieldCoordinate = resolveKindFieldCoordinate(okfVersion, kind, action.field);
+    if (!fieldCoordinate) {
       return rejected(`field '${action.field}' is not declared by the '${kind.governs}' Kind`);
     }
-    const beforeRaw = target.doc.frontmatter[action.field];
+    const beforeRaw = target.doc.frontmatter[fieldCoordinate.storageField];
     let before: ActionScalar | null;
     if (beforeRaw === undefined || beforeRaw === null) {
       before = null;
@@ -813,6 +824,9 @@ export class TrustedActionService {
         action: "document.set-field",
         docId: action.docId,
         field: action.field,
+        ...(fieldCoordinate.storageField !== action.field
+          ? { storageField: fieldCoordinate.storageField }
+          : {}),
         changed: false,
         version: target.version,
         confirmed: false,
@@ -827,7 +841,7 @@ export class TrustedActionService {
 
     const timestamp = new Date(this.now()).toISOString();
     const candidate = ownRecord(target.doc.frontmatter);
-    setOwn(candidate, action.field, action.value);
+    setOwn(candidate, fieldCoordinate.storageField, action.value);
     setOwn(candidate, "timestamp", timestamp);
     setOwn(candidate, "actor", actor);
     const violations = validateAgainstKind({ id: action.docId, frontmatter: candidate, body: target.doc.body }, kind);
@@ -849,6 +863,8 @@ export class TrustedActionService {
       expiresAt,
       launchId,
       action,
+      storageField: fieldCoordinate.storageField,
+      okfVersion,
       timestamp,
       targetTitle: typeof target.doc.frontmatter.title === "string" ? target.doc.frontmatter.title : action.docId,
       targetType,
@@ -871,6 +887,9 @@ export class TrustedActionService {
         },
         target: { docId: action.docId, title: this.pending.get(token)!.targetTitle, kind: targetType, version: target.version },
         field: action.field,
+        ...(fieldCoordinate.storageField !== action.field
+          ? { storageField: fieldCoordinate.storageField }
+          : {}),
         before,
         after: action.value,
         actor,
@@ -907,9 +926,19 @@ export class TrustedActionService {
           actualVersion: target.version,
         };
       }
-      const registry = await loadKinds(this.bundle);
+      const [registry, okfVersion] = await Promise.all([
+        loadKinds(this.bundle),
+        readBundleOkfVersion(this.bundle),
+      ]);
+      if (okfVersion !== pending.okfVersion) {
+        return { status: "revoked", action: "document.set-field", message: "the bundle OKF edition changed" };
+      }
       const kind = registry.kinds.get(pending.targetType);
       if (!kind || kind.id !== pending.kindId) return { status: "revoked", action: "document.set-field", message: "the governing Kind changed" };
+      const fieldCoordinate = resolveKindFieldCoordinate(okfVersion, kind, pending.action.field);
+      if (!fieldCoordinate || fieldCoordinate.storageField !== pending.storageField) {
+        return { status: "revoked", action: "document.set-field", message: "the governing Kind field mapping changed" };
+      }
       const currentKindVersion = (await readDocVersioned(this.bundle, kind.id)).version;
       if (currentKindVersion !== pending.kindVersion || kindDigest(kind) !== pending.kindDigest) {
         return { status: "revoked", action: "document.set-field", message: "the governing Kind changed" };
@@ -934,7 +963,7 @@ export class TrustedActionService {
         buildCandidate: (existing) => {
           if (!existing) throw new DocumentNotFoundError(pending.action.docId);
           const frontmatter = ownRecord(existing.frontmatter);
-          setOwn(frontmatter, pending.action.field, pending.action.value);
+          setOwn(frontmatter, pending.storageField, pending.action.value);
           setOwn(frontmatter, "timestamp", pending.timestamp);
           return { frontmatter, body: existing.body };
         },
@@ -944,6 +973,9 @@ export class TrustedActionService {
         action: "document.set-field",
         docId: pending.action.docId,
         field: pending.action.field,
+        ...(pending.storageField !== pending.action.field
+          ? { storageField: pending.storageField }
+          : {}),
         changed: result.changed,
         version: result.version,
         warnings: result.warnings,

@@ -1539,6 +1539,36 @@ test("doc update: status transition via a kind-declared --<field> flag — the h
   }
 });
 
+test("doc update: logical --progress_status resolves to legacy v0.1 status and discloses storage", async () => {
+  const { dir, cleanup } = await makeTaskBundle();
+  try {
+    await writeDoc(
+      { root: dir },
+      { id: "tasks/logical", frontmatter: { type: "Task", title: "Logical", status: "todo", timestamp: OLD_TS }, body: "" },
+    );
+    const result = await runDoc(["update", "tasks/logical", "--progress_status", "done", "--dir", dir]);
+    assert.deepEqual(result.field_coordinates, [{ logical_field: "progress_status", stored_as: "status" }]);
+    const after = await readDoc({ root: dir }, "tasks/logical");
+    assert.equal(after.frontmatter.status, "done");
+    assert.equal(Object.hasOwn(after.frontmatter, "progress_status"), false);
+
+    await assert.rejects(
+      () => doc(
+        ["update", "tasks/logical", "--status", "todo", "--progress_status", "done", "--dir", dir, "--json"],
+        { readStdin: async () => undefined },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.code, "USAGE");
+        assert.match(error.message, /same stored field 'status'/);
+        return true;
+      },
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("doc update: status transition via a kind-declared --<field> flag over --remote (MemoryBackend, real enforced CAS)", async () => {
   const bundle: Bundle = { root: "mem://doc-update-kind-field-remote", backend: new MemoryBackend() };
   await writeDoc(bundle, {

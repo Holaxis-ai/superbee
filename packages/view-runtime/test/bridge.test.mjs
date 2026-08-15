@@ -232,6 +232,105 @@ test("BridgeService edge queries agree with core for exact boundary ids and rela
   }
 });
 
+for (const row of [
+  { version: "0.1", field: "status" },
+  { version: "0.2", field: "superbee_progress_status" },
+]) {
+  test(`BridgeService query exposes logical progress_status over declared ${row.version} storage`, async () => {
+    const bundle = { root: `mem://bridge-progress-${row.version}`, backend: new MemoryBackend() };
+    if (row.version === "0.2") {
+      await bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+    }
+    await writeDoc(bundle, {
+      id: "conventions/task",
+      frontmatter: {
+        type: "Convention",
+        governs: "Task",
+        fields: {
+          required: ["title", row.field],
+          optional: [],
+          values: { [row.field]: ["todo", "done"] },
+        },
+      },
+      body: "",
+    });
+    await writeDoc(bundle, {
+      id: "tasks/one",
+      frontmatter: { type: "Task", title: "One", [row.field]: "todo" },
+      body: "",
+    });
+    const bridge = new BridgeService({
+      bundle,
+      launches: {
+        async resolve(launchId) {
+          return launchId === "launch" ? { launchId, capability: "bundle-read" } : null;
+        },
+        revoke() {},
+      },
+      config: async () => ({ root: null, name: "Test", mode: "test" }),
+      renderDocument: ({ body }) => ({ html: body, bounded: false }),
+      allowActionProtocol: false,
+    });
+    const outcome = await bridge.handle("launch", {
+      bridge: "v0",
+      type: "query",
+      id: "progress",
+      params: { type: "Task", field: "progress_status=todo" },
+    });
+    assert.equal(outcome.reply?.result?.count, 1);
+    const frontmatter = outcome.reply?.result?.rows?.[0]?.frontmatter;
+    assert.equal(frontmatter?.progress_status, "todo");
+    assert.equal(frontmatter?.[row.field], "todo", "raw coordinate remains visible");
+
+    const untyped = await bridge.handle("launch", {
+      bridge: "v0",
+      type: "query",
+      id: "progress-feed",
+      params: { limit: 10 },
+    });
+    const task = untyped.reply?.result?.rows?.find((candidate) => candidate.id === "tasks/one");
+    assert.equal(task?.frontmatter?.progress_status, "todo", "untyped View feeds receive the same projection");
+  });
+}
+
+test("BridgeService never projects v0.2 lifecycle status as workflow progress", async () => {
+  const bundle = { root: "mem://bridge-lifecycle-only", backend: new MemoryBackend() };
+  await bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  await writeDoc(bundle, {
+    id: "conventions/release",
+    frontmatter: {
+      type: "Convention",
+      governs: "Release",
+      fields: { required: ["title", "status"], optional: [], values: { status: ["draft", "stable", "deprecated"] } },
+    },
+    body: "",
+  });
+  await writeDoc(bundle, {
+    id: "releases/one",
+    frontmatter: { type: "Release", title: "One", status: "stable" },
+    body: "",
+  });
+  const bridge = new BridgeService({
+    bundle,
+    launches: {
+      async resolve() { return { launchId: "launch", capability: "bundle-read" }; },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    allowActionProtocol: false,
+  });
+  const outcome = await bridge.handle("launch", {
+    bridge: "v0",
+    type: "query",
+    id: "lifecycle",
+    params: { type: "Release" },
+  });
+  const frontmatter = outcome.reply?.result?.rows?.[0]?.frontmatter;
+  assert.equal(frontmatter?.status, "stable");
+  assert.equal(Object.hasOwn(frontmatter ?? {}, "progress_status"), false);
+});
+
 test("invalid v0 envelopes correlate only a bounded existing id and perform no launch work", async () => {
   let launchResolutions = 0;
   const bridge = new BridgeService({

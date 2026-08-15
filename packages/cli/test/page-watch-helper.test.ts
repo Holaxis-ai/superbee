@@ -120,6 +120,22 @@ test("the contract and both worked Pages remain in the shipped skill references"
   for (const relative of Object.values(authorities)) assert.ok(shipped.has(relative), `${relative} is not shipped`);
 });
 
+test("first-party workflow Views prefer the logical progress_status projection", () => {
+  for (const relative of [
+    "examples/views/pulse.html",
+    "examples/views/roadmap.html",
+    "examples/recipes/review-workflow/views/review-workflow/reviews.html",
+  ]) {
+    const html = source(relative);
+    assert.match(html, /progress_status/, `${relative} bypasses the logical workflow field`);
+    assert.doesNotMatch(
+      html,
+      /progress_status[^\n;]*\?[^\n;]*\.status/,
+      `${relative} falls back to lifecycle status when the logical projection is absent`,
+    );
+  }
+});
+
 for (const [name, relative] of Object.entries(authorities)) {
   test(`${name}: subscribes before snapshot and buffers pre-ack events`, async () => {
     const h = harness(relative);

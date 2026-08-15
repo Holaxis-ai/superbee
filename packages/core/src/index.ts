@@ -222,7 +222,14 @@ export { InvalidInputError } from "./errors.js";
 export {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
+  PROGRESS_STATUS_FIELD,
+  SUPERBEE_PROGRESS_STATUS_FIELD,
   RESERVED_KIND_FIELD_NAMES,
+  progressStatusCoordinate,
+  resolveKindFieldCoordinate,
+  kindInputFieldNames,
+  readKindField,
+  projectLogicalKindFields,
   validateAgainstKind,
   defaultTimestampAndValidateAgainstRegistry,
   freshnessHorizonMs,
@@ -232,7 +239,13 @@ export {
   isTerminal,
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
-export type { KindConvention, KindFields, KindRegistry, RegistryValidationResult } from "./kinds.js";
+export type {
+  KindConvention,
+  KindFieldCoordinate,
+  KindFields,
+  KindRegistry,
+  RegistryValidationResult,
+} from "./kinds.js";
 
 // Ported MIME utilities (holaxis-agentstate `packages/schemas/src/content-type.ts`).
 // `resolveContentType` is the ONE place a blob's content-type is resolved (explicit
