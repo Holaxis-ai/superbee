@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { operationsFor } from "./release-run-operations.mjs";
 import { loadReleaseTargets } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -25,6 +26,9 @@ function extractJobs(text) {
       if (current) jobs[current].push(line);
       continue;
     }
+    // A comment at job-header depth is not structure: it neither opens a job nor ends the mapping,
+    // and it belongs to no job. Comments indented deeper sit inside a job and are kept with it.
+    if (/^ {0,2}#/.test(line)) continue;
     const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (header) {
       current = header[1];
@@ -81,6 +85,74 @@ function workflowTargetChoice(text) {
 // `release-candidate-<id>` are deliberately NOT in this list — only the command that BUILDS/PACKS.
 const BUILD_PACK_TOKENS = ["release:candidate", "release-candidate.mjs", "build.mjs", "npm pack", "npm run build", "buildCli"];
 
+// Tokens that mean "something outside this run changed". Shared by the read-only-job assertions.
+const MUTATING_TOKENS = [
+  "-X PATCH", "-X POST", "-X DELETE", "-X PUT",
+  "--method PATCH", "--method POST", "--method DELETE",
+  "gh release upload", "gh release create", "gh release edit", "gh release delete",
+  "npm stage approve", "npm stage reject", "npm publish", "npm dist-tag",
+  "release-verify-ordering.mjs apply", "--execute",
+];
+
+// npm subcommands that read the registry or nothing at all. Everything else — including a
+// subcommand nobody has classified yet — is treated as a registry WRITE that needs credentials.
+// The unknown case falling into the auth branch is the point: this list can only widen by review.
+const NPM_NON_WRITING_SUBCOMMANDS = new Set([
+  "view", "pack", "ping", "install", "ci", "run", "exec", "config", "audit", "help", "--version", "-v",
+]);
+
+/** Every flag `release-run-operations.mjs` reads, with a value each emitter accepts. */
+const OPERATION_SAMPLE_ARGV = [
+  "--stage-id", "stage1",
+  "--version", "0.1.0",
+  "--tag", "latest",
+  "--target", "bridge",
+  "--track", "next",
+  "--failed-version", "0.1.0",
+  "--prior-version", "0.0.1",
+  "--recovery-target", "bridge",
+  "--release-id", "1",
+  "--github-latest", "true",
+];
+
+/** Logical shell commands in a `run:` block: comments dropped, backslash continuations joined. */
+function shellCommands(runBlock) {
+  return runBlock
+    .split("\n")
+    .filter((line) => !/^\s*#/.test(line))
+    .join("\n")
+    .replace(/\\\n\s*/g, " ")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** Does this argv write to the npm registry (and therefore need credentials)? Fails closed. */
+function needsRegistryAuth(argv) {
+  return argv[0] === "npm" && !NPM_NON_WRITING_SUBCOMMANDS.has(argv[1]);
+}
+
+// `npm` in COMMAND position: the start of a command, after a pipeline/list operator, inside a command
+// substitution, or after then/else/do. Prose that merely MENTIONS npm — an ::error:: message naming
+// the operator's command, a dry-run echo of what would run — is not an invocation and must not be
+// scanned as one; a real invocation hidden inside `$(...)` still is.
+const NPM_INVOCATION = /(?:^|[|&;(]\s*|\$\(\s*|\bthen\s+|\belse\s+|\bdo\s+)npm\s+([A-Za-z][A-Za-z-]*|--version)/g;
+
+/** Does this job supply npm registry credentials — OIDC trusted publishing or a token? */
+function declaresNpmCredentials(jobText) {
+  const perms = permissionsOf(jobText) ?? {};
+  const oidc = perms["id-token"] === "write" && /registry-url:/.test(jobText);
+  return oidc || /NODE_AUTH_TOKEN|NPM_TOKEN|_authToken/.test(jobText);
+}
+
+/** `needs:` of a job, in both the scalar and the list form. */
+function needsOf(jobText) {
+  const scalar = /^ {4}needs: ([A-Za-z0-9_-]+)\s*$/m.exec(jobText);
+  if (scalar) return [scalar[1]];
+  const list = /^ {4}needs: \[([^\]]*)\]\s*$/m.exec(jobText);
+  return list ? list[1].split(",").map((entry) => entry.trim()).filter(Boolean) : [];
+}
+
 test("neither workflow grants ambient permissions — every job opts in", () => {
   assert.match(staged, /\npermissions: \{\}\n/, "release-staged.yml must set top-level permissions: {}");
   assert.match(finalize, /\npermissions: \{\}\n/, "release-finalize.yml must set top-level permissions: {}");
@@ -110,9 +182,9 @@ test("finalize workflow: gate jobs hold contents:write ONLY for draft visibility
   assert.deepEqual(permissionsOf(jobs["registry-verify"]), { actions: "read", contents: "write" });
   assert.deepEqual(permissionsOf(jobs.finalize), { actions: "read", contents: "write" });
   // No gate job may carry a mutating gh/npm invocation — GETs and octet-stream downloads only.
-  for (const name of ["ordering-verified", "registry-verify"]) {
+  for (const name of ["target-authorized", "ordering-verified", "registry-verify"]) {
     const body = jobs[name];
-    for (const token of ["-X PATCH", "-X POST", "-X DELETE", "-X PUT", "--method PATCH", "--method POST", "--method DELETE", "gh release upload", "gh release create", "gh release edit", "gh release delete", "npm stage approve", "npm stage reject", "npm publish", "npm dist-tag"]) {
+    for (const token of MUTATING_TOKENS) {
       assert.ok(!body.includes(token), `gate job ${name} must not contain mutating token ${JSON.stringify(token)}`);
     }
   }
@@ -141,9 +213,9 @@ test("workflow target choices enumerate the normalized manifest roster and keep 
 
 test("the ordering gate runs BEFORE registry mutation and again before publication", () => {
   const jobs = extractJobs(finalize);
-  // Job chain: ordering-verified -> registry-verify -> finalize.
+  // Job chain: target-authorized -> ordering-verified -> registry-verify -> finalize.
   assert.match(jobs["registry-verify"], /needs: ordering-verified/);
-  assert.match(jobs.finalize, /needs: registry-verify/);
+  assert.deepEqual(needsOf(jobs.finalize).sort(), ["registry-verify", "target-authorized"]);
   // The gate replays the state machine over signed receipts in the gate job AND pre-publish.
   for (const name of ["ordering-verified", "finalize"]) {
     assert.match(jobs[name], /release-verify-ordering\.mjs assets/, `${name} lists receipt assets via the one naming authority`);
@@ -278,13 +350,129 @@ test("the finalizer is separately dispatched and consumes every immutable ID", (
   assert.ok((finalize.match(/release-verify-chain\.mjs verify-finalizer/g) ?? []).length === 3);
 });
 
-test("the finalizer consumes resolved publication facts for npm promotion and GitHub latest", () => {
-  const body = extractJobs(finalize).finalize;
-  assert.match(body, /release-resolve-target\.mjs --target "\$TARGET" --tag "v\$VERSION" --github-output "\$GITHUB_OUTPUT"/);
-  assert.match(body, /if \[ -n "\$NPM_PROMOTE_TAG" \]/, "finalize must gate dist-tag promotion on resolved manifest policy");
-  assert.match(body, /release-run-operations\.mjs --op promote/, "finalize must emit the manifest-defined dist-tag promotion");
-  assert.match(body, /--tag "\$NPM_PROMOTE_TAG"/, "finalize must promote the resolved npm tag");
-  assert.match(body, /--github-latest "\$GITHUB_LATEST"/, "finalize must publish with the resolved GitHub latest policy");
+// F12 — the publication-policy resolve was a cheap precondition placed AFTER
+// `release-verify-ordering.mjs apply --mode live` had already rewritten the draft's status asset and
+// body. This pins the general property rather than that one step's position: the facts are resolved
+// and the registry proved in a job that mutates nothing, and every mutating job is downstream of it.
+test("F12: publication policy is resolved and proved in a non-mutating job, upstream of every mutation", () => {
+  const jobs = extractJobs(finalize);
+  const gate = jobs["target-authorized"];
+
+  assert.match(gate, /release-resolve-target\.mjs --target "\$TARGET" --tag "v\$VERSION" --github-output "\$GITHUB_OUTPUT"/,
+    "the manifest facts are resolved in the first job");
+  assert.match(gate, /release-publication-policy\.mjs verify/, "the registry precondition runs in the first job");
+  assert.deepEqual(permissionsOf(jobs["target-authorized"]), { contents: "read" }, "the precondition job cannot write anything");
+
+  // Every job that mutates must be reachable FROM target-authorized through `needs:`, so no mutation
+  // can ever run before the precondition — including a job added later.
+  const ancestors = (name, seen = new Set()) => {
+    for (const parent of needsOf(jobs[name] ?? "")) {
+      if (seen.has(parent)) continue;
+      seen.add(parent);
+      ancestors(parent, seen);
+    }
+    return seen;
+  };
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name === "target-authorized") continue;
+    if (!MUTATING_TOKENS.some((token) => body.includes(token))) continue;
+    assert.ok(ancestors(name).has("target-authorized"), `mutating job ${name} must depend on the precondition job`);
+  }
+
+  // And no job re-derives publication policy after a mutation: the facts travel as job outputs,
+  // which only a `needs:` dependency can deliver.
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name === "target-authorized") continue;
+    assert.ok(!body.includes("--github-output"), `job ${name} must consume resolved facts, never re-resolve them`);
+  }
+  assert.match(jobs.finalize, /needs\.target-authorized\.outputs\.github_latest/, "finalize publishes with the pre-resolved GitHub latest policy");
+  assert.match(jobs.finalize, /--github-latest "\$GITHUB_LATEST"/);
+});
+
+// F1 — the promote step ran `npm dist-tag add` in a job with no npm credentials, AFTER the ordering
+// `apply` step had already rewritten the draft. Under `set -euo pipefail` that leaves npm published
+// and the GitHub release stranded as a draft. The class this pins is not "the promote step": it is
+// "a registry-authenticated command in a job that cannot authenticate". Which operations authenticate
+// is resolved through the real emitter (`operationsFor`), so a new op is classified automatically.
+test("F1: no workflow job runs a registry-authenticated command without credentials for it", () => {
+  const seen = { authenticated: 0, viaOperationsCli: 0 };
+  for (const [workflow, text] of [["release-staged.yml", staged], ["release-finalize.yml", finalize]]) {
+    for (const [name, body] of Object.entries(extractJobs(text))) {
+      const credentialed = declaresNpmCredentials(body);
+      for (const command of runBlocks(body).flatMap(shellCommands)) {
+        // (a) operations executed through the release CLI, resolved by the emitter itself.
+        if (command.includes("release-run-operations.mjs") && command.includes("--execute")) {
+          const op = /--op\s+(\S+)/.exec(command)?.[1];
+          assert.ok(op, `${workflow}:${name} runs the operations CLI without --op: ${command}`);
+          seen.viaOperationsCli += 1;
+          for (const { argv } of operationsFor(op, OPERATION_SAMPLE_ARGV)) {
+            if (!needsRegistryAuth(argv)) continue;
+            seen.authenticated += 1;
+            assert.ok(credentialed, `${workflow}:${name} executes --op ${op} -> \`${argv.join(" ")}\`, which needs npm credentials the job does not declare`);
+          }
+        }
+        // (b) npm invoked directly in the shell.
+        for (const [, subcommand] of command.matchAll(NPM_INVOCATION)) {
+          if (NPM_NON_WRITING_SUBCOMMANDS.has(subcommand)) continue;
+          seen.authenticated += 1;
+          assert.ok(credentialed, `${workflow}:${name} runs \`npm ${subcommand}\`, which needs npm credentials the job does not declare`);
+        }
+      }
+    }
+  }
+  assert.ok(seen.viaOperationsCli > 0, "the scan must actually reach the operations CLI invocations");
+  assert.ok(seen.authenticated > 0, "the scan must actually classify at least one authenticated command (the stage publish)");
+});
+
+// The scan above is only as good as its notion of "an npm command ran here". Prose that names npm —
+// an operator remediation printed by an ::error:: annotation, a dry-run echo of the command that
+// WOULD run — must not be mistaken for an invocation, or the gate reds on its own documentation; and
+// an invocation hidden in a command substitution must still be caught, or the gate is trivial to evade.
+test("F1: the npm-invocation matcher reads command position, not prose", () => {
+  const subcommands = (text) => [...text.matchAll(NPM_INVOCATION)].map(([, sub]) => sub);
+  for (const prose of [
+    'echo "::error::npm registry unreachable - nothing has been mutated"',
+    'echo "[dry-run] would run: npm stage publish $TARBALL --tag $POLICY_TAG"',
+    'echo "run the operator promotion: npm dist-tag add superbee@0.1.0 latest"',
+  ]) {
+    assert.deepEqual(subcommands(prose), [], `prose must not read as an invocation: ${prose}`);
+  }
+  assert.deepEqual(subcommands("npm ci"), ["ci"]);
+  assert.deepEqual(subcommands('npm install --global npm@11.15.0 --ignore-scripts'), ["install"], "npm@version is not a subcommand");
+  assert.deepEqual(subcommands('test "$(npm --version)" = "11.15.0"'), ["--version"], "command substitution is a command position");
+  assert.deepEqual(subcommands('npm stage publish "$TARBALL" --tag "$POLICY_TAG" | tee stage.json'), ["stage"]);
+  assert.deepEqual(subcommands('gh api foo && npm dist-tag add pkg@1.0.0 latest'), ["dist-tag"], "an invocation after && is still an invocation");
+  assert.equal(needsRegistryAuth(["npm", "dist-tag", "add"]), true);
+  assert.equal(needsRegistryAuth(["npm", "view", "pkg"]), false);
+  assert.equal(needsRegistryAuth(["npm", "some-command-nobody-classified"]), true, "an unknown subcommand fails closed into the auth branch");
+  assert.equal(needsRegistryAuth(["gh", "api", "-X", "PATCH"]), false, "gh is not an npm credential question");
+});
+
+test("F1: the dist-tag promotion is operator-owned, and the finalizer proves it instead of performing it", () => {
+  const jobs = extractJobs(finalize);
+  // No job may EXECUTE the promote: this workflow holds no npm write credential by design.
+  for (const [name, body] of Object.entries(jobs)) {
+    for (const command of runBlocks(body).flatMap(shellCommands)) {
+      assert.ok(
+        !(command.includes("--op promote") && command.includes("--execute")),
+        `job ${name} must not execute the dist-tag promotion; it is a 2FA operator action: ${command}`,
+      );
+    }
+  }
+  // What replaces it is a proof, run before any mutation and again immediately before publication.
+  assert.match(jobs["target-authorized"], /release-publication-policy\.mjs verify/);
+  const body = jobs.finalize;
+  const proofAt = body.indexOf("release-publication-policy.mjs verify");
+  const publishAt = body.indexOf("release-run-operations.mjs --op immutable-release");
+  assert.notEqual(proofAt, -1, "finalize must re-prove the declared publication policy before publishing");
+  assert.ok(proofAt < publishAt, "the re-proof must precede the GitHub release publication");
+  // Both placements traverse the same adapter in dry-run rather than being skipped there.
+  for (const [name, job] of [["target-authorized", jobs["target-authorized"]], ["finalize", body]]) {
+    const proof = runBlocks(job)
+      .flatMap(shellCommands)
+      .find((command) => command.includes("release-publication-policy.mjs verify"));
+    assert.ok(proof?.includes('--mode "$MODE"'), `${name}'s proof must run in both modes, got ${JSON.stringify(proof)}`);
+  }
 });
 
 test("the staged workflow triggers on v* tags and on dry-run dispatch", () => {

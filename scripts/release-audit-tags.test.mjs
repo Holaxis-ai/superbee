@@ -20,6 +20,7 @@ import {
   readBurnedDeclaration,
   saneSuccessors,
 } from "./release-audit-tags.mjs";
+import { defaultReleaseManifest } from "./release-targets.mjs";
 
 // Fixture mirroring the live registry at build time. No test hits the network.
 function registryFixture(overrides = {}) {
@@ -633,3 +634,130 @@ test("the FUTURE live registry shape — pre.5 published over the pre.4 burn —
   assert.deepEqual(result.violations, []);
   assert.equal(result.facts.source_state, "in-sync");
 });
+
+// ---------------------------------------------------------------------------------------------
+// F2 — publication policy (release/targets.json) and audit policy agree BY CONSTRUCTION.
+//
+// The manifest is the ONE place a human declares where a version lands on npm; the audit reads
+// that declaration instead of restating it. These tests pin the derivation in both directions, so
+// a manifest edit can never leave the audit expecting a dist-tag state the release never produces
+// (which is what made the scheduled audit permanently red once the bridge tuple stopped promoting
+// to `latest`) — nor tolerate a state the manifest forbids.
+// ---------------------------------------------------------------------------------------------
+
+const repoDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const committedManifest = defaultReleaseManifest();
+const bridgeTuple = committedManifest.allowed_tuples.bridge;
+
+/**
+ * The declared destiny of a tuple, restated INDEPENDENTLY of the implementation: a version lands on
+ * `npm_tag` at stage and moves to `npm_promote_tag` at finalize, and those are the only dist-tags it
+ * ever carries. The tests below compare the audit's expectations against this restatement, so they
+ * follow a policy edit instead of pinning today's policy values.
+ */
+function declaredTagsOf(tuple) {
+  return new Set([tuple.publication.npm_tag, tuple.publication.npm_promote_tag].filter((tag) => typeof tag === "string"));
+}
+
+// The live @holaxis/aslite registry as captured 2026-08-14: latest == next == 0.1.0-pre.8 over
+// published pre.1, pre.2, pre.3, pre.8 (pre.4..pre.7, pre.9, pre.10 are declared burns).
+const LIVE_PUBLISHED = ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.8"];
+const LIVE_AT_REST = "0.1.0-pre.8";
+
+/** A synthetic destiny map — the shape `distTagDestiny` produces — for one candidate version. */
+function destinyOf(version, tags) {
+  return new Map([[version, new Set(tags)]]);
+}
+
+/** The registry state the cutover PRODUCES: each dist-tag held by whichever version policy puts there. */
+function postBridgeRegistry(overrides = {}) {
+  const declared = declaredTagsOf(bridgeTuple);
+  const versions = [...LIVE_PUBLISHED, bridgeTuple.version];
+  return {
+    distTags: {
+      latest: declared.has("latest") ? bridgeTuple.version : LIVE_AT_REST,
+      next: declared.has("next") ? bridgeTuple.version : LIVE_AT_REST,
+    },
+    versions,
+    time: Object.fromEntries(versions.map((v, i) => [v, new Date(Date.UTC(2026, 6, 1 + i)).toISOString()])),
+    ...overrides,
+  };
+}
+
+async function committedBurns() {
+  return readBurnedDeclaration(JSON.parse(await readFile(path.join(repoDir, "release", "burned-versions.json"), "utf8")));
+}
+
+test("F2: the post-bridge registry the manifest itself produces is GREEN at rest", async () => {
+  const registry = postBridgeRegistry();
+  const result = auditRegistryState({
+    declaration: AT_REST,
+    sourceVersion: bridgeTuple.version,
+    registry,
+    burnedVersions: await committedBurns(),
+  });
+  assert.deepEqual(result.violations, [], `state produced by release/targets.json must not be a violation: ${JSON.stringify(result.violations)}`);
+  assert.deepEqual(result.facts.expected_tags, registry.distTags, "expected tags must equal the state the publication manifest declares");
+});
+
+test("F2: the expectation tracks the manifest in BOTH directions, not a value that happens to agree", () => {
+  const candidate = "0.1.0-pre.11";
+  const versions = [...LIVE_PUBLISHED, candidate];
+  const nextOnly = expectedTagState({
+    declaration: AT_REST, versions, observedTags: {}, destiny: destinyOf(candidate, ["next"]),
+  });
+  assert.deepEqual(nextOnly.expected, { latest: LIVE_AT_REST, next: candidate },
+    "a candidate published to next only leaves latest on the newest latest-eligible version");
+  const promoted = expectedTagState({
+    declaration: AT_REST, versions, observedTags: {}, destiny: destinyOf(candidate, ["next", "latest"]),
+  });
+  assert.deepEqual(promoted.expected, { latest: candidate, next: candidate },
+    "flipping npm_promote_tag to latest in the manifest moves the audit's expectation with it");
+});
+
+test("F2: a candidate sitting on a dist-tag the manifest never gives it is RED", async () => {
+  const candidate = bridgeTuple.version;
+  const forbidden = ["latest", "next"].filter((tag) => !declaredTagsOf(bridgeTuple).has(tag));
+  assert.ok(forbidden.length > 0, "the bridge tuple must forbid at least one dist-tag for this scenario to exist");
+  const registry = postBridgeRegistry();
+  for (const tag of forbidden) {
+    const result = auditRegistryState({
+      declaration: AT_REST,
+      sourceVersion: candidate,
+      registry: { ...registry, distTags: { ...registry.distTags, [tag]: candidate } },
+      burnedVersions: await committedBurns(),
+    });
+    assert.ok(codes(result).includes(`${tag}_off_policy`), `promoting ${candidate} to ${tag} against the manifest must be red, got ${codes(result).join(",")}`);
+  }
+});
+
+test("F2: declaring a phase that would put a next-only candidate on latest is RED", () => {
+  const candidate = "0.1.0-pre.11";
+  const versions = [...LIVE_PUBLISHED, candidate];
+  const state = expectedTagState({
+    declaration: { phase: "promoted", kind: "prerelease", version: candidate },
+    versions,
+    observedTags: { latest: LIVE_AT_REST, next: candidate },
+    destiny: destinyOf(candidate, ["next"]),
+  });
+  assert.deepEqual(state.violations.map((v) => v.code), ["phase_contradicts_publication_policy"]);
+  assert.deepEqual(state.expected, { latest: LIVE_AT_REST, next: candidate },
+    "the expectation falls back to the prior so the remaining comparison still says something");
+});
+
+test("F2: transition tolerance covers timing, never a state the manifest forbids", () => {
+  const candidate = "0.1.0-pre.11";
+  const versions = [...LIVE_PUBLISHED, candidate];
+  const state = expectedTagState({
+    declaration: { phase: "staged", kind: "prerelease", version: candidate },
+    versions,
+    observedTags: { latest: candidate, next: candidate },
+    destiny: destinyOf(candidate, ["next"]),
+  });
+  const tolerated = (state.accepted ?? []).map((entry) => entry.tags);
+  assert.ok(
+    !tolerated.some((tags) => tags.latest === candidate),
+    `no tolerated transition state may put a next-only candidate on latest, got ${JSON.stringify(tolerated)}`,
+  );
+});
+
