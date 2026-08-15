@@ -22,6 +22,7 @@ import {
   verifyReleasePacket,
 } from "./release-packet.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
+import { captureRepositorySettings } from "./release-settings-capture.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
@@ -118,6 +119,56 @@ function refs(schema, allowedRefs = sharedBundleHeads, extras = {}) {
   };
 }
 
+// Settings evidence is always this repository's real producer output. The API payload it projects
+// carries the volatile fields a live `gh api repos/...` response carries, so a fixture that leaked
+// one of them into the evidence would fail here rather than in production.
+const SETTINGS_REPOSITORY = "packet-test-org/packet-test-repo";
+const SETTINGS_BASELINE_AT = "2026-08-15T04:00:00.000Z";
+const SETTINGS_RECHECK_AT = "2026-08-15T04:11:00.000Z";
+
+function repositoryApiPayload(overrides = {}) {
+  return {
+    full_name: SETTINGS_REPOSITORY,
+    id: 1234567,
+    node_id: "R_kgDOPacketTest",
+    pushed_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    size: 12345,
+    stargazers_count: 3,
+    open_issues_count: 7,
+    allow_forking: false,
+    archived: false,
+    default_branch: "main",
+    delete_branch_on_merge: false,
+    disabled: false,
+    fork: false,
+    has_discussions: false,
+    has_downloads: false,
+    has_issues: false,
+    has_pages: false,
+    has_projects: true,
+    has_wiki: false,
+    is_template: false,
+    private: true,
+    visibility: "private",
+    web_commit_signoff_required: false,
+    ...overrides,
+  };
+}
+
+async function settingsCapture(capturedAt, overrides) {
+  return captureRepositorySettings({
+    repository: SETTINGS_REPOSITORY,
+    api: async () => repositoryApiPayload(overrides),
+    now: () => new Date(capturedAt),
+  });
+}
+
+async function writeSettingsEvidence(evidence, { baselineAt = SETTINGS_BASELINE_AT, recheckAt = SETTINGS_RECHECK_AT, recheckOverrides } = {}) {
+  await writeFile(evidence["settings-baseline"], `${JSON.stringify(await settingsCapture(baselineAt), null, 2)}\n`);
+  await writeFile(evidence["settings-recheck"], `${JSON.stringify(await settingsCapture(recheckAt, recheckOverrides), null, 2)}\n`);
+}
+
 async function writeRefEvidence(evidence, allowedRefs) {
   await writeFile(evidence["refs-baseline"], JSON.stringify(refs(REF_ASSERTIONS_SCHEMA, allowedRefs)));
   await writeFile(evidence["refs-recheck"], JSON.stringify(refs(REF_ASSERTIONS_SCHEMA, allowedRefs)));
@@ -165,8 +216,7 @@ async function fixture(root) {
     successor_coordinate_decision: `sha256:${"3".repeat(64)}`,
   }));
   await writeFile(evidence["registry-snapshot"], "opaque registry snapshot\n");
-  await writeFile(evidence["settings-baseline"], JSON.stringify({ schema: "superbee.release-settings.v1", visibility: "private", npm: { provenance: true } }));
-  await writeFile(evidence["settings-recheck"], JSON.stringify({ schema: "superbee.release-settings.v1", visibility: "private", npm: { provenance: true } }));
+  await writeSettingsEvidence(evidence);
   await cp(sharedBundle, evidence["transfer-bundle"]);
   await writeRefEvidence(evidence, sharedBundleHeads);
   await writeFile(evidence["cutover-script"], "#!/bin/sh\n# operator-owned, non-executing artifact\n");
@@ -694,15 +744,49 @@ test("packet creation records pre-cutover lifecycle semantics while verification
   }
 });
 
-test("packet creation rejects settings drift even when both settings files are internally valid JSON", async () => {
+// F9: the settings slot now has a producer and a schema, so it can fail for the reasons a
+// settings-drift gate is supposed to fail for — including the one the review named, where the
+// operator supplies the same capture twice and calls it a recheck.
+test("packet creation rejects settings evidence that drifts, repeats a capture, or is not producer output", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-settings-"));
+  const create = async (input, suffix) => createReleasePacket({
+    commit: head, publicAncestor: parent, out: path.join(root, suffix), ...input,
+    observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier,
+  });
   try {
-    const input = await fixture(root);
-    await writeFile(input.evidence["settings-recheck"], JSON.stringify({ schema: "superbee.release-settings.v1", visibility: "public", npm: { provenance: true } }));
-    await assert.rejects(
-      createReleasePacket({ commit: head, publicAncestor: parent, out: path.join(root, "packet"), ...input, observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier }),
-      /settings baseline.*recheck differ|settings drift/i,
-    );
+    for (const [name, mutate, expected] of [
+      ["a drifted setting", async (input) => {
+        await writeSettingsEvidence(input.evidence, { recheckOverrides: { visibility: "public" } });
+      }, /settings baseline and recheck differ/],
+      ["the same capture supplied twice", async (input) => {
+        await cp(input.evidence["settings-baseline"], input.evidence["settings-recheck"], { force: true });
+      }, /settings recheck must be captured after the baseline/],
+      ["a recheck of a different repository", async (input) => {
+        const other = await captureRepositorySettings({
+          repository: "packet-test-org/other-repo",
+          api: async () => repositoryApiPayload({ full_name: "packet-test-org/other-repo" }),
+          now: () => new Date(SETTINGS_RECHECK_AT),
+        });
+        await writeFile(input.evidence["settings-recheck"], `${JSON.stringify(other, null, 2)}\n`);
+      }, /settings baseline captured .* but the recheck captured/],
+      ["a hand-authored blob that is not producer output", async (input) => {
+        await writeFile(input.evidence["settings-recheck"], JSON.stringify({ schema: "superbee.release-settings.v1", visibility: "private", npm: { provenance: true } }));
+      }, /evidence settings-recheck keys differ/],
+      ["a capture missing a pinned setting", async (input) => {
+        const capture = JSON.parse(await readFile(input.evidence["settings-recheck"], "utf8"));
+        delete capture.settings.allow_forking;
+        await writeFile(input.evidence["settings-recheck"], `${JSON.stringify(capture, null, 2)}\n`);
+      }, /repository settings is missing or malformed: allow_forking/],
+      ["a capture carrying a volatile API field", async (input) => {
+        const capture = JSON.parse(await readFile(input.evidence["settings-recheck"], "utf8"));
+        capture.settings.pushed_at = new Date().toISOString();
+        await writeFile(input.evidence["settings-recheck"], `${JSON.stringify(capture, null, 2)}\n`);
+      }, /is not this producer's normalized output/],
+    ]) {
+      const input = await fixture(path.join(root, name.replaceAll(" ", "-")));
+      await mutate(input);
+      await assert.rejects(create(input, `packet-${name.replaceAll(" ", "-")}`), expected, name);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

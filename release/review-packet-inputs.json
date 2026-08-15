@@ -33,6 +33,7 @@
     "scripts/release-receipts.mjs",
     "scripts/release-resolve-target.mjs",
     "scripts/release-run-operations.mjs",
+    "scripts/release-settings-capture.mjs",
     "scripts/release-state.mjs",
     "scripts/release-targets.mjs",
     "scripts/release-verify-chain.mjs",

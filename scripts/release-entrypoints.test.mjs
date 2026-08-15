@@ -154,6 +154,11 @@ const OWNED_ENTRYPOINT_PROBES = [
     expected: { code: 0, stdout: /npm stage reject STAGE-1/ },
   },
   {
+    relativePath: "scripts/release-settings-capture.mjs",
+    args: () => [],
+    expected: { code: 1, stderr: /usage: release-settings-capture\.mjs --repo <OWNER\/NAME> --out <file\|-> \[--source <file\|->\]/ },
+  },
+  {
     relativePath: "scripts/release-verify-chain.mjs",
     args: () => [],
     expected: { code: 1, stderr: /usage: release-verify-chain\.mjs stage-id\|capture-draft\|verify-finalizer/ },
@@ -391,6 +396,7 @@ test("positive executable authority comes from declarations plus explicit operat
     "scripts/release-packet.mjs",
     "scripts/release-resolve-target.mjs",
     "scripts/release-run-operations.mjs",
+    "scripts/release-settings-capture.mjs",
     "scripts/release-verify-chain.mjs",
     "scripts/release-verify-ordering.mjs",
     "scripts/release-verify-registry.mjs",

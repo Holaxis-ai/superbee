@@ -13,6 +13,7 @@ import { isMainModule } from "./is-main-module.mjs";
 import { fileSha256, verifyRetainedTarball } from "./verify-npm-package.mjs";
 import { RELEASE_CANDIDATE_SCHEMA, assertAllowedTuple, loadReleaseTargets, tarballFilename } from "./release-targets.mjs";
 import { deriveWorkflowExecution } from "./release-workflow-topology.mjs";
+import { RELEASE_SETTINGS_SCHEMA, assertSettingsRecheckFollows, validateReleaseSettingsCapture } from "./release-settings-capture.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
@@ -51,8 +52,8 @@ const EVIDENCE_SCHEMAS = Object.freeze({
   "registry-snapshot": "opaque",
   "refs-baseline": REF_ASSERTIONS_SCHEMA,
   "refs-recheck": REF_ASSERTIONS_SCHEMA,
-  "settings-baseline": "json",
-  "settings-recheck": "json",
+  "settings-baseline": RELEASE_SETTINGS_SCHEMA,
+  "settings-recheck": RELEASE_SETTINGS_SCHEMA,
   "transfer-bundle": "git-bundle",
   "transfer-allowlist": TRANSFER_ALLOWLIST_SCHEMA,
   "cutover-script": "opaque",
@@ -592,11 +593,17 @@ async function enumerateRepositoryRefs(root) {
 }
 
 function parseSettingsEvidence(bytes, label) {
-  return requireObject(label, parseJsonBytes(bytes, label));
+  return validateReleaseSettingsCapture(requireObject(label, parseJsonBytes(bytes, label)), label, packetError);
 }
 
+/**
+ * Two real captures of one repository, taken at two instants, agreeing on every pinned setting.
+ * The producer owns the schema and the projection; this only compares what it emitted.
+ */
 function validateSettingsAuthority({ baseline, recheck }) {
-  if (!sameJsonValue(baseline, recheck)) packetError("settings baseline and recheck differ");
+  assertSettingsRecheckFollows(baseline, recheck, packetError);
+  if (!sameJsonValue(baseline.repository, recheck.repository)) packetError("settings baseline and recheck describe different repositories");
+  if (!sameJsonValue(baseline.settings, recheck.settings)) packetError("settings baseline and recheck differ");
 }
 
 function describeRefMap(map) {
@@ -670,7 +677,7 @@ async function collectEvidence(id, sourceFile, outDir, source) {
     row.schema = parsed.schema;
   } else if (id === "settings-baseline" || id === "settings-recheck") {
     parsed = parseSettingsEvidence(bytes, `evidence ${id}`);
-    row.schema = "json";
+    row.schema = parsed.schema;
   } else if (id === "transfer-bundle") {
     await transferBundleHeads(path.join(outDir, relative));
     row.schema = "git-bundle";
