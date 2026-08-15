@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -8,6 +9,7 @@ const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
 
 export const RELEASE_TARGET_SCHEMA = "superbee.release-targets.v1";
+export const CUTOVER_CONTRACT_SCHEMA = "superbee.cutover-contract.v1";
 export const RELEASE_CANDIDATE_SCHEMA = "superbee.release-candidate.v1";
 export const RELEASE_STAGE_RECEIPT_SCHEMA = "superbee.stage-receipt.v1";
 export const RELEASE_FINALIZER_PROOF_SCHEMA = "superbee.finalizer-chain-proof.v1";
@@ -18,8 +20,13 @@ const TOKEN = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const DIRECTORY_SEGMENT = /^@?[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 const PACKAGE = /^(?:@[a-z0-9][a-z0-9._~-]*\/)?[a-z0-9][a-z0-9._~-]*$/;
 
+const POLICY_DIGEST = /^sha256:[0-9a-f]{64}$/;
+const CUTOVER_CONTRACT_KEYS = ["schema", "semantics", "reviewed_at", "review", "targets"];
+
 export const DEFAULT_RELEASE_TARGETS_PATH = path.join(repoRoot, "release", "targets.json");
 export const DEFAULT_BURNED_VERSIONS_PATH = path.join(repoRoot, "release", "burned-versions.json");
+export const DEFAULT_CUTOVER_CONTRACT_PATH = path.join(repoRoot, "release", "cutover-contract.json");
+const CUTOVER_CONTRACT_LABEL = "release/cutover-contract.json";
 const DEFAULT_CLI_PACKAGE_PATH = path.join(repoRoot, "packages", "cli", "package.json");
 
 export function assertTargetId(targetId) {
@@ -134,6 +141,12 @@ function normalizeTuple(raw, id) {
   if (typeof publication.github_latest !== "boolean") throw new Error(`release tuple ${id} has invalid GitHub latest policy`);
   if (outcome === "publish" && publication.npm_tag === null) throw new Error(`published release tuple ${id} requires an npm publication tag`);
   if (outcome !== "publish" && publication.npm_tag !== null) throw new Error(`non-publish release tuple ${id} must not set an npm publication tag`);
+  if (publication.npm_promote_tag !== null && publication.npm_tag === null) {
+    throw new Error(`release tuple ${id} cannot promote a dist-tag for a version it never publishes`);
+  }
+  if (publication.github_latest && outcome !== "publish") {
+    throw new Error(`non-publish release tuple ${id} must not claim the GitHub latest release`);
+  }
   return { id, target: targetId, package: raw.package, version, tag, outcome, production, publication: { npm_tag: publication.npm_tag, npm_promote_tag: publication.npm_promote_tag, github_latest: publication.github_latest } };
 }
 
@@ -141,7 +154,113 @@ function sortedKeys(value) {
   return Object.keys(value).sort();
 }
 
-export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${sortedKeys(value).map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === undefined) throw new Error(`cutover policy surface cannot encode ${typeof value}`);
+  return encoded;
+}
+
+/**
+ * The slice of a normalized manifest a human reviewer approves for the cutover: who publishes,
+ * with what release authority, under which publication policy. Versions and tags are deliberately
+ * excluded - they move within an already-approved target and are governed by the burn ledger, the
+ * functional successor floor, and the tag/version binding.
+ */
+export function cutoverPolicySurface(manifest, id) {
+  const target = manifest?.targets?.[id];
+  const tuple = manifest?.allowed_tuples?.[id];
+  if (!target || !tuple) throw new Error(`release target ${id} has no reviewable cutover surface`);
+  return {
+    target: id,
+    package: target.package.name,
+    allow_production: target.allow_production,
+    workflow_contract: target.workflow_contract,
+    outcome: tuple.outcome,
+    production: tuple.production,
+    publication: {
+      npm_tag: tuple.publication.npm_tag,
+      npm_promote_tag: tuple.publication.npm_promote_tag,
+      github_latest: tuple.publication.github_latest,
+    },
+  };
+}
+
+export function cutoverPolicyDigest(manifest, id) {
+  return `sha256:${createHash("sha256").update(canonicalJson(cutoverPolicySurface(manifest, id))).digest("hex")}`;
+}
+
+export function normalizeCutoverContract(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error(`${CUTOVER_CONTRACT_LABEL} must be an object`);
+  for (const key of Object.keys(raw)) {
+    if (!CUTOVER_CONTRACT_KEYS.includes(key)) throw new Error(`${CUTOVER_CONTRACT_LABEL} has unsupported key ${JSON.stringify(key)}`);
+  }
+  if (raw.schema !== CUTOVER_CONTRACT_SCHEMA) {
+    throw new Error(`${CUTOVER_CONTRACT_LABEL} schema ${JSON.stringify(raw.schema)} != ${CUTOVER_CONTRACT_SCHEMA}`);
+  }
+  const targetsRaw = raw.targets;
+  if (!targetsRaw || typeof targetsRaw !== "object" || Array.isArray(targetsRaw)) {
+    throw new Error(`${CUTOVER_CONTRACT_LABEL} requires an approved target roster`);
+  }
+  const approved = {};
+  for (const [id, entry] of Object.entries(targetsRaw)) {
+    assertTargetId(id);
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || sortedKeys(entry).join(",") !== "policy_sha256" || !POLICY_DIGEST.test(entry.policy_sha256)) {
+      throw new Error(`${CUTOVER_CONTRACT_LABEL} entry ${id} requires exactly one sha256 policy digest`);
+    }
+    approved[id] = { policy_sha256: entry.policy_sha256 };
+  }
+  if (Object.keys(approved).length === 0) throw new Error(`${CUTOVER_CONTRACT_LABEL} must approve at least one release target`);
+  // Normalizing to the same shape it accepts keeps the check idempotent: a caller that has already
+  // read and validated the contract can hand it straight back without weakening the assertion.
+  return { schema: CUTOVER_CONTRACT_SCHEMA, targets: approved };
+}
+
+/**
+ * Bind a structurally valid manifest to the detached human approval. The manifest stays the only
+ * place policy values are written; the contract records that a reviewer approved exactly this
+ * roster and exactly these values, and holds digests rather than copies so no value is declared
+ * twice. Editing release/targets.json alone therefore cannot enroll a target or move a
+ * publication policy - it invalidates an approval that lives in a different, separately reviewed
+ * file.
+ */
+function assertApprovedCutover(manifest, contract) {
+  const approved = normalizeCutoverContract(contract);
+  const declaredIds = sortedKeys(manifest.targets);
+  const approvedIds = sortedKeys(approved.targets);
+  if (JSON.stringify(declaredIds) !== JSON.stringify(approvedIds)) {
+    const unapproved = declaredIds.filter((id) => !approvedIds.includes(id));
+    const retired = approvedIds.filter((id) => !declaredIds.includes(id));
+    throw new Error(
+      `release target roster is not the approved cutover roster (unapproved: ${unapproved.join(",") || "none"}; unlisted: ${retired.join(",") || "none"}); re-approval is a separate reviewed change to ${CUTOVER_CONTRACT_LABEL}`,
+    );
+  }
+  const drifted = declaredIds
+    .map((id) => ({ id, declared: cutoverPolicyDigest(manifest, id), approved: approved.targets[id].policy_sha256 }))
+    .filter((entry) => entry.declared !== entry.approved);
+  if (drifted.length > 0) {
+    const detail = drifted
+      .map((entry) => `${entry.id}: approved ${entry.approved}, declared ${entry.declared} for ${canonicalJson(cutoverPolicySurface(manifest, entry.id))}`)
+      .join("; ");
+    throw new Error(
+      `release publication policy is not approved by the cutover contract (${detail}); re-approval is a separate reviewed change to ${CUTOVER_CONTRACT_LABEL}`,
+    );
+  }
+  return manifest;
+}
+
+export function loadCutoverContractSync(file = DEFAULT_CUTOVER_CONTRACT_PATH) {
+  return normalizeCutoverContract(JSON.parse(readFileSync(file, "utf8")));
+}
+
+export async function loadCutoverContract(file = DEFAULT_CUTOVER_CONTRACT_PATH) {
+  return normalizeCutoverContract(JSON.parse(await readFile(file, "utf8")));
+}
+
+function normalizeManifestStructure(raw, burnedVersions) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("release target manifest must be an object");
   if (raw.schema !== RELEASE_TARGET_SCHEMA) throw new Error(`release target manifest schema ${JSON.stringify(raw.schema)} != ${RELEASE_TARGET_SCHEMA}`);
   const functionalSuccessorFloor = assertVersion(raw.functional_successor_floor);
@@ -174,6 +293,10 @@ export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
   const versions = Object.values(allowedTuples).map((tuple) => tuple.version);
   const tags = Object.values(allowedTuples).map((tuple) => tuple.tag);
   if (new Set(versions).size !== versions.length || new Set(tags).size !== tags.length) throw new Error("reviewed release tuple versions and tags must be pairwise distinct");
+  const githubLatest = Object.values(allowedTuples).filter((tuple) => tuple.publication.github_latest).map((tuple) => tuple.id).sort();
+  if (githubLatest.length > 1) {
+    throw new Error(`release target manifest declares ${githubLatest.length} GitHub latest releases (${githubLatest.join(", ")}); the repository has exactly one`);
+  }
   const stableSuccessor = allowedTuples["successor-stable"];
   if (!stableSuccessor) throw new Error("release target manifest requires a successor-stable tuple for functional successor floor review");
   if (compareStrictSemver(stableSuccessor.version, functionalSuccessorFloor) === -1) {
@@ -187,6 +310,15 @@ export function normalizeReleaseTargets(raw, { burnedVersions = [] } = {}) {
     targets,
     allowed_tuples: allowedTuples,
   };
+}
+
+/**
+ * There is no exported path to a normalized manifest that skips the approval check: every release
+ * consumer goes through here, and the contract defaults to the reviewed one on disk rather than to
+ * "unchecked" so a caller cannot opt out by omission.
+ */
+export function normalizeReleaseTargets(raw, { burnedVersions = [], contract = loadCutoverContractSync() } = {}) {
+  return assertApprovedCutover(normalizeManifestStructure(raw, burnedVersions), contract);
 }
 
 function normalizeBurnedVersions(raw) {
@@ -219,13 +351,17 @@ async function assertCheckedInCliVersion(manifest, file) {
   }
 }
 
+// The burn ledger and the checked-in CLI describe the manifest's own directory, so they follow the
+// manifest path; the cutover approval describes the reviewed source tree, so it never does - a
+// manifest handed to this loader from anywhere is measured against the approval under review.
 export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH, {
   burnedFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_BURNED_VERSIONS_PATH : null,
   cliPackageFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_CLI_PACKAGE_PATH : null,
+  contractFile = DEFAULT_CUTOVER_CONTRACT_PATH,
 } = {}) {
   const raw = JSON.parse(await readFile(file, "utf8"));
   const burnedVersions = burnedFile ? await loadBurnedVersions(burnedFile) : [];
-  const manifest = normalizeReleaseTargets(raw, { burnedVersions });
+  const manifest = normalizeReleaseTargets(raw, { burnedVersions, contract: await loadCutoverContract(contractFile) });
   if (cliPackageFile) await assertCheckedInCliVersion(manifest, cliPackageFile);
   return manifest;
 }

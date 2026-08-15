@@ -111,6 +111,116 @@ test("production npm and GitHub publication policies are exact target contracts"
   assert.throws(() => normalizeReleaseTargets(previewLatest), /invalid GitHub latest policy/);
 });
 
+const cutoverContractPath = path.join(repoRoot, "release", "cutover-contract.json");
+
+test("the cutover roster and publication policy are approved by something that is not the manifest", async () => {
+  const manifest = await loadReleaseTargets();
+  const contract = JSON.parse(await readFile(cutoverContractPath, "utf8"));
+  assert.deepEqual(Object.keys(contract.targets).sort(), Object.keys(manifest.targets).sort());
+  for (const [id, entry] of Object.entries(contract.targets)) {
+    assert.deepEqual(Object.keys(entry), ["policy_sha256"], `${id} approval carries a digest and nothing else`);
+    assert.match(entry.policy_sha256, /^sha256:[0-9a-f]{64}$/, id);
+  }
+
+  const shadowed = structuredClone(manifest);
+  shadowed.targets.shadow = { ...structuredClone(manifest.targets["successor-stable"]), id: "shadow" };
+  shadowed.allowed_tuples.shadow = {
+    id: "shadow",
+    target: "shadow",
+    package: "superbee",
+    version: "9.9.9",
+    tag: "v9.9.9",
+    outcome: "publish",
+    production: true,
+    publication: { npm_tag: "next", npm_promote_tag: "latest", github_latest: true },
+  };
+  assert.throws(() => normalizeReleaseTargets(shadowed), /declares 2 GitHub latest releases \(shadow, successor-stable\)/);
+  shadowed.allowed_tuples.shadow.publication = { npm_tag: "next", npm_promote_tag: null, github_latest: false };
+  assert.throws(() => normalizeReleaseTargets(shadowed), /roster \(unapproved: shadow; unlisted: none\)/);
+
+  const retired = structuredClone(manifest);
+  delete retired.targets["successor-preview"];
+  delete retired.allowed_tuples["successor-preview"];
+  assert.throws(() => normalizeReleaseTargets(retired), /roster \(unapproved: none; unlisted: successor-preview\)/);
+
+  for (const id of ["bridge", "successor-preview"]) {
+    const flipped = structuredClone(manifest);
+    flipped.allowed_tuples[id].publication.github_latest = true;
+    assert.throws(() => normalizeReleaseTargets(flipped), /declares 2 GitHub latest releases/, id);
+  }
+  const demoted = structuredClone(manifest);
+  demoted.allowed_tuples["successor-stable"].publication.github_latest = false;
+  assert.throws(() => normalizeReleaseTargets(demoted), /successor-stable: approved sha256:/);
+  const promoted = structuredClone(manifest);
+  promoted.allowed_tuples["successor-preview"].publication.npm_promote_tag = "latest";
+  assert.throws(() => normalizeReleaseTargets(promoted), /successor-preview: approved sha256:/);
+  const rebranded = structuredClone(manifest);
+  rebranded.targets.bridge.package = { name: "superbee", directory: ["superbee"] };
+  rebranded.allowed_tuples.bridge.package = "superbee";
+  assert.throws(() => normalizeReleaseTargets(rebranded), /bridge: approved sha256:/);
+  const escalated = structuredClone(manifest);
+  escalated.targets["rehearsal-reject"].workflow_contract = "full";
+  assert.throws(() => normalizeReleaseTargets(escalated), /rehearsal-reject: approved sha256:/);
+});
+
+test("a publication policy the manifest grammar forbids is rejected before any approval is consulted", async () => {
+  const manifest = await loadReleaseTargets();
+  const rehearsalLatest = structuredClone(manifest);
+  rehearsalLatest.allowed_tuples["rehearsal-approve"].publication.github_latest = true;
+  assert.throws(() => normalizeReleaseTargets(rehearsalLatest), /non-publish release tuple rehearsal-approve must not claim the GitHub latest release/);
+  const rehearsalPromote = structuredClone(manifest);
+  rehearsalPromote.allowed_tuples["rehearsal-reject"].publication.npm_promote_tag = "latest";
+  assert.throws(() => normalizeReleaseTargets(rehearsalPromote), /cannot promote a dist-tag for a version it never publishes/);
+});
+
+test("re-approving the cutover is a separate deliberate act that blesses exactly one target", async () => {
+  const manifest = await loadReleaseTargets();
+  const drifted = structuredClone(manifest);
+  drifted.allowed_tuples["successor-preview"].publication.npm_promote_tag = "latest";
+
+  let reported = "";
+  try {
+    normalizeReleaseTargets(drifted);
+  } catch (error) {
+    reported = error.message;
+  }
+  const declared = /successor-preview: approved sha256:[0-9a-f]{64}, declared (sha256:[0-9a-f]{64})/.exec(reported);
+  assert.ok(declared, `drift must report the digest a reviewer has to approve: ${reported}`);
+  assert.match(reported, /"npm_promote_tag":"latest"/);
+
+  const reapproved = JSON.parse(await readFile(cutoverContractPath, "utf8"));
+  reapproved.targets["successor-preview"] = { policy_sha256: declared[1] };
+  assert.equal(
+    normalizeReleaseTargets(drifted, { contract: reapproved }).allowed_tuples["successor-preview"].publication.npm_promote_tag,
+    "latest",
+  );
+  assert.throws(() => normalizeReleaseTargets(manifest, { contract: reapproved }), /successor-preview: approved sha256:/);
+});
+
+test("manifest normalization fails closed on a missing or malformed cutover approval", async () => {
+  const manifest = await loadReleaseTargets();
+  const digest = `sha256:${"0".repeat(64)}`;
+  const cases = [
+    ["null", null],
+    ["array", []],
+    ["empty object", {}],
+    ["no roster", { schema: "superbee.cutover-contract.v1" }],
+    ["wrong schema", { schema: "superbee.release-targets.v1", targets: { bridge: { policy_sha256: digest } } }],
+    ["empty roster", { schema: "superbee.cutover-contract.v1", targets: {} }],
+    ["short digest", { schema: "superbee.cutover-contract.v1", targets: { bridge: { policy_sha256: "sha256:abc" } } }],
+    ["bare digest", { schema: "superbee.cutover-contract.v1", targets: { bridge: digest.slice(7) } }],
+    ["annotated entry", { schema: "superbee.cutover-contract.v1", targets: { bridge: { policy_sha256: digest, note: "approved" } } }],
+    ["unsupported key", { schema: "superbee.cutover-contract.v1", targets: { bridge: { policy_sha256: digest } }, waived: true }],
+  ];
+  for (const [label, contract] of cases) {
+    assert.throws(() => normalizeReleaseTargets(manifest, { contract }), /release\/cutover-contract\.json/, label);
+  }
+  await assert.rejects(
+    loadReleaseTargets(path.join(repoRoot, "release", "targets.json"), { contractFile: path.join(repoRoot, "release", "no-such-approval.json") }),
+    /ENOENT/,
+  );
+});
+
 test("package-only compatibility lookup refuses the split Superbee coordinates", async () => {
   const manifest = await loadReleaseTargets();
   assert.equal(targetFromPackageName("@holaxis/aslite", manifest.targets), "bridge");
