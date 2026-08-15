@@ -119,8 +119,9 @@ jobs:
           # The npm side of the release is the operator's, with 2FA (see the credential model at the
           # top of this file). This proves it landed while nothing has been mutated yet: a version
           # missing its declared dist-tag, or sitting on one the manifest never gives it, stops the
-          # finalizer here rather than between two irreversible steps.
-          node scripts/release-audit-tags.mjs verify-promotion \
+          # finalizer here rather than between two irreversible steps. The script prints the exact
+          # operator command for whichever half is missing.
+          node scripts/release-publication-policy.mjs verify \
             --target "$TARGET" --version "$VERSION" --mode "$MODE"
 
   ordering-verified:
@@ -432,7 +433,7 @@ jobs:
           # target-authorized proved this before anything was mutated; dist-tags can move between
           # jobs (an operator rollback mid-run), so the pre-publish re-check mirrors the ordering
           # gate. Still a pure read: this job holds no npm credential and writes nothing to npm.
-          node scripts/release-audit-tags.mjs verify-promotion \
+          node scripts/release-publication-policy.mjs verify \
             --target "$TARGET" --version "$VERSION" --mode "$MODE"
 
       - name: Re-query and prove exact final inventory and owned body before publication

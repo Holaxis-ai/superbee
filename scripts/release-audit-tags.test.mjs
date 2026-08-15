@@ -10,16 +10,12 @@ import { promisify } from "node:util";
 import {
   NetworkUnavailableError,
   auditRegistryState,
-  checkDeclaredDistTags,
   checkSourceDrift,
-  checkUnauthorizedDistTags,
   checkVersionScheme,
   classifyRegistryStatus,
   compareSemver,
-  distTagDestiny,
   expectedTagState,
   fetchRegistryState,
-  mayHoldDistTag,
   parsePhaseDeclaration,
   readBurnedDeclaration,
   saneSuccessors,
@@ -765,43 +761,3 @@ test("F2: transition tolerance covers timing, never a state the manifest forbids
   );
 });
 
-test("F2: distTagDestiny reads the tuple, and an undeclared version stays unconstrained", () => {
-  const manifest = {
-    allowed_tuples: {
-      bridge: { target: "bridge", package: "@holaxis/aslite", version: "0.1.0-pre.11", publication: { npm_tag: "next", npm_promote_tag: null, github_latest: false } },
-      stable: { target: "successor-stable", package: "superbee", version: "0.1.0", publication: { npm_tag: "next", npm_promote_tag: "latest", github_latest: true } },
-      rehearsal: { target: "rehearsal-reject", package: "superbee-release-rehearsal", version: "0.0.0-x.1", publication: { npm_tag: null, npm_promote_tag: null, github_latest: false } },
-    },
-  };
-  const bridge = distTagDestiny(manifest, "@holaxis/aslite");
-  assert.deepEqual([...bridge.get("0.1.0-pre.11")], ["next"], "only the tuple's own package is derived");
-  assert.equal(bridge.has("0.1.0"), false);
-  assert.equal(mayHoldDistTag(bridge, "0.1.0-pre.11", "latest"), false);
-  assert.equal(mayHoldDistTag(bridge, "0.1.0-pre.8", "latest"), true, "a version with no tuple predates the manifest and is unconstrained");
-
-  const superbee = distTagDestiny(manifest, "superbee");
-  assert.deepEqual([...superbee.get("0.1.0")].sort(), ["latest", "next"]);
-
-  const rehearsal = distTagDestiny(manifest, "superbee-release-rehearsal");
-  assert.equal(rehearsal.get("0.0.0-x.1").size, 0, "a non-publishing tuple's version may hold no dist-tag at all");
-  assert.equal(mayHoldDistTag(rehearsal, "0.0.0-x.1", "latest"), false);
-});
-
-test("F2: the forbidden and required directions are separately decidable", () => {
-  const destiny = destinyOf("0.1.0-pre.11", ["next"]);
-  assert.deepEqual(
-    checkUnauthorizedDistTags({ destiny, version: "0.1.0-pre.11", distTags: { latest: "0.1.0-pre.11", next: "0.1.0-pre.11" } }).map((v) => v.code),
-    ["unauthorized_dist_tag"],
-  );
-  assert.deepEqual(checkUnauthorizedDistTags({ destiny, version: "0.1.0-pre.11", distTags: { latest: LIVE_AT_REST, next: "0.1.0-pre.11" } }), []);
-  assert.deepEqual(
-    checkDeclaredDistTags({ destiny, version: "0.1.0-pre.11", distTags: { latest: LIVE_AT_REST, next: LIVE_AT_REST } }).map((v) => [v.code, v.tag]),
-    [["declared_dist_tag_unmet", "next"]],
-  );
-  assert.deepEqual(checkDeclaredDistTags({ destiny, version: "0.1.0-pre.11", distTags: { latest: LIVE_AT_REST, next: "0.1.0-pre.11" } }), []);
-  assert.deepEqual(
-    checkDeclaredDistTags({ destiny: new Map(), version: "0.1.0-pre.8", distTags: {} }),
-    [],
-    "the manifest requires nothing of a version it does not declare",
-  );
-});

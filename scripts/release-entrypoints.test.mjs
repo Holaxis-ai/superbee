@@ -144,6 +144,11 @@ const OWNED_ENTRYPOINT_PROBES = [
     expected: { code: 1, stderr: /usage: release-reconcile\.mjs --to <state> --receipt <file\|->/ },
   },
   {
+    relativePath: "scripts/release-publication-policy.mjs",
+    args: () => [],
+    expected: { code: 2, stderr: /usage: release-publication-policy\.mjs verify/ },
+  },
+  {
     relativePath: "scripts/release-resolve-target.mjs",
     args: () => ["--target", "bridge", "--json"],
     expected: { code: 0, stdout: /"target":"bridge"/ },
@@ -389,6 +394,7 @@ test("positive executable authority comes from declarations plus explicit operat
     "scripts/release-candidate.mjs",
     "scripts/release-emit-receipt.mjs",
     "scripts/release-packet.mjs",
+    "scripts/release-publication-policy.mjs",
     "scripts/release-resolve-target.mjs",
     "scripts/release-run-operations.mjs",
     "scripts/release-verify-chain.mjs",

@@ -132,6 +132,12 @@ function needsRegistryAuth(argv) {
   return argv[0] === "npm" && !NPM_NON_WRITING_SUBCOMMANDS.has(argv[1]);
 }
 
+// `npm` in COMMAND position: the start of a command, after a pipeline/list operator, inside a command
+// substitution, or after then/else/do. Prose that merely MENTIONS npm — an ::error:: message naming
+// the operator's command, a dry-run echo of what would run — is not an invocation and must not be
+// scanned as one; a real invocation hidden inside `$(...)` still is.
+const NPM_INVOCATION = /(?:^|[|&;(]\s*|\$\(\s*|\bthen\s+|\belse\s+|\bdo\s+)npm\s+([A-Za-z][A-Za-z-]*|--version)/g;
+
 /** Does this job supply npm registry credentials — OIDC trusted publishing or a token? */
 function declaresNpmCredentials(jobText) {
   const perms = permissionsOf(jobText) ?? {};
@@ -354,7 +360,7 @@ test("F12: publication policy is resolved and proved in a non-mutating job, upst
 
   assert.match(gate, /release-resolve-target\.mjs --target "\$TARGET" --tag "v\$VERSION" --github-output "\$GITHUB_OUTPUT"/,
     "the manifest facts are resolved in the first job");
-  assert.match(gate, /release-audit-tags\.mjs verify-promotion/, "the registry precondition runs in the first job");
+  assert.match(gate, /release-publication-policy\.mjs verify/, "the registry precondition runs in the first job");
   assert.deepEqual(permissionsOf(jobs["target-authorized"]), { contents: "read" }, "the precondition job cannot write anything");
 
   // Every job that mutates must be reachable FROM target-authorized through `needs:`, so no mutation
@@ -406,7 +412,7 @@ test("F1: no workflow job runs a registry-authenticated command without credenti
           }
         }
         // (b) npm invoked directly in the shell.
-        for (const [, subcommand] of command.matchAll(/\bnpm\s+([A-Za-z][A-Za-z-]*|--version)/g)) {
+        for (const [, subcommand] of command.matchAll(NPM_INVOCATION)) {
           if (NPM_NON_WRITING_SUBCOMMANDS.has(subcommand)) continue;
           seen.authenticated += 1;
           assert.ok(credentialed, `${workflow}:${name} runs \`npm ${subcommand}\`, which needs npm credentials the job does not declare`);
@@ -416,6 +422,30 @@ test("F1: no workflow job runs a registry-authenticated command without credenti
   }
   assert.ok(seen.viaOperationsCli > 0, "the scan must actually reach the operations CLI invocations");
   assert.ok(seen.authenticated > 0, "the scan must actually classify at least one authenticated command (the stage publish)");
+});
+
+// The scan above is only as good as its notion of "an npm command ran here". Prose that names npm —
+// an operator remediation printed by an ::error:: annotation, a dry-run echo of the command that
+// WOULD run — must not be mistaken for an invocation, or the gate reds on its own documentation; and
+// an invocation hidden in a command substitution must still be caught, or the gate is trivial to evade.
+test("F1: the npm-invocation matcher reads command position, not prose", () => {
+  const subcommands = (text) => [...text.matchAll(NPM_INVOCATION)].map(([, sub]) => sub);
+  for (const prose of [
+    'echo "::error::npm registry unreachable - nothing has been mutated"',
+    'echo "[dry-run] would run: npm stage publish $TARBALL --tag $POLICY_TAG"',
+    'echo "run the operator promotion: npm dist-tag add superbee@0.1.0 latest"',
+  ]) {
+    assert.deepEqual(subcommands(prose), [], `prose must not read as an invocation: ${prose}`);
+  }
+  assert.deepEqual(subcommands("npm ci"), ["ci"]);
+  assert.deepEqual(subcommands('npm install --global npm@11.15.0 --ignore-scripts'), ["install"], "npm@version is not a subcommand");
+  assert.deepEqual(subcommands('test "$(npm --version)" = "11.15.0"'), ["--version"], "command substitution is a command position");
+  assert.deepEqual(subcommands('npm stage publish "$TARBALL" --tag "$POLICY_TAG" | tee stage.json'), ["stage"]);
+  assert.deepEqual(subcommands('gh api foo && npm dist-tag add pkg@1.0.0 latest'), ["dist-tag"], "an invocation after && is still an invocation");
+  assert.equal(needsRegistryAuth(["npm", "dist-tag", "add"]), true);
+  assert.equal(needsRegistryAuth(["npm", "view", "pkg"]), false);
+  assert.equal(needsRegistryAuth(["npm", "some-command-nobody-classified"]), true, "an unknown subcommand fails closed into the auth branch");
+  assert.equal(needsRegistryAuth(["gh", "api", "-X", "PATCH"]), false, "gh is not an npm credential question");
 });
 
 test("F1: the dist-tag promotion is operator-owned, and the finalizer proves it instead of performing it", () => {
@@ -430,9 +460,9 @@ test("F1: the dist-tag promotion is operator-owned, and the finalizer proves it 
     }
   }
   // What replaces it is a proof, run before any mutation and again immediately before publication.
-  assert.match(jobs["target-authorized"], /release-audit-tags\.mjs verify-promotion/);
+  assert.match(jobs["target-authorized"], /release-publication-policy\.mjs verify/);
   const body = jobs.finalize;
-  const proofAt = body.indexOf("release-audit-tags.mjs verify-promotion");
+  const proofAt = body.indexOf("release-publication-policy.mjs verify");
   const publishAt = body.indexOf("release-run-operations.mjs --op immutable-release");
   assert.notEqual(proofAt, -1, "finalize must re-prove the declared publication policy before publishing");
   assert.ok(proofAt < publishAt, "the re-proof must precede the GitHub release publication");
@@ -440,7 +470,7 @@ test("F1: the dist-tag promotion is operator-owned, and the finalizer proves it 
   for (const [name, job] of [["target-authorized", jobs["target-authorized"]], ["finalize", body]]) {
     const proof = runBlocks(job)
       .flatMap(shellCommands)
-      .find((command) => command.includes("release-audit-tags.mjs verify-promotion"));
+      .find((command) => command.includes("release-publication-policy.mjs verify"));
     assert.ok(proof?.includes('--mode "$MODE"'), `${name}'s proof must run in both modes, got ${JSON.stringify(proof)}`);
   }
 });
