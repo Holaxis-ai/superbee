@@ -95,6 +95,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     serve: simple(CLI_LEAVES.serve, ["serve"], [], [...dir, "--port", "0"]),
     ui: simple(CLI_LEAVES.ui, ["ui"], [], [...dir, "--port", "0"]),
     mcp: simple(CLI_LEAVES.mcp, ["mcp"], [], dir, "stderr"),
+    mcpStatus: simple(CLI_LEAVES.mcpStatus, ["mcp", "status"], []),
     viewList: simple(CLI_LEAVES.viewList, ["view", "list"], [], dir),
     sync: simple(CLI_LEAVES.sync, ["sync"], [], dir),
     version: simple(CLI_LEAVES.version, ["version"], []),

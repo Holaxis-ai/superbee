@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import type { Bundle } from "@superbee/core";
 import { KNOWN_COMMANDS } from "../src/cli.js";
-import { MCP_USAGE, mcp } from "../src/commands/mcp.js";
+import { MCP_STATUS_USAGE, MCP_USAGE, mcp } from "../src/commands/mcp.js";
 import { CliError } from "../src/errors.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
 import { cliVersion } from "../src/build-identity.js";
@@ -33,6 +33,62 @@ test("mcp help is offline and does not open a bundle", async () => {
   assert.match(output, /command `superbee`.*argument `mcp`/s);
   assert.match(output, /does not scan or rewrite host MCP configuration/);
   assert.match(output, /show_document.*authoritative Markdown/s);
+});
+
+test("mcp status help is offline and does not open a bundle or server", async () => {
+  let output = "";
+  let opened = false;
+  let started = false;
+  await mcp(["status", "--help"], {
+    stdout: (text) => { output += text; },
+    openBundle: async () => { opened = true; return bundle; },
+    startServer: async () => { started = true; },
+  });
+  assert.equal(output, MCP_STATUS_USAGE);
+  assert.equal(opened, false);
+  assert.equal(started, false);
+  assert.match(output, /never scans.*writes configuration/s);
+});
+
+test("mcp status selects aliases and emits a stable read-only envelope", async () => {
+  let output = "";
+  let selected: readonly string[] = [];
+  await mcp(["status", "--host", "chatgpt", "--json"], {
+    stdout: (text) => { output += text; },
+    inspectHosts: (targets) => {
+      selected = targets.map(({ id }) => id);
+      return targets.map((target) => ({
+        host: target.id,
+        label: target.label,
+        state: "absent",
+        config: "~/.codex/config.toml",
+        reason: "no Superbee registration found",
+        docs_url: target.docs_url,
+      }));
+    },
+  });
+  assert.deepEqual(selected, ["codex"]);
+  assert.deepEqual(JSON.parse(output), {
+    mcp_status: {
+      count: 1,
+      registration_mutation_available: false,
+      hosts: [{
+        host: "codex",
+        label: "Codex / ChatGPT",
+        state: "absent",
+        config: "~/.codex/config.toml",
+        reason: "no Superbee registration found",
+        docs_url: "https://learn.chatgpt.com/docs/extend/mcp?surface=cli",
+      }],
+    },
+  });
+});
+
+test("mcp status rejects unknown hosts on the ordinary CLI error channel", async () => {
+  await assert.rejects(
+    mcp(["status", "--host", "other"], {}),
+    (error: unknown) => error instanceof CliError && error.code === "USAGE" && !error.handled,
+  );
 });
 
 test("mcp opens the explicit local bundle and leaves stdout untouched for stdio protocol", async () => {

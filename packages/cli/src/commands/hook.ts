@@ -48,7 +48,11 @@ import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
-import { HOST_CONFIG_ROOTS, resolveHostConfigRoot } from "../host-config.js";
+import {
+  HOST_CONFIG_ROOTS,
+  resolveHostConfigRoot,
+  resolveOpenCodeConfigRoot,
+} from "../host-config.js";
 import { atomicWriteFileSync } from "../private-config-write.js";
 import {
   classifyHookCommand,
@@ -386,16 +390,11 @@ function targetsForBase(base: string): HookTargets {
   };
 }
 
-function configuredPath(value: string | undefined, fallback: string): string {
-  return value === undefined || value.length === 0 ? fallback : value;
-}
-
 /** Resolve global targets exactly where each host reads them. */
 export function globalHookTargets(home: string = homedir(), env: NodeJS.ProcessEnv = process.env): HookTargets {
   const claudeHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env);
   const codexHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env);
-  const xdgConfigHome = configuredPath(env.XDG_CONFIG_HOME, join(home, ".config"));
-  const opencodeHome = configuredPath(env.OPENCODE_CONFIG_DIR, join(xdgConfigHome, "opencode"));
+  const opencodeHome = resolveOpenCodeConfigRoot(home, env);
   return {
     claudeSettings: join(claudeHome, "settings.json"),
     codexHooks: join(codexHome, "hooks.json"),

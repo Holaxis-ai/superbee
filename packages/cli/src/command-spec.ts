@@ -324,9 +324,12 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "mcp",
-        leaves: [publicLeaf("mcp", "mcp", zero, 21)],
-        usage: "mcp [--dir <path>] [--actor <name>]",
-        summary: "Run the local MCP Apps adapter over a bundle (stdio): display authoritative Markdown documents in the fixed reader, launch registered Views unchanged, or launch active View HTML transiently and save its approved exact bytes; bundle data and governed actions stay behind local human approval",
+        leaves: [
+          publicLeaf("mcp", "mcp", zero, 21),
+          publicLeaf("mcpStatus", "mcp status", zero),
+        ],
+        usage: "mcp [status [--host <id>] [--json] | --dir <path> [--actor <name>]]",
+        summary: "Run the local MCP Apps adapter over a bundle, or inspect the read-only user-level registration status for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode",
       },
       {
         id: "viewList",
