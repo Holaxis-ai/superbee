@@ -244,7 +244,7 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
   assert.doesNotMatch(JSON.stringify(result), /(?:locator|\/Users\/|private-path)/);
 });
 
-test("bundle-unbound workspace listing rejects path-bearing allowed fields and extra locator data", async () => {
+test("bundle-unbound workspace listing rejects path-bearing identities and extra locator data", async () => {
   const base = {
     id: "bnd_00000000000000000000000000000000",
     label: "planning",
@@ -254,7 +254,6 @@ test("bundle-unbound workspace listing rejects path-bearing allowed fields and e
   const invalid = [
     { ...base, id: "/Users/private-path/planning" },
     { ...base, label: "file:///Users/private-path/planning" },
-    { ...base, displayName: "Planning (/Users/private-path/planning)" },
     {
       id: "bnd_00000000000000000000000000000000",
       label: "planning",
@@ -269,6 +268,25 @@ test("bundle-unbound workspace listing rejects path-bearing allowed fields and e
     );
     assert.equal(result.isError, true);
     assert.doesNotMatch(JSON.stringify(result), /(?:private-path|\/Users\/|file:\/\/|locator)/);
+  }
+});
+
+test("bundle-unbound workspace listing omits display names containing either path separator", async () => {
+  const base: McpWorkspaceSummary = {
+    id: "bnd_00000000000000000000000000000000",
+    label: "planning",
+    available: true,
+  };
+  for (const displayName of [
+    "Planning:/Users/private/catalog",
+    "Planning[/Users/private/catalog]",
+    "Planning=C:\\Users\\private\\catalog",
+    "Planning:file:///Users/private/catalog",
+    "Planning / Research",
+  ]) {
+    const result = await callWorkspaceList([{ ...base, displayName }]);
+    assert.equal(result.isError, undefined);
+    assert.doesNotMatch(JSON.stringify(result), /(?:\/Users\/|C:\\|file:\/\/|displayName)/);
   }
 });
 

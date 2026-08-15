@@ -113,8 +113,6 @@ export const MAX_VIEW_CATALOG_SCAN = 40;
 export const MAX_WORKSPACE_CATALOG_PAGE = 50;
 const WORKSPACE_ID_PATTERN = /^bnd_[0-9a-f]{32}$/;
 const WORKSPACE_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
-const PATH_LIKE_DISPLAY_PATTERN =
-  /(?:^|[\s("'`])(?:file:\/\/|\/[\S]+|[a-z]:[\\/]|\\\\[\S]+)/i;
 
 const workspaceSummarySchema = z
   .object({
@@ -128,7 +126,6 @@ const workspaceSummarySchema = z
       .trim()
       .min(1)
       .max(200)
-      .refine((value) => !PATH_LIKE_DISPLAY_PATTERN.test(value))
       .optional(),
     available: z.boolean(),
   })
@@ -145,7 +142,14 @@ function normalizeWorkspaceSummaries(
   listed: readonly McpWorkspaceSummary[],
 ): McpWorkspaceSummary[] {
   const workspaces = listed
-    .map((entry) => workspaceSummarySchema.parse(entry))
+    .map((entry) => {
+      const parsed = workspaceSummarySchema.parse(entry);
+      if (parsed.displayName && /[\\/]/.test(parsed.displayName)) {
+        const { displayName: _omitted, ...safe } = parsed;
+        return safe;
+      }
+      return parsed;
+    })
     .sort((left, right) =>
       left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
     );
