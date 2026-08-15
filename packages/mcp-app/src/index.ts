@@ -7,7 +7,9 @@ export {
   MCP_VIEW_RESOURCE_URI,
   MAX_VIEW_CATALOG_PAGE,
   MAX_VIEW_CATALOG_SCAN,
+  MAX_WORKSPACE_CATALOG_PAGE,
   LIST_VIEWS_TOOL_NAME,
+  LIST_WORKSPACES_TOOL_NAME,
   POLL_DURABLE_VIEW_TOOL_NAME,
   PREPARE_VIEW_ACTION_TOOL_NAME,
   RESUME_DURABLE_VIEW_TOOL_NAME,
@@ -19,6 +21,8 @@ export {
   createMcpAppServer,
   resolveDurableViewLaunch,
   startMcpStdioServer,
+  type CreateBundleUnboundMcpAppServerOptions,
+  type CreateFixedMcpAppServerOptions,
   type CreateMcpAppServerOptions,
 } from "./server.js";
 export type {
@@ -38,4 +42,6 @@ export {
   createMcpBundleContext,
   type McpBundleContext,
   type McpBundleContextOptions,
+  type McpWorkspaceResolver,
+  type McpWorkspaceSummary,
 } from "./workspace.js";

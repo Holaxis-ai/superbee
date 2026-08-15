@@ -55,6 +55,8 @@ import {
   createMcpBundleContext,
   type McpBundleContext,
   type McpBundleContextOptions,
+  type McpWorkspaceResolver,
+  type McpWorkspaceSummary,
 } from "./workspace.js";
 
 // MCP Apps hosts may preload/cache resources by URI. Keep one URI immutable to one exact shell
@@ -73,6 +75,7 @@ export const SHOW_VIEW_TOOL_NAME = "show_view";
 export const SHOW_DOCUMENT_TOOL_NAME = "show_document";
 export const RESOLVE_DOCUMENT_TOOL_NAME = "resolve_document";
 export const LIST_VIEWS_TOOL_NAME = "list_views";
+export const LIST_WORKSPACES_TOOL_NAME = "list_workspaces";
 export const PREPARE_VIEW_ACTION_TOOL_NAME = "prepare_view_action";
 export const FINISH_VIEW_ACTION_TOOL_NAME = "finish_view_action";
 export const AUTHORIZE_DURABLE_VIEW_TOOL_NAME = "authorize_durable_view";
@@ -107,6 +110,23 @@ function mintClaimId(): string {
 }
 export const MAX_VIEW_CATALOG_PAGE = 20;
 export const MAX_VIEW_CATALOG_SCAN = 40;
+export const MAX_WORKSPACE_CATALOG_PAGE = 50;
+
+const workspaceSummarySchema = z
+  .object({
+    id: z.string().trim().min(1).max(128),
+    label: z.string().trim().min(1).max(128),
+    displayName: z.string().trim().min(1).max(200).optional(),
+    available: z.boolean(),
+  })
+  .strict();
+
+const listWorkspacesOutputSchema = z.object({
+  workspaces: z.array(workspaceSummarySchema),
+  shown: z.number().int().nonnegative(),
+  total: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+});
 
 const listViewsInputSchema = z
   .object({
@@ -415,9 +435,18 @@ function fallbackText(payload: McpViewPayload): string {
     : `Registered Superbee View "${payload.title}" (${payload.source.viewId}) is ready for local approval of its exact current bytes before it can read bundle data.`;
 }
 
-export interface CreateMcpAppServerOptions extends McpBundleContextOptions {
+export interface CreateFixedMcpAppServerOptions extends McpBundleContextOptions {
   version?: string;
 }
+
+export interface CreateBundleUnboundMcpAppServerOptions {
+  workspaceResolver: McpWorkspaceResolver;
+  version?: string;
+}
+
+export type CreateMcpAppServerOptions =
+  | CreateFixedMcpAppServerOptions
+  | CreateBundleUnboundMcpAppServerOptions;
 
 interface McpBundleRuntime {
   readonly context: McpBundleContext;
@@ -520,6 +549,65 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     name: "Superbee Conversational Views",
     version: options.version ?? "0.0.1",
   });
+  if ("workspaceResolver" in options) {
+    registerAppTool(
+      server,
+      LIST_WORKSPACES_TOOL_NAME,
+      {
+        title: "List Superbee workspaces",
+        description:
+          "List the bounded private catalog of Superbee workspaces available for explicit selection. Results contain only stable IDs, labels, display names, and availability; they never expose filesystem paths.",
+        inputSchema: z.object({}).strict(),
+        outputSchema: listWorkspacesOutputSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+        _meta: { ui: { visibility: ["model"] } },
+      },
+      async (): Promise<CallToolResult> => {
+        try {
+          const listed = await options.workspaceResolver.list();
+          const workspaces: McpWorkspaceSummary[] = listed
+            .map((entry) => workspaceSummarySchema.parse(entry))
+            .sort((left, right) =>
+              left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
+            );
+          const page = workspaces.slice(0, MAX_WORKSPACE_CATALOG_PAGE);
+          return {
+            content: [
+              {
+                type: "text",
+                text: workspaces.length === 0
+                  ? "No Superbee workspaces are registered in this user's private catalog."
+                  : `Found ${workspaces.length} registered Superbee workspace(s); showing ${page.length}.`,
+              },
+            ],
+            structuredContent: {
+              workspaces: page,
+              shown: page.length,
+              total: workspaces.length,
+              truncated: page.length < workspaces.length,
+            },
+          };
+        } catch {
+          return {
+            isError: true,
+            content: [
+              {
+                type: "text",
+                text: "Could not list Superbee workspaces because the private workspace catalog is unavailable or invalid.",
+              },
+            ],
+          };
+        }
+      },
+    );
+    return server;
+  }
+
   const runtime = createMcpBundleRuntime(createMcpBundleContext(options));
 
   registerAppTool(
