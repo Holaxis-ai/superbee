@@ -44,6 +44,14 @@ function dateOnly(value: unknown): string | null {
     : null;
 }
 
+/** The caller's local calendar day; OKF deliberately defines `today` without a UTC override. */
+function localDateOnly(value: Date): string {
+  const year = String(value.getFullYear()).padStart(4, "0");
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 /**
  * Derive a freshness verdict from `generated.at`, falling back to legacy `timestamp`.
  *
@@ -58,7 +66,7 @@ export function freshness(doc: OkfDocument, options: FreshnessOptions = {}): Fre
   const staleAfter = options.okfVersion === "0.2"
     ? dateOnly(doc.frontmatter.stale_after)
     : null;
-  if (staleAfter !== null && now.toISOString().slice(0, 10) >= staleAfter) {
+  if (staleAfter !== null && localDateOnly(now) >= staleAfter) {
     return {
       verdict: "stale",
       ...(ageMs === undefined ? {} : { ageMs }),
