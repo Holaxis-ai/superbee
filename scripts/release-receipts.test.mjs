@@ -372,7 +372,21 @@ test("the receipt promotes to the tuple's npm_promote_tag, not the stage tag the
   const built = buildReceipt(receiptFieldsFor("successor-stable", "0.1.0", "superbee"));
   assert.equal(built.receipt.stage.tag, "next", "the stage tag is what npm published");
   assert.equal(built.operations.promote.command, "npm dist-tag add superbee@0.1.0 latest");
+  assert.equal(built.operations.promote.requires_2fa, true);
   assert.match(renderReceiptMarkdown(built), /npm dist-tag add superbee@0\.1\.0 latest/);
+});
+
+// Promotion has no automated credential (npm trusted publishing is publish-scoped), so this receipt
+// is the operator's ONLY instruction for it and must say on its face that nothing else will do it.
+test("the receipt presents promotion as a required operator action no workflow performs", () => {
+  const markdown = renderReceiptMarkdown(buildReceipt(receiptFieldsFor("successor-stable", "0.1.0", "superbee")));
+  assert.match(markdown, /REQUIRED operator action/);
+  assert.match(markdown, /no workflow performs this/);
+  assert.match(markdown, /requires 2FA/);
+  assert.ok(
+    markdown.indexOf("npm dist-tag add superbee@0.1.0 latest") > markdown.indexOf("REQUIRED operator action"),
+    "the command belongs under the operator-action heading",
+  );
 });
 
 test("the receipt omits promote entirely when the tuple declares npm_promote_tag: null", () => {
@@ -381,30 +395,45 @@ test("the receipt omits promote entirely when the tuple declares npm_promote_tag
     ["successor-preview", "0.1.1-pre.1", "superbee"],
   ]) {
     const built = buildReceipt(receiptFieldsFor(target, version, basename));
+    // Absent, not empty and not a no-op command: the key does not exist at all.
     assert.ok(!Object.hasOwn(built.operations, "promote"), `${target} must emit no promote operation`);
+    assert.ok(!JSON.stringify(built.operations).includes("dist-tag"), `${target} operations must carry no dist-tag command`);
     const markdown = renderReceiptMarkdown(built);
     assert.ok(!/npm dist-tag/.test(markdown), `${target} receipt must not tell the operator to move a dist-tag`);
     assert.match(markdown, /declares no dist-tag promotion/);
+    assert.match(markdown, /No workflow promotes it and neither should you/);
   }
 });
 
-// The class, not the probe: every full-contract target declared in the manifest — including any
-// added later — must have its receipt promotion derived from that target's own tuple.
-test("every full-contract target's receipt promotion equals its manifest tuple's npm_promote_tag", () => {
+// The class, not the probe: EVERY target declared in the manifest — including any added later.
+// A full-contract target's promotion comes from its own tuple; an identity-only rehearsal target
+// cannot produce a stage receipt at all, so it can never emit a promote command either.
+test("every declared target's receipt promotion equals its manifest tuple's npm_promote_tag", () => {
   const manifest = defaultReleaseManifest();
-  const checked = [];
+  const promotions = {};
   for (const [id, target] of Object.entries(manifest.targets)) {
-    if (target.workflow_contract !== "full") continue;
     const tuple = manifest.allowed_tuples[id];
-    const built = buildReceipt(receiptFieldsFor(id, tuple.version, target.tarball_basename, tuple.publication.npm_tag));
+    const fields = receiptFieldsFor(id, tuple.version, target.tarball_basename, tuple.publication.npm_tag ?? "next");
+    if (target.workflow_contract !== "full") {
+      assert.throws(() => buildReceipt(fields), /requires workflow contract full/, `${id} must not reach the receipt chain`);
+      promotions[id] = null;
+      continue;
+    }
+    const built = buildReceipt(fields);
     const promoted = built.operations.promote ? built.operations.promote.argv.at(-1) : null;
     assert.equal(promoted, tuple.publication.npm_promote_tag, `receipt promotion for ${id}`);
     if (built.operations.promote) {
       assert.equal(built.operations.promote.argv.at(-2), `${target.package.name}@${tuple.version}`);
     }
-    checked.push(id);
+    promotions[id] = promoted;
   }
-  assert.deepEqual(checked.sort(), ["bridge", "successor-preview", "successor-stable"]);
+  assert.deepEqual(promotions, {
+    bridge: null,
+    "successor-stable": "latest",
+    "successor-preview": null,
+    "rehearsal-approve": null,
+    "rehearsal-reject": null,
+  });
 });
 
 // ── F8: no silent bridge redirect. The target decides which package the receipt names. ──

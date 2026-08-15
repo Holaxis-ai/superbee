@@ -100,15 +100,28 @@ export function renderReceiptMarkdown(built) {
     operations.registry_verify.workflow_proof,
     "```",
     "",
-    "### Promotion (after the registry proof)",
-    "",
-    // The promote operation exists only when the reviewed tuple declares npm_promote_tag; the
-    // finalize workflow promotes to exactly this tag, so the manual path cannot diverge from it.
+    // Promotion is an OPERATOR action: npm's trusted publishing is publish-scoped, so no workflow
+    // holds a credential for `npm dist-tag add`. This command is the only instruction the operator
+    // gets for it, and it is built from the tuple's npm_promote_tag — the declared end state the
+    // release is checked against — so following it verbatim reaches exactly that state.
     ...(operations.promote
-      ? ["```sh", operations.promote.command, "```"]
+      ? [
+        "### Promotion (REQUIRED operator action — no workflow performs this)",
+        "",
+        "npm's trusted publishing is publish-scoped: `npm dist-tag add` exchanges no OIDC token, so",
+        "nothing promotes on your behalf. After the registry verification above, run this yourself",
+        "(requires 2FA). The release is not complete until the registry carries this tag:",
+        "",
+        "```sh",
+        operations.promote.command,
+        "```",
+      ]
       : [
+        "### Promotion (none for this release)",
+        "",
         "This release tuple declares no dist-tag promotion (`npm_promote_tag: null`): the tag npm",
-        "already carries is final. Do NOT move a dist-tag by hand.",
+        "already carries is final. No workflow promotes it and neither should you — do NOT move a",
+        "dist-tag by hand.",
       ]),
     "",
     ...STABLE_MCP_LAUNCH_GUIDANCE.split("\n"),

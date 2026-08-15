@@ -157,19 +157,27 @@ export function registryVerifyOperations({ version, target }) {
   };
 }
 
-/** Interactive dist-tag promotion after registry proof (§5 promoted). */
+/**
+ * Interactive dist-tag promotion after registry proof (§5 promoted). npm's trusted publishing is
+ * publish-scoped — `npm dist-tag add` performs no OIDC token exchange — so this is an OPERATOR
+ * action with 2FA, like `npm stage approve`, never something a workflow can run for them.
+ */
 export function promoteOperation({ version, tag, target }) {
   const releaseTarget = targetFor(target);
-  return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
+  return op(
+    ["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)],
+    { requires_2fa: true },
+  );
 }
 
 /**
  * The promotion the reviewed tuple DECLARES for this target: `publication.npm_promote_tag`, the
- * same manifest field release-resolve-target.mjs hands the finalize workflow. The receipt is the
- * path a human follows when that workflow fails, so it must not restate the policy from another
- * value — the stage tag (`publication.npm_tag`) is what npm already holds and promoting to it is a
- * no-op. Returns null when the tuple declares no promotion, so the caller OMITS the operation
- * instead of telling the operator to move a dist-tag the reviewed policy leaves alone.
+ * same manifest field every other consumer of the publication policy reads. Promotion is performed
+ * by a human, so this command is the ONLY instruction they get for it and must not be restated
+ * from another value — the stage tag (`publication.npm_tag`) is what npm already holds, and
+ * promoting to it is a no-op that leaves the declared end state unreached. Returns null when the
+ * tuple declares no promotion (bridge and both rehearsal tuples), so the caller OMITS the
+ * operation rather than emitting an empty or no-op command.
  */
 export function promoteOperationForTarget({ version, target }) {
   const releaseTarget = targetFor(target);
