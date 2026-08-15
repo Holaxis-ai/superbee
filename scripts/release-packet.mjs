@@ -2,7 +2,7 @@
 // plus the deliberately small normalized ref assertions checked below.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -291,9 +291,18 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
   return { paths, closure, explicit, workflowEntries };
 }
 
-function assertExecutionRoot(root, label) {
-  const requested = path.resolve(root);
-  if (requested !== repoRoot) {
+async function canonicalPath(target) {
+  const resolved = path.resolve(target);
+  try {
+    return await realpath(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+async function assertExecutionRoot(root, label) {
+  const [requested, executing] = await Promise.all([canonicalPath(root), canonicalPath(repoRoot)]);
+  if (requested !== executing) {
     packetError(`${label} must execute from the same checkout as --root; run ${path.join(requested, "scripts", "release-packet.mjs")}`);
   }
 }
@@ -667,7 +676,7 @@ async function assertDetachedCheckout(root) {
 }
 
 export async function createReleasePacket({ commit, publicAncestor, out, candidates, evidence, observedSource, root = repoRoot, retainedVerifier = verifyRetainedTarball, onEvidenceCaptured }) {
-  assertExecutionRoot(root, "create");
+  await assertExecutionRoot(root, "create");
   const targets = await loadPacketTargets(root);
   const candidateIds = Object.keys(targets.allowed_tuples);
   if (!candidates || Object.keys(candidates).length !== candidateIds.length || candidateIds.some((id) => !candidates[id])) {
@@ -732,7 +741,7 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
 }
 
 export async function verifyReleasePacket({ packet: packetFile, root = repoRoot, retainedVerifier = verifyRetainedTarball, observedSource }) {
-  assertExecutionRoot(root, "verify");
+  await assertExecutionRoot(root, "verify");
   const packetPath = path.resolve(packetFile);
   const outDir = path.dirname(packetPath);
   if (path.basename(packetPath) !== PACKET_FILE) packetError(`packet path must end in ${PACKET_FILE}`);
@@ -919,7 +928,9 @@ export function parsePacketArgs(argv) {
 }
 
 async function runBoundToRoot(args, argv) {
-  if (!args.root || args.root === repoRoot) return false;
+  if (!args.root) return false;
+  const [requested, executing] = await Promise.all([canonicalPath(args.root), canonicalPath(repoRoot)]);
+  if (requested === executing) return false;
   const targetScript = path.join(args.root, "scripts", "release-packet.mjs");
   await regularFile(targetScript, `--root packet script ${targetScript}`);
   try {
