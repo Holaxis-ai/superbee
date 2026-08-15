@@ -494,7 +494,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 99
+      "line": 94
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -505,7 +505,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 111
+      "line": 106
     },
     {
       "file": "packages/cli/src/commands/skill.ts",

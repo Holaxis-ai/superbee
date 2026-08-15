@@ -30,19 +30,13 @@
 // SCOPE: `--scope project` (default) targets the current repo; `--scope user` targets each
 // host's configured user directory. Project-scope OpenCode stays under `<cwd>/.config/opencode/`.
 import {
-  chmodSync,
   existsSync,
   lstatSync,
   readFileSync,
-  realpathSync,
-  renameSync,
   rmSync,
-  statSync,
-  writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, dirname } from "node:path";
-import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { parseArgs } from "node:util";
 import {
   computeCodexConfigUpdate,
@@ -55,6 +49,7 @@ import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { HOST_CONFIG_ROOTS, resolveHostConfigRoot } from "../host-config.js";
+import { atomicWriteFileSync } from "../private-config-write.js";
 import {
   classifyHookCommand,
   classifyHookEntry,
@@ -507,61 +502,6 @@ export function readSettingsForInstall(
     }
   }
   return { ok: true, settings: parsed as HookSettings };
-}
-
-/**
- * A SYMLINKED destination (a stowed/dotfile-managed settings file) is written THROUGH, not
- * replaced: renaming a temp over the link path would swap the link for a regular file and strand
- * the real target. The link is resolved once and the whole atomic dance happens at the RESOLVED
- * path, so the link stays a link and its target updates atomically. A dangling link is refused —
- * writing "through" it would silently create a file somewhere the user's manager doesn't own.
- * A non-link destination passes through verbatim (ancestor symlinks need no handling: the temp
- * lives in the same — possibly linked — directory, so rename resolves them identically).
- */
-function resolveWriteDestination(path: string, followFinalSymlink: boolean): string {
-  let isLink = false;
-  try {
-    isLink = lstatSync(path).isSymbolicLink();
-  } catch {
-    return path; // absent → create at the literal path
-  }
-  if (!isLink) return path;
-  if (!followFinalSymlink) {
-    throw new Error(`symlink at ${path} — refusing to replace a generated plugin through a link`);
-  }
-  try {
-    return realpathSync(path);
-  } catch {
-    throw new Error(`dangling symlink at ${path} — refusing to write through it; fix or remove the link`);
-  }
-}
-
-/**
- * Atomic file write: temp file in the SAME directory + rename, so a concurrent reader sees either
- * the old bytes or the new bytes — never a torn/empty file (truncate-then-write's race window).
- * A symlinked destination is written through at its resolved target by default (see
- * {@link resolveWriteDestination}); generated plugin callers opt out because their ownership is
- * the literal directory entry, not a dotfile-manager target. When replacing an existing file its mode is preserved (a
- * user's 0600 settings must not widen to the default umask); the temp is cleaned up on ANY
- * failure (write or rename).
- */
-export function atomicWriteFileSync(
-  path: string,
-  content: string | Uint8Array,
-  options: { followFinalSymlink?: boolean } = {},
-): void {
-  const destination = resolveWriteDestination(path, options.followFinalSymlink ?? true);
-  mkdirSync(dirname(destination), { recursive: true });
-  const mode = existsSync(destination) ? statSync(destination).mode & 0o7777 : undefined;
-  const tmp = `${destination}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  try {
-    writeFileSync(tmp, content, mode !== undefined ? { mode } : {});
-    if (mode !== undefined) chmodSync(tmp, mode); // umask masks writeFileSync's mode; enforce it
-    renameSync(tmp, destination);
-  } catch (err) {
-    rmSync(tmp, { force: true });
-    throw err;
-  }
 }
 
 function writeSettings(path: string, settings: HookSettings): void {

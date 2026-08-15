@@ -47,7 +47,7 @@ import {
   collapseHomeDirectory,
   currentExecutableRealPath,
 } from "../invocation.js";
-import { atomicWriteFileSync } from "./hook.js";
+import { atomicWriteFileSync } from "../private-config-write.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { parseSelectorOrUsage } from "../args.js";
