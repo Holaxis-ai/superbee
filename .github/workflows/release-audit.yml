@@ -2,8 +2,14 @@ name: Release policy audit
 
 # Registry-observing enforcement of the release conventions (decisions/version-update-contract):
 # scripts/release-audit-tags.mjs compares the LIVE npm state of @holaxis/aslite (dist-tags,
-# published versions, publish times) plus packages/cli/package.json against the policy encoded in
-# scripts/release-state.mjs `resolveTags` and the phase declared in release/phase.json.
+# published versions, publish times) plus packages/cli/package.json against the declared policy.
+#
+# Two authorities compose in that comparison and neither restates the other: scripts/release-state.mjs
+# `resolveTags` owns the phase machine (which tags move during a transaction, given the phase declared
+# in release/phase.json), and release/targets.json owns dist-tag eligibility (a tuple's npm_tag plus
+# npm_promote_tag are the only dist-tags its version may ever carry). A version the manifest publishes
+# to `next` only therefore leaves `latest` where it is, and the audit expects exactly that — change the
+# manifest and this audit's expectation moves with it, with no second edit anywhere.
 #
 # Deliberately a SEPARATE workflow, NOT part of the offline `npm run check` chain: ordinary gates
 # run with the network off (local-first), and this audit is only meaningful online. The
