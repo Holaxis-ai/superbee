@@ -352,8 +352,10 @@ async function assertCheckedInCliVersion(manifest, file) {
 }
 
 // The burn ledger and the checked-in CLI describe the manifest's own directory, so they follow the
-// manifest path; the cutover approval describes the reviewed source tree, so it never does - a
-// manifest handed to this loader from anywhere is measured against the approval under review.
+// manifest path. The cutover approval deliberately never does: it is part of the reviewed source,
+// and resolving it as a sibling would let any manifest arrive carrying the approval that blesses
+// it. A manifest handed to this loader from anywhere is measured against the approval under
+// review, so this check applies on every path rather than only to the default manifest.
 export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH, {
   burnedFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_BURNED_VERSIONS_PATH : null,
   cliPackageFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_CLI_PACKAGE_PATH : null,

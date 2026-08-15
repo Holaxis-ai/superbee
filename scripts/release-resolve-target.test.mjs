@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { GITHUB_OUTPUT_FIELDS, parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
 import { loadReleaseTargets, normalizeReleaseTargets, resolveDeclaredTarget, targetFromPackageName, updatePolicyForTarget } from "./release-targets.mjs";
@@ -218,6 +219,53 @@ test("manifest normalization fails closed on a missing or malformed cutover appr
   await assert.rejects(
     loadReleaseTargets(path.join(repoRoot, "release", "targets.json"), { contractFile: path.join(repoRoot, "release", "no-such-approval.json") }),
     /ENOENT/,
+  );
+});
+
+test("the cutover approval binds to the reviewed source tree, not to the manifest handed in", async (t) => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-foreign-cutover-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  await mkdir(path.join(scratch, "scripts"), { recursive: true });
+  await mkdir(path.join(scratch, "release"), { recursive: true });
+  for (const relative of ["scripts/release-targets.mjs", "scripts/strict-semver.mjs", "release/burned-versions.json"]) {
+    await copyFile(path.join(repoRoot, relative), path.join(scratch, relative));
+  }
+  const foreignManifestPath = path.join(scratch, "release", "targets.json");
+  const foreignBurnedPath = path.join(scratch, "release", "burned-versions.json");
+  const doctored = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
+  doctored.allowed_tuples["successor-preview"].publication.npm_promote_tag = "latest";
+  await writeFile(foreignManifestPath, JSON.stringify(doctored, null, 2));
+
+  // A second instance of the real module whose reviewed source tree is the scratch directory.
+  const foreign = await import(pathToFileURL(path.join(scratch, "scripts", "release-targets.mjs")).href);
+
+  // The synchronous authority consults the approval as well: with none in that tree, no manifest.
+  assert.throws(() => foreign.defaultReleaseManifest(), /ENOENT/);
+  assert.throws(() => foreign.defaultReleaseTargets(), /ENOENT/);
+
+  let reported = "";
+  try {
+    normalizeReleaseTargets(doctored);
+  } catch (error) {
+    reported = error.message;
+  }
+  const declared = /successor-preview: approved sha256:[0-9a-f]{64}, declared (sha256:[0-9a-f]{64})/.exec(reported);
+  assert.ok(declared, `drift must report the digest a reviewer has to approve: ${reported}`);
+
+  const siblingApproval = JSON.parse(await readFile(cutoverContractPath, "utf8"));
+  siblingApproval.targets["successor-preview"] = { policy_sha256: declared[1] };
+  await writeFile(path.join(scratch, "release", "cutover-contract.json"), JSON.stringify(siblingApproval, null, 2));
+
+  // That tree approves its own manifest, because there the approval is the reviewed source.
+  assert.equal(
+    foreign.defaultReleaseManifest().allowed_tuples["successor-preview"].publication.npm_promote_tag,
+    "latest",
+  );
+  // Handed to this checkout, the same manifest is measured against this checkout's approval, and
+  // the approval sitting next to it counts for nothing - a foreign manifest cannot approve itself.
+  await assert.rejects(
+    loadReleaseTargets(foreignManifestPath, { burnedFile: foreignBurnedPath, cliPackageFile: null }),
+    /successor-preview: approved sha256:/,
   );
 });
 
