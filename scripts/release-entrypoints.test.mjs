@@ -33,6 +33,7 @@ const EXPLICIT_OPERATOR_EXECUTABLE_PATHS = [
   "scripts/release-inspect.mjs",
   "scripts/release-packet.mjs",
   "scripts/release-reconcile.mjs",
+  "scripts/release-settings-capture.mjs",
 ];
 const LEGACY_MAIN_GUARD_PATTERNS = [
   /process\.argv\[1\][\s\S]{0,200}fileURLToPath\(import\.meta\.url\)/,
@@ -402,7 +403,6 @@ test("positive executable authority comes from declarations plus explicit operat
     "scripts/release-publication-policy.mjs",
     "scripts/release-resolve-target.mjs",
     "scripts/release-run-operations.mjs",
-    "scripts/release-settings-capture.mjs",
     "scripts/release-verify-chain.mjs",
     "scripts/release-verify-ordering.mjs",
     "scripts/release-verify-registry.mjs",

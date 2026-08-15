@@ -92,6 +92,24 @@ function bundleHeads(bundleFile) {
 const sharedBundle = path.join(sharedBundleDir, "transfer-bundle");
 const sharedBundleHeads = await buildTransferBundle(sharedBundle);
 
+/**
+ * Swap a retained evidence file and re-record every digest that covers it, so a verification run
+ * reaches the evidence's own validators instead of stopping at a byte-level mismatch.
+ */
+async function replaceRetainedEvidence(out, category, file, bytes) {
+  const retained = path.join(out, "evidence", file);
+  await writeFile(retained, bytes);
+  const sha256 = await fileSha256(retained);
+  await rewritePacket(out, (packet) => {
+    const row = packet.external_evidence.find((entry) => entry.category === category);
+    row.sha256 = sha256;
+    row.bytes = bytes.length;
+    const inventoried = packet.inventory.find((entry) => entry.path === `evidence/${file}`);
+    inventoried.sha256 = sha256;
+    inventoried.bytes = bytes.length;
+  });
+}
+
 async function rewritePacket(out, mutate) {
   const packetPath = path.join(out, "release-packet.json");
   const packet = JSON.parse(await readFile(packetPath, "utf8"));
@@ -430,6 +448,21 @@ test("the manifest closure follows every workflow file, package script hop, and 
     ["a node invocation of a path that is neither tracked nor ignored", async (root) => {
       await appendWorkflowStep(root, "release-finalize.yml", "node scripts/not-in-the-index.mjs");
     }, /neither a tracked source file nor an ignored build output/],
+    // The exact shape another work package is landing: one new script, one new step in an existing
+    // release workflow, and no edit to the packet's own code. The derivation must find it alone.
+    ["a new script invoked by a new step in an existing release workflow", async (root) => {
+      await writeFile(
+        path.join(root, "scripts", "release-publication-policy.mjs"),
+        'import { isMainModule } from "./is-main-module.mjs";\n\nexport function resolvePublicationPolicy() {\n  return isMainModule(import.meta.url);\n}\n',
+      );
+      await appendWorkflowStep(root, "release-finalize.yml", "node scripts/release-publication-policy.mjs");
+    }, /missing: [^;]*scripts\/release-publication-policy\.mjs/],
+    // Release-governing DATA is never imported, so no closure walk can find it; the release/
+    // directory is what makes it derivable.
+    ["a new governing data file committed under release/", async (root) => {
+      await writeFile(path.join(root, "release", "cutover-contract.json"), '{"schema":"superbee.cutover-contract.v1","targets":{}}\n');
+      execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+    }, /missing: release\/cutover-contract\.json/],
   ];
   for (const [name, mutate, expected] of cases) {
     const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-topology-"));
@@ -572,7 +605,7 @@ test("packet creation rejects a retained transfer bundle whose actual heads diff
 
 // F3: the review reproduced a bundle whose refs carry the approved NAMES over other content, and a
 // bundle truncated to its header. `git bundle list-heads` accepts both; so did the packet.
-test("packet creation rejects a transfer bundle whose head commits or pack bytes are not the reviewed ones", async () => {
+test("packet creation and verification reject a transfer bundle whose head commits or pack bytes are not the reviewed ones", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-bundle-integrity-"));
   const create = async (input, suffix) => createReleasePacket({
     commit: head, publicAncestor: parent, out: path.join(root, suffix), ...input,
@@ -599,6 +632,32 @@ test("packet creation rejects a transfer bundle whose head commits or pack bytes
     await writeFile(truncated.evidence["transfer-bundle"], whole.subarray(0, 200));
     assert.deepEqual(bundleHeads(truncated.evidence["transfer-bundle"]), sharedBundleHeads, "list-heads accepts the truncated bundle");
     await assert.rejects(create(truncated, "packet-truncated"), /transfer bundle pack is incomplete, corrupt, or not self-contained/);
+
+    // Verification is an independent audit of retained bytes, not a replay of creation's verdict:
+    // both reproductions must be rejected again when they are swapped into a valid packet.
+    const retained = await fixture(path.join(root, "retained"));
+    const out = path.join(root, "packet-retained");
+    await createReleasePacket({
+      commit: head, publicAncestor: parent, out, ...retained,
+      observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier,
+    });
+    const verify = () => verifyReleasePacket({
+      packet: path.join(out, "release-packet.json"),
+      retainedVerifier: syntheticRetainedVerifier,
+      observedSource: { commit: head, dirty: false },
+    });
+    await verify();
+
+    const substitutedBundle = path.join(root, "substituted-for-verify");
+    await buildTransferBundle(substitutedBundle, { mainCommit: otherCommit });
+    await replaceRetainedEvidence(out, "transfer-bundle", "transfer-bundle", await readFile(substitutedBundle));
+    await assert.rejects(verify(), /transfer bundle heads differ from the reviewed allowlist/);
+
+    await replaceRetainedEvidence(out, "transfer-bundle", "transfer-bundle", whole.subarray(0, 200));
+    await assert.rejects(verify(), /transfer bundle pack is incomplete, corrupt, or not self-contained/);
+
+    await replaceRetainedEvidence(out, "transfer-bundle", "transfer-bundle", whole);
+    await verify();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

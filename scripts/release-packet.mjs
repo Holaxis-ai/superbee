@@ -31,10 +31,19 @@ const DIGEST_FILE = "release-packet.sha256";
 // The generator pins itself: no workflow runs `release:packet`, and the packet records this file's
 // own digest. Every other entrypoint is derived from the workflows by release-workflow-topology.
 const SOURCE_ENTRYPOINTS = ["scripts/release-packet.mjs"];
-// Files the packet pins because a reviewer needs them, independent of any import edge.
+// Release-governing DATA is never imported, so no closure walk can find it. It is derived the way
+// the executable half is — from the tree — because it all lives in one directory: every tracked
+// file under release/ is authority a release obeys (the target manifest, the burn ledger, the
+// phase declaration, this packet's own input manifest, any approval contract added later), and a
+// new one joins the closure the moment it is committed.
+const RELEASE_AUTHORITY_DIRECTORY = "release/";
+// What is left cannot be derived from a directory or an import edge. Each entry states why it is
+// pinned, so the list stays reviewable rather than accumulating.
 const EXPLICIT_PACKET_INPUTS = [
-  "release/review-packet-inputs.json", "release/targets.json", "release/burned-versions.json",
-  ".github/release-allowed-signers", "package.json", "package-lock.json", "packages/cli/SKILL.md",
+  ".github/release-allowed-signers", // who may sign a release tag: named by a workflow, never imported
+  "package.json", // the script authority every workflow `npm run` resolves through
+  "package-lock.json", // the exact dependency closure those scripts execute against
+  "packages/cli/SKILL.md", // shipped inside every candidate tarball and byte-compared by the verifier
 ];
 const EXTERNAL_IMPORTS = new Set(["es-module-lexer", "esbuild", "pako"]); // Directly declared and lockfile-pinned build dependencies.
 const EVIDENCE = [
@@ -275,7 +284,12 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
   // Ignore rules are authority twice over: they decide which checkout residue a packet build may
   // carry, and which workflow-executed paths count as build output rather than pinned source.
   const ignoreRuleFiles = [...trackedPaths].filter((relative) => path.posix.basename(relative) === GITIGNORE);
-  const explicit = [...EXPLICIT_PACKET_INPUTS, ...ignoreRuleFiles, ...execution.workflowFiles, ...execution.scriptAuthorityFiles];
+  const releaseAuthorityFiles = [...trackedPaths].filter((relative) => relative.startsWith(RELEASE_AUTHORITY_DIRECTORY));
+  if (releaseAuthorityFiles.length === 0) packetError(`${RELEASE_AUTHORITY_DIRECTORY} declares no tracked release authority files`);
+  const explicit = [
+    ...EXPLICIT_PACKET_INPUTS, ...ignoreRuleFiles, ...releaseAuthorityFiles,
+    ...execution.workflowFiles, ...execution.scriptAuthorityFiles,
+  ];
   const expected = [...new Set([...closure, ...explicit])].sort();
   if (JSON.stringify(paths) !== JSON.stringify(expected)) {
     const missing = expected.filter((item) => !paths.includes(item));
