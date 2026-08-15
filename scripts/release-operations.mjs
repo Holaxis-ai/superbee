@@ -28,7 +28,7 @@ function targetFor(targetId) {
   return resolveDeclaredTarget({
     targetId,
     targets: defaultReleaseTargets(),
-    context: "release operation target",
+    context: "release operation",
     workflowContract: "full",
   });
 }
