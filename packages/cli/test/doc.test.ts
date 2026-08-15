@@ -3547,7 +3547,7 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   assert.match(historyHelp, /resolved advisory actor label from --actor, SUPERBEE_ACTOR, or legacy\s+AGENTSTATE_LITE_ACTOR/);
   assert.match(historyHelp, /authenticated principal \(server-set, unforgeable\)/);
   assert.match(historyHelp, /'superbee_updated_by' in v0\.2/);
-  assert.match(historyHelp, /falling back to the\s+file's OS owner/);
+  assert.match(historyHelp, /falling back to the\s+local user identity/);
 
   const updateHelp = await capture(["update", "--help"]);
   assert.match(updateHelp, /'actor' in v0\.1; 'superbee_updated_by' in v0\.2/);

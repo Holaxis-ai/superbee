@@ -200,7 +200,7 @@ and agent is the resolved advisory actor label from --actor, SUPERBEE_ACTOR, or 
 AGENTSTATE_LITE_ACTOR. A local --dir bundle keeps no history, so it returns just the single current
 revision. Its actor is resolved from the doc's edition-appropriate advisory attribution
 ('superbee_updated_by' in v0.2, then compatibility 'updated_by'/'actor'), falling back to the
-file's OS owner when none is present. The newest version is the token to
+local user identity when none is present. The newest version is the token to
 pass to --expected-version for an optimistic doc update/delete.
 
 Options:
