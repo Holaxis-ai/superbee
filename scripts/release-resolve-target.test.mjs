@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
+import { GITHUB_OUTPUT_FIELDS, parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
 import { loadReleaseTargets, normalizeReleaseTargets, resolveDeclaredTarget, targetFromPackageName, updatePolicyForTarget } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -232,6 +232,30 @@ test("renderGithubOutput emits only primitive stable fields", () => {
     }),
     "target=bridge\npackage=@holaxis/aslite\nversion=0.1.0-pre.11\ntag=v0.1.0-pre.11\npolicy_tag=next\nnpm_promote_tag=\ngithub_latest=false\nworkflow_contract=full\n",
   );
+});
+
+test("renderGithubOutput refuses to render a fact set that is not the resolved target contract", async () => {
+  const facts = await resolveTargetFacts({ target: "successor-stable", tag: "v0.1.0" });
+  assert.deepEqual(Object.keys(facts).sort(), Object.keys(GITHUB_OUTPUT_FIELDS).sort());
+
+  for (const key of Object.keys(GITHUB_OUTPUT_FIELDS)) {
+    const dropped = { ...facts };
+    delete dropped[key];
+    assert.throws(() => renderGithubOutput(dropped), new RegExp(`missing: ${key}`), `dropped ${key}`);
+    assert.throws(() => renderGithubOutput({ ...facts, [key]: undefined }), new RegExp(`github output ${key} is missing`), `undefined ${key}`);
+  }
+
+  const renamed = { ...facts, npm_promotion_tag: facts.npm_promote_tag };
+  delete renamed.npm_promote_tag;
+  assert.throws(() => renderGithubOutput(renamed), /missing: npm_promote_tag; unknown: npm_promotion_tag/);
+
+  for (const [key, kind] of Object.entries(GITHUB_OUTPUT_FIELDS)) {
+    if (kind === "nullable") continue;
+    assert.throws(() => renderGithubOutput({ ...facts, [key]: null }), new RegExp(`github output ${key} must not be null`), `null ${key}`);
+    assert.throws(() => renderGithubOutput({ ...facts, [key]: "" }), new RegExp(`github output ${key} must not be empty`), `empty ${key}`);
+  }
+  assert.throws(() => renderGithubOutput({ ...facts, tag: "v0.1.0\nnpm_promote_tag=latest" }), /github output tag must be a single line/);
+  assert.throws(() => renderGithubOutput(undefined), /requires resolved target facts/);
 });
 
 test("renderGithubOutput emits empty strings for nullable publication fields", () => {
