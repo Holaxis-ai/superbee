@@ -417,7 +417,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
               : coordinate.logicalField;
             throw new CliError(
               "USAGE",
-              `--${previous} and --${field} address the same field '${logicalField}'; pass only one`,
+              `'${logicalField}' was supplied more than once; pass it once`,
               { help: `${cliInvocation()} doc update ${id} --${logicalField} <value>` },
             );
           }

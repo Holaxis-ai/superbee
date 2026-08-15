@@ -547,7 +547,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
         : coordinate.logicalField;
       throw new CliError(
         "USAGE",
-        `--${previous} and --${field} address the same field '${logicalField}'; pass only one`,
+        `'${logicalField}' was supplied more than once; pass it once`,
         { help: `${cliInvocation()} new "${kind.governs}" <id> --${logicalField} <value>` },
       );
     }

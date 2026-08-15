@@ -1607,7 +1607,8 @@ test("doc update: logical --progress_status resolves to legacy v0.1 storage with
       (error: unknown) => {
         assert.ok(error instanceof CliError);
         assert.equal(error.code, "USAGE");
-        assert.match(error.message, /same field 'progress_status'/);
+        assert.match(error.message, /'progress_status' was supplied more than once/);
+        assert.doesNotMatch(error.message, /--status|stored field/);
         return true;
       },
     );

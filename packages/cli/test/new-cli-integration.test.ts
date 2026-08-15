@@ -96,7 +96,8 @@ test("built CLI new accepts logical progress_status while preserving v0.1 status
       { encoding: "utf8" },
     );
     assert.equal(duplicate.status, 2, `stdout=${duplicate.stdout} stderr=${duplicate.stderr}`);
-    assert.match(duplicate.stdout, /same field 'progress_status'/);
+    assert.match(duplicate.stdout, /'progress_status' was supplied more than once/);
+    assert.doesNotMatch(duplicate.stdout, /--status|stored field/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -116,10 +117,11 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
         path: "tasks/",
         fields: {
           required: ["title", "superbee_progress_status"],
-          optional: ["status"],
+          optional: ["status", "priority"],
           values: {
             superbee_progress_status: ["todo", "done"],
             status: ["draft", "stable", "deprecated"],
+            priority: ["high"],
           },
         },
       },
@@ -138,6 +140,28 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
     assert.match(missingProgress.stdout, /progress_status/);
     assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
+
+    for (const duplicateFields of [
+      ["--progress_status", "todo", "--superbee_progress_status", "done"],
+      ["--superbee_progress_status", "todo", "--progress_status", "done"],
+    ]) {
+      const duplicate = spawnSync(
+        "node",
+        [cliBin, "new", "Task", `duplicate-${duplicateFields[0]!.includes("superbee") ? "raw" : "logical"}`, "--title", "Duplicate", ...duplicateFields, "--dir", dir, "--json"],
+        { encoding: "utf8" },
+      );
+      assert.equal(duplicate.status, 2, `stdout=${duplicate.stdout} stderr=${duplicate.stderr}`);
+      assert.match(duplicate.stdout, /'progress_status' was supplied more than once/);
+      assert.doesNotMatch(duplicate.stdout, /superbee_progress_status/);
+    }
+
+    const literalValue = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "literal-value", "--title", "Literal", "--progress_status", "todo", "--priority", "superbee_progress_status", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(literalValue.status, 2, `stdout=${literalValue.stdout} stderr=${literalValue.stderr}`);
+    assert.match(literalValue.stdout, /'priority' value 'superbee_progress_status'/);
 
     const result = spawnSync(
       "node",

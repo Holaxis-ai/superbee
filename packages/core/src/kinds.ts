@@ -256,11 +256,15 @@ export function projectKindValidationWarnings(
   if (!progress) return warnings;
   const stored = `'${progress.storageField}'`;
   const logical = `'${progress.logicalField}'`;
-  return warnings.map((warning) => ({
-    ...warning,
-    field: warning.field === progress.storageField ? progress.logicalField : warning.field,
-    message: warning.message.split(stored).join(logical),
-  }));
+  return warnings.map((warning) => warning.field === progress.storageField
+    ? {
+        ...warning,
+        field: progress.logicalField,
+        // Core's Kind warnings name the field first. Replace that one coordinate only; a later
+        // occurrence may be the user's literal value and must remain byte-truthful.
+        message: warning.message.replace(stored, logical),
+      }
+    : warning);
 }
 
 /** True for a plain YAML/JSON map (excludes arrays, `null`, dates, and other object instances). */
