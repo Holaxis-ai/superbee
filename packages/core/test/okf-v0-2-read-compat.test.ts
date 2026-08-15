@@ -1,8 +1,9 @@
 /**
- * A hand-authored, producer-conforming OKF v0.2 bundle pins Superbee's read/transport posture.
- * Ordinary compatibility tests never mutate the fixture: they exercise the local filesystem path
- * and the reference router through RemoteBackend, then compare their projections. A separate,
- * explicitly labeled test pins permissive preservation of unusual legacy actor spellings.
+ * A hand-authored, producer-conforming OKF v0.2 bundle pins the read/transport contract
+ * independently from Superbee's authoring path. Ordinary compatibility tests never mutate the
+ * fixture: they exercise the local filesystem path and the reference router through RemoteBackend,
+ * then compare their projections. A separate, explicitly labeled test pins permissive preservation
+ * of unusual legacy actor spellings.
  */
 import test from "node:test";
 import assert from "node:assert/strict";

@@ -455,13 +455,15 @@ export interface EdgeFilter {
   text?: string;
 }
 
-/** A consumer-derived freshness verdict. OKF has no first-class staleness flag (mapping §c). */
+/** A consumer-derived freshness verdict, including OKF v0.2's absolute `stale_after` date. */
 export type FreshnessVerdict = "fresh" | "stale" | "empty";
 
 /** Inputs for a {@link freshness} judgment. */
 export interface FreshnessOptions {
   /** Instant to compare against; defaults to "now". */
   now?: Date;
+  /** Bundle edition; v0.2 activates the standard `stale_after` lifecycle field. */
+  okfVersion?: string;
   /** Maximum age before a concept is judged `stale`. */
   maxAgeMs?: number;
   /** ISO-8601 timestamps of upstream dependencies; any newer than the concept marks it `stale`. */
@@ -470,7 +472,7 @@ export interface FreshnessOptions {
 
 /** The outcome of a {@link freshness} judgment. */
 export interface FreshnessResult {
-  /** `fresh` / `stale` / `empty` (no usable `generated.at` or legacy `timestamp`). */
+  /** `fresh` / `stale` / `empty` (no usable clock and no elapsed v0.2 `stale_after`). */
   verdict: FreshnessVerdict;
   /** Age in milliseconds relative to the comparison instant, when a meaningful-change time was present. */
   ageMs?: number;
