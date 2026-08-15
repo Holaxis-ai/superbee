@@ -9,7 +9,13 @@
 // Normative source: version-update-protocols.md §5. Single authority so the workflow, the receipt
 // instructions, and the tests never drift.
 
-import { assertWorkflowContract, defaultReleaseTargets, stageDownloadFilenameForTarget } from "./release-targets.mjs";
+import {
+  assertWorkflowContract,
+  defaultReleaseManifest,
+  defaultReleaseTargets,
+  resolveAllowedTupleByTarget,
+  stageDownloadFilenameForTarget,
+} from "./release-targets.mjs";
 import { assertStrictSemver } from "./strict-semver.mjs";
 
 function targetFor(targetId = "bridge") {
@@ -146,6 +152,21 @@ export function registryVerifyOperations({ version, target = "bridge" }) {
 export function promoteOperation({ version, tag, target = "bridge" }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
+}
+
+/**
+ * The promotion the reviewed tuple DECLARES for this target: `publication.npm_promote_tag`, the
+ * same manifest field release-resolve-target.mjs hands the finalize workflow. The receipt is the
+ * path a human follows when that workflow fails, so it must not restate the policy from another
+ * value — the stage tag (`publication.npm_tag`) is what npm already holds and promoting to it is a
+ * no-op. Returns null when the tuple declares no promotion, so the caller OMITS the operation
+ * instead of telling the operator to move a dist-tag the reviewed policy leaves alone.
+ */
+export function promoteOperationForTarget({ version, target }) {
+  const releaseTarget = targetFor(target);
+  const tuple = resolveAllowedTupleByTarget(defaultReleaseManifest(), { target: releaseTarget.id });
+  if (tuple.publication.npm_promote_tag === null) return null;
+  return promoteOperation({ version, tag: tuple.publication.npm_promote_tag, target: releaseTarget.id });
 }
 
 /**

@@ -9,6 +9,7 @@ import {
 } from "./release-receipts.mjs";
 import { STABLE_MCP_LAUNCH_GUIDANCE } from "../packages/cli/src/integration-guidance.js";
 import { buildReceipt, renderReceiptMarkdown } from "./release-emit-receipt.mjs";
+import { defaultReleaseManifest } from "./release-targets.mjs";
 
 const STAGE_ID = "123e4567-e89b-42d3-a456-426614174000";
 const VERSION = "0.1.0-pre.4";
@@ -315,6 +316,73 @@ test("buildReceipt completes for a DRY RUN (sentinel stage id) end to end", () =
   assert.match(built.receipt_emission.inspected, /--stage-id dry-run-stage/);
   const markdown = renderReceiptMarkdown(built);
   assert.match(markdown, /dry-run-stage/);
+});
+
+// ── F7: the receipt's promote operation is the manifest's npm_promote_tag, never the stage tag ──
+// The finalize workflow promotes to `publication.npm_promote_tag`; the receipt is what a human
+// follows when that workflow fails. Building it from the stage tag (`publication.npm_tag`) told the
+// operator to re-apply the tag the package already holds while the workflow moved a different one.
+function receiptFieldsFor(target, version, tarballBasename, policyTag = "next") {
+  const tarball = `${tarballBasename}-${version}.tgz`;
+  return {
+    target,
+    runId: "100",
+    artifactId: "101",
+    artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
+    stageId: STAGE_ID,
+    version,
+    tag: `v${version}`,
+    sourceCommit: COMMIT,
+    policyTag,
+    tarballSha256: TARBALL_SHA,
+    tarballFilename: tarball,
+    integrity: INTEGRITY,
+    manifestSha256: MANIFEST_SHA,
+    draftReleaseId: "300",
+    draftAssets: [
+      { id: "201", name: tarball, digest: TARBALL_SHA },
+      { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
+    ],
+  };
+}
+
+test("the receipt promotes to the tuple's npm_promote_tag, not the stage tag the package holds", () => {
+  const built = buildReceipt(receiptFieldsFor("successor-stable", "0.1.0", "superbee"));
+  assert.equal(built.receipt.stage.tag, "next", "the stage tag is what npm published");
+  assert.equal(built.operations.promote.command, "npm dist-tag add superbee@0.1.0 latest");
+  assert.match(renderReceiptMarkdown(built), /npm dist-tag add superbee@0\.1\.0 latest/);
+});
+
+test("the receipt omits promote entirely when the tuple declares npm_promote_tag: null", () => {
+  for (const [target, version, basename] of [
+    ["bridge", VERSION, "holaxis-aslite"],
+    ["successor-preview", "0.1.1-pre.1", "superbee"],
+  ]) {
+    const built = buildReceipt(receiptFieldsFor(target, version, basename));
+    assert.ok(!Object.hasOwn(built.operations, "promote"), `${target} must emit no promote operation`);
+    const markdown = renderReceiptMarkdown(built);
+    assert.ok(!/npm dist-tag/.test(markdown), `${target} receipt must not tell the operator to move a dist-tag`);
+    assert.match(markdown, /declares no dist-tag promotion/);
+  }
+});
+
+// The class, not the probe: every full-contract target declared in the manifest — including any
+// added later — must have its receipt promotion derived from that target's own tuple.
+test("every full-contract target's receipt promotion equals its manifest tuple's npm_promote_tag", () => {
+  const manifest = defaultReleaseManifest();
+  const checked = [];
+  for (const [id, target] of Object.entries(manifest.targets)) {
+    if (target.workflow_contract !== "full") continue;
+    const tuple = manifest.allowed_tuples[id];
+    const built = buildReceipt(receiptFieldsFor(id, tuple.version, target.tarball_basename, tuple.publication.npm_tag));
+    const promoted = built.operations.promote ? built.operations.promote.argv.at(-1) : null;
+    assert.equal(promoted, tuple.publication.npm_promote_tag, `receipt promotion for ${id}`);
+    if (built.operations.promote) {
+      assert.equal(built.operations.promote.argv.at(-2), `${target.package.name}@${tuple.version}`);
+    }
+    checked.push(id);
+  }
+  assert.deepEqual(checked.sort(), ["bridge", "successor-preview", "successor-stable"]);
 });
 
 test("a live receipt still refuses a non-UUID, non-sentinel stage id", () => {
