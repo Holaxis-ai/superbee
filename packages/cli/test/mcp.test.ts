@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Bundle } from "@superbee/core";
+import type { McpWorkspaceResolver } from "@superbee/mcp-app";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { MCP_STATUS_USAGE, MCP_USAGE, mcp } from "../src/commands/mcp.js";
 import { CliError } from "../src/errors.js";
@@ -124,24 +125,56 @@ test("mcp opens the explicit local bundle and leaves stdout untouched for stdio 
   assert.equal(output, "");
 });
 
+test("bare mcp starts bundle-unbound from the private catalog without cwd discovery", async () => {
+  let opened = false;
+  let resolverActor: string | undefined;
+  let startedResolver: McpWorkspaceResolver | undefined;
+  let startedVersion: string | undefined;
+  const resolver: McpWorkspaceResolver = {
+    list: async () => [],
+    open: async () => {
+      throw new Error("not used");
+    },
+  };
+  await mcp(["--actor", "mike/test"], {
+    openBundle: async () => {
+      opened = true;
+      return bundle;
+    },
+    createWorkspaceResolver: (actor) => {
+      resolverActor = actor;
+      return resolver;
+    },
+    startServer: async (options) => {
+      assert.ok("workspaceResolver" in options);
+      startedResolver = options.workspaceResolver;
+      startedVersion = options.version;
+    },
+  });
+  assert.equal(opened, false);
+  assert.equal(resolverActor, "mike/test");
+  assert.equal(startedResolver, resolver);
+  assert.equal(startedVersion, cliVersion());
+});
+
 test("mcp routes every pre-initialize failure to stderr and marks it handled", async () => {
   const rows: Array<{
     name: string;
     argv: string[];
-    openBundle: () => Promise<Bundle>;
+    openBundle?: () => Promise<Bundle>;
+    createWorkspaceResolver?: () => McpWorkspaceResolver;
     startServer?: () => Promise<void>;
     code: "USAGE" | "NOT_FOUND" | "RUNTIME";
   }> = [
     {
       name: "argument parsing",
       argv: ["--nope"],
-      openBundle: async () => bundle,
       code: "USAGE",
     },
     {
-      name: "bundle resolution",
+      name: "workspace resolver creation",
       argv: [],
-      openBundle: async () => {
+      createWorkspaceResolver: () => {
         throw new CliError("NOT_FOUND", "no bundle for MCP");
       },
       code: "NOT_FOUND",
@@ -149,7 +182,10 @@ test("mcp routes every pre-initialize failure to stderr and marks it handled", a
     {
       name: "server startup",
       argv: [],
-      openBundle: async () => bundle,
+      createWorkspaceResolver: () => ({
+        list: async () => [],
+        open: async () => { throw new Error("not used"); },
+      }),
       startServer: async () => {
         throw new Error("server could not start");
       },
@@ -168,7 +204,10 @@ test("mcp routes every pre-initialize failure to stderr and marks it handled", a
         stderr: (text) => {
           stderr += text;
         },
-        openBundle: row.openBundle,
+        ...(row.openBundle ? { openBundle: row.openBundle } : {}),
+        ...(row.createWorkspaceResolver
+          ? { createWorkspaceResolver: row.createWorkspaceResolver }
+          : {}),
         startServer: "startServer" in row ? row.startServer : async () => {},
       }),
       (error: unknown) =>

@@ -102,8 +102,8 @@ initialize response reports the same running release. Superbee does not scan or 
   — Boot the reference wire-protocol server over a local bundle (loopback, no auth)
 - `superbee ui [--dir <path> | --remote <url>] [--port <p>] [--open]`
   — Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle's docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register — see status's legacy_naming finding), and see a live activity feed, the bundle's sharing status, and your registered workspaces. The header shows the bundle's display name — derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"
-- `superbee mcp [status [--host <id>] [--json] | --dir <path> [--actor <name>]]`
-  — Run the local MCP Apps adapter over a bundle, or inspect the read-only user-level registration status for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode
+- `superbee mcp [status [--host <id>] [--json] | [--dir <path>] [--actor <name>]]`
+  — Run the local MCP Apps adapter over the private workspace catalog (or one fixed --dir bundle), or inspect read-only user-level registration status for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode
 - `superbee view list [--limit <n>] [--dir <path> | --remote <url>]`
   — List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views
 - `superbee sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]`
@@ -395,8 +395,10 @@ cat "$REFS/views/references/view-authoring-v0.md"
 ## Human review
 
 When you create or materially revise a bundle document for human review, display it when the
-human asks and otherwise offer once. In an MCP Apps host, call `show_document` with the exact
-document ID; do not return only a filesystem path. Outside an MCP Apps host, run
+human asks and otherwise offer once. In an MCP Apps host, call `list_workspaces` when needed,
+then `show_document` with the exact workspace label or ID and document ID; do not return only
+a filesystem path. In fixed `mcp --dir` compatibility mode, the workspace argument is omitted.
+Outside an MCP Apps host, run
 `superbee doc open <id>` to open that exact document in the existing browser reader.
 
 ## Notes

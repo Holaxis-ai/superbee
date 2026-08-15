@@ -688,8 +688,10 @@ function renderHumanReviewSection(invocation: string): string[] {
     "## Human review",
     "",
     "When you create or materially revise a bundle document for human review, display it when the",
-    "human asks and otherwise offer once. In an MCP Apps host, call `show_document` with the exact",
-    "document ID; do not return only a filesystem path. Outside an MCP Apps host, run",
+    "human asks and otherwise offer once. In an MCP Apps host, call `list_workspaces` when needed,",
+    "then `show_document` with the exact workspace label or ID and document ID; do not return only",
+    "a filesystem path. In fixed `mcp --dir` compatibility mode, the workspace argument is omitted.",
+    "Outside an MCP Apps host, run",
     `\`${invocation} doc open <id>\` to open that exact document in the existing browser reader.`,
     "",
   ];

@@ -212,8 +212,9 @@ const renderedNpm = renderNpm();
 
 test("npm Skill makes authoritative document presentation a first-class human-review step", () => {
   assert.match(renderedNpm, /## Human review/);
-  assert.match(renderedNpm, /call `show_document` with the exact\s+document ID/);
-  assert.match(renderedNpm, /do not return only a filesystem path/);
+  assert.match(renderedNpm, /call `list_workspaces` when needed/);
+  assert.match(renderedNpm, /`show_document` with the exact workspace label or ID and document ID/);
+  assert.match(renderedNpm, /do not return only\s+a filesystem path/);
   assert.match(renderedNpm, /`superbee doc open <id>`.*exact document/s);
 });
 

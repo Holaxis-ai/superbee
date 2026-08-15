@@ -36,6 +36,7 @@ import {
   SAVE_TRANSIENT_VIEW_TOOL_NAME,
   SHOW_DOCUMENT_TOOL_NAME,
   SHOW_VIEW_TOOL_NAME,
+  createMcpBundleContext,
   createMcpAppServer,
   resolveDurableViewLaunch,
   type McpWorkspaceResolver,
@@ -215,7 +216,12 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
   });
 
   const tools = await client.listTools();
-  assert.deepEqual(tools.tools.map((tool) => tool.name), [LIST_WORKSPACES_TOOL_NAME]);
+  assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    LIST_WORKSPACES_TOOL_NAME,
+    SHOW_DOCUMENT_TOOL_NAME,
+    LIST_VIEWS_TOOL_NAME,
+    RESOLVE_DOCUMENT_TOOL_NAME,
+  ]);
   assert.deepEqual(tools.tools[0]?._meta?.ui?.visibility, ["model"]);
   assert.equal(tools.tools[0]?.annotations?.readOnlyHint, true);
 
@@ -242,6 +248,98 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
   assert.equal(payload.workspaces.at(-1)?.label, "workspace-49");
   assert.equal(openCalls, 0);
   assert.doesNotMatch(JSON.stringify(result), /(?:locator|\/Users\/|private-path)/);
+});
+
+test("bundle-unbound document and View discovery require and honor one explicit workspace", async (t) => {
+  const planning = { root: "mem://planning", backend: new MemoryBackend() } as Bundle;
+  const research = { root: "mem://research", backend: new MemoryBackend() } as Bundle;
+  await writeDoc(planning, {
+    id: "docs/brief",
+    frontmatter: { type: "Document", title: "Planning brief" },
+    body: "# Planning\n\nSelected planning workspace.",
+  });
+  await writeDoc(research, {
+    id: "docs/brief",
+    frontmatter: { type: "Document", title: "Research brief" },
+    body: "# Research\n\nSelected research workspace.",
+  });
+  await seedNavigationTarget(planning, "views-registry/planning");
+  await seedNavigationTarget(research, "views-registry/research");
+
+  const opened: string[] = [];
+  const resolver: McpWorkspaceResolver = {
+    list: async () => [],
+    open: async (selector) => {
+      opened.push(selector);
+      if (selector === "planning") {
+        return createMcpBundleContext({ bundle: planning, bundleName: "Planning" });
+      }
+      if (selector === "research") {
+        return createMcpBundleContext({ bundle: research, bundleName: "Research" });
+      }
+      throw new Error("private path: /Users/private/catalog");
+    },
+  };
+  const server = createMcpAppServer({ workspaceResolver: resolver, version: "test" });
+  const client = new Client(
+    { name: "workspace-selection-test", version: "test" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const missingWorkspace = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { docId: "docs/brief" },
+  });
+  assert.equal(missingWorkspace.isError, true);
+  assert.deepEqual(opened, []);
+
+  const shown = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { workspace: "planning", docId: "docs/brief" },
+  });
+  assert.equal(shown.isError, undefined);
+  const claim = extractClaimId(shown);
+  assert.ok(claim);
+  const resolved = await client.callTool({
+    name: RESOLVE_DOCUMENT_TOOL_NAME,
+    arguments: { claim },
+  });
+  assert.match(JSON.stringify(resolved.structuredContent), /Planning brief/);
+  assert.doesNotMatch(JSON.stringify(resolved), /Research brief/);
+
+  const planningViews = await client.callTool({
+    name: LIST_VIEWS_TOOL_NAME,
+    arguments: { workspace: "planning" },
+  });
+  const researchViews = await client.callTool({
+    name: LIST_VIEWS_TOOL_NAME,
+    arguments: { workspace: "research" },
+  });
+  assert.match(JSON.stringify(planningViews.structuredContent), /views-registry\/planning/);
+  assert.doesNotMatch(JSON.stringify(planningViews.structuredContent), /views-registry\/research/);
+  assert.match(JSON.stringify(researchViews.structuredContent), /views-registry\/research/);
+  assert.deepEqual(opened, ["planning", "planning", "research"]);
+
+  const unavailable = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { workspace: "missing", docId: "docs/brief" },
+  });
+  assert.equal(unavailable.isError, true);
+  assert.doesNotMatch(JSON.stringify(unavailable), /Users|private path|catalog/);
+
+  const pathSelector = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { workspace: "/Users/private/catalog", docId: "docs/brief" },
+  });
+  assert.equal(pathSelector.isError, true);
+  assert.deepEqual(opened, ["planning", "planning", "research", "missing"]);
 });
 
 test("bundle-unbound workspace listing rejects path-bearing identities and extra locator data", async () => {
