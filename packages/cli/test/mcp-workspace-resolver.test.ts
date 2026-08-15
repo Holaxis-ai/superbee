@@ -117,3 +117,15 @@ test("catalog MCP resolver bounds display-name bundle reads to the visible page"
   assert.equal(opens, MAX_WORKSPACE_CATALOG_PAGE);
   assert.equal(listed[MAX_WORKSPACE_CATALOG_PAGE]?.displayName, undefined);
 });
+
+test("catalog MCP resolver refuses canonical-root drift between resolution and open", async () => {
+  const resolver = createCatalogMcpWorkspaceResolver({
+    resolveEntry: async () => availableEntry,
+    open: async () => ({ root: "/private/catalog/replaced" }) as Bundle,
+  });
+
+  await assert.rejects(
+    resolver.open("planning"),
+    /workspace catalog target changed during selection/,
+  );
+});

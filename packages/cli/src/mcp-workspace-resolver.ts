@@ -72,6 +72,9 @@ export function createCatalogMcpWorkspaceResolver(
     open: async (selector) => {
       const entry = await resolveEntry(selector, options.home);
       const bundle = await open(entry.locator.path);
+      if (bundle.root !== entry.locator.path) {
+        throw new Error("workspace catalog target changed during selection");
+      }
       const bundleName = (await deriveName(bundle)).name;
       return createMcpBundleContext({
         bundle,
