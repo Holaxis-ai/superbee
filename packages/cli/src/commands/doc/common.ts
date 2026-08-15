@@ -19,18 +19,43 @@ const COMMON_OPTIONS = `Common options:
  * The FAMILY INDEX — printed only for a bare `doc`/`doc --help`. Each verb has its OWN focused help
  * (below), so a `doc read --help` no longer dumps the write/update/delete manual too (AXI §10).
  */
-export const DOC_USAGE = `superbee doc — write, patch, read, or delete a generic OKF concept document
+export const DOC_USAGE = `superbee doc — write, patch, read, present, or delete a generic OKF concept document
 
 Usage:
   superbee doc write   <id> --type <t> [options]        Create/overwrite a concept doc
   superbee doc update  <id> [options]                   Patch given fields of an existing doc
   superbee doc read    <id> [--out <p> | --body-out <p>] Read a doc (raw/body byte channels)
+  superbee doc open    <id>                             Open the rendered doc in a browser
   superbee doc history <id>                             Show a doc's attributed version chain
   superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
 
 Run 'superbee doc <verb> --help' for a verb's full options.
 
 ${COMMON_OPTIONS}
+`;
+
+export const DOC_OPEN_USAGE = `superbee doc open — display one exact bundle document in the browser
+
+Usage:
+  superbee doc open <id> [options]
+
+The command verifies the document exists, starts the existing local web UI, and opens its trusted
+DocPage route directly. It uses the same bounded Markdown renderer as the rest of Superbee; it does
+not export a second HTML copy or introduce another rendering path. The UI server stays in the
+foreground until SIGINT/SIGTERM, matching 'superbee ui'.
+
+Options:
+  --dir <path>         Bundle directory (default: discovered from the cwd)
+  --remote <url>       Display a document from an explicit remote bundle
+                       (mutually exclusive with --dir; remote access is always explicit)
+  --port <p>           Port to bind (default: stable per bundle, then OS-assigned if occupied)
+  --actor <name>       Advisory identity for any later human-confirmed View actions in this UI
+  --json               Emit compact JSON instead of TOON
+  -h, --help           Show this help
+
+Examples:
+  superbee doc open docs/core
+  superbee doc open tasks/42 --dir .agentstate-lite
 `;
 
 export const DOC_WRITE_USAGE = `superbee doc write — create or overwrite a generic OKF concept document

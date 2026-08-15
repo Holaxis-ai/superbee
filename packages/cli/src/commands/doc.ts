@@ -19,16 +19,18 @@
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { DOC_USAGE, type DocCliDeps } from "./doc/common.js";
+import type { UiCliDeps } from "./ui.js";
 import { docWrite } from "./doc/write.js";
 import { docUpdate } from "./doc/update.js";
 import { docRead } from "./doc/read.js";
 import { docHistory } from "./doc/history.js";
 import { docDelete } from "./doc/delete.js";
+import { docOpen } from "./doc/open.js";
 
 export { DOC_USAGE, type DocCliDeps, readErrorToCliError } from "./doc/common.js";
 export { inBundlePollutionWarning } from "./doc/read.js";
 
-export async function doc(argv: string[], deps: Partial<DocCliDeps> = {}): Promise<void> {
+export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const sub = argv[0];
   const rest = argv.slice(1);
@@ -36,13 +38,14 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps> = {}): Promi
   if (sub === "write") return docWrite(rest, deps);
   if (sub === "update") return docUpdate(rest, deps);
   if (sub === "read") return docRead(rest, deps);
+  if (sub === "open") return docOpen(rest, deps);
   if (sub === "history") return docHistory(rest, deps);
   if (sub === "delete") return docDelete(rest, deps);
   if (sub === "-h" || sub === "--help" || sub === undefined) {
     stdout(DOC_USAGE);
     return;
   }
-  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|read|history|delete)`, {
+  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|read|open|history|delete)`, {
     help: `${cliInvocation()} doc --help`,
   });
 }

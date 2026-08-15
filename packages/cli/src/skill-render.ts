@@ -670,8 +670,8 @@ function renderHumanReviewSection(invocation: string): string[] {
     "",
     "When you create or materially revise a bundle document for human review, display it when the",
     "human asks and otherwise offer once. In an MCP Apps host, call `show_document` with the exact",
-    "document ID; do not return only a filesystem path. Outside an MCP Apps host, use",
-    `\`${invocation} ui --open\` as the current rendered-document fallback.`,
+    "document ID; do not return only a filesystem path. Outside an MCP Apps host, run",
+    `\`${invocation} doc open <id>\` to open that exact document in the existing browser reader.`,
     "",
   ];
 }

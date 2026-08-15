@@ -3540,6 +3540,11 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   assert.doesNotMatch(readHelp, /--blank-body/, "read help does not leak write-only flags");
   assert.doesNotMatch(readHelp, /doc delete —/);
 
+  const openHelp = await capture(["open", "--help"]);
+  assert.match(openHelp, /doc open —/);
+  assert.match(openHelp, /existing local web UI/);
+  assert.doesNotMatch(openHelp, /--body-out|--blank-body/, "open help carries no editing or byte-channel flags");
+
   const deleteHelp = await capture(["delete", "--help"]);
   assert.match(deleteHelp, /doc delete —/);
   assert.doesNotMatch(deleteHelp, /--blank-body|--title/, "delete help stays minimal");
@@ -3558,6 +3563,7 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   const familyHelp = await capture(["--help"]);
   assert.match(familyHelp, /doc write/);
   assert.match(familyHelp, /doc read/);
+  assert.match(familyHelp, /doc open/);
   assert.match(familyHelp, /--body-out/);
   assert.match(familyHelp, /doc <verb> --help/);
 });

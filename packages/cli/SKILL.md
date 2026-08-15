@@ -59,6 +59,8 @@ initialize response reports the same running release. Superbee does not scan or 
   — Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version
 - `superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]`
   — Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting
+- `superbee doc open <id> [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]`
+  — Open one exact authoritative document in the existing rendered browser UI
 - `superbee doc history <id> [--limit <n>] [--remote <url>]`
   — Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) — the tokens for --expected-version
 - `superbee doc delete <id> [--expected-version <v>] [--remote <url>]`
@@ -387,8 +389,8 @@ cat "$REFS/views/references/view-authoring-v0.md"
 
 When you create or materially revise a bundle document for human review, display it when the
 human asks and otherwise offer once. In an MCP Apps host, call `show_document` with the exact
-document ID; do not return only a filesystem path. Outside an MCP Apps host, use
-`superbee ui --open` as the current rendered-document fallback.
+document ID; do not return only a filesystem path. Outside an MCP Apps host, run
+`superbee doc open <id>` to open that exact document in the existing browser reader.
 
 ## Notes
 

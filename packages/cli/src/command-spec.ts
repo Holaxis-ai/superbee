@@ -192,6 +192,12 @@ export const CLI_COMMAND_GROUPS = [
           "Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting",
       },
       {
+        id: "docOpen",
+        leaves: [publicLeaf("docOpen", "doc open", one)],
+        usage: "doc open <id> [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]",
+        summary: "Open one exact authoritative document in the existing rendered browser UI",
+      },
+      {
         id: "docHistory",
         leaves: [publicLeaf("docHistory", "doc history", one)],
         usage: "doc history <id> [--limit <n>] [--remote <url>]",

@@ -62,8 +62,9 @@ Views.
   AI agents, with a `SessionStart` hook installer for Claude Code / Codex / OpenCode.
 - **Human-visible.** In an MCP Apps conversation, an agent can call `show_document` with an exact
   bundle ID to display the authoritative document through Superbee's bounded Markdown reader;
-  no executable View approval or separate Markdown tool is involved. `superbee ui --open` opens
-  the same bundle in a local browser: read docs as rendered pages (cross-links you can follow,
+  no executable View approval or separate Markdown tool is involved. Outside an MCP Apps host,
+  `superbee doc open <id>` opens that exact document in the same local browser reader;
+  `superbee ui --open` opens the bundle launcher. In the browser you can read rendered pages (cross-links you can follow,
   derived backlinks), see a live activity
   feed and the bundle's sharing status, and launch its registered Views — which present live data
   through the read-only v0 bridge or propose one human-confirmed local scalar action through v1.
