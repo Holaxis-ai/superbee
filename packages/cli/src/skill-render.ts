@@ -584,6 +584,7 @@ export function renderNpm(): string {
   lines.push(...renderRemoteAccessSection(NPM_BIN));
   lines.push(...renderNpmShippedReferencesSection());
   lines.push(...renderBundleViewsSection(NPM_BIN, REFS_POINTER));
+  lines.push(...renderHumanReviewSection(NPM_BIN));
   lines.push(...renderNotesSection(referenceNotesAddendum(NPM_BIN, REFS_POINTER)));
   return lines.join("\n");
 }
@@ -661,6 +662,18 @@ function renderBundleViewsSection(invocation: string, ref: RefPointer): string[]
   lines.push("```");
   lines.push("");
   return lines;
+}
+
+function renderHumanReviewSection(invocation: string): string[] {
+  return [
+    "## Human review",
+    "",
+    "When you create or materially revise a bundle document for human review, display it when the",
+    "human asks and otherwise offer once. In an MCP Apps host, call `show_document` with the exact",
+    "document ID; do not return only a filesystem path. Outside an MCP Apps host, use",
+    `\`${invocation} ui --open\` as the current rendered-document fallback.`,
+    "",
+  ];
 }
 
 /** Shipped-reference addendum to `## Notes` — see {@link renderNotesSection}'s `extraBullets`. */

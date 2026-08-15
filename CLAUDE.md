@@ -14,9 +14,10 @@ imports only Node + core + server + view-runtime, while CLI policy and generated
 the CLI), `packages/markdown-renderer` (`@superbee/markdown-renderer` — the private shared
 bounded Markdown-to-React security boundary), `packages/ui` (the browser SPA — PRIVATE workspace;
 only its BUILT assets ship, gzip-embedded into the CLI bundle; it launches bundle-authored Views
-and consumes markdown-renderer, see gate 4), `packages/mcp-app` (the PRIVATE experimental local
-stdio adapter: one fixed MCP App shell over active registered or process-local Views, using the
-same launch, bridge, authorization, rendering, and governed-action authorities as the web host),
+and consumes markdown-renderer, see gate 4), `packages/mcp-app` (the PRIVATE local stdio adapter:
+one fixed document-reader App plus one fixed active-View shell for registered or process-local
+Views; the reader delegates to the shared renderer, and the View shell uses the same launch,
+bridge, authorization, rendering, and governed-action authorities as the web host),
 and `packages/cli` —
 the **publishable npm package `superbee`** (the canonical bin is `superbee`; the legacy aliases `aslite` and `agentstate-lite` remain supported), an
 esbuild bundle that inlines core + board-git + server + the built UI assets + deps into one
@@ -147,9 +148,10 @@ explicit legacy-compatibility path. Existing bundles always retain their declare
   duplicate this policy in a future UI or server action path.
 - Keep exactly **ONE** frontmatter parser, **ONE** bundle walk, **ONE** link resolver, and
   **ONE** View semantics/action authority. Human-facing hosts are adapters over those authorities:
-  the supported local `ui` shell launches durable bundle-authored Views; the experimental `mcp`
-  command launches process-local or registered active Views. Do not reintroduce a parallel static
-  viewer, parser, or mutation policy inside either host. Both hosts delegate the same bounded
+  the supported local `ui` shell launches durable bundle-authored Views; the local `mcp` command
+  displays authoritative documents in a fixed reader or launches process-local/registered active
+  Views. Do not reintroduce a parallel Markdown parser or mutation policy inside either host: the
+  MCP reader delegates to the shared bounded renderer, while both View hosts delegate the same
   `document.set-field` proposal to view-runtime, which requires trusted-shell confirmation and hard
   CAS through core's mutation service; MCP keeps its prepare/finish tools app-only so the model and
   sandboxed View cannot invoke writes directly.
@@ -204,9 +206,12 @@ opt into `bundle-propose` for one human-confirmed, version-guarded scalar-field 
 `packages/viewer` / `view` → `viz.html` surface is removed — author human
 views as bundle Views rather than adding a second rendering engine.
 
-The experimental local `superbee mcp` command is a second host adapter, not a second View
-system. Its single model-visible `show_view` tool launches either agent-authored active HTML as a
-process-local transient View or one existing registered View unchanged by exact id. Both use the
+The local `superbee mcp` command is a second host adapter, not a second View system. Its
+model-visible `show_document` tool presents one exact authoritative bundle document in a fixed,
+non-executable reader through the shared bounded Markdown renderer; its compact model result
+carries only a one-shot claim, and the App retrieves the rendered payload through an app-only
+resolver. The separate model-visible `show_view` tool launches either agent-authored active HTML
+as a process-local transient View or one existing registered View unchanged by exact id. Both use the
 same active source contract, launch/bridge authority, sandbox, CSP, shared bounded Markdown
 renderer, subscription and sizing behavior, and require exact-byte local trust approval before
 bundle data is exposed. Transient approval is process-local and never enters the persistent
@@ -214,8 +219,8 @@ registered-View trust store. The model-visible `save_transient_view` tool can pe
 launch unchanged as a registered View; it accepts no HTML, and the new durable identity requires
 its own local approval. App-only lifecycle and prepare/finish tools remain hidden from the model;
 actions require a configured actor, explicit human confirmation, version revalidation, and hard
-CAS through the shared action and mutation authorities. It is deliberately local, stdio-only,
-unpublished as a standalone package, and not yet a supported product surface.
+CAS through the shared action and mutation authorities. The adapter is deliberately local,
+stdio-only, and shipped inside the supported npm CLI rather than as a standalone package.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
 `docs/core` and preserved outside the OSS repository — it is not a build or deployment target

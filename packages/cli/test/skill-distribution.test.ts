@@ -210,6 +210,13 @@ test("the shipped View authoring reference teaches Superbee commands while prese
 
 const renderedNpm = renderNpm();
 
+test("npm Skill makes authoritative document presentation a first-class human-review step", () => {
+  assert.match(renderedNpm, /## Human review/);
+  assert.match(renderedNpm, /call `show_document` with the exact\s+document ID/);
+  assert.match(renderedNpm, /do not return only a filesystem path/);
+  assert.match(renderedNpm, /`superbee ui --open`.*fallback/s);
+});
+
 test("the npm skill teaches only the bounded stable MCP PATH contract", () => {
   assert.match(renderedNpm, /## Stable MCP launch/);
   assert.match(renderedNpm, /npm install -g superbee/);

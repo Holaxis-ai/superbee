@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src 'none'; connect-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'"
+    />
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif);
+        background: var(--color-background-primary, transparent);
+        color: var(--color-text-primary, CanvasText);
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 0; }
+      .shell {
+        display: grid;
+        gap: 0.9rem;
+        padding: max(0.85rem, env(safe-area-inset-top))
+          max(0.85rem, env(safe-area-inset-right))
+          max(0.85rem, env(safe-area-inset-bottom))
+          max(0.85rem, env(safe-area-inset-left));
+      }
+      header { display: grid; gap: 0.4rem; }
+      .title-row {
+        display: flex;
+        align-items: start;
+        justify-content: space-between;
+        gap: 0.75rem;
+      }
+      h1 { margin: 0; font-size: clamp(1.25rem, 3vw, 1.8rem); line-height: 1.18; }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem 0.7rem;
+        color: var(--color-text-secondary, GrayText);
+        font-size: 0.78rem;
+      }
+      .meta code { overflow-wrap: anywhere; }
+      button {
+        appearance: none;
+        border: 1px solid var(--color-border-primary, color-mix(in srgb, CanvasText 28%, transparent));
+        border-radius: 0.55rem;
+        background: var(--color-background-primary, Canvas);
+        color: var(--color-text-primary, CanvasText);
+        cursor: pointer;
+        flex: 0 0 auto;
+        font: inherit;
+        font-size: 0.8rem;
+        font-weight: 650;
+        padding: 0.42rem 0.65rem;
+      }
+      button[hidden] { display: none; }
+      main {
+        border-top: 1px solid var(--color-border-secondary, color-mix(in srgb, CanvasText 15%, transparent));
+        min-width: 0;
+        padding-top: 0.9rem;
+      }
+      .document { font-family: var(--font-sans, ui-sans-serif, system-ui, sans-serif); line-height: 1.55; }
+      .document :first-child { margin-top: 0; }
+      .document :last-child { margin-bottom: 0; }
+      .document pre { overflow: auto; padding: 0.75rem; border-radius: 0.5rem; }
+      .document img { max-width: 100%; height: auto; }
+      .document table { border-collapse: collapse; display: block; max-width: 100%; overflow: auto; }
+      .document th, .document td { border: 1px solid var(--color-border-secondary, color-mix(in srgb, CanvasText 18%, transparent)); padding: 0.35rem 0.5rem; }
+      .notice, .error {
+        border-radius: 0.55rem;
+        padding: 0.65rem 0.75rem;
+        font-size: 0.84rem;
+      }
+      .notice { background: var(--color-background-secondary, color-mix(in srgb, CanvasText 7%, transparent)); }
+      .error { color: var(--color-text-danger, #b42318); }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header id="header" hidden>
+        <div class="title-row">
+          <h1 id="title"></h1>
+          <button id="display-mode" type="button" hidden>Expand</button>
+        </div>
+        <div class="meta">
+          <code id="document-id"></code>
+          <span id="document-type"></span>
+          <span id="document-version"></span>
+        </div>
+      </header>
+      <div id="error" class="error" role="alert" hidden></div>
+      <div id="bounded" class="notice" hidden>This document was bounded for safe display.</div>
+      <main id="document" class="document" hidden></main>
+    </div>
+    <!-- SUPERBEE_DOCUMENT_APP_SCRIPT -->
+  </body>
+</html>

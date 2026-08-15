@@ -54,7 +54,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command and installer recognition remain supported while Superbee is canonical",
-      "line": 21
+      "line": 22
     },
     {
       "file": "CLAUDE.md",
@@ -65,7 +65,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 21
+      "line": 22
     },
     {
       "file": "examples/recipes/personal-task-system/references/view-authoring-v0.md",

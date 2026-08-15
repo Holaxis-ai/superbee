@@ -67,6 +67,7 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
   assert.equal(client.getServerVersion()?.version, cliVersion());
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    "show_document",
     "list_views",
     "show_view",
     "authorize_durable_view",
@@ -77,14 +78,37 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
     "close_durable_view",
     "prepare_view_action",
     "finish_view_action",
+    "resolve_document",
     "resolve_launch",
   ]);
   assert.deepEqual(
     tools.tools
       .filter((tool) => tool._meta?.ui?.visibility?.includes("app"))
       .map((tool) => tool._meta?.ui?.visibility),
-    Array.from({ length: 8 }, () => ["app"]),
+    Array.from({ length: 9 }, () => ["app"]),
     "lifecycle and bridge tools belong to the trusted App",
+  );
+
+  const document = await client.callTool({
+    name: "show_document",
+    arguments: { docId: "tasks/stdio" },
+  });
+  assert.equal(document.isError, undefined);
+  assert.equal(document.structuredContent, undefined, "the model-facing result stays compact");
+  const documentText = document.content[0]?.type === "text" ? document.content[0].text : "";
+  const documentClaim = /\[agentstate-claim:v1:([A-Za-z0-9_-]+)\]/.exec(documentText)?.[1];
+  assert.ok(documentClaim);
+  const recoveredDocument = await client.callTool({
+    name: "resolve_document",
+    arguments: { claim: documentClaim },
+  });
+  assert.equal(
+    (recoveredDocument.structuredContent as { schemaVersion: string }).schemaVersion,
+    "superbee.document-presentation.v1",
+  );
+  assert.match(
+    ((recoveredDocument.structuredContent as { document: { html: string } }).document.html),
+    /<h1>Goal<\/h1><p>Prove the installed command&#x27;s transport\.<\/p>/,
   );
   assert.deepEqual(
     tools.tools.find((tool) => tool.name === "save_transient_view")?._meta?.ui?.visibility,

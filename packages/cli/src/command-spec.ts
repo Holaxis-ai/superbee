@@ -320,7 +320,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "mcp",
         leaves: [publicLeaf("mcp", "mcp", zero, 21)],
         usage: "mcp [--dir <path>] [--actor <name>]",
-        summary: "Run the experimental local MCP Apps adapter over a bundle (stdio): launch an existing registered View unchanged, or launch standard active View HTML transiently and save its approved exact bytes as a registered View; bundle data and governed actions stay behind local human approval",
+        summary: "Run the local MCP Apps adapter over a bundle (stdio): display authoritative Markdown documents in the fixed reader, launch registered Views unchanged, or launch active View HTML transiently and save its approved exact bytes; bundle data and governed actions stay behind local human approval",
       },
       {
         id: "viewList",
