@@ -24,6 +24,18 @@ name: Finalize release (separately dispatched)
 # of id-token/registry-url wiring authenticates `npm dist-tag add`, and the alternative is a
 # long-lived npm token this design deliberately does not hold. The proof runs in target-authorized,
 # the FIRST job, so a registry that has not reached the declared state costs nothing to discover.
+#
+# OPERATOR SEQUENCE — the npm steps are yours, and they come BEFORE this workflow:
+#   1. Run the staged release. It builds the candidate once, prepares an unpublished GitHub draft,
+#      and stages the retained tarball to npm. The stage receipt in that run's summary carries every
+#      command below with the exact ids already filled in; follow it rather than retyping them.
+#   2. Inspect the staged tarball and check its SHA-256 against the receipt.
+#   3. `npm stage approve <stage-id>` (+2FA) — this publishes the version on its npm_tag.
+#   4. If the target declares an npm_promote_tag: `npm dist-tag add <pkg>@<version> <tag>` (+2FA).
+#      This is the act that moves `latest`, so it is deliberately a human one.
+#   5. Dispatch THIS workflow. Its first job proves steps 3 and 4 landed and stops before touching
+#      anything if they did not, naming the exact command still owed.
+# Dispatching before steps 3-4 is safe: it stops in the first job with nothing mutated.
 on:
   workflow_dispatch:
     inputs:
@@ -54,7 +66,7 @@ on:
         options: ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"]
         default: "successor-stable"
       mode:
-        description: "dry-run (default) verifies/prints; live verifies registry + publishes draft"
+        description: "dry-run (default) verifies/prints; live REQUIRES the npm stage approve (and the dist-tag promotion, if the target declares one) to already be done, then publishes the draft"
         type: choice
         options: ["dry-run", "live"]
         default: "dry-run"
