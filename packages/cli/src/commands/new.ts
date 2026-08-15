@@ -589,7 +589,17 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     persistActor: true,
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.
     onPersisted: boardPostPersistHook(bundle, actor),
-    buildCandidate: () => ({ frontmatter, body }),
+    buildCandidate: (_existing, context) => {
+      const preparedEdition = okfVersion ?? "0.1";
+      if (context.okfVersion !== preparedEdition) {
+        throw new CliError(
+          "STALE_HEAD",
+          `the bundle OKF edition changed from '${preparedEdition}' to '${context.okfVersion}' while creating '${targetId}' — rerun the command against the current edition`,
+          { help: `${cliInvocation()} new "${kindName}" ${rawId}` },
+        );
+      }
+      return { frontmatter, body };
+    },
     errors: {
       alreadyExists: () =>
         new CliError(

@@ -436,12 +436,15 @@ export async function addLink(
     // time either runs. Both post-write checks are skipped entirely on the idempotent no-op path.
     let warnings: ValidationWarning[];
     try {
+      // Keep advisory linting post-write and independently fallible: a successful mutation must
+      // retain its truthful receipt even when the current convention registry cannot be read.
+      const postWriteRegistry = await loadKinds(bundle);
       warnings = await lintLinkType(bundle, {
         sourceType: sourceTypeAtWrite,
         text,
         to: normalizedTo,
         remoteUrl: opts.remoteUrl,
-      }, registry);
+      }, postWriteRegistry);
       const absent = await targetAbsentWarning(bundle, normalizedTo, opts.remoteUrl);
       if (absent) warnings.push(absent);
     } catch (err) {

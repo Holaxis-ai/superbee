@@ -5,7 +5,6 @@ import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
 import {
   loadKinds,
-  readBundleOkfVersion,
   resolveKindFieldCoordinate,
   type Frontmatter,
 } from "@superbee/core";
@@ -301,10 +300,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // Load the kind registry ONCE (it doesn't depend on this doc's version) — used below to validate
   // the RESULT of the patch, mirroring `doc write`'s warn-by-default/--strict contract, AND to
   // authorize any dynamic kind-field flags.
-  const [registry, okfVersion] = await Promise.all([
-    loadKinds(bundle),
-    readBundleOkfVersion(bundle),
-  ]);
+  const registry = await loadKinds(bundle);
 
   // Fork 2: a patch touching ANY kind-declared field is validated STRICTLY (a non-empty warning set —
   // incl. an out-of-enum value — rejects with USAGE/exit 2 and does NOT write), even without --strict.
@@ -332,7 +328,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
     onPersisted: boardPostPersistHook(bundle, actor),
-    buildCandidate: async (existingDoc) => {
+    buildCandidate: async (existingDoc, context) => {
       const existing = existingDoc!;
       const nextFrontmatter: Frontmatter = { ...existing.frontmatter };
       if (p.title !== undefined) nextFrontmatter.title = p.title;
@@ -345,7 +341,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       // v0.1's legacy meaningful-change clock is refreshed here; v0.2's `generated.at` clock is
       // owned centrally by `mutateDocument` so every trusted write surface advances it identically.
       // `--keep-timestamp` remains the v0.1 compatibility escape hatch.
-      if (okfVersion !== "0.2" && !p.keepTimestamp) {
+      if (context.okfVersion !== "0.2" && !p.keepTimestamp) {
         nextFrontmatter.timestamp = new Date().toISOString();
       }
 
@@ -393,7 +389,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
         const declared = [...kind.fields.required, ...kind.fields.optional];
         const resolvedFields = new Map<string, ReturnType<typeof resolveKindFieldCoordinate>>();
         for (const field of p.kindFields.keys()) {
-          resolvedFields.set(field, resolveKindFieldCoordinate(okfVersion, kind, field));
+          resolvedFields.set(field, resolveKindFieldCoordinate(context.okfVersion, kind, field));
         }
         const unknown = [...resolvedFields.entries()]
           .filter(([, coordinate]) => coordinate === undefined)

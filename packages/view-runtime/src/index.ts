@@ -721,6 +721,8 @@ interface PendingApproval {
   kindDigest: Version;
 }
 
+class ActionBundleEditionChanged extends Error {}
+
 const DEFAULT_APPROVAL_TTL_MS = 120_000;
 const DEFAULT_MAX_APPROVALS = 128;
 
@@ -842,8 +844,12 @@ export class TrustedActionService {
     const timestamp = new Date(this.now()).toISOString();
     const candidate = ownRecord(target.doc.frontmatter);
     setOwn(candidate, fieldCoordinate.storageField, action.value);
-    setOwn(candidate, "timestamp", timestamp);
-    setOwn(candidate, "actor", actor);
+    if (okfVersion !== "0.2" || kind.fields.required.includes("timestamp")) {
+      setOwn(candidate, "timestamp", timestamp);
+    }
+    if (okfVersion !== "0.2" || kind.fields.required.includes("actor")) {
+      setOwn(candidate, "actor", actor);
+    }
     const violations = validateAgainstKind({ id: action.docId, frontmatter: candidate, body: target.doc.body }, kind);
     if (violations.length > 0) return rejected(violations.map((warning) => warning.message).join("; "));
 
@@ -960,11 +966,17 @@ export class TrustedActionService {
         actor: this.actor!.trim(),
         persistActor: true,
         expectedVersion: pending.action.expectedVersion,
-        buildCandidate: (existing) => {
+        now: () => pending.timestamp,
+        buildCandidate: (existing, context) => {
           if (!existing) throw new DocumentNotFoundError(pending.action.docId);
+          if (context.okfVersion !== (pending.okfVersion ?? "0.1")) {
+            throw new ActionBundleEditionChanged("the bundle OKF edition changed");
+          }
           const frontmatter = ownRecord(existing.frontmatter);
           setOwn(frontmatter, pending.storageField, pending.action.value);
-          setOwn(frontmatter, "timestamp", pending.timestamp);
+          if (context.okfVersion !== "0.2" || kind.fields.required.includes("timestamp")) {
+            setOwn(frontmatter, "timestamp", pending.timestamp);
+          }
           return { frontmatter, body: existing.body };
         },
       });
@@ -1003,6 +1015,9 @@ export class TrustedActionService {
       }
       if (error instanceof KindConformanceError) {
         return { status: "rejected", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error.message };
+      }
+      if (error instanceof ActionBundleEditionChanged) {
+        return { status: "revoked", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error.message };
       }
       return { status: "failed", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error instanceof Error ? error.message : String(error) };
     }

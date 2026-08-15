@@ -49,7 +49,12 @@ async function fixture(
   });
   await writeDoc(bundle, {
     id: "tasks/alpha",
-    frontmatter: { type: "Task", title: "Alpha", [progressField]: "todo", timestamp: T },
+    frontmatter: {
+      type: "Task",
+      title: "Alpha",
+      [progressField]: "todo",
+      ...(options.okfVersion === "0.2" ? {} : { timestamp: T }),
+    },
     body: "",
   });
   await writeDoc(bundle, {
@@ -137,6 +142,12 @@ for (const row of [
     const after = await readDocVersioned(bundle, "tasks/alpha");
     assert.equal(after.doc.frontmatter[expectedStorage], "done");
     assert.equal(Object.hasOwn(after.doc.frontmatter, "progress_status"), false);
+    if (row.label === "v0.2") {
+      assert.equal(Object.hasOwn(after.doc.frontmatter, "timestamp"), false);
+      assert.equal(Object.hasOwn(after.doc.frontmatter, "actor"), false);
+      assert.equal(Object.hasOwn(after.doc.frontmatter, "generated"), false);
+      assert.equal((await bundle.backend!.versions("tasks/alpha"))[0]?.actor, "mike/test");
+    }
   });
 }
 
