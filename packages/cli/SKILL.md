@@ -410,6 +410,11 @@ cat "$REFS/views/references/view-authoring-v0.md"
   self-describing Review Request kind plus a generic live View, but no review instances. A
   definitions-only recipe may contain only its manifest, convention docs, explicitly declared
   static Reference docs, and View registry/HTML pairs; install it with the same `recipe add <folder>` command.
+- Exact-target engineering review: `$REFS/recipes/engineering-review/` installs the
+  Engineering Review Request / Engineering Review / Review Finding / Repair Evidence kinds, an
+  authoring playbook, and a live repair-ledger View that surfaces unresolved findings and missing
+  parent-red/head-green proofs. Install it by NAME — `superbee recipe add engineering-review`
+  — since a shipped portable recipe folder resolves the same way a built-in name does.
 - A full interop-shaped example bundle (externally-authored markdown: unquoted timestamps,
   relative links, wrapped bullets) ships at `$REFS/sample-bundle/` — copy it and point `--dir` at
   the copy to explore a populated bundle without writing one from scratch.

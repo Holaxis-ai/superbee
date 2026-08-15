@@ -160,10 +160,15 @@ settings — sync only ever appends commits to it.
   idempotently — it seeds schemas and may carry explicitly declared static References and
   self-contained Views, then the bundle owns them. A `definitions-only` package rejects instance
   data and undeclared files. Three
-  recipes ship built-in (`context-notes`, `work-tracking`, `roadmap`);
-  `examples/recipes/claims` is the minimal custom-Kind example, while
-  `examples/recipes/review-workflow` is a complete content-free cognitive ecosystem: a
-  self-describing Review Request kind plus a generic live View, with no review instances.
+  recipes ship built-in (`context-notes`, `work-tracking`, `roadmap`), and the npm package carries
+  portable recipe folders that `recipe add <name>` resolves by name too.
+  `examples/recipes/claims` is the minimal custom-Kind example;
+  `examples/recipes/review-workflow` is a complete content-free cognitive ecosystem (a
+  self-describing Review Request kind plus a generic live View, with no review instances); and
+  `examples/recipes/engineering-review` — `superbee recipe add engineering-review` — installs the
+  exact-target review model: verdicts bound to an immutable target version, findings that keep a
+  stable identity and disposition across rounds, repair evidence requiring both a parent-red and a
+  head-green proof, and a live repair-ledger View over the gaps.
 
 Bundles are valid [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
 v0.1 or v0.2 — plain markdown any conformant tool can read. New bundles default to v0.1; explicit

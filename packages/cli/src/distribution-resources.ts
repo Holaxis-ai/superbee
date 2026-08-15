@@ -50,7 +50,9 @@ export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
     ["examples/views/views-registry/about.md", "views/views-registry/about.md"],
   ]),
 
-  // Installable definitions: the Claims example and the complete Review Workflow package.
+  // Installable definitions: the Claims example, the complete Review Workflow package, and the
+  // Engineering Review package. The latter two are name-resolvable at `recipe add <name>` through
+  // the shipped-recipe source, which reads this same projection from the running package root.
   ...npmResources("portable-recipe", [
     ["examples/recipes/claims/recipe.md", "recipes/claims/recipe.md"],
     ["examples/recipes/claims/conventions/claim.md", "recipes/claims/conventions/claim.md"],
@@ -71,6 +73,40 @@ export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
     [
       "examples/recipes/review-workflow/references/view-authoring-v0.md",
       "recipes/review-workflow/references/view-authoring-v0.md",
+    ],
+    ["examples/recipes/engineering-review/recipe.md", "recipes/engineering-review/recipe.md"],
+    [
+      "examples/recipes/engineering-review/conventions/engineering-review-request.md",
+      "recipes/engineering-review/conventions/engineering-review-request.md",
+    ],
+    [
+      "examples/recipes/engineering-review/conventions/engineering-review.md",
+      "recipes/engineering-review/conventions/engineering-review.md",
+    ],
+    [
+      "examples/recipes/engineering-review/conventions/repair-evidence.md",
+      "recipes/engineering-review/conventions/repair-evidence.md",
+    ],
+    [
+      "examples/recipes/engineering-review/conventions/review-finding.md",
+      "recipes/engineering-review/conventions/review-finding.md",
+    ],
+    ["examples/recipes/engineering-review/conventions/view.md", "recipes/engineering-review/conventions/view.md"],
+    [
+      "examples/recipes/engineering-review/references/engineering-review-playbook.md",
+      "recipes/engineering-review/references/engineering-review-playbook.md",
+    ],
+    [
+      "examples/recipes/engineering-review/references/view-authoring-v0.md",
+      "recipes/engineering-review/references/view-authoring-v0.md",
+    ],
+    [
+      "examples/recipes/engineering-review/views-registry/engineering-review-ledger.md",
+      "recipes/engineering-review/views-registry/engineering-review-ledger.md",
+    ],
+    [
+      "examples/recipes/engineering-review/views/engineering-review/ledger.html",
+      "recipes/engineering-review/views/engineering-review/ledger.html",
     ],
   ]),
 
@@ -105,7 +141,11 @@ export const NPM_RESOURCES: ProjectedResource[] = DISTRIBUTION_RESOURCES.map(({ 
  * graph, so a newly advertised row cannot be omitted from this resource inventory.
  */
 const SKILL_COMMAND_RESOURCE_OVERRIDES = {
-  "recipe add": ["recipes/claims/recipe.md", "recipes/review-workflow/recipe.md"],
+  "recipe add": [
+    "recipes/claims/recipe.md",
+    "recipes/review-workflow/recipe.md",
+    "recipes/engineering-review/recipe.md",
+  ],
   ui: ["views/references/view-authoring-v0.md"],
 } as const satisfies Partial<Record<string, readonly string[]>>;
 
@@ -143,6 +183,10 @@ export const SKILL_CAPABILITY_PATTERNS: SkillCapabilityPattern[] = [
   },
   {
     pattern: /recipe/i,
-    requires: ["recipes/claims/recipe.md", "recipes/review-workflow/recipe.md"],
+    requires: [
+      "recipes/claims/recipe.md",
+      "recipes/review-workflow/recipe.md",
+      "recipes/engineering-review/recipe.md",
+    ],
   },
 ];

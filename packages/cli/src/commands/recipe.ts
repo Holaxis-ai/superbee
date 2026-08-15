@@ -1,6 +1,7 @@
 // `superbee recipe add <name-or-path>` — apply a recipe's definitions to an EXISTING
-// bundle. `<name-or-path>` is a built-in name (e.g. `context-notes`) OR a path to a recipe folder
-// (npm-style disambiguation: a separator or a leading `~` means a path — see `recipe-source.ts`).
+// bundle. `<name-or-path>` is a built-in name (e.g. `context-notes`), a portable recipe folder
+// this distribution ships (e.g. `engineering-review`), OR a path to a recipe folder (npm-style
+// disambiguation: a separator or a leading `~` means a path — see `recipe-source.ts`).
 //
 // Mirrors `new.ts`'s create-only / expect-absent-CAS receipt shape, but at the RECIPE level: each
 // of the recipe's convention docs is written via the engine's expect-absent CAS create
@@ -25,7 +26,8 @@ Usage:
   superbee recipe add <name-or-path> [--dir <path>] [--remote <url>]
 
 Applies a recipe's definitions to the bundle. <name-or-path> is a built-in name (e.g.
-'context-notes') or a path to a recipe folder (a path is anything containing '/' or starting
+'context-notes'), the name of a portable recipe this distribution ships (e.g.
+'engineering-review'), or a path to a recipe folder (a path is anything containing '/' or starting
 with '~' — a local folder literally named 'foo' is reachable only as './foo'). A recipe folder
 is 'recipe.md' (type: Recipe manifest) plus one or more 'conventions/*.md' docs. A portable recipe
 may opt into 'content_policy: definitions-only' and explicitly declare static 'type: Reference'

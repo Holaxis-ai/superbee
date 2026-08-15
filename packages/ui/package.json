@@ -13,7 +13,7 @@
     "pretest": "npm run build -w @superbee/markdown-renderer",
     "test": "vitest run",
     "e2e": "playwright test",
-    "e2e:gate": "playwright install chromium && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts --project=chromium"
+    "e2e:gate": "playwright install chromium && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts e2e/engineering-review.spec.ts --project=chromium"
   },
   "dependencies": {
     "@superbee/markdown-renderer": "*",

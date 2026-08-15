@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Repair ledger</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --canvas:#f5f3ee; --panel:#fffefb; --card:#ffffff; --ink:#1b2027; --muted:#6b7480;
+    --rule:#dcdad3; --soft:#ecebe6; --accent:#1f4f6d; --accent-soft:#e3eef4;
+    --open:#a3521c; --open-soft:#f6ebdd; --gap:#a0413a; --gap-soft:#f7e5e2;
+    --done:#25654c; --done-soft:#e2f0e9;
+    --shadow:0 8px 28px rgba(25,32,40,.07);
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    --serif:"Iowan Old Style","Palatino Linotype",Georgia,serif;
+    --mono:ui-monospace,"SFMono-Regular",Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark) {
+    :root { --canvas:#101519; --panel:#171f25; --card:#1c252c; --ink:#eef2f5; --muted:#9daab5;
+      --rule:#313d47; --soft:#25313a; --accent:#77b6d6; --accent-soft:#1e3b4a;
+      --open:#e0a165; --open-soft:#3b2f1f; --gap:#ec8f85; --gap-soft:#3d2523;
+      --done:#7ec5a5; --done-soft:#1f3a30; --shadow:0 8px 28px rgba(0,0,0,.22); }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--canvas); color:var(--ink); font:14px/1.45 var(--sans); }
+  header { position:sticky; top:0; z-index:3; padding:20px 24px 16px; background:color-mix(in srgb,var(--panel) 94%,transparent); border-bottom:1px solid var(--rule); backdrop-filter:blur(12px); }
+  .title-row { display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; }
+  h1 { margin:0; font:600 30px/1 var(--serif); letter-spacing:-.02em; }
+  .live { margin-left:auto; color:var(--accent); font:11px var(--mono); text-transform:uppercase; letter-spacing:.08em; }
+  .live::before { content:""; display:inline-block; width:7px; height:7px; margin-right:6px; border-radius:50%; background:currentColor; }
+  .summary { margin-top:7px; color:var(--muted); font-size:12px; }
+  .authority { margin-top:6px; color:var(--muted); font-size:12px; font-style:italic; }
+  main { padding:20px 24px 72px; max-width:1080px; margin:0 auto; }
+  section + section { margin-top:26px; }
+  h2 { margin:0 0 10px; font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  h2 .count { margin-left:8px; padding:2px 7px; border-radius:999px; background:var(--soft); color:var(--muted); font:11px var(--mono); }
+  .finding { border:1px solid var(--rule); border-radius:12px; background:var(--card); box-shadow:var(--shadow); padding:16px 18px; margin-bottom:12px; }
+  .finding-top { display:flex; gap:12px; align-items:flex-start; flex-wrap:wrap; }
+  .finding-title { font:600 18px/1.3 var(--serif); flex:1 1 320px; }
+  .chip { padding:3px 9px; border-radius:999px; background:var(--soft); color:var(--muted); font:11px var(--mono); text-transform:uppercase; letter-spacing:.05em; white-space:nowrap; }
+  .chip.severity-critical, .chip.severity-high { background:var(--gap-soft); color:var(--gap); }
+  .chip.disposition-unresolved { background:var(--open-soft); color:var(--open); }
+  .chip.disposition-repaired, .chip.disposition-accepted_risk, .chip.disposition-rejected_invalid, .chip.disposition-superseded { background:var(--done-soft); color:var(--done); }
+  .defect-class { margin-top:10px; padding-left:11px; border-left:3px solid var(--accent-soft); color:var(--ink); }
+  .defect-class .label { display:block; color:var(--muted); font:11px var(--mono); text-transform:uppercase; letter-spacing:.06em; margin-bottom:2px; }
+  .meta { margin-top:10px; color:var(--muted); font-size:12px; display:flex; gap:14px; flex-wrap:wrap; }
+  .meta code { font:11px var(--mono); background:var(--soft); padding:1px 5px; border-radius:4px; color:var(--ink); }
+  .evidence { margin-top:12px; padding-top:11px; border-top:1px solid var(--rule); font-size:13px; }
+  .evidence .none { color:var(--muted); }
+  .proofs { display:flex; gap:8px; flex-wrap:wrap; margin-top:7px; }
+  .proof { padding:3px 9px; border-radius:6px; background:var(--soft); color:var(--muted); font:11px var(--mono); }
+  .proof.ok { background:var(--done-soft); color:var(--done); }
+  .proof.bad { background:var(--gap-soft); color:var(--gap); }
+  .gaps { list-style:none; margin:11px 0 0; padding:0; }
+  .gap { margin-top:6px; padding:7px 11px; border-radius:8px; background:var(--gap-soft); color:var(--gap); font-size:12.5px; }
+  .empty, .error, .note { border:1px dashed var(--rule); border-radius:12px; padding:34px 22px; text-align:center; color:var(--muted); }
+  .error { border-style:solid; border-color:var(--gap); color:var(--gap); }
+  .note { padding:14px 18px; text-align:left; font-size:12.5px; }
+  .resolved-banner { border:1px solid var(--done); border-radius:12px; background:var(--done-soft); color:var(--done); padding:14px 18px; font-size:13px; }
+  @media (max-width:560px) { header, main { padding-left:16px; padding-right:16px; } h1 { font-size:25px; } }
+</style>
+</head>
+<body data-state="loading">
+<header>
+  <div class="title-row">
+    <h1>Repair ledger</h1>
+    <span class="live" id="live">Connecting</span>
+  </div>
+  <p class="summary" id="summary">Reading this bundle&#8230;</p>
+  <p class="authority">A projection of the documents, never the authority. If this disagrees with the documents, the documents are right.</p>
+</header>
+<main id="app"><div class="empty">Subscribing before the first read&#8230;</div></main>
+<script>
+(function () {
+  var PROTO = "v0", seq = 0, pending = {}, subs = [];
+  function send(type, extra) {
+    return new Promise(function (resolve, reject) {
+      var id = String(++seq);
+      pending[id] = { resolve: resolve, reject: reject };
+      var msg = { bridge: PROTO, id: id, type: type };
+      if (extra) for (var k in extra) msg[k] = extra[k];
+      parent.postMessage(msg, "*");
+    });
+  }
+  function watch(refresh) {
+    if (typeof refresh !== "function") return Promise.reject(new TypeError("Bridge.watch requires a refresh function"));
+    var active = true, ready = false, running = false, queued = [];
+    function schedule(initial) {
+      running = true;
+      var batch = queued.splice(0);
+      return Promise.resolve().then(function () { return refresh(batch); }).then(function (value) {
+        running = false;
+        if (queued.length) void schedule(false);
+        return value;
+      }, function (err) {
+        running = false;
+        if (queued.length) void schedule(false);
+        if (initial) throw err;
+        console.error("Bridge.watch refresh failed", err);
+      });
+    }
+    function onChange(event) {
+      if (!active) return;
+      queued.push(event);
+      if (ready && !running) void schedule(false);
+    }
+    return window.Bridge.subscribe(onChange).then(function () {
+      ready = true;
+      return schedule(true);
+    }, function (err) {
+      active = false;
+      throw err;
+    });
+  }
+  window.addEventListener("message", function (e) {
+    if (e.source !== window.parent) return;
+    var m = e.data;
+    if (!m || m.bridge !== PROTO) return;
+    if (m.type === "change") { subs.forEach(function (cb) { cb(m.event); }); return; }
+    var p = pending[m.id];
+    if (!p) return;
+    delete pending[m.id];
+    if (m.type === "error") p.reject(new Error((m.error && m.error.message) || "bridge error"));
+    else p.resolve(m.result);
+  });
+  window.Bridge = {
+    query: function (params) { return send("query", { params: params }); },
+    edges: function (params) { return send("edges", { params: params }); },
+    subscribe: function (cb) { subs.push(cb); return send("subscribe"); },
+    watch: watch
+  };
+})();
+
+(function () {
+  "use strict";
+  var FINDING_LIMIT = 200;
+  var app = document.getElementById("app");
+  var summary = document.getElementById("summary");
+  var live = document.getElementById("live");
+
+  function esc(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+  }
+  function shortVersion(value) {
+    var text = String(value == null ? "" : value);
+    return text.length > 12 ? text.slice(0, 12) + "…" : text;
+  }
+  function plural(n, word) { return n + " " + word + (n === 1 ? "" : "s"); }
+
+  /**
+   * The gaps this ledger exists to surface. Each one is a relationship the documents SHOULD carry
+   * and do not; none of them is inferred from prose. A finding with no gaps and a terminal
+   * disposition is closed as far as this projection can tell.
+   */
+  function gapsFor(finding, evidence) {
+    var fields = finding.frontmatter || {};
+    var gaps = [];
+    if (fields.disposition === "repaired" && evidence.length === 0) {
+      gaps.push("Disposition is repaired, but no Repair Evidence links to this finding.");
+    }
+    if ((fields.disposition === "accepted_risk" || fields.disposition === "rejected_invalid") && !fields.rationale) {
+      gaps.push("Closed as " + fields.disposition + " without a recorded rationale.");
+    }
+    if ((fields.disposition === "accepted_risk" || fields.disposition === "rejected_invalid") && !fields.owner) {
+      gaps.push("Closed as " + fields.disposition + " without a named owner.");
+    }
+    evidence.forEach(function (item) {
+      var proof = item.frontmatter || {};
+      var label = item.id;
+      if (proof.parent_red === "missing") {
+        gaps.push(label + ": the probe was never proven red against the pre-repair implementation.");
+      }
+      if (proof.head_green === "missing") {
+        gaps.push(label + ": the probe was never run at the repaired version.");
+      }
+      if (proof.head_green === "failing") {
+        gaps.push(label + ": the probe still fails at the repaired version.");
+      }
+      if (proof.probe_source === "hand_authored") {
+        gaps.push(label + ": the probe is hand-authored, so it can pass while the real path stays broken.");
+      }
+    });
+    return gaps;
+  }
+
+  function proofChip(label, value, goodValues) {
+    var state = value === undefined ? "" : goodValues.indexOf(value) >= 0 ? " ok" : " bad";
+    return '<span class="proof' + state + '">' + esc(label) + ": " + esc(value || "missing") + "</span>";
+  }
+
+  function renderEvidence(evidence) {
+    if (evidence.length === 0) {
+      return '<div class="evidence"><span class="none">No linked Repair Evidence.</span></div>';
+    }
+    return evidence.map(function (item) {
+      var proof = item.frontmatter || {};
+      return '<div class="evidence" data-evidence="' + esc(item.id) + '">' +
+        "<div>" + esc(proof.title || item.id) +
+        (proof.repair_commit ? ' &#183; <code>' + esc(shortVersion(proof.repair_commit)) + "</code>" : "") +
+        "</div>" +
+        '<div class="proofs">' +
+          proofChip("parent-red", proof.parent_red, ["proven", "not_applicable"]) +
+          proofChip("head-green", proof.head_green, ["proven"]) +
+          proofChip("probe", proof.probe_source, ["real_artifact"]) +
+        "</div></div>";
+    }).join("");
+  }
+
+  function renderFinding(entry) {
+    var fields = entry.finding.frontmatter || {};
+    var gaps = entry.gaps;
+    return '<article class="finding" data-finding="' + esc(entry.finding.id) + '" data-gaps="' + gaps.length + '">' +
+      '<div class="finding-top">' +
+        '<div class="finding-title">' + esc(fields.title || entry.finding.id) + "</div>" +
+        '<span class="chip severity-' + esc(fields.severity) + '">' + esc(fields.severity || "unrated") + "</span>" +
+        '<span class="chip disposition-' + esc(fields.disposition) + '">' + esc(fields.disposition || "undeclared") + "</span>" +
+      "</div>" +
+      (fields.defect_class
+        ? '<div class="defect-class"><span class="label">Defect class</span>' + esc(fields.defect_class) + "</div>"
+        : "") +
+      '<div class="meta">' +
+        (fields.found_in_version ? "<span>Found in <code>" + esc(shortVersion(fields.found_in_version)) + "</code></span>" : "") +
+        (entry.round ? "<span>Raised by " + esc(entry.round) + "</span>" : "") +
+        (fields.owner ? "<span>Owner: " + esc(fields.owner) + "</span>" : "") +
+      "</div>" +
+      renderEvidence(entry.evidence) +
+      (gaps.length
+        ? '<ul class="gaps">' + gaps.map(function (gap) { return '<li class="gap">' + esc(gap) + "</li>"; }).join("") + "</ul>"
+        : "") +
+      "</article>";
+  }
+
+  function section(title, entries) {
+    if (entries.length === 0) return "";
+    return "<section><h2>" + esc(title) + '<span class="count">' + entries.length + "</span></h2>" +
+      entries.map(renderFinding).join("") + "</section>";
+  }
+
+  function render(findings, evidenceByFinding, roundByFinding, total) {
+    var entries = findings.map(function (finding) {
+      var evidence = evidenceByFinding[finding.id] || [];
+      return {
+        finding: finding,
+        evidence: evidence,
+        round: roundByFinding[finding.id],
+        gaps: gapsFor(finding, evidence)
+      };
+    });
+
+    var unresolved = entries.filter(function (e) { return (e.finding.frontmatter || {}).disposition === "unresolved"; });
+    var incomplete = entries.filter(function (e) {
+      return (e.finding.frontmatter || {}).disposition !== "unresolved" && e.gaps.length > 0;
+    });
+    var closed = entries.filter(function (e) {
+      return (e.finding.frontmatter || {}).disposition !== "unresolved" && e.gaps.length === 0;
+    });
+
+    if (entries.length === 0) {
+      document.body.dataset.state = "empty";
+      summary.textContent = "No Review Findings yet.";
+      app.innerHTML = '<div class="empty" id="empty">No Review Findings in this bundle. ' +
+        "This ledger fills in as review rounds record findings.</div>";
+      return;
+    }
+
+    var open = unresolved.length + incomplete.length;
+    document.body.dataset.state = open > 0 ? "open" : "resolved";
+    summary.textContent = plural(entries.length, "finding") + " · " +
+      unresolved.length + " unresolved · " +
+      plural(incomplete.length, "evidence gap");
+
+    var overLimit = total > findings.length
+      ? '<div class="note">Showing ' + findings.length + " of " + total +
+        " findings. Narrow the bundle or read the documents directly for the rest.</div>"
+      : "";
+    var banner = open === 0
+      ? '<div class="resolved-banner" id="resolved">Every finding has a terminal disposition and complete repair evidence.</div>'
+      : "";
+
+    app.innerHTML = overLimit + banner +
+      section("Unresolved", unresolved) +
+      section("Closed with an evidence gap", incomplete) +
+      section("Closed", closed);
+  }
+
+  function refresh() {
+    live.textContent = "Refreshing";
+    return Promise.all([
+      Bridge.query({ type: "Review Finding", limit: FINDING_LIMIT }),
+      Bridge.query({ type: "Repair Evidence" }),
+      Bridge.query({ type: "Engineering Review" }),
+      Bridge.edges({ text: "repairs" }),
+      Bridge.edges({ text: "raised by" })
+    ]).then(function (results) {
+      var findingResult = results[0];
+      var evidenceRows = results[1].rows || [];
+      var reviewRows = results[2].rows || [];
+      var repairEdges = results[3].edges || [];
+      var raisedEdges = results[4].edges || [];
+
+      var evidenceById = {};
+      evidenceRows.forEach(function (row) { evidenceById[row.id] = row; });
+      var reviewById = {};
+      reviewRows.forEach(function (row) { reviewById[row.id] = row; });
+
+      var evidenceByFinding = {};
+      repairEdges.forEach(function (edge) {
+        var item = evidenceById[edge.from];
+        if (!item) return;
+        (evidenceByFinding[edge.to] = evidenceByFinding[edge.to] || []).push(item);
+      });
+
+      var roundByFinding = {};
+      raisedEdges.forEach(function (edge) {
+        var review = reviewById[edge.to];
+        if (!review) return;
+        var fields = review.frontmatter || {};
+        roundByFinding[edge.from] = fields.title || review.id;
+      });
+
+      var findings = (findingResult.rows || []).slice().sort(function (a, b) {
+        return String(a.id).localeCompare(String(b.id));
+      });
+      render(findings, evidenceByFinding, roundByFinding, findingResult.count || findings.length);
+      live.textContent = "Live";
+    });
+  }
+
+  Bridge.watch(refresh).catch(function (error) {
+    document.body.dataset.state = "error";
+    live.textContent = "Unavailable";
+    summary.textContent = "This view could not read the bundle.";
+    app.innerHTML = '<div class="error" id="error">' + esc(error && error.message ? error.message : String(error)) + "</div>";
+  });
+})();
+</script>
+</body>
+</html>

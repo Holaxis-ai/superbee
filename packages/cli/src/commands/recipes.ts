@@ -10,6 +10,12 @@
 // Lists BUILT-INS ONLY (approved §B decision 9) — an external (path-addressed) recipe is not
 // enumerable, since there is no registry of "every recipe folder that might exist on disk
 // somewhere." A `recipes --path <dir>` inspect is reserved, not built.
+//
+// This distribution's SHIPPED portable recipe folders (`recipe-source-shipped.ts`) ARE enumerable
+// — `shippedRecipeNames()` already reads them — but adding them to this inventory changes the
+// `count`, the applied/create-bundle command rows, and the receipts several suites pin, so it is a
+// separate unit. Until then, an unknown name's error is the discovery surface: it names every
+// resolvable recipe, built-in and shipped alike.
 import { parseArgs } from "node:util";
 import type { Bundle } from "@superbee/core";
 import {
@@ -35,8 +41,9 @@ A recipe is a folder ('recipe.md' manifest + 'conventions/*.md' docs) that 'reci
 <name-or-path>' installs onto a bundle in one shot — idempotently (re-adding an already-applied
 recipe is a changed:false no-op). A definitions-only portable recipe may also declare static
 Reference docs and View registry/HTML pairs without carrying instances. This command lists the
-BUILT-IN recipes shipped with the CLI; an external recipe (a path) is not enumerated here, only
-path-addressed via 'recipe add <path>'.
+BUILT-IN recipes only. This distribution ALSO ships portable recipe folders that 'recipe add
+<name>' resolves by name (see 'recipe add --help'); like an external recipe folder, they are not
+enumerated here — an unknown name's error names every resolvable recipe.
 'init' applies the default recipe ('context-notes') automatically unless '--recipe none' is
 passed. Without a discoverable bundle, this command still lists the offline inventory and exact
 commands for safely creating a new bundle ('init --create-only') or adding each recipe to an

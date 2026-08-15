@@ -373,6 +373,41 @@ export async function bootUiOverPersonalTaskSystemBundle(): Promise<RunningUi & 
   };
 }
 
+/** One document to seed a bundle with before booting `ui` over it. */
+export interface SeedDoc {
+  id: string;
+  frontmatter: Frontmatter;
+  body: string;
+}
+
+/**
+ * Install the shipped Engineering Review recipe BY NAME (the one documented install command), seed
+ * the given findings/evidence/reviews, and boot the real repair-ledger View. Passing no docs is the
+ * ledger's empty state.
+ */
+export async function bootUiOverEngineeringReviewBundle(
+  seedDocs: SeedDoc[] = [],
+): Promise<RunningUi & { dir: string; cleanup: () => Promise<void> }> {
+  const { initBundle, writeDoc } = await import("@superbee/core");
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-engineering-review-e2e-"));
+  await initBundle(dir);
+  execFileSync(process.execPath, [CLI_DIST, "recipe", "add", "engineering-review", "--dir", dir, "--json"], {
+    encoding: "utf8",
+  });
+  for (const doc of seedDocs) {
+    await writeDoc({ root: dir }, { id: doc.id, frontmatter: doc.frontmatter, body: doc.body });
+  }
+  const running = await bootUi(["--dir", dir]);
+  return {
+    ...running,
+    dir,
+    cleanup: async () => {
+      await running.stop();
+      await rm(dir, { recursive: true, force: true });
+    },
+  };
+}
+
 /** The slice of the shared runtime handle the resilience spec drives. */
 export interface InProcessUiServer {
   host: string;

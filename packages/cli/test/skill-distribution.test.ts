@@ -165,6 +165,43 @@ test("the shipped review-workflow references exactly mirror the complete recipe 
   assert.deepEqual(actual, expected);
 });
 
+test("the shipped engineering-review references exactly mirror the complete recipe folder", () => {
+  const sourcePrefix = "examples/recipes/engineering-review/";
+  const destPrefix = "recipes/engineering-review/";
+  const inventory = relativeFileInventory(path.join(REPO_ROOT, sourcePrefix)).sort();
+  const expected = inventory.map((relative) => ({
+    src: `${sourcePrefix}${relative}`,
+    dest: `${destPrefix}${relative}`,
+  }));
+  const actual = NPM_RESOURCES
+    .filter(({ src, dest }) => src.startsWith(sourcePrefix) || dest.startsWith(destPrefix))
+    .sort((a, b) => a.src.localeCompare(b.src));
+  assert.deepEqual(actual, expected);
+});
+
+test("the engineering-review projection is byte-identical to its repo authority", () => {
+  const projected = NPM_RESOURCES.filter(({ dest }) => dest.startsWith("recipes/engineering-review/"));
+  assert.ok(projected.length > 0, "the engineering-review recipe must be npm-projected");
+  for (const { src, dest } of projected) {
+    assert.deepEqual(
+      readFileSync(path.join(REPO_ROOT, "packages/cli/references", dest)),
+      readFileSync(path.join(REPO_ROOT, src)),
+      `${dest} drifted from ${src} — run \`npm run gen:skill -w superbee\``,
+    );
+  }
+});
+
+test("the engineering-review recipe carries the canonical View convention and reference byte-for-byte", () => {
+  assert.deepEqual(
+    readFileSync(path.join(REPO_ROOT, "examples/recipes/engineering-review/conventions/view.md")),
+    readFileSync(path.join(REPO_ROOT, "examples/views/conventions/view.md")),
+  );
+  assert.deepEqual(
+    readFileSync(path.join(REPO_ROOT, "examples/recipes/engineering-review/references/view-authoring-v0.md")),
+    readFileSync(path.join(REPO_ROOT, "examples/views/references/view-authoring-v0.md")),
+  );
+});
+
 test("the portable recipe carries the canonical View convention byte-for-byte", () => {
   const canonical = readFileSync(path.join(REPO_ROOT, "examples/views/conventions/view.md"));
   const portable = readFileSync(path.join(REPO_ROOT, "examples/recipes/review-workflow/conventions/view.md"));
@@ -216,6 +253,11 @@ test("the npm skill teaches only the bounded stable MCP PATH contract", () => {
   assert.match(renderedNpm, /command `superbee`.*argument `mcp`/s);
   assert.match(renderedNpm, /`superbee version --json`/);
   assert.match(renderedNpm, /does not scan or rewrite host MCP configuration/);
+});
+
+test("the npm skill documents the one name-based install command for the engineering-review recipe", () => {
+  assert.match(renderedNpm, /recipe add engineering-review/);
+  assert.ok(renderedNpm.includes("$REFS/recipes/engineering-review/"));
 });
 
 test("the typical flow creates a complete Context Note in one command", () => {

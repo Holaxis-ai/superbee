@@ -7,7 +7,12 @@ import { parseMarkdown } from "@superbee/core";
 import { parseRecipeFiles, type RecipeFile, type RecipeSource } from "./recipe-parser.js";
 import { expandRecipePath, looksLikeRecipePath } from "./recipe-ref.js";
 
-async function readRecipeDir(root: string): Promise<RecipeFile[]> {
+/**
+ * Acquire one recipe folder's bytes. Exported for the shipped-recipe source, which resolves a NAME
+ * to a directory inside the running distribution and then reads it through this same walk — one
+ * traversal-and-containment implementation, never two.
+ */
+export async function readRecipeDir(root: string): Promise<RecipeFile[]> {
   const files: RecipeFile[] = [];
   const rootReal = await fs.realpath(root);
 
@@ -91,7 +96,7 @@ async function walkConventions(dir: string, relPrefix: string, rootReal: string,
   }
 }
 
-class RecipeUnsafePathSignal extends Error {
+export class RecipeUnsafePathSignal extends Error {
   rel: string;
   reason: "symlink-escape" | "dot-entry";
   constructor(rel: string, reason: "symlink-escape" | "dot-entry" = "symlink-escape") {
