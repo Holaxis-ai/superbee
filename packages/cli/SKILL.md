@@ -150,7 +150,7 @@ becomes — or stays — shared memory across clones and teammates. Three modes:
 ```sh
 superbee sync                            # existing shared project — provisions the board; a local-only bundle reports its state
 superbee init --dir .agentstate-lite     # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one
-superbee sync --establish                # optional — start sharing a local bundle's board with teammates
+superbee sync --establish                # establish a new shared board after user approval
 ```
 
 That's the whole setup. The CLI discovers the conventional folder on its own (the way git
@@ -212,6 +212,13 @@ scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate/<
 and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates
 share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.
 
+Do not raise a sharing decision during ordinary local work. When the user names teammates,
+a shared board, a handoff, synchronization, or cross-clone coordination, use Superbee's
+built-in board path: run `sync` to join an existing `origin/board`; if none exists, explain
+that `sync --establish` creates it and offer to run that explicit one-time operation. If the
+user prefers an in-tree bundle, custom Git branch/path, or another sharing mechanism, surface
+the tradeoff and record that explicit choice; never silently substitute one for Superbee sync.
+
 ## Typical flow
 
 ```sh
@@ -219,7 +226,7 @@ share this bundle? When the user's intent is ambiguous, ask rather than defaulti
 superbee sync                          # existing project that shares a board — sets up AND pulls the shared board
 superbee init --dir .agentstate-lite   # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle
 
-# Optional, after a greenfield init: start sharing this bundle's board with teammates
+# If collaboration is requested, offer the explicit one-time shared-board operation:
 superbee sync --establish
 
 # Everything after runs bare, from anywhere in the project tree
@@ -236,9 +243,9 @@ superbee doc write specs/auth --type Spec --title "Auth" --body "…" --actor <y
 superbee link add specs/auth context-notes/cycle-1
 superbee list --type Spec
 
-# Share the board — recording work isn't done until it's shared
-# (safe everywhere: a local-only board just reports its state; outside any
-#  workspace it prints "sync: nothing to sync" — in both cases nothing is committed or pushed)
+# For a shared board, sync after a unit of work; local-only work stays complete locally
+# (safe everywhere: a local-only board reports its state; outside any workspace it prints
+#  "sync: nothing to sync" — in both cases nothing is committed or pushed)
 superbee sync
 ```
 
@@ -247,8 +254,8 @@ superbee sync
 Ordinary `superbee sync` shares your board — commits your changes, pulls your teammate's, pushes yours,
 while leaving code-project files untouched.
 
-Run it whenever you close a unit of work — a task finished, a decision recorded, a session
-ending. Recording work isn't done until it's shared. Three known empty states (all exit 0):
+On a shared board, run it whenever you close a unit of work — a task finished, a decision recorded, a session
+ending. Local-only work remains complete locally. Three known empty states (all exit 0):
 outside any git repo or workspace it prints `sync: nothing to sync`; a LOCAL-ONLY board (a
 bundle with no shared `board` branch — a supported mode) reports itself as local-only, with
 nothing committed, pulled, or pushed, and its note points at `--establish` — but bare `sync`

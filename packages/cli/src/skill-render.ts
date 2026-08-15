@@ -103,7 +103,7 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push("```sh");
   lines.push(`${prefix} sync                            # existing shared project — provisions the board; a local-only bundle reports its state`);
   lines.push(`${prefix} init --dir .agentstate-lite     # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one`);
-  lines.push(`${prefix} sync --establish                # optional — start sharing a local bundle's board with teammates`);
+  lines.push(`${prefix} sync --establish                # establish a new shared board after user approval`);
   lines.push("```");
   lines.push("");
   lines.push(
@@ -213,6 +213,25 @@ function renderWorkspaceLocation(prefix: string): string[] {
   );
   lines.push("share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.");
   lines.push("");
+  lines.push(
+    "Do not raise a sharing decision during ordinary local work. When the user names teammates,",
+  );
+  lines.push(
+    "a shared board, a handoff, synchronization, or cross-clone coordination, use Superbee's",
+  );
+  lines.push(
+    "built-in board path: run `sync` to join an existing `origin/board`; if none exists, explain",
+  );
+  lines.push(
+    "that `sync --establish` creates it and offer to run that explicit one-time operation. If the",
+  );
+  lines.push(
+    "user prefers an in-tree bundle, custom Git branch/path, or another sharing mechanism, surface",
+  );
+  lines.push(
+    "the tradeoff and record that explicit choice; never silently substitute one for Superbee sync.",
+  );
+  lines.push("");
   return lines;
 }
 
@@ -225,7 +244,7 @@ function renderTypicalFlow(prefix: string): string[] {
   lines.push(`${prefix} sync                          # existing project that shares a board — sets up AND pulls the shared board`);
   lines.push(`${prefix} init --dir .agentstate-lite   # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle`);
   lines.push("");
-  lines.push(`# Optional, after a greenfield init: start sharing this bundle's board with teammates`);
+  lines.push(`# If collaboration is requested, offer the explicit one-time shared-board operation:`);
   lines.push(`${prefix} sync --establish`);
   lines.push("");
   lines.push(`# Everything after runs bare, from anywhere in the project tree`);
@@ -242,9 +261,9 @@ function renderTypicalFlow(prefix: string): string[] {
   lines.push(`${prefix} link add specs/auth context-notes/cycle-1`);
   lines.push(`${prefix} list --type Spec`);
   lines.push("");
-  lines.push(`# Share the board — recording work isn't done until it's shared`);
-  lines.push(`# (safe everywhere: a local-only board just reports its state; outside any`);
-  lines.push(`#  workspace it prints "sync: nothing to sync" — in both cases nothing is committed or pushed)`);
+  lines.push(`# For a shared board, sync after a unit of work; local-only work stays complete locally`);
+  lines.push(`# (safe everywhere: a local-only board reports its state; outside any workspace it prints`);
+  lines.push(`#  "sync: nothing to sync" — in both cases nothing is committed or pushed)`);
   lines.push(`${prefix} sync`);
   lines.push("```");
   lines.push("");
@@ -261,10 +280,10 @@ function renderSyncSection(prefix: string): string[] {
   lines.push("while leaving code-project files untouched.");
   lines.push("");
   lines.push(
-    "Run it whenever you close a unit of work — a task finished, a decision recorded, a session",
+    "On a shared board, run it whenever you close a unit of work — a task finished, a decision recorded, a session",
   );
   lines.push(
-    "ending. Recording work isn't done until it's shared. Three known empty states (all exit 0):",
+    "ending. Local-only work remains complete locally. Three known empty states (all exit 0):",
   );
   lines.push(
     "outside any git repo or workspace it prints `sync: nothing to sync`; a LOCAL-ONLY board (a",
