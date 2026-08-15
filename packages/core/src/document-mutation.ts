@@ -195,6 +195,12 @@ function withV02Metadata(
   });
 }
 
+/** One stable instant per CAS decision, shared by every clock a bundle Kind explicitly carries. */
+function onceNow(now: () => string): () => string {
+  let value: string | undefined;
+  return () => (value ??= now());
+}
+
 /**
  * True when `existing` already satisfies ITS OWN governing kind — the monotone ratchet's
  * precondition (probe: tasks/overwrite-ratchet-survey). Validates the RAW existing
@@ -224,6 +230,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const now = opts.now ?? (() => new Date().toISOString());
 
   if (opts.mode === "create-only") {
+    const decisionNow = onceNow(now);
     const attributed = attributeCandidate(
       await opts.buildCandidate(undefined),
       opts.actor,
@@ -231,8 +238,8 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       okfVersion,
       opts.registry,
     );
-    const candidate = withV02Metadata(attributed, undefined, okfVersion, now);
-    const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, now);
+    const candidate = withV02Metadata(attributed, undefined, okfVersion, decisionNow);
+    const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, decisionNow);
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
       actor: opts.actor,
@@ -256,6 +263,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     const outcome = await versionedMutation<OkfDocument, undefined>({
       read: readExisting,
       decide: async (existing) => {
+        const decisionNow = onceNow(now);
         const attributed = attributeCandidate(
           await opts.buildCandidate(existing),
           opts.actor,
@@ -263,14 +271,14 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           okfVersion,
           opts.registry,
         );
-        const candidate = withV02Metadata(attributed, existing, okfVersion, now);
+        const candidate = withV02Metadata(attributed, existing, okfVersion, decisionNow);
         const validated = validateCandidate(
           opts.id,
           candidate,
           opts.registry,
           opts.strict,
           okfVersion,
-          now,
+          decisionNow,
         );
         warnings = validated.warnings;
 
@@ -315,12 +323,13 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       return read;
     },
     decide: async (existing) => {
+      const decisionNow = onceNow(now);
       if (hardCas && lastReadVersion !== opts.expectedVersion) {
         throw new VersionConflict(opts.id, opts.expectedVersion!, lastReadVersion);
       }
 
       const rawCandidate = await opts.buildCandidate(existing);
-      const candidateForComparison = withV02Metadata(rawCandidate, existing, okfVersion, now);
+      const candidateForComparison = withV02Metadata(rawCandidate, existing, okfVersion, decisionNow);
       if (existing && isNoopPatch(existing, candidateForComparison, compareTimestamp, okfVersion)) {
         return { action: "done", result: { doc: existing, warnings: [] } };
       }
@@ -332,14 +341,14 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         okfVersion,
         opts.registry,
       );
-      const candidate = withV02Metadata(attributed, existing, okfVersion, now);
+      const candidate = withV02Metadata(attributed, existing, okfVersion, decisionNow);
       const { warnings } = validateCandidate(
         opts.id,
         candidate,
         opts.registry,
         opts.strict,
         okfVersion,
-        now,
+        decisionNow,
       );
       return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
     },
