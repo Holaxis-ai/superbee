@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { GITHUB_OUTPUT_FIELDS, parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
+import { parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
 import { loadReleaseTargets, normalizeReleaseTargets, resolveDeclaredTarget, targetFromPackageName, updatePolicyForTarget } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -392,11 +392,30 @@ test("renderGithubOutput emits only primitive stable fields", () => {
   );
 });
 
+// Stated here rather than imported from the renderer, so this test is an independent claim about
+// the workflow contract and fails on the rendering when the renderer stops enforcing it.
+const EXPECTED_GITHUB_OUTPUT_FIELDS = Object.freeze({
+  target: "required",
+  package: "required",
+  version: "required",
+  tag: "required",
+  policy_tag: "nullable",
+  npm_promote_tag: "nullable",
+  github_latest: "required",
+  workflow_contract: "required",
+});
+
 test("renderGithubOutput refuses to render a fact set that is not the resolved target contract", async () => {
   const facts = await resolveTargetFacts({ target: "successor-stable", tag: "v0.1.0" });
-  assert.deepEqual(Object.keys(facts).sort(), Object.keys(GITHUB_OUTPUT_FIELDS).sort());
+  assert.deepEqual(Object.keys(facts).sort(), Object.keys(EXPECTED_GITHUB_OUTPUT_FIELDS).sort());
 
-  for (const key of Object.keys(GITHUB_OUTPUT_FIELDS)) {
+  // The finding's own scenario first: a dropped npm_promote_tag used to render `npm_promote_tag=`,
+  // which finalize's `if [ -n "$NPM_PROMOTE_TAG" ]` reads as "policy says do not promote".
+  const withoutPromoteTag = { ...facts };
+  delete withoutPromoteTag.npm_promote_tag;
+  assert.throws(() => renderGithubOutput(withoutPromoteTag), /missing: npm_promote_tag/);
+
+  for (const key of Object.keys(EXPECTED_GITHUB_OUTPUT_FIELDS)) {
     const dropped = { ...facts };
     delete dropped[key];
     assert.throws(() => renderGithubOutput(dropped), new RegExp(`missing: ${key}`), `dropped ${key}`);
@@ -407,7 +426,7 @@ test("renderGithubOutput refuses to render a fact set that is not the resolved t
   delete renamed.npm_promote_tag;
   assert.throws(() => renderGithubOutput(renamed), /missing: npm_promote_tag; unknown: npm_promotion_tag/);
 
-  for (const [key, kind] of Object.entries(GITHUB_OUTPUT_FIELDS)) {
+  for (const [key, kind] of Object.entries(EXPECTED_GITHUB_OUTPUT_FIELDS)) {
     if (kind === "nullable") continue;
     assert.throws(() => renderGithubOutput({ ...facts, [key]: null }), new RegExp(`github output ${key} must not be null`), `null ${key}`);
     assert.throws(() => renderGithubOutput({ ...facts, [key]: "" }), new RegExp(`github output ${key} must not be empty`), `empty ${key}`);
