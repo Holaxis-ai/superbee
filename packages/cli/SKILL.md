@@ -398,6 +398,8 @@ When you create or materially revise a bundle document for human review, display
 human asks and otherwise offer once. In an MCP Apps host, call `list_workspaces` when needed,
 then `show_document` with the exact workspace label or ID and document ID; do not return only
 a filesystem path. In fixed `mcp --dir` compatibility mode, the workspace argument is omitted.
+To present an existing interactive View, call `list_views` and then `show_view` with that same
+workspace and the exact View ID; later View lifecycle calls use only the returned launch ID.
 Outside an MCP Apps host, run
 `superbee doc open <id>` to open that exact document in the existing browser reader.
 
