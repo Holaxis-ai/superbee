@@ -486,7 +486,8 @@ function transferClaim({ held_board_ref: heldBoardRef, protected_release_tag_ref
     `(confirmed: ${confirmed.join(" ") || "none"}; not present in the creating repository: ${unobserved.join(" ") || "none"})`,
     `and held none of the ${protectedTags.length} protected release tags.`,
     "The retained bundle unbundles into a complete connected history whose heads are exactly the allowlisted refs at those commits,",
-    "carries no object outside the closure those refs reach — so nothing rides along behind a header the bundle does not advertise —",
+    // Plain ASCII: this sentence is packet data an operator copies between terminals and tickets.
+    "carries no object outside the closure those refs reach (nothing rides along behind a header the bundle does not advertise),",
     `and carries no head descended from ${heldBoardRef}.`,
     "Nothing here proves the state of any remote repository.",
   ].join(" ");
