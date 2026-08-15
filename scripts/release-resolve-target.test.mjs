@@ -269,6 +269,43 @@ test("the cutover approval binds to the reviewed source tree, not to the manifes
   );
 });
 
+test("an explicit --manifest path still gets the burn ledger and checked-in CLI checks", async (t) => {
+  // scripts/release-candidate.mjs passes createReleaseCandidate's --manifest straight through, so
+  // this is the live shape: a manifest somewhere other than release/targets.json, loaded with no
+  // other options. The reviewed ledger and CLI still apply; only an explicit argument opts out.
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-explicit-manifest-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const raw = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
+
+  const burnedLedger = JSON.parse(await readFile(path.join(repoRoot, "release", "burned-versions.json"), "utf8"));
+  const burnedVersion = burnedLedger.burned[0].version;
+  const burning = structuredClone(raw);
+  burning.allowed_tuples["successor-preview"].version = burnedVersion;
+  burning.allowed_tuples["successor-preview"].tag = `v${burnedVersion}`;
+  const burningPath = path.join(scratch, "burning-targets.json");
+  await writeFile(burningPath, JSON.stringify(burning, null, 2));
+  await assert.rejects(loadReleaseTargets(burningPath), new RegExp(`uses burned version ${burnedVersion.replace(/\./g, "\\.")}`));
+
+  const driftedCli = structuredClone(raw);
+  driftedCli.allowed_tuples["successor-stable"].version = "9.9.9";
+  driftedCli.allowed_tuples["successor-stable"].tag = "v9.9.9";
+  driftedCli.functional_successor_floor = "9.9.9";
+  const driftedCliPath = path.join(scratch, "drifted-cli-targets.json");
+  await writeFile(driftedCliPath, JSON.stringify(driftedCli, null, 2));
+  await assert.rejects(loadReleaseTargets(driftedCliPath), /packages\/cli\/package\.json must declare successor superbee@9\.9\.9/);
+
+  // An unmodified manifest at a foreign path still loads, so the checks are binding, not blanket.
+  const faithfulPath = path.join(scratch, "faithful-targets.json");
+  await writeFile(faithfulPath, JSON.stringify(raw, null, 2));
+  assert.equal((await loadReleaseTargets(faithfulPath)).allowed_tuples.bridge.version, raw.allowed_tuples.bridge.version);
+
+  // Opting out stays possible, but only by saying so at the call site.
+  assert.equal(
+    (await loadReleaseTargets(burningPath, { burnedFile: null })).allowed_tuples["successor-preview"].version,
+    burnedVersion,
+  );
+});
+
 test("package-only compatibility lookup refuses the split Superbee coordinates", async () => {
   const manifest = await loadReleaseTargets();
   assert.equal(targetFromPackageName("@holaxis/aslite", manifest.targets), "bridge");

@@ -351,14 +351,17 @@ async function assertCheckedInCliVersion(manifest, file) {
   }
 }
 
-// The burn ledger and the checked-in CLI describe the manifest's own directory, so they follow the
-// manifest path. The cutover approval deliberately never does: it is part of the reviewed source,
-// and resolving it as a sibling would let any manifest arrive carrying the approval that blesses
-// it. A manifest handed to this loader from anywhere is measured against the approval under
-// review, so this check applies on every path rather than only to the default manifest.
+// All three authorities are part of the reviewed source, so none of them follows the manifest
+// path by default: a manifest handed to this loader from anywhere is measured against the burn
+// ledger, the checked-in CLI, and the cutover approval under review. Defaulting them off the
+// manifest's own directory would let any manifest arrive carrying the evidence that clears it,
+// and defaulting them to null off the default path meant the checks a release depends on
+// vanished for exactly the callers that pass an explicit --manifest. Callers that genuinely
+// verify someone else's tree, such as the retained-tarball verifier and the packet, pass their
+// own paths or an explicit null, and that opt-out stays visible at the call site.
 export async function loadReleaseTargets(file = DEFAULT_RELEASE_TARGETS_PATH, {
-  burnedFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_BURNED_VERSIONS_PATH : null,
-  cliPackageFile = file === DEFAULT_RELEASE_TARGETS_PATH ? DEFAULT_CLI_PACKAGE_PATH : null,
+  burnedFile = DEFAULT_BURNED_VERSIONS_PATH,
+  cliPackageFile = DEFAULT_CLI_PACKAGE_PATH,
   contractFile = DEFAULT_CUTOVER_CONTRACT_PATH,
 } = {}) {
   const raw = JSON.parse(await readFile(file, "utf8"));
