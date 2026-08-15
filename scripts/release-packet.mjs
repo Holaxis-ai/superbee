@@ -3,6 +3,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -11,39 +12,29 @@ import { init, parse } from "es-module-lexer";
 import { isMainModule } from "./is-main-module.mjs";
 import { fileSha256, verifyRetainedTarball } from "./verify-npm-package.mjs";
 import { RELEASE_CANDIDATE_SCHEMA, assertAllowedTuple, loadReleaseTargets, tarballFilename } from "./release-targets.mjs";
+import { deriveWorkflowExecution } from "./release-workflow-topology.mjs";
+import { RELEASE_SETTINGS_SCHEMA, assertSettingsRecheckFollows, validateReleaseSettingsCapture } from "./release-settings-capture.mjs";
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(import.meta.url);
 export const repoRoot = path.resolve(path.dirname(scriptPath), "..");
-export const REVIEW_PACKET_SCHEMA = "superbee.release-packet.v2";
+export const REVIEW_PACKET_SCHEMA = "superbee.release-packet.v3";
 export const REVIEW_PACKET_INPUTS_SCHEMA = "superbee.review-packet-inputs.v1";
-export const REF_ASSERTIONS_SCHEMA = "superbee.ref-assertions.v1";
-export const TRANSFER_ALLOWLIST_SCHEMA = "superbee.transfer-allowlist.v1";
+// v2 carries a ref -> commit map instead of bare ref names: a transfer bundle is only meaningful
+// evidence when its heads are bound to specific commits.
+export const REF_ASSERTIONS_SCHEMA = "superbee.ref-assertions.v2";
+export const TRANSFER_ALLOWLIST_SCHEMA = "superbee.transfer-allowlist.v2";
+export const HELD_BOARD_REF = "refs/heads/board";
 const PACKET_FILE = "release-packet.json";
 const DIGEST_FILE = "release-packet.sha256";
+// The generator pins itself: no workflow runs `release:packet`, and the packet records this file's
+// own digest. Every other entrypoint is derived from the workflows by release-workflow-topology.
 const SOURCE_ENTRYPOINTS = ["scripts/release-packet.mjs"];
-const RELEASE_WORKFLOWS = [
-  ".github/workflows/release-staged.yml",
-  ".github/workflows/release-finalize.yml",
-  ".github/workflows/release-audit.yml",
+// Files the packet pins because a reviewer needs them, independent of any import edge.
+const EXPLICIT_PACKET_INPUTS = [
+  "release/review-packet-inputs.json", "release/targets.json", "release/burned-versions.json",
+  ".github/release-allowed-signers", "package.json", "package-lock.json", "packages/cli/SKILL.md",
 ];
-const RELEASE_EXECUTION_TOPOLOGY = Object.freeze({
-  packageScripts: Object.freeze({
-    "package.json": Object.freeze(["release:candidate", "release:audit-tags"]),
-    "packages/cli/package.json": Object.freeze(["prepublishOnly"]),
-  }),
-  directEntrypoints: Object.freeze([
-    "scripts/release-packet.mjs",
-    "scripts/release-candidate.mjs",
-    "scripts/release-verify-chain.mjs",
-    "scripts/release-emit-receipt.mjs",
-    "scripts/release-resolve-target.mjs",
-    "scripts/release-verify-ordering.mjs",
-    "scripts/release-verify-registry.mjs",
-    "scripts/release-run-operations.mjs",
-    "scripts/release-audit-tags.mjs",
-  ]),
-});
 const EXTERNAL_IMPORTS = new Set(["es-module-lexer", "esbuild", "pako"]); // Directly declared and lockfile-pinned build dependencies.
 const EVIDENCE = [
   ["planning-heads", "planning-heads.json"],
@@ -61,8 +52,8 @@ const EVIDENCE_SCHEMAS = Object.freeze({
   "registry-snapshot": "opaque",
   "refs-baseline": REF_ASSERTIONS_SCHEMA,
   "refs-recheck": REF_ASSERTIONS_SCHEMA,
-  "settings-baseline": "json",
-  "settings-recheck": "json",
+  "settings-baseline": RELEASE_SETTINGS_SCHEMA,
+  "settings-recheck": RELEASE_SETTINGS_SCHEMA,
   "transfer-bundle": "git-bundle",
   "transfer-allowlist": TRANSFER_ALLOWLIST_SCHEMA,
   "cutover-script": "opaque",
@@ -71,26 +62,10 @@ const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9@._/-]+$/;
 const REF = /^refs\/(?:heads|tags|notes)\/[A-Za-z0-9][A-Za-z0-9._/-]*$/;
-const NORMAL_CHECK_OUTPUT_PREFIXES = Object.freeze([
-  "node_modules/",
-  "packages/board-git/dist/",
-  "packages/cli/dist/",
-  "packages/cli/src/generated/",
-  "packages/core/dist/",
-  "packages/markdown-renderer/dist/",
-  "packages/mcp-app/dist/",
-  "packages/mcp-app/src/generated/",
-  "packages/server/dist/",
-  "packages/mcp-app/test-results/",
-  "packages/ui-server/dist/",
-  "packages/ui/blob-report/",
-  "packages/ui/dist/",
-  "packages/ui/node_modules/",
-  "packages/ui/playwright-report/",
-  "packages/ui/test-results/",
-  "packages/view-runtime/dist/",
-  "release-candidate/",
-]);
+// Refs the repository merely holds are only enumerated and compared, never transferred, so they are
+// admitted on a wider (still control-character-free) alphabet than the transferable set.
+const LOOSE_REF = /^refs\/[!-~]+$/;
+const GITIGNORE = ".gitignore";
 
 await init;
 
@@ -246,28 +221,44 @@ export async function staticPacketClosure({ root = repoRoot, entries = SOURCE_EN
   return [...found].sort();
 }
 
-function resolveNodeScriptCommand(command, label, baseDirectory = ".") {
-  const matched = /^node\s+((?:\.\.\/|\.\/)?[A-Za-z0-9_./-]+\.mjs)$/.exec(command);
-  if (!matched) packetError(`${label} must be one literal node <path>.mjs command`);
-  const relative = path.posix.normalize(path.posix.join(baseDirectory, matched[1]));
-  return literalPath(`${label} entrypoint`, relative);
-}
-
-async function releaseReachableEntrypoints(root) {
-  const direct = new Set(RELEASE_EXECUTION_TOPOLOGY.directEntrypoints);
-  for (const [relative, names] of Object.entries(RELEASE_EXECUTION_TOPOLOGY.packageScripts)) {
-    const packageJson = requireObject(relative, await readJson(resolveInput(root, relative), relative));
-    const scripts = requireObject(`${relative} scripts`, packageJson.scripts);
-    const baseDirectory = path.posix.dirname(relative);
-    for (const name of names) {
-      const command = scripts[name];
-      if (typeof command !== "string") packetError(`${relative} script ${name} must be a string`);
-      direct.add(resolveNodeScriptCommand(command, `${relative} script ${name}`, baseDirectory));
-    }
+async function gitStdout(root, args, label, options = {}) {
+  try {
+    const { stdout } = await execFileAsync("git", args, { cwd: root, ...options });
+    return stdout;
+  } catch (error) {
+    packetError(`${label}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return [...direct].sort();
 }
 
+/** Every path in the Git index, as the authority for "this file is reviewed source". */
+async function trackedPathSet(root) {
+  const stdout = await gitStdout(root, ["ls-files", "-z"], "cannot read git index", { encoding: "buffer" });
+  const bytes = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  const paths = new Set();
+  let start = 0;
+  for (let end = bytes.indexOf(0, start); end !== -1; end = bytes.indexOf(0, start)) {
+    paths.add(bytes.subarray(start, end).toString("utf8"));
+    start = end + 1;
+  }
+  if (start !== bytes.length) packetError("git index output is not NUL terminated");
+  return paths;
+}
+
+async function isIgnoredPath(root, relative) {
+  try {
+    await execFileAsync("git", ["check-ignore", "-q", "--", relative], { cwd: root });
+    return true;
+  } catch (error) {
+    if (error?.code === 1) return false;
+    packetError(`cannot classify ${relative} against the checkout's ignore rules: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Derive the release execution surface from the workflows, then bind it to the committed manifest.
+ * The manifest is the reviewed declaration; this recomputes it from the checkout on every create
+ * and verify, so a workflow edit that reaches new code fails the packet until the code is pinned.
+ */
 export async function validatePacketInputManifest({ root = repoRoot, manifestPath = path.join(repoRoot, "release", "review-packet-inputs.json") } = {}) {
   const manifest = requireObject("packet input manifest", await readJson(manifestPath, "packet input manifest"));
   if (manifest.schema !== REVIEW_PACKET_INPUTS_SCHEMA) packetError(`packet input manifest schema is not ${REVIEW_PACKET_INPUTS_SCHEMA}`);
@@ -275,20 +266,28 @@ export async function validatePacketInputManifest({ root = repoRoot, manifestPat
   for (const relative of paths) {
     resolveInput(root, literalPath("packet input manifest path", relative));
   }
-  const workflowEntries = await releaseReachableEntrypoints(root);
+  const targets = await loadPacketTargets(root);
+  const trackedPaths = await trackedPathSet(root);
+  const execution = await deriveWorkflowExecution({
+    root,
+    publishedPackageNames: [...new Set(Object.values(targets.allowed_tuples).map((tuple) => tuple.package))],
+    trackedPaths,
+    isIgnored: (relative) => isIgnoredPath(root, relative),
+    fail: packetError,
+  });
+  const workflowEntries = [...new Set([...SOURCE_ENTRYPOINTS, ...execution.entrypoints])].sort();
   const closure = await staticPacketClosure({ root, entries: workflowEntries });
-  const explicit = [
-    "release/review-packet-inputs.json", "release/targets.json", "release/burned-versions.json",
-    ...RELEASE_WORKFLOWS, ".github/release-allowed-signers",
-    "package.json", "package-lock.json", "packages/cli/package.json", "packages/cli/SKILL.md",
-  ];
+  // Ignore rules are authority twice over: they decide which checkout residue a packet build may
+  // carry, and which workflow-executed paths count as build output rather than pinned source.
+  const ignoreRuleFiles = [...trackedPaths].filter((relative) => path.posix.basename(relative) === GITIGNORE);
+  const explicit = [...EXPLICIT_PACKET_INPUTS, ...ignoreRuleFiles, ...execution.workflowFiles, ...execution.scriptAuthorityFiles];
   const expected = [...new Set([...closure, ...explicit])].sort();
   if (JSON.stringify(paths) !== JSON.stringify(expected)) {
     const missing = expected.filter((item) => !paths.includes(item));
     const extra = paths.filter((item) => !expected.includes(item));
     packetError(`packet input manifest closure differs (missing: ${missing.join(",") || "none"}; extra: ${extra.join(",") || "none"})`);
   }
-  return { paths, closure, explicit, workflowEntries };
+  return { paths, closure, explicit, workflowEntries, execution };
 }
 
 async function canonicalPath(target) {
@@ -412,13 +411,21 @@ async function collectCandidate(slot, sourceDir, outDir, source, { targets, root
   };
 }
 
-function refSet(label, value) {
-  const refs = uniqueSorted(value, label);
+function refName(label, ref) {
+  requireString(label, ref, REF);
+  if (ref.includes("//") || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".")) {
+    packetError(`invalid ${label}: ${JSON.stringify(ref)}`);
+  }
+  return ref;
+}
+
+/** A ref -> commit map in canonical (sorted, unique) key order. */
+function refMap(label, value) {
+  const map = requireObject(label, value);
+  const refs = uniqueSorted(Object.keys(map), `${label} names`);
   for (const ref of refs) {
-    requireString(label, ref, REF);
-    if (ref.includes("//") || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".")) {
-      packetError(`invalid ${label}: ${JSON.stringify(ref)}`);
-    }
+    refName(label, ref);
+    requireString(`${label} ${ref} commit`, map[ref], COMMIT);
   }
   return refs;
 }
@@ -432,8 +439,8 @@ export function validateRefAssertionsEnvelope(value, { publicAncestor, privateCo
   if (envelope.public_main !== publicAncestor || envelope.public_ancestor_P !== publicAncestor || envelope.private_R !== privateCommit) {
     packetError("ref assertion P/R/public-main mismatch");
   }
-  if (envelope.held_board_ref !== "refs/heads/board") packetError("held board ref must be refs/heads/board");
-  const allowed = refSet("allowed refs", envelope.allowed_refs);
+  if (envelope.held_board_ref !== HELD_BOARD_REF) packetError(`held board ref must be ${HELD_BOARD_REF}`);
+  const allowed = refMap("allowed refs", envelope.allowed_refs);
   if (allowed.includes(envelope.held_board_ref)) packetError("held board ref must not be transferable");
   const categories = uniqueSorted(envelope.required_categories, "required categories");
   if (JSON.stringify(categories) !== JSON.stringify(["main", "notes", "tags"])) packetError("required categories must be main, notes, and tags");
@@ -441,10 +448,16 @@ export function validateRefAssertionsEnvelope(value, { publicAncestor, privateCo
     refs.includes("refs/heads/main") && refs.some((ref) => ref.startsWith("refs/tags/")) && refs.some((ref) => ref.startsWith("refs/notes/"))
   );
   if (!hasRequiredCategories(allowed)) packetError("allowed refs must cover main, tags, and notes");
+  // The transfer moves the reviewed private head into the public repository, and P — proven an
+  // ancestor of R in the source checkout — is the fast-forward base. Binding main to R is what
+  // stops a bundle that carries the approved ref NAMES over unreviewed content.
+  if (envelope.allowed_refs["refs/heads/main"] !== privateCommit) {
+    packetError(`transferable refs/heads/main must carry the reviewed commit ${privateCommit}, not ${JSON.stringify(envelope.allowed_refs["refs/heads/main"])}`);
+  }
   if (!allowlist) {
-    const observed = refSet("observed refs", envelope.observed_refs);
-    if (observed.includes(envelope.held_board_ref)) packetError("held board ref must not appear in observed transferable refs");
-    if (JSON.stringify(observed) !== JSON.stringify(allowed)) packetError("observed refs must exactly equal allowed transferable refs");
+    refMap("observed refs", envelope.observed_refs);
+    if (Object.hasOwn(envelope.observed_refs, envelope.held_board_ref)) packetError("held board ref must not appear in observed transferable refs");
+    if (!sameJsonValue(envelope.observed_refs, envelope.allowed_refs)) packetError("observed refs must exactly equal allowed transferable refs");
   }
   return envelope;
 }
@@ -453,69 +466,195 @@ function reservedCandidateTagRefs(targets) {
   return [...new Set(Object.values(targets.allowed_tuples).map((tuple) => `refs/tags/${tuple.tag}`))].sort();
 }
 
-function packetLifecycle(targets) {
-  return {
-    creation_topology: "pre-cutover-transfer",
-    verification_scope: "retained-packet-audit",
-    protected_release_tag_refs: reservedCandidateTagRefs(targets),
-  };
+/**
+ * What the packet claims, written from the facts it actually recorded. Verification rebuilds this
+ * sentence from the retained evidence and compares, so the human-readable claim cannot drift from
+ * the machine-checked one.
+ */
+function transferClaim({ protected_release_tag_refs: protectedTags, transfer_refs_confirmed_at_create: confirmed, transfer_refs_unobserved_at_create: unobserved }) {
+  return [
+    `The creating repository held ${confirmed.length} of ${confirmed.length + unobserved.length} allowlisted refs at the asserted commits`,
+    `(confirmed: ${confirmed.join(" ") || "none"}; not present in the creating repository: ${unobserved.join(" ") || "none"})`,
+    `and held none of the ${protectedTags.length} protected release tags.`,
+    "The retained bundle unbundles into a complete connected history whose heads are exactly the allowlisted refs at those commits.",
+    "Nothing here proves the state of any remote repository.",
+  ].join(" ");
 }
 
-function validatePacketLifecycle(value, targets) {
-  const lifecycle = exactKeys(value, "packet lifecycle", ["creation_topology", "verification_scope", "protected_release_tag_refs"]);
-  if (lifecycle.creation_topology !== "pre-cutover-transfer") packetError("packet lifecycle creation_topology must be pre-cutover-transfer");
-  if (lifecycle.verification_scope !== "retained-packet-audit") packetError("packet lifecycle verification_scope must be retained-packet-audit");
-  if (JSON.stringify(refSet("packet lifecycle protected release tags", lifecycle.protected_release_tag_refs)) !== JSON.stringify(packetLifecycle(targets).protected_release_tag_refs)) {
-    packetError("packet lifecycle protected release tags differ from release targets");
+function packetLifecycle(targets, envelope, repositoryRefs) {
+  const live = new Set(repositoryRefs.map((row) => row.ref));
+  const allowed = Object.keys(envelope.allowed_refs);
+  const lifecycle = {
+    protected_release_tag_refs: reservedCandidateTagRefs(targets),
+    creation_repository_refs: repositoryRefs,
+    transfer_refs_confirmed_at_create: allowed.filter((ref) => live.has(ref)).sort(),
+    transfer_refs_unobserved_at_create: allowed.filter((ref) => !live.has(ref)).sort(),
+  };
+  return { ...lifecycle, claim: transferClaim(lifecycle) };
+}
+
+function repositoryRefRows(label, value) {
+  if (!Array.isArray(value)) packetError(`${label} must be an array`);
+  const rows = value.map((row) => {
+    exactKeys(row, `${label} row`, ["ref", "sha"]);
+    requireString(`${label} ref`, row.ref, LOOSE_REF);
+    if (row.ref.includes("..")) packetError(`invalid ${label} ref: ${JSON.stringify(row.ref)}`);
+    requireString(`${label} ${row.ref} commit`, row.sha, COMMIT);
+    return row.ref;
+  });
+  uniqueSorted(rows, `${label} names`);
+  return new Map(value.map((row) => [row.ref, row.sha]));
+}
+
+function validatePacketLifecycle(value, targets, envelope) {
+  const lifecycle = exactKeys(value, "packet lifecycle", [
+    "claim", "creation_repository_refs", "protected_release_tag_refs",
+    "transfer_refs_confirmed_at_create", "transfer_refs_unobserved_at_create",
+  ]);
+  repositoryRefRows("packet lifecycle creation repository refs", lifecycle.creation_repository_refs);
+  const expected = packetLifecycle(targets, envelope, lifecycle.creation_repository_refs);
+  if (!sameJsonValue(lifecycle, expected)) {
+    packetError("packet lifecycle differs from the release targets and the retained transfer evidence");
   }
   return lifecycle;
 }
 
+/** The bundle header's own ref -> commit table. Cheap, and trusted for nothing on its own. */
 async function transferBundleHeads(bundleFile) {
   await regularFile(bundleFile, "transfer bundle");
   let stdout;
   try {
-    ({ stdout } = await execFileAsync("git", ["bundle", "list-heads", bundleFile], { encoding: "utf8" }));
+    ({ stdout } = await execFileAsync("git", ["bundle", "list-heads", bundleFile], { encoding: "utf8", maxBuffer: 20 * 1024 * 1024 }));
   } catch (error) {
     packetError(`transfer bundle is not a valid git bundle: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const refs = [];
+  const heads = {};
   for (const line of stdout.split("\n").filter(Boolean)) {
-    const [, , ref = ""] = /^([a-f0-9]{40})\s+(\S+)$/.exec(line) ?? [];
+    const [, sha, ref] = /^([a-f0-9]{40})\s+(\S+)$/.exec(line) ?? [];
     if (!ref) packetError(`transfer bundle list-heads output is malformed: ${JSON.stringify(line)}`);
-    requireString("transfer bundle ref", ref, REF);
-    if (ref.includes("//") || ref.includes("..") || ref.endsWith("/") || ref.endsWith(".")) {
-      packetError(`invalid transfer bundle ref: ${JSON.stringify(ref)}`);
-    }
-    refs.push(ref);
+    refName("transfer bundle ref", ref);
+    if (Object.hasOwn(heads, ref)) packetError(`transfer bundle repeats ref ${ref}`);
+    heads[ref] = sha;
   }
-  const sorted = [...new Set(refs)].sort();
-  if (sorted.length !== refs.length) packetError("transfer bundle actual heads must be unique");
-  return sorted;
+  return Object.fromEntries(Object.keys(heads).sort().map((ref) => [ref, heads[ref]]));
+}
+
+/**
+ * Unpack the bundle for real. `git bundle verify` reads only the header — it calls a bundle
+ * truncated to its first bytes "okay" — so the pack is validated by fetching it into a scratch
+ * repository, which runs index-pack over every byte, and then walking every reachable object. A
+ * bundle with prerequisites cannot complete this fetch, which is the intended outcome: transfer
+ * evidence has to stand on its own.
+ */
+async function unbundleTransferPack(bundleFile) {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-transfer-pack-"));
+  try {
+    try {
+      await execFileAsync("git", ["init", "--quiet", "--bare", "--template=", scratch]);
+    } catch (error) {
+      packetError(`cannot create a scratch repository for the transfer bundle: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
+      await execFileAsync("git", ["-C", scratch, "fetch", "--quiet", "--no-tags", bundleFile, "+refs/*:refs/bundle/*"], { maxBuffer: 20 * 1024 * 1024 });
+    } catch (error) {
+      packetError(`transfer bundle pack is incomplete, corrupt, or not self-contained: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const listed = await gitStdout(scratch, ["for-each-ref", "--format=%(objectname) %(refname)", "refs/bundle/"], "cannot read the unbundled transfer refs");
+    const heads = {};
+    for (const line of listed.split("\n").filter(Boolean)) {
+      const [, sha, ref] = /^([a-f0-9]{40}) (\S+)$/.exec(line) ?? [];
+      if (!ref) packetError(`unbundled ref listing is malformed: ${JSON.stringify(line)}`);
+      heads[refName("unbundled transfer ref", `refs/${ref.slice("refs/bundle/".length)}`)] = sha;
+    }
+    const objects = Object.values(heads);
+    if (objects.length === 0) packetError("transfer bundle pack carries no refs");
+    try {
+      await execFileAsync("git", ["-C", scratch, "rev-list", "--objects", "--quiet", ...objects], { maxBuffer: 20 * 1024 * 1024 });
+    } catch (error) {
+      packetError(`transfer bundle history is not fully connected: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return Object.fromEntries(Object.keys(heads).sort().map((ref) => [ref, heads[ref]]));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** Every ref this checkout actually holds. Remote-tracking refs are not transferable and are out of scope. */
+async function enumerateRepositoryRefs(root) {
+  const listed = await gitStdout(root, ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags", "refs/notes"], "cannot enumerate repository refs");
+  const rows = [];
+  for (const line of listed.split("\n").filter(Boolean)) {
+    const [, sha, ref] = /^([a-f0-9]{40}) (\S+)$/.exec(line) ?? [];
+    if (!ref) packetError(`git for-each-ref output is malformed: ${JSON.stringify(line)}`);
+    requireString("repository ref", ref, LOOSE_REF);
+    rows.push({ ref, sha });
+  }
+  return rows.sort((a, b) => codePointOrder(a.ref, b.ref));
 }
 
 function parseSettingsEvidence(bytes, label) {
-  return requireObject(label, parseJsonBytes(bytes, label));
+  return validateReleaseSettingsCapture(requireObject(label, parseJsonBytes(bytes, label)), label, packetError);
 }
 
+/**
+ * Two real captures of one repository, taken at two instants, agreeing on every pinned setting.
+ * The producer owns the schema and the projection; this only compares what it emitted.
+ */
 function validateSettingsAuthority({ baseline, recheck }) {
-  if (!sameJsonValue(baseline, recheck)) packetError("settings baseline and recheck differ");
+  assertSettingsRecheckFollows(baseline, recheck, packetError);
+  if (!sameJsonValue(baseline.repository, recheck.repository)) packetError("settings baseline and recheck describe different repositories");
+  if (!sameJsonValue(baseline.settings, recheck.settings)) packetError("settings baseline and recheck differ");
 }
 
-async function validateTransferAuthority({ baseline, recheck, allowlist, bundleFile, source, targets, mode }) {
+function describeRefMap(map) {
+  return Object.entries(map).map(([ref, sha]) => `${ref}@${sha}`).join(",") || "none";
+}
+
+/**
+ * Bind the three operator-supplied envelopes, the retained bundle's actual pack, and the refs the
+ * creating repository really held to one another.
+ *
+ * `repositoryRefs` is a live `for-each-ref` enumeration at create time and the enumeration the
+ * packet recorded at verify time — the same rules run over both, which is the only honest way to
+ * re-run a repository-state check offline.
+ */
+async function validateTransferAuthority({ baseline, recheck, allowlist, bundleFile, source, targets, repositoryRefs, mode }) {
   for (const [label, value, isAllowlist] of [["refs baseline", baseline, false], ["refs recheck", recheck, false], ["transfer allowlist", allowlist, true]]) {
-    validateRefAssertionsEnvelope(value, { publicAncestor: source.public_ancestor, privateCommit: source.commit, allowlist: isAllowlist });
+    try {
+      validateRefAssertionsEnvelope(value, { publicAncestor: source.public_ancestor, privateCommit: source.commit, allowlist: isAllowlist });
+    } catch (error) {
+      packetError(`${label}: ${error instanceof Error ? error.message.replace("release packet verification failed: ", "") : String(error)}`);
+    }
   }
   const expected = baseline.allowed_refs;
-  if (JSON.stringify(recheck.allowed_refs) !== JSON.stringify(expected) || JSON.stringify(allowlist.allowed_refs) !== JSON.stringify(expected)) {
+  if (!sameJsonValue(recheck.allowed_refs, expected) || !sameJsonValue(allowlist.allowed_refs, expected)) {
     packetError("transfer baseline/recheck/allowlist allowed refs differ");
   }
-  const actualHeads = await transferBundleHeads(bundleFile);
-  if (JSON.stringify(actualHeads) !== JSON.stringify(expected)) {
-    packetError(`transfer bundle actual heads differ from allowed refs (allowed: ${expected.join(",")}; actual: ${actualHeads.join(",")})`);
+  const listedHeads = await transferBundleHeads(bundleFile);
+  const packedHeads = await unbundleTransferPack(bundleFile);
+  if (!sameJsonValue(listedHeads, packedHeads)) {
+    packetError(`transfer bundle header refs differ from the refs its pack carries (header: ${describeRefMap(listedHeads)}; pack: ${describeRefMap(packedHeads)})`);
   }
+  if (!sameJsonValue(packedHeads, expected)) {
+    packetError(`transfer bundle heads differ from the reviewed allowlist (allowed: ${describeRefMap(expected)}; actual: ${describeRefMap(packedHeads)})`);
+  }
+  const where = mode === "create" ? "the creating repository" : "the repository state this packet recorded at creation";
+  const held = new Map(repositoryRefs.map((row) => [row.ref, row.sha]));
+  // Two different inputs, two different rules: the reviewed allowlist may not carry a tag the
+  // release workflow has yet to create, and the repository may not already hold one.
   for (const ref of reservedCandidateTagRefs(targets)) {
-    if (actualHeads.includes(ref)) packetError(`${mode === "create" ? "pre-cutover packet creation" : "retained packet audit"} found protected release tag present in transfer bundle: ${ref}`);
+    if (Object.hasOwn(expected, ref)) packetError(`protected release tag ${ref} is not transferable: the release workflow creates it after cutover`);
+    if (held.has(ref)) packetError(`protected release tag ${ref} already exists in ${where}; this packet cannot claim a pre-cutover transfer`);
+  }
+  for (const [ref, sha] of Object.entries(expected)) {
+    const actual = held.get(ref);
+    if (actual !== undefined && actual !== sha) {
+      packetError(`transfer evidence asserts ${ref}@${sha} but ${where} holds ${ref}@${actual}`);
+    }
+  }
+  const boardHead = held.get(baseline.held_board_ref);
+  if (boardHead !== undefined && Object.values(expected).includes(boardHead)) {
+    packetError(`a transferable ref carries the held ${baseline.held_board_ref} head ${boardHead}`);
   }
 }
 
@@ -541,7 +680,7 @@ async function collectEvidence(id, sourceFile, outDir, source) {
     row.schema = parsed.schema;
   } else if (id === "settings-baseline" || id === "settings-recheck") {
     parsed = parseSettingsEvidence(bytes, `evidence ${id}`);
-    row.schema = "json";
+    row.schema = parsed.schema;
   } else if (id === "transfer-bundle") {
     await transferBundleHeads(path.join(outDir, relative));
     row.schema = "git-bundle";
@@ -634,34 +773,64 @@ function checksumLine(file) {
   return `${file.slice("sha256:".length)}  ${PACKET_FILE}\n`;
 }
 
+/**
+ * Attribute every ignored path to the rule that ignores it. A path is acceptable only when a
+ * TRACKED `.gitignore` declares it: that keeps the allowed-output set derived from reviewed,
+ * digest-bound source instead of an enumerated prefix list, while still rejecting content hidden
+ * behind `.git/info/exclude`, a global excludes file, or any other unreviewable local rule.
+ */
+async function attributeIgnoredPaths(root, relatives, trackedPaths) {
+  const { error, stdout } = await new Promise((resolve) => {
+    const child = execFile("git", ["check-ignore", "-v", "-z", "--stdin"], { cwd: root, encoding: "utf8", maxBuffer: 20 * 1024 * 1024 },
+      (failure, out) => resolve({ error: failure, stdout: out }));
+    // A git that exits before reading stdin would otherwise raise EPIPE as an unhandled error.
+    child.stdin.on("error", () => {});
+    child.stdin.end(`${relatives.join("\0")}\0`);
+  });
+  // Exit 1 means "no input path is ignored" and still carries a well-formed (empty) report.
+  if (error && error.code !== 1) {
+    packetError(`cannot attribute ignored checkout paths: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const attribution = new Map();
+  const fields = stdout.split("\0");
+  if (fields.pop() !== "" || fields.length % 4 !== 0) packetError("git check-ignore output is malformed");
+  for (let index = 0; index < fields.length; index += 4) {
+    attribution.set(fields[index + 3], { source: fields[index], line: fields[index + 1], pattern: fields[index + 2] });
+  }
+  const undeclared = [];
+  for (const relative of relatives) {
+    const matched = attribution.get(relative);
+    if (!matched) { undeclared.push(`${relative} (no ignore rule)`); continue; }
+    const source = matched.source;
+    if (path.posix.isAbsolute(source) || path.isAbsolute(source) || path.posix.basename(source) !== GITIGNORE || !trackedPaths.has(source)) {
+      undeclared.push(`${relative} (${source}:${matched.line})`);
+    }
+  }
+  if (undeclared.length > 0) {
+    packetError(`checkout has ignored paths no tracked ${GITIGNORE} declares: ${undeclared.sort().join(", ")}`);
+  }
+}
+
 export async function observedCheckout(root) {
   let head;
   let status;
   try {
     [head, status] = await Promise.all([
       execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root }),
-      execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"], { cwd: root }),
+      execFileAsync("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignored=matching"], { cwd: root }),
     ]);
   } catch (error) {
     packetError(`cannot inspect verification checkout: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const records = status.stdout.split("\n").filter(Boolean);
+  const records = status.stdout.split("\0").filter(Boolean);
   const nonIgnored = [];
-  const disallowedIgnored = [];
-  const invalidAllowedRoots = new Set();
+  const ignored = [];
   for (const record of records) {
-    if (!record.startsWith("!! ")) { nonIgnored.push(record); continue; }
-    const relative = record.slice(3);
-    const prefix = NORMAL_CHECK_OUTPUT_PREFIXES.find((candidate) => relative === candidate || relative.startsWith(candidate));
-    if (!prefix) { disallowedIgnored.push(relative); continue; }
-    const info = await lstat(path.join(root, prefix)).catch(() => null);
-    if (!info?.isDirectory() || info.isSymbolicLink()) invalidAllowedRoots.add(prefix);
+    if (record.startsWith("!! ")) ignored.push(record.slice(3));
+    else nonIgnored.push(record);
   }
   if (nonIgnored.length > 0) packetError(`checkout has non-ignored changes: ${nonIgnored.sort().join(", ")}`);
-  if (disallowedIgnored.length > 0) {
-    packetError(`checkout has disallowed ignored paths: ${disallowedIgnored.sort().join(", ")}; allowed generated-output prefixes: ${NORMAL_CHECK_OUTPUT_PREFIXES.join(", ")}`);
-  }
-  if (invalidAllowedRoots.size > 0) packetError(`allowed generated-output root is not a real directory: ${[...invalidAllowedRoots].sort().join(", ")}`);
+  if (ignored.length > 0) await attributeIgnoredPaths(root, ignored, await trackedPathSet(root));
   return { commit: head.stdout.trim(), dirty: false };
 }
 
@@ -701,12 +870,13 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
       capturedEvidence[id] = captured.parsed;
       await onEvidenceCaptured?.(id);
     }
+    const repositoryRefs = await enumerateRepositoryRefs(root);
     await validateTransferAuthority({
       baseline: capturedEvidence["refs-baseline"],
       recheck: capturedEvidence["refs-recheck"],
       allowlist: capturedEvidence["transfer-allowlist"],
       bundleFile: path.join(staged, "evidence", "transfer-bundle"),
-      source, targets,
+      source, targets, repositoryRefs,
       mode: "create",
     });
     validateSettingsAuthority({
@@ -716,7 +886,7 @@ export async function createReleasePacket({ commit, publicAncestor, out, candida
     const packet = {
       schema: REVIEW_PACKET_SCHEMA,
       source,
-      lifecycle: packetLifecycle(targets),
+      lifecycle: packetLifecycle(targets, capturedEvidence["refs-baseline"], repositoryRefs),
       generator: {
         entrypoint: "scripts/release-packet.mjs",
         entrypoint_sha256: await fileSha256(path.join(root, "scripts", "release-packet.mjs")),
@@ -790,7 +960,6 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
   const paths = new Set(packet.inventory.map((row) => row.path));
   if (paths.has(PACKET_FILE) || paths.has(DIGEST_FILE)) packetError("packet must not inventory itself or its detached digest");
   const targets = await loadPacketTargets(root);
-  validatePacketLifecycle(packet.lifecycle, targets);
   const candidateIds = Object.keys(targets.allowed_tuples);
   if (!packet.candidates || JSON.stringify(Object.keys(packet.candidates).sort()) !== JSON.stringify([...candidateIds].sort())) packetError("packet candidate slots differ from release targets");
   const expectedTuples = Object.fromEntries(candidateIds.map((id) => [id, targets.allowed_tuples[id]]));
@@ -840,12 +1009,14 @@ export async function verifyReleasePacket({ packet: packetFile, root = repoRoot,
       await transferBundleHeads(file);
     }
   }
+  const lifecycle = validatePacketLifecycle(packet.lifecycle, targets, requireObject("packet refs baseline", retainedEvidence["refs-baseline"]));
   await validateTransferAuthority({
     baseline: retainedEvidence["refs-baseline"],
     recheck: retainedEvidence["refs-recheck"],
     allowlist: retainedEvidence["transfer-allowlist"],
     bundleFile: path.join(outDir, "evidence", "transfer-bundle"),
     source, targets,
+    repositoryRefs: lifecycle.creation_repository_refs,
     mode: "verify",
   });
   validateSettingsAuthority({
@@ -954,9 +1125,14 @@ if (isMainModule(import.meta.url)) {
     const argv = process.argv.slice(2);
     const args = parsePacketArgs(argv);
     if (await runBoundToRoot(args, argv)) process.exitCode ??= 0;
-    else {
-    const result = args.command === "create" ? await createReleasePacket(args) : await verifyReleasePacket(args);
-    console.log(args.command === "create" ? `release packet created: ${result.outDir}` : `release packet verified: ${args.packet}`);
+    else if (args.command === "create") {
+      const { outDir, packet } = await createReleasePacket(args);
+      console.log(`release packet created: ${outDir}`);
+      console.log(`proven: ${packet.lifecycle.claim}`);
+    } else {
+      const packet = await verifyReleasePacket(args);
+      console.log(`release packet verified: ${args.packet}`);
+      console.log(`proven: ${packet.lifecycle.claim}`);
     }
   } catch (error) {
     console.error(error instanceof Error ? error.stack : error);

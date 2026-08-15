@@ -820,8 +820,12 @@ async function runInstalledProof(spec) {
         "skill manifest",
       );
       // The serialized receipt identifiers remain compatible inside the canonical skill folder.
-      // New receipts identify the canonical successor package.
-      assert.equal(skillManifest.package, target.package.name);
+      // New receipts identify the canonical successor package — the ownership marker a later
+      // `skill install` recognizes — and NOT the npm coordinate this bundle shipped under. One
+      // bundle publishes as both the bridge and the successor, and the installer writes the
+      // successor spelling from either. Asserting the shipped coordinate here made the bridge
+      // tuple unverifiable through the retained-tarball proof.
+      assert.equal(skillManifest.package, SUCCESSOR_PACKAGE_NAME);
       assert.equal(skillManifest.version, manifest.version);
     }
 
