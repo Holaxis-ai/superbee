@@ -16,6 +16,19 @@ export interface McpBundleContextOptions {
   viewAuthorization?: ViewAuthorizationStore;
 }
 
+export interface McpWorkspaceSummary {
+  readonly id: string;
+  readonly label: string;
+  readonly displayName?: string;
+  readonly available: boolean;
+}
+
+/** Host-neutral workspace authority supplied by the CLI; implementations may know the catalog. */
+export interface McpWorkspaceResolver {
+  list(): Promise<readonly McpWorkspaceSummary[]>;
+  open(selector: string): Promise<McpBundleContext>;
+}
+
 /** Normalize the existing fixed-bundle server inputs into one immutable routing context. */
 export function createMcpBundleContext(
   options: McpBundleContextOptions,

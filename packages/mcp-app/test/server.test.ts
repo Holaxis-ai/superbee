@@ -26,6 +26,8 @@ import {
   MCP_DOCUMENT_RESOURCE_URI,
   MCP_VIEW_RESOURCE_URI,
   LIST_VIEWS_TOOL_NAME,
+  LIST_WORKSPACES_TOOL_NAME,
+  MAX_WORKSPACE_CATALOG_PAGE,
   POLL_DURABLE_VIEW_TOOL_NAME,
   PREPARE_VIEW_ACTION_TOOL_NAME,
   RESUME_DURABLE_VIEW_TOOL_NAME,
@@ -36,6 +38,8 @@ import {
   SHOW_VIEW_TOOL_NAME,
   createMcpAppServer,
   resolveDurableViewLaunch,
+  type McpWorkspaceResolver,
+  type McpWorkspaceSummary,
 } from "../src/index.js";
 import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
 
@@ -151,6 +155,159 @@ async function seedNavigationTarget(
     "text/html; charset=utf-8",
   );
 }
+
+async function callWorkspaceList(
+  entries: readonly McpWorkspaceSummary[],
+) {
+  const resolver: McpWorkspaceResolver = {
+    list: async () => entries,
+    open: async () => {
+      throw new Error("not used");
+    },
+  };
+  const server = createMcpAppServer({ workspaceResolver: resolver });
+  const client = new Client(
+    { name: "workspace-catalog-error-test", version: "test" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    return await client.callTool({
+      name: LIST_WORKSPACES_TOOL_NAME,
+      arguments: {},
+    });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", async (t) => {
+  let openCalls = 0;
+  const resolver: McpWorkspaceResolver = {
+    list: async () => Array.from(
+      { length: MAX_WORKSPACE_CATALOG_PAGE + 2 },
+      (_, index) => ({
+        id: `bnd_${String(index).padStart(32, "0")}`,
+        label: `workspace-${String(MAX_WORKSPACE_CATALOG_PAGE + 1 - index).padStart(2, "0")}`,
+        ...(index === 0 ? { displayName: "Product planning" } : {}),
+        available: index % 2 === 0,
+      }),
+    ),
+    open: async () => {
+      openCalls += 1;
+      throw new Error("list_workspaces must not open a bundle");
+    },
+  };
+  const server = createMcpAppServer({ workspaceResolver: resolver, version: "test" });
+  const client = new Client(
+    { name: "workspace-catalog-test", version: "test" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const tools = await client.listTools();
+  assert.deepEqual(tools.tools.map((tool) => tool.name), [LIST_WORKSPACES_TOOL_NAME]);
+  assert.deepEqual(tools.tools[0]?._meta?.ui?.visibility, ["model"]);
+  assert.equal(tools.tools[0]?.annotations?.readOnlyHint, true);
+
+  const result = await client.callTool({
+    name: LIST_WORKSPACES_TOOL_NAME,
+    arguments: {},
+  });
+  assert.equal(result.isError, undefined);
+  const payload = result.structuredContent as {
+    workspaces: Array<{
+      id: string;
+      label: string;
+      displayName?: string;
+      available: boolean;
+    }>;
+    shown: number;
+    total: number;
+    truncated: boolean;
+  };
+  assert.equal(payload.shown, MAX_WORKSPACE_CATALOG_PAGE);
+  assert.equal(payload.total, MAX_WORKSPACE_CATALOG_PAGE + 2);
+  assert.equal(payload.truncated, true);
+  assert.equal(payload.workspaces[0]?.label, "workspace-00");
+  assert.equal(payload.workspaces.at(-1)?.label, "workspace-49");
+  assert.equal(openCalls, 0);
+  assert.doesNotMatch(JSON.stringify(result), /(?:locator|\/Users\/|private-path)/);
+});
+
+test("bundle-unbound workspace listing rejects path-bearing identities and extra locator data", async () => {
+  const base = {
+    id: "bnd_00000000000000000000000000000000",
+    label: "planning",
+    displayName: "Planning",
+    available: true,
+  };
+  const invalid = [
+    { ...base, id: "/Users/private-path/planning" },
+    { ...base, label: "file:///Users/private-path/planning" },
+    {
+      id: "bnd_00000000000000000000000000000000",
+      label: "planning",
+      available: true,
+      path: "/Users/private-path/planning",
+    },
+  ];
+
+  for (const entry of invalid) {
+    const result = await callWorkspaceList(
+      [entry] as unknown as readonly McpWorkspaceSummary[],
+    );
+    assert.equal(result.isError, true);
+    assert.doesNotMatch(JSON.stringify(result), /(?:private-path|\/Users\/|file:\/\/|locator)/);
+  }
+});
+
+test("bundle-unbound workspace listing omits display names containing either path separator", async () => {
+  const base: McpWorkspaceSummary = {
+    id: "bnd_00000000000000000000000000000000",
+    label: "planning",
+    available: true,
+  };
+  for (const displayName of [
+    "Planning:/Users/private/catalog",
+    "Planning[/Users/private/catalog]",
+    "Planning=C:\\Users\\private\\catalog",
+    "Planning:file:///Users/private/catalog",
+    "Planning / Research",
+  ]) {
+    const result = await callWorkspaceList([{ ...base, displayName }]);
+    assert.equal(result.isError, undefined);
+    assert.doesNotMatch(JSON.stringify(result), /(?:\/Users\/|C:\\|file:\/\/|displayName)/);
+  }
+});
+
+test("bundle-unbound workspace listing rejects duplicate IDs or labels", async () => {
+  const first: McpWorkspaceSummary = {
+    id: "bnd_00000000000000000000000000000000",
+    label: "planning",
+    available: true,
+  };
+  for (const second of [
+    { ...first, label: "research" },
+    { ...first, id: "bnd_11111111111111111111111111111111" },
+  ]) {
+    const result = await callWorkspaceList([first, second]);
+    assert.equal(result.isError, true);
+    assert.match(
+      JSON.stringify(result),
+      /private workspace catalog is unavailable or invalid/,
+    );
+  }
+});
 
 test("list_views is bounded, continues deterministically, and every listed id is invokable", async (t) => {
   const bundle = memoryBundle();
