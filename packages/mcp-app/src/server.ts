@@ -175,6 +175,26 @@ const showDocumentInputSchema = z
   .object({ docId: z.string().trim().min(1).max(1024) })
   .strict();
 
+const workspaceSelectorSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(64)
+  .refine(
+    (value) =>
+      WORKSPACE_ID_PATTERN.test(value) ||
+      (WORKSPACE_LABEL_PATTERN.test(value) && !value.startsWith("bnd_")),
+    "workspace must be an exact catalog ID or label",
+  );
+
+const workspaceShowDocumentInputSchema = showDocumentInputSchema
+  .extend({ workspace: workspaceSelectorSchema })
+  .strict();
+
+const workspaceListViewsInputSchema = listViewsInputSchema
+  .extend({ workspace: workspaceSelectorSchema })
+  .strict();
+
 const showDocumentOutputSchema = z.object({
   schemaVersion: z.literal(DOCUMENT_PRESENTATION_SCHEMA_VERSION),
   document: z.object({
@@ -581,12 +601,133 @@ function createMcpBundleRuntime(context: McpBundleContext): McpBundleRuntime {
   });
 }
 
+async function presentDocument(
+  bundle: Bundle,
+  docId: string,
+  pendingDocuments: PendingClaimRegistry<DocumentPresentationPayload>,
+): Promise<CallToolResult> {
+  try {
+    const result = await readDocVersioned(bundle, docId);
+    const rendered = renderDocumentToStaticHtml({
+      id: result.doc.id,
+      body: result.doc.body,
+    });
+    const title = displayScalar(result.doc.frontmatter.title) ?? result.doc.id;
+    const type = displayScalar(result.doc.frontmatter.type);
+    const payload: DocumentPresentationPayload = {
+      schemaVersion: DOCUMENT_PRESENTATION_SCHEMA_VERSION,
+      document: {
+        id: result.doc.id,
+        version: result.version,
+        title,
+        ...(type ? { type } : {}),
+        html: rendered.html,
+        bounded: rendered.bounded,
+      },
+    };
+    const claimId = mintClaimId();
+    pendingDocuments.record(claimId, payload);
+    return {
+      content: [{
+        type: "text",
+        text: `Displayed Superbee document "${title}" (${result.doc.id}) at ${result.version}.\n${formatClaimMarker(claimId)}`,
+      }],
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      isError: true,
+      content: [{
+        type: "text",
+        text: `Could not display Superbee document '${docId}': ${detail.slice(0, 500)}`,
+      }],
+    };
+  }
+}
+
+async function listViews(
+  bundle: Bundle,
+  cursor: string | undefined,
+): Promise<CallToolResult> {
+  try {
+    const afterId = decodeViewCursor(cursor);
+    const catalog = await listViewCatalogPage(bundle, {
+      ...(afterId ? { afterId } : {}),
+      limit: MAX_VIEW_CATALOG_PAGE,
+      scanLimit: MAX_VIEW_CATALOG_SCAN,
+      access: ["bundle-read", "bundle-propose"],
+    });
+    const payload = {
+      views: catalog.entries.map((entry) => ({
+        id: entry.id,
+        title: entry.title,
+        ...(entry.description ? { description: entry.description } : {}),
+        access: entry.access,
+        ...(entry.presentation ? { presentation: entry.presentation } : {}),
+        ...(entry.timestamp ? { timestamp: entry.timestamp } : {}),
+      })),
+      shown: catalog.entries.length,
+      registeredTotal: catalog.registeredTotal,
+      excluded: catalog.excludedAccess,
+      invalidRegistrations: catalog.invalidRegistrations,
+      pageUnavailableEntries: catalog.pageUnavailableEntries,
+      skippedDocuments: catalog.skippedDocuments,
+      examined: catalog.examined,
+      truncated: catalog.truncated,
+      ...(catalog.nextAfterId
+        ? { nextCursor: encodeViewCursor(catalog.nextAfterId) }
+        : {}),
+    };
+    return {
+      content: [{
+        type: "text",
+        text: catalog.registeredTotal === 0
+          ? "No registered active Views are available to this MCP host."
+          : `Found ${catalog.registeredTotal} registered active View registration(s); showing ${catalog.entries.length} admitted View(s) from ${catalog.examined} examined.`,
+      }],
+      structuredContent: payload,
+    };
+  } catch (error) {
+    return {
+      isError: true,
+      content: [{
+        type: "text",
+        text: `Could not list Superbee Views: ${error instanceof Error ? error.message : String(error)}`,
+      }],
+    };
+  }
+}
+
+function resolveDocumentClaim(
+  pendingDocuments: PendingClaimRegistry<DocumentPresentationPayload>,
+  claim: string,
+): CallToolResult {
+  const entry = pendingDocuments.consume(claim);
+  if (!entry) {
+    return {
+      isError: true,
+      content: [{
+        type: "text",
+        text: "Unknown, expired, or already-redeemed Superbee document claim. Display the document again.",
+      }],
+    };
+  }
+  return {
+    content: [{
+      type: "text",
+      text: `Recovered Superbee document "${entry.payload.document.title}" (${entry.payload.document.id}).`,
+    }],
+    structuredContent: { ...entry.payload },
+  };
+}
+
 export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServer {
   const server = new McpServer({
     name: "Superbee Conversational Views",
     version: options.version ?? "0.0.1",
   });
   if ("workspaceResolver" in options) {
+    const pendingDocuments = new PendingClaimRegistry<DocumentPresentationPayload>();
     registerAppTool(
       server,
       LIST_WORKSPACES_TOOL_NAME,
@@ -638,6 +779,127 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
         }
       },
     );
+
+    registerAppTool(
+      server,
+      SHOW_DOCUMENT_TOOL_NAME,
+      {
+        title: "Show Superbee document",
+        description:
+          "Display one authoritative document from an explicitly selected private-catalog workspace in Superbee's fixed Markdown reader.",
+        inputSchema: workspaceShowDocumentInputSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+        _meta: {
+          ui: {
+            resourceUri: MCP_DOCUMENT_RESOURCE_URI,
+            visibility: ["model"],
+          },
+        },
+      },
+      async ({ workspace, docId }): Promise<CallToolResult> => {
+        let context: McpBundleContext;
+        try {
+          context = await options.workspaceResolver.open(workspace);
+        } catch {
+          return {
+            isError: true,
+            content: [{
+              type: "text",
+              text: `Could not open Superbee workspace '${workspace}'. Call list_workspaces and retry with an available exact ID or label.`,
+            }],
+          };
+        }
+        return presentDocument(context.bundle, docId, pendingDocuments);
+      },
+    );
+
+    registerAppTool(
+      server,
+      LIST_VIEWS_TOOL_NAME,
+      {
+        title: "List registered Superbee Views",
+        description:
+          "List durable Views from an explicitly selected private-catalog workspace. Results are deterministic and bounded; use nextCursor to continue.",
+        inputSchema: workspaceListViewsInputSchema,
+        outputSchema: listViewsOutputSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false,
+        },
+        _meta: { ui: { visibility: ["model"] } },
+      },
+      async ({ workspace, cursor }): Promise<CallToolResult> => {
+        let context: McpBundleContext;
+        try {
+          context = await options.workspaceResolver.open(workspace);
+        } catch {
+          return {
+            isError: true,
+            content: [{
+              type: "text",
+              text: `Could not open Superbee workspace '${workspace}'. Call list_workspaces and retry with an available exact ID or label.`,
+            }],
+          };
+        }
+        return listViews(context.bundle, cursor);
+      },
+    );
+
+    registerAppResource(
+      server,
+      "Superbee Document Reader",
+      MCP_DOCUMENT_RESOURCE_URI,
+      {
+        mimeType: RESOURCE_MIME_TYPE,
+        description: "Fixed Superbee reader for authoritative bundle Markdown documents.",
+      },
+      async (): Promise<ReadResourceResult> => ({
+        contents: [{
+          uri: MCP_DOCUMENT_RESOURCE_URI,
+          mimeType: RESOURCE_MIME_TYPE,
+          text: MCP_DOCUMENT_HTML,
+          _meta: {
+            ui: {
+              csp: {
+                connectDomains: [],
+                resourceDomains: [],
+                frameDomains: [],
+                baseUriDomains: [],
+              },
+              prefersBorder: false,
+            },
+          },
+        }],
+      }),
+    );
+
+    registerAppTool(
+      server,
+      RESOLVE_DOCUMENT_TOOL_NAME,
+      {
+        title: "Resolve undelivered Superbee document",
+        description:
+          "Redeem the exact one-shot claim marker from a show_document result whose structured payload the host stripped.",
+        inputSchema: { claim: z.string().min(8).max(256) },
+        outputSchema: showDocumentOutputSchema,
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+        _meta: { ui: { visibility: ["app"] } },
+      },
+      async ({ claim }): Promise<CallToolResult> =>
+        resolveDocumentClaim(pendingDocuments, claim),
+    );
     return server;
   }
 
@@ -664,49 +926,8 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
         },
       },
     },
-    async ({ docId }): Promise<CallToolResult> => {
-      try {
-        const result = await readDocVersioned(runtime.context.bundle, docId);
-        const rendered = renderDocumentToStaticHtml({
-          id: result.doc.id,
-          body: result.doc.body,
-        });
-        const title = displayScalar(result.doc.frontmatter.title) ?? result.doc.id;
-        const type = displayScalar(result.doc.frontmatter.type);
-        const payload: DocumentPresentationPayload = {
-          schemaVersion: DOCUMENT_PRESENTATION_SCHEMA_VERSION,
-          document: {
-            id: result.doc.id,
-            version: result.version,
-            title,
-            ...(type ? { type } : {}),
-            html: rendered.html,
-            bounded: rendered.bounded,
-          },
-        };
-        const claimId = mintClaimId();
-        runtime.pendingDocuments.record(claimId, payload);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Displayed Superbee document "${title}" (${result.doc.id}) at ${result.version}.\n${formatClaimMarker(claimId)}`,
-            },
-          ],
-        };
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Could not display Superbee document '${docId}': ${detail.slice(0, 500)}`,
-            },
-          ],
-        };
-      }
-    },
+    async ({ docId }): Promise<CallToolResult> =>
+      presentDocument(runtime.context.bundle, docId, runtime.pendingDocuments),
   );
 
   registerAppTool(
@@ -727,58 +948,8 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["model"] } },
     },
     async (input): Promise<CallToolResult> => {
-      try {
-        const { cursor } = listViewsInputSchema.parse(input);
-        const afterId = decodeViewCursor(cursor);
-        const catalog = await listViewCatalogPage(runtime.context.bundle, {
-          ...(afterId ? { afterId } : {}),
-          limit: MAX_VIEW_CATALOG_PAGE,
-          scanLimit: MAX_VIEW_CATALOG_SCAN,
-          access: ["bundle-read", "bundle-propose"],
-        });
-        const payload = {
-          views: catalog.entries.map((entry) => ({
-            id: entry.id,
-            title: entry.title,
-            ...(entry.description ? { description: entry.description } : {}),
-            access: entry.access,
-            ...(entry.presentation ? { presentation: entry.presentation } : {}),
-            ...(entry.timestamp ? { timestamp: entry.timestamp } : {}),
-          })),
-          shown: catalog.entries.length,
-          registeredTotal: catalog.registeredTotal,
-          excluded: catalog.excludedAccess,
-          invalidRegistrations: catalog.invalidRegistrations,
-          pageUnavailableEntries: catalog.pageUnavailableEntries,
-          skippedDocuments: catalog.skippedDocuments,
-          examined: catalog.examined,
-          truncated: catalog.truncated,
-          ...(catalog.nextAfterId
-            ? { nextCursor: encodeViewCursor(catalog.nextAfterId) }
-            : {}),
-        };
-        return {
-          content: [
-            {
-              type: "text",
-              text: catalog.registeredTotal === 0
-                ? "No registered active Views are available to this MCP host."
-                : `Found ${catalog.registeredTotal} registered active View registration(s); showing ${catalog.entries.length} admitted View(s) from ${catalog.examined} examined.`,
-            },
-          ],
-          structuredContent: payload,
-        };
-      } catch (error) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Could not list Superbee Views: ${error instanceof Error ? error.message : String(error)}`,
-            },
-          ],
-        };
-      }
+      const { cursor } = listViewsInputSchema.parse(input);
+      return listViews(runtime.context.bundle, cursor);
     },
   );
 
@@ -1323,29 +1494,8 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       },
       _meta: { ui: { visibility: ["app"] } },
     },
-    async ({ claim }): Promise<CallToolResult> => {
-      const entry = runtime.pendingDocuments.consume(claim);
-      if (!entry) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Unknown, expired, or already-redeemed Superbee document claim. Display the document again.",
-            },
-          ],
-        };
-      }
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Recovered Superbee document "${entry.payload.document.title}" (${entry.payload.document.id}).`,
-          },
-        ],
-        structuredContent: { ...entry.payload },
-      };
-    },
+    async ({ claim }): Promise<CallToolResult> =>
+      resolveDocumentClaim(runtime.pendingDocuments, claim),
   );
 
   registerAppTool(

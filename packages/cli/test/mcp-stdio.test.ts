@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -10,6 +10,7 @@ import { initBundle, writeDoc } from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { cliVersion } from "../src/build-identity.js";
+import { addCatalogEntry } from "../src/catalog.js";
 
 const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
 
@@ -130,6 +131,55 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
     (result.structuredContent as { schemaVersion: string }).schemaVersion,
     "agentstate.transient-view-launch.v1",
   );
+});
+
+test("built bare MCP server resolves read-only tools through the private workspace catalog", async (t) => {
+  const base = await mkdtemp(path.join(os.tmpdir(), "superbee-mcp-unbound-"));
+  const home = path.join(base, "home");
+  const requestedRoot = path.join(base, "bundle");
+  await mkdir(requestedRoot, { recursive: true });
+  const root = await realpath(requestedRoot);
+  const bundle = await initBundle(root);
+  await writeDoc(bundle, {
+    id: "docs/brief",
+    frontmatter: { type: "Document", title: "Catalog brief" },
+    body: "# Brief\n\nOpened through an explicit workspace.",
+  });
+  await addCatalogEntry("planning", root, { home });
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
+  env.HOME = home;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [CLI, "mcp"],
+    env,
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "unbound-stdio-proof", version: "test" }, { capabilities: {} });
+  t.after(async () => {
+    await client.close();
+    await rm(base, { recursive: true, force: true });
+  });
+
+  await client.connect(transport);
+  const tools = await client.listTools();
+  assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    "list_workspaces",
+    "show_document",
+    "list_views",
+    "resolve_document",
+  ]);
+  const listed = await client.callTool({ name: "list_workspaces", arguments: {} });
+  assert.match(JSON.stringify(listed.structuredContent), /planning/);
+  assert.doesNotMatch(JSON.stringify(listed), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+  const shown = await client.callTool({
+    name: "show_document",
+    arguments: { workspace: "planning", docId: "docs/brief" },
+  });
+  assert.equal(shown.isError, undefined);
+  assert.match(JSON.stringify(shown), /Catalog brief/);
 });
 
 test("literal PATH `aslite mcp` reports the selected CLI release and never rewrites host config", async (t) => {

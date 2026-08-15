@@ -1,10 +1,13 @@
-// `superbee mcp [--dir <path>] [--actor <name>]` — run the local MCP Apps adapter over one
-// AgentState bundle. The command uses stdio as its transport, so stdout belongs exclusively to MCP
+// `superbee mcp [--dir <path>] [--actor <name>]` — run the local MCP Apps adapter over the private
+// workspace catalog or one fixed bundle. The command uses stdio as its transport, so stdout belongs exclusively to MCP
 // protocol frames after startup; diagnostics and human receipts must never be written there.
 import { parseArgs } from "node:util";
-import { startMcpStdioServer } from "@superbee/mcp-app";
+import {
+  startMcpStdioServer,
+  type CreateMcpAppServerOptions,
+  type McpWorkspaceResolver,
+} from "@superbee/mcp-app";
 import type { Bundle } from "@superbee/core";
-import type { ViewAuthorizationStore } from "@superbee/view-runtime";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveActor } from "../actor.js";
@@ -16,6 +19,7 @@ import { render, renderErrorEnvelope, resolveMode } from "../output.js";
 import { LocalViewAuthorizationStore } from "../ui/view-authorizations.js";
 import { cliVersion } from "../build-identity.js";
 import { STABLE_MCP_LAUNCH_GUIDANCE } from "../integration-guidance.js";
+import { createCatalogMcpWorkspaceResolver } from "../mcp-workspace-resolver.js";
 import {
   inspectMcpHosts,
   MCP_INSTALL_TARGETS,
@@ -24,14 +28,14 @@ import {
   type McpInstallTarget,
 } from "../mcp-install-targets.js";
 
-export const MCP_USAGE = `superbee mcp — expose invocation-specific Superbee Views to an MCP Apps host
+export const MCP_USAGE = `superbee mcp — expose Superbee documents and Views to an MCP Apps host
 
 Usage:
   superbee mcp [--dir <path>] [--actor <name>]
   superbee mcp status [--host <id>] [--json]
 
 Options:
-  --dir <path>          Local bundle directory (default: discovered from the cwd)
+  --dir <path>          Fixed local bundle compatibility mode; omit for the private workspace catalog
   --actor <name>        Attribute confirmed human actions (overrides SUPERBEE_ACTOR; legacy
                         AGENTSTATE_LITE_ACTOR remains supported)
   -h, --help            Show this help
@@ -39,9 +43,11 @@ Options:
 Run \`superbee mcp status\` to inspect user-level registrations without changing them.
 Registration mutation is intentionally unavailable in this build.
 
-The server uses stdio. Use show_document with an exact document ID to display its
-authoritative Markdown in Superbee's fixed reader without executable View approval. Use show_view
-to provide an exact registered View ID and launch its current HTML unchanged through the shared
+The server uses stdio. Without --dir it lists the user's private workspace catalog and requires an
+explicit workspace label or ID for show_document and list_views. Use show_document with an exact
+document ID to display its authoritative Markdown in Superbee's fixed reader without executable
+View approval. In fixed --dir compatibility mode, use show_view to provide an exact registered
+View ID and launch its current HTML unchanged through the shared
 View bridge, after trusted-shell approval of those exact bytes. Or the agent can launch standard
 View HTML transiently for the current MCP process, with explicit bundle-read or bundle-propose
 access, then save the approved exact bytes as a registered View without transformation.
@@ -72,13 +78,8 @@ export interface McpCliDeps {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   openBundle: (dir: string | undefined) => Promise<Bundle>;
-  startServer: (options: {
-    bundle: Bundle;
-    version?: string;
-    actor?: string;
-    bundleName?: string;
-    viewAuthorization?: ViewAuthorizationStore;
-  }) => Promise<void>;
+  startServer: (options: CreateMcpAppServerOptions) => Promise<void>;
+  createWorkspaceResolver: (actor?: string) => McpWorkspaceResolver;
   inspectHosts: (targets: readonly McpInstallTarget[]) => McpHostStatus[];
 }
 
@@ -160,10 +161,21 @@ async function mcpInner(argv: string[], deps: Partial<McpCliDeps>): Promise<void
     stdout(MCP_USAGE);
     return;
   }
-  const bundle = await open(values.dir);
   const actor = resolveActor(values.actor, {
     help: `${cliInvocation()} mcp --actor <name>`,
   });
+  if (values.dir === undefined) {
+    const workspaceResolver = (
+      deps.createWorkspaceResolver ??
+      ((resolvedActor?: string) => createCatalogMcpWorkspaceResolver({ actor: resolvedActor }))
+    )(actor);
+    await start({
+      workspaceResolver,
+      version: cliVersion(),
+    });
+    return;
+  }
+  const bundle = await open(values.dir);
   const bundleName = (await deriveBundleDisplayName(bundle)).name;
   await start({
     bundle,

@@ -328,8 +328,8 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("mcp", "mcp", zero, 21),
           publicLeaf("mcpStatus", "mcp status", zero),
         ],
-        usage: "mcp [status [--host <id>] [--json] | --dir <path> [--actor <name>]]",
-        summary: "Run the local MCP Apps adapter over a bundle, or inspect the read-only user-level registration status for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode",
+        usage: "mcp [status [--host <id>] [--json] | [--dir <path>] [--actor <name>]]",
+        summary: "Run the local MCP Apps adapter over the private workspace catalog (or one fixed --dir bundle), or inspect read-only user-level registration status for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode",
       },
       {
         id: "viewList",

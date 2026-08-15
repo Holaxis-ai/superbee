@@ -209,6 +209,12 @@ opt into `bundle-propose` for one human-confirmed, version-guarded scalar-field 
 views as bundle Views rather than adding a second rendering engine.
 
 The local `superbee mcp` command is a second host adapter, not a second View system. Its
+default bundle-unbound mode exposes the user's private catalog through `list_workspaces`; its
+read-only `show_document` and `list_views` root tools require one exact catalog label or ID and
+never accept a filesystem path. Explicit `mcp --dir <bundle>` retains the fixed-bundle
+compatibility/developer mode. Bundle-selected executable View launch routing is not yet exposed by
+the unbound mode; fixed mode remains the authority for `show_view` and its hidden lifecycle until
+that routing is launch-bound. Its
 model-visible `show_document` tool presents one exact authoritative bundle document in a fixed,
 non-executable reader through the shared bounded Markdown renderer; its compact model result
 carries only a one-shot claim, and the App retrieves the rendered payload through an app-only
