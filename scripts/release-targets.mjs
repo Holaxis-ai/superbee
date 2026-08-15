@@ -248,6 +248,14 @@ export function targetFromPackageName(packageName, targets = defaultReleaseTarge
   return matches.length === 1 ? matches[0].id : null;
 }
 
+/** Release identity is never coerced: a present non-string is a caller defect, not an absent field. */
+function assertDeclaredIdentity(label, value) {
+  if (value !== undefined && typeof value !== "string") {
+    throw new Error(`${label} must be a string; received ${JSON.stringify(value) ?? typeof value}`);
+  }
+  return value;
+}
+
 export function resolveDeclaredTarget({
   targetId,
   packageName,
@@ -256,8 +264,12 @@ export function resolveDeclaredTarget({
   workflowContract,
   fallbackTargetId,
 } = {}) {
+  // Dropping a malformed identity would resolve some other target's package, so both identity
+  // fields are rejected before either one is allowed to stand in for the other.
+  assertDeclaredIdentity(`${context} target id`, targetId);
+  assertDeclaredIdentity(`${context} package name`, packageName);
   const normalizedTargetId = targetId ?? (packageName === undefined ? fallbackTargetId : undefined);
-  const normalizedPackageName = typeof packageName === "string" ? packageName : undefined;
+  const normalizedPackageName = packageName;
   let target;
   if (normalizedTargetId !== undefined) {
     target = targets[assertTargetId(normalizedTargetId)];

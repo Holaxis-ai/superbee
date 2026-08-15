@@ -133,6 +133,35 @@ test("declared-target resolution fails closed for ambiguous or missing package-o
   );
 });
 
+test("declared-target resolution rejects every non-string release identity", async () => {
+  const manifest = await loadReleaseTargets();
+  const targets = manifest.targets;
+  for (const packageName of [null, 12345, { name: "superbee" }, ["superbee"]]) {
+    assert.throws(
+      () => resolveDeclaredTarget({ targetId: "bridge", packageName, targets, context: "test target" }),
+      /test target package name must be a string/,
+      `targetId + ${JSON.stringify(packageName)}`,
+    );
+    assert.throws(
+      () => resolveDeclaredTarget({ packageName, targets, context: "test target" }),
+      /test target package name must be a string/,
+      `package-only ${JSON.stringify(packageName)}`,
+    );
+    assert.throws(
+      () => resolveDeclaredTarget({ packageName, targets, context: "test target", fallbackTargetId: "bridge" }),
+      /test target package name must be a string/,
+      `fallback + ${JSON.stringify(packageName)}`,
+    );
+  }
+  for (const targetId of [null, 12345, { id: "bridge" }, ["bridge"]]) {
+    assert.throws(
+      () => resolveDeclaredTarget({ targetId, packageName: "@holaxis/aslite", targets, context: "test target" }),
+      /test target target id must be a string/,
+      `${JSON.stringify(targetId)} + packageName`,
+    );
+  }
+});
+
 test("the normalized manifest requires target ids and tuple ids to stay aligned", async () => {
   const manifest = await loadReleaseTargets();
   const omittedTarget = structuredClone(manifest);
