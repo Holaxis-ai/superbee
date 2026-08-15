@@ -8,7 +8,7 @@ import {
   HOST_CONFIG_ROOTS,
   resolveClaudeUserConfigFile,
   resolveHostConfigRoot,
-  resolveOpenCodeConfigRoot,
+  resolveOpenCodeGlobalConfigRoot,
 } from "./host-config.js";
 import {
   resolvePersistentInstallAuthority,
@@ -200,8 +200,16 @@ function targetConfigPath(target: McpInstallTargetId, input: McpStatusEnvironmen
       }
       return undefined;
     case "opencode":
-      return input.env.OPENCODE_CONFIG?.trim() || join(resolveOpenCodeConfigRoot(input.home, input.env), "opencode.json");
+      return join(resolveOpenCodeGlobalConfigRoot(input.home, input.env), "opencode.json");
   }
+}
+
+function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
+  const root = resolveOpenCodeGlobalConfigRoot(input.home, input.env);
+  const candidates = [join(root, "opencode.json"), join(root, "opencode.jsonc")];
+  const additional = input.env.OPENCODE_CONFIG?.trim();
+  if (additional && !candidates.includes(additional)) candidates.push(additional);
+  return candidates;
 }
 
 function parseClaudeEntries(text: string): McpRegistrationEntry[] {
@@ -279,6 +287,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
     };
   }
   const authority = deps.authority?.() ?? resolvePersistentInstallAuthority({ env: input.env, platform: input.platform });
+  let reportedPath = path;
   try {
     let entries: McpRegistrationEntry[];
     if (target.id === "codex") {
@@ -293,12 +302,28 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
       }));
     } else {
       const read = deps.readFile ?? ((candidate) => readFileSync(candidate, "utf8"));
-      try {
-        const content = read(path);
-        entries = target.id === "opencode" ? parseOpenCodeEntries(content) : parseClaudeEntries(content);
-      } catch (error) {
-        if (isRecord(error) && own(error, "code") === "ENOENT") entries = [];
-        else throw error;
+      const candidates = target.id === "opencode" ? openCodeConfigCandidates(input) : [path];
+      const sources: Array<{ path: string; entries: McpRegistrationEntry[] }> = [];
+      for (const candidate of candidates) {
+        try {
+          const content = read(candidate);
+          reportedPath = candidate;
+          sources.push({
+            path: candidate,
+            entries: target.id === "opencode" ? parseOpenCodeEntries(content) : parseClaudeEntries(content),
+          });
+        } catch (error) {
+          if (!isRecord(error) || own(error, "code") !== "ENOENT") throw error;
+        }
+      }
+      entries = sources.flatMap((source) => source.entries);
+      for (const name of [CURRENT_REGISTRATION, ...LEGACY_REGISTRATIONS]) {
+        const declarations = sources.filter((source) => source.entries.some((entry) => entry.name === name));
+        if (declarations.length > 1) {
+          throw new Error(
+            `registration '${name}' is declared by multiple OpenCode config sources: ${declarations.map((source) => source.path).join(", ")}`,
+          );
+        }
       }
     }
     const classification = classifyMcpRegistration(selectedEntry(entries), authority);
@@ -306,7 +331,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
       host: target.id,
       label: target.label,
       ...classification,
-      config: collapseHomeDirectory(path),
+      config: collapseHomeDirectory(reportedPath),
       docs_url: target.docs_url,
     };
   } catch (error) {
@@ -314,7 +339,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
       host: target.id,
       label: target.label,
       state: "unreadable",
-      config: collapseHomeDirectory(path),
+      config: collapseHomeDirectory(reportedPath),
       reason: `status unavailable: ${error instanceof Error ? error.message : String(error)}`,
       docs_url: target.docs_url,
     };

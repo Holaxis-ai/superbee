@@ -25,10 +25,15 @@ export function renderShellHostConfigRoot(config: HostConfigRoot): string {
   return `"\${${config.env}:-$HOME/${config.fallbackDirectory}}"`;
 }
 
-/** Resolve OpenCode's user config root without consulting a project or the current directory. */
-export function resolveOpenCodeConfigRoot(home: string, env: NodeJS.ProcessEnv): string {
+/** Resolve OpenCode's canonical global config root without project or resource-dir overrides. */
+export function resolveOpenCodeGlobalConfigRoot(home: string, env: NodeJS.ProcessEnv): string {
   const xdg = env.XDG_CONFIG_HOME?.trim() || join(home, ".config");
-  return env.OPENCODE_CONFIG_DIR?.trim() || join(xdg, "opencode");
+  return join(xdg, "opencode");
+}
+
+/** Resolve OpenCode's resource/plugin root; OPENCODE_CONFIG_DIR applies to this host surface. */
+export function resolveOpenCodeConfigRoot(home: string, env: NodeJS.ProcessEnv): string {
+  return env.OPENCODE_CONFIG_DIR?.trim() || resolveOpenCodeGlobalConfigRoot(home, env);
 }
 
 /** Resolve Claude Code's user-scoped MCP registry (distinct from its `.claude` settings root). */

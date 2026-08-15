@@ -8,7 +8,11 @@ import { dirname, join } from "node:path";
 
 import { globalHookTargets, type HookTargets } from "../src/commands/hook.js";
 import { skillTargets, type SkillTargets } from "../src/commands/skill.js";
-import { resolveClaudeUserConfigFile, resolveOpenCodeConfigRoot } from "../src/host-config.js";
+import {
+  resolveClaudeUserConfigFile,
+  resolveOpenCodeConfigRoot,
+  resolveOpenCodeGlobalConfigRoot,
+} from "../src/host-config.js";
 
 interface HostRow {
   name: string;
@@ -59,7 +63,7 @@ test("global hook targets and user-scoped skill installation share the host-root
   }
 });
 
-test("OpenCode hook and MCP consumers share one relocated user config root", () => {
+test("OpenCode resource and global-config roots keep their distinct override authorities", () => {
   const home = "/tmp/aslite-host-root-home";
   const env = {
     HOME: home,
@@ -67,6 +71,7 @@ test("OpenCode hook and MCP consumers share one relocated user config root", () 
     OPENCODE_CONFIG_DIR: "/tmp/opencode-profile",
   };
   assert.equal(dirname(dirname(globalHookTargets(home, env).opencodePlugin)), resolveOpenCodeConfigRoot(home, env));
+  assert.equal(resolveOpenCodeGlobalConfigRoot(home, env), "/tmp/xdg/opencode");
 });
 
 test("Claude Code user MCP registry honors CLAUDE_CONFIG_DIR without nesting the default", () => {

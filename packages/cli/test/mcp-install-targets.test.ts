@@ -78,23 +78,45 @@ test("registration ownership is exact and legacy names remain migration-only can
 
 test("host config paths honor relocated roots and remain read-only", () => {
   const seen: string[] = [];
-  const readFile = (path: string): string => {
-    seen.push(path);
-    return "{}";
-  };
   const authority = () => stable;
   const cases = [
     ["claude-code", "/relocated/claude/.claude.json", env({ CLAUDE_CONFIG_DIR: "/relocated/claude" })],
     ["claude-desktop", "/users/mike/Library/Application Support/Claude/claude_desktop_config.json", env()],
-    ["opencode", "/relocated/xdg/opencode/opencode.json", env({ XDG_CONFIG_HOME: "/relocated/xdg" })],
+    ["opencode", "/relocated/xdg/opencode/opencode.json", env({
+      XDG_CONFIG_HOME: "/relocated/xdg",
+      OPENCODE_CONFIG_DIR: "/resource-directory-not-global-config",
+    })],
     ["opencode", "/one/opencode.json", env({ OPENCODE_CONFIG: "/one/opencode.json" })],
   ] as const;
   for (const [id, expected, environment] of cases) {
+    const readFile = (path: string): string => {
+      seen.push(path);
+      if (path === expected) return "{}";
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    };
     const result = inspectMcpHost(target(id), { environment, authority, readFile });
     assert.equal(result.config, expected);
     assert.equal(result.state, "absent");
   }
-  assert.deepEqual(seen, cases.map(([, expected]) => expected));
+  for (const [, expected] of cases) assert.ok(seen.includes(expected));
+});
+
+test("OpenCode recognizes the canonical JSONC filename without guessing comment syntax", () => {
+  const command = stable.evidence.runtime_path!;
+  const args = [stable.evidence.executable_path!, "mcp"];
+  const jsonc = "/xdg/opencode/opencode.jsonc";
+  const result = inspectMcpHost(target("opencode"), {
+    environment: env({ XDG_CONFIG_HOME: "/xdg" }),
+    authority: () => stable,
+    readFile: (path) => {
+      if (path === jsonc) {
+        return JSON.stringify({ mcp: { superbee: { type: "local", command: [command, ...args] } } });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+  });
+  assert.equal(result.config, jsonc);
+  assert.equal(result.state, "owned_current");
 });
 
 test("Claude, OpenCode v1/v2, and Codex registrations share one normalized classifier", () => {
@@ -109,12 +131,22 @@ test("Claude, OpenCode v1/v2, and Codex registrations share one normalized class
   const opencodeV1 = inspectMcpHost(target("opencode"), {
     environment: env(),
     authority,
-    readFile: () => JSON.stringify({ mcp: { superbee: { type: "local", command: [command, ...args] } } }),
+    readFile: (path) => {
+      if (path.endsWith("opencode.json")) {
+        return JSON.stringify({ mcp: { superbee: { type: "local", command: [command, ...args] } } });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
   });
   const opencodeV2 = inspectMcpHost(target("opencode"), {
     environment: env(),
     authority,
-    readFile: () => JSON.stringify({ mcp: { servers: { superbee: { type: "local", command: [command, ...args] } } } }),
+    readFile: (path) => {
+      if (path.endsWith("opencode.json")) {
+        return JSON.stringify({ mcp: { servers: { superbee: { type: "local", command: [command, ...args] } } } });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
   });
   let codexArgs: readonly string[] = [];
   const codex = inspectMcpHost(target("codex"), {
@@ -138,7 +170,10 @@ test("malformed config and unsupported desktop platforms fail closed as status r
   const malformed = inspectMcpHost(target("opencode"), {
     environment: env(),
     authority: () => stable,
-    readFile: () => "// JSONC is not silently guessed\n{}",
+    readFile: (path) => {
+      if (path.endsWith("opencode.jsonc")) return "// JSONC is not silently guessed\n{}";
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
   });
   const unsupported = inspectMcpHost(target("claude-desktop"), {
     environment: env({}, "linux"),
