@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -176,6 +176,26 @@ test("built CLI exposes conflict exit 5 for check drift and exit 0 after generat
     });
     assert.equal(clean.status, 0, clean.stdout + clean.stderr);
     assert.equal(JSON.parse(clean.stdout).clean, true);
+  } finally {
+    await scratch.cleanup();
+  }
+});
+
+test("index generate materializes a missing root index for an explicit index-less bundle without changing its legacy edition fallback", async () => {
+  const scratch = await tempBundle("indexless");
+  try {
+    await unlink(path.join(scratch.root, "index.md"));
+
+    const drift = await expectConflict(["generate", "--check", "--dir", scratch.root]);
+    assert.equal(drift.details?.would_change, 1);
+    assert.deepEqual(category(drift.details!, "created").rows, [{ path: "index.md" }]);
+    await assert.rejects(() => access(path.join(scratch.root, "index.md")));
+
+    const generated = await runJson(["generate", "--dir", scratch.root]);
+    assert.equal(generated.changed, true);
+    assert.equal(generated.writes, 1);
+    const rootIndex = await readFile(path.join(scratch.root, "index.md"), "utf8");
+    assert.match(rootIndex, /okf_version:\s*['"]?0\.1['"]?/);
   } finally {
     await scratch.cleanup();
   }

@@ -64,11 +64,11 @@ test("ui --port abc: USAGE (exit 2), not a bare parse crash", async () => {
   }
 });
 
-test("ui --dir <not-a-bundle>: NOT_FOUND (exit 6), delegated from openBundle", async () => {
+test("ui --dir <missing>: NOT_FOUND (exit 6), delegated from openBundle", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-empty-"));
   try {
     await assert.rejects(
-      () => ui(["--dir", dir], { bootUiServer, waitForShutdown: () => Promise.resolve(), openBrowser: () => {} }),
+      () => ui(["--dir", path.join(dir, "missing")], { bootUiServer, waitForShutdown: () => Promise.resolve(), openBrowser: () => {} }),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "NOT_FOUND");

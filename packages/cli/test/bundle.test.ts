@@ -476,13 +476,12 @@ test("openBundle: a directory-type project binding resolves the bundle when neit
   }
 });
 
-test("openBundle: a directory-type binding pointing at a path with no bundle is NOT_FOUND (exit 6), naming the binding file", async () => {
+test("openBundle: a directory-type binding pointing at a missing path is NOT_FOUND (exit 6), naming the binding file", async () => {
   const root = await tempDir();
   try {
     const projectDir = path.join(root, "project");
     await mkdir(projectDir, { recursive: true });
-    await mkdir(path.join(root, "empty"), { recursive: true }); // exists, but no index.md
-    await writeBinding(projectDir, "../empty");
+    await writeBinding(projectDir, "../missing");
 
     await inDir(projectDir, async () => {
       await assert.rejects(
@@ -496,6 +495,30 @@ test("openBundle: a directory-type binding pointing at a path with no bundle is 
           return true;
         },
       );
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("openBundle: a directory-type project binding is an exact boundary and accepts an index-less OKF bundle", async () => {
+  const root = await tempDir();
+  try {
+    const indexless = path.join(root, "indexless");
+    await mkdir(indexless);
+    await writeFile(path.join(indexless, "note.md"), "---\ntype: Note\ntitle: Bound\n---\n\nhello\n");
+    const projectDir = path.join(root, "project");
+    await mkdir(projectDir);
+    await writeBinding(projectDir, "../indexless");
+
+    await inDir(projectDir, async () => {
+      const bundle = await openBundle(undefined, undefined);
+      assert.equal(bundle.root, indexless);
+      let out = "";
+      await list(["--json"], { stdout: (s) => (out += s) });
+      const parsed = JSON.parse(out) as { count: number; docs: Array<{ id: string }> };
+      assert.equal(parsed.count, 1);
+      assert.equal(parsed.docs[0]?.id, "note");
     });
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -535,7 +558,7 @@ test("openBundle: an explicit --dir may name a project directory containing the 
   }
 });
 
-test("openBundle: a bad explicit --dir inside a project points to the existing bundle instead of suggesting a divergent init", async () => {
+test("openBundle: an existing explicit --dir inside another bundle remains its own exact index-less boundary", async () => {
   const project = await tempDir();
   try {
     const conventional = path.join(project, CONVENTIONAL_BUNDLE_DIR_NAME);
@@ -543,22 +566,14 @@ test("openBundle: a bad explicit --dir inside a project points to the existing b
     const nested = path.join(project, "src");
     await mkdir(nested);
 
-    await assert.rejects(
-      () => openBundle(nested, undefined),
-      (err: unknown) => {
-        assert.ok(err instanceof CliError);
-        assert.equal(err.code, "NOT_FOUND");
-        assert.ok(err.help?.includes(`--dir ${conventional}`));
-        assert.doesNotMatch(err.help ?? "", / init /);
-        return true;
-      },
-    );
+    const bundle = await openBundle(nested, undefined);
+    assert.equal(bundle.root, nested);
   } finally {
     await rm(project, { recursive: true, force: true });
   }
 });
 
-test("openBundle: an explicit --dir to a NON-bundle path is the plain NOT_FOUND (no binding mention) even with a binding present elsewhere — suppressed, not merged", async () => {
+test("openBundle: an explicit index-less directory suppresses a project binding instead of merging selection rungs", async () => {
   const root = await tempDir();
   try {
     const otherBundle = path.join(root, "other");
@@ -570,15 +585,57 @@ test("openBundle: an explicit --dir to a NON-bundle path is the plain NOT_FOUND 
     await mkdir(badDir, { recursive: true });
 
     await inDir(projectDir, async () => {
+      const bundle = await openBundle(badDir, undefined);
+      assert.equal(bundle.root, badDir);
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("openBundle: explicit nonexistent and non-directory targets remain NOT_FOUND and never retarget an ancestor", async () => {
+  const root = await tempDir();
+  try {
+    await initBundle(root);
+    const missing = path.join(root, "missing");
+    const file = path.join(root, "not-a-directory");
+    await writeFile(file, "not a bundle directory");
+
+    for (const target of [missing, file]) {
       await assert.rejects(
-        () => openBundle(badDir, undefined),
+        () => openBundle(target, undefined),
         (err: unknown) => {
           assert.ok(err instanceof CliError);
           assert.equal(err.code, "NOT_FOUND");
-          assert.doesNotMatch(err.message, /project binding/);
-          assert.ok(err.help?.includes(`init --dir ${badDir}`));
+          assert.match(err.message, /no local bundle directory/);
+          assert.ok(err.help?.includes(`--dir ${root}`));
+          assert.doesNotMatch(err.help ?? "", / init /);
           return true;
         },
+      );
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("openBundle: explicit --dir consumes an index-less OKF bundle, while ambient discovery still refuses to guess it", async () => {
+  const root = await tempDir();
+  try {
+    await writeFile(path.join(root, "note.md"), "---\ntype: Note\ntitle: Index-less\n---\n\nhello\n");
+
+    const explicit = await openBundle(root, undefined);
+    assert.equal(explicit.root, root);
+    let out = "";
+    await list(["--dir", root, "--json"], { stdout: (s) => (out += s) });
+    const parsed = JSON.parse(out) as { count: number; docs: Array<{ id: string }> };
+    assert.equal(parsed.count, 1);
+    assert.equal(parsed.docs[0]?.id, "note");
+
+    await inDir(root, async () => {
+      await assert.rejects(
+        () => openBundle(undefined, undefined),
+        (err: unknown) => err instanceof CliError && err.code === "NOT_FOUND",
       );
     });
   } finally {

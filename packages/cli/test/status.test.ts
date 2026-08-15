@@ -1248,7 +1248,7 @@ test("status: a malformed --limit is a USAGE error (exit 2)", async () => {
   }
 });
 
-test("status: exit is ALWAYS 0 when the analysis runs, findings or not; no bundle is NOT_FOUND (exit 6)", async () => {
+test("status: exit is ALWAYS 0 when analysis reaches an existing directory; a missing target is NOT_FOUND (exit 6)", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
   try {
     // A bundle FULL of findings still resolves without throwing (exit 0) — findings are reports.
@@ -1259,8 +1259,9 @@ test("status: exit is ALWAYS 0 when the analysis runs, findings or not; no bundl
 
   const emptyDir = await tempDir();
   try {
+    await status(["--dir", emptyDir], { stdout: () => {} });
     await assert.rejects(
-      () => status(["--dir", emptyDir]),
+      () => status(["--dir", path.join(emptyDir, "missing")]),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "NOT_FOUND");

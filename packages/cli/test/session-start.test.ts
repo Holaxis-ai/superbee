@@ -477,7 +477,7 @@ test("first-contact: no board anywhere → today's behavior (init hint), no boar
     await writeFile(path.join(dir, "README.md"), "# plain repo\n");
     git(dir, ["add", "-A"]);
     git(dir, ["commit", "-m", "initial"]);
-    const out = await runHome(homeDir, ["--dir", dir]);
+    const out = await runHome(homeDir, ["--dir", path.join(dir, "missing")]);
     assert.ok(out.includes("getting_started"));
     assert.ok(out.includes("no OKF bundle found"));
     assert.ok(!out.includes("board:"), "no board block for a boardless repo");

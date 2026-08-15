@@ -85,8 +85,8 @@ test("built CLI: empty explicit target flags preserve presence and never fall th
     }
 
     const emptyDir = await run(["list", "--dir", "", "--json"], cwd);
-    assert.equal(emptyDir.code, 6);
-    assert.match(emptyDir.stdout, /no OKF bundle at/);
+    assert.equal(emptyDir.code, 0, emptyDir.stderr || emptyDir.stdout);
+    assert.equal((JSON.parse(emptyDir.stdout) as { count: number }).count, 0);
     assert.doesNotMatch(emptyDir.stdout, /AGENTSTATE_LITE_REMOTE ambient/);
 
     const bothEmpty = await run(["list", "--remote=", "--dir", "", "--json"], cwd);
