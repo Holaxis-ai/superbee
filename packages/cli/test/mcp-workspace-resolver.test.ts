@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, realpath, rename, rm, symlink } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
-import type { Bundle } from "@superbee/core";
+import { initBundle, type Bundle } from "@superbee/core";
 import { MAX_WORKSPACE_CATALOG_PAGE } from "@superbee/mcp-app";
 
 import { createCatalogMcpWorkspaceResolver } from "../src/mcp-workspace-resolver.js";
+import { openBundle } from "../src/bundle.js";
+import { addCatalogEntry } from "../src/catalog.js";
 
 const availableEntry = {
   id: "bnd_00000000000000000000000000000000",
@@ -64,6 +69,11 @@ test("catalog MCP resolver re-resolves selection and returns one immutable bundl
       assert.equal(dir, availableEntry.locator.path);
       return bundle;
     },
+    resolveTarget: async () => ({
+      root: availableEntry.locator.path,
+      canonicalRoot: availableEntry.locator.path,
+      selectedBy: "explicit-dir",
+    }),
     deriveName: async () => ({ name: "Product planning", source: "explicit" }),
   });
 
@@ -121,7 +131,45 @@ test("catalog MCP resolver bounds display-name bundle reads to the visible page"
 test("catalog MCP resolver refuses canonical-root drift between resolution and open", async () => {
   const resolver = createCatalogMcpWorkspaceResolver({
     resolveEntry: async () => availableEntry,
-    open: async () => ({ root: "/private/catalog/replaced" }) as Bundle,
+    open: async () => ({ root: availableEntry.locator.path }) as Bundle,
+    resolveTarget: async () => ({
+      root: availableEntry.locator.path,
+      canonicalRoot: "/private/catalog/replaced",
+      selectedBy: "explicit-dir",
+    }),
+  });
+
+  await assert.rejects(
+    resolver.open("planning"),
+    /workspace catalog target changed during selection/,
+  );
+});
+
+test("catalog MCP resolver refuses a real rename-and-symlink retarget during selection", async (t) => {
+  const requestedBase = await mkdtemp(path.join(os.tmpdir(), "superbee-mcp-retarget-"));
+  const base = await realpath(requestedBase);
+  const home = path.join(base, "home");
+  const slot = path.join(base, "slot");
+  const moved = path.join(base, "moved");
+  const foreign = path.join(base, "foreign");
+  await initBundle(slot);
+  await initBundle(foreign);
+  await addCatalogEntry("planning", slot, { home });
+  t.after(async () => {
+    await rm(base, { recursive: true, force: true });
+  });
+
+  let swapped = false;
+  const resolver = createCatalogMcpWorkspaceResolver({
+    home,
+    open: async (dir) => {
+      if (!swapped) {
+        swapped = true;
+        await rename(slot, moved);
+        await symlink(foreign, slot, "dir");
+      }
+      return openBundle(dir);
+    },
   });
 
   await assert.rejects(
