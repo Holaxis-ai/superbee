@@ -61,22 +61,43 @@ env:
   RECEIPT_DIR: release-stage-receipt
 
 jobs:
+  # Every cheap precondition lives HERE, in the first job, which holds contents:read and runs no
+  # mutating command: resolving the manifest's publication facts and refusing identity-only targets.
+  # Downstream jobs consume the resolved facts as job outputs, so nothing re-derives policy after a
+  # mutation has landed.
   target-authorized:
-    name: target-authorized - full release contract only
+    name: target-authorized — resolve publication policy BEFORE any mutation
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
+    outputs:
+      target: ${{ steps.facts.outputs.target }}
+      package: ${{ steps.facts.outputs.package }}
+      version: ${{ steps.facts.outputs.version }}
+      tag: ${{ steps.facts.outputs.tag }}
+      policy_tag: ${{ steps.facts.outputs.policy_tag }}
+      npm_promote_tag: ${{ steps.facts.outputs.npm_promote_tag }}
+      github_latest: ${{ steps.facts.outputs.github_latest }}
+      workflow_contract: ${{ steps.facts.outputs.workflow_contract }}
     steps:
       - uses: actions/checkout@v4
-      - name: Refuse identity-only rehearsal targets
+
+      - name: Resolve final publication policy facts
+        id: facts
         env:
           TARGET: ${{ inputs.target }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          FACTS="$(node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION")"
-          test "$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).workflow_contract)' "$FACTS")" = "full" \
+          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --github-output "$GITHUB_OUTPUT"
+
+      - name: Refuse identity-only rehearsal targets
+        env:
+          WORKFLOW_CONTRACT: ${{ steps.facts.outputs.workflow_contract }}
+        run: |
+          set -euo pipefail
+          test "$WORKFLOW_CONTRACT" = "full" \
             || { echo "::error::identity-only rehearsal targets have no finalization path"; exit 1; }
 
   ordering-verified:
@@ -270,7 +291,7 @@ jobs:
 
   finalize:
     name: final — publish the prepared draft only after re-verification
-    needs: registry-verify
+    needs: [target-authorized, registry-verify]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -379,23 +400,14 @@ jobs:
           node scripts/release-verify-ordering.mjs apply --mode "$MODE" --plan publication-plan.json \
             --repo "$GITHUB_REPOSITORY" --out-dir publication-out
 
-      - name: Resolve final publication policy facts
-        id: facts
-        env:
-          TARGET: ${{ inputs.target }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --github-output "$GITHUB_OUTPUT"
-
       - name: Re-query and prove exact final inventory and owned body before publication
         env:
           GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           VERSION: ${{ inputs.version }}
           TARGET: ${{ inputs.target }}
-          NPM_PROMOTE_TAG: ${{ steps.facts.outputs.npm_promote_tag }}
-          GITHUB_LATEST: ${{ steps.facts.outputs.github_latest }}
+          NPM_PROMOTE_TAG: ${{ needs.target-authorized.outputs.npm_promote_tag }}
+          GITHUB_LATEST: ${{ needs.target-authorized.outputs.github_latest }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then

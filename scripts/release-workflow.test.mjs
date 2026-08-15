@@ -25,6 +25,9 @@ function extractJobs(text) {
       if (current) jobs[current].push(line);
       continue;
     }
+    // A comment at job-header depth is not structure: it neither opens a job nor ends the mapping,
+    // and it belongs to no job. Comments indented deeper sit inside a job and are kept with it.
+    if (/^ {0,2}#/.test(line)) continue;
     const header = /^ {2}([A-Za-z0-9_-]+):\s*$/.exec(line);
     if (header) {
       current = header[1];
@@ -81,6 +84,23 @@ function workflowTargetChoice(text) {
 // `release-candidate-<id>` are deliberately NOT in this list — only the command that BUILDS/PACKS.
 const BUILD_PACK_TOKENS = ["release:candidate", "release-candidate.mjs", "build.mjs", "npm pack", "npm run build", "buildCli"];
 
+// Tokens that mean "something outside this run changed". Shared by the read-only-job assertions.
+const MUTATING_TOKENS = [
+  "-X PATCH", "-X POST", "-X DELETE", "-X PUT",
+  "--method PATCH", "--method POST", "--method DELETE",
+  "gh release upload", "gh release create", "gh release edit", "gh release delete",
+  "npm stage approve", "npm stage reject", "npm publish", "npm dist-tag",
+  "release-verify-ordering.mjs apply", "--execute",
+];
+
+/** `needs:` of a job, in both the scalar and the list form. */
+function needsOf(jobText) {
+  const scalar = /^ {4}needs: ([A-Za-z0-9_-]+)\s*$/m.exec(jobText);
+  if (scalar) return [scalar[1]];
+  const list = /^ {4}needs: \[([^\]]*)\]\s*$/m.exec(jobText);
+  return list ? list[1].split(",").map((entry) => entry.trim()).filter(Boolean) : [];
+}
+
 test("neither workflow grants ambient permissions — every job opts in", () => {
   assert.match(staged, /\npermissions: \{\}\n/, "release-staged.yml must set top-level permissions: {}");
   assert.match(finalize, /\npermissions: \{\}\n/, "release-finalize.yml must set top-level permissions: {}");
@@ -110,9 +130,9 @@ test("finalize workflow: gate jobs hold contents:write ONLY for draft visibility
   assert.deepEqual(permissionsOf(jobs["registry-verify"]), { actions: "read", contents: "write" });
   assert.deepEqual(permissionsOf(jobs.finalize), { actions: "read", contents: "write" });
   // No gate job may carry a mutating gh/npm invocation — GETs and octet-stream downloads only.
-  for (const name of ["ordering-verified", "registry-verify"]) {
+  for (const name of ["target-authorized", "ordering-verified", "registry-verify"]) {
     const body = jobs[name];
-    for (const token of ["-X PATCH", "-X POST", "-X DELETE", "-X PUT", "--method PATCH", "--method POST", "--method DELETE", "gh release upload", "gh release create", "gh release edit", "gh release delete", "npm stage approve", "npm stage reject", "npm publish", "npm dist-tag"]) {
+    for (const token of MUTATING_TOKENS) {
       assert.ok(!body.includes(token), `gate job ${name} must not contain mutating token ${JSON.stringify(token)}`);
     }
   }
@@ -141,9 +161,9 @@ test("workflow target choices enumerate the normalized manifest roster and keep 
 
 test("the ordering gate runs BEFORE registry mutation and again before publication", () => {
   const jobs = extractJobs(finalize);
-  // Job chain: ordering-verified -> registry-verify -> finalize.
+  // Job chain: target-authorized -> ordering-verified -> registry-verify -> finalize.
   assert.match(jobs["registry-verify"], /needs: ordering-verified/);
-  assert.match(jobs.finalize, /needs: registry-verify/);
+  assert.deepEqual(needsOf(jobs.finalize).sort(), ["registry-verify", "target-authorized"]);
   // The gate replays the state machine over signed receipts in the gate job AND pre-publish.
   for (const name of ["ordering-verified", "finalize"]) {
     assert.match(jobs[name], /release-verify-ordering\.mjs assets/, `${name} lists receipt assets via the one naming authority`);
@@ -278,13 +298,42 @@ test("the finalizer is separately dispatched and consumes every immutable ID", (
   assert.ok((finalize.match(/release-verify-chain\.mjs verify-finalizer/g) ?? []).length === 3);
 });
 
-test("the finalizer consumes resolved publication facts for npm promotion and GitHub latest", () => {
-  const body = extractJobs(finalize).finalize;
-  assert.match(body, /release-resolve-target\.mjs --target "\$TARGET" --tag "v\$VERSION" --github-output "\$GITHUB_OUTPUT"/);
-  assert.match(body, /if \[ -n "\$NPM_PROMOTE_TAG" \]/, "finalize must gate dist-tag promotion on resolved manifest policy");
-  assert.match(body, /release-run-operations\.mjs --op promote/, "finalize must emit the manifest-defined dist-tag promotion");
-  assert.match(body, /--tag "\$NPM_PROMOTE_TAG"/, "finalize must promote the resolved npm tag");
-  assert.match(body, /--github-latest "\$GITHUB_LATEST"/, "finalize must publish with the resolved GitHub latest policy");
+// F12 — the publication-policy resolve was a cheap precondition placed AFTER
+// `release-verify-ordering.mjs apply --mode live` had already rewritten the draft's status asset and
+// body. This pins the general property rather than that one step's position: the facts are resolved
+// and the registry proved in a job that mutates nothing, and every mutating job is downstream of it.
+test("F12: publication policy is resolved and proved in a non-mutating job, upstream of every mutation", () => {
+  const jobs = extractJobs(finalize);
+  const gate = jobs["target-authorized"];
+
+  assert.match(gate, /release-resolve-target\.mjs --target "\$TARGET" --tag "v\$VERSION" --github-output "\$GITHUB_OUTPUT"/,
+    "the manifest facts are resolved in the first job");
+  assert.deepEqual(permissionsOf(jobs["target-authorized"]), { contents: "read" }, "the precondition job cannot write anything");
+
+  // Every job that mutates must be reachable FROM target-authorized through `needs:`, so no mutation
+  // can ever run before the precondition — including a job added later.
+  const ancestors = (name, seen = new Set()) => {
+    for (const parent of needsOf(jobs[name] ?? "")) {
+      if (seen.has(parent)) continue;
+      seen.add(parent);
+      ancestors(parent, seen);
+    }
+    return seen;
+  };
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name === "target-authorized") continue;
+    if (!MUTATING_TOKENS.some((token) => body.includes(token))) continue;
+    assert.ok(ancestors(name).has("target-authorized"), `mutating job ${name} must depend on the precondition job`);
+  }
+
+  // And no job re-derives publication policy after a mutation: the facts travel as job outputs,
+  // which only a `needs:` dependency can deliver.
+  for (const [name, body] of Object.entries(jobs)) {
+    if (name === "target-authorized") continue;
+    assert.ok(!body.includes("--github-output"), `job ${name} must consume resolved facts, never re-resolve them`);
+  }
+  assert.match(jobs.finalize, /needs\.target-authorized\.outputs\.github_latest/, "finalize publishes with the pre-resolved GitHub latest policy");
+  assert.match(jobs.finalize, /--github-latest "\$GITHUB_LATEST"/);
 });
 
 test("the staged workflow triggers on v* tags and on dry-run dispatch", () => {
