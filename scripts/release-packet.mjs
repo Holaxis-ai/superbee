@@ -480,12 +480,14 @@ function reservedCandidateTagRefs(targets) {
  * sentence from the retained evidence and compares, so the human-readable claim cannot drift from
  * the machine-checked one.
  */
-function transferClaim({ protected_release_tag_refs: protectedTags, transfer_refs_confirmed_at_create: confirmed, transfer_refs_unobserved_at_create: unobserved }) {
+function transferClaim({ held_board_ref: heldBoardRef, protected_release_tag_refs: protectedTags, transfer_refs_confirmed_at_create: confirmed, transfer_refs_unobserved_at_create: unobserved }) {
   return [
     `The creating repository held ${confirmed.length} of ${confirmed.length + unobserved.length} allowlisted refs at the asserted commits`,
     `(confirmed: ${confirmed.join(" ") || "none"}; not present in the creating repository: ${unobserved.join(" ") || "none"})`,
     `and held none of the ${protectedTags.length} protected release tags.`,
-    "The retained bundle unbundles into a complete connected history whose heads are exactly the allowlisted refs at those commits.",
+    "The retained bundle unbundles into a complete connected history whose heads are exactly the allowlisted refs at those commits,",
+    "carries no object outside the closure those refs reach — so nothing rides along behind a header the bundle does not advertise —",
+    `and carries no head descended from ${heldBoardRef}.`,
     "Nothing here proves the state of any remote repository.",
   ].join(" ");
 }
@@ -499,7 +501,7 @@ function packetLifecycle(targets, envelope, repositoryRefs) {
     transfer_refs_confirmed_at_create: allowed.filter((ref) => live.has(ref)).sort(),
     transfer_refs_unobserved_at_create: allowed.filter((ref) => !live.has(ref)).sort(),
   };
-  return { ...lifecycle, claim: transferClaim(lifecycle) };
+  return { ...lifecycle, claim: transferClaim({ ...lifecycle, held_board_ref: envelope.held_board_ref }) };
 }
 
 function repositoryRefRows(label, value) {
@@ -548,14 +550,43 @@ async function transferBundleHeads(bundleFile) {
   return Object.fromEntries(Object.keys(heads).sort().map((ref) => [ref, heads[ref]]));
 }
 
+async function isAncestorCommit(scratch, ancestor, descendant) {
+  try {
+    await execFileAsync("git", ["-C", scratch, "cat-file", "-e", `${ancestor}^{commit}`]);
+  } catch {
+    return false; // an object the pack never carried cannot be an ancestor of one it did
+  }
+  try {
+    await execFileAsync("git", ["-C", scratch, "merge-base", "--is-ancestor", ancestor, descendant]);
+    return true;
+  } catch (error) {
+    if (error?.code === 1) return false;
+    packetError(`cannot compare transfer bundle ancestry: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
 /**
- * Unpack the bundle for real. `git bundle verify` reads only the header — it calls a bundle
- * truncated to its first bytes "okay" — so the pack is validated by fetching it into a scratch
- * repository, which runs index-pack over every byte, and then walking every reachable object. A
- * bundle with prerequisites cannot complete this fetch, which is the intended outcome: transfer
- * evidence has to stand on its own.
+ * Unpack the bundle for real, then hold its CONTENTS to the refs it advertises.
+ *
+ * A bundle header is a claim; the pack is the artifact, and three ways they come apart have all
+ * been observed here. `git bundle verify` calls a bundle truncated to its first bytes "okay". It
+ * calls a bundle built from a shallow clone "a complete history" while every parent object is
+ * missing. And deleting one header row from a bundle's bytes leaves the pack untouched, so the
+ * objects behind the deleted ref still import while `list-heads` advertises only what remains —
+ * header equality and reachability from the advertised heads both pass while the packet retains
+ * the withheld object graph, which is the exact content the transfer allowlist exists to exclude.
+ *
+ * So the pack is fetched into a scratch repository (index-pack reads every byte, and a bundle with
+ * prerequisites cannot complete the fetch), and then every object it imported is compared against
+ * the closure its advertised refs authorize. Anything outside that closure is rejected. Computing
+ * that closure IS the connectivity walk, so it happens once rather than twice, and `rev-list
+ * --objects` emits annotated tag objects, so a legitimately tagged transfer stays authorized.
+ *
+ * `withheldHeads` are commits the creating repository holds and never authorized for transfer.
+ * A transferable head is rejected for DESCENDING from one, not merely for equalling it: a child
+ * commit carries its parent's whole tree with it.
  */
-async function unbundleTransferPack(bundleFile) {
+async function unbundleTransferPack(bundleFile, { withheldHeads = [] } = {}) {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-transfer-pack-"));
   try {
     try {
@@ -577,10 +608,34 @@ async function unbundleTransferPack(bundleFile) {
     }
     const objects = Object.values(heads);
     if (objects.length === 0) packetError("transfer bundle pack carries no refs");
+    let closure;
     try {
-      await execFileAsync("git", ["-C", scratch, "rev-list", "--objects", "--quiet", ...objects], { maxBuffer: 20 * 1024 * 1024 });
+      closure = await gitStdout(scratch, ["rev-list", "--objects", "--no-object-names", ...objects], "walk", { maxBuffer: 64 * 1024 * 1024 });
     } catch (error) {
       packetError(`transfer bundle history is not fully connected: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const authorized = new Set(closure.split("\n").map((line) => line.trim()).filter(Boolean));
+    const imported = await gitStdout(
+      scratch,
+      ["cat-file", "--batch-all-objects", "--batch-check=%(objectname) %(objecttype)"],
+      "cannot enumerate the objects the transfer bundle imported",
+      { maxBuffer: 64 * 1024 * 1024 },
+    );
+    const unadvertised = [];
+    for (const line of imported.split("\n").filter(Boolean)) {
+      const [, sha, type] = /^([a-f0-9]{40}) (\S+)$/.exec(line) ?? [];
+      if (!sha) packetError(`transfer bundle object listing is malformed: ${JSON.stringify(line)}`);
+      if (!authorized.has(sha)) unadvertised.push(`${type} ${sha}`);
+    }
+    if (unadvertised.length > 0) {
+      packetError(`transfer bundle pack carries ${unadvertised.length} object(s) no allowlisted ref reaches: ${unadvertised.sort().slice(0, 10).join(", ")}`);
+    }
+    for (const withheld of withheldHeads) {
+      for (const [ref, sha] of Object.entries(heads)) {
+        if (await isAncestorCommit(scratch, withheld, sha)) {
+          packetError(`transferable ref ${ref}@${sha} descends from withheld commit ${withheld}, so the transfer would carry its history`);
+        }
+      }
     }
     return Object.fromEntries(Object.keys(heads).sort().map((ref) => [ref, heads[ref]]));
   } finally {
@@ -639,16 +694,17 @@ async function validateTransferAuthority({ baseline, recheck, allowlist, bundleF
   if (!sameJsonValue(recheck.allowed_refs, expected) || !sameJsonValue(allowlist.allowed_refs, expected)) {
     packetError("transfer baseline/recheck/allowlist allowed refs differ");
   }
+  const where = mode === "create" ? "the creating repository" : "the repository state this packet recorded at creation";
+  const held = new Map(repositoryRefs.map((row) => [row.ref, row.sha]));
+  const boardHead = held.get(baseline.held_board_ref);
   const listedHeads = await transferBundleHeads(bundleFile);
-  const packedHeads = await unbundleTransferPack(bundleFile);
+  const packedHeads = await unbundleTransferPack(bundleFile, { withheldHeads: boardHead === undefined ? [] : [boardHead] });
   if (!sameJsonValue(listedHeads, packedHeads)) {
     packetError(`transfer bundle header refs differ from the refs its pack carries (header: ${describeRefMap(listedHeads)}; pack: ${describeRefMap(packedHeads)})`);
   }
   if (!sameJsonValue(packedHeads, expected)) {
     packetError(`transfer bundle heads differ from the reviewed allowlist (allowed: ${describeRefMap(expected)}; actual: ${describeRefMap(packedHeads)})`);
   }
-  const where = mode === "create" ? "the creating repository" : "the repository state this packet recorded at creation";
-  const held = new Map(repositoryRefs.map((row) => [row.ref, row.sha]));
   // Two different inputs, two different rules: the reviewed allowlist may not carry a tag the
   // release workflow has yet to create, and the repository may not already hold one.
   for (const ref of reservedCandidateTagRefs(targets)) {
@@ -661,7 +717,6 @@ async function validateTransferAuthority({ baseline, recheck, allowlist, bundleF
       packetError(`transfer evidence asserts ${ref}@${sha} but ${where} holds ${ref}@${actual}`);
     }
   }
-  const boardHead = held.get(baseline.held_board_ref);
   if (boardHead !== undefined && Object.values(expected).includes(boardHead)) {
     packetError(`a transferable ref carries the held ${baseline.held_board_ref} head ${boardHead}`);
   }

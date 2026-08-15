@@ -25,6 +25,9 @@ import { captureRepositorySettings } from "./release-settings-capture.mjs";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
 const gitAuthorArgs = ["-c", "user.name=packet-test", "-c", "user.email=packet-test@example.invalid"];
+// Git derives a commit's SHA from its timestamps, so an unpinned date makes every rebuilt notes
+// commit a different object and any comparison against an earlier bundle a coin flip.
+const gitDateEnv = { ...process.env, GIT_AUTHOR_DATE: "2026-08-15T00:00:00Z", GIT_COMMITTER_DATE: "2026-08-15T00:00:00Z" };
 
 /**
  * A complete repository for the packet to run against, built from this checkout's working tree.
@@ -60,27 +63,54 @@ async function createFixtureRepository() {
     await symlink(path.join(repoRoot, "node_modules", entry), path.join(root, "node_modules", entry));
   }
   execFileSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: root, stdio: "pipe" });
+  // Give the reviewed commit a real parent, so ancestry is an ordinary relation in this repository
+  // rather than a case the fixture cannot express.
+  const rootCommit = commitUnreviewedContent(root, {
+    message: "packet fixture root",
+    file: ".packet-fixture-root",
+    body: "the commit the reviewed source is built on\n",
+  });
+  execFileSync("git", ["update-ref", "refs/heads/main", rootCommit], { cwd: root, stdio: "pipe" });
   execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
   execFileSync("git", [...gitAuthorArgs, "commit", "--quiet", "-m", "packet fixture source"], { cwd: root, stdio: "pipe" });
   const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   execFileSync("git", ["update-ref", FIXTURE_TAG_REF, commit], { cwd: root, stdio: "pipe" });
+  // The held branch, genuinely present and never transferable: the content the allowlist exists to
+  // exclude, so the tests can prove it stays excluded instead of assuming it.
+  const board = commitUnreviewedContent(root, {
+    message: "held board state",
+    file: "PRIVATE-BOARD-CONTENT.md",
+    body: "PRIVATE BOARD CONTENT\n",
+  });
+  execFileSync("git", ["update-ref", HELD_BOARD_REF, board], { cwd: root, stdio: "pipe" });
   const loaded = await import(`${pathToFileURL(path.join(root, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`);
-  return { root, commit, module: loaded };
+  return { root, commit, rootCommit, board, module: loaded };
 }
 
 /**
- * A real, parentless commit carrying content the reviewer never saw. Written with plumbing so the
- * fixture repository's HEAD, index and working tree stay exactly as the packet requires them, and
- * so the commit's own history is complete — the bundle must be rejected for its SHA, not for a
- * defect in the pack.
+ * A real commit carrying content the reviewer never saw. Written with plumbing so the fixture
+ * repository's HEAD, index and working tree stay exactly as the packet requires them, and so the
+ * commit's own history is complete — a bundle carrying it must be rejected for what it is, not for
+ * a defect in the pack.
  */
-function commitUnreviewedContent(root, { message, file, body }) {
+function commitUnreviewedContent(root, { message, file, body, parent: parentCommit }) {
   const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: root, input: body, encoding: "utf8" }).trim();
   const tree = execFileSync("git", ["mktree"], { cwd: root, input: `100644 blob ${blob}\t${file}\n`, encoding: "utf8" }).trim();
-  return execFileSync("git", [...gitAuthorArgs, "commit-tree", tree, "-m", message], { cwd: root, encoding: "utf8" }).trim();
+  const parentage = parentCommit ? ["-p", parentCommit] : [];
+  return execFileSync("git", [...gitAuthorArgs, "commit-tree", tree, ...parentage, "-m", message], { cwd: root, encoding: "utf8", env: gitDateEnv }).trim();
+}
+
+/** Delete one advertised ref from a bundle's header, leaving its pack byte-for-byte intact. */
+async function stripBundleHeaderRow(bundleFile, ref, sha) {
+  const bytes = await readFile(bundleFile);
+  const row = Buffer.from(`${sha} ${ref}\n`, "latin1");
+  const at = bytes.indexOf(row);
+  assert.notEqual(at, -1, `bundle header row for ${ref} not found`);
+  await writeFile(bundleFile, Buffer.concat([bytes.subarray(0, at), bytes.subarray(at + row.length)]));
 }
 
 const FIXTURE_TAG_REF = "refs/tags/v0.1.0-pre.10";
+const HELD_BOARD_REF = "refs/heads/board";
 const fixtureRepository = await createFixtureRepository();
 const sourceRoot = fixtureRepository.root;
 const { createReleasePacket, verifyReleasePacket } = fixtureRepository.module;
@@ -103,10 +133,11 @@ const syntheticRetainedVerifier = async ({ manifest }) => {
  * tag the repository actually holds, and a notes ref. Every transfer fixture in this file is
  * generator output, never hand-written bytes — a stub cannot exercise a pack validator.
  *
- * `mainCommit` lets a test transfer the approved ref NAMES over other content, and `extraTags`
- * lets one add a tag the reviewed allowlist does not carry.
+ * `mainCommit` lets a test transfer the approved ref NAMES over other content, `extraTags` adds a
+ * tag the reviewed allowlist does not carry, and `extraRefs` puts a named ref at a chosen commit —
+ * including the held board branch, so a test can build the bundle an operator must never ship.
  */
-async function buildTransferBundle(bundleFile, { mainCommit = head, tagCommit, extraTags = [] } = {}) {
+async function buildTransferBundle(bundleFile, { mainCommit = head, tagCommit, extraTags = [], extraRefs = {} } = {}) {
   const source = path.join(path.dirname(bundleFile), `transfer-repo-${path.basename(bundleFile)}`);
   await rm(source, { recursive: true, force: true });
   // Clone rather than init+fetch: fetching FROM a repository is rejected when that repository is
@@ -128,7 +159,11 @@ async function buildTransferBundle(bundleFile, { mainCommit = head, tagCommit, e
     execFileSync("git", ["-C", source, "update-ref", `refs/tags/${tag}`, "refs/heads/main"], { stdio: "pipe" });
     refs.push(`refs/tags/${tag}`);
   }
-  execFileSync("git", [...gitAuthorArgs, "-C", source, "notes", "--ref", "review", "add", "-m", "transfer review", "refs/heads/main"], { stdio: "pipe" });
+  for (const [ref, commit] of Object.entries(extraRefs)) {
+    execFileSync("git", ["-C", source, "update-ref", ref, commit], { stdio: "pipe" });
+    refs.push(ref);
+  }
+  execFileSync("git", [...gitAuthorArgs, "-C", source, "notes", "--ref", "review", "add", "-m", "transfer review", "refs/heads/main"], { stdio: "pipe", env: gitDateEnv });
   refs.push("refs/notes/review");
   await rm(bundleFile, { force: true });
   execFileSync("git", ["-C", source, "bundle", "create", path.resolve(bundleFile), ...refs], { stdio: "pipe" });
@@ -739,6 +774,100 @@ test("packet creation and verification reject a transfer bundle whose head commi
     await replaceRetainedEvidence(out, "transfer-bundle", "transfer-bundle", whole);
     await verify();
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// F3, third face: the bundle HEADER is a claim and the PACK is the artifact. Deleting one header
+// row leaves the pack untouched, so the withheld objects still import while list-heads advertises
+// only what remains — and a head that merely DESCENDS from the held board carries its whole tree.
+// Header equality and reachability-from-advertised-heads pass in both cases.
+test("packet creation and verification reject a bundle whose pack carries objects no allowlisted ref reaches", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-unadvertised-"));
+  const boardHead = execFileSync("git", ["rev-parse", HELD_BOARD_REF], { cwd: sourceRoot, encoding: "utf8" }).trim();
+  try {
+    // The pack carries the board; only its header row is gone.
+    const smuggled = await fixture(path.join(root, "smuggled"));
+    const bundleFile = smuggled.evidence["transfer-bundle"];
+    const withBoard = await buildTransferBundle(bundleFile, { extraRefs: { [HELD_BOARD_REF]: boardHead } });
+    assert.equal(withBoard[HELD_BOARD_REF], boardHead, "the bundle really carries the board ref before stripping");
+    await stripBundleHeaderRow(bundleFile, HELD_BOARD_REF, boardHead);
+    assert.deepEqual(bundleHeads(bundleFile), sharedBundleHeads, "the stripped bundle advertises exactly the approved refs");
+    await assert.rejects(
+      createReleasePacket({
+        commit: head, publicAncestor: parent, out: path.join(root, "packet-smuggled"), ...smuggled,
+        observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier,
+      }),
+      /carries 3 object\(s\) no allowlisted ref reaches/,
+    );
+
+    // The same bundle swapped into a VALID packet: verification is an independent audit of the
+    // retained bytes rather than a replay of creation's verdict.
+    const retained = await fixture(path.join(root, "retained"));
+    const out = path.join(root, "packet-retained");
+    await createReleasePacket({
+      commit: head, publicAncestor: parent, out, ...retained,
+      observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier,
+    });
+    const verify = () => verifyReleasePacket({
+      packet: path.join(out, "release-packet.json"),
+      retainedVerifier: syntheticRetainedVerifier,
+      observedSource: { commit: head, dirty: false },
+    });
+    await verify();
+    await replaceRetainedEvidence(out, "transfer-bundle", "transfer-bundle", await readFile(bundleFile));
+    await assert.rejects(verify(), /carries 3 object\(s\) no allowlisted ref reaches/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("packet creation and verification reject a transferable head that descends from the held board ref", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-descendant-"));
+  const boardHead = execFileSync("git", ["rev-parse", HELD_BOARD_REF], { cwd: sourceRoot, encoding: "utf8" }).trim();
+  const descendantRef = "refs/tags/v0.0.0-board-descendant";
+  try {
+    // Every object here IS reachable from an advertised ref, so the object-set rule is satisfied
+    // and only an ancestry rule can catch it: a child commit carries its parent's whole tree.
+    const descendant = commitUnreviewedContent(sourceRoot, {
+      message: "release note built on the board",
+      file: "NOTES.md",
+      body: "carries the board history behind it\n",
+      parent: boardHead,
+    });
+    execFileSync("git", ["update-ref", descendantRef, descendant], { cwd: sourceRoot, stdio: "pipe" });
+    const descended = await fixture(path.join(root, "descended"));
+    const heads = await buildTransferBundle(descended.evidence["transfer-bundle"], { extraRefs: { [descendantRef]: descendant } });
+    await writeRefEvidence(descended.evidence, heads);
+    await assert.rejects(
+      createReleasePacket({
+        commit: head, publicAncestor: parent, out: path.join(root, "packet-descended"), ...descended,
+        observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier,
+      }),
+      new RegExp(`transferable ref ${descendantRef}@${descendant} descends from withheld commit ${boardHead}`),
+    );
+    execFileSync("git", ["update-ref", "-d", descendantRef], { cwd: sourceRoot, stdio: "pipe" });
+
+    // At verify the rule runs against the enumeration the packet RECORDED, which is operator-
+    // supplied bytes and therefore exactly what must not be taken on trust.
+    const valid = await fixture(path.join(root, "valid"));
+    const out = path.join(root, "packet-valid");
+    await createReleasePacket({
+      commit: head, publicAncestor: parent, out, ...valid,
+      observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier,
+    });
+    const verify = () => verifyReleasePacket({
+      packet: path.join(out, "release-packet.json"),
+      retainedVerifier: syntheticRetainedVerifier,
+      observedSource: { commit: head, dirty: false },
+    });
+    await verify();
+    await rewritePacket(out, (packet) => {
+      packet.lifecycle.creation_repository_refs.find((entry) => entry.ref === HELD_BOARD_REF).sha = fixtureRepository.rootCommit;
+    });
+    await assert.rejects(verify(), new RegExp(`descends from withheld commit ${fixtureRepository.rootCommit}`));
+  } finally {
+    try { execFileSync("git", ["update-ref", "-d", descendantRef], { cwd: sourceRoot, stdio: "pipe" }); } catch {}
     await rm(root, { recursive: true, force: true });
   }
 });
