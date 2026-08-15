@@ -35,7 +35,7 @@ export type BlobKey = string;
  * Per OKF §4.1 the ONLY spec-required field is {@link Frontmatter.type}. All
  * other well-known fields are optional/recommended, and producers MAY add
  * arbitrary extra keys — consumers MUST preserve unknown keys on round-trip and
- * MUST NOT reject a document for carrying them (§9 permissive-consumption).
+ * MUST NOT reject a document for carrying them (OKF v0.1 §9 / v0.2 §11 permissive consumption).
  */
 export interface Frontmatter {
   /** REQUIRED, non-empty. Free-form kind of concept (e.g. `"BigQuery Table"`, `"Spec"`). Not centrally registered; consumers tolerate unknown values. */
@@ -50,7 +50,7 @@ export interface Frontmatter {
   tags?: string[];
   /** Legacy v0.1 ISO-8601 datetime of last meaningful change (`generated.at` is the v0.2 clock). */
   timestamp?: string;
-  /** Bundle-version marker; permitted ONLY in the bundle-root `index.md` frontmatter (§11). */
+  /** Bundle-version marker; permitted ONLY in the bundle-root `index.md` frontmatter (OKF v0.1 §11 / v0.2 §12). */
   okf_version?: string;
   /** Arbitrary producer-defined keys are permitted and preserved on round-trip. */
   [key: string]: unknown;
@@ -80,7 +80,7 @@ export interface Bundle {
   backend?: StorageBackend;
 }
 
-/** The two OKF reserved filenames the engine reads/writes directly (§6 index.md / §7 log.md). */
+/** The two OKF reserved filenames the engine reads/writes directly (v0.1 §6/§7; v0.2 §8/§9). */
 export type ReservedFilename = "index.md" | "log.md";
 
 /**

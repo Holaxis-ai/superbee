@@ -365,7 +365,8 @@ const VALID_FIELDS_KEYS = new Set([
  * Top-level convention-doc keys that are near-misses for the ONE correct enum-constraint shape
  * (`fields.values.<field>: [...]`) — the exact wrong shapes agents commonly reach for
  * reaching for (`enum:`, `enums:`, top-level `values:`, `constraints:`). This is a SMALL, DENY-
- * ADJACENT set, not a generic top-level-key linter: OKF §9 permits unknown frontmatter, and a
+ * ADJACENT set, not a generic top-level-key linter: OKF v0.1 §9 / v0.2 §11 permits unknown
+ * frontmatter, and a
  * bundle producer may legitimately add other top-level keys to a convention doc (title, tags,
  * whatever) — those get NO warning. Strict inside the blocks we own (`fields:`), permissive
  * everywhere else.

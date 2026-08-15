@@ -4,7 +4,7 @@
  * This is the ONLY module that touches the YAML layer; every other module works
  * with the already-parsed {@link Frontmatter}/body shapes. gray-matter delimits
  * frontmatter with `---` lines (OKF §4.1) and preserves unknown keys on
- * round-trip (OKF §9 permissive-consumption).
+ * round-trip (OKF v0.1 §9 / v0.2 §11 permissive consumption).
  */
 
 import matter from "gray-matter";

@@ -168,7 +168,7 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *  - `CliError` -> unchanged (already classified).
  *  - `BoardGitError` (structural guard, never `instanceof` — the dual-load hazard) -> the
  *    same-named `CliErrorCode`, message/details/help preserved verbatim.
- *  - `InvalidInputError` (core's typed input-validation rejection: unsafe/reserved ids, §9.2
+ *  - `InvalidInputError` (core's typed input-validation rejection: unsafe/reserved ids,
  *    empty type, bad option values) -> USAGE (2). This TYPE is the only path by which a
  *    non-`CliError` throw reaches USAGE — "fix your input" is a claim about the input, so it
  *    must be provably input-derived, never a fallback bucket.

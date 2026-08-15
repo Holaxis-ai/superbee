@@ -77,7 +77,8 @@ Every produced bundle must stay a valid OKF v0.1 or v0.2 Knowledge Bundle. Genui
 default to v0.2 without asking users to choose an edition; `init --okf-version 0.1` remains the
 explicit legacy-compatibility path. Existing bundles always retain their declared edition:
 
-- Frontmatter on every non-reserved `.md`, with a **required, non-empty `type`** (§9.2).
+- Frontmatter on every non-reserved `.md`, with a **required, non-empty `type`**
+  (OKF v0.1 §9; v0.2 §11).
 - `index.md` / `log.md` are **reserved** at any directory level (§3.1); only the bundle-root
   `index.md` may carry frontmatter, solely to declare `okf_version`.
 - **Cross-links are relative** bundle-relative markdown links (the form the reference graph

@@ -220,7 +220,7 @@ test("writeDocVersioned rejects every empty or non-string type before storage", 
       () => writeDocVersioned(bundle, doc(id, { type } as never)),
       (error: unknown) =>
         error instanceof InvalidInputError &&
-        error.message === `OKF §9.2: frontmatter.type is required and must be non-empty (concept '${id}').`,
+        error.message === `OKF conformance: frontmatter.type is required and must be non-empty (concept '${id}').`,
     );
   }
   assert.deepEqual(await bundle.backend!.list(), []);
