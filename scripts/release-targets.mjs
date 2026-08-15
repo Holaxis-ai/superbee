@@ -394,42 +394,42 @@ function assertDeclaredIdentity(label, value) {
   return value;
 }
 
+// This primitive owns the invariant that a release target is stated, never assumed, so it offers
+// no way to supply a target that stands in when identity is absent - a caller holding a default
+// would reproduce the silent redirect at every call site that consolidated onto it.
 export function resolveDeclaredTarget({
   targetId,
   packageName,
   targets = defaultReleaseTargets(),
   context = "release target",
   workflowContract,
-  fallbackTargetId,
 } = {}) {
   // Dropping a malformed identity would resolve some other target's package, so both identity
   // fields are rejected before either one is allowed to stand in for the other.
   assertDeclaredIdentity(`${context} target id`, targetId);
   assertDeclaredIdentity(`${context} package name`, packageName);
-  const normalizedTargetId = targetId ?? (packageName === undefined ? fallbackTargetId : undefined);
-  const normalizedPackageName = packageName;
   let target;
-  if (normalizedTargetId !== undefined) {
-    target = targets[assertTargetId(normalizedTargetId)];
-    if (!target) throw new Error(`${context} ${JSON.stringify(normalizedTargetId)} is not a declared release target`);
-  } else if (normalizedPackageName !== undefined) {
-    const inferredTargetId = targetFromPackageName(normalizedPackageName, targets);
+  if (targetId !== undefined) {
+    target = targets[assertTargetId(targetId)];
+    if (!target) throw new Error(`${context} ${JSON.stringify(targetId)} is not a declared release target`);
+  } else if (packageName !== undefined) {
+    const inferredTargetId = targetFromPackageName(packageName, targets);
     if (inferredTargetId === null) {
       const matches = Object.values(targets)
-        .filter((candidate) => candidate.package.name === normalizedPackageName)
+        .filter((candidate) => candidate.package.name === packageName)
         .map((candidate) => candidate.id)
         .sort();
       if (matches.length > 1) {
-        throw new Error(`${context} package ${normalizedPackageName} is ambiguous across targets ${matches.join(", ")}; explicit target required`);
+        throw new Error(`${context} package ${packageName} is ambiguous across targets ${matches.join(", ")}; explicit target required`);
       }
-      throw new Error(`${context} package ${normalizedPackageName} does not match any declared release target`);
+      throw new Error(`${context} package ${packageName} does not match any declared release target`);
     }
     target = targets[inferredTargetId];
   } else {
     throw new Error(`${context} requires an explicit target`);
   }
-  if (normalizedPackageName !== undefined && normalizedPackageName !== target.package.name) {
-    throw new Error(`${context} package ${normalizedPackageName} does not match target ${target.package.name}`);
+  if (packageName !== undefined && packageName !== target.package.name) {
+    throw new Error(`${context} package ${packageName} does not match target ${target.package.name}`);
   }
   return workflowContract ? assertWorkflowContract(target, workflowContract) : target;
 }

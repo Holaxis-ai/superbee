@@ -305,17 +305,38 @@ test("declared-target resolution rejects every non-string release identity", asy
       /test target package name must be a string/,
       `package-only ${JSON.stringify(packageName)}`,
     );
-    assert.throws(
-      () => resolveDeclaredTarget({ packageName, targets, context: "test target", fallbackTargetId: "bridge" }),
-      /test target package name must be a string/,
-      `fallback + ${JSON.stringify(packageName)}`,
-    );
   }
   for (const targetId of [null, 12345, { id: "bridge" }, ["bridge"]]) {
     assert.throws(
       () => resolveDeclaredTarget({ targetId, packageName: "@holaxis/aslite", targets, context: "test target" }),
       /test target target id must be a string/,
       `${JSON.stringify(targetId)} + packageName`,
+    );
+  }
+});
+
+test("no extra field can stand in for an absent release target", async () => {
+  const manifest = await loadReleaseTargets();
+  const targets = manifest.targets;
+  // Each of these is a plausible way to reintroduce a silent default into the shared primitive.
+  // Absent identity must stay unresolvable no matter what else the caller passes.
+  const redirects = [
+    { fallbackTargetId: "bridge" },
+    { fallbackTarget: "bridge" },
+    { defaultTargetId: "bridge" },
+    { target: "bridge" },
+    { targetId: undefined, packageName: undefined },
+  ];
+  for (const redirect of redirects) {
+    assert.throws(
+      () => resolveDeclaredTarget({ targets, context: "test target", ...redirect }),
+      /test target requires an explicit target/,
+      JSON.stringify(redirect),
+    );
+    assert.throws(
+      () => resolveDeclaredTarget({ targets, context: "test target", workflowContract: "full", ...redirect }),
+      /test target requires an explicit target/,
+      `${JSON.stringify(redirect)} + workflowContract`,
     );
   }
 });
