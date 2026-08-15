@@ -227,7 +227,9 @@ test("the cutover approval binds to the reviewed source tree, not to the manifes
   t.after(() => rm(scratch, { recursive: true, force: true }));
   await mkdir(path.join(scratch, "scripts"), { recursive: true });
   await mkdir(path.join(scratch, "release"), { recursive: true });
-  for (const relative of ["scripts/release-targets.mjs", "scripts/strict-semver.mjs", "release/burned-versions.json"]) {
+  // Every first-party module release-targets.mjs imports must exist in the scratch tree, or the
+  // foreign load fails on module resolution instead of on the approval this test is about.
+  for (const relative of ["scripts/release-targets.mjs", "scripts/strict-semver.mjs", "scripts/canonical-json.mjs", "release/burned-versions.json"]) {
     await copyFile(path.join(repoRoot, relative), path.join(scratch, relative));
   }
   const foreignManifestPath = path.join(scratch, "release", "targets.json");

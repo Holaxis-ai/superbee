@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { canonicalJsonString } from "./canonical-json.mjs";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -155,13 +156,7 @@ function sortedKeys(value) {
 }
 
 function canonicalJson(value) {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${sortedKeys(value).map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
-  }
-  const encoded = JSON.stringify(value);
-  if (encoded === undefined) throw new Error(`cutover policy surface cannot encode ${typeof value}`);
-  return encoded;
+  return canonicalJsonString(value, "cutover policy surface");
 }
 
 /**

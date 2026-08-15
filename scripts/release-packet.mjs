@@ -1,6 +1,7 @@
 // Generic, offline release-review packet authority. Provider state enters only as retained bytes
 // plus the deliberately small normalized ref assertions checked below.
 import { execFile } from "node:child_process";
+import { canonicalizeJsonValue } from "./canonical-json.mjs";
 import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -71,12 +72,6 @@ await init;
 
 export function canonicalJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
-}
-
-function canonicalizeJsonValue(value) {
-  if (Array.isArray(value)) return value.map(canonicalizeJsonValue);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalizeJsonValue(value[key])]));
 }
 
 function packetError(message) {

@@ -21,6 +21,7 @@
     "release/burned-versions.json",
     "release/review-packet-inputs.json",
     "release/targets.json",
+    "scripts/canonical-json.mjs",
     "scripts/is-main-module.mjs",
     "scripts/mutation-survivors.mjs",
     "scripts/prepublish-guard.mjs",
