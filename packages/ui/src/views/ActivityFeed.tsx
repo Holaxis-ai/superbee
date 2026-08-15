@@ -27,6 +27,7 @@ import { PAGE_TYPE_NAMES } from "../pages/registry.js";
 import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
+import { mutationActorFromFrontmatter } from "@superbee/core/mutation-attribution";
 
 /** How many rows the feed shows — recent pulse, not a history browser. */
 export const FEED_LIMIT = 8;
@@ -40,18 +41,7 @@ export interface FeedRow {
   version: string;
   kind: string;
   title: string;
-  /**
-   * The doc's `actor` label: WHOEVER WROTE LAST. Not the creator, not the claimer, and not the
-   * owner — a later write by anyone replaces it, and an unattributed write keeps the previous name
-   * while bumping the timestamp. Rendered as provenance ("attributed to …"), never as the subject
-   * of the row, because the row cannot honestly say this actor did any particular thing.
-   *
-   * The wording is load-bearing. "signed by" was rejected: in software that reads as
-   * CRYPTOGRAPHICALLY signed, and this label is self-declared, unverified, and explicitly not an
-   * authentication or authorization credential — the one field where implying verification is the
-   * specific failure mode. "attributed to" claims neither verification nor a particular action,
-   * and matches the vocabulary the rest of the codebase already uses for this field.
-   */
+  /** Advisory attribution for the latest attributed mutation; never ownership or authentication. */
   actor?: string;
   /** Lifecycle state, when the doc's kind declares one (e.g. a Task's `status`). */
   status?: string;
@@ -83,7 +73,7 @@ export function feedRows(heads: DocHead[]): FeedRow[] {
         version: h.version,
         kind: String(h.frontmatter.type ?? "Doc"),
         title: stringField(h.frontmatter.title) ?? h.id,
-        actor: stringField(h.frontmatter.actor),
+        actor: mutationActorFromFrontmatter(h.frontmatter),
         // Read GENERICALLY off frontmatter — any kind that declares these gets them; no Task
         // special-casing, and a bundle whose kinds declare neither renders exactly as before.
         status: stringField(h.frontmatter.status),

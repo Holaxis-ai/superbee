@@ -133,6 +133,7 @@ export async function buildCliBundle(outfile, options) {
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
+      "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
       "@superbee/core": r("../core/src/index.ts"),
       // The git tier lives in its own workspace package (board-git A1); alias to source so the
       // npm artifact stays ONE self-contained file with no dist pre-build.

@@ -82,6 +82,44 @@ describe("feedRows (pure projection)", () => {
     expect(note!.actor).toBe("codex");
   });
 
+  it("resolves mutation attribution through the shared edition-neutral precedence", () => {
+    const rows = feedRows([
+      head("notes/v02", {
+        type: "Context Note",
+        title: "V02",
+        superbee_updated_by: "  carol  ",
+        updated_by: "alice",
+        actor: "mike",
+        timestamp: "2026-07-23T12:00:00Z",
+      }),
+      head("notes/compat", {
+        type: "Context Note",
+        title: "Compat",
+        updated_by: " alice ",
+        actor: "mike",
+        timestamp: "2026-07-23T11:00:00Z",
+      }),
+      head("notes/v01", {
+        type: "Context Note",
+        title: "V01",
+        actor: " mike ",
+        timestamp: "2026-07-23T10:00:00Z",
+      }),
+      head("notes/none", {
+        type: "Context Note",
+        title: "None",
+        timestamp: "2026-07-23T09:00:00Z",
+      }),
+    ]);
+
+    expect(rows.map(({ id, actor }) => ({ id, actor }))).toEqual([
+      { id: "notes/v02", actor: "carol" },
+      { id: "notes/compat", actor: "alice" },
+      { id: "notes/v01", actor: "mike" },
+      { id: "notes/none", actor: undefined },
+    ]);
+  });
+
   it("falls back to the id for an untitled doc and caps at FEED_LIMIT", () => {
     const heads = Array.from({ length: FEED_LIMIT + 3 }, (_, i) =>
       head(`docs/d${i}`, { type: "Doc", timestamp: `2026-07-0${(i % 9) + 1}T00:00:00Z` }),

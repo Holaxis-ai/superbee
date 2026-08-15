@@ -34,7 +34,11 @@ const TASK_KIND = {
   id: "conventions/task",
   title: "Task",
   governs: "Task",
-  fields: { required: ["title", "status"], optional: ["priority", "assignee"], values: {} },
+  fields: {
+    required: ["title", "status"],
+    optional: ["priority", "assignee", "superbee_updated_by", "updated_by"],
+    values: {},
+  },
   linkTypes: {},
 };
 
@@ -88,6 +92,8 @@ describe("DocPage", () => {
           status: "in_progress",
           priority: "1",
           secret_internal: "never-a-chip",
+          superbee_updated_by: "  alice  ",
+          updated_by: "compat",
           actor: "mike",
           timestamp: "2026-07-21T10:00:00.000Z",
         },
@@ -107,6 +113,9 @@ describe("DocPage", () => {
     expect(chips).toContain("priority: 1");
     // An undeclared field is NEVER a chip — chips are the kind's vocabulary, not the doc's.
     expect(chips.join("|")).not.toContain("secret_internal");
+    expect(chips.join("|")).not.toContain("updated_by");
+    expect(container.querySelector(".doc-head-meta")!.textContent).toContain("alice");
+    expect(container.querySelector(".doc-head-meta")!.textContent).not.toContain("mike");
     expect(container.querySelector(".doc-body h1")!.textContent).toBe("Progress");
     expect(container.querySelector(".doc-body a")!.getAttribute("href")).toBe("?view=doc&id=designs%2Fdoc-reader");
     expect(container.querySelector(".doc-backlinks")!.textContent).toContain("plans/doc-reader-build");

@@ -13,7 +13,9 @@ function nonEmptyString(value: unknown): string | undefined {
  * The producer-qualified v0.2 extension wins. The remaining spellings preserve permissive
  * consumption of documents written before the extension existed.
  */
-export function mutationActorFromFrontmatter(frontmatter: Frontmatter): string | undefined {
+export function mutationActorFromFrontmatter(
+  frontmatter: Readonly<Record<string, unknown>>,
+): string | undefined {
   return nonEmptyString(frontmatter[SUPERBEE_UPDATED_BY_FIELD])
     ?? nonEmptyString(frontmatter.updated_by)
     ?? nonEmptyString(frontmatter.actor);
