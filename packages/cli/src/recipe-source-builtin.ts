@@ -5,7 +5,7 @@ import { parseRecipeFiles, type LoadedRecipe, type RecipeFile, type RecipeSource
 import { looksLikeRecipePath } from "./recipe-ref.js";
 import {
   CONTEXT_NOTE_KIND,
-  CONTEXT_NOTE_SEED_BODY,
+  CONTEXT_NOTE_SEED_BODY_LOGICAL,
   CONTEXT_NOTES_SUMMARY,
   RECIPE_DESC_BODY,
   TASK_KIND,
@@ -30,7 +30,7 @@ function unstampedConvention(kind: Parameters<typeof kindConventionDoc>[0], body
 }
 
 function buildContextNotesFiles(): RecipeFile[] {
-  const conv = unstampedConvention(CONTEXT_NOTE_KIND, CONTEXT_NOTE_SEED_BODY);
+  const conv = unstampedConvention(CONTEXT_NOTE_KIND, CONTEXT_NOTE_SEED_BODY_LOGICAL);
   return [
     {
       path: "recipe.md",

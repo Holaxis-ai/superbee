@@ -95,17 +95,20 @@ export const CONTEXT_NOTE_KIND: KindConvention = {
  * example of the ONE correct shape, right where an agent discovering `conventions/` will find it —
  * not just in a doc an agent may never read. Bodies are prose (the registry only parses
  * frontmatter, per `parseConventionDoc`), so a fenced YAML example here is inert to the parser
- * and purely illustrative. Moved VERBATIM from core's `CONTEXT_NOTE_SEED_BODY` (Recipes Unit A) —
- * this exact string, reused through the same `kindConventionDoc` serializer, is what guarantees
- * the on-disk `conventions/context-note.md` a recipe-zero `init` produces is BYTE-IDENTICAL
- * (modulo the always-dynamic `timestamp`) to what the old engine-side seeding produced.
+ * and purely illustrative. The source uses one explicit logical-field token so the recipe
+ * materializer can teach the physical workflow coordinate appropriate to the target OKF edition.
  */
-export const CONTEXT_NOTE_SEED_BODY =
+const RECIPE_PROGRESS_STATUS_TOKEN = "{{superbee:progress_status}}";
+
+export const CONTEXT_NOTE_SEED_BODY_LOGICAL =
   "# Context Note\n\n" +
   "An agent's cross-session orientation note: what happened, what was decided, and what's " +
   "still open. Create one with `new \"Context Note\" <id>` (scaffolds the `# Summary` section " +
   "under `context-notes/`), read it with `doc read`, and edit it with `doc update` / `doc " +
-  "write`. `status` surfaces this kind's 24h freshness horizon across the bundle.\n\n" +
+  "write`. This recipe retains `timestamp` as an explicit compatibility field and uses the " +
+  "Superbee-specific `freshness_horizon` Kind extension so `superbee status` can surface notes " +
+  "older than 24h. In an OKF v0.2 bundle, `generated.at` remains the standard meaningful-change " +
+  "clock when provenance is present.\n\n" +
   "## Declaring a kind convention\n\n" +
   "A kind convention is a plain OKF doc (`type: Convention`) living under `conventions/`. Its " +
   "FRONTMATTER is the only part core parses (this prose is not). Supported frontmatter keys:\n\n" +
@@ -123,7 +126,7 @@ export const CONTEXT_NOTE_SEED_BODY =
   "- `sections` — list of expected level-1 (`# Heading`) body-section names. Declare only the " +
   "headings EVERY instance must carry (this Context Note kind declares just `Summary`, the one " +
   "section `new \"Context Note\"` scaffolds and every instance carries).\n" +
-  "- `freshness_horizon` — `<n>(m|h|d)`, e.g. `24h`, `30d`, `15m`.\n\n" +
+  "- `freshness_horizon` — a Superbee Kind extension using `<n>(m|h|d)`, e.g. `24h`, `30d`, `15m`.\n\n" +
   "Worked example (a `Roadmap Item` kind, with an enum-restricted field and expected sections):\n\n" +
   "```yaml\n" +
   "---\n" +
@@ -133,18 +136,28 @@ export const CONTEXT_NOTE_SEED_BODY =
   "description: A durable line of work that groups related tasks.\n" +
   "path: roadmap/\n" +
   "fields:\n" +
-  "  required: [title, status]\n" +
+  `  required: [title, ${RECIPE_PROGRESS_STATUS_TOKEN}]\n` +
   "  optional: [horizon]\n" +
   "  values:\n" +
-  "    status: [planned, active, done]\n" +
+  `    ${RECIPE_PROGRESS_STATUS_TOKEN}: [planned, active, done]\n` +
   "  descriptions:\n" +
   "    title: A concise summary of the outcome.\n" +
-  "    status: The roadmap item's current lifecycle state.\n" +
+  `    ${RECIPE_PROGRESS_STATUS_TOKEN}: The roadmap item's current workflow progress.\n` +
   "    horizon: The expected delivery window.\n" +
   "sections: [Why, \"Done when\"]\n" +
   "freshness_horizon: 30d\n" +
   "---\n" +
   "```\n";
+
+function materializeRecipeBody(body: string, storageField: string): string {
+  return body.replaceAll(RECIPE_PROGRESS_STATUS_TOKEN, storageField);
+}
+
+/** V0.1 materialization retained for tests and direct recipe-content consumers. */
+export const CONTEXT_NOTE_SEED_BODY = materializeRecipeBody(
+  CONTEXT_NOTE_SEED_BODY_LOGICAL,
+  "status",
+);
 
 /** One-line description, shown by `recipes` and the command reference — the built-in `context-notes`
  * recipe's `recipe.md` manifest `summary:`. */
@@ -514,6 +527,7 @@ function materializeRecipeForEdition(
     return {
       ...doc,
       frontmatter: { ...doc.frontmatter, fields: materializedFields },
+      body: materializeRecipeBody(doc.body, storageField),
     };
   });
   return { ...recipe, docs };
