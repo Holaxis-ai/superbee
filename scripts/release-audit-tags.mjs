@@ -1,4 +1,6 @@
-// The scheduled release-policy audit (`npm run release:audit-tags`) for @holaxis/aslite. Fetches the
+// The scheduled release-policy audit (`npm run release:audit-tags`). It watches whichever package the
+// manifest's successor-stable tuple declares -- see `auditedPackage` below -- so it follows the rename
+// instead of staying pinned to the coordinate being retired. Fetches the
 // live packument (dist-tags + versions + publish times) and FAILS when the registry contradicts the
 // ratified release policy:
 //
@@ -41,6 +43,7 @@ import {
   registryUrlFor,
 } from "./release-publication-policy.mjs";
 import { resolveTags } from "./release-state.mjs";
+import { defaultReleaseManifest } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
 // Re-exported, not re-implemented: these are this CLI's documented contract surface (exit 20 vs 1),
@@ -59,7 +62,22 @@ export {
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
-export const PACKAGE = "@holaxis/aslite";
+/**
+ * The package this standing audit watches, derived from the manifest rather than written here.
+ *
+ * It was hardcoded to the retiring name, which meant that the moment the rename completed the
+ * audit would keep watching an abandoned package and never observe the live one — the exact drift
+ * it exists to catch. Reading it from the successor-stable tuple makes it follow the rename with
+ * no edit. `--package` overrides it for the transition window, when the old name is still live
+ * and worth a second look.
+ */
+export function auditedPackage(manifest = defaultReleaseManifest()) {
+  const tuple = manifest.allowed_tuples["successor-stable"];
+  if (!tuple?.package) throw new Error("release audit cannot resolve the successor-stable package from the release manifest");
+  return tuple.package;
+}
+
+export const PACKAGE = auditedPackage();
 export const REGISTRY_URL = registryUrlFor(PACKAGE);
 export const PHASES = ["at_rest", "staged", "approved", "promoted", "failed"];
 
@@ -239,6 +257,21 @@ function newestOf(versions) {
  * newest published version — that is what lets a candidate published to `next` only leave `latest`
  * where it is without the audit reading it as drift.
  */
+/**
+ * True only for a coordinate whose entire published history is one version that reserves the name:
+ * exactly one version, `latest` on it, no `next`, no other tag, and the manifest does not declare
+ * that version as a release tuple. Every clause is load-bearing — relaxing any of them would let a
+ * genuinely broken registry state read as "not started yet".
+ */
+export function isNameReservingPlaceholder({ versions, observedTags, destiny }) {
+  if (versions.length !== 1) return false;
+  const only = versions[0];
+  const tags = Object.keys(observedTags ?? {});
+  if (tags.length !== 1 || tags[0] !== "latest") return false;
+  if (observedTags.latest !== only) return false;
+  return destiny?.has?.(only) !== true; // a declared tuple version is a release, not a placeholder
+}
+
 export function expectedTagState({ declaration, versions, observedTags, destiny = defaultDistTagDestiny(PACKAGE) }) {
   const notes = [];
   const violations = [];
@@ -248,6 +281,18 @@ export function expectedTagState({ declaration, versions, observedTags, destiny 
   if (declaration.phase === "at_rest") {
     if (versions.length === 0) {
       violations.push(violation("package_unpublished", `${PACKAGE} has no published versions`));
+      return { expected: null, notes, violations };
+    }
+    // A coordinate that has never been released through this machinery cannot satisfy a policy
+    // written for one mid-lifecycle. The successor currently holds a single placeholder version
+    // reserving the name, with `latest` on it and no `next` — the state the cutover plan expects
+    // to find before any production change. Legal, and deliberately narrow: it stops applying the
+    // moment a second version exists, or `next` appears, or the manifest declares the published
+    // version, so the check re-arms by itself at the first real release.
+    if (isNameReservingPlaceholder({ versions, observedTags, destiny })) {
+      notes.push(
+        `${PACKAGE} holds only the name-reserving placeholder ${versions[0]} with no next tag; no release transaction has occurred on this coordinate`,
+      );
       return { expected: null, notes, violations };
     }
     if (!stableReached) {

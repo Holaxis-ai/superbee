@@ -1,7 +1,8 @@
 name: Release policy audit
 
 # Registry-observing enforcement of the release conventions (decisions/version-update-contract):
-# scripts/release-audit-tags.mjs compares the LIVE npm state of @holaxis/aslite (dist-tags,
+# scripts/release-audit-tags.mjs compares the LIVE npm state of the successor package the release
+# manifest declares (dist-tags,
 # published versions, publish times) plus packages/cli/package.json against the declared policy.
 #
 # Two authorities compose in that comparison and neither restates the other: scripts/release-state.mjs
