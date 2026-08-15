@@ -13,22 +13,55 @@
 // is the last step of the gate.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, rmSync } from "node:fs";
+import { cp, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createReleaseCandidate } from "./release-candidate.mjs";
-import { createReleasePacket, verifyReleasePacket, REF_ASSERTIONS_SCHEMA, TRANSFER_ALLOWLIST_SCHEMA } from "./release-packet.mjs";
+import { REF_ASSERTIONS_SCHEMA, TRANSFER_ALLOWLIST_SCHEMA } from "./release-packet.mjs";
 import { captureRepositorySettings } from "./release-settings-capture.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
-const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
-const liveTagRef = execFileSync("git", ["for-each-ref", "--count=1", "--format=%(refname)", "refs/tags"], { cwd: repoRoot, encoding: "utf8" }).trim();
 const gitAuthorArgs = ["-c", "user.name=packet-test", "-c", "user.email=packet-test@example.invalid"];
+const liveTagRef = "refs/tags/v0.1.0-pre.10";
+
+/**
+ * The candidates come from the REAL packer running in this checkout; the packet runs against a
+ * complete repository built from the same working tree. CI checks out at depth one, where the
+ * checked-out commit's parents do not exist locally, so no bundle containing that commit can carry
+ * a complete history and the packet's pack validator correctly refuses one. The artifacts under
+ * test are unaffected — they are built from this working tree either way.
+ */
+async function createFixtureRepository() {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-candidates-source-"));
+  for (const relative of execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean)) {
+    const from = path.join(repoRoot, relative);
+    if (!existsSync(from)) continue;
+    await mkdir(path.join(root, path.dirname(relative)), { recursive: true });
+    await cp(from, path.join(root, relative));
+  }
+  await mkdir(path.join(root, "node_modules"), { recursive: true });
+  for (const entry of await readdir(path.join(repoRoot, "node_modules"))) {
+    await symlink(path.join(repoRoot, "node_modules", entry), path.join(root, "node_modules", entry));
+  }
+  execFileSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", [...gitAuthorArgs, "commit", "--quiet", "-m", "candidate fixture source"], { cwd: root, stdio: "pipe" });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  execFileSync("git", ["update-ref", liveTagRef, commit], { cwd: root, stdio: "pipe" });
+  return { root, commit, module: await import(`${pathToFileURL(path.join(root, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`) };
+}
+
+const fixtureRepository = await createFixtureRepository();
+const sourceRoot = fixtureRepository.root;
+const head = fixtureRepository.commit;
+const { createReleasePacket, verifyReleasePacket } = fixtureRepository.module;
+process.on("exit", () => rmSync(sourceRoot, { recursive: true, force: true }));
 const SETTINGS_REPOSITORY = "packet-test-org/packet-test-repo";
 const GZIP_MAGIC = Buffer.from([0x1f, 0x8b]);
 
@@ -45,9 +78,8 @@ function settingsPayload() {
 
 function buildTransferBundle(bundleFile) {
   const source = `${bundleFile}-source`;
-  execFileSync("git", ["init", "--quiet", "--bare", "--template=", source], { stdio: "pipe" });
-  execFileSync("git", ["-C", source, "fetch", "--quiet", "--no-tags", repoRoot, `${head}:refs/heads/main`], { stdio: "pipe" });
-  execFileSync("git", ["-C", source, "fetch", "--quiet", "--no-tags", repoRoot, `${liveTagRef}:${liveTagRef}`], { stdio: "pipe" });
+  execFileSync("git", ["clone", "--quiet", "--bare", sourceRoot, source], { stdio: "pipe" });
+  execFileSync("git", ["-C", source, "update-ref", "refs/heads/main", head], { stdio: "pipe" });
   execFileSync("git", [...gitAuthorArgs, "-C", source, "notes", "--ref", "review", "add", "-m", "transfer review", "refs/heads/main"], { stdio: "pipe" });
   execFileSync("git", ["-C", source, "bundle", "create", bundleFile, "refs/heads/main", liveTagRef, "refs/notes/review"], { stdio: "pipe" });
   const heads = {};
@@ -117,8 +149,9 @@ async function packEveryCandidate(root) {
       // The packet runs the retained-tarball proof for every candidate; running it here too would
       // double the slowest step in this lane and prove nothing extra.
       verify: false,
-      // The test checkout carries the working-tree edits under test; the packet's own source
-      // binding is what proves the reviewed commit.
+      // The packer is real; only the source identity is supplied, and it is the fixture
+      // repository's commit — the same commit the packet binds itself to — so the candidate
+      // manifests and the packet agree on one reviewed source rather than two.
       sourceFacts: { commit: head, dirty: false },
     });
     candidates[id] = out;

@@ -11,7 +11,6 @@ import {
   REF_ASSERTIONS_SCHEMA,
   REVIEW_PACKET_SCHEMA,
   TRANSFER_ALLOWLIST_SCHEMA,
-  createReleasePacket,
   observedCheckout,
   parsePacketArgs,
   preparePacketOutputDir,
@@ -19,7 +18,6 @@ import {
   trackedSourceFiles,
   validatePacketInputManifest,
   validateRefAssertionsEnvelope,
-  verifyReleasePacket,
 } from "./release-packet.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
 import { captureRepositorySettings } from "./release-settings-capture.mjs";
@@ -27,23 +25,70 @@ import { captureRepositorySettings } from "./release-settings-capture.mjs";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
 const gitAuthorArgs = ["-c", "user.name=packet-test", "-c", "user.email=packet-test@example.invalid"];
-const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8" }).trim();
-const parent = head; // CI intentionally checks out depth one; synthetic P may equal R in unit fixtures.
-// A tag this repository actually holds, so the packet's live ref binding is exercised against real
-// repository state rather than an invented name.
-// CI checks out at depth one and fetches no tags, so this repository may genuinely hold none.
-// The packet enumerates the creating repository's real refs, so the premise has to be true rather
-// than mocked: create a fixture tag and remove it on exit when there is nothing to borrow.
-let liveTagRef = execFileSync("git", ["for-each-ref", "--count=1", "--format=%(refname)", "refs/tags"], { cwd: repoRoot, encoding: "utf8" }).trim();
-if (!liveTagRef) {
-  liveTagRef = "refs/tags/v0.0.0-packet-fixture";
-  execFileSync("git", ["-C", repoRoot, "update-ref", liveTagRef, head], { stdio: "pipe" });
-  process.on("exit", () => {
-    try {
-      execFileSync("git", ["-C", repoRoot, "update-ref", "-d", liveTagRef], { stdio: "pipe" });
-    } catch {}
-  });
+
+/**
+ * A complete repository for the packet to run against, built from this checkout's working tree.
+ *
+ * The packet's central claim is that the retained bundle carries a COMPLETE history rooted at the
+ * reviewed commit, and it proves that by unbundling the pack and walking every reachable object.
+ * CI checks out at depth one, where the checked-out commit's parents do not exist locally: no
+ * bundle containing that commit can be complete, and the validator correctly refuses one. (`git
+ * bundle create` still succeeds there, and `git bundle verify` still reports "The bundle records a
+ * complete history" — only a real unbundle catches it. That is the same class of hole as the
+ * truncated bundle this file already covers.)
+ *
+ * So the fixture stops borrowing the checkout's ancestry and builds its own: a root commit whose
+ * history is complete by construction, carrying the working tree under test. Every packet
+ * operation runs against this repository, through the packet module loaded FROM it, which is what
+ * `assertExecutionRoot` requires. That makes the suite behave identically at depth one and in a
+ * deep clone, and it stops the tests from creating and deleting refs in the developer's own
+ * repository to satisfy the live-ref enumeration.
+ */
+async function createFixtureRepository() {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-source-"));
+  const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean);
+  for (const relative of tracked) {
+    const from = path.join(repoRoot, relative);
+    if (!existsSync(from)) continue; // a staged deletion is not part of the tree under test
+    await mkdir(path.join(root, path.dirname(relative)), { recursive: true });
+    await cp(from, path.join(root, relative));
+  }
+  // A real directory, so the repository's own `node_modules/` ignore rule covers it; the packet
+  // module resolves its dependencies through the entries linked inside.
+  await mkdir(path.join(root, "node_modules"), { recursive: true });
+  for (const entry of await readdir(path.join(repoRoot, "node_modules"))) {
+    await symlink(path.join(repoRoot, "node_modules", entry), path.join(root, "node_modules", entry));
+  }
+  execFileSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
+  execFileSync("git", [...gitAuthorArgs, "commit", "--quiet", "-m", "packet fixture source"], { cwd: root, stdio: "pipe" });
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  execFileSync("git", ["update-ref", FIXTURE_TAG_REF, commit], { cwd: root, stdio: "pipe" });
+  const loaded = await import(`${pathToFileURL(path.join(root, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`);
+  return { root, commit, module: loaded };
 }
+
+/**
+ * A real, parentless commit carrying content the reviewer never saw. Written with plumbing so the
+ * fixture repository's HEAD, index and working tree stay exactly as the packet requires them, and
+ * so the commit's own history is complete — the bundle must be rejected for its SHA, not for a
+ * defect in the pack.
+ */
+function commitUnreviewedContent(root, { message, file, body }) {
+  const blob = execFileSync("git", ["hash-object", "-w", "--stdin"], { cwd: root, input: body, encoding: "utf8" }).trim();
+  const tree = execFileSync("git", ["mktree"], { cwd: root, input: `100644 blob ${blob}\t${file}\n`, encoding: "utf8" }).trim();
+  return execFileSync("git", [...gitAuthorArgs, "commit-tree", tree, "-m", message], { cwd: root, encoding: "utf8" }).trim();
+}
+
+const FIXTURE_TAG_REF = "refs/tags/v0.1.0-pre.10";
+const fixtureRepository = await createFixtureRepository();
+const sourceRoot = fixtureRepository.root;
+const { createReleasePacket, verifyReleasePacket } = fixtureRepository.module;
+const head = fixtureRepository.commit;
+const parent = head; // P and R coincide in unit fixtures; the ancestor relation is proven either way.
+const liveTagRef = FIXTURE_TAG_REF;
+process.on("exit", () => rmSync(sourceRoot, { recursive: true, force: true }));
+
 const syntheticRetainedVerifier = async ({ manifest }) => {
   const candidate = JSON.parse(await readFile(manifest, "utf8"));
   const packageIdentity = { name: candidate.package.name, version: candidate.version };
@@ -64,11 +109,12 @@ const syntheticRetainedVerifier = async ({ manifest }) => {
 async function buildTransferBundle(bundleFile, { mainCommit = head, tagCommit, extraTags = [] } = {}) {
   const source = path.join(path.dirname(bundleFile), `transfer-repo-${path.basename(bundleFile)}`);
   await rm(source, { recursive: true, force: true });
-  // Clone rather than init+fetch: CI checks out at depth one, and fetching FROM a shallow
-  // repository is rejected with "shallow roots are not allowed to be updated" — a warning that
-  // exits 0, so the ref is silently never created and the failure surfaces lines later. A bare
-  // clone copies the objects and every ref regardless of the source's depth.
-  execFileSync("git", ["clone", "--quiet", "--bare", repoRoot, source], { stdio: "pipe" });
+  // Clone rather than init+fetch: fetching FROM a repository is rejected when that repository is
+  // shallow ("shallow roots are not allowed to be updated" — a warning that exits 0, so the ref is
+  // silently never created and the failure surfaces lines later). A bare clone copies the objects
+  // and every ref. The source is the fixture repository, whose history is complete, so the bundle
+  // this produces can satisfy the packet's pack validator.
+  execFileSync("git", ["clone", "--quiet", "--bare", sourceRoot, source], { stdio: "pipe" });
   execFileSync("git", ["-C", source, "update-ref", "refs/heads/main", mainCommit], { stdio: "pipe" });
   const refs = ["refs/heads/main"];
   if (tagCommit === undefined) {
@@ -572,33 +618,31 @@ test("packet creation retains exactly five slots with detached self-free digest 
   }
 });
 
-test("packet creation and verification accept a clean detached source checkout", async (t) => {
-  if (execFileSync("git", ["status", "--porcelain"], { cwd: repoRoot, encoding: "utf8" }).trim()) {
-    t.skip("requires the test source to be committed before creating its exact detached checkout");
-    return;
-  }
+// This ran only when the developer's own tree happened to be clean. It now runs always, because
+// the checkout it detaches from is the fixture repository, which the suite controls.
+test("packet creation and verification accept a clean detached source checkout", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-detached-"));
-  const sourceRoot = path.join(root, "source");
+  const detachedRoot = path.join(root, "source");
   try {
-    execFileSync("git", ["worktree", "add", "--detach", sourceRoot, head], { cwd: repoRoot, stdio: "pipe" });
-    await mkdir(path.join(sourceRoot, "node_modules"), { recursive: true });
-    await cp(path.join(repoRoot, "node_modules", "es-module-lexer"), path.join(sourceRoot, "node_modules", "es-module-lexer"), { recursive: true });
-    const isolatedPacket = await import(`${pathToFileURL(path.join(sourceRoot, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`);
+    execFileSync("git", ["worktree", "add", "--detach", detachedRoot, head], { cwd: sourceRoot, stdio: "pipe" });
+    await mkdir(path.join(detachedRoot, "node_modules"), { recursive: true });
+    await symlink(path.join(repoRoot, "node_modules", "es-module-lexer"), path.join(detachedRoot, "node_modules", "es-module-lexer"));
+    const isolatedPacket = await import(`${pathToFileURL(path.join(detachedRoot, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`);
     const input = await fixture(root);
     const out = path.join(root, "packet");
-    await isolatedPacket.createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
-    await isolatedPacket.verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier });
-    await writeFile(path.join(sourceRoot, "ambient-untracked"), "must reject\n");
+    await isolatedPacket.createReleasePacket({ commit: head, publicAncestor: parent, out, ...input, root: detachedRoot, retainedVerifier: syntheticRetainedVerifier });
+    await isolatedPacket.verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: detachedRoot, retainedVerifier: syntheticRetainedVerifier });
+    await writeFile(path.join(detachedRoot, "ambient-untracked"), "must reject\n");
     await assert.rejects(
-      isolatedPacket.verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier }),
+      isolatedPacket.verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: detachedRoot, retainedVerifier: syntheticRetainedVerifier }),
       /checkout has non-ignored changes: \?\? ambient-untracked/,
     );
     await assert.rejects(
-      verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: sourceRoot, retainedVerifier: syntheticRetainedVerifier }),
+      verifyReleasePacket({ packet: path.join(out, "release-packet.json"), root: detachedRoot, retainedVerifier: syntheticRetainedVerifier }),
       /same checkout as --root|foreign checkout/i,
     );
   } finally {
-    execFileSync("git", ["worktree", "remove", "--force", sourceRoot], { cwd: repoRoot, stdio: "pipe" });
+    execFileSync("git", ["worktree", "remove", "--force", detachedRoot], { cwd: sourceRoot, stdio: "pipe" });
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -642,9 +686,15 @@ test("packet creation and verification reject a transfer bundle whose head commi
     observedSource: { commit: head, dirty: false }, retainedVerifier: syntheticRetainedVerifier,
   });
   try {
-    // Approved ref names over unreviewed content: main carries a commit that is not R.
+    // The review's own reproduction: a bundle whose refs carry the approved NAMES while main points
+    // at a tree the reviewer never saw. The commit is real and parentless, so the pack is complete
+    // and connected — the rejection has to come from the SHA binding, not from a broken bundle.
     const substituted = await fixture(path.join(root, "substituted"));
-    const otherCommit = execFileSync("git", ["rev-parse", "HEAD~1"], { cwd: repoRoot, encoding: "utf8" }).trim();
+    const otherCommit = commitUnreviewedContent(sourceRoot, {
+      message: "private board content",
+      file: "PRIVATE-BOARD-CONTENT.md",
+      body: "# held board state\n\nthis tree was never reviewed\n",
+    });
     const smuggledHeads = await buildTransferBundle(substituted.evidence["transfer-bundle"], { mainCommit: otherCommit });
     assert.deepEqual(Object.keys(smuggledHeads), Object.keys(sharedBundleHeads), "the smuggled bundle carries the approved ref names");
     assert.notEqual(smuggledHeads["refs/heads/main"], sharedBundleHeads["refs/heads/main"]);
@@ -705,7 +755,13 @@ test("packet creation binds transfer evidence to the refs the creating repositor
     // Internally consistent evidence — bundle and envelopes agree — whose tag is not the commit
     // this repository holds under that name. Only a live enumeration can catch it.
     const stale = await fixture(path.join(root, "stale"));
-    const staleTagCommit = execFileSync("git", ["rev-parse", "HEAD~2"], { cwd: repoRoot, encoding: "utf8" }).trim();
+    // A real commit the repository does not hold under that tag name: the bundle and the envelopes
+    // agree with each other perfectly, and only the live enumeration can tell that they are stale.
+    const staleTagCommit = commitUnreviewedContent(sourceRoot, {
+      message: "superseded tag target",
+      file: "SUPERSEDED.md",
+      body: "# an earlier tag target\n\nthe repository has since moved this tag\n",
+    });
     const staleHeads = await buildTransferBundle(stale.evidence["transfer-bundle"], { tagCommit: staleTagCommit });
     await writeRefEvidence(stale.evidence, staleHeads);
     await assert.rejects(
@@ -715,26 +771,28 @@ test("packet creation binds transfer evidence to the refs the creating repositor
 
     const cutover = await fixture(path.join(root, "cutover"));
     const reservedTag = targetManifest.allowed_tuples["successor-stable"].tag;
-    execFileSync("git", ["tag", reservedTag, head], { cwd: repoRoot, stdio: "pipe" });
+    execFileSync("git", ["tag", reservedTag, head], { cwd: sourceRoot, stdio: "pipe" });
     try {
       await assert.rejects(
         create(cutover, "packet-cutover"),
         new RegExp(`protected release tag refs/tags/${reservedTag.replaceAll(".", "\\.")} already exists in the creating repository`),
       );
     } finally {
-      execFileSync("git", ["tag", "-d", reservedTag], { cwd: repoRoot, stdio: "pipe" });
+      execFileSync("git", ["tag", "-d", reservedTag], { cwd: sourceRoot, stdio: "pipe" });
     }
 
     const recorded = await fixture(path.join(root, "recorded"));
     const { packet } = await create(recorded, "packet-recorded");
-    const liveRefs = execFileSync("git", ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags", "refs/notes"], { cwd: repoRoot, encoding: "utf8" })
+    const liveRefs = execFileSync("git", ["for-each-ref", "--format=%(objectname) %(refname)", "refs/heads", "refs/tags", "refs/notes"], { cwd: sourceRoot, encoding: "utf8" })
       .split("\n").filter(Boolean)
       .map((line) => ({ ref: line.split(" ")[1], sha: line.split(" ")[0] }))
       .sort((a, b) => (a.ref < b.ref ? -1 : 1));
     assert.deepEqual(packet.lifecycle.creation_repository_refs, liveRefs, "the packet records the enumeration it checked");
-    assert.deepEqual(packet.lifecycle.transfer_refs_confirmed_at_create, [liveTagRef]);
-    assert.deepEqual(packet.lifecycle.transfer_refs_unobserved_at_create, ["refs/heads/main", "refs/notes/review"]);
-    assert.match(packet.lifecycle.claim, /held 1 of 3 allowlisted refs/);
+    // The creating repository holds main at R and holds the tag; it has never held the notes ref.
+    // Both sides of the partition are exercised, and the claim reports what was actually confirmed.
+    assert.deepEqual(packet.lifecycle.transfer_refs_confirmed_at_create, ["refs/heads/main", liveTagRef].sort());
+    assert.deepEqual(packet.lifecycle.transfer_refs_unobserved_at_create, ["refs/notes/review"]);
+    assert.match(packet.lifecycle.claim, /held 2 of 3 allowlisted refs/);
     assert.match(packet.lifecycle.claim, /Nothing here proves the state of any remote repository/);
 
     // The recorded enumeration is what verification re-runs the same rules against.
@@ -914,7 +972,7 @@ test("packet argument parsing rejects unknown flags", () => {
 
 test("packet verification binds to the clean checked-out HEAD and verified summary fields", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-binding-"));
-  const dirtyFile = path.join(repoRoot, ".packet-test-dirty");
+  const dirtyFile = path.join(sourceRoot, ".packet-test-dirty");
   try {
     const input = await fixture(root);
     const out = path.join(root, "packet");
