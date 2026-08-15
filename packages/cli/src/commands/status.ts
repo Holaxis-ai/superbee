@@ -67,9 +67,10 @@ Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
 isn't in the bundle — informational, since OKF permits links to not-yet-written knowledge; external
 links are excluded entirely), an orphan scan (concept docs with zero inbound links from OTHER
-concept docs), a freshness sweep over kinds that declare a horizon (a governed doc older than it is
-'stale'; a governed doc with no usable timestamp — missing OR malformed — is counted
-'no_timestamp'), and two graph lints over any declared 'links'/'expects_inbound' vocabulary (see
+concept docs), a freshness sweep over OKF v0.2 'stale_after' dates and kinds that declare a horizon
+(an elapsed absolute date or exceeded horizon is 'stale'; a horizon-governed doc with no usable
+meaningful-change time is counted 'no_timestamp'), and two graph lints over any declared
+'links'/'expects_inbound' vocabulary (see
 'kinds --help'): edges violating a declared typed-edge type ('link_type_violations') and kind
 instances missing a declared inbound expectation ('missing_expected_links'), plus two lints over
 the bundle's View surface (legacy locations included; the legacy 'Page' kind name no longer
@@ -100,8 +101,8 @@ Category semantics (one line each):
                       not content, and nothing is expected to cite them — so they are NOT
                       special-cased out of the count or the rows; the 'type' column on each row is
                       how you tell schema from content at a glance.
-  stale              A governed doc (its type has a declared kind with a freshness horizon) whose
-                      timestamp is older than that horizon.
+  stale              An OKF v0.2 doc on/after its 'stale_after' date, or a governed doc whose
+                      meaningful-change time is older than its kind's freshness horizon.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
   registry_warnings  Malformed convention docs THEMSELVES (loadKinds' own warnings) — a problem in
@@ -395,21 +396,27 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     if (!inbound.has(doc.id)) orphanRows.push({ id: doc.id, type: docType(doc) });
   }
 
-  // Freshness sweep: only over kinds that declare a horizon (feeding the EXISTING
-  // `FreshnessOptions.maxAgeMs` via `freshness()` itself — no forked verdict logic).
+  // One freshness authority handles both standard v0.2 `stale_after` and optional Kind horizons.
   const now = new Date();
   const staleRows: Record<string, unknown>[] = [];
   const noTimestampRows: Record<string, unknown>[] = [];
   for (const doc of docs) {
     const kind = registry.kinds.get(docType(doc));
-    if (!kind) continue;
-    const horizonMs = freshnessHorizonMs(kind);
-    if (horizonMs === undefined) continue;
-    const result = freshness(doc, { maxAgeMs: horizonMs, now });
-    if (result.verdict === "empty") {
+    const horizonMs = kind ? freshnessHorizonMs(kind) : undefined;
+    const staleAfter = okfVersion === "0.2" && typeof doc.frontmatter.stale_after === "string"
+      ? doc.frontmatter.stale_after
+      : undefined;
+    if (horizonMs === undefined && staleAfter === undefined) continue;
+    const result = freshness(doc, { maxAgeMs: horizonMs, now, okfVersion });
+    if (result.verdict === "empty" && horizonMs !== undefined) {
       noTimestampRows.push({ id: doc.id, type: docType(doc) });
     } else if (result.verdict === "stale") {
-      staleRows.push({ id: doc.id, age_ms: result.ageMs, horizon_ms: horizonMs });
+      staleRows.push({
+        id: doc.id,
+        ...(result.ageMs === undefined ? {} : { age_ms: result.ageMs }),
+        ...(horizonMs === undefined ? {} : { horizon_ms: horizonMs }),
+        ...(staleAfter === undefined ? {} : { stale_after: staleAfter }),
+      });
     }
   }
 
