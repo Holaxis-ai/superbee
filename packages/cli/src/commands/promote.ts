@@ -7,7 +7,7 @@
 // the blob-layer's own `.md` rejection and silently miss the concept-document namespace entirely)
 // — is a DOC: the FILE is parsed with core's ONE frontmatter parser (`parseMarkdown`) and written
 // through the shared mutation policy (doc id = the key minus `.md`, via `conceptIdFromPath` —
-// reserved-filename rejection and OKF §9.2 (non-empty `type`) come FREE from the engine, no
+// reserved-filename rejection and the OKF non-empty-`type` rule come FREE from the engine, no
 // reimplementation here). A governing kind convention is validated exactly as `doc write` (the SAME
 // shared helper, B8 — warn-by-default, `--strict` rejects). Every OTHER key routes through
 // `writeBlob` (opaque bytes + a content-type, never parsed). `--content-type` with a `.md` key is a
@@ -56,8 +56,8 @@ Usage:
 Routes by the --doc-key's target (checked case-insensitively):
   A key ending '.md' is a DOC: the file is parsed as an OKF concept (YAML frontmatter + markdown
   body) and written through the engine — doc id = the key minus '.md'. The file's OWN frontmatter
-  is passed through verbatim (no CLI metadata flags on this route — edit the file locally, that is
-  the whole loop). A governing kind convention is validated exactly like 'doc write' (warn-by-
+  supplies the document metadata (no CLI metadata flags on this route — edit the file locally,
+  that is the whole loop). A governing kind convention is validated exactly like 'doc write' (warn-by-
   default; --strict rejects, exit 2, no write). --content-type is a USAGE error on this route.
   Any OTHER key is a BLOB: opaque bytes + a content-type, never parsed or normalized.
 
@@ -68,8 +68,10 @@ CONFLICT (exit 5) whose envelope carries the CURRENT version, so you can re-pull
 edit -> re-promote without a second discovery call.
 
 Locally (--dir) this is a convenience — the files ARE the store — but a .md promote still doubles
-as IMPORT+NORMALIZE (frontmatter key order, a defaulted timestamp, kind validation), same as 'doc
-write'. Over --remote it is load-bearing: there is no other way to get bytes into a served bundle.
+as IMPORT+NORMALIZE (edition-aware frontmatter normalization and kind validation), same as 'doc
+write'. Current v0.2 imports do not invent optional generated metadata or the legacy timestamp;
+explicit v0.1 bundles retain their historical defaulted timestamp. Over --remote it is load-bearing:
+there is no other way to get bytes into a served bundle.
 
 The receipt's content_type reports the WRITE-TIME resolution (override, else inferred from the
 key's extension) — history-less backends (the local filesystem) do not persist an explicit
@@ -324,7 +326,7 @@ function promoteWriteErrorToCliError(err: unknown, key: string, file: string, re
     );
   }
   // Anything else lands on the one boundary: a typed InvalidInputError (reserved-id, unsafe-id,
-  // §9.2) → USAGE, a RemoteError by ITS code (AUTH_REQUIRED/FORBIDDEN/…), an unexpected
+  // empty type) → USAGE, a RemoteError by ITS code (AUTH_REQUIRED/FORBIDDEN/…), an unexpected
   // failure → RUNTIME.
   return classifyBundleError(err, remoteUrl);
 }

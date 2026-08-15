@@ -93,7 +93,7 @@ export function resolveOkfAuthoringVersion(requested?: string): string {
 
 /**
  * Initialize (or open) an OKF bundle at `root`. Creates the directory and a root
- * `index.md` carrying `okf_version` frontmatter (§11 — the sole place any
+ * `index.md` carrying `okf_version` frontmatter (OKF v0.1 §11 / v0.2 §12 — the sole place any
  * index.md may carry frontmatter). Idempotent: an existing `index.md` is left
  * untouched. Filesystem-backed by construction (creating a bundle is inherently
  * a local operation; a remote store is provisioned out of band).
@@ -138,7 +138,9 @@ function assertWritableConceptDocument(doc: OkfDocument): string {
 
   const type = doc.frontmatter?.type;
   if (typeof type !== "string" || type.trim() === "") {
-    throw new InvalidInputError(`OKF §9.2: frontmatter.type is required and must be non-empty (concept '${doc.id}').`);
+    throw new InvalidInputError(
+      `OKF conformance: frontmatter.type is required and must be non-empty (concept '${doc.id}').`,
+    );
   }
   return type;
 }
@@ -146,7 +148,7 @@ function assertWritableConceptDocument(doc: OkfDocument): string {
 /**
  * Atomically write (create or overwrite) a concept document to `<id>.md` and
  * surface the backend's {@link WriteResult} (the normalized document + its version
- * token). Enforces OKF §9.2 (non-empty `type`), rejects reserved-file ids, preserves
+ * token). Enforces the OKF non-empty `type` rule (v0.1 §9 / v0.2 §11), rejects reserved-file ids, preserves
  * unknown frontmatter keys, and applies the bundle edition's document-shape policy. A v0.1
  * document retains the historical guaranteed `timestamp`; a v0.2 document does not invent the
  * optional `generated` family or legacy clock fields.

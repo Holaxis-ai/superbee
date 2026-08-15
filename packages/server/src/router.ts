@@ -6,7 +6,7 @@
  *
  * ONE-ENGINE RULE: this module contains NO parsing/link/OKF logic of its own.
  * Doc WRITES route through the engine (`writeDocVersioned` from `@superbee/core`)
- * so server-side OKF enforcement (§9.2 non-empty `type`, id safety, reserved-file
+ * so server-side OKF enforcement (non-empty `type`, id safety, reserved-file
  * rejection) comes free — the engine keeps ALL semantics, the router only maps
  * HTTP <-> the `StorageBackend` seam. Reads / list / versions / reserved-file
  * access go through the bundle's `StorageBackend` DIRECTLY (protocol principle 2:

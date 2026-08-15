@@ -29,6 +29,16 @@ import { commandReference } from "../src/reference.js";
 import { applyRecipe } from "../src/recipes.js";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 
+test("promote --help describes edition-aware document normalization", async () => {
+  let out = "";
+  await promote(["--help"], { stdout: (s) => (out += s) });
+
+  assert.match(out, /edition-aware frontmatter normalization and kind validation/);
+  assert.match(out, /Current v0\.2 imports do not invent optional generated metadata or the legacy timestamp/);
+  assert.match(out, /explicit v0\.1 bundles retain their historical defaulted timestamp/);
+  assert.doesNotMatch(out, /frontmatter key order, a defaulted timestamp/);
+});
+
 async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "agentstate-lite-promote-pull-test-"));
 }
@@ -353,7 +363,7 @@ test("promote .md: no usable frontmatter is a USAGE error naming the FILE PATH, 
         assert.equal(err.code, "USAGE");
         assert.match(err.message, new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
         assert.match(err.message, /frontmatter/);
-        assert.doesNotMatch(err.message, /concept 'specs\/x'/); // never the bare engine §9.2 wording
+        assert.doesNotMatch(err.message, /concept 'specs\/x'/); // never the bare engine conformance wording
         assert.match(err.help ?? "", /new --help/);
         return true;
       },
