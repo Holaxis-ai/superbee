@@ -16,7 +16,6 @@ import {
   normalizeReceiptStatusBody,
   parseAuxiliaryReleaseAssetName,
   parseReceiptFile,
-  policyTagFor,
   receiptAssetName,
   receiptEmissionCommands,
   releaseTier,
@@ -51,9 +50,10 @@ function sha256Bytes(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
-function stageReceiptFor(version) {
+function stageReceiptFor(version, policyTag = "next") {
   const tarball = `holaxis-aslite-${version}.tgz`;
   return buildStageReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: "sha256:" + "c".repeat(64),
@@ -61,7 +61,7 @@ function stageReceiptFor(version) {
     version,
     tag: `v${version}`,
     sourceCommit: COMMIT,
-    policyTag: policyTagFor(version),
+    policyTag,
     tarballSha256: TARBALL_SHA,
     tarballFilename: tarball,
     integrity: INTEGRITY,
@@ -177,9 +177,6 @@ test("tier + naming authorities", () => {
   assert.equal(releaseTier(STABLE), "stable");
   assert.equal(releaseTier("1.0.0+build-1"), "stable", "a hyphen in build metadata does not make a prerelease");
   assert.equal(releaseTier("1.0.0-pre.1+build-1"), "prerelease", "prerelease identity survives build metadata");
-  assert.equal(policyTagFor(PRE), "next");
-  assert.equal(policyTagFor(STABLE), "latest");
-  assert.equal(policyTagFor("1.0.0+build-1"), "latest");
   assert.equal(receiptAssetName("inspected", STAGE_ID), `receipt-inspected-${STAGE_ID}.json`);
   assert.equal(stampAssetName(STAGE_ID), `receipt-status-${STAGE_ID}.json`);
   assert.ok(parseAuxiliaryReleaseAssetName(`receipt-approved-${STAGE_ID}.json`, { mode: "pre-stage" }));
@@ -213,6 +210,7 @@ test("TIER MATRIX — prerelease with both receipts reaches approved_public, no 
   const result = evaluate(PRE);
   assert.equal(result.tier, "prerelease");
   assert.equal(result.state, "approved_public");
+  assert.equal(result.public_tag, "next");
   assert.deepEqual(result.missing, []);
   assert.equal(result.stamp_required, false);
   assert.deepEqual(result.actors, { inspected: "briand-ai", approved: "briand-ai" });
@@ -233,6 +231,12 @@ test("split inspector and approver identities pass in both directions and both t
       assert.deepEqual(result.actors, { inspected: inspector, approved: approver });
     }
   }
+});
+
+test("approved_public consumes the staged manifest tag instead of deriving a second policy", () => {
+  const result = evaluate(STABLE);
+  assert.equal(result.state, "approved_public");
+  assert.equal(result.public_tag, "next");
 });
 
 test("TIER MATRIX — prerelease missing inspection passes WITH stamp, ledger stays staged", () => {
@@ -528,7 +532,7 @@ test("publication executor is empirically mutation-free in dry-run and live uses
     chmodSync(ghStub, 0o755);
     const dryPublish = spawnSync(process.execPath, [
       path.join(repoRoot, "scripts", "release-run-operations.mjs"),
-      "--op", "immutable-release", "--version", PRE, "--release-id", "300",
+      "--op", "immutable-release", "--version", PRE, "--release-id", "300", "--github-latest", "false",
     ], {
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASLITE_TEST_PUBLISH_LOG: publishLog },

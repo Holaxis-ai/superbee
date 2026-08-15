@@ -16,8 +16,8 @@ on:
       target:
         description: "Release target from release/targets.json"
         type: choice
-        options: ["successor", "bridge", "rehearsal-reject", "rehearsal-approve"]
-        default: "successor"
+        options: ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"]
+        default: "successor-stable"
       mode:
         description: "dry-run (default) prints operations; live stages through the release environment"
         type: choice
@@ -48,6 +48,8 @@ jobs:
       commit: ${{ steps.facts.outputs.commit }}
       version: ${{ steps.facts.outputs.version }}
       policy_tag: ${{ steps.facts.outputs.policy_tag }}
+      npm_promote_tag: ${{ steps.facts.outputs.npm_promote_tag }}
+      github_latest: ${{ steps.facts.outputs.github_latest }}
       workflow_contract: ${{ steps.facts.outputs.workflow_contract }}
       tarball_filename: ${{ steps.candidate.outputs.tarball_filename }}
       tarball_sha256: ${{ steps.candidate.outputs.tarball_sha256 }}
@@ -67,7 +69,7 @@ jobs:
             TAG="$GITHUB_REF_NAME"
             node scripts/release-resolve-target.mjs --tag "$TAG" --github-output "$GITHUB_OUTPUT"
           else
-            TARGET="${INPUT_TARGET:-successor}"
+            TARGET="${INPUT_TARGET:-successor-stable}"
             FACTS="$(node scripts/release-resolve-target.mjs --target "$TARGET" --json)"
             TAG="$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).tag)' "$FACTS")"
             node scripts/release-resolve-target.mjs --target "$TARGET" --github-output "$GITHUB_OUTPUT"

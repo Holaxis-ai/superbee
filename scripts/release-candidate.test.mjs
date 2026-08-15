@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,10 +13,10 @@ import {
   prepareCandidateOutputDir,
 } from "./release-candidate.mjs";
 import { verifyRetainedTarball, fileSha256 } from "./verify-npm-package.mjs";
+import { loadReleaseTargets } from "./release-targets.mjs";
 import { buildCli } from "../packages/cli/build.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const cliPackageJson = path.join(repoRoot, "packages", "cli", "package.json");
 
 function headCommit() {
   try {
@@ -35,7 +35,7 @@ test("parseCandidateArgs validates the tag shape and 40-hex commit", () => {
     out: "release-candidate",
     json: false,
   });
-  assert.equal(parseCandidateArgs(["--target", "successor", "--tag", "v1.2.3", "--commit", "b".repeat(40), "--out", "cand", "--json"]).json, true);
+  assert.equal(parseCandidateArgs(["--target", "successor-preview", "--tag", "v0.1.1-pre.1", "--commit", "b".repeat(40), "--out", "cand", "--json"]).json, true);
   assert.throws(() => parseCandidateArgs(["--target", "bridge", "--tag", "1.2.3", "--commit", "a".repeat(40)]), /v-prefixed SemVer/);
   assert.throws(() => parseCandidateArgs(["--target", "bridge", "--tag", "v1.2.3", "--commit", "xyz"]), /40-hex/);
   assert.throws(() => parseCandidateArgs(["--commit", "a".repeat(40)]), /usage:/);
@@ -91,7 +91,7 @@ test("build once, pack once: the retained manifest's SHA-256 is the tarball's ac
     t.skip("requires a git checkout and npm_execpath (run via npm)");
     return;
   }
-  const version = JSON.parse(await readFile(cliPackageJson, "utf8")).version;
+  const version = (await loadReleaseTargets()).allowed_tuples.bridge.version;
   const out = await mkdtemp(path.join(tmpdir(), "aslite-candidate-"));
   try {
     const { candidate, tarballPath, outDir } = await createReleaseCandidate({
@@ -132,6 +132,7 @@ test("verifyRetainedTarball fails closed when the tarball bytes do not match the
     await writeFile(
       manifestPath,
       JSON.stringify({
+        target: "bridge",
         tarball: { sha256: "sha256:" + "0".repeat(64) }, // deliberately wrong
         build_identity: { artifact: { channel: "npm-package" } },
       }),
@@ -173,6 +174,25 @@ test("verifyRetainedTarball fails closed when the recorded release-target agreem
   }
 });
 
+test("custom-root retained verification binds the sibling burn ledger", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-custom-burn-"));
+  try {
+    const targets = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
+    targets.allowed_tuples["successor-preview"].version = "0.1.0-pre.10";
+    targets.allowed_tuples["successor-preview"].tag = "v0.1.0-pre.10";
+    const targetsPath = path.join(scratch, "targets.json");
+    await writeFile(targetsPath, JSON.stringify(targets));
+    await writeFile(path.join(scratch, "burned-versions.json"), JSON.stringify({ burned: [{ version: "0.1.0-pre.10", reason: "burned fixture" }] }));
+    const tarball = path.join(scratch, "candidate.tgz");
+    await writeFile(tarball, "not a tarball\n");
+    const manifest = path.join(scratch, "candidate.json");
+    await writeFile(manifest, JSON.stringify({ target: "successor-preview", tarball: { sha256: await fileSha256(tarball) } }));
+    await assert.rejects(verifyRetainedTarball({ tarball, manifest, targetsPath }), /uses burned version/);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
+
 test("verifyRetainedTarball fails closed when no manifest is supplied (QA finding #2)", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "aslite-nomanifest-"));
   try {
@@ -197,5 +217,135 @@ test("the retained-tarball verifier path contains no build or pack call (structu
   const retainedRegion = source.slice(at); // to EOF: only the retained fn + CLI dispatch follow
   for (const token of ["build.mjs", "npm pack", "buildCli", '"pack"']) {
     assert.ok(!retainedRegion.includes(token), `retained verifier must not reference ${JSON.stringify(token)}`);
+  }
+});
+
+test("retained verification rejects a real same-shape tarball relabeled across rehearsal slots", async (t) => {
+  const commit = headCommit();
+  if (!commit || !process.env.npm_execpath) {
+    t.skip("requires a git checkout and npm_execpath (run via npm)");
+    return;
+  }
+  const targets = await loadReleaseTargets();
+  const sourceTuple = targets.allowed_tuples["rehearsal-reject"];
+  const claimedTuple = targets.allowed_tuples["rehearsal-approve"];
+  const out = await mkdtemp(path.join(tmpdir(), "superbee-cross-slot-"));
+  try {
+    const result = await createReleaseCandidate({
+      target: sourceTuple.target,
+      tag: sourceTuple.tag,
+      commit,
+      out,
+      verify: false,
+      sourceFacts: { commit, dirty: false },
+    });
+    const accepted = await verifyRetainedTarball({ tarball: result.tarballPath, manifest: result.manifestPath });
+    assert.equal(accepted.package, `${sourceTuple.package}@${sourceTuple.version}`);
+    const relabeledTarball = path.join(out, `superbee-release-rehearsal-${claimedTuple.version}.tgz`);
+    await cp(result.tarballPath, relabeledTarball);
+    const relabeled = structuredClone(result.candidate);
+    relabeled.target = claimedTuple.target;
+    relabeled.tag = claimedTuple.tag;
+    relabeled.version = claimedTuple.version;
+    relabeled.build_identity.package.version = claimedTuple.version;
+    relabeled.tarball.filename = path.basename(relabeledTarball);
+    relabeled.tarball.version = claimedTuple.version;
+    relabeled.tarball.path = relabeledTarball;
+    const relabeledManifest = path.join(out, "candidate-relabeled.json");
+    await writeFile(relabeledManifest, `${JSON.stringify(relabeled, null, 2)}\n`);
+
+    await assert.rejects(
+      verifyRetainedTarball({ tarball: relabeledTarball, manifest: relabeledManifest }),
+      /installed package coordinate does not match the reviewed tuple/,
+    );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await buildCli("local-dev");
+  }
+});
+
+test("retained verification rejects a real Superbee tarball relabeled across successor preview/stable tuples", async (t) => {
+  const commit = headCommit();
+  if (!commit || !process.env.npm_execpath) {
+    t.skip("requires a git checkout and npm_execpath (run via npm)");
+    return;
+  }
+  const targets = await loadReleaseTargets();
+  const sourceTuple = targets.allowed_tuples["successor-preview"];
+  const claimedTuple = targets.allowed_tuples["successor-stable"];
+  const out = await mkdtemp(path.join(tmpdir(), "superbee-successor-cross-slot-"));
+  try {
+    const result = await createReleaseCandidate({
+      target: sourceTuple.target,
+      tag: sourceTuple.tag,
+      commit,
+      out,
+      verify: false,
+      sourceFacts: { commit, dirty: false },
+    });
+    const accepted = await verifyRetainedTarball({ tarball: result.tarballPath, manifest: result.manifestPath });
+    assert.equal(accepted.package, `${sourceTuple.package}@${sourceTuple.version}`);
+    const relabeledTarball = path.join(out, `superbee-${claimedTuple.version}.tgz`);
+    await cp(result.tarballPath, relabeledTarball);
+    const relabeled = structuredClone(result.candidate);
+    relabeled.target = claimedTuple.target;
+    relabeled.tag = claimedTuple.tag;
+    relabeled.version = claimedTuple.version;
+    relabeled.build_identity.package.version = claimedTuple.version;
+    relabeled.tarball.filename = path.basename(relabeledTarball);
+    relabeled.tarball.version = claimedTuple.version;
+    relabeled.tarball.path = relabeledTarball;
+    const relabeledManifest = path.join(out, "candidate-successor-relabeled.json");
+    await writeFile(relabeledManifest, `${JSON.stringify(relabeled, null, 2)}\n`);
+
+    await assert.rejects(
+      verifyRetainedTarball({ tarball: relabeledTarball, manifest: relabeledManifest }),
+      /installed package coordinate does not match the reviewed tuple/,
+    );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await buildCli("local-dev");
+  }
+});
+
+test("retained verification rejects omitted or self-attested compatibility claims on a real candidate", async (t) => {
+  const commit = headCommit();
+  if (!commit || !process.env.npm_execpath) {
+    t.skip("requires a git checkout and npm_execpath (run via npm)");
+    return;
+  }
+  const targets = await loadReleaseTargets();
+  const tuple = targets.allowed_tuples["successor-preview"];
+  const out = await mkdtemp(path.join(tmpdir(), "superbee-compatibility-proof-"));
+  try {
+    const result = await createReleaseCandidate({
+      target: tuple.target,
+      tag: tuple.tag,
+      commit,
+      out,
+      verify: false,
+      sourceFacts: { commit, dirty: false },
+    });
+    const omitted = structuredClone(result.candidate);
+    delete omitted.compatibility_contracts;
+    const omittedManifest = path.join(out, "candidate-compatibility-omitted.json");
+    await writeFile(omittedManifest, `${JSON.stringify(omitted, null, 2)}\n`);
+    await assert.rejects(
+      verifyRetainedTarball({ tarball: result.tarballPath, manifest: omittedManifest }),
+      /candidate compatibility contracts do not agree/,
+    );
+
+    const selfAttested = structuredClone(result.candidate);
+    selfAttested.compatibility_contracts = { skill: 99, hook: 99, mcp: 99 };
+    selfAttested.build_identity.compatibility_contracts = structuredClone(selfAttested.compatibility_contracts);
+    const selfAttestedManifest = path.join(out, "candidate-compatibility-self-attested.json");
+    await writeFile(selfAttestedManifest, `${JSON.stringify(selfAttested, null, 2)}\n`);
+    await assert.rejects(
+      verifyRetainedTarball({ tarball: result.tarballPath, manifest: selfAttestedManifest }),
+      /embedded compatibility contracts do not match the candidate build identity/,
+    );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await buildCli("local-dev");
   }
 });

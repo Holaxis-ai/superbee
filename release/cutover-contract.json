@@ -1,0 +1,18 @@
+{
+  "schema": "superbee.cutover-contract.v1",
+  "semantics": {
+    "what": "Detached human approval of the Superbee cutover roster and of the publication policy each reviewed target carries. release/targets.json stays the only place these values are written; this file records that a reviewer approved exactly that roster and exactly those values. It holds digests, never copies, so no policy value is declared in two places.",
+    "surface": "Per target the approved digest covers: package name, allow_production, workflow_contract, tuple outcome, tuple production flag, and the full publication policy (npm_tag, npm_promote_tag, github_latest). Versions and tags are deliberately outside the digest - they move within an already-approved target and are governed by release/burned-versions.json, the functional successor floor, and the v<version> tag binding.",
+    "authority": "Enrolling a target, retiring one, or moving a publication policy value in release/targets.json invalidates the approval recorded here and fails every load of the manifest. Re-approval is therefore a second, separately reviewed change to a second file: it cannot be smuggled in as a manifest edit.",
+    "lifecycle": "The failure names each drifted target and prints both the approved digest and the digest the manifest now declares, alongside the exact surface that produced it. Re-approving means reading that surface, agreeing to it, and writing the declared digest here in the same reviewed commit as the manifest change."
+  },
+  "reviewed_at": "2026-08-15",
+  "review": "PR #9 remediation, finding F6: roster and publication policy need an authority a manifest edit alone cannot satisfy.",
+  "targets": {
+    "bridge": { "policy_sha256": "sha256:4f63928fb332e1d2d08e34d71725b3ae5d9128349cd1c1b428a88c79cde1259a" },
+    "successor-stable": { "policy_sha256": "sha256:1e2023ac6134dc87c3a6863a3157dea92f6b33196ee8b984d07ba6fe1d283bdd" },
+    "successor-preview": { "policy_sha256": "sha256:dde6b982f17a12ab0e19f306e5387998aa910ceeae0121f2c1981c5e30347052" },
+    "rehearsal-reject": { "policy_sha256": "sha256:014c15d5f3e143b794db52d7f7f228651615fc36a674edc987a66d8d30037b25" },
+    "rehearsal-approve": { "policy_sha256": "sha256:03850208c9385e74d65ea274c9167a8a80adc72259ae467184c893ae42429429" }
+  }
+}

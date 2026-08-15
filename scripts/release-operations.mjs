@@ -9,13 +9,28 @@
 // Normative source: version-update-protocols.md §5. Single authority so the workflow, the receipt
 // instructions, and the tests never drift.
 
-import { assertWorkflowContract, defaultReleaseTargets, stageDownloadFilenameForTarget } from "./release-targets.mjs";
+import {
+  defaultReleaseManifest,
+  defaultReleaseTargets,
+  resolveAllowedTupleByTarget,
+  resolveDeclaredTarget,
+  stageDownloadFilenameForTarget,
+} from "./release-targets.mjs";
 import { assertStrictSemver } from "./strict-semver.mjs";
 
-function targetFor(targetId = "bridge") {
-  const target = defaultReleaseTargets()[targetId];
-  if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
-  return assertWorkflowContract(target);
+/**
+ * Which package an operation names is NEVER defaulted. A missing target used to resolve to the
+ * bridge, so a superbee rollback invoked without one silently emitted registry commands against
+ * @holaxis/aslite. The shared resolver fails closed on an absent, unknown, non-string, or
+ * identity-only target.
+ */
+function targetFor(targetId) {
+  return resolveDeclaredTarget({
+    targetId,
+    targets: defaultReleaseTargets(),
+    context: "release operation",
+    workflowContract: "full",
+  });
 }
 
 // A safe token for ids/tags/filenames: alphanumerics and . _ - only, and NOT dash-leading — a
@@ -41,6 +56,12 @@ function assertSha256(value) {
   return value;
 }
 
+function assertBooleanish(name, value) {
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  throw new Error(`invalid ${name}: ${JSON.stringify(value)}`);
+}
+
 /** Shell-quote an argv element for DISPLAY only (never for execution). */
 function q(arg) {
   if (/^[A-Za-z0-9._@/:=,+-]+$/.test(arg)) return arg;
@@ -55,7 +76,7 @@ function op(argv, extra = {}) {
 }
 
 /** `npm stage download <id>` + local SHA-256 compare — the mandatory pre-approval inspection. */
-export function inspectionInstructions({ stageId, tarballSha256, version, target = "bridge" }) {
+export function inspectionInstructions({ stageId, tarballSha256, version, target }) {
   const releaseTarget = targetFor(target);
   assertToken("stageId", stageId);
   assertSha256(tarballSha256);
@@ -86,13 +107,13 @@ export function approveOperation({ stageId }) {
 }
 
 /** Move a secondary dist-tag (e.g. float `next` to a prerelease candidate). */
-export function secondaryTagOperation({ version, tag, target = "bridge" }) {
+export function secondaryTagOperation({ version, tag, target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
 }
 
 /** Remove a stale secondary tag (e.g. drop `next` once stable makes it redundant). */
-export function removeSecondaryTagOperation({ tag, target = "bridge" }) {
+export function removeSecondaryTagOperation({ tag, target }) {
   const releaseTarget = targetFor(target);
   return op(["npm", "dist-tag", "rm", releaseTarget.package.name, assertToken("tag", tag)]);
 }
@@ -102,7 +123,7 @@ export function removeSecondaryTagOperation({ tag, target = "bridge" }) {
  * deprecate the failed version WITH the recovery command as the message. Returns argvs + display
  * commands.
  */
-export function rollbackOperation({ failedVersion, priorVersion, track = "next", target = "bridge", recoveryTarget = target }) {
+export function rollbackOperation({ failedVersion, priorVersion, track = "next", target, recoveryTarget = target }) {
   const releaseTarget = targetFor(target);
   const recovery = targetFor(recoveryTarget);
   assertVersion(failedVersion);
@@ -120,7 +141,7 @@ export function rollbackOperation({ failedVersion, priorVersion, track = "next",
  * Human-readable registry inspection commands. The strict integrity/signature/provenance/install
  * proof is performed by release-verify-registry.mjs in the separately dispatched finalizer.
  */
-export function registryVerifyOperations({ version, target = "bridge" }) {
+export function registryVerifyOperations({ version, target }) {
   const releaseTarget = targetFor(target);
   assertVersion(version);
   const coord = `${releaseTarget.package.name}@${version}`;
@@ -136,23 +157,47 @@ export function registryVerifyOperations({ version, target = "bridge" }) {
   };
 }
 
-/** Interactive dist-tag promotion after registry proof (§5 promoted). */
-export function promoteOperation({ version, tag = "latest", target = "bridge" }) {
+/**
+ * Interactive dist-tag promotion after registry proof (§5 promoted). npm 11.15 trusted publishing
+ * is publish-scoped — `npm dist-tag add` performs no OIDC token exchange — so this is an OPERATOR
+ * action with 2FA, like `npm stage approve`, never something a workflow can run for them.
+ */
+export function promoteOperation({ version, tag, target }) {
   const releaseTarget = targetFor(target);
-  return op(["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)]);
+  return op(
+    ["npm", "dist-tag", "add", `${releaseTarget.package.name}@${assertVersion(version)}`, assertToken("tag", tag)],
+    { requires_2fa: true },
+  );
+}
+
+/**
+ * The promotion the reviewed tuple DECLARES for this target: `publication.npm_promote_tag`, the
+ * same manifest field every other consumer of the publication policy reads. Promotion is performed
+ * by a human, so this command is the ONLY instruction they get for it and must not be restated
+ * from another value — the stage tag (`publication.npm_tag`) is what npm already holds, and
+ * promoting to it is a no-op that leaves the declared end state unreached. Returns null when the
+ * tuple declares no promotion (bridge and both rehearsal tuples), so the caller OMITS the
+ * operation rather than emitting an empty or no-op command.
+ */
+export function promoteOperationForTarget({ version, target }) {
+  const releaseTarget = targetFor(target);
+  const tuple = resolveAllowedTupleByTarget(defaultReleaseManifest(), { target: releaseTarget.id });
+  if (tuple.publication.npm_promote_tag === null) return null;
+  return promoteOperation({ version, tag: tuple.publication.npm_promote_tag, target: releaseTarget.id });
 }
 
 /**
  * Immutable-release finalization (§5 final): publish the PREPARED GitHub draft (never create a new
  * one) after re-verifying its identity. Returns argvs + display commands.
  */
-export function immutableReleaseOperations({ releaseId, tag }) {
+export function immutableReleaseOperations({ releaseId, tag, githubLatest }) {
   assertToken("releaseId", releaseId);
   assertToken("tag", tag);
+  const makeLatest = assertBooleanish("githubLatest", githubLatest);
   const releasePath = `repos/{owner}/{repo}/releases/${releaseId}`;
   const argvs = [
     ["gh", "api", releasePath, "--jq", ".draft, .tag_name, .id"],
-    ["gh", "api", "-X", "PATCH", releasePath, "-f", "draft=false", "-f", "make_latest=true"],
+    ["gh", "api", "-X", "PATCH", releasePath, "-f", "draft=false", "-f", `make_latest=${makeLatest}`],
   ];
   return { argvs, commands: argvs.map(displayCommand), tag };
 }

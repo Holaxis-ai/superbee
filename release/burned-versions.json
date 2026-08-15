@@ -25,6 +25,10 @@
     {
       "version": "0.1.0-pre.9",
       "reason": "tag v0.1.0-pre.9 points at 0574913c, whose release-verify-registry.mjs feeds npm audit signatures a lockfile-only scratch install (nothing installed, nothing auditable \u2014 live run 31532497412); finalize checks out scripts from the dispatched tag ref, so the immovable tag can never pass registry-verify; never staged or published"
+    },
+    {
+      "version": "0.1.0-pre.10",
+      "reason": "tag v0.1.0-pre.10 points at f64586194abb8b01c3167092effb02ca6b2c24dc rather than the reviewed packet-authority repair source; the immutable tag cannot represent bridge bytes; never published or staged"
     }
   ]
 }

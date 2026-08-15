@@ -31,7 +31,9 @@ const EXPLICIT_OPERATOR_EXECUTABLE_PATHS = [
   "scripts/migrate-legacy-view-names.mjs",
   "scripts/rename-literal-inventory.mjs",
   "scripts/release-inspect.mjs",
+  "scripts/release-packet.mjs",
   "scripts/release-reconcile.mjs",
+  "scripts/release-settings-capture.mjs",
 ];
 const LEGACY_MAIN_GUARD_PATTERNS = [
   /process\.argv\[1\][\s\S]{0,200}fileURLToPath\(import\.meta\.url\)/,
@@ -133,9 +135,19 @@ const OWNED_ENTRYPOINT_PROBES = [
     expected: { code: 1, stderr: /unknown argument "--unknown"/ },
   },
   {
+    relativePath: "scripts/release-packet.mjs",
+    args: () => [],
+    expected: { code: 1, stderr: /usage: npm run release:packet/ },
+  },
+  {
     relativePath: "scripts/release-reconcile.mjs",
     args: () => [],
     expected: { code: 1, stderr: /usage: release-reconcile\.mjs --to <state> --receipt <file\|->/ },
+  },
+  {
+    relativePath: "scripts/release-publication-policy.mjs",
+    args: () => [],
+    expected: { code: 2, stderr: /usage: release-publication-policy\.mjs verify/ },
   },
   {
     relativePath: "scripts/release-resolve-target.mjs",
@@ -146,6 +158,11 @@ const OWNED_ENTRYPOINT_PROBES = [
     relativePath: "scripts/release-run-operations.mjs",
     args: () => ["--op", "reject", "--stage-id", "STAGE-1"],
     expected: { code: 0, stdout: /npm stage reject STAGE-1/ },
+  },
+  {
+    relativePath: "scripts/release-settings-capture.mjs",
+    args: () => [],
+    expected: { code: 1, stderr: /usage: release-settings-capture\.mjs --repo <OWNER\/NAME> --out <file\|-> \[--source <file\|->\]/ },
   },
   {
     relativePath: "scripts/release-verify-chain.mjs",
@@ -382,8 +399,11 @@ test("positive executable authority comes from declarations plus explicit operat
     "scripts/release-audit-tags.mjs",
     "scripts/release-candidate.mjs",
     "scripts/release-emit-receipt.mjs",
+    "scripts/release-packet.mjs",
+    "scripts/release-publication-policy.mjs",
     "scripts/release-resolve-target.mjs",
     "scripts/release-run-operations.mjs",
+    "scripts/release-settings-capture.mjs",
     "scripts/release-verify-chain.mjs",
     "scripts/release-verify-ordering.mjs",
     "scripts/release-verify-registry.mjs",

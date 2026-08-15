@@ -1,47 +1,67 @@
-// Registry-observing release-policy audit (`npm run release:audit-tags`). Fetches the live
-// packument for @holaxis/aslite (dist-tags + versions + publish times) and FAILS when the
-// registry contradicts the ratified release policy:
+// The scheduled release-policy audit (`npm run release:audit-tags`) for @holaxis/aslite. Fetches the
+// live packument (dist-tags + versions + publish times) and FAILS when the registry contradicts the
+// ratified release policy:
 //
-//   a. dist-tag state for the phase declared in release/phase.json, with the expected tags
-//      computed by scripts/release-state.mjs `resolveTags` — the one policy authority;
+//   a. dist-tag state for the phase declared in release/phase.json. Two authorities compose here and
+//      neither restates the other: scripts/release-state.mjs `resolveTags` owns the PHASE MACHINE,
+//      and release/targets.json owns which dist-tags a version may ever carry — derived by
+//      `distTagDestiny` in scripts/release-publication-policy.mjs, the module this one reads policy
+//      from. The manifest decides eligibility, resolveTags decides the transient window.
 //   b. version scheme: pre-stable publishes are `A.B.0-pre.N` with N contiguous from 1 and
 //      publish times monotone in N (decisions/version-update-contract §1);
 //   c. source-vs-registry drift: packages/cli/package.json must be the newest published
 //      version (pre-release-prep) or one sane increment ahead (staged-prep).
 //
-// NETWORK vs VIOLATION is structural, not textual: unreachable/unhealthy registry throws
-// NetworkUnavailableError -> exit 20 (CI turns that into a loud neutral skip); a policy
-// violation exits 1; usage errors exit 2. Deliberately NOT part of the offline `npm run check`
-// chain — ordinary gates run with the network off.
+// NETWORK vs VIOLATION is structural, not textual: an unreachable/unhealthy registry throws
+// NetworkUnavailableError -> exit 20 (CI turns that into a loud neutral skip, because this audit is a
+// lint); a policy violation exits 1; usage errors exit 2. Deliberately NOT part of the offline
+// `npm run check` chain — ordinary gates run with the network off.
+//
+// The finalizer's pre-mutation precondition over the same policy derivation is a different entry
+// point with a different failure contract: scripts/release-publication-policy.mjs verify.
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { isMainModule } from "./is-main-module.mjs";
+import {
+  EXIT_NETWORK,
+  EXIT_PASS,
+  EXIT_USAGE,
+  EXIT_VIOLATION,
+  NetworkUnavailableError,
+  classifyRegistryStatus,
+  defaultDistTagDestiny,
+  describeDestiny,
+  eligibleFor,
+  fetchRegistryState,
+  mayHoldDistTag,
+  parsePackument,
+  registryUrlFor,
+} from "./release-publication-policy.mjs";
 import { resolveTags } from "./release-state.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
+
+// Re-exported, not re-implemented: these are this CLI's documented contract surface (exit 20 vs 1),
+// and release-publication-policy.mjs is their single owner.
+export {
+  EXIT_NETWORK,
+  EXIT_PASS,
+  EXIT_USAGE,
+  EXIT_VIOLATION,
+  NetworkUnavailableError,
+  classifyRegistryStatus,
+  fetchRegistryState,
+  parsePackument,
+  registryUrlFor,
+};
 
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 export const PACKAGE = "@holaxis/aslite";
-export const REGISTRY_URL = "https://registry.npmjs.org/@holaxis%2faslite";
-export const EXIT_PASS = 0;
-export const EXIT_VIOLATION = 1;
-export const EXIT_USAGE = 2;
-export const EXIT_NETWORK = 20;
-const FETCH_TIMEOUT_MS = 30_000;
-const MAX_BODY_BYTES = 20 * 1024 * 1024;
-
+export const REGISTRY_URL = registryUrlFor(PACKAGE);
 export const PHASES = ["at_rest", "staged", "approved", "promoted", "failed"];
-
-/** Registry unreachable or unhealthy — the audit cannot evaluate policy. Never a red. */
-export class NetworkUnavailableError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "NetworkUnavailableError";
-  }
-}
 
 const PRERELEASE_SCHEME = /^(\d+)\.(\d+)\.(\d+)-pre\.([1-9]\d*)$/;
 const SEMVER =
@@ -212,11 +232,14 @@ function newestOf(versions) {
 }
 
 /**
- * Expected dist-tag state for the declared phase, computed via `resolveTags`. The audit derives
- * the priors (the at-rest known-good: newest published, excluding an in-flight candidate) and the
- * policy state machine maps (kind, phase, candidate, priors) -> expected tags.
+ * Expected dist-tag state for the declared phase. Two authorities compose here, each owning exactly
+ * one thing: the PUBLICATION MANIFEST owns which dist-tags a version may ever carry (`destiny`), and
+ * `resolveTags` owns the transient window a transaction passes through. The priors handed to the
+ * phase machine are therefore the newest published version ELIGIBLE for each tag, not simply the
+ * newest published version — that is what lets a candidate published to `next` only leave `latest`
+ * where it is without the audit reading it as drift.
  */
-export function expectedTagState({ declaration, versions, observedTags }) {
+export function expectedTagState({ declaration, versions, observedTags, destiny = defaultDistTagDestiny(PACKAGE) }) {
   const notes = [];
   const violations = [];
   const stable = versions.filter((v) => parseSemver(v)?.prerelease.length === 0);
@@ -228,15 +251,33 @@ export function expectedTagState({ declaration, versions, observedTags }) {
       return { expected: null, notes, violations };
     }
     if (!stableReached) {
-      // Pre-stable at rest: latest == next == newest published prerelease (contract §1).
-      const rest = newestOf(versions);
-      return { expected: resolveTags({ kind: "prerelease", phase: "at_rest", priorLatest: rest, priorNext: rest }), notes, violations };
+      // Pre-stable at rest: latest == next == newest published prerelease (contract §1) — except
+      // that a version the manifest publishes to `next` only can never take `latest`, so each tag
+      // rests on the newest version eligible for it.
+      const restLatest = newestOf(eligibleFor(destiny, versions, "latest"));
+      const restNext = newestOf(eligibleFor(destiny, versions, "next"));
+      if (!restLatest) {
+        violations.push(violation("no_latest_eligible_version", `no published version of ${PACKAGE} is eligible to hold dist-tag latest under the publication manifest`));
+        return { expected: null, notes, violations };
+      }
+      if (restLatest !== restNext) {
+        notes.push(`latest rests on ${restLatest}: the publication manifest declares ${restNext} as ${describeDestiny(destiny, restNext)}`);
+      }
+      return { expected: resolveTags({ kind: "prerelease", phase: "at_rest", priorLatest: restLatest, priorNext: restNext }), notes, violations };
     }
-    // Post-stable at rest: latest is the newest stable; next only for a genuine newer preview.
-    const newestStable = newestOf(stable);
+    // Post-stable at rest: latest is the newest latest-eligible stable; next only for a genuine
+    // newer preview the manifest actually publishes to next.
+    const newestStable = newestOf(eligibleFor(destiny, stable, "latest"));
+    if (!newestStable) {
+      violations.push(violation("no_latest_eligible_version", `no published stable version of ${PACKAGE} is eligible to hold dist-tag latest under the publication manifest`));
+      return { expected: null, notes, violations };
+    }
     const observedNext = observedTags?.next;
     const genuinePreview =
-      observedNext && versions.includes(observedNext) && compareSemver(observedNext, newestStable) > 0
+      observedNext &&
+      versions.includes(observedNext) &&
+      mayHoldDistTag(destiny, observedNext, "next") &&
+      compareSemver(observedNext, newestStable) > 0
         ? observedNext
         : undefined;
     if (genuinePreview) notes.push(`next=${genuinePreview} accepted as a genuine published preview newer than latest`);
@@ -247,13 +288,15 @@ export function expectedTagState({ declaration, versions, observedTags }) {
     };
   }
 
-  // Transaction phases: priors = newest published excluding the candidate.
+  // Transaction phases: priors = newest published EXCLUDING the candidate, per tag.
   // Assumes npm staged-but-unapproved versions do NOT appear in the public packument; if npm
   // stage semantics differ, the candidate reads as published earlier and the tolerated staged
   // window simply lengthens — no other logic depends on the assumption.
   const { phase, kind, version } = declaration;
-  const prior = newestOf(versions.filter((v) => v !== version));
-  if (!prior) {
+  const priorVersions = versions.filter((v) => v !== version);
+  const priorLatest = newestOf(eligibleFor(destiny, priorVersions, "latest"));
+  const priorNext = newestOf(eligibleFor(destiny, priorVersions, "next"));
+  if (!priorLatest || !priorNext) {
     violations.push(violation("no_prior_release", `phase ${phase} declared but no published prior release exists to hold latest`));
     return { expected: null, notes, violations };
   }
@@ -265,21 +308,36 @@ export function expectedTagState({ declaration, versions, observedTags }) {
   let expected;
   if ((phase === "staged" || phase === "approved") && !candidatePublished) {
     // npm cannot point a dist-tag at an unpublished version: expect the at-rest prior state.
-    notes.push(`candidate ${version} not yet published; expecting tags to still hold the prior known-good ${prior}`);
-    expected = resolveTags({ kind, phase: "at_rest", priorLatest: prior, priorNext: prior });
+    notes.push(`candidate ${version} not yet published; expecting tags to still hold the prior known-good latest=${priorLatest} next=${priorNext}`);
+    expected = resolveTags({ kind, phase: "at_rest", priorLatest, priorNext });
   } else {
-    expected = resolveTags({ kind, phase, version, priorLatest: prior, priorNext: prior });
+    expected = resolveTags({ kind, phase, version, priorLatest, priorNext });
+  }
+  // A declared phase that would place the candidate on a dist-tag the manifest never gives it is a
+  // contradiction between two committed files, not a tolerable transition. Red it, and hold the
+  // expectation at the prior so the remaining comparison still says something useful.
+  for (const tag of ["latest", "next"]) {
+    if (expected[tag] !== version || mayHoldDistTag(destiny, version, tag)) continue;
+    violations.push(
+      violation(
+        "phase_contradicts_publication_policy",
+        `phase ${phase} expects dist-tag ${tag} to hold ${version}, but the publication manifest declares ${version} as ${describeDestiny(destiny, version)}`,
+      ),
+    );
+    expected = { ...expected, [tag]: tag === "latest" ? priorLatest : priorNext };
   }
   if (expected.deprecate) {
     notes.push(`policy expects ${expected.deprecate} to be deprecated (deprecation state is not observed by this audit)`);
   }
   // Transition tolerance: the tag flips (promotion, rollback restore) cannot land atomically with
   // the reviewed phase-file commit, so any phase of the DECLARED transaction is accepted; red only
-  // when the observed tags match NO transaction state (kind + candidate + priors fixed).
+  // when the observed tags match NO transaction state (kind + candidate + priors fixed). A state
+  // the publication manifest forbids is NOT tolerated — tolerance covers timing, never policy.
   const accepted = [];
   for (const p of [phase, "staged", "approved", "promoted", "failed"]) {
-    const t = resolveTags({ kind, phase: p, version, priorLatest: prior, priorNext: prior });
+    const t = resolveTags({ kind, phase: p, version, priorLatest, priorNext });
     if (!candidatePublished && (t.latest === version || t.next === version)) continue;
+    if (["latest", "next"].some((tag) => t[tag] === version && !mayHoldDistTag(destiny, version, tag))) continue;
     if (!accepted.some((a) => a.tags.latest === t.latest && a.tags.next === t.next)) {
       accepted.push({ phase: p, tags: { latest: t.latest, next: t.next } });
     }
@@ -395,7 +453,7 @@ export function checkSourceDrift(sourceVersion, versions, burnedVersions = []) {
  * The pure audit over one registry snapshot. Returns { violations, notes, facts }; empty
  * violations means the registry, phase declaration, and source agree with policy.
  */
-export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [] }) {
+export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [], destiny = defaultDistTagDestiny(PACKAGE) }) {
   const { distTags, versions, time } = registry;
   const violations = [];
   const notes = [];
@@ -403,7 +461,7 @@ export function auditRegistryState({ declaration, sourceVersion, registry, burne
   violations.push(...checkVersionScheme(versions, time, burnedVersions));
   violations.push(...checkDeclarationConsistency(declaration, sourceVersion));
 
-  const tagState = expectedTagState({ declaration, versions, observedTags: distTags });
+  const tagState = expectedTagState({ declaration, versions, observedTags: distTags, destiny });
   violations.push(...tagState.violations);
   notes.push(...tagState.notes);
   if (tagState.expected) {
@@ -454,65 +512,6 @@ export function auditRegistryState({ declaration, sourceVersion, registry, burne
       expected_tags: tagState.expected,
       source_state: drift.state ?? "violating",
     },
-  };
-}
-
-/** HTTP status -> structural class: 200 data, 404 violation-class, anything else network-class. */
-export function classifyRegistryStatus(status) {
-  if (status === 200) return "ok";
-  if (status === 404) return "missing";
-  return "unavailable";
-}
-
-export async function fetchRegistryState({ url = REGISTRY_URL, timeoutMs = FETCH_TIMEOUT_MS, fetchImpl = fetch } = {}) {
-  let response;
-  try {
-    response = await fetchImpl(url, {
-      redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: { accept: "application/json" },
-    });
-  } catch (error) {
-    throw new NetworkUnavailableError(`registry request failed: ${error?.message ?? error}`);
-  }
-  const klass = classifyRegistryStatus(response.status);
-  if (klass === "unavailable") throw new NetworkUnavailableError(`registry responded ${response.status}`);
-  if (klass === "missing") return { missing: true };
-  let text;
-  try {
-    text = await response.text();
-  } catch (error) {
-    throw new NetworkUnavailableError(`registry response read failed: ${error?.message ?? error}`);
-  }
-  if (text.length > MAX_BODY_BYTES) throw new NetworkUnavailableError("registry response exceeded the size bound");
-  let body;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    throw new NetworkUnavailableError("registry response was not JSON");
-  }
-  return parsePackument(body);
-}
-
-/**
- * Validate a 200 packument body (or a captured replay of it). A malformed-but-200 body is a
- * registry-health condition — NetworkUnavailableError, never a crash or a policy violation.
- * Accepts `versions` as the packument's manifest map or a captured `npm view` string array.
- */
-export function parsePackument(body) {
-  const isRecord = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
-  const versionsOk =
-    isRecord(body?.versions) ||
-    (Array.isArray(body?.versions) && body.versions.every((v) => typeof v === "string"));
-  if (!isRecord(body) || !isRecord(body["dist-tags"]) || !versionsOk || !isRecord(body.time)) {
-    throw new NetworkUnavailableError("registry returned 200 with a malformed packument body");
-  }
-  const { created, modified, ...versionTimes } = body.time;
-  return {
-    missing: false,
-    distTags: body["dist-tags"],
-    versions: Array.isArray(body.versions) ? body.versions : Object.keys(body.versions),
-    time: versionTimes,
   };
 }
 

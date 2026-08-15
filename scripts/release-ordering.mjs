@@ -56,14 +56,10 @@ function isoTime(name, value) {
   return value;
 }
 
-/** prerelease candidates publish to `next`; stable candidates move `latest`. */
+/** prerelease candidates tolerate missing receipts; stable candidates require both. */
 export function releaseTier(version) {
   const parsed = SEMVER.exec(strictVersion("version", version));
   return parsed[1] === undefined ? "stable" : "prerelease";
-}
-
-export function policyTagFor(version) {
-  return releaseTier(version) === "prerelease" ? "next" : "latest";
 }
 
 export function receiptAssetName(decision, stageId) {
@@ -289,6 +285,7 @@ export function evaluateOrdering({ mode, chain, stageReceipt, inspected, approve
   if (missing.length > 0 && mode === "live" && tier === "stable") {
     fail(`stable candidate is missing required operator receipts: ${missing.join(", ")}`);
   }
+  const publicTag = field("stage publication tag", stageReceipt?.stage?.tag, TOKEN);
 
   // Replay the state machine over the evidence that exists. The ledger can only legally reach
   // approved_public THROUGH inspected, so an approved-only prerelease stops at `staged` and the
@@ -314,7 +311,7 @@ export function evaluateOrdering({ mode, chain, stageReceipt, inspected, approve
           actor: approved.payload.actor,
           approved_at: approved.payload.emitted_at,
           public_version: approved.payload.version,
-          public_tag: policyTagFor(approved.payload.version),
+          public_tag: publicTag,
           stage_id: approved.payload.stage_id,
           tarball_sha256: approved.payload.tarball_sha256,
         },
@@ -336,6 +333,7 @@ export function evaluateOrdering({ mode, chain, stageReceipt, inspected, approve
     draft_release_id: chain.draft_release_id,
     verified: RECEIPT_DECISIONS.filter((kind) => !missing.includes(kind)),
     missing,
+    public_tag: ledger.identifiers.public_tag ?? null,
     actors: {
       inspected: inspected?.payload.actor ?? null,
       approved: approved?.payload.actor ?? null,
