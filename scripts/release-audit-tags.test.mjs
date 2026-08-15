@@ -19,10 +19,12 @@ import {
   expectedTagState,
   fetchRegistryState,
   parsePhaseDeclaration,
+  isNameReservingPlaceholder,
   readBurnedDeclaration,
   registryUrlFor,
   saneSuccessors,
 } from "./release-audit-tags.mjs";
+import { defaultDistTagDestiny } from "./release-publication-policy.mjs";
 import { defaultReleaseManifest } from "./release-targets.mjs";
 
 // Fixture mirroring the live registry at build time. No test hits the network.
@@ -787,4 +789,30 @@ test("the audited package is derived from the manifest, not pinned to a name", (
     registryUrlFor(declared),
     "the registry endpoint must follow the derived package, not a separately written URL",
   );
+});
+
+// ── the successor coordinate before any release has happened ───────────────────────────────────
+// Switching the audit to the successor immediately surfaced that `superbee` cannot satisfy an
+// at-rest policy written for a package mid-lifecycle: it holds one placeholder version reserving
+// the name, with `latest` on it and no `next`. That is the state the cutover plan expects to find,
+// so it is legal — but only in that exact shape.
+test("a name-reserving placeholder is a legal at-rest state, and only in that exact shape", () => {
+  const destiny = defaultDistTagDestiny(PACKAGE);
+  const placeholder = { versions: ["0.0.1"], observedTags: { latest: "0.0.1" }, destiny };
+  assert.equal(isNameReservingPlaceholder(placeholder), true);
+
+  // Every clause is load-bearing: each of these is NOT a placeholder and must stay auditable.
+  assert.equal(isNameReservingPlaceholder({ ...placeholder, versions: ["0.0.1", "0.1.0"] }), false, "a second published version ends it");
+  assert.equal(isNameReservingPlaceholder({ ...placeholder, observedTags: { latest: "0.0.1", next: "0.0.1" } }), false, "a next tag ends it");
+  assert.equal(isNameReservingPlaceholder({ ...placeholder, observedTags: { next: "0.0.1" } }), false, "latest must be the tag held");
+  assert.equal(isNameReservingPlaceholder({ versions: ["0.1.0"], observedTags: { latest: "0.1.0" }, destiny }), false, "a manifest-declared version is a release, not a placeholder");
+
+  // End to end, against the exact live shape the standing audit reads today.
+  const result = auditRegistryState({
+    declaration: AT_REST,
+    sourceVersion: committedManifest.allowed_tuples["successor-stable"].version,
+    registry: { distTags: { latest: "0.0.1" }, versions: ["0.0.1"], time: { "0.0.1": "2026-08-11T00:00:00.000Z" } },
+  });
+  assert.deepEqual(result.violations, [], "the placeholder state the plan expects must not be a violation");
+  assert.match(result.notes.join("\n"), /name-reserving placeholder/);
 });
