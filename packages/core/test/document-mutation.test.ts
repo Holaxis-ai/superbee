@@ -19,6 +19,11 @@ function bundleFor(backend: MemoryBackend): Bundle {
   return { root: "/unused", backend };
 }
 
+async function v02BundleFor(backend = new MemoryBackend()): Promise<Bundle> {
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  return bundleFor(backend);
+}
+
 function candidate(title: string, body: string, timestamp = "2026-07-16T00:00:00.000Z") {
   return { frontmatter: { type: "Note", title, timestamp }, body };
 }
@@ -168,6 +173,203 @@ test("semantic patch no-op ignores an auto-refreshed timestamp and returns the u
   assert.equal(result.version, initial.version);
   assert.equal(result.doc.frontmatter.actor, undefined);
   assert.equal((await backend.versions("notes/a")).length, 1);
+});
+
+test("v0.2 mutation does not invent generated, timestamp, or actor metadata", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "openai/codex",
+    persistActor: true,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "body" }),
+  });
+
+  assert.deepEqual(result.doc.frontmatter, { type: "Note", title: "A" });
+  assert.equal((await backend.versions("notes/a"))[0]!.actor, "openai/codex");
+});
+
+test("v0.2 substantive mutation advances generated.at while preserving producer, verification, and date scalars", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const initial = await writeDocVersioned(bundle, {
+    id: "notes/a",
+    frontmatter: {
+      type: "Note",
+      title: "A",
+      generated: { at: "2026-08-01T00:00:00Z", by: "https://legacy.example/producer" },
+      verified: [{ at: "2026-08-02T00:00:00Z", by: "human:reviewer" }],
+      stale_after: "2026-12-31",
+      sources: [{ resource: "https://example.test/source", last_modified: "2026-07-27" }],
+    },
+    body: "before",
+  });
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "openai/codex",
+    persistActor: true,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.notEqual(result.version, initial.version);
+  assert.deepEqual(result.doc.frontmatter.generated, {
+    at: "2026-08-14T12:00:00Z",
+    by: "https://legacy.example/producer",
+  });
+  assert.deepEqual(result.doc.frontmatter.verified, [
+    { at: "2026-08-02T00:00:00Z", by: "human:reviewer" },
+  ]);
+  assert.equal(result.doc.frontmatter.stale_after, "2026-12-31");
+  assert.deepEqual(result.doc.frontmatter.sources, [
+    { resource: "https://example.test/source", last_modified: "2026-07-27" },
+  ]);
+  assert.equal(result.doc.frontmatter.timestamp, undefined);
+  assert.equal(result.doc.frontmatter.actor, undefined);
+});
+
+test("v0.2 verification-only writes preserve generated.at and clock-only patches are no-ops", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const initial = await writeDocVersioned(bundle, {
+    id: "notes/a",
+    frontmatter: {
+      type: "Note",
+      title: "A",
+      generated: { at: "2026-08-01T00:00:00Z", by: "producer/1" },
+      verified: [{ at: "2026-08-02T00:00:00Z", by: "human:first" }],
+    },
+    body: "body",
+  });
+
+  const verified = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: (existing) => ({
+      frontmatter: {
+        ...existing!.frontmatter,
+        verified: [
+          ...(existing!.frontmatter.verified as unknown[]),
+          { at: "2026-08-14T11:00:00Z", by: "human:second" },
+        ],
+      },
+      body: existing!.body,
+    }),
+  });
+  assert.equal(verified.changed, true);
+  assert.equal((verified.doc.frontmatter.generated as { at: string }).at, "2026-08-01T00:00:00Z");
+
+  const clockOnly = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-15T12:00:00Z",
+    buildCandidate: (existing) => ({
+      frontmatter: {
+        ...existing!.frontmatter,
+        generated: { ...(existing!.frontmatter.generated as object), at: "2099-01-01T00:00:00Z" },
+      },
+      body: existing!.body,
+    }),
+  });
+  assert.equal(clockOnly.changed, false);
+  assert.equal(clockOnly.version, verified.version);
+  assert.notEqual(clockOnly.version, initial.version);
+  assert.equal((clockOnly.doc.frontmatter.generated as { at: string }).at, "2026-08-01T00:00:00Z");
+});
+
+test("v0.2 permits explicit valid producer replacement but rejects a newly supplied invalid identity", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  await writeDocVersioned(bundle, {
+    id: "notes/a",
+    frontmatter: {
+      type: "Note",
+      generated: { at: "2026-08-01T00:00:00Z", by: "https://legacy.example/producer" },
+    },
+    body: "body",
+  });
+
+  await assert.rejects(
+    () => mutateDocument({
+      bundle,
+      id: "notes/a",
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      now: () => "2026-08-14T12:00:00Z",
+      buildCandidate: (existing) => ({
+        frontmatter: { ...existing!.frontmatter, generated: { at: "x", by: "not-an-actor" } },
+        body: "changed",
+      }),
+    }),
+    (error: unknown) => error instanceof Error && /generated\.by/.test(error.message),
+  );
+
+  const changed = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: (existing) => ({
+      frontmatter: { ...existing!.frontmatter, generated: { by: "superbee/1.0.0" } },
+      body: "changed",
+    }),
+  });
+  assert.deepEqual(changed.doc.frontmatter.generated, {
+    at: "2026-08-14T12:00:00Z",
+    by: "superbee/1.0.0",
+  });
+});
+
+test("v0.2 bundle-local Kinds may explicitly retain required timestamp and actor extensions", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const kind: KindConvention = {
+    id: "conventions/note",
+    title: "Note",
+    governs: "Note",
+    fields: {
+      required: ["title", "timestamp", "actor"],
+      optional: [],
+      values: {},
+      terminal: {},
+      descriptions: {},
+    },
+  };
+  const registry: KindRegistry = { kinds: new Map([["Note", kind]]), warnings: [] };
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "create-only",
+    registry,
+    strict: true,
+    actor: "openai/codex",
+    persistActor: true,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "body" }),
+  });
+  assert.equal(result.doc.frontmatter.timestamp, "2026-08-14T12:00:00Z");
+  assert.equal(result.doc.frontmatter.actor, "openai/codex");
 });
 
 test("strict kind rejection is typed, happens after timestamp defaulting, and performs no write", async () => {

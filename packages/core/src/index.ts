@@ -10,7 +10,7 @@
  * The FILESYSTEM is the source of truth by default, but storage is routed through
  * a pluggable {@link StorageBackend} (default: {@link FilesystemBackend}). This
  * module implements bundle I/O, standard-markdown cross-links (never wikilinks),
- * derived backlinks, freshness derived from `timestamp`, and reserved-file
+ * derived backlinks, freshness derived from the edition's meaningful-change clock, and reserved-file
  * (`index.md`/`log.md`) handling. Human-facing bundle Pages consume this engine through the
  * reference server's narrow browser bridge (read-only v0 plus shell-confirmed local proposals).
  *

@@ -5,7 +5,9 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createRouter } from "@superbee/server";
@@ -17,11 +19,14 @@ import {
   queryHeads,
   readDocVersioned,
 } from "../src/bundle.js";
+import { mutateDocument } from "../src/document-mutation.js";
 import { RemoteBackend } from "../src/remote-backend.js";
+import type { KindRegistry } from "../src/kinds.js";
 import type { Bundle } from "../src/types.js";
 
 const fixtureRoot = fileURLToPath(new URL("./fixtures/okf-v0.2", import.meta.url));
 const localBundle: Bundle = { root: fixtureRoot };
+const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
 function remoteBundle(): Bundle {
   const router = createRouter(localBundle);
@@ -115,4 +120,45 @@ test("OKF v0.2 fixture: compatibility probes leave the external bundle byte-unto
   await queryEdges(remoteBundle());
 
   assert.deepEqual(await readFile(revenuePath), before);
+});
+
+test("OKF v0.2 fixture: a trusted mutation preserves external provenance, verification, and date-only values", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "superbee-okf-v02-fixture-"));
+  const root = path.join(parent, "bundle");
+  await cp(fixtureRoot, root, { recursive: true });
+  try {
+    const result = await mutateDocument({
+      bundle: { root },
+      id: "concepts/revenue",
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      actor: "openai/codex",
+      persistActor: true,
+      now: () => "2026-08-14T12:00:00Z",
+      buildCandidate: (existing) => ({
+        frontmatter: { ...existing!.frontmatter, description: "Updated revenue definition." },
+        body: existing!.body,
+      }),
+    });
+
+    assert.deepEqual(result.doc.frontmatter.generated, {
+      at: "2026-08-14T12:00:00Z",
+      by: "https://producer.example/agents/finance",
+    });
+    assert.deepEqual(result.doc.frontmatter.verified, [{
+      at: "2026-07-29T09:15:00Z",
+      by: "https://producer.example/people/reviewer",
+      method: "human-review",
+    }]);
+    assert.deepEqual(result.doc.frontmatter.sources, [{
+      resource: "https://warehouse.example/revenue",
+      last_modified: "2026-07-27",
+    }]);
+    assert.equal(result.doc.frontmatter.stale_after, "2026-12-31");
+    assert.equal(result.doc.frontmatter.timestamp, undefined);
+    assert.equal(result.doc.frontmatter.actor, undefined);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
 });

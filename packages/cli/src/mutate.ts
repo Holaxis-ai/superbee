@@ -54,6 +54,8 @@ export interface MutateDocOptions {
   actor?: string;
   persistActor?: boolean;
   expectedVersion?: Version;
+  /** Already-resolved bundle edition, avoiding a duplicate root-index read. */
+  okfVersion?: string;
   /** Best-effort CLI orchestration hook; it never changes mutation success. */
   onPersisted?: () => void | Promise<void>;
   errors: MutateErrorHooks;
@@ -129,6 +131,7 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       actor: opts.actor,
       persistActor: opts.persistActor,
       expectedVersion: opts.expectedVersion,
+      okfVersion: opts.okfVersion,
     });
 
     if (result.changed) await firePostPersist(opts.onPersisted);

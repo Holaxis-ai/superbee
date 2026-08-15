@@ -201,6 +201,18 @@ test("freshness: empty / fresh / stale-by-age / stale-by-dependency", () => {
   const old = freshness(mk("2026-06-01T12:00:00Z"), { now, maxAgeMs: 24 * 3600_000 });
   assert.equal(old.verdict, "stale");
 
+  const v02 = freshness({
+    id: "x",
+    frontmatter: {
+      type: "T",
+      timestamp: "2026-06-01T12:00:00Z",
+      generated: { at: "2026-07-01T11:00:00Z", by: "producer/1" },
+    },
+    body: "",
+  }, { now, maxAgeMs: 2 * 3600_000 });
+  assert.equal(v02.verdict, "fresh");
+  assert.equal(v02.ageMs, 3600_000);
+
   const dep = freshness(mk("2026-07-01T10:00:00Z"), {
     now,
     dependsOn: ["2026-07-01T11:00:00Z"], // dependency newer than the note
@@ -209,7 +221,7 @@ test("freshness: empty / fresh / stale-by-age / stale-by-dependency", () => {
   assert.match(dep.reason ?? "", /dependency/);
 });
 
-test("meaningful change time lookup returns the exact v0.1 timestamp value", () => {
+test("meaningful change time lookup prefers v0.2 generated.at and falls back to v0.1 timestamp", () => {
   const cases: Array<{ label: string; frontmatter: Record<string, unknown>; expected: unknown }> = [
     { label: "missing", frontmatter: { type: "T" }, expected: undefined },
     { label: "blank", frontmatter: { type: "T", timestamp: "   " }, expected: "   " },
@@ -219,6 +231,18 @@ test("meaningful change time lookup returns the exact v0.1 timestamp value", () 
   for (const row of cases) {
     assert.equal(meaningfulChangeTimeValue(row.frontmatter), row.expected, row.label);
   }
+  assert.equal(
+    meaningfulChangeTimeValue({
+      type: "T",
+      timestamp: "2026-07-01T12:00:00Z",
+      generated: { at: "2026-08-01T12:00:00Z", by: "producer/1" },
+    }),
+    "2026-08-01T12:00:00Z",
+  );
+  assert.equal(
+    meaningfulChangeTimeValue({ type: "T", timestamp: "legacy", generated: { by: "producer/1" } }),
+    "legacy",
+  );
 });
 
 test("content-type: extension inference + warning policy", () => {

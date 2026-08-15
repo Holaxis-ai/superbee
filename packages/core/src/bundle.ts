@@ -2,7 +2,7 @@
  * OKF bundle operations — the engine.
  *
  * The engine owns all OKF SEMANTICS (id safety, the non-empty `type` rule,
- * reserved-file handling, `timestamp` defaulting, link/backlink derivation) and routes
+ * reserved-file handling, edition-aware write normalization, link/backlink derivation) and routes
  * every store access through a {@link StorageBackend}.
  * When a {@link Bundle} carries no `backend`, a {@link FilesystemBackend} rooted at
  * `bundle.root` is used — so existing `{ root }` callers keep working unchanged while
@@ -12,7 +12,10 @@
 import path from "node:path";
 
 import { FilesystemBackend } from "./backend.js";
-import { normalizeV01DocumentForWrite } from "./document-write-policy.js";
+import {
+  normalizeV01DocumentForWrite,
+  normalizeV02DocumentForWrite,
+} from "./document-write-policy.js";
 import { isUsableTimestamp, MalformedDocumentError, parseMarkdown, stringifyWithData } from "./frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "./index-marker.js";
 import { parseLinksFromDoc } from "./links.js";
@@ -49,7 +52,7 @@ export { matchesFilter } from "./query-filter.js";
 
 /** A written concept document together with the {@link Version} the backend recorded for it. */
 export interface WriteResult {
-  /** The persisted document (with `type` leading, `timestamp` trailing, defaults applied). */
+  /** The persisted document after the bundle edition's shape normalization. */
   doc: OkfDocument;
   /** Opaque version token of the write — pass it back as {@link WriteOptions.expectedVersion} for a later compare-and-swap. */
   version: Version;
@@ -125,7 +128,9 @@ export async function initBundle(root: string, options: InitBundleOptions = {}):
  * Atomically write (create or overwrite) a concept document to `<id>.md` and
  * surface the backend's {@link WriteResult} (the normalized document + its version
  * token). Enforces OKF §9.2 (non-empty `type`), rejects reserved-file ids, preserves
- * unknown frontmatter keys, and guarantees a `timestamp` (defaults to now).
+ * unknown frontmatter keys, and applies the bundle edition's document-shape policy. A v0.1
+ * document retains the historical guaranteed `timestamp`; a v0.2 document does not invent the
+ * optional `generated` family or legacy clock fields.
  *
  * `options` threads the seam's hard-case capabilities THROUGH the engine: an
  * `expectedVersion` makes the write a compare-and-swap (typed `VersionConflict` on
@@ -137,6 +142,17 @@ export async function initBundle(root: string, options: InitBundleOptions = {}):
 export async function writeDocVersioned(
   bundle: Bundle,
   doc: OkfDocument,
+  options?: WriteOptions,
+): Promise<WriteResult> {
+  const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
+  return writeDocVersionedForEdition(bundle, doc, okfVersion, options);
+}
+
+/** @internal Edition-pinned sibling used by mutation policy after it has read the root once. */
+export async function writeDocVersionedForEdition(
+  bundle: Bundle,
+  doc: OkfDocument,
+  okfVersion: string,
   options?: WriteOptions,
 ): Promise<WriteResult> {
   assertSafeConceptId(doc.id);
@@ -152,11 +168,18 @@ export async function writeDocVersioned(
     throw new InvalidInputError(`OKF §9.2: frontmatter.type is required and must be non-empty (concept '${doc.id}').`);
   }
 
-  const existingTimestamp = doc.frontmatter.timestamp;
-  const timestamp = isUsableTimestamp(existingTimestamp)
-    ? { preserveExisting: true as const, existingTimestamp }
-    : { preserveExisting: false as const, fallbackTimestamp: new Date().toISOString() };
-  const saved = normalizeV01DocumentForWrite(doc, type, timestamp);
+  let saved: OkfDocument;
+  if (okfVersion === "0.1") {
+    const existingTimestamp = doc.frontmatter.timestamp;
+    const timestamp = isUsableTimestamp(existingTimestamp)
+      ? { preserveExisting: true as const, existingTimestamp }
+      : { preserveExisting: false as const, fallbackTimestamp: new Date().toISOString() };
+    saved = normalizeV01DocumentForWrite(doc, type, timestamp);
+  } else {
+    // Newer-edition raw transport stays permissive and non-inventing. Product mutation semantics
+    // (including v0.2's meaningful-change clock) live in `mutateDocument`, which supplies this hint.
+    saved = normalizeV02DocumentForWrite(doc, type);
+  }
 
   const version = await backendFor(bundle).write(doc.id, saved, options);
   return { doc: saved, version };

@@ -135,6 +135,9 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(saved.frontmatter.superbee_progress_status, "todo");
     assert.equal(saved.frontmatter.status, "stable");
     assert.equal(Object.hasOwn(saved.frontmatter, "progress_status"), false);
+    assert.equal(Object.hasOwn(saved.frontmatter, "timestamp"), false);
+    assert.equal(Object.hasOwn(saved.frontmatter, "actor"), false);
+    assert.equal(Object.hasOwn(saved.frontmatter, "generated"), false);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

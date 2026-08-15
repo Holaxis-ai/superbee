@@ -329,6 +329,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     actor,
     persistActor: true,
     expectedVersion: p.expectedVersion?.trim(),
+    okfVersion,
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
     onPersisted: boardPostPersistHook(bundle, actor),
@@ -342,11 +343,12 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       // Actor attribution is applied by `mutateDoc` only after this candidate has proven
       // substantive. The spread preserves the previous actor on a no-op; ambient attribution can
       // never turn an identical patch into a write.
-      // `timestamp` means "last meaningful change" (OKF + VISION); a patch IS one, so refresh it by
-      // default — `--keep-timestamp` opts back into preserving the existing value (mirrors `link
-      // add`). `mutateDoc`'s ignoring-timestamp idempotency check decides whether this refreshed
-      // value ever reaches disk (a true no-op patch discards it, same as before this refactor).
-      if (!p.keepTimestamp) nextFrontmatter.timestamp = new Date().toISOString();
+      // v0.1's legacy meaningful-change clock is refreshed here; v0.2's `generated.at` clock is
+      // owned centrally by `mutateDocument` so every trusted write surface advances it identically.
+      // `--keep-timestamp` remains the v0.1 compatibility escape hatch.
+      if (okfVersion !== "0.2" && !p.keepTimestamp) {
+        nextFrontmatter.timestamp = new Date().toISOString();
+      }
 
       let nextBody = existing.body;
       if (p.body !== undefined) nextBody = p.body;
