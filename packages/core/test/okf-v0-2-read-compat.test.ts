@@ -1,11 +1,12 @@
 /**
- * A hand-authored OKF v0.2 bundle pins AgentState Lite's permissive read/transport posture without
- * claiming v0.2 authoring support. These tests never mutate the fixture: they exercise the local
- * filesystem path and the reference router through RemoteBackend, then compare their projections.
+ * A hand-authored, producer-conforming OKF v0.2 bundle pins Superbee's read/transport posture.
+ * Ordinary compatibility tests never mutate the fixture: they exercise the local filesystem path
+ * and the reference router through RemoteBackend, then compare their projections. A separate,
+ * explicitly labeled test pins permissive preservation of unusual legacy actor spellings.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,10 +66,10 @@ test("OKF v0.2 fixture: root version and ordinary documents read identically thr
   assert.equal(shaped.frontmatter.status, "stable");
   const generated = shaped.frontmatter.generated as { at: string; by: string };
   assert.equal(Date.parse(generated.at), Date.parse("2026-07-28T12:34:56Z"));
-  assert.equal(generated.by, "https://producer.example/agents/finance");
+  assert.equal(generated.by, "finance_agent/1.0");
   const verified = shaped.frontmatter.verified as Array<{ at: string; by: string; method: string }>;
   assert.equal(Date.parse(verified[0]!.at), Date.parse("2026-07-29T09:15:00Z"));
-  assert.equal(verified[0]!.by, "https://producer.example/people/reviewer");
+  assert.equal(verified[0]!.by, "human:reviewer");
   assert.equal(verified[0]!.method, "human-review");
   const sources = shaped.frontmatter.sources as Array<{ resource: string; last_modified: string }>;
   assert.equal(sources[0]!.resource, "https://warehouse.example/revenue");
@@ -79,6 +80,12 @@ test("OKF v0.2 fixture: root version and ordinary documents read identically thr
     labels: ["finance", "monthly"],
   });
   assert.match(shaped.body, /\[source dataset\]\(source-data\.md\)/);
+
+  const sourceData = await readDocVersioned(localBundle, "concepts/source-data");
+  assert.deepEqual(sourceData.doc.frontmatter.generated, {
+    at: "2026-07-27T23:00:00Z",
+    by: "process:finance-nightly",
+  });
 });
 
 test("OKF v0.2 fixture: document, head, filter, and graph projections agree across local and reference-server paths", async () => {
@@ -144,11 +151,11 @@ test("OKF v0.2 fixture: a trusted mutation preserves external provenance, verifi
 
     assert.deepEqual(result.doc.frontmatter.generated, {
       at: "2026-08-14T12:00:00Z",
-      by: "https://producer.example/agents/finance",
+      by: "finance_agent/1.0",
     });
     assert.deepEqual(result.doc.frontmatter.verified, [{
       at: "2026-07-29T09:15:00Z",
-      by: "https://producer.example/people/reviewer",
+      by: "human:reviewer",
       method: "human-review",
     }]);
     assert.deepEqual(result.doc.frontmatter.sources, [{
@@ -158,6 +165,52 @@ test("OKF v0.2 fixture: a trusted mutation preserves external provenance, verifi
     assert.equal(result.doc.frontmatter.stale_after, "2026-12-31");
     assert.equal(result.doc.frontmatter.timestamp, undefined);
     assert.equal(result.doc.frontmatter.actor, undefined);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("OKF v0.2 permissive consumer: mutation preserves unusual legacy actor spellings", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "superbee-okf-v02-legacy-actor-"));
+  const root = path.join(parent, "bundle");
+  await cp(fixtureRoot, root, { recursive: true });
+  const legacyPath = path.join(root, "concepts", "legacy-actor.md");
+  await writeFile(legacyPath, `---
+type: Reference
+title: Imported legacy actor
+generated:
+  at: 2026-07-28T12:34:56Z
+  by: https://producer.example/agents/finance
+verified:
+  - at: 2026-07-29T09:15:00Z
+    by: https://producer.example/people/reviewer
+---
+# Imported legacy actor
+`);
+  try {
+    const result = await mutateDocument({
+      bundle: { root },
+      id: "concepts/legacy-actor",
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      actor: "openai/codex",
+      persistActor: true,
+      now: () => "2026-08-14T12:00:00Z",
+      buildCandidate: (existing) => ({
+        frontmatter: { ...existing!.frontmatter, description: "Preserved imported identity." },
+        body: existing!.body,
+      }),
+    });
+
+    assert.deepEqual(result.doc.frontmatter.generated, {
+      at: "2026-08-14T12:00:00Z",
+      by: "https://producer.example/agents/finance",
+    });
+    assert.deepEqual(result.doc.frontmatter.verified, [{
+      at: "2026-07-29T09:15:00Z",
+      by: "https://producer.example/people/reviewer",
+    }]);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }
