@@ -11,6 +11,7 @@ import {
   resolveKindFieldCoordinate,
   type KindConvention,
 } from "../src/kinds.js";
+import { applyQuerySelectionFilters } from "../src/query-selection.js";
 
 function kind(field: string): KindConvention {
   return {
@@ -66,4 +67,28 @@ test("v0.2 never reclassifies lifecycle status from its value", () => {
 test("unknown OKF editions do not receive an inferred progress mapping", () => {
   assert.equal(progressStatusCoordinate("0.3", kind("status")), undefined);
   assert.equal(progressStatusCoordinate("0.3", kind(SUPERBEE_PROGRESS_STATUS_FIELD)), undefined);
+});
+
+test("a physically declared progress_status field wins over the compatibility alias", () => {
+  const declared = kind("status");
+  declared.fields.optional.push(PROGRESS_STATUS_FIELD);
+  declared.fields.values[PROGRESS_STATUS_FIELD] = ["green", "red"];
+  const frontmatter = { type: "Task", status: "todo", progress_status: "green" };
+
+  assert.equal(progressStatusCoordinate("0.1", declared), undefined);
+  assert.deepEqual(resolveKindFieldCoordinate("0.1", declared, PROGRESS_STATUS_FIELD), {
+    logicalField: PROGRESS_STATUS_FIELD,
+    storageField: PROGRESS_STATUS_FIELD,
+  });
+  assert.equal(readKindField("0.1", declared, frontmatter, PROGRESS_STATUS_FIELD), "green");
+  assert.equal(projectLogicalKindFields("0.1", declared, frontmatter), frontmatter);
+  const rows = [{ id: "tasks/collision", frontmatter, version: "v1" }];
+  assert.equal(
+    applyQuerySelectionFilters(rows, { field: "progress_status=green", okfVersion: "0.1" }, [declared]).count,
+    1,
+  );
+  assert.equal(
+    applyQuerySelectionFilters(rows, { field: "progress_status=todo", okfVersion: "0.1" }, [declared]).count,
+    0,
+  );
 });

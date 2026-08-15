@@ -198,7 +198,7 @@
     return typeColor[t];
   }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-  function progress(fm) { return Object.prototype.hasOwnProperty.call(fm, "progress_status") ? fm.progress_status : fm.status; }
+  function progress(fm) { return fm.progress_status; }
   function rel(ts) {
     if (!ts) return "";
     var d = Date.now() - new Date(ts).getTime();

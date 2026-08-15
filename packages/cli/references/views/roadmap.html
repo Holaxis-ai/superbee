@@ -130,7 +130,7 @@
   var openIds={}, freshIds=new Set();
   function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,function(c){return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
   function fm(r){return r.frontmatter||{}}
-  function progress(f){return Object.prototype.hasOwnProperty.call(f,"progress_status")?f.progress_status:f.status}
+  function progress(f){return f.progress_status}
 
   function classify(it){
     var s=progress(fm(it));

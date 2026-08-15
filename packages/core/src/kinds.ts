@@ -130,6 +130,9 @@ export function progressStatusCoordinate(
   okfVersion: string | undefined,
   kind: KindConvention,
 ): KindFieldCoordinate | undefined {
+  // A Kind may already own a concrete field with the product-level name. That field remains a
+  // normal declared coordinate; never shadow or overwrite it with a compatibility alias.
+  if (declaresField(kind, PROGRESS_STATUS_FIELD)) return undefined;
   const version = okfVersion?.trim() || "0.1";
   if (version === "0.1" && declaresField(kind, "status")) {
     return { logicalField: PROGRESS_STATUS_FIELD, storageField: "status" };
@@ -149,9 +152,10 @@ export function resolveKindFieldCoordinate(
   kind: KindConvention,
   field: string,
 ): KindFieldCoordinate | undefined {
+  if (declaresField(kind, field)) return { logicalField: field, storageField: field };
   const progress = progressStatusCoordinate(okfVersion, kind);
   if (field === PROGRESS_STATUS_FIELD && progress) return progress;
-  return declaresField(kind, field) ? { logicalField: field, storageField: field } : undefined;
+  return undefined;
 }
 
 /** Declared authoring names plus the logical progress alias, when this Kind proves one exists. */
@@ -186,7 +190,11 @@ export function projectLogicalKindFields(
   frontmatter: Frontmatter,
 ): Frontmatter {
   const progress = progressStatusCoordinate(okfVersion, kind);
-  if (!progress || !hasOwn(frontmatter, progress.storageField)) return frontmatter;
+  if (
+    !progress ||
+    !hasOwn(frontmatter, progress.storageField) ||
+    hasOwn(frontmatter, progress.logicalField)
+  ) return frontmatter;
   const projected = { ...frontmatter } as Frontmatter;
   setOwn(
     projected as Record<string, unknown>,

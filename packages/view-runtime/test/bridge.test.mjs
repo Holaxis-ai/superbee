@@ -293,6 +293,44 @@ for (const row of [
   });
 }
 
+test("BridgeService never projects v0.2 lifecycle status as workflow progress", async () => {
+  const bundle = { root: "mem://bridge-lifecycle-only", backend: new MemoryBackend() };
+  await bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  await writeDoc(bundle, {
+    id: "conventions/release",
+    frontmatter: {
+      type: "Convention",
+      governs: "Release",
+      fields: { required: ["title", "status"], optional: [], values: { status: ["draft", "stable", "deprecated"] } },
+    },
+    body: "",
+  });
+  await writeDoc(bundle, {
+    id: "releases/one",
+    frontmatter: { type: "Release", title: "One", status: "stable" },
+    body: "",
+  });
+  const bridge = new BridgeService({
+    bundle,
+    launches: {
+      async resolve() { return { launchId: "launch", capability: "bundle-read" }; },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    allowActionProtocol: false,
+  });
+  const outcome = await bridge.handle("launch", {
+    bridge: "v0",
+    type: "query",
+    id: "lifecycle",
+    params: { type: "Release" },
+  });
+  const frontmatter = outcome.reply?.result?.rows?.[0]?.frontmatter;
+  assert.equal(frontmatter?.status, "stable");
+  assert.equal(Object.hasOwn(frontmatter ?? {}, "progress_status"), false);
+});
+
 test("invalid v0 envelopes correlate only a bounded existing id and perform no launch work", async () => {
   let launchResolutions = 0;
   const bridge = new BridgeService({
