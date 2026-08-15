@@ -423,54 +423,68 @@ test("the packet-input manifest rejects missing, extra, and escaping rows", asyn
 // F5: the reachable-entrypoint set is parsed out of the workflow files, across every workflow in
 // the directory — not a frozen constant that stops describing them the moment one is edited.
 test("the manifest closure follows every workflow file, package script hop, and command substitution", async () => {
+  // Every case that expects a path to become newly REQUIRED names it here, and the loop refuses to
+  // run a case whose target the committed manifest already pins. Without that guard a case silently
+  // becomes vacuous the moment someone pins its target for an unrelated reason, and the suite
+  // reports a fixed derivation it never exercised.
   const cases = [
-    ["a node invocation added to a non-release workflow", async (root) => {
+    ["a node invocation added to a non-release workflow", "scripts/release-inspect.mjs", async (root) => {
       await appendWorkflowStep(root, "ci-tests.yml", "node scripts/release-inspect.mjs");
-    }, /missing: [^;]*scripts\/release-inspect\.mjs/],
-    ["a node invocation added inside a command substitution", async (root) => {
+    }],
+    ["a node invocation added inside a command substitution", "scripts/release-reconcile.mjs", async (root) => {
       await appendWorkflowStep(root, "release-audit.yml", 'FACTS="$(node scripts/release-reconcile.mjs --json)"');
-    }, /missing: [^;]*scripts\/release-reconcile\.mjs/],
-    ["a node invocation added through an entirely new workflow file", async (root) => {
+    }],
+    ["a node invocation added through an entirely new workflow file", "scripts/release-inspect-recovery.mjs", async (root) => {
       await writeFile(path.join(root, ".github", "workflows", "extra.yml"),
         "name: extra\non:\n  workflow_dispatch:\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node scripts/release-inspect-recovery.mjs\n");
       execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
-    }, /missing: [^;]*scripts\/release-inspect-recovery\.mjs/],
-    ["a node invocation added to a package script a workflow runs", async (root) => {
+    }],
+    ["a node invocation added to a package script a workflow runs", "scripts/rename-literal-inventory.mjs", async (root) => {
       const file = path.join(root, "package.json");
       const manifest = JSON.parse(await readFile(file, "utf8"));
       manifest.scripts["mutation:survivors"] = "node scripts/rename-literal-inventory.mjs";
       await writeFile(file, `${JSON.stringify(manifest, null, 2)}\n`);
       execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
-    }, /missing: [^;]*scripts\/rename-literal-inventory\.mjs/],
-    ["a node invocation whose script path is not statically resolvable", async (root) => {
-      await appendWorkflowStep(root, "release-staged.yml", 'node "$UNPINNED_SCRIPT"');
-    }, /unresolvable script path|unresolvable argument/],
-    ["a node invocation of a path that is neither tracked nor ignored", async (root) => {
-      await appendWorkflowStep(root, "release-finalize.yml", "node scripts/not-in-the-index.mjs");
-    }, /neither a tracked source file nor an ignored build output/],
-    // The exact shape another work package is landing: one new script, one new step in an existing
-    // release workflow, and no edit to the packet's own code. The derivation must find it alone.
-    ["a new script invoked by a new step in an existing release workflow", async (root) => {
+    }],
+    // One new script plus one new step in an existing release workflow, with no edit to the
+    // packet's own code: the shape every landing work package has. The name is deliberately one
+    // this repository does not carry, so the case cannot go vacuous when a real script lands.
+    ["a new script invoked by a new step in an existing release workflow", "scripts/release-landing-probe.mjs", async (root) => {
       await writeFile(
-        path.join(root, "scripts", "release-publication-policy.mjs"),
-        'import { isMainModule } from "./is-main-module.mjs";\n\nexport function resolvePublicationPolicy() {\n  return isMainModule(import.meta.url);\n}\n',
+        path.join(root, "scripts", "release-landing-probe.mjs"),
+        'import { isMainModule } from "./is-main-module.mjs";\n\nexport function probeLanding() {\n  return isMainModule(import.meta.url);\n}\n',
       );
-      await appendWorkflowStep(root, "release-finalize.yml", "node scripts/release-publication-policy.mjs");
-    }, /missing: [^;]*scripts\/release-publication-policy\.mjs/],
+      await appendWorkflowStep(root, "release-finalize.yml", "node scripts/release-landing-probe.mjs");
+    }],
     // Release-governing DATA is never imported, so no closure walk can find it; the release/
     // directory is what makes it derivable.
-    ["a new governing data file committed under release/", async (root) => {
-      await writeFile(path.join(root, "release", "cutover-contract.json"), '{"schema":"superbee.cutover-contract.v1","targets":{}}\n');
+    ["a new governing data file committed under release/", "release/landing-probe-contract.json", async (root) => {
+      await writeFile(path.join(root, "release", "landing-probe-contract.json"), '{"schema":"superbee.landing-probe.v1"}\n');
       execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
-    }, /missing: release\/cutover-contract\.json/],
+    }],
+    ["a node invocation whose script path is not statically resolvable", null, async (root) => {
+      await appendWorkflowStep(root, "release-staged.yml", 'node "$UNPINNED_SCRIPT"');
+    }, /unresolvable script path|unresolvable argument/],
+    ["a node invocation of a path that is neither tracked nor ignored", null, async (root) => {
+      await appendWorkflowStep(root, "release-finalize.yml", "node scripts/not-in-the-index.mjs");
+    }, /neither a tracked source file nor an ignored build output/],
   ];
-  for (const [name, mutate, expected] of cases) {
+  const committed = JSON.parse(await readFile(path.join(repoRoot, "release", "review-packet-inputs.json"), "utf8"));
+  for (const [name, newlyRequired, mutate, expected] of cases) {
+    assert.equal(
+      committed.paths.includes(newlyRequired), false,
+      `${name}: ${newlyRequired} is already pinned, so this case would pass without proving anything`,
+    );
     const root = await mkdtemp(path.join(tmpdir(), "superbee-packet-topology-"));
     try {
       const { manifestPath } = await manifestFixture(root);
       await validatePacketInputManifest({ root, manifestPath });
       await mutate(root);
-      await assert.rejects(validatePacketInputManifest({ root, manifestPath }), expected, name);
+      await assert.rejects(
+        validatePacketInputManifest({ root, manifestPath }),
+        expected ?? new RegExp(`missing: [^;]*${newlyRequired.replaceAll(".", "\\.").replaceAll("/", "\\/")}`),
+        name,
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
