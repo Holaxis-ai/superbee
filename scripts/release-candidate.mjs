@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildCli } from "../packages/cli/build.mjs";
 import { currentSourceFacts } from "../packages/cli/scripts/build-bundle.mjs";
+import { isMainModule } from "./is-main-module.mjs";
 import { sanitizedNpmEnvironment, verifyRetainedTarball, fileSha256 } from "./verify-npm-package.mjs";
 import {
   DEFAULT_RELEASE_TARGETS_PATH,
@@ -28,8 +29,7 @@ import {
 } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
-const scriptPath = fileURLToPath(import.meta.url);
-const repoRoot = path.resolve(path.dirname(scriptPath), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliRoot = path.join(repoRoot, "packages", "cli");
 const OUTPUT_OWNER = ".aslite-release-candidate-owned-v1";
 const OUTPUT_OWNER_CONTENT = "agentstate-lite release candidate output v1\n";
@@ -248,21 +248,23 @@ export async function createReleaseCandidate({
   return { candidate, tarballPath, manifestPath, outDir };
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
-  try {
-    const args = parseCandidateArgs(process.argv.slice(2));
-    const result = await createReleaseCandidate(args);
-    if (args.json) {
-      console.log(JSON.stringify(result.candidate));
-    } else {
-      const t = result.candidate.tarball;
-      console.log(
-        `release candidate ${result.candidate.tag}: ${t.filename} ${t.sha256} (${t.size} bytes) retained at ` +
-          `${path.relative(repoRoot, result.tarballPath)}; manifest ${path.relative(repoRoot, result.manifestPath)}`,
-      );
-    }
-  } catch (error) {
+async function main(argv = process.argv.slice(2)) {
+  const args = parseCandidateArgs(argv);
+  const result = await createReleaseCandidate(args);
+  if (args.json) {
+    console.log(JSON.stringify(result.candidate));
+  } else {
+    const t = result.candidate.tarball;
+    console.log(
+      `release candidate ${result.candidate.tag}: ${t.filename} ${t.sha256} (${t.size} bytes) retained at ` +
+        `${path.relative(repoRoot, result.tarballPath)}; manifest ${path.relative(repoRoot, result.manifestPath)}`,
+    );
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
     console.error(error instanceof Error ? error.stack : error);
     process.exitCode = 1;
-  }
+  });
 }

@@ -20,6 +20,7 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isMainModule } from "./is-main-module.mjs";
 import { rejectOperation } from "./release-operations.mjs";
 import { stageDownloadFilenameFor } from "./release-receipts.mjs";
 import { canonicalPayloadBytes, canonicalReceiptPayload, parseReceiptFile, receiptAssetName, SIGN_NAMESPACE } from "./release-ordering.mjs";
@@ -27,8 +28,7 @@ import { allowedSignerPrincipals } from "./release-verify-ordering.mjs";
 import { executeRecoveryTransaction, normalizeAssetTriple, normalizeSlot, runRecoveryBatch, sha256Bytes } from "./release-inspect-recovery.mjs";
 import { RELEASE_CANDIDATE_SCHEMA, assertWorkflowContract, defaultReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
 
-const scriptPath = fileURLToPath(import.meta.url);
-const repoRoot = path.resolve(path.dirname(scriptPath), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRUBBED_GITHUB_ENV = new Set([
   "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST", "GH_REPO",
 ]);
@@ -485,7 +485,7 @@ export async function main(argv, dependencyOverrides = {}) {
   return batch;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (isMainModule(import.meta.url)) {
   try {
     const result = await main(process.argv.slice(2));
     for (const row of result.rows) if (row.status === "failed") console.error(row.error);

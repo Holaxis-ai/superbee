@@ -7,11 +7,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { isMainModule } from "./is-main-module.mjs";
 import { DEFAULT_RELEASE_TARGETS_PATH, defaultReleaseTargets, loadReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
-const scriptPath = fileURLToPath(import.meta.url);
-const repoRoot = path.resolve(path.dirname(scriptPath), "..");
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SUCCESSOR_TARGET = defaultReleaseTargets().successor;
 const SUCCESSOR_PACKAGE_NAME = SUCCESSOR_TARGET.package.name;
 const SUCCESSOR_INSTALL_ROOT = SUCCESSOR_TARGET.package.directory;
@@ -1076,25 +1076,27 @@ export async function verifyRetainedTarball({ tarball, manifest }) {
   });
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
-  try {
-    const args = parseVerificationArgs(process.argv.slice(2));
-    const result =
-      args.mode === "tarball"
-        ? await verifyRetainedTarball({ tarball: args.tarball, manifest: args.manifest })
-        : await verifyNpmPackage({ mode: args.mode });
-    if (args.json) {
-      console.log(JSON.stringify(result));
-    } else {
-      const source = result.identity.identity.source;
-      console.log(
-        `verified ${result.mode} ${result.package}: ${result.files} files, zero runtime dependencies, ` +
-          `bins ${result.bins.join("/")}, source commit=${source.commit ?? "unknown"} dirty=${source.dirty ?? "unknown"}, ` +
-          "offline workflow passed",
-      );
-    }
-  } catch (error) {
+async function main(argv = process.argv.slice(2)) {
+  const args = parseVerificationArgs(argv);
+  const result =
+    args.mode === "tarball"
+      ? await verifyRetainedTarball({ tarball: args.tarball, manifest: args.manifest })
+      : await verifyNpmPackage({ mode: args.mode });
+  if (args.json) {
+    console.log(JSON.stringify(result));
+  } else {
+    const source = result.identity.identity.source;
+    console.log(
+      `verified ${result.mode} ${result.package}: ${result.files} files, zero runtime dependencies, ` +
+        `bins ${result.bins.join("/")}, source commit=${source.commit ?? "unknown"} dirty=${source.dirty ?? "unknown"}, ` +
+        "offline workflow passed",
+    );
+  }
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
     console.error(error instanceof Error ? error.stack : error);
     process.exitCode = 1;
-  }
+  });
 }

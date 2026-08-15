@@ -20,6 +20,7 @@ import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "
 import path from "node:path";
 import { isDeepStrictEqual, parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
+import { isMainModule } from "./is-main-module.mjs";
 
 import {
   deleteDoc,
@@ -790,9 +791,7 @@ async function main() {
   console.log(JSON.stringify({ note: NORMALIZATION_NOTE, bundles: receipts }, null, 2));
 }
 
-const invokedDirectly =
-  process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
-if (invokedDirectly) {
+if (isMainModule(import.meta.url)) {
   main().catch((err) => {
     console.error(err?.stack ?? String(err));
     process.exit(1);

@@ -19,6 +19,7 @@
 import { rm, chmod } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { isMainModule } from "../../scripts/is-main-module.mjs";
 import { buildCliBundle } from "./scripts/build-bundle.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
 import { loadReleaseTargets } from "../../scripts/release-targets.mjs";
@@ -65,8 +66,15 @@ export async function buildCli(artifactChannel, { source, packageIdentity, relea
   return outfile;
 }
 
-// Direct CLI invocation: `node build.mjs local-dev|npm-package`.
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const built = await buildCli(process.argv[2]);
+async function main(argv = process.argv.slice(2)) {
+  const built = await buildCli(argv[0]);
   console.log(`built ${built}`);
+}
+
+// Direct CLI invocation: `node build.mjs local-dev|npm-package`.
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
 }

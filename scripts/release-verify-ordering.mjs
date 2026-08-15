@@ -13,8 +13,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
+import { isMainModule } from "./is-main-module.mjs";
 import {
   PUBLICATION_PLAN_SCHEMA,
   buildPublicationPlan,
@@ -31,8 +31,6 @@ import {
   verifyFinalPublication,
 } from "./release-ordering.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
-
-const scriptPath = fileURLToPath(import.meta.url);
 
 function arg(argv, flag, required = true) {
   const at = argv.indexOf(flag);
@@ -281,7 +279,7 @@ export async function main(argv) {
   throw new Error("usage: release-verify-ordering.mjs assets|verify|plan|apply|final ...");
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (isMainModule(import.meta.url)) {
   main(process.argv.slice(2)).catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

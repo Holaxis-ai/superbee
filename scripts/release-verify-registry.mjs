@@ -7,15 +7,13 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 
 import { fileSha256, sanitizedNpmEnvironment } from "./verify-npm-package.mjs";
+import { isMainModule } from "./is-main-module.mjs";
 import { REGISTRY_PROOF_SCHEMA, assertWorkflowContract, defaultReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
 const execFileAsync = promisify(execFile);
-const scriptPath = fileURLToPath(import.meta.url);
-
 function targetFor(targetId = "bridge") {
   const target = defaultReleaseTargets()[targetId];
   if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
@@ -183,7 +181,7 @@ export async function verifyRegistry({ target: targetId = "bridge", version, man
   }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (isMainModule(import.meta.url)) {
   verifyRegistry({
     target: arg(process.argv.slice(2), "--target", false) ?? "bridge",
     version: arg(process.argv.slice(2), "--version"),

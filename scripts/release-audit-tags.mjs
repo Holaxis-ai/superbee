@@ -18,11 +18,11 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { isMainModule } from "./is-main-module.mjs";
 import { resolveTags } from "./release-state.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
-const scriptPath = fileURLToPath(import.meta.url);
-const repoRoot = path.dirname(path.dirname(scriptPath));
+const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
 export const PACKAGE = "@holaxis/aslite";
 export const REGISTRY_URL = "https://registry.npmjs.org/@holaxis%2faslite";
@@ -593,7 +593,7 @@ export async function main(argv = process.argv.slice(2)) {
   return EXIT_PASS;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === scriptPath) {
+if (isMainModule(import.meta.url)) {
   main()
     .then((code) => {
       process.exitCode = code;

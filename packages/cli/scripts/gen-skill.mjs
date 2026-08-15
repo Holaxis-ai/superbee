@@ -18,6 +18,7 @@ import { build } from "esbuild";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve, relative, sep, join } from "node:path";
+import { isMainModule } from "../../../scripts/is-main-module.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const skillRenderTs = resolve(here, "../src/skill-render.ts");
@@ -26,12 +27,6 @@ const repoRoot = resolve(here, "../../..");
 
 const skillPath = resolve(here, "../SKILL.md");
 const referencesDir = resolve(here, "../references");
-const args = process.argv.slice(2);
-if (args.length > 1 || (args.length === 1 && args[0] !== "--check")) {
-  console.error("usage: node scripts/gen-skill.mjs [--check]");
-  process.exit(2);
-}
-const checkOnly = args[0] === "--check";
 
 async function loadSkillRender() {
   const out = await build({
@@ -111,34 +106,52 @@ async function checkReferences(resources) {
 
 // ---------------------------------------------------------------------------------------------
 
-const { renderNpm, NPM_RESOURCES } = await loadSkillRender();
-const content = renderNpm();
-const resources = NPM_RESOURCES;
+function parseArgs(argv) {
+  if (argv.length > 1 || (argv.length === 1 && argv[0] !== "--check")) {
+    throw new Error("usage: node scripts/gen-skill.mjs [--check]");
+  }
+  return { checkOnly: argv[0] === "--check" };
+}
 
-if (checkOnly) {
-  let ok = true;
-  let current = "";
-  try {
-    current = await readFile(skillPath, "utf8");
-  } catch {
-    /* missing → stale */
+export async function main(argv = process.argv.slice(2)) {
+  const { checkOnly } = parseArgs(argv);
+  const { renderNpm, NPM_RESOURCES } = await loadSkillRender();
+  const content = renderNpm();
+  const resources = NPM_RESOURCES;
+
+  if (checkOnly) {
+    let ok = true;
+    let current = "";
+    try {
+      current = await readFile(skillPath, "utf8");
+    } catch {
+      /* missing → stale */
+    }
+    if (current !== content) {
+      console.error(`${skillPath} is stale — run \`node scripts/gen-skill.mjs\` to regenerate.`);
+      ok = false;
+    }
+    for (const problem of await checkReferences(resources)) {
+      console.error(problem);
+      ok = false;
+    }
+    if (!ok) {
+      console.error("run `node scripts/gen-skill.mjs` to regenerate.");
+      process.exit(1);
+    }
+    console.log(`${skillPath} is up to date.`);
+  } else {
+    await writeFile(skillPath, content);
+    console.log(`wrote ${skillPath}`);
+    await syncReferences(resources);
+    console.log(`synced ${referencesDir}`);
   }
-  if (current !== content) {
-    console.error(`${skillPath} is stale — run \`node scripts/gen-skill.mjs\` to regenerate.`);
-    ok = false;
-  }
-  for (const problem of await checkReferences(resources)) {
-    console.error(problem);
-    ok = false;
-  }
-  if (!ok) {
-    console.error("run `node scripts/gen-skill.mjs` to regenerate.");
-    process.exit(1);
-  }
-  console.log(`${skillPath} is up to date.`);
-} else {
-  await writeFile(skillPath, content);
-  console.log(`wrote ${skillPath}`);
-  await syncReferences(resources);
-  console.log(`synced ${referencesDir}`);
+}
+
+if (isMainModule(import.meta.url)) {
+  main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(message);
+    process.exit(error instanceof Error && message === "usage: node scripts/gen-skill.mjs [--check]" ? 2 : 1);
+  });
 }
