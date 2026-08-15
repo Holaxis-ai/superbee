@@ -263,3 +263,89 @@ test("retained verification rejects a real same-shape tarball relabeled across r
     await buildCli("local-dev");
   }
 });
+
+test("retained verification rejects a real Superbee tarball relabeled across successor preview/stable tuples", async (t) => {
+  const commit = headCommit();
+  if (!commit || !process.env.npm_execpath) {
+    t.skip("requires a git checkout and npm_execpath (run via npm)");
+    return;
+  }
+  const targets = await loadReleaseTargets();
+  const sourceTuple = targets.allowed_tuples["successor-preview"];
+  const claimedTuple = targets.allowed_tuples["successor-stable"];
+  const out = await mkdtemp(path.join(tmpdir(), "superbee-successor-cross-slot-"));
+  try {
+    const result = await createReleaseCandidate({
+      target: sourceTuple.target,
+      tag: sourceTuple.tag,
+      commit,
+      out,
+      verify: false,
+      sourceFacts: { commit, dirty: false },
+    });
+    const accepted = await verifyRetainedTarball({ tarball: result.tarballPath, manifest: result.manifestPath });
+    assert.equal(accepted.package, `${sourceTuple.package}@${sourceTuple.version}`);
+    const relabeledTarball = path.join(out, `superbee-${claimedTuple.version}.tgz`);
+    await cp(result.tarballPath, relabeledTarball);
+    const relabeled = structuredClone(result.candidate);
+    relabeled.target = claimedTuple.target;
+    relabeled.tag = claimedTuple.tag;
+    relabeled.version = claimedTuple.version;
+    relabeled.build_identity.package.version = claimedTuple.version;
+    relabeled.tarball.filename = path.basename(relabeledTarball);
+    relabeled.tarball.version = claimedTuple.version;
+    relabeled.tarball.path = relabeledTarball;
+    const relabeledManifest = path.join(out, "candidate-successor-relabeled.json");
+    await writeFile(relabeledManifest, `${JSON.stringify(relabeled, null, 2)}\n`);
+
+    await assert.rejects(
+      verifyRetainedTarball({ tarball: relabeledTarball, manifest: relabeledManifest }),
+      /installed package coordinate does not match the reviewed tuple/,
+    );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await buildCli("local-dev");
+  }
+});
+
+test("retained verification rejects omitted or self-attested compatibility claims on a real candidate", async (t) => {
+  const commit = headCommit();
+  if (!commit || !process.env.npm_execpath) {
+    t.skip("requires a git checkout and npm_execpath (run via npm)");
+    return;
+  }
+  const targets = await loadReleaseTargets();
+  const tuple = targets.allowed_tuples["successor-preview"];
+  const out = await mkdtemp(path.join(tmpdir(), "superbee-compatibility-proof-"));
+  try {
+    const result = await createReleaseCandidate({
+      target: tuple.target,
+      tag: tuple.tag,
+      commit,
+      out,
+      verify: false,
+      sourceFacts: { commit, dirty: false },
+    });
+    const omitted = structuredClone(result.candidate);
+    delete omitted.compatibility_contracts;
+    const omittedManifest = path.join(out, "candidate-compatibility-omitted.json");
+    await writeFile(omittedManifest, `${JSON.stringify(omitted, null, 2)}\n`);
+    await assert.rejects(
+      verifyRetainedTarball({ tarball: result.tarballPath, manifest: omittedManifest }),
+      /candidate compatibility contracts do not agree/,
+    );
+
+    const selfAttested = structuredClone(result.candidate);
+    selfAttested.compatibility_contracts = { skill: 99, hook: 99, mcp: 99 };
+    selfAttested.build_identity.compatibility_contracts = structuredClone(selfAttested.compatibility_contracts);
+    const selfAttestedManifest = path.join(out, "candidate-compatibility-self-attested.json");
+    await writeFile(selfAttestedManifest, `${JSON.stringify(selfAttested, null, 2)}\n`);
+    await assert.rejects(
+      verifyRetainedTarball({ tarball: result.tarballPath, manifest: selfAttestedManifest }),
+      /embedded compatibility contracts do not match the candidate build identity/,
+    );
+  } finally {
+    await rm(out, { recursive: true, force: true });
+    await buildCli("local-dev");
+  }
+});

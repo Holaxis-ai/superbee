@@ -31,7 +31,7 @@ function arg(argv, flag, required = true) {
 
 export function buildReceipt(fields) {
   const { stageId, version, policyTag, tarballSha256, draftReleaseId, target = "bridge" } = fields;
-  const receipt = buildStageReceipt(fields);
+  const receipt = buildStageReceipt({ ...fields, target });
   const inspection = inspectionInstructions({ stageId, tarballSha256, version, target });
   return {
     receipt,

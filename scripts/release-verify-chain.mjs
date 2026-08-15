@@ -8,7 +8,7 @@ import { fileSha256 } from "./verify-npm-package.mjs";
 import { isMainModule } from "./is-main-module.mjs";
 import { parseAuxiliaryReleaseAssetName } from "./release-ordering.mjs";
 import { parseStagePublishJson, verifyFinalizerChain } from "./release-receipts.mjs";
-import { assertWorkflowContract, defaultReleaseTargets, tarballFilename } from "./release-targets.mjs";
+import { assertWorkflowContract, defaultReleaseTargets, resolveDeclaredTarget, tarballFilename } from "./release-targets.mjs";
 
 function arg(argv, flag) {
   const at = argv.indexOf(flag);
@@ -60,8 +60,12 @@ async function verifyChain(argv) {
   const receiptPath = arg(argv, "--receipt");
   const candidate = await jsonFile(candidatePath);
   const receipt = await jsonFile(receiptPath);
-  const target = defaultReleaseTargets()[candidate.target ?? receipt.prepared?.target ?? "bridge"];
-  if (!target) throw new Error(`unknown release target ${JSON.stringify(candidate.target ?? receipt.prepared?.target)}`);
+  const target = resolveDeclaredTarget({
+    targetId: candidate.target ?? receipt.prepared?.target,
+    packageName: candidate.package?.name ?? receipt.prepared?.package ?? candidate.build_identity?.package?.name,
+    targets: defaultReleaseTargets(),
+    context: "finalizer proof target",
+  });
   const expectedFilename = tarballFilename(assertWorkflowContract(target), candidate.version);
   if (candidate.tarball?.filename !== expectedFilename || path.basename(candidate.tarball.filename) !== candidate.tarball.filename) {
     throw new Error(`candidate tarball filename ${candidate.tarball?.filename} != ${expectedFilename}`);

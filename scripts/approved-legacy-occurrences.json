@@ -1440,7 +1440,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 310
+      "line": 316
     },
     {
       "file": "scripts/release-inspect.mjs",
@@ -1451,7 +1451,7 @@
       "treatment": "preserve-internal-non-user-facing-name",
       "owner": "runtime-owner",
       "reason": "temporary scratch names are private implementation namespaces, not product guidance",
-      "line": 360
+      "line": 366
     },
     {
       "file": "scripts/release-ordering.mjs",
@@ -1517,7 +1517,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 134
+      "line": 130
     },
     {
       "file": "scripts/release-verify-ordering.mjs",
@@ -1539,7 +1539,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 99
+      "line": 115
     },
     {
       "file": "scripts/verify-npm-package.mjs",

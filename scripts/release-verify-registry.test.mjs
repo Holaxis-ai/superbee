@@ -5,6 +5,8 @@ import { assertRegistryCandidate } from "./release-verify-registry.mjs";
 
 const SHA = "sha256:" + "a".repeat(64);
 const candidate = {
+  target: "bridge",
+  package: { name: "@holaxis/aslite" },
   version: "0.1.0-pre.4",
   source: { commit: "b".repeat(40), dirty: false },
   tarball: { sha256: SHA, shasum: "c".repeat(40), integrity: "sha512-YWJjZA==" },
@@ -55,6 +57,16 @@ test("registry proof fails closed on each independent mismatch", () => {
   assert.throws(
     () => assertRegistryCandidate({ candidate, packReceipt, packumentDist: { ...packumentDist, attestations: undefined }, tarballSha256: SHA, installedIdentity }),
     /no npm-hosted SLSA provenance/,
+  );
+});
+
+test("registry proof rejects ambiguous package-only identity instead of redirecting to bridge", () => {
+  const ambiguous = structuredClone(candidate);
+  delete ambiguous.target;
+  ambiguous.package = { name: "superbee" };
+  assert.throws(
+    () => assertRegistryCandidate({ candidate: ambiguous, packReceipt, packumentDist, tarballSha256: SHA, installedIdentity }),
+    /ambiguous across targets successor-preview, successor-stable; explicit target required/,
   );
 });
 

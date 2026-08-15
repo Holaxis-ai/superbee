@@ -8,9 +8,9 @@ import {
   RELEASE_CANDIDATE_SCHEMA,
   RELEASE_FINALIZER_PROOF_SCHEMA,
   RELEASE_STAGE_RECEIPT_SCHEMA,
+  resolveDeclaredTarget,
   stageDownloadFilenameForTarget,
   tarballFilename as releaseTarballFilename,
-  targetFromPackageName,
 } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
@@ -93,20 +93,31 @@ export function stageDownloadFilenameFor(targetId, version, stageId) {
 }
 
 function resolveTargetFromFields(fields) {
-  const targetId = fields.target ?? targetFromPackageName(fields.packageName) ?? "bridge";
-  const target = defaultReleaseTargets()[targetId];
-  if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
-  if (fields.packageName !== undefined && fields.packageName !== target.package.name) {
-    fail(`package ${fields.packageName} != target ${target.package.name}`);
+  try {
+    return resolveDeclaredTarget({
+      targetId: fields.target,
+      packageName: fields.packageName,
+      targets: defaultReleaseTargets(),
+      context: "stage receipt target",
+      workflowContract: "full",
+    });
+  } catch (error) {
+    fail(error.message);
   }
-  return assertWorkflowContract(target);
 }
 
 function resolveTargetFromCandidate(candidate, prepared = {}) {
-  const targetId = candidate?.target ?? prepared.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name);
-  const target = defaultReleaseTargets()[targetId ?? "bridge"];
-  if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
-  return assertWorkflowContract(target);
+  try {
+    return resolveDeclaredTarget({
+      targetId: candidate?.target ?? prepared.target,
+      packageName: candidate?.package?.name ?? prepared.package ?? candidate?.build_identity?.package?.name,
+      targets: defaultReleaseTargets(),
+      context: "finalizer proof target",
+      workflowContract: "full",
+    });
+  } catch (error) {
+    fail(error.message);
+  }
 }
 
 function normalizedAssets(assets) {

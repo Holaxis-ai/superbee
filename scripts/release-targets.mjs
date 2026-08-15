@@ -248,6 +248,42 @@ export function targetFromPackageName(packageName, targets = defaultReleaseTarge
   return matches.length === 1 ? matches[0].id : null;
 }
 
+export function resolveDeclaredTarget({
+  targetId,
+  packageName,
+  targets = defaultReleaseTargets(),
+  context = "release target",
+  workflowContract,
+  fallbackTargetId,
+} = {}) {
+  const normalizedTargetId = targetId ?? (packageName === undefined ? fallbackTargetId : undefined);
+  const normalizedPackageName = typeof packageName === "string" ? packageName : undefined;
+  let target;
+  if (normalizedTargetId !== undefined) {
+    target = targets[assertTargetId(normalizedTargetId)];
+    if (!target) throw new Error(`${context} ${JSON.stringify(normalizedTargetId)} is not a declared release target`);
+  } else if (normalizedPackageName !== undefined) {
+    const inferredTargetId = targetFromPackageName(normalizedPackageName, targets);
+    if (inferredTargetId === null) {
+      const matches = Object.values(targets)
+        .filter((candidate) => candidate.package.name === normalizedPackageName)
+        .map((candidate) => candidate.id)
+        .sort();
+      if (matches.length > 1) {
+        throw new Error(`${context} package ${normalizedPackageName} is ambiguous across targets ${matches.join(", ")}; explicit target required`);
+      }
+      throw new Error(`${context} package ${normalizedPackageName} does not match any declared release target`);
+    }
+    target = targets[inferredTargetId];
+  } else {
+    throw new Error(`${context} requires an explicit target`);
+  }
+  if (normalizedPackageName !== undefined && normalizedPackageName !== target.package.name) {
+    throw new Error(`${context} package ${normalizedPackageName} does not match target ${target.package.name}`);
+  }
+  return workflowContract ? assertWorkflowContract(target, workflowContract) : target;
+}
+
 export function assertWorkflowContract(target, workflowContract = "full") {
   if (!target || target.workflow_contract !== workflowContract) {
     throw new Error(`release target ${target?.id ?? "<unknown>"} requires workflow contract ${workflowContract}`);

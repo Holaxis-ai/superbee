@@ -5,7 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
-import { loadReleaseTargets, normalizeReleaseTargets, targetFromPackageName, updatePolicyForTarget } from "./release-targets.mjs";
+import { loadReleaseTargets, normalizeReleaseTargets, resolveDeclaredTarget, targetFromPackageName, updatePolicyForTarget } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -115,6 +115,22 @@ test("package-only compatibility lookup refuses the split Superbee coordinates",
   const manifest = await loadReleaseTargets();
   assert.equal(targetFromPackageName("@holaxis/aslite", manifest.targets), "bridge");
   assert.equal(targetFromPackageName("superbee", manifest.targets), null);
+});
+
+test("declared-target resolution fails closed for ambiguous or missing package-only identity", async () => {
+  const manifest = await loadReleaseTargets();
+  assert.equal(
+    resolveDeclaredTarget({ packageName: "@holaxis/aslite", targets: manifest.targets, context: "test target" }).id,
+    "bridge",
+  );
+  assert.throws(
+    () => resolveDeclaredTarget({ packageName: "superbee", targets: manifest.targets, context: "test target" }),
+    /ambiguous across targets successor-preview, successor-stable; explicit target required/,
+  );
+  assert.throws(
+    () => resolveDeclaredTarget({ targets: manifest.targets, context: "test target" }),
+    /requires an explicit target/,
+  );
 });
 
 test("the normalized manifest requires target ids and tuple ids to stay aligned", async () => {

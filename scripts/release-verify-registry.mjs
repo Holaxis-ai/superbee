@@ -10,14 +10,17 @@ import { promisify } from "node:util";
 
 import { fileSha256, sanitizedNpmEnvironment } from "./verify-npm-package.mjs";
 import { isMainModule } from "./is-main-module.mjs";
-import { REGISTRY_PROOF_SCHEMA, assertWorkflowContract, defaultReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
+import { REGISTRY_PROOF_SCHEMA, assertWorkflowContract, defaultReleaseTargets, resolveDeclaredTarget } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
 const execFileAsync = promisify(execFile);
-function targetFor(targetId = "bridge") {
-  const target = defaultReleaseTargets()[targetId];
-  if (!target) throw new Error(`invalid release target: ${JSON.stringify(targetId)}`);
-  return assertWorkflowContract(target);
+function targetFor({ targetId, packageName }) {
+  return assertWorkflowContract(resolveDeclaredTarget({
+    targetId,
+    packageName,
+    targets: defaultReleaseTargets(),
+    context: "registry proof target",
+  }));
 }
 
 function arg(argv, flag, required = true) {
@@ -46,7 +49,17 @@ function parseJson(text, label) {
   }
 }
 
-export function assertRegistryCandidate({ candidate, packReceipt, packumentDist, tarballSha256, installedIdentity, target = targetFor(candidate?.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name) ?? "bridge") }) {
+export function assertRegistryCandidate({
+  candidate,
+  packReceipt,
+  packumentDist,
+  tarballSha256,
+  installedIdentity,
+  target = targetFor({
+    targetId: candidate?.target,
+    packageName: candidate?.package?.name ?? candidate?.build_identity?.package?.name,
+  }),
+}) {
   if (packReceipt.name !== target.package.name) throw new Error(`registry package ${packReceipt.name} != ${target.package.name}`);
   if (packReceipt.version !== candidate.version) {
     throw new Error(`registry version ${packReceipt.version} != candidate ${candidate.version}`);
@@ -87,10 +100,13 @@ export function assertRegistryCandidate({ candidate, packReceipt, packumentDist,
   }
 }
 
-export async function verifyRegistry({ target: targetId = "bridge", version, manifest, out }) {
-  const target = targetFor(targetId);
+export async function verifyRegistry({ target: targetId, version, manifest, out }) {
   if (!isStrictSemver(version)) throw new Error(`invalid --version ${version}`);
   const candidate = parseJson(await readFile(manifest, "utf8"), "candidate manifest");
+  const target = targetFor({
+    targetId,
+    packageName: candidate?.package?.name ?? candidate?.build_identity?.package?.name,
+  });
   if (candidate.version !== version) throw new Error(`candidate version ${candidate.version} != requested ${version}`);
   if (candidate.target !== target.id || candidate.package?.name !== target.package.name) {
     throw new Error(`candidate target/package ${candidate.target ?? "<missing>"}/${candidate.package?.name ?? "<missing>"} != ${target.id}/${target.package.name}`);
@@ -183,7 +199,7 @@ export async function verifyRegistry({ target: targetId = "bridge", version, man
 
 if (isMainModule(import.meta.url)) {
   verifyRegistry({
-    target: arg(process.argv.slice(2), "--target", false) ?? "bridge",
+    target: arg(process.argv.slice(2), "--target", false),
     version: arg(process.argv.slice(2), "--version"),
     manifest: arg(process.argv.slice(2), "--manifest"),
     out: arg(process.argv.slice(2), "--out", false),

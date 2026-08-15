@@ -42,6 +42,33 @@ test("declared rehearsal targets resolve from the manifest but cannot enter the 
   );
 });
 
+test("stage receipts reject ambiguous package-only lookup instead of redirecting to bridge", () => {
+  assert.throws(
+    () =>
+      buildStageReceipt({
+        packageName: "superbee",
+        runId: "100",
+        artifactId: "101",
+        artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
+        stageId: STAGE_ID,
+        version: "0.1.1-pre.1",
+        tag: "v0.1.1-pre.1",
+        sourceCommit: COMMIT,
+        policyTag: "next",
+        tarballSha256: TARBALL_SHA,
+        tarballFilename: "superbee-0.1.1-pre.1.tgz",
+        integrity: INTEGRITY,
+        manifestSha256: MANIFEST_SHA,
+        draftReleaseId: "300",
+        draftAssets: [
+          { id: "201", name: "superbee-0.1.1-pre.1.tgz", digest: TARBALL_SHA },
+          { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
+        ],
+      }),
+    /ambiguous across targets successor-preview, successor-stable; explicit target required/,
+  );
+});
+
 function fixture() {
   const draftAssets = [
     { id: "201", name: TARBALL, digest: TARBALL_SHA },
@@ -211,6 +238,7 @@ const ACTION_BARE_DIGEST = "c".repeat(64);
 
 test("a bare hex artifact digest (the actions/upload-artifact output shape) is canonicalized", () => {
   const receipt = buildStageReceipt({
+    target: "bridge",
     runId: "100",
     artifactId: "101",
     artifactDigest: ACTION_BARE_DIGEST,
@@ -245,6 +273,7 @@ test("canonicalization does not weaken the digest guard", () => {
   for (const bad of ["sha256:" + "z".repeat(64), "c".repeat(63), "c".repeat(65), "sha256:", "", null]) {
     assert.throws(
       () => buildStageReceipt({
+        target: "bridge",
         runId: "100", artifactId: "101", artifactDigest: bad, stageId: STAGE_ID, version: VERSION,
         tag: `v${VERSION}`, sourceCommit: COMMIT, policyTag: "next", tarballSha256: TARBALL_SHA,
         tarballFilename: TARBALL, integrity: INTEGRITY, manifestSha256: MANIFEST_SHA,

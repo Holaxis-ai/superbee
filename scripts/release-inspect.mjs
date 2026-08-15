@@ -26,7 +26,7 @@ import { stageDownloadFilenameFor } from "./release-receipts.mjs";
 import { canonicalPayloadBytes, canonicalReceiptPayload, parseReceiptFile, receiptAssetName, SIGN_NAMESPACE } from "./release-ordering.mjs";
 import { allowedSignerPrincipals } from "./release-verify-ordering.mjs";
 import { executeRecoveryTransaction, normalizeAssetTriple, normalizeSlot, runRecoveryBatch, sha256Bytes } from "./release-inspect-recovery.mjs";
-import { RELEASE_CANDIDATE_SCHEMA, assertWorkflowContract, defaultReleaseTargets, targetFromPackageName } from "./release-targets.mjs";
+import { RELEASE_CANDIDATE_SCHEMA, assertWorkflowContract, defaultReleaseTargets, resolveDeclaredTarget } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SCRUBBED_GITHUB_ENV = new Set([
@@ -271,9 +271,15 @@ function createProductionDependencies(overrides = {}) {
   }
 
   function candidateTarget(candidate, row) {
-    const targetId = candidate?.target ?? row.target ?? targetFromPackageName(candidate?.package?.name ?? candidate?.build_identity?.package?.name) ?? "bridge";
-    const target = defaultReleaseTargets()[targetId];
-    if (!target) fail(`unknown release target ${JSON.stringify(targetId)}`);
+    if (row.target !== undefined && candidate?.target !== undefined && row.target !== candidate.target) {
+      fail(`candidate target ${candidate.target} does not match requested target ${row.target}`);
+    }
+    const target = resolveDeclaredTarget({
+      targetId: row.target ?? candidate?.target,
+      packageName: candidate?.package?.name ?? candidate?.build_identity?.package?.name,
+      targets: defaultReleaseTargets(),
+      context: "inspection target",
+    });
     if (row.target !== undefined && row.target !== target.id) fail(`candidate target ${target.id} does not match requested target ${row.target}`);
     if (candidate?.package?.name !== undefined && candidate.package.name !== target.package.name) {
       fail(`candidate package ${candidate.package.name} does not match target ${target.package.name}`);
