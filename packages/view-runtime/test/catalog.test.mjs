@@ -100,6 +100,31 @@ test("View catalog preserves its existing timestamp projection around the shared
   assert.equal("timestamp" in catalog.entries[1], false);
 });
 
+test("View catalog projects edition-neutral mutation attribution with shared precedence", async () => {
+  const catalog = await projectViewCatalog([
+    {
+      id: "views-registry/attributed",
+      version: "v1",
+      frontmatter: {
+        type: "View",
+        title: "Attributed",
+        entry: "views/attributed.html",
+        superbee_updated_by: "  carol  ",
+        updated_by: "alice",
+        actor: "mike",
+      },
+    },
+    {
+      id: "views-registry/unattributed",
+      version: "v2",
+      frontmatter: { type: "View", title: "Unattributed", entry: "views/unattributed.html" },
+    },
+  ], { admitEntry: async () => true });
+
+  assert.equal(catalog.entries[0].actor, "carol");
+  assert.equal("actor" in catalog.entries[1], false);
+});
+
 test("catalog admission keeps shared-entry registrations distinct by optional version pin", async () => {
   const backend = new CountingMemoryBackend();
   const bundle = { root: "mem://pinned-view-catalog", backend };

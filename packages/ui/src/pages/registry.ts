@@ -7,6 +7,7 @@ import {
   type PageTypeName,
 } from "@superbee/core/page";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
+import { mutationActorFromFrontmatter } from "@superbee/core/mutation-attribution";
 
 export {
   declaredAccessValue,
@@ -56,7 +57,7 @@ export function parseRegisteredPage(
     type: registration.type,
     title: stringValue(frontmatter.title) ?? registration.id,
     description: stringValue(frontmatter.description),
-    actor: stringValue(frontmatter.actor),
+    actor: mutationActorFromFrontmatter(frontmatter),
     timestamp: stringValue(meaningfulChangeTimeValue(frontmatter)),
   };
 }
