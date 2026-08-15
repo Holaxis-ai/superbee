@@ -220,7 +220,17 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
     LIST_WORKSPACES_TOOL_NAME,
     SHOW_DOCUMENT_TOOL_NAME,
     LIST_VIEWS_TOOL_NAME,
+    SHOW_VIEW_TOOL_NAME,
+    AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
+    SAVE_TRANSIENT_VIEW_TOOL_NAME,
+    DURABLE_VIEW_BRIDGE_TOOL_NAME,
+    RESUME_DURABLE_VIEW_TOOL_NAME,
+    POLL_DURABLE_VIEW_TOOL_NAME,
+    CLOSE_DURABLE_VIEW_TOOL_NAME,
+    PREPARE_VIEW_ACTION_TOOL_NAME,
+    FINISH_VIEW_ACTION_TOOL_NAME,
     RESOLVE_DOCUMENT_TOOL_NAME,
+    RESOLVE_LAUNCH_TOOL_NAME,
   ]);
   assert.deepEqual(tools.tools[0]?._meta?.ui?.visibility, ["model"]);
   assert.equal(tools.tools[0]?.annotations?.readOnlyHint, true);
@@ -340,6 +350,353 @@ test("bundle-unbound document and View discovery require and honor one explicit 
   });
   assert.equal(pathSelector.isError, true);
   assert.deepEqual(opened, ["planning", "planning", "research", "missing"]);
+});
+
+test("bundle-unbound View launches pin every lifecycle operation to the selected workspace", async (t) => {
+  const planning = { root: "mem://launch-planning", backend: new MemoryBackend() } as Bundle;
+  const research = { root: "mem://launch-research", backend: new MemoryBackend() } as Bundle;
+  await seed(planning);
+  await seed(research);
+  await writeDoc(planning, {
+    id: "tasks/alpha",
+    frontmatter: { type: "Task", title: "Planning Alpha", status: "todo", timestamp: T },
+    body: "# Goal\n\nPlanning only.",
+  });
+  await writeDoc(research, {
+    id: "tasks/alpha",
+    frontmatter: { type: "Task", title: "Research Alpha", status: "todo", timestamp: T },
+    body: "# Goal\n\nResearch only.",
+  });
+  await seedNavigationTarget(planning, "views-registry/planning-only");
+
+  const opened: string[] = [];
+  const resolver: McpWorkspaceResolver = {
+    list: async () => [],
+    open: async (selector) => {
+      opened.push(selector);
+      if (selector === "planning") {
+        return createMcpBundleContext({
+          bundle: planning,
+          bundleName: "Planning workspace",
+          actor: "openai/codex",
+        });
+      }
+      if (selector === "research") {
+        return createMcpBundleContext({
+          bundle: research,
+          bundleName: "Research workspace",
+          actor: "openai/codex",
+        });
+      }
+      throw new Error("private locator must not escape");
+    },
+  };
+  const server = createMcpAppServer({ workspaceResolver: resolver, version: "test" });
+  const client = new Client(
+    { name: "workspace-launch-routing-test", version: "test" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const missingWorkspace = await client.callTool({
+    name: SHOW_VIEW_TOOL_NAME,
+    arguments: { viewId: "views-registry/roadmap" },
+  });
+  assert.equal(missingWorkspace.isError, true);
+  assert.deepEqual(opened, []);
+
+  const planningShown = await client.callTool({
+    name: SHOW_VIEW_TOOL_NAME,
+    arguments: { workspace: "planning", viewId: "views-registry/roadmap" },
+  });
+  const researchShown = await client.callTool({
+    name: SHOW_VIEW_TOOL_NAME,
+    arguments: { workspace: "research", viewId: "views-registry/roadmap" },
+  });
+  const planningView = planningShown.structuredContent as {
+    launch: { launchId: string; authorization: { authorized: boolean } };
+  };
+  const researchView = researchShown.structuredContent as typeof planningView;
+  assert.equal(planningView.launch.authorization.authorized, false);
+  assert.equal(researchView.launch.authorization.authorized, false);
+  assert.deepEqual(opened, ["planning", "research"]);
+
+  await client.callTool({
+    name: AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
+    arguments: { launchId: planningView.launch.launchId },
+  });
+  await client.callTool({
+    name: AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
+    arguments: { launchId: researchView.launch.launchId },
+  });
+  const planningClaim = extractClaimId(planningShown);
+  assert.ok(planningClaim);
+  const recoveredPlanning = await client.callTool({
+    name: RESOLVE_LAUNCH_TOOL_NAME,
+    arguments: { claim: planningClaim },
+  });
+  assert.equal(
+    (recoveredPlanning.structuredContent as {
+      launch: { launchId: string; authorization: { authorized: boolean } };
+    }).launch.launchId,
+    planningView.launch.launchId,
+  );
+  assert.equal(
+    (recoveredPlanning.structuredContent as {
+      launch: { authorization: { authorized: boolean } };
+    }).launch.authorization.authorized,
+    true,
+  );
+  const hello = async (launchId: string) => client.callTool({
+    name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
+    arguments: {
+      launchId,
+      request: { bridge: "v0", type: "hello", id: `hello-${launchId}` },
+    },
+  });
+  const planningHello = await hello(planningView.launch.launchId);
+  const researchHello = await hello(researchView.launch.launchId);
+  assert.equal(
+    (planningHello.structuredContent as {
+      outcome: { reply: { result: { bundle: { name: string } } } };
+    }).outcome.reply.result.bundle.name,
+    "Planning workspace",
+  );
+  assert.equal(
+    (researchHello.structuredContent as {
+      outcome: { reply: { result: { bundle: { name: string } } } };
+    }).outcome.reply.result.bundle.name,
+    "Research workspace",
+  );
+
+  const readTitle = async (launchId: string) => {
+    const result = await client.callTool({
+      name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
+      arguments: {
+        launchId,
+        request: { bridge: "v0", type: "read", id: `read-${launchId}`, docId: "tasks/alpha" },
+      },
+    });
+    return (result.structuredContent as {
+      outcome: { reply: { result: { frontmatter: { title: string } } } };
+    }).outcome.reply.result.frontmatter.title;
+  };
+  assert.equal(await readTitle(planningView.launch.launchId), "Planning Alpha");
+  assert.equal(await readTitle(researchView.launch.launchId), "Research Alpha");
+
+  const planningNavigation = await client.callTool({
+    name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
+    arguments: {
+      launchId: planningView.launch.launchId,
+      request: {
+        bridge: "v0",
+        type: "open-page",
+        id: "planning-navigation",
+        pageId: "views-registry/planning-only",
+      },
+    },
+  });
+  assert.equal(
+    (planningNavigation.structuredContent as { navigation: { status: string } }).navigation.status,
+    "opened",
+  );
+  const researchNavigation = await client.callTool({
+    name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
+    arguments: {
+      launchId: researchView.launch.launchId,
+      request: {
+        bridge: "v0",
+        type: "open-page",
+        id: "research-navigation",
+        pageId: "views-registry/planning-only",
+      },
+    },
+  });
+  assert.equal(
+    (researchNavigation.structuredContent as { navigation: { status: string } }).navigation.status,
+    "failed",
+  );
+
+  const proposed = await client.callTool({
+    name: SHOW_VIEW_TOOL_NAME,
+    arguments: {
+      workspace: "planning",
+      mode: "transient",
+      title: "Planning editor",
+      html: "<!doctype html><title>Planning editor</title>",
+      access: "bundle-propose",
+    },
+  });
+  const proposalView = proposed.structuredContent as { launch: { launchId: string } };
+  await client.callTool({
+    name: AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
+    arguments: { launchId: proposalView.launch.launchId },
+  });
+  const target = await readDocVersioned(planning, "tasks/alpha");
+  const prepared = await client.callTool({
+    name: PREPARE_VIEW_ACTION_TOOL_NAME,
+    arguments: {
+      launchId: proposalView.launch.launchId,
+      requestId: "planning-done",
+      action: {
+        kind: "document.set-field",
+        docId: "tasks/alpha",
+        field: "status",
+        value: "done",
+        expectedVersion: target.version,
+      },
+    },
+  });
+  const approvalToken = (prepared.structuredContent as {
+    result: { status: string; approvalToken: string };
+  }).result.approvalToken;
+  const finished = await client.callTool({
+    name: FINISH_VIEW_ACTION_TOOL_NAME,
+    arguments: {
+      launchId: proposalView.launch.launchId,
+      approvalToken,
+      decision: "commit",
+    },
+  });
+  assert.equal(
+    (finished.structuredContent as { result: { status: string } }).result.status,
+    "committed",
+  );
+  assert.equal((await readDocVersioned(planning, "tasks/alpha")).doc.frontmatter.status, "done");
+  assert.equal((await readDocVersioned(research, "tasks/alpha")).doc.frontmatter.status, "todo");
+
+  const saved = await client.callTool({
+    name: SAVE_TRANSIENT_VIEW_TOOL_NAME,
+    arguments: {
+      launchId: proposalView.launch.launchId,
+      viewId: "views-registry/planning-editor",
+    },
+  });
+  assert.equal(saved.isError, undefined);
+  assert.ok(await readBlob(planning, "views/planning-editor.html"));
+  assert.equal(await readBlob(research, "views/planning-editor.html"), null);
+
+  const resumable = await client.callTool({
+    name: SHOW_VIEW_TOOL_NAME,
+    arguments: { workspace: "research", viewId: "views-registry/roadmap" },
+  });
+  const resumableLaunchId = (resumable.structuredContent as {
+    launch: { launchId: string };
+  }).launch.launchId;
+  await client.callTool({
+    name: AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
+    arguments: { launchId: resumableLaunchId },
+  });
+  const resumed = await client.callTool({
+    name: RESUME_DURABLE_VIEW_TOOL_NAME,
+    arguments: { launchId: resumableLaunchId },
+  });
+  const resumedLaunchId = (resumed.structuredContent as {
+    view: { launch: { launchId: string } };
+  }).view.launch.launchId;
+  const resumedHello = await hello(resumedLaunchId);
+  assert.equal(
+    (resumedHello.structuredContent as {
+      outcome: { reply: { result: { bundle: { name: string } } } };
+    }).outcome.reply.result.bundle.name,
+    "Research workspace",
+  );
+});
+
+test("bundle-unbound access:none transient Views stay bundleless for their full lifecycle", async (t) => {
+  let openCalls = 0;
+  const resolver: McpWorkspaceResolver = {
+    list: async () => [],
+    open: async () => {
+      openCalls += 1;
+      throw new Error("must not open a bundle");
+    },
+  };
+  const server = createMcpAppServer({ workspaceResolver: resolver, version: "test" });
+  const client = new Client(
+    { name: "bundleless-transient-test", version: "test" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const implicitRead = await client.callTool({
+    name: SHOW_VIEW_TOOL_NAME,
+    arguments: {
+      mode: "transient",
+      title: "Implicit read",
+      html: "<!doctype html><title>Implicit read</title>",
+    },
+  });
+  assert.equal(implicitRead.isError, true);
+  assert.equal(openCalls, 0);
+
+  const shown = await client.callTool({
+    name: SHOW_VIEW_TOOL_NAME,
+    arguments: {
+      mode: "transient",
+      title: "Bundleless",
+      html: "<!doctype html><title>Bundleless</title>",
+      access: "none",
+    },
+  });
+  const view = shown.structuredContent as {
+    launch: {
+      launchId: string;
+      access: string;
+      authorization: { required: boolean; authorized: boolean };
+    };
+  };
+  assert.equal(view.launch.access, "none");
+  assert.deepEqual(view.launch.authorization, { required: false, authorized: false });
+  assert.equal(openCalls, 0);
+
+  const bridge = await client.callTool({
+    name: DURABLE_VIEW_BRIDGE_TOOL_NAME,
+    arguments: {
+      launchId: view.launch.launchId,
+      request: { bridge: "v0", type: "hello", id: "bundleless-hello" },
+    },
+  });
+  assert.equal(
+    (bridge.structuredContent as {
+      outcome: { reply: { error: { code: string } } };
+    }).outcome.reply.error.code,
+    "FORBIDDEN",
+  );
+
+  const save = await client.callTool({
+    name: SAVE_TRANSIENT_VIEW_TOOL_NAME,
+    arguments: {
+      launchId: view.launch.launchId,
+      viewId: "views-registry/bundleless",
+    },
+  });
+  assert.equal(save.isError, true);
+  assert.match(JSON.stringify(save), /bundleless transient View cannot be saved/);
+  assert.equal(openCalls, 0);
+
+  const resumed = await client.callTool({
+    name: RESUME_DURABLE_VIEW_TOOL_NAME,
+    arguments: { launchId: view.launch.launchId },
+  });
+  const resumedView = (resumed.structuredContent as {
+    view: { launch: { launchId: string; access: string } };
+  }).view;
+  assert.notEqual(resumedView.launch.launchId, view.launch.launchId);
+  assert.equal(resumedView.launch.access, "none");
+  assert.equal(openCalls, 0);
 });
 
 test("bundle-unbound workspace listing rejects path-bearing identities and extra locator data", async () => {

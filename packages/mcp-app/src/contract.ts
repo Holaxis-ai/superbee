@@ -9,7 +9,7 @@ export interface TransientShowViewInput {
   mode: "transient";
   title: string;
   html: string;
-  access?: Extract<BridgeCapability, "bundle-read" | "bundle-propose">;
+  access?: BridgeCapability;
 }
 
 export type ShowViewInput =

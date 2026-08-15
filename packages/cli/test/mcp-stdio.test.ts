@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { initBundle, writeDoc } from "@superbee/core";
+import { initBundle, writeBlob, writeDoc } from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { cliVersion } from "../src/build-identity.js";
@@ -133,7 +133,7 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
   );
 });
 
-test("built bare MCP server resolves read-only tools through the private workspace catalog", async (t) => {
+test("built bare MCP server resolves documents and Views through the private workspace catalog", async (t) => {
   const base = await mkdtemp(path.join(os.tmpdir(), "superbee-mcp-unbound-"));
   const home = path.join(base, "home");
   const requestedRoot = path.join(base, "bundle");
@@ -145,6 +145,22 @@ test("built bare MCP server resolves read-only tools through the private workspa
     frontmatter: { type: "Document", title: "Catalog brief" },
     body: "# Brief\n\nOpened through an explicit workspace.",
   });
+  await writeDoc(bundle, {
+    id: "views-registry/brief",
+    frontmatter: {
+      type: "View",
+      title: "Catalog brief View",
+      entry: "views/brief.html",
+      access: "bundle-read",
+    },
+    body: "",
+  });
+  await writeBlob(
+    bundle,
+    "views/brief.html",
+    new TextEncoder().encode("<!doctype html><title>Catalog brief View</title>"),
+    "text/html; charset=utf-8",
+  );
   await addCatalogEntry("planning", root, { home });
   const env = Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
@@ -168,7 +184,17 @@ test("built bare MCP server resolves read-only tools through the private workspa
     "list_workspaces",
     "show_document",
     "list_views",
+    "show_view",
+    "authorize_durable_view",
+    "save_transient_view",
+    "durable_view_bridge",
+    "resume_durable_view",
+    "poll_durable_view",
+    "close_durable_view",
+    "prepare_view_action",
+    "finish_view_action",
     "resolve_document",
+    "resolve_launch",
   ]);
   const listed = await client.callTool({ name: "list_workspaces", arguments: {} });
   assert.match(JSON.stringify(listed.structuredContent), /planning/);
@@ -180,6 +206,37 @@ test("built bare MCP server resolves read-only tools through the private workspa
   });
   assert.equal(shown.isError, undefined);
   assert.match(JSON.stringify(shown), /Catalog brief/);
+
+  const missingWorkspace = await client.callTool({
+    name: "show_view",
+    arguments: { viewId: "views-registry/brief" },
+  });
+  assert.equal(missingWorkspace.isError, true);
+  const launched = await client.callTool({
+    name: "show_view",
+    arguments: { workspace: "planning", viewId: "views-registry/brief" },
+  });
+  const launchId = (launched.structuredContent as {
+    launch: { launchId: string };
+  }).launch.launchId;
+  const approved = await client.callTool({
+    name: "authorize_durable_view",
+    arguments: { launchId },
+  });
+  assert.equal(approved.isError, undefined);
+  const hello = await client.callTool({
+    name: "durable_view_bridge",
+    arguments: {
+      launchId,
+      request: { bridge: "v0", type: "hello", id: "catalog-hello" },
+    },
+  });
+  assert.equal(
+    (hello.structuredContent as {
+      outcome: { reply: { result: { grant: string } } };
+    }).outcome.reply.result.grant,
+    "read",
+  );
 });
 
 test("literal PATH `aslite mcp` reports the selected CLI release and never rewrites host config", async (t) => {

@@ -43,14 +43,16 @@ Options:
 Run \`superbee mcp status\` to inspect user-level registrations without changing them.
 Registration mutation is intentionally unavailable in this build.
 
-The server uses stdio. Without --dir it lists the user's private workspace catalog and requires an
-explicit workspace label or ID for show_document and list_views. Use show_document with an exact
-document ID to display its authoritative Markdown in Superbee's fixed reader without executable
-View approval. In fixed --dir compatibility mode, use show_view to provide an exact registered
-View ID and launch its current HTML unchanged through the shared
-View bridge, after trusted-shell approval of those exact bytes. Or the agent can launch standard
-View HTML transiently for the current MCP process, with explicit bundle-read or bundle-propose
-access, then save the approved exact bytes as a registered View without transformation.
+The server uses stdio. Without --dir it lists the user's private workspace catalog. Pass one exact
+workspace label or ID to show_document, list_views, and show_view for a registered or
+bundle-capable transient View. Use show_document with an exact document ID to display its
+authoritative Markdown in Superbee's fixed reader without executable View approval. show_view
+launches an exact registered View or standard transient View HTML through the shared View bridge;
+every later bridge, navigation, save, and governed-action call stays pinned to that original
+workspace. A transient View with explicit access:none may omit workspace and remains bundleless.
+In fixed --dir compatibility mode, workspace is omitted. Transient Views with explicit
+bundle-read or bundle-propose access can be saved after approval as registered Views without
+transformation.
 Views use the same query, render-document, graph, subscription, and governed-action bridge in MCP
 and the web UI. Every bundle-propose action requires explicit human confirmation and a current
 document version. The server accepts no remote targets or arbitrary filesystem paths.
