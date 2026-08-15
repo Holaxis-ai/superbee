@@ -11,4 +11,13 @@
 # SHAs — history rewriting was considered and rejected, since it would invalidate every digest,
 # signed receipt, and review approval bound to those commits.
 
+# Mike committed under two addresses and two display names, which splits one person into four
+# entries in the contributor list. Both addresses are real, so this is consolidation, not
+# correction: `Mike Collier <mikec@holaxis.ai>` is the canonical identity by his choice, and the
+# other three forms map onto it. Changing that choice later is a one-line edit to this file —
+# nothing here is baked into a commit.
+
 briand-ai <briand@bittr.ai> <wp1@example.invalid>
+
+Mike Collier <mikec@holaxis.ai> <mikec@holaxis.ai>
+Mike Collier <mikec@holaxis.ai> <mike@mikec.ai>
