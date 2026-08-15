@@ -34,3 +34,8 @@ export {
   parseDocumentPresentationPayload,
   type DocumentPresentationPayload,
 } from "./document-contract.js";
+export {
+  createMcpBundleContext,
+  type McpBundleContext,
+  type McpBundleContextOptions,
+} from "./workspace.js";
