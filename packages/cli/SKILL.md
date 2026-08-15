@@ -102,8 +102,8 @@ initialize response reports the same running release. Superbee does not scan or 
   — Boot the reference wire-protocol server over a local bundle (loopback, no auth)
 - `superbee ui [--dir <path> | --remote <url>] [--port <p>] [--open]`
   — Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle's docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register — see status's legacy_naming finding), and see a live activity feed, the bundle's sharing status, and your registered workspaces. The header shows the bundle's display name — derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"
-- `superbee mcp [--dir <path>] [--actor <name>]`
-  — Run the local MCP Apps adapter over a bundle (stdio): display authoritative Markdown documents in the fixed reader, launch registered Views unchanged, or launch active View HTML transiently and save its approved exact bytes; bundle data and governed actions stay behind local human approval
+- `superbee mcp [status [--host <id>] [--json] | --dir <path> [--actor <name>]]`
+  — Run the local MCP Apps adapter over a bundle, or inspect the read-only user-level registration status for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode
 - `superbee view list [--limit <n>] [--dir <path> | --remote <url>]`
   — List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views
 - `superbee sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]`

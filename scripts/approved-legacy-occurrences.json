@@ -494,7 +494,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 94
+      "line": 98
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -505,7 +505,29 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 106
+      "line": 110
+    },
+    {
+      "file": "packages/cli/src/mcp-install-targets.ts",
+      "line_sha256": "d1083c48935cbc77875595dd6617713426f8a5a5f323349f2ee5fe29ef004c73",
+      "literal": "aslite",
+      "ordinal": 0,
+      "category": "legacy-mcp-registration",
+      "treatment": "preserve-as-read-only-migration-candidate",
+      "owner": "mcp-host-integration",
+      "reason": "read-only status recognizes the former registration name without claiming mutation ownership",
+      "line": 114
+    },
+    {
+      "file": "packages/cli/src/mcp-install-targets.ts",
+      "line_sha256": "d1083c48935cbc77875595dd6617713426f8a5a5f323349f2ee5fe29ef004c73",
+      "literal": "agentstate-lite",
+      "ordinal": 0,
+      "category": "legacy-mcp-registration",
+      "treatment": "preserve-as-read-only-migration-candidate",
+      "owner": "mcp-host-integration",
+      "reason": "read-only status recognizes the former registration name without claiming mutation ownership",
+      "line": 114
     },
     {
       "file": "packages/cli/src/commands/skill.ts",

@@ -1,6 +1,6 @@
 /**
  * Agreement contract for the two consumers of Claude/Codex config roots: global hook targeting
- * and user-scoped Agent Skill installation. OpenCode is hook-only and intentionally absent.
+ * and user-scoped Agent Skill installation. OpenCode's root is shared separately with MCP status.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -8,6 +8,7 @@ import { dirname, join } from "node:path";
 
 import { globalHookTargets, type HookTargets } from "../src/commands/hook.js";
 import { skillTargets, type SkillTargets } from "../src/commands/skill.js";
+import { resolveClaudeUserConfigFile, resolveOpenCodeConfigRoot } from "../src/host-config.js";
 
 interface HostRow {
   name: string;
@@ -56,4 +57,22 @@ test("global hook targets and user-scoped skill installation share the host-root
       });
     }
   }
+});
+
+test("OpenCode hook and MCP consumers share one relocated user config root", () => {
+  const home = "/tmp/aslite-host-root-home";
+  const env = {
+    HOME: home,
+    XDG_CONFIG_HOME: "/tmp/xdg",
+    OPENCODE_CONFIG_DIR: "/tmp/opencode-profile",
+  };
+  assert.equal(dirname(dirname(globalHookTargets(home, env).opencodePlugin)), resolveOpenCodeConfigRoot(home, env));
+});
+
+test("Claude Code user MCP registry honors CLAUDE_CONFIG_DIR without nesting the default", () => {
+  assert.equal(resolveClaudeUserConfigFile("/users/mike", {}), "/users/mike/.claude.json");
+  assert.equal(
+    resolveClaudeUserConfigFile("/users/mike", { CLAUDE_CONFIG_DIR: "/profiles/claude" }),
+    "/profiles/claude/.claude.json",
+  );
 });
