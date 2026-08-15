@@ -4,6 +4,7 @@ import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:c
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parse as parseJsonc, type ParseError } from "jsonc-parser";
 import {
   HOST_CONFIG_ROOTS,
   resolveClaudeUserConfigFile,
@@ -110,8 +111,8 @@ export interface McpStatusDeps {
   ) => string;
 }
 
-const CURRENT_REGISTRATION = "superbee";
-const LEGACY_REGISTRATIONS = ["aslite-views", "agentstate-lite-experimental"] as const;
+export const CURRENT_MCP_REGISTRATION = "superbee";
+export const LEGACY_MCP_REGISTRATIONS = ["aslite-views", "agentstate-lite-experimental"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -152,13 +153,13 @@ export function classifyMcpRegistration(
   authority: PersistentInstallAuthority,
 ): Pick<McpHostStatus, "state" | "reason"> {
   if (!entry) return { state: "absent", reason: "no Superbee registration found" };
-  if (LEGACY_REGISTRATIONS.includes(entry.name as (typeof LEGACY_REGISTRATIONS)[number])) {
+  if (LEGACY_MCP_REGISTRATIONS.includes(entry.name as (typeof LEGACY_MCP_REGISTRATIONS)[number])) {
     return {
       state: "known_legacy",
       reason: `registration '${entry.name}' is a legacy candidate; inspect it before migration`,
     };
   }
-  if (entry.name !== CURRENT_REGISTRATION) {
+  if (entry.name !== CURRENT_MCP_REGISTRATION) {
     return { state: "foreign", reason: `registration '${entry.name}' is not managed by Superbee` };
   }
   const runtime = authority.evidence.runtime_path;
@@ -185,7 +186,10 @@ export function classifyMcpRegistration(
   return { state: "owned_current", reason: "the registration matches this durable Superbee install" };
 }
 
-function targetConfigPath(target: McpInstallTargetId, input: McpStatusEnvironment): string | undefined {
+export function resolveMcpTargetConfigPath(
+  target: McpInstallTargetId,
+  input: McpStatusEnvironment,
+): string | undefined {
   switch (target) {
     case "codex":
       return join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, input.home, input.env), "config.toml");
@@ -204,7 +208,7 @@ function targetConfigPath(target: McpInstallTargetId, input: McpStatusEnvironmen
   }
 }
 
-function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
+export function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
   const root = resolveOpenCodeGlobalConfigRoot(input.home, input.env);
   const candidates = [join(root, "opencode.json"), join(root, "opencode.jsonc")];
   const additional = input.env.OPENCODE_CONFIG?.trim();
@@ -212,8 +216,15 @@ function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
   return candidates;
 }
 
-function parseClaudeEntries(text: string): McpRegistrationEntry[] {
-  const root: unknown = JSON.parse(text);
+function parseConfigRoot(text: string): unknown {
+  const errors: ParseError[] = [];
+  const root = parseJsonc(text, errors, { allowTrailingComma: true, disallowComments: false });
+  if (errors.length > 0) throw new Error(`configuration is not valid JSON/JSONC (error ${errors[0]?.error})`);
+  return root;
+}
+
+export function parseClaudeMcpEntries(text: string): McpRegistrationEntry[] {
+  const root: unknown = parseConfigRoot(text);
   if (!isRecord(root)) throw new Error("configuration root is not an object");
   const servers = own(root, "mcpServers");
   if (servers === undefined) return [];
@@ -230,8 +241,8 @@ function parseClaudeEntries(text: string): McpRegistrationEntry[] {
   return result;
 }
 
-function parseOpenCodeEntries(text: string): McpRegistrationEntry[] {
-  const root: unknown = JSON.parse(text);
+export function parseOpenCodeMcpEntries(text: string): McpRegistrationEntry[] {
+  const root: unknown = parseConfigRoot(text);
   if (!isRecord(root)) throw new Error("configuration root is not an object");
   const mcp = own(root, "mcp");
   if (mcp === undefined) return [];
@@ -247,7 +258,7 @@ function parseOpenCodeEntries(text: string): McpRegistrationEntry[] {
   return result;
 }
 
-function parseCodexEntries(text: string): McpRegistrationEntry[] {
+export function parseCodexMcpEntries(text: string): McpRegistrationEntry[] {
   const root: unknown = JSON.parse(text);
   if (!Array.isArray(root)) throw new Error("codex mcp list did not return an array");
   const result: McpRegistrationEntry[] = [];
@@ -263,9 +274,11 @@ function parseCodexEntries(text: string): McpRegistrationEntry[] {
   return result;
 }
 
-function selectedEntry(entries: readonly McpRegistrationEntry[]): McpRegistrationEntry | undefined {
-  return entries.find((entry) => entry.name === CURRENT_REGISTRATION)
-    ?? LEGACY_REGISTRATIONS.map((name) => entries.find((entry) => entry.name === name)).find(Boolean);
+export function selectMcpRegistration(
+  entries: readonly McpRegistrationEntry[],
+): McpRegistrationEntry | undefined {
+  return entries.find((entry) => entry.name === CURRENT_MCP_REGISTRATION)
+    ?? LEGACY_MCP_REGISTRATIONS.map((name) => entries.find((entry) => entry.name === name)).find(Boolean);
 }
 
 function environment(deps: McpStatusDeps): McpStatusEnvironment {
@@ -275,7 +288,7 @@ function environment(deps: McpStatusDeps): McpStatusEnvironment {
 /** Inspect one known host using a bounded, user-level read. Never writes or scans. */
 export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {}): McpHostStatus {
   const input = environment(deps);
-  const path = targetConfigPath(target.id, input);
+  const path = resolveMcpTargetConfigPath(target.id, input);
   if (!path) {
     return {
       host: target.id,
@@ -292,7 +305,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
     let entries: McpRegistrationEntry[];
     if (target.id === "codex") {
       const run = deps.execFile ?? ((file, args, options) => execFileSync(file, args, options));
-      entries = parseCodexEntries(run("codex", ["mcp", "list", "--json"], {
+      entries = parseCodexMcpEntries(run("codex", ["mcp", "list", "--json"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 2_000,
@@ -310,14 +323,14 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
           reportedPath = candidate;
           sources.push({
             path: candidate,
-            entries: target.id === "opencode" ? parseOpenCodeEntries(content) : parseClaudeEntries(content),
+            entries: target.id === "opencode" ? parseOpenCodeMcpEntries(content) : parseClaudeMcpEntries(content),
           });
         } catch (error) {
           if (!isRecord(error) || own(error, "code") !== "ENOENT") throw error;
         }
       }
       entries = sources.flatMap((source) => source.entries);
-      for (const name of [CURRENT_REGISTRATION, ...LEGACY_REGISTRATIONS]) {
+      for (const name of [CURRENT_MCP_REGISTRATION, ...LEGACY_MCP_REGISTRATIONS]) {
         const declarations = sources.filter((source) => source.entries.some((entry) => entry.name === name));
         if (declarations.length > 1) {
           throw new Error(
@@ -326,7 +339,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
         }
       }
     }
-    const classification = classifyMcpRegistration(selectedEntry(entries), authority);
+    const classification = classifyMcpRegistration(selectMcpRegistration(entries), authority);
     return {
       host: target.id,
       label: target.label,

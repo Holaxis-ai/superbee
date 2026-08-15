@@ -231,9 +231,11 @@ its own local approval. App-only lifecycle and prepare/finish tools remain hidde
 actions require a configured actor, explicit human confirmation, version revalidation, and hard
 CAS through the shared action and mutation authorities. The adapter is deliberately local,
 stdio-only, and shipped inside the supported npm CLI rather than as a standalone package.
-`superbee mcp status` is a separate read-only host-registration inspector: it checks only the
-bounded user-level surfaces for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode, never
-opens or selects a bundle, and has no install/uninstall authority.
+`superbee mcp install|status|uninstall --host <id>` owns one explicit user-level registration
+for Codex/ChatGPT, Claude Code, Claude Desktop, or OpenCode. Mutation requires an exact host,
+durable npm-install authority, exact ownership classification, and read-back verification; it
+never detects a host as mutation authority, pins a bundle directory, or replaces/removes a foreign
+same-name entry. Bare `status` is the bounded read-only multi-host inspector.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
 `docs/core` and preserved outside the OSS repository — it is not a build or deployment target

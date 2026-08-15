@@ -47,17 +47,18 @@
     "prepublishOnly": "node ../../scripts/prepublish-guard.mjs"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@superbee/board-git": "*",
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",
     "@superbee/mcp-app": "*",
     "@superbee/server": "*",
     "@superbee/ui-server": "*",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "@toon-format/toon": "2.3.0",
     "@types/node": "^22.0.0",
     "axi-sdk-js": "0.1.8",
     "esbuild": "0.25.12",
+    "jsonc-parser": "3.3.1",
     "pako": "2.1.0",
     "typescript": "^5.4.0"
   }

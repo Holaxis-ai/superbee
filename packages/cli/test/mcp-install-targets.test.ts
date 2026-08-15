@@ -166,12 +166,20 @@ test("Claude, OpenCode v1/v2, and Codex registrations share one normalized class
   assert.deepEqual(codexArgs, ["mcp", "list", "--json"]);
 });
 
-test("malformed config and unsupported desktop platforms fail closed as status rows", () => {
+test("commented JSONC is read losslessly while malformed config and unsupported platforms fail closed", () => {
+  const commented = inspectMcpHost(target("opencode"), {
+    environment: env(),
+    authority: () => stable,
+    readFile: (path) => {
+      if (path.endsWith("opencode.jsonc")) return "// user comment\n{}";
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+  });
   const malformed = inspectMcpHost(target("opencode"), {
     environment: env(),
     authority: () => stable,
     readFile: (path) => {
-      if (path.endsWith("opencode.jsonc")) return "// JSONC is not silently guessed\n{}";
+      if (path.endsWith("opencode.jsonc")) return "{ nope";
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     },
   });
@@ -179,6 +187,7 @@ test("malformed config and unsupported desktop platforms fail closed as status r
     environment: env({}, "linux"),
     authority: () => stable,
   });
+  assert.equal(commented.state, "absent");
   assert.equal(malformed.state, "unreadable");
   assert.match(malformed.reason, /status unavailable/);
   assert.equal(unsupported.state, "unsupported");

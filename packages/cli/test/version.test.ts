@@ -62,9 +62,9 @@ test("version is registered in command discovery", () => {
 
 test("version help carries bounded stable-MCP verification guidance", () => {
   assert.match(VERSION_USAGE, /npm install -g superbee/);
-  assert.match(VERSION_USAGE, /command `superbee`.*argument `mcp`/s);
-  assert.match(VERSION_USAGE, /`superbee version --json`/);
-  assert.match(VERSION_USAGE, /does not scan or rewrite host MCP configuration/);
+  assert.match(VERSION_USAGE, /`superbee mcp install --host <id>`/);
+  assert.match(VERSION_USAGE, /never an npx cache or one bundle directory/);
+  assert.match(VERSION_USAGE, /`superbee mcp status --host <id>`/);
   assert.match(VERSION_USAGE, /--check performs one read-only, two-second comparison/);
   assert.match(VERSION_USAGE, /--tag latest\|next/);
   assert.match(VERSION_USAGE, /never installs a package/);

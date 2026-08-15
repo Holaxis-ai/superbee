@@ -128,6 +128,10 @@ export async function buildCliBundle(outfile, options) {
     },
     // Resolve the workspace deps to their TypeScript source so no dist pre-build is needed.
     alias: {
+      // jsonc-parser's package "main" points at a UMD build whose relative require() calls cannot
+      // survive inside our one-file ESM artifact. Pin its published ESM entry for bundling while
+      // ordinary TypeScript/tests continue to consume the package's declared typings.
+      "jsonc-parser": r("../../node_modules/jsonc-parser/lib/esm/main.js"),
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
       "@superbee/core/page": r("../core/src/page.ts"),

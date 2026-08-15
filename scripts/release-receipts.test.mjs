@@ -210,9 +210,9 @@ test("stage summary carries the bounded stable MCP launch migration guidance", (
   const summary = renderReceiptMarkdown(built);
   assert.equal((summary.match(/## Stable MCP launch/g) ?? []).length, 1);
   assert.match(summary, /npm install -g superbee/);
-  assert.match(summary, /host command `superbee` with first argument `mcp`/);
-  assert.match(summary, /superbee version --json/);
-  assert.match(summary, /does not scan or rewrite host MCP configuration/);
+  assert.match(summary, /superbee mcp install --host <id>/);
+  assert.match(summary, /never an npx cache or one bundle directory/);
+  assert.match(summary, /superbee mcp status --host <id>/);
   assert.ok(summary.endsWith(STABLE_MCP_LAUNCH_GUIDANCE), "receipt consumes the shared guidance authority exactly");
   assert.ok(!Object.hasOwn(built.receipt, "guidance"), "immutable receipt schema remains unchanged");
 });
