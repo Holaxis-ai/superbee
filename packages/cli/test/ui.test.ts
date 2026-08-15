@@ -10,9 +10,11 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:net";
+import { EventEmitter } from "node:events";
+import type { ChildProcess, spawn as spawnType } from "node:child_process";
 
 import { initBundle, writeDoc } from "@superbee/core";
-import { ui } from "../src/commands/ui.js";
+import { defaultOpenBrowser, ui } from "../src/commands/ui.js";
 import { docOpen } from "../src/commands/doc/open.js";
 import { bootUiServer } from "../src/ui/server.js";
 import { CliError } from "../src/errors.js";
@@ -32,6 +34,23 @@ async function bindThrowawayListener(): Promise<{ port: number; close: () => Pro
   if (addr === null || typeof addr === "string") throw new Error("failed to bind a throwaway TCP address");
   return { port: addr.port, close: () => new Promise<void>((resolve) => server.close(() => resolve())) };
 }
+
+test("browser launch contains an asynchronous missing-opener error", async () => {
+  const child = new EventEmitter() as ChildProcess;
+  let unrefCalled = false;
+  child.unref = () => {
+    unrefCalled = true;
+    return child;
+  };
+  const spawnMissing = (() => {
+    queueMicrotask(() => child.emit("error", Object.assign(new Error("spawn xdg-open ENOENT"), { code: "ENOENT" })));
+    return child;
+  }) as typeof spawnType;
+
+  defaultOpenBrowser("http://127.0.0.1:4818/?token=test", spawnMissing);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(unrefCalled, true);
+});
 
 test("ui --help: prints usage and does not boot a server", async () => {
   let out = "";

@@ -80,12 +80,17 @@ function defaultWaitForShutdown(): Promise<void> {
 }
 
 /** Best-effort cross-platform "open a URL in the default browser" — no dependency (the CLI bundle stays zero-runtime-deps); a failure here never fails the command, since the printed URL is always the fallback. */
-function defaultOpenBrowser(url: string): void {
+export function defaultOpenBrowser(url: string, spawnProcess: typeof spawn = spawn): void {
   try {
     const platform = process.platform;
     const [cmd, args] =
       platform === "darwin" ? ["open", [url]] : platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-    spawn(cmd, args, { stdio: "ignore", detached: true }).unref();
+    const child = spawnProcess(cmd, args, { stdio: "ignore", detached: true });
+    // A missing platform opener (for example `xdg-open` in a minimal Linux image) reports ENOENT
+    // asynchronously on ChildProcess. Contain it here: browser launch is best-effort and the URL
+    // printed by the command remains the fallback.
+    child.once("error", () => {});
+    child.unref();
   } catch {
     // best-effort only
   }
