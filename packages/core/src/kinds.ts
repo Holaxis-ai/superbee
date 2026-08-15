@@ -112,6 +112,16 @@ export const PROGRESS_STATUS_FIELD = "progress_status";
 /** Producer-qualified v0.2 storage coordinate for Superbee workflow progress. */
 export const SUPERBEE_PROGRESS_STATUS_FIELD = "superbee_progress_status";
 
+/** Physical coordinate used for Superbee's logical workflow-progress field in one OKF edition. */
+export function progressStatusStorageField(
+  okfVersion: string | undefined,
+): "status" | typeof SUPERBEE_PROGRESS_STATUS_FIELD | undefined {
+  const version = okfVersion?.trim() || "0.1";
+  if (version === "0.1") return "status";
+  if (version === "0.2") return SUPERBEE_PROGRESS_STATUS_FIELD;
+  return undefined;
+}
+
 /** A logical Kind field and the concrete frontmatter key that stores it in this OKF edition. */
 export interface KindFieldCoordinate {
   logicalField: string;
@@ -133,14 +143,11 @@ export function progressStatusCoordinate(
   // A Kind may already own a concrete field with the product-level name. That field remains a
   // normal declared coordinate; never shadow or overwrite it with a compatibility alias.
   if (declaresField(kind, PROGRESS_STATUS_FIELD)) return undefined;
-  const version = okfVersion?.trim() || "0.1";
-  if (version === "0.1" && declaresField(kind, "status")) {
-    return { logicalField: PROGRESS_STATUS_FIELD, storageField: "status" };
-  }
-  if (version === "0.2" && declaresField(kind, SUPERBEE_PROGRESS_STATUS_FIELD)) {
+  const storageField = progressStatusStorageField(okfVersion);
+  if (storageField && declaresField(kind, storageField)) {
     return {
       logicalField: PROGRESS_STATUS_FIELD,
-      storageField: SUPERBEE_PROGRESS_STATUS_FIELD,
+      storageField,
     };
   }
   return undefined;

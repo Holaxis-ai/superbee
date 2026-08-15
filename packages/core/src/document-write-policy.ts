@@ -23,7 +23,7 @@ export function isOkfActor(value: unknown): value is string {
 }
 
 /**
- * Normalize one document according to AgentState Lite's current OKF v0.1 write contract.
+ * Normalize one document according to Superbee's OKF v0.1 write contract.
  * The caller supplies one evaluated preserve-or-fallback timestamp decision, keeping this policy
  * deterministic and free of I/O.
  */

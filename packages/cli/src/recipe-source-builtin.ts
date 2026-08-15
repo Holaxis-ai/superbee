@@ -20,11 +20,17 @@ import {
   ROADMAP_DESC_BODY,
 } from "./recipes.js";
 
-/** Replaced at apply time; it only preserves frontmatter key order through the shared serializer. */
+/** Used only to call the shared serializer; built-in source bytes discard it before parsing. */
 const PLACEHOLDER_TIMESTAMP = "1970-01-01T00:00:00.000Z";
 
+function unstampedConvention(kind: Parameters<typeof kindConventionDoc>[0], body: string) {
+  const doc = kindConventionDoc(kind, body, PLACEHOLDER_TIMESTAMP);
+  const { timestamp: _timestamp, ...frontmatter } = doc.frontmatter;
+  return { ...doc, frontmatter };
+}
+
 function buildContextNotesFiles(): RecipeFile[] {
-  const conv = kindConventionDoc(CONTEXT_NOTE_KIND, CONTEXT_NOTE_SEED_BODY, PLACEHOLDER_TIMESTAMP);
+  const conv = unstampedConvention(CONTEXT_NOTE_KIND, CONTEXT_NOTE_SEED_BODY);
   return [
     {
       path: "recipe.md",
@@ -38,7 +44,7 @@ function buildContextNotesFiles(): RecipeFile[] {
 }
 
 function buildWorkTrackingFiles(): RecipeFile[] {
-  const conv = kindConventionDoc(TASK_KIND, TASK_SEED_BODY, PLACEHOLDER_TIMESTAMP);
+  const conv = unstampedConvention(TASK_KIND, TASK_SEED_BODY);
   return [
     {
       path: "recipe.md",
@@ -52,8 +58,8 @@ function buildWorkTrackingFiles(): RecipeFile[] {
 }
 
 function buildRoadmapFiles(): RecipeFile[] {
-  const roadmap = kindConventionDoc(ROADMAP_KIND, ROADMAP_SEED_BODY, PLACEHOLDER_TIMESTAMP);
-  const item = kindConventionDoc(ROADMAP_ITEM_KIND, ROADMAP_ITEM_SEED_BODY, PLACEHOLDER_TIMESTAMP);
+  const roadmap = unstampedConvention(ROADMAP_KIND, ROADMAP_SEED_BODY);
+  const item = unstampedConvention(ROADMAP_ITEM_KIND, ROADMAP_ITEM_SEED_BODY);
   return [
     {
       path: "recipe.md",

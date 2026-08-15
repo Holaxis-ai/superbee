@@ -355,7 +355,7 @@ test("recipe add work-tracking: applies the current built-in Task convention wit
         terminal: { status: ["done", "canceled"] },
         descriptions: {
           title: "A concise human-readable summary of the work.",
-          status: "The task's current lifecycle state.",
+          status: "The task's current workflow state.",
           priority: "Relative urgency used to order the work; follow the bundle's adopted priority scale.",
           assignee: "The person or agent currently responsible for the task.",
           description: "The task's scope, context, acceptance criteria, and other working details.",

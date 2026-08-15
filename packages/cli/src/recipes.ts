@@ -18,17 +18,21 @@
 // whether the folder was a built-in in-code constant or bytes read off disk), so a built-in and an
 // external recipe apply through byte-for-byte the SAME function.
 import {
+  PROGRESS_STATUS_FIELD,
+  progressStatusStorageField,
   readBlob,
+  readBundleOkfVersion,
   readDoc,
   resolveContentType,
   writeBlob,
-  writeDocVersioned,
+  mutateDocument,
   query,
   CONVENTIONS_PREFIX,
   VersionConflict,
   type Bundle,
   type ConceptId,
   type KindConvention,
+  type KindRegistry,
   type OkfDocument,
   type ValidationWarning,
 } from "@superbee/core";
@@ -183,17 +187,17 @@ export const TASK_KIND: KindConvention = {
   // is a future consumer.
   links: { "depends on": TASK_TYPE },
   fields: {
-    required: ["title", "status"],
+    required: ["title", PROGRESS_STATUS_FIELD],
     optional: ["priority", "assignee", "description"],
-    values: { status: ["todo", "in_progress", "blocked", "done", "canceled"] },
+    values: { [PROGRESS_STATUS_FIELD]: ["todo", "in_progress", "blocked", "done", "canceled"] },
     valueDescriptions: {},
     // The terminal declaration (tasks/status-terminal-declaration.md): done/canceled are the
     // states past which a Task is no longer open — machinery (list --open, the status sweep's
     // exclusion + sort) ships together with the declaration for every new bundle.
-    terminal: { status: ["done", "canceled"] },
+    terminal: { [PROGRESS_STATUS_FIELD]: ["done", "canceled"] },
     descriptions: {
       title: "A concise human-readable summary of the work.",
-      status: "The task's current lifecycle state.",
+      [PROGRESS_STATUS_FIELD]: "The task's current workflow state.",
       priority: "Relative urgency used to order the work; follow the bundle's adopted priority scale.",
       assignee: "The person or agent currently responsible for the task.",
       description: "The task's scope, context, acceptance criteria, and other working details.",
@@ -211,23 +215,23 @@ export const TASK_KIND: KindConvention = {
 export const TASK_SEED_BODY =
   "# Task\n\n" +
   "A unit of work, composed entirely from lite primitives — no bespoke task engine.\n" +
-  "A task is a `type: Task` doc; its `status` is a validated enum; its DEPENDENCIES are\n" +
+  "A task is a `type: Task` doc; its logical `progress_status` is a validated enum; its DEPENDENCIES are\n" +
   "typed `depends on` cross-links to prerequisite task docs (the declared link type —\n" +
   "the link graph IS the DAG, and `link show <id> --text \"depends on\"` shows both\n" +
-  "directions); an atomic CLAIM is a compare-and-swap write flipping `status` to\n" +
+  "directions); an atomic CLAIM is a compare-and-swap write flipping `progress_status` to\n" +
   "`in_progress` (a second claimer gets a VersionConflict). Query with `list --type Task`;\n" +
   "lint/orphans/staleness via `status`.\n";
 
 /** One-line description, shown by `recipes` and the command reference — the built-in
  * `work-tracking` recipe's `recipe.md` manifest `summary:`. */
 export const WORK_TRACKING_SUMMARY =
-  "Declares the built-in Task kind convention (title/status required, status enum, 'depends on' link type, 30d freshness horizon)";
+  "Declares the built-in Task kind convention (title/progress_status required, workflow enum, 'depends on' link type, 30d freshness horizon)";
 
 /** The prose body of the built-in `work-tracking` recipe's `recipe.md` manifest doc — NOT parsed
  * by `parseRecipeFiles` (only the manifest's frontmatter is read), purely descriptive. */
 export const WORK_TRACKING_DESC_BODY =
   "# Work Tracking\n\n" +
-  "Installs the `Task` kind convention: a unit of work with a validated `status` enum " +
+  "Installs the `Task` kind convention: a unit of work with a validated logical `progress_status` enum " +
   "(todo/in_progress/blocked/done/canceled), scaffolded under `tasks/`. Status/priority/assignee " +
   "are FIELDS of Task, not separate conventions or a bespoke task verb — dependencies, claiming, " +
   "and querying all compose from existing generic primitives (`link add`, CAS `doc update`, " +
@@ -284,13 +288,13 @@ export const ROADMAP_ITEM_KIND: KindConvention = {
   links: { contains: "Task" },
   linkDescriptions: { contains: "Tasks whose delivery is governed by this roadmap commitment." },
   fields: {
-    required: ["title", "status"],
+    required: ["title", PROGRESS_STATUS_FIELD],
     optional: ["description", "sequence"],
-    values: { status: ["queued", "active", "done"] },
+    values: { [PROGRESS_STATUS_FIELD]: ["queued", "active", "done"] },
     valueDescriptions: {},
     // Brian's ruling (task board `tasks/status-terminal-declaration.md`): a done Roadmap Item
     // hides from `list --open`, consistent with Task's done/canceled.
-    terminal: { status: ["done"] },
+    terminal: { [PROGRESS_STATUS_FIELD]: ["done"] },
     descriptions: {},
   },
 };
@@ -301,14 +305,14 @@ export const ROADMAP_ITEM_SEED_BODY =
   "A durable line of work spanning multiple tasks — the granular form of the single\n" +
   "roadmap spine doc. An item CONTAINS its tasks via links carrying the text `contains`;\n" +
   "backlinks from a task answer \"which item owns this\". An item's progress is DERIVED,\n" +
-  "never stored: list its contained tasks and read their statuses (the rollup). `status`\n" +
+  "never stored: list its contained tasks and read their workflow states (the rollup). `progress_status`\n" +
   "tracks the item itself: `queued` (not started) → `active` (any contained task moving)\n" +
   "→ `done` (all contained tasks done or canceled).\n";
 
 /** One-line description, shown by `recipes` and the command reference — the built-in `roadmap`
  * recipe's `recipe.md` manifest `summary:`. */
 export const ROADMAP_SUMMARY =
-  "Declares the Roadmap + Roadmap Item kind conventions (typed 'contains' links, roadmap → item → task; item status enum queued/active/done) — work-tracking's companion";
+  "Declares the Roadmap + Roadmap Item kind conventions (typed 'contains' links, roadmap → item → task; item progress_status enum queued/active/done) — work-tracking's companion";
 
 /** The prose body of the built-in `roadmap` recipe's `recipe.md` manifest doc — NOT parsed by
  * `parseRecipeFiles` (only the manifest's frontmatter is read), purely descriptive. Its "Pairing
@@ -438,6 +442,119 @@ function governsKind(doc: OkfDocument, kindName: string): boolean {
   return typeof governs === "string" && governs.trim() === kindName;
 }
 
+const RECIPE_WRITE_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function renameLogicalFieldMap(
+  value: unknown,
+  storageField: string,
+  recipeId: string,
+  docId: ConceptId,
+): unknown {
+  const record = plainRecord(value);
+  if (!record || !Object.prototype.hasOwnProperty.call(record, PROGRESS_STATUS_FIELD)) return value;
+  if (
+    storageField !== PROGRESS_STATUS_FIELD
+    && Object.prototype.hasOwnProperty.call(record, storageField)
+  ) {
+    throw new CliError(
+      "USAGE",
+      `recipe '${recipeId}' convention '${docId}' declares both logical '${PROGRESS_STATUS_FIELD}' and storage field '${storageField}'`,
+    );
+  }
+  return Object.fromEntries(
+    Object.entries(record).map(([field, fieldValue]) => [
+      field === PROGRESS_STATUS_FIELD ? storageField : field,
+      fieldValue,
+    ]),
+  );
+}
+
+/** Materialize explicit logical recipe fields into the target edition's physical convention keys. */
+function materializeRecipeForEdition(
+  recipe: LoadedRecipe,
+  okfVersion: string,
+): LoadedRecipe {
+  const storageField = progressStatusStorageField(okfVersion);
+  if (!storageField) {
+    throw new CliError(
+      "USAGE",
+      `recipe '${recipe.id}' cannot target unsupported OKF mutation version '${okfVersion}'`,
+    );
+  }
+  const docs = recipe.docs.map((doc) => {
+    const fields = plainRecord(doc.frontmatter.fields);
+    if (!fields) return doc;
+    const listField = (value: unknown): unknown => {
+      if (!Array.isArray(value) || !value.includes(PROGRESS_STATUS_FIELD)) return value;
+      if (value.includes(storageField)) {
+        throw new CliError(
+          "USAGE",
+          `recipe '${recipe.id}' convention '${doc.id}' declares both logical '${PROGRESS_STATUS_FIELD}' and storage field '${storageField}'`,
+        );
+      }
+      return value.map((field) => field === PROGRESS_STATUS_FIELD ? storageField : field);
+    };
+    const materializedFields: Record<string, unknown> = { ...fields };
+    for (const key of ["required", "optional"]) {
+      if (Object.prototype.hasOwnProperty.call(fields, key)) {
+        materializedFields[key] = listField(fields[key]);
+      }
+    }
+    for (const key of ["values", "value_descriptions", "terminal", "descriptions"]) {
+      if (Object.prototype.hasOwnProperty.call(fields, key)) {
+        materializedFields[key] = renameLogicalFieldMap(fields[key], storageField, recipe.id, doc.id);
+      }
+    }
+    return {
+      ...doc,
+      frontmatter: { ...doc.frontmatter, fields: materializedFields },
+    };
+  });
+  return { ...recipe, docs };
+}
+
+function recipeDocumentForApply(
+  doc: OkfDocument,
+  okfVersion: string,
+  now: string,
+): OkfDocument {
+  return okfVersion === "0.1"
+    ? { ...doc, frontmatter: { ...doc.frontmatter, timestamp: now } }
+    : { ...doc, frontmatter: { ...doc.frontmatter } };
+}
+
+async function createRecipeDocument(
+  bundle: Bundle,
+  doc: OkfDocument,
+  okfVersion: string,
+  now: string,
+): Promise<OkfDocument> {
+  const result = await mutateDocument({
+    bundle,
+    id: doc.id,
+    mode: "create-only",
+    registry: RECIPE_WRITE_REGISTRY,
+    strict: false,
+    now: () => now,
+    buildCandidate: (_existing, context) => {
+      if (context.okfVersion !== okfVersion) {
+        throw new CliError(
+          "CONFLICT",
+          `bundle OKF version changed from '${okfVersion}' to '${context.okfVersion}' during recipe installation; retry`,
+        );
+      }
+      return { frontmatter: { ...doc.frontmatter }, body: doc.body };
+    },
+  });
+  return result.doc;
+}
+
 /** The id of an existing convention doc governing the LEGACY kind name, or null. Called at most
  * once per apply, and only when the recipe carries a convention governing the current name. */
 async function findLegacyViewConvention(bundle: Bundle): Promise<ConceptId | null> {
@@ -449,30 +566,20 @@ async function findLegacyViewConvention(bundle: Bundle): Promise<ConceptId | nul
 }
 
 /**
- * Apply `recipe` to `bundle`: write each of its convention docs via the engine's generic
- * expect-absent CAS create (`writeDocVersioned(bundle, doc, { expectedVersion: null })`) — the
- * SAME create-race-closing pattern core's old `seedContextNoteKind` used, now generalized to any
- * recipe, built-in OR external. Idempotent: a `VersionConflict` means the doc already exists (a
- * prior apply, or a bundle author's own hand-edit) — silently a no-op for that doc, never an
- * error, never a clobber.
- *
- * Timestamp rule (approved §B decision 6): the installer ALWAYS stamps `timestamp = now` — a
- * convention doc's timestamp means "installed into THIS bundle," which is genuinely the apply
- * instant, not whenever the recipe's bytes happened to be authored. Every convention doc
- * `parseRecipeFiles` produces already carries a `timestamp` key (a real one for a bundle-authored
- * external recipe; `PLACEHOLDER_TIMESTAMP` for the in-code built-in), so `{ ...d.frontmatter,
- * timestamp: now }` REPLACES the value IN PLACE rather than appending a new key — preserving
- * frontmatter key order end to end (`writeDocVersioned` itself additionally normalizes `type`
- * first / `timestamp` last, so this holds regardless). On `VersionConflict` the freshly-stamped
- * in-memory doc is discarded, so an existing on-disk doc is never rewritten or re-stamped —
- * idempotency intact, hand-edits never clobbered.
+ * Apply `recipe` through the shared document-mutation boundary using expect-absent CAS. Recipe
+ * conventions may declare Superbee's logical `progress_status`; this installer materializes the
+ * concrete field for the bundle edition before any write. V0.1 retains the historical install-time
+ * `timestamp`; v0.2 preserves explicitly supplied legacy fields but does not invent them. A
+ * `VersionConflict` remains an idempotent existing-doc result, never a clobber.
  */
 export async function applyRecipe(
   bundle: Bundle,
   recipe: LoadedRecipe,
   now: string = new Date().toISOString(),
 ): Promise<ApplyRecipeResult> {
-  await assertPortableTargetsCompatible(bundle, recipe, now);
+  const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
+  recipe = materializeRecipeForEdition(recipe, okfVersion);
+  await assertPortableTargetsCompatible(bundle, recipe, now, okfVersion);
 
   // Legacy-alias probes (see the module comment above the alias helpers): resolved lazily, once.
   const legacyConventionId = recipe.docs.some((d) => governsKind(d, VIEW_KIND_NAME))
@@ -505,10 +612,10 @@ export async function applyRecipe(
       });
       continue;
     }
-    const doc: OkfDocument = { ...d, frontmatter: { ...d.frontmatter, timestamp: now } };
+    let doc = recipeDocumentForApply(d, okfVersion, now);
     let changed = true;
     try {
-      await writeDocVersioned(bundle, doc, { expectedVersion: null });
+      doc = await createRecipeDocument(bundle, doc, okfVersion, now);
     } catch (err) {
       if (err instanceof VersionConflict) {
         changed = false; // already present — idempotent no-op, not an error
@@ -578,17 +685,14 @@ export async function applyRecipe(
       entryChanged = false;
     }
 
-    const registry: OkfDocument = {
-      ...page.registry,
-      frontmatter: { ...page.registry.frontmatter, timestamp: now },
-    };
+    let registry = recipeDocumentForApply(page.registry, okfVersion, now);
     let registryChanged = true;
     try {
-      await writeDocVersioned(bundle, registry, { expectedVersion: null });
+      registry = await createRecipeDocument(bundle, registry, okfVersion, now);
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readDoc(bundle, registry.id);
-      if (!sameInstalledDoc(existing, registry)) throw recipeAssetConflict(recipe.id, `${registry.id}.md`);
+      if (!sameInstalledDoc(existing, registry, okfVersion)) throw recipeAssetConflict(recipe.id, `${registry.id}.md`);
       registryChanged = false;
     }
 
@@ -603,17 +707,14 @@ export async function applyRecipe(
 
   const references: RecipeReferenceResult[] = [];
   for (const reference of recipe.references) {
-    const desired: OkfDocument = {
-      ...reference.doc,
-      frontmatter: { ...reference.doc.frontmatter, timestamp: now },
-    };
+    let desired = recipeDocumentForApply(reference.doc, okfVersion, now);
     let changed = true;
     try {
-      await writeDocVersioned(bundle, desired, { expectedVersion: null });
+      desired = await createRecipeDocument(bundle, desired, okfVersion, now);
     } catch (err) {
       if (!(err instanceof VersionConflict)) throw err;
       const existing = await readDoc(bundle, desired.id);
-      if (!sameInstalledDoc(existing, desired)) throw recipeAssetConflict(recipe.id, `${desired.id}.md`);
+      if (!sameInstalledDoc(existing, desired, okfVersion)) throw recipeAssetConflict(recipe.id, `${desired.id}.md`);
       changed = false;
     }
     references.push({ id: desired.id, changed });
@@ -648,7 +749,12 @@ export async function applyRecipe(
   };
 }
 
-async function assertPortableTargetsCompatible(bundle: Bundle, recipe: LoadedRecipe, now: string): Promise<void> {
+async function assertPortableTargetsCompatible(
+  bundle: Bundle,
+  recipe: LoadedRecipe,
+  now: string,
+  okfVersion: string,
+): Promise<void> {
   const registries = new Map<ConceptId, OkfDocument>();
   if (recipe.pages.length > 0) {
     // Both accepted registry prefixes (views-registry/ current, pages-registry/ legacy) — the
@@ -669,11 +775,8 @@ async function assertPortableTargetsCompatible(bundle: Bundle, recipe: LoadedRec
 
     const existingRegistry = registries.get(page.registry.id);
     if (existingRegistry) {
-      const desiredRegistry: OkfDocument = {
-        ...page.registry,
-        frontmatter: { ...page.registry.frontmatter, timestamp: now },
-      };
-      if (!sameInstalledDoc(existingRegistry, desiredRegistry)) {
+      const desiredRegistry = recipeDocumentForApply(page.registry, okfVersion, now);
+      if (!sameInstalledDoc(existingRegistry, desiredRegistry, okfVersion)) {
         throw recipeAssetConflict(recipe.id, `${page.registry.id}.md`);
       }
     }
@@ -687,19 +790,24 @@ async function assertPortableTargetsCompatible(bundle: Bundle, recipe: LoadedRec
   for (const reference of recipe.references) {
     const existing = installedReferences.get(reference.doc.id);
     if (!existing) continue;
-    const desired: OkfDocument = {
-      ...reference.doc,
-      frontmatter: { ...reference.doc.frontmatter, timestamp: now },
-    };
-    if (!sameInstalledDoc(existing, desired)) {
+    const desired = recipeDocumentForApply(reference.doc, okfVersion, now);
+    if (!sameInstalledDoc(existing, desired, okfVersion)) {
       throw recipeAssetConflict(recipe.id, `${reference.doc.id}.md`);
     }
   }
 }
 
-function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument): boolean {
+function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
   const { timestamp: _existingTimestamp, ...existingFrontmatter } = existing.frontmatter;
   const { timestamp: _desiredTimestamp, ...desiredFrontmatter } = desired.frontmatter;
+  if (okfVersion === "0.2") {
+    for (const frontmatter of [existingFrontmatter, desiredFrontmatter]) {
+      const generated = plainRecord(frontmatter.generated);
+      if (!generated) continue;
+      const { at: _at, ...rest } = generated;
+      frontmatter.generated = rest;
+    }
+  }
   return isDeepStrictEqual(existingFrontmatter, desiredFrontmatter) && existing.body === desired.body;
 }
 

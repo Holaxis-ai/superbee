@@ -25,8 +25,8 @@ Usage:
 
 Options:
   --dir <path>            Directory to init the bundle in (default: the current directory)
-  --okf-version <v>       Supported OKF authoring version (currently/default: 0.1); bundles using
-                           other versions remain readable
+  --okf-version <v>       Supported OKF authoring version (0.1 or 0.2; default: 0.1); bundles using
+                           other versions remain readable but are not authorable
   --recipe <name-or-path> Apply a recipe on create (default: context-notes; 'none' for a bare
                            bundle) — a built-in name or a path to a recipe folder; see
                            'superbee recipes' to list built-ins

@@ -5,6 +5,7 @@ import {
   PROGRESS_STATUS_FIELD,
   SUPERBEE_PROGRESS_STATUS_FIELD,
   kindInputFieldNames,
+  progressStatusStorageField,
   progressStatusCoordinate,
   projectLogicalKindFields,
   readKindField,
@@ -27,6 +28,13 @@ function kind(field: string): KindConvention {
     },
   };
 }
+
+test("logical progress storage coordinates are edition-owned and fail closed", () => {
+  assert.equal(progressStatusStorageField(undefined), "status");
+  assert.equal(progressStatusStorageField("0.1"), "status");
+  assert.equal(progressStatusStorageField("0.2"), SUPERBEE_PROGRESS_STATUS_FIELD);
+  assert.equal(progressStatusStorageField("0.3"), undefined);
+});
 
 for (const row of [
   { version: undefined, field: "status" },
