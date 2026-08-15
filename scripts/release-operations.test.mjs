@@ -211,7 +211,7 @@ test("every operation that names a package refuses to resolve one without an exp
   for (const hostile of [null, 12345, { id: "bridge" }, ["bridge"]]) {
     assert.throws(
       () => promoteOperation({ target: hostile, version: "0.1.0", tag: "latest" }),
-      /invalid release target|requires an explicit target/,
+      /must be a string|invalid release target|requires an explicit target/,
       `must reject ${JSON.stringify(hostile)}`,
     );
   }
