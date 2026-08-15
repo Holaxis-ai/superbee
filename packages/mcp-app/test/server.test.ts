@@ -156,6 +156,34 @@ async function seedNavigationTarget(
   );
 }
 
+async function callWorkspaceList(
+  entries: readonly McpWorkspaceSummary[],
+) {
+  const resolver: McpWorkspaceResolver = {
+    list: async () => entries,
+    open: async () => {
+      throw new Error("not used");
+    },
+  };
+  const server = createMcpAppServer({ workspaceResolver: resolver });
+  const client = new Client(
+    { name: "workspace-catalog-error-test", version: "test" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    return await client.callTool({
+      name: LIST_WORKSPACES_TOOL_NAME,
+      arguments: {},
+    });
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
 test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", async (t) => {
   let openCalls = 0;
   const resolver: McpWorkspaceResolver = {
@@ -216,37 +244,51 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
   assert.doesNotMatch(JSON.stringify(result), /(?:locator|\/Users\/|private-path)/);
 });
 
-test("bundle-unbound workspace listing fails closed without leaking resolver details", async (t) => {
-  const resolver: McpWorkspaceResolver = {
-    list: async () => ([{
+test("bundle-unbound workspace listing rejects path-bearing allowed fields and extra locator data", async () => {
+  const base = {
+    id: "bnd_00000000000000000000000000000000",
+    label: "planning",
+    displayName: "Planning",
+    available: true,
+  };
+  const invalid = [
+    { ...base, id: "/Users/private-path/planning" },
+    { ...base, label: "file:///Users/private-path/planning" },
+    { ...base, displayName: "Planning (/Users/private-path/planning)" },
+    {
       id: "bnd_00000000000000000000000000000000",
       label: "planning",
       available: true,
       path: "/Users/private-path/planning",
-    }] as unknown as readonly McpWorkspaceSummary[]),
-    open: async () => {
-      throw new Error("not used");
     },
-  };
-  const server = createMcpAppServer({ workspaceResolver: resolver });
-  const client = new Client(
-    { name: "workspace-catalog-error-test", version: "test" },
-    { capabilities: {} },
-  );
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  t.after(async () => {
-    await client.close();
-    await server.close();
-  });
+  ];
 
-  const result = await client.callTool({
-    name: LIST_WORKSPACES_TOOL_NAME,
-    arguments: {},
-  });
-  assert.equal(result.isError, true);
-  assert.doesNotMatch(JSON.stringify(result), /(?:private-path|\/Users\/|path)/);
+  for (const entry of invalid) {
+    const result = await callWorkspaceList(
+      [entry] as unknown as readonly McpWorkspaceSummary[],
+    );
+    assert.equal(result.isError, true);
+    assert.doesNotMatch(JSON.stringify(result), /(?:private-path|\/Users\/|file:\/\/|locator)/);
+  }
+});
+
+test("bundle-unbound workspace listing rejects duplicate IDs or labels", async () => {
+  const first: McpWorkspaceSummary = {
+    id: "bnd_00000000000000000000000000000000",
+    label: "planning",
+    available: true,
+  };
+  for (const second of [
+    { ...first, label: "research" },
+    { ...first, id: "bnd_11111111111111111111111111111111" },
+  ]) {
+    const result = await callWorkspaceList([first, second]);
+    assert.equal(result.isError, true);
+    assert.match(
+      JSON.stringify(result),
+      /private workspace catalog is unavailable or invalid/,
+    );
+  }
 });
 
 test("list_views is bounded, continues deterministically, and every listed id is invokable", async (t) => {

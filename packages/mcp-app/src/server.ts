@@ -111,12 +111,25 @@ function mintClaimId(): string {
 export const MAX_VIEW_CATALOG_PAGE = 20;
 export const MAX_VIEW_CATALOG_SCAN = 40;
 export const MAX_WORKSPACE_CATALOG_PAGE = 50;
+const WORKSPACE_ID_PATTERN = /^bnd_[0-9a-f]{32}$/;
+const WORKSPACE_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
+const PATH_LIKE_DISPLAY_PATTERN =
+  /(?:^|[\s("'`])(?:file:\/\/|\/[\S]+|[a-z]:[\\/]|\\\\[\S]+)/i;
 
 const workspaceSummarySchema = z
   .object({
-    id: z.string().trim().min(1).max(128),
-    label: z.string().trim().min(1).max(128),
-    displayName: z.string().trim().min(1).max(200).optional(),
+    id: z.string().regex(WORKSPACE_ID_PATTERN),
+    label: z
+      .string()
+      .regex(WORKSPACE_LABEL_PATTERN)
+      .refine((value) => !value.startsWith("bnd_")),
+    displayName: z
+      .string()
+      .trim()
+      .min(1)
+      .max(200)
+      .refine((value) => !PATH_LIKE_DISPLAY_PATTERN.test(value))
+      .optional(),
     available: z.boolean(),
   })
   .strict();
@@ -127,6 +140,26 @@ const listWorkspacesOutputSchema = z.object({
   total: z.number().int().nonnegative(),
   truncated: z.boolean(),
 });
+
+function normalizeWorkspaceSummaries(
+  listed: readonly McpWorkspaceSummary[],
+): McpWorkspaceSummary[] {
+  const workspaces = listed
+    .map((entry) => workspaceSummarySchema.parse(entry))
+    .sort((left, right) =>
+      left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
+    );
+  const ids = new Set<string>();
+  const labels = new Set<string>();
+  for (const workspace of workspaces) {
+    if (ids.has(workspace.id) || labels.has(workspace.label)) {
+      throw new Error("workspace resolver returned ambiguous identities");
+    }
+    ids.add(workspace.id);
+    labels.add(workspace.label);
+  }
+  return workspaces;
+}
 
 const listViewsInputSchema = z
   .object({
@@ -570,11 +603,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       async (): Promise<CallToolResult> => {
         try {
           const listed = await options.workspaceResolver.list();
-          const workspaces: McpWorkspaceSummary[] = listed
-            .map((entry) => workspaceSummarySchema.parse(entry))
-            .sort((left, right) =>
-              left.label.localeCompare(right.label) || left.id.localeCompare(right.id)
-            );
+          const workspaces = normalizeWorkspaceSummaries(listed);
           const page = workspaces.slice(0, MAX_WORKSPACE_CATALOG_PAGE);
           return {
             content: [
