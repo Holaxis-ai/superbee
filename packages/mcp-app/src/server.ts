@@ -1,4 +1,5 @@
 import {
+  readDocVersioned,
   versionOfBytes,
   type Bundle,
 } from "@superbee/core";
@@ -43,8 +44,13 @@ import type {
   TransientViewLaunchPayload,
 } from "./contract.js";
 import { MCP_VIEW_HTML } from "./generated/view-html.generated.js";
+import { MCP_DOCUMENT_HTML } from "./generated/document-html.generated.js";
+import {
+  DOCUMENT_PRESENTATION_SCHEMA_VERSION,
+  type DocumentPresentationPayload,
+} from "./document-contract.js";
 import { randomBytes } from "node:crypto";
-import { PendingLaunchRegistry } from "./pending-launches.js";
+import { PendingClaimRegistry, PendingLaunchRegistry } from "./pending-launches.js";
 
 // MCP Apps hosts may preload/cache resources by URI. Keep one URI immutable to one exact shell
 // byte sequence so a newly built server cannot silently execute stale trusted-shell code.
@@ -53,7 +59,14 @@ const MCP_VIEW_RESOURCE_DIGEST = versionOfBytes(MCP_VIEW_HTML).slice(
 );
 export const MCP_VIEW_RESOURCE_URI =
   `ui://agentstate/view-host/v1/${MCP_VIEW_RESOURCE_DIGEST}.html`;
+const MCP_DOCUMENT_RESOURCE_DIGEST = versionOfBytes(MCP_DOCUMENT_HTML).slice(
+  "sha256:".length,
+);
+export const MCP_DOCUMENT_RESOURCE_URI =
+  `ui://superbee/document-reader/v1/${MCP_DOCUMENT_RESOURCE_DIGEST}.html`;
 export const SHOW_VIEW_TOOL_NAME = "show_view";
+export const SHOW_DOCUMENT_TOOL_NAME = "show_document";
+export const RESOLVE_DOCUMENT_TOOL_NAME = "resolve_document";
 export const LIST_VIEWS_TOOL_NAME = "list_views";
 export const PREPARE_VIEW_ACTION_TOOL_NAME = "prepare_view_action";
 export const FINISH_VIEW_ACTION_TOOL_NAME = "finish_view_action";
@@ -76,7 +89,7 @@ function boundedNavigationMessage(error: unknown): string {
 }
 
 /**
- * Claim marker carried in show_view's TEXT content — the channel Claude Desktop preserves when it
+ * Claim marker carried in model-visible tool TEXT — the channel Claude Desktop preserves when it
  * strips structuredContent (probe-established). Model-visible by construction; conveys no model
  * authority: resolve_launch is app-only, same-connection, bounded, one-shot, exact-match-only.
  */
@@ -95,6 +108,28 @@ const listViewsInputSchema = z
     cursor: z.string().trim().min(1).max(1024).optional(),
   })
   .strict();
+
+const showDocumentInputSchema = z
+  .object({ docId: z.string().trim().min(1).max(1024) })
+  .strict();
+
+const showDocumentOutputSchema = z.object({
+  schemaVersion: z.literal(DOCUMENT_PRESENTATION_SCHEMA_VERSION),
+  document: z.object({
+    id: z.string(),
+    version: z.string(),
+    title: z.string(),
+    type: z.string().optional(),
+    html: z.string(),
+    bounded: z.boolean(),
+  }),
+});
+
+function displayScalar(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+}
 
 const listViewsOutputSchema = z.object({
   views: z.array(
@@ -400,6 +435,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
   );
   const actions = new TrustedActionService(options.bundle, activeActionAuthority, options.actor);
   const pendingLaunches = new PendingLaunchRegistry();
+  const pendingDocuments = new PendingClaimRegistry<DocumentPresentationPayload>();
   const durableBridge = new BridgeService({
     bundle: options.bundle,
     launches: new PageBridgeLaunchAuthority(
@@ -449,6 +485,72 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     navigations.set(sourceLaunchId, operation);
     return operation;
   };
+
+  registerAppTool(
+    server,
+    SHOW_DOCUMENT_TOOL_NAME,
+    {
+      title: "Show Superbee document",
+      description:
+        "Display one authoritative bundle document by exact id in Superbee's fixed Markdown reader. Use this for human review of documents; it does not launch executable View code or require View authorization.",
+      inputSchema: showDocumentInputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+      _meta: {
+        ui: {
+          resourceUri: MCP_DOCUMENT_RESOURCE_URI,
+          visibility: ["model"],
+        },
+      },
+    },
+    async ({ docId }): Promise<CallToolResult> => {
+      try {
+        const result = await readDocVersioned(options.bundle, docId);
+        const rendered = renderDocumentToStaticHtml({
+          id: result.doc.id,
+          body: result.doc.body,
+        });
+        const title = displayScalar(result.doc.frontmatter.title) ?? result.doc.id;
+        const type = displayScalar(result.doc.frontmatter.type);
+        const payload: DocumentPresentationPayload = {
+          schemaVersion: DOCUMENT_PRESENTATION_SCHEMA_VERSION,
+          document: {
+            id: result.doc.id,
+            version: result.version,
+            title,
+            ...(type ? { type } : {}),
+            html: rendered.html,
+            bounded: rendered.bounded,
+          },
+        };
+        const claimId = mintClaimId();
+        pendingDocuments.record(claimId, payload);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Displayed Superbee document "${title}" (${result.doc.id}) at ${result.version}.\n${formatClaimMarker(claimId)}`,
+            },
+          ],
+        };
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `Could not display Superbee document '${docId}': ${detail.slice(0, 500)}`,
+            },
+          ],
+        };
+      }
+    },
+  );
 
   registerAppTool(
     server,
@@ -987,6 +1089,36 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
 
   registerAppResource(
     server,
+    "Superbee Document Reader",
+    MCP_DOCUMENT_RESOURCE_URI,
+    {
+      mimeType: RESOURCE_MIME_TYPE,
+      description: "Fixed Superbee reader for authoritative bundle Markdown documents.",
+    },
+    async (): Promise<ReadResourceResult> => ({
+      contents: [
+        {
+          uri: MCP_DOCUMENT_RESOURCE_URI,
+          mimeType: RESOURCE_MIME_TYPE,
+          text: MCP_DOCUMENT_HTML,
+          _meta: {
+            ui: {
+              csp: {
+                connectDomains: [],
+                resourceDomains: [],
+                frameDomains: [],
+                baseUriDomains: [],
+              },
+              prefersBorder: false,
+            },
+          },
+        },
+      ],
+    }),
+  );
+
+  registerAppResource(
+    server,
     "Superbee View Host",
     MCP_VIEW_RESOURCE_URI,
     {
@@ -1015,6 +1147,48 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
         },
       ],
     }),
+  );
+
+  registerAppTool(
+    server,
+    RESOLVE_DOCUMENT_TOOL_NAME,
+    {
+      title: "Resolve undelivered Superbee document",
+      description:
+        "Redeem the exact one-shot claim marker from a show_document result whose structured payload the host stripped.",
+      inputSchema: { claim: z.string().min(8).max(256) },
+      outputSchema: showDocumentOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+      _meta: { ui: { visibility: ["app"] } },
+    },
+    async ({ claim }): Promise<CallToolResult> => {
+      const entry = pendingDocuments.consume(claim);
+      if (!entry) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "Unknown, expired, or already-redeemed Superbee document claim. Display the document again.",
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Recovered Superbee document "${entry.payload.document.title}" (${entry.payload.document.id}).`,
+          },
+        ],
+        structuredContent: { ...entry.payload },
+      };
+    },
   );
 
   registerAppTool(

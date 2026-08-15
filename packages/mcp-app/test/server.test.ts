@@ -16,19 +16,23 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { extractClaimId } from "../src/result-recovery.js";
+import { MCP_DOCUMENT_HTML } from "../src/generated/document-html.generated.js";
 import { MCP_VIEW_HTML } from "../src/generated/view-html.generated.js";
 import {
   AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
   CLOSE_DURABLE_VIEW_TOOL_NAME,
   DURABLE_VIEW_BRIDGE_TOOL_NAME,
   FINISH_VIEW_ACTION_TOOL_NAME,
+  MCP_DOCUMENT_RESOURCE_URI,
   MCP_VIEW_RESOURCE_URI,
   LIST_VIEWS_TOOL_NAME,
   POLL_DURABLE_VIEW_TOOL_NAME,
   PREPARE_VIEW_ACTION_TOOL_NAME,
   RESUME_DURABLE_VIEW_TOOL_NAME,
+  RESOLVE_DOCUMENT_TOOL_NAME,
   RESOLVE_LAUNCH_TOOL_NAME,
   SAVE_TRANSIENT_VIEW_TOOL_NAME,
+  SHOW_DOCUMENT_TOOL_NAME,
   SHOW_VIEW_TOOL_NAME,
   createMcpAppServer,
   resolveDurableViewLaunch,
@@ -49,6 +53,14 @@ test("the App shell resource URI is derived from its exact HTML bytes", () => {
   assert.notEqual(
     MCP_VIEW_RESOURCE_URI,
     `ui://agentstate/view-host/v1/${changedDigest}.html`,
+  );
+});
+
+test("the document reader resource URI is derived from its exact HTML bytes", () => {
+  const digest = versionOfBytes(MCP_DOCUMENT_HTML).slice("sha256:".length);
+  assert.equal(
+    MCP_DOCUMENT_RESOURCE_URI,
+    `ui://superbee/document-reader/v1/${digest}.html`,
   );
 });
 
@@ -262,7 +274,7 @@ test("list_views is bounded, continues deterministically, and every listed id is
   assert.equal(secondPage.nextCursor, undefined);
 });
 
-test("MCP contract exposes one fixed App resource and invocation-specific tool results", async (t) => {
+test("MCP contract exposes fixed View and document App resources with invocation-specific results", async (t) => {
   const bundle = memoryBundle();
   await seed(bundle);
   const server = createMcpAppServer({ bundle, version: "test" });
@@ -277,6 +289,7 @@ test("MCP contract exposes one fixed App resource and invocation-specific tool r
 
   const tools = await client.listTools();
   assert.deepEqual(tools.tools.map((tool) => tool.name), [
+    SHOW_DOCUMENT_TOOL_NAME,
     LIST_VIEWS_TOOL_NAME,
     SHOW_VIEW_TOOL_NAME,
     AUTHORIZE_DURABLE_VIEW_TOOL_NAME,
@@ -287,8 +300,12 @@ test("MCP contract exposes one fixed App resource and invocation-specific tool r
     CLOSE_DURABLE_VIEW_TOOL_NAME,
     PREPARE_VIEW_ACTION_TOOL_NAME,
     FINISH_VIEW_ACTION_TOOL_NAME,
+    RESOLVE_DOCUMENT_TOOL_NAME,
     RESOLVE_LAUNCH_TOOL_NAME,
   ]);
+  const showDocumentTool = tools.tools.find(
+    (tool) => tool.name === SHOW_DOCUMENT_TOOL_NAME,
+  );
   const listTool = tools.tools.find((tool) => tool.name === LIST_VIEWS_TOOL_NAME);
   const showTool = tools.tools.find((tool) => tool.name === SHOW_VIEW_TOOL_NAME);
   const authorizeTool = tools.tools.find(
@@ -307,11 +324,17 @@ test("MCP contract exposes one fixed App resource and invocation-specific tool r
     (tool) => tool.name === CLOSE_DURABLE_VIEW_TOOL_NAME,
   );
   assert.deepEqual(listTool?._meta?.ui?.visibility, ["model"]);
+  assert.equal(showDocumentTool?._meta?.ui?.resourceUri, MCP_DOCUMENT_RESOURCE_URI);
+  assert.deepEqual(showDocumentTool?._meta?.ui?.visibility, ["model"]);
+  assert.equal(showDocumentTool?.annotations?.readOnlyHint, true);
   const resumeTool = tools.tools.find(
     (tool) => tool.name === RESUME_DURABLE_VIEW_TOOL_NAME,
   );
   const prepareTool = tools.tools.find((tool) => tool.name === PREPARE_VIEW_ACTION_TOOL_NAME);
   const finishTool = tools.tools.find((tool) => tool.name === FINISH_VIEW_ACTION_TOOL_NAME);
+  const resolveDocumentTool = tools.tools.find(
+    (tool) => tool.name === RESOLVE_DOCUMENT_TOOL_NAME,
+  );
   assert.equal(showTool?._meta?.ui?.resourceUri, MCP_VIEW_RESOURCE_URI);
   assert.equal(showTool?.annotations?.readOnlyHint, true);
   assert.deepEqual(saveTool?._meta?.ui?.visibility, ["model"]);
@@ -332,6 +355,7 @@ test("MCP contract exposes one fixed App resource and invocation-specific tool r
   assert.deepEqual(closeTool?._meta?.ui?.visibility, ["app"]);
   assert.deepEqual(prepareTool?._meta?.ui?.visibility, ["app"]);
   assert.deepEqual(finishTool?._meta?.ui?.visibility, ["app"]);
+  assert.deepEqual(resolveDocumentTool?._meta?.ui?.visibility, ["app"]);
   assert.equal(finishTool?.annotations?.readOnlyHint, false);
 
   const resource = await client.readResource({ uri: MCP_VIEW_RESOURCE_URI });
@@ -363,6 +387,63 @@ test("MCP contract exposes one fixed App resource and invocation-specific tool r
   assert.doesNotThrow(() => new Function(content.text.slice(scriptStart, scriptEnd)));
   assert.deepEqual(content._meta?.ui?.csp?.frameDomains, ["blob:"]);
   assert.deepEqual(content._meta?.ui?.csp?.connectDomains, []);
+
+  const documentResource = await client.readResource({ uri: MCP_DOCUMENT_RESOURCE_URI });
+  const documentContent = documentResource.contents[0];
+  assert.ok(documentContent && "text" in documentContent);
+  assert.equal(documentContent.uri, MCP_DOCUMENT_RESOURCE_URI);
+  assert.match(documentContent.text, /id="document"/);
+  assert.match(documentContent.text, /Superbee Document Reader/);
+  assert.match(
+    documentContent.text,
+    /http-equiv="Content-Security-Policy"[\s\S]*connect-src 'none'[\s\S]*frame-src 'none'/,
+  );
+  assert.doesNotMatch(documentContent.text, /<iframe\b/);
+  assert.deepEqual(documentContent._meta?.ui?.csp?.frameDomains, []);
+  assert.match(documentContent.text, /resolve_document/);
+  const documentScriptStart = documentContent.text.indexOf("<script>") + "<script>".length;
+  const documentScriptEnd = documentContent.text.lastIndexOf("</script>");
+  assert.ok(
+    documentScriptStart >= "<script>".length && documentScriptEnd > documentScriptStart,
+  );
+  assert.doesNotThrow(
+    () => new Function(documentContent.text.slice(documentScriptStart, documentScriptEnd)),
+  );
+
+  const shownDocument = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { docId: "tasks/alpha" },
+  });
+  assert.equal(shownDocument.isError, undefined);
+  const shownText = shownDocument.content[0]?.type === "text"
+    ? shownDocument.content[0].text
+    : "";
+  assert.match(shownText, /Displayed Superbee document "Alpha" \(tasks\/alpha\)/);
+  assert.doesNotMatch(shownText, /First task/);
+  assert.equal(shownDocument.structuredContent, undefined);
+  const expectedDocumentPayload = {
+    schemaVersion: "superbee.document-presentation.v1",
+    document: {
+      id: "tasks/alpha",
+      version: (await readDocVersioned(bundle, "tasks/alpha")).version,
+      title: "Alpha",
+      type: "Task",
+      html: '<div data-aslite-rendered-document=""><h1>Goal</h1><p>First task.</p></div>',
+      bounded: false,
+    },
+  };
+  const documentClaim = extractClaimId(shownDocument);
+  assert.ok(documentClaim);
+  const recoveredDocument = await client.callTool({
+    name: RESOLVE_DOCUMENT_TOOL_NAME,
+    arguments: { claim: documentClaim },
+  });
+  assert.deepEqual(recoveredDocument.structuredContent, expectedDocumentPayload);
+  const reusedDocumentClaim = await client.callTool({
+    name: RESOLVE_DOCUMENT_TOOL_NAME,
+    arguments: { claim: documentClaim },
+  });
+  assert.equal(reusedDocumentClaim.isError, true);
 
   const first = await client.callTool({
     name: SHOW_VIEW_TOOL_NAME,
@@ -414,6 +495,31 @@ test("MCP contract exposes one fixed App resource and invocation-specific tool r
     removedContract.content[0]?.type === "text" ? removedContract.content[0].text : "",
     /objectIds|unrecognized key/i,
   );
+});
+
+test("show_document fails cleanly for an unknown exact document id", async (t) => {
+  const bundle = memoryBundle();
+  await seed(bundle);
+  const server = createMcpAppServer({ bundle });
+  const client = new Client({ name: "test-client", version: "test" }, { capabilities: {} });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  const result = await client.callTool({
+    name: SHOW_DOCUMENT_TOOL_NAME,
+    arguments: { docId: "docs/missing" },
+  });
+  assert.equal(result.isError, true);
+  assert.match(
+    result.content[0]?.type === "text" ? result.content[0].text : "",
+    /Could not display Superbee document 'docs\/missing'/,
+  );
+  assert.equal(result.structuredContent, undefined);
 });
 
 test("durable View execution preserves a UTF-8 BOM included in the approved bytes", async () => {

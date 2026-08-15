@@ -3,6 +3,7 @@ export {
   CLOSE_DURABLE_VIEW_TOOL_NAME,
   DURABLE_VIEW_BRIDGE_TOOL_NAME,
   FINISH_VIEW_ACTION_TOOL_NAME,
+  MCP_DOCUMENT_RESOURCE_URI,
   MCP_VIEW_RESOURCE_URI,
   MAX_VIEW_CATALOG_PAGE,
   MAX_VIEW_CATALOG_SCAN,
@@ -10,8 +11,10 @@ export {
   POLL_DURABLE_VIEW_TOOL_NAME,
   PREPARE_VIEW_ACTION_TOOL_NAME,
   RESUME_DURABLE_VIEW_TOOL_NAME,
+  RESOLVE_DOCUMENT_TOOL_NAME,
   RESOLVE_LAUNCH_TOOL_NAME,
   SAVE_TRANSIENT_VIEW_TOOL_NAME,
+  SHOW_DOCUMENT_TOOL_NAME,
   SHOW_VIEW_TOOL_NAME,
   createMcpAppServer,
   resolveDurableViewLaunch,
@@ -26,3 +29,8 @@ export type {
   TransientShowViewInput,
   TransientViewLaunchPayload,
 } from "./contract.js";
+export {
+  DOCUMENT_PRESENTATION_SCHEMA_VERSION,
+  parseDocumentPresentationPayload,
+  type DocumentPresentationPayload,
+} from "./document-contract.js";

@@ -60,8 +60,11 @@ Views.
 - **Local-first.** Everything works with the network off; the filesystem is the source of truth.
 - **Agent-native.** The primary interface is a small, predictable CLI designed to be driven by
   AI agents, with a `SessionStart` hook installer for Claude Code / Codex / OpenCode.
-- **Human-visible.** `superbee ui --open` opens a local browser window over the bundle: read its
-  docs as rendered pages (cross-links you can follow, derived backlinks), see a live activity
+- **Human-visible.** In an MCP Apps conversation, an agent can call `show_document` with an exact
+  bundle ID to display the authoritative document through Superbee's bounded Markdown reader;
+  no executable View approval or separate Markdown tool is involved. `superbee ui --open` opens
+  the same bundle in a local browser: read docs as rendered pages (cross-links you can follow,
+  derived backlinks), see a live activity
   feed and the bundle's sharing status, and launch its registered Views — which present live data
   through the read-only v0 bridge or propose one human-confirmed local scalar action through v1.
   (`Page` is the retired legacy name for the View kind — legacy-named content no longer

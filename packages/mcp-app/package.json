@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Experimental local MCP Apps adapter for conversational Superbee Views.",
+  "description": "Local MCP Apps adapter for rendered Superbee documents and conversational Views.",
   "license": "MIT",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
