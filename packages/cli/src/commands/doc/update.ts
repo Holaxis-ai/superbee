@@ -329,7 +329,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     actor,
     persistActor: true,
     expectedVersion: p.expectedVersion?.trim(),
-    okfVersion,
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
     onPersisted: boardPostPersistHook(bundle, actor),

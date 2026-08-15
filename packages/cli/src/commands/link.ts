@@ -37,7 +37,6 @@ import {
   isReservedFile,
   pathFromConceptId,
   loadKinds,
-  readBundleOkfVersion,
   type Bundle,
   type EdgeFilter,
   type KindRegistry,
@@ -387,10 +386,7 @@ export async function addLink(
   // Link addition is an ordinary body patch through the shared document mutation service. That
   // service owns CAS/retry, edition-aware clocks, actor persistence, no-op receipts, and Kind
   // validation; this command owns only the markdown-link candidate and graph guidance.
-  const [registry, okfVersion] = await Promise.all([
-    loadKinds(bundle),
-    readBundleOkfVersion(bundle),
-  ]);
+  const registry = await loadKinds(bundle);
   let sourceTypeAtWrite = "";
   const mutation = await mutateDoc({
     bundle,
@@ -404,8 +400,7 @@ export async function addLink(
     actor: opts.actor,
     persistActor: true,
     maxAttempts: LINK_ADD_MAX_ATTEMPTS,
-    okfVersion,
-    buildCandidate: (source) => {
+    buildCandidate: (source, context) => {
       const existing = source!;
       sourceTypeAtWrite = docType(existing);
       // Link text is the relationship-type signal, so identity is target + exact text. Re-adding
@@ -418,7 +413,7 @@ export async function addLink(
       const nextFrontmatter = { ...existing.frontmatter };
       // v0.1 retains link add's historical explicit clock refresh. v0.2's `generated.at` is
       // advanced centrally by mutateDocument, and top-level timestamp/actor stay untouched.
-      if (okfVersion !== "0.2" && !opts.keepTimestamp) {
+      if (context.okfVersion !== "0.2" && !opts.keepTimestamp) {
         nextFrontmatter.timestamp = new Date().toISOString();
       }
       return { frontmatter: nextFrontmatter, body: nextBody };

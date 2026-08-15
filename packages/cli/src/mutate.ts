@@ -14,6 +14,7 @@ import {
   type Bundle,
   type ConceptId,
   type DocumentMutationCandidate,
+  type DocumentMutationContext,
   type DocumentMutationMode,
   type Frontmatter,
   type KindRegistry,
@@ -46,7 +47,10 @@ export interface MutateDocOptions {
   strict: boolean;
   /** Fallback `help` for a kind rejection whose violations name no completable field (see `kindConformanceCliError`). */
   helpOnKindReject: string;
-  buildCandidate: (existing: OkfDocument | undefined) => MutateCandidate | Promise<MutateCandidate>;
+  buildCandidate: (
+    existing: OkfDocument | undefined,
+    context: DocumentMutationContext,
+  ) => MutateCandidate | Promise<MutateCandidate>;
   onAbsent?: "fail" | "create";
   maxAttempts?: number;
   compareTimestamp?: boolean;
@@ -54,8 +58,6 @@ export interface MutateDocOptions {
   actor?: string;
   persistActor?: boolean;
   expectedVersion?: Version;
-  /** Already-resolved bundle edition, avoiding a duplicate root-index read. */
-  okfVersion?: string;
   /** Best-effort CLI orchestration hook; it never changes mutation success. */
   onPersisted?: () => void | Promise<void>;
   errors: MutateErrorHooks;
@@ -131,7 +133,6 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       actor: opts.actor,
       persistActor: opts.persistActor,
       expectedVersion: opts.expectedVersion,
-      okfVersion: opts.okfVersion,
     });
 
     if (result.changed) await firePostPersist(opts.onPersisted);

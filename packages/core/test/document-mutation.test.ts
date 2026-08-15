@@ -11,6 +11,7 @@ import { MemoryBackend } from "../src/memory-backend.js";
 import { validateAgainstKind } from "../src/kinds.js";
 import { VersionConflict } from "../src/versioning.js";
 import type { KindConvention, KindRegistry } from "../src/kinds.js";
+import type { MutateDocumentOptions } from "../src/document-mutation.js";
 import type { Bundle, ConceptId, OkfDocument, Version, WriteOptions } from "../src/types.js";
 
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
@@ -192,6 +193,37 @@ test("v0.2 mutation does not invent generated, timestamp, or actor metadata", as
 
   assert.deepEqual(result.doc.frontmatter, { type: "Note", title: "A" });
   assert.equal((await backend.versions("notes/a"))[0]!.actor, "openai/codex");
+});
+
+test("mutation edition is authoritative from the bundle root and cannot be overridden by a caller hint", async () => {
+  const v01Backend = new MemoryBackend();
+  await v01Backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n# Bundle\n");
+  const v01 = await mutateDocument({
+    bundle: bundleFor(v01Backend),
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    buildCandidate: () => ({ frontmatter: { type: "Note" }, body: "body" }),
+    // Runtime callers can always supply undeclared object keys; the authority must ignore them.
+    okfVersion: "0.2",
+  } as MutateDocumentOptions & { okfVersion: string });
+  assert.equal(typeof v01.doc.frontmatter.timestamp, "string");
+
+  const futureBackend = new MemoryBackend();
+  await futureBackend.writeReserved("", "index.md", "---\nokf_version: '0.3'\n---\n# Bundle\n");
+  await assert.rejects(
+    () => mutateDocument({
+      bundle: bundleFor(futureBackend),
+      id: "notes/a",
+      mode: "create-only",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      buildCandidate: () => ({ frontmatter: { type: "Note" }, body: "body" }),
+      okfVersion: "0.2",
+    } as MutateDocumentOptions & { okfVersion: string }),
+    (error: unknown) => error instanceof Error && /Unsupported OKF mutation version '0\.3'/.test(error.message),
+  );
 });
 
 test("v0.2 substantive mutation advances generated.at while preserving producer, verification, and date scalars", async () => {

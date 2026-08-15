@@ -38,6 +38,11 @@ export interface DocumentMutationCandidate {
   body: string;
 }
 
+/** Root-derived bundle facts supplied by the mutation authority to candidate construction. */
+export interface DocumentMutationContext {
+  okfVersion: "0.1" | "0.2";
+}
+
 /** Typed strict-kind rejection for trusted consumers to translate at their own boundary. */
 export class KindConformanceError extends InvalidInputError {
   readonly id: ConceptId;
@@ -75,6 +80,7 @@ export interface MutateDocumentOptions {
   /** Recomputed against every fresh CAS attempt. */
   buildCandidate: (
     existing: OkfDocument | undefined,
+    context: DocumentMutationContext,
   ) => DocumentMutationCandidate | Promise<DocumentMutationCandidate>;
   /** Patch only: require an existing target or allow an expect-absent create. */
   onAbsent?: "fail" | "create";
@@ -90,8 +96,6 @@ export interface MutateDocumentOptions {
   expectedVersion?: Version;
   /** Test seam for edition-specific clocks; production defaults to the current ISO instant. */
   now?: () => string;
-  /** Already-resolved bundle edition, when the caller needed it to construct the candidate. */
-  okfVersion?: string;
 }
 
 export interface DocumentMutationResult {
@@ -221,18 +225,19 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const onAbsent = opts.onAbsent ?? "fail";
   const compareTimestamp = opts.compareTimestamp ?? false;
   const persistActor = opts.persistActor ?? false;
-  const okfVersion = opts.okfVersion ?? await readBundleOkfVersion(opts.bundle) ?? "0.1";
+  const okfVersion = await readBundleOkfVersion(opts.bundle) ?? "0.1";
   if (okfVersion !== "0.1" && okfVersion !== "0.2") {
     throw new InvalidInputError(
       `Unsupported OKF mutation version '${okfVersion}'. This build can mutate 0.1 and 0.2 bundles.`,
     );
   }
   const now = opts.now ?? (() => new Date().toISOString());
+  const context: DocumentMutationContext = { okfVersion };
 
   if (opts.mode === "create-only") {
     const decisionNow = onceNow(now);
     const attributed = attributeCandidate(
-      await opts.buildCandidate(undefined),
+      await opts.buildCandidate(undefined, context),
       opts.actor,
       persistActor,
       okfVersion,
@@ -265,7 +270,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       decide: async (existing) => {
         const decisionNow = onceNow(now);
         const attributed = attributeCandidate(
-          await opts.buildCandidate(existing),
+          await opts.buildCandidate(existing, context),
           opts.actor,
           persistActor,
           okfVersion,
@@ -328,7 +333,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         throw new VersionConflict(opts.id, opts.expectedVersion!, lastReadVersion);
       }
 
-      const rawCandidate = await opts.buildCandidate(existing);
+      const rawCandidate = await opts.buildCandidate(existing, context);
       const candidateForComparison = withV02Metadata(rawCandidate, existing, okfVersion, decisionNow);
       if (existing && isNoopPatch(existing, candidateForComparison, compareTimestamp, okfVersion)) {
         return { action: "done", result: { doc: existing, warnings: [] } };

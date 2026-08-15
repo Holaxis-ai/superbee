@@ -139,6 +139,7 @@ export {
 } from "./document-mutation.js";
 export type {
   DocumentMutationCandidate,
+  DocumentMutationContext,
   DocumentMutationMode,
   DocumentMutationResult,
   MutateDocumentOptions,
