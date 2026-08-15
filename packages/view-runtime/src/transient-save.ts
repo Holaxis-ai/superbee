@@ -141,6 +141,7 @@ export async function persistTransientView(
     throw new TransientViewSaveError("the transient View title is invalid for a durable registration");
   }
 
+  const mutationNow = options.now ?? new Date().toISOString();
   const desiredRegistry: OkfDocument = {
     id: viewId,
     frontmatter: {
@@ -150,8 +151,6 @@ export async function persistTransientView(
       entry,
       entry_version: source.contentVersion,
       access: source.capability,
-      ...(options.actor ? { actor: options.actor } : {}),
-      timestamp: options.now ?? new Date().toISOString(),
     },
     body: "",
   };
@@ -248,6 +247,7 @@ export async function persistTransientView(
           strict: true,
           actor: options.actor,
           persistActor: true,
+          now: () => mutationNow,
           buildCandidate: () => ({
             frontmatter: desiredRegistry.frontmatter,
             body: desiredRegistry.body,

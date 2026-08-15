@@ -1148,6 +1148,53 @@ test("doc update: patches ONE field, preserving the body and every other field v
   }
 });
 
+test("doc update on an explicit v0.2 bundle advances generated.at without inventing legacy metadata", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n", "utf8");
+    await writeDoc(
+      { root: dir },
+      {
+        id: "concepts/a",
+        frontmatter: {
+          type: "Concept",
+          title: "Old",
+          generated: { at: OLD_TS, by: "https://legacy.example/producer" },
+          verified: [{ at: "2026-07-01T00:00:00Z", by: "human:reviewer" }],
+        },
+        body: "Body.",
+      },
+    );
+
+    const before = Date.now();
+    const changed = await runDoc([
+      "update",
+      "concepts/a",
+      "--title",
+      "New",
+      "--actor",
+      "openai/codex",
+      "--dir",
+      dir,
+    ]);
+    assert.equal(changed.changed, true);
+    const after = await readDoc({ root: dir }, "concepts/a");
+    const generated = after.frontmatter.generated as { at: string; by: string };
+    assert.ok(Date.parse(generated.at) >= before);
+    assert.equal(generated.by, "https://legacy.example/producer");
+    assert.deepEqual(after.frontmatter.verified, [{ at: "2026-07-01T00:00:00Z", by: "human:reviewer" }]);
+    assert.equal(after.frontmatter.timestamp, undefined);
+    assert.equal(after.frontmatter.actor, undefined);
+
+    const unchangedAt = generated.at;
+    const noop = await runDoc(["update", "concepts/a", "--title", "New", "--dir", dir]);
+    assert.equal(noop.changed, false);
+    assert.equal(((await readDoc({ root: dir }, "concepts/a")).frontmatter.generated as { at: string }).at, unchangedAt);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("doc update --tag: REPLACES the whole tag set, not adds to it", async () => {
   const { dir, cleanup } = await makeBundle();
   try {

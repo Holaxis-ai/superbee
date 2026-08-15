@@ -48,7 +48,7 @@ export interface Frontmatter {
   resource?: string;
   /** Cross-cutting categorization tags. */
   tags?: string[];
-  /** ISO-8601 datetime of last meaningful change — the freshness field (`Z` or numeric-offset forms). */
+  /** Legacy v0.1 ISO-8601 datetime of last meaningful change (`generated.at` is the v0.2 clock). */
   timestamp?: string;
   /** Bundle-version marker; permitted ONLY in the bundle-root `index.md` frontmatter (§11). */
   okf_version?: string;
@@ -470,9 +470,9 @@ export interface FreshnessOptions {
 
 /** The outcome of a {@link freshness} judgment. */
 export interface FreshnessResult {
-  /** `fresh` / `stale` / `empty` (no usable `timestamp`). */
+  /** `fresh` / `stale` / `empty` (no usable `generated.at` or legacy `timestamp`). */
   verdict: FreshnessVerdict;
-  /** Age in milliseconds relative to the comparison instant, when a timestamp was present. */
+  /** Age in milliseconds relative to the comparison instant, when a meaningful-change time was present. */
   ageMs?: number;
   /** Human-readable reason (e.g. exceeded max age, a dependency is newer). */
   reason?: string;

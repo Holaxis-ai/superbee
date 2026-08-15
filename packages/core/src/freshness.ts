@@ -1,10 +1,10 @@
 /**
- * Freshness derivation from the OKF `timestamp` frontmatter field.
+ * Freshness derivation from the document's edition-neutral meaningful-change clock.
  *
- * OKF has NO first-class staleness concept (mapping §c) — `timestamp` is just the
- * ISO-8601 instant of the last meaningful change. Staleness is a CONSUMER
+ * OKF has NO first-class staleness verdict — v0.1 `timestamp` and v0.2 `generated.at`
+ * provide the ISO-8601 instant of the last meaningful change. Staleness is a CONSUMER
  * judgment, layered here on top of the raw field:
- *   - `empty` — no usable timestamp is present.
+ *   - `empty` — no usable meaningful-change time is present.
  *   - `stale` — a declared dependency was written more recently than this concept,
  *               OR the concept's age exceeds `maxAgeMs`.
  *   - `fresh` — otherwise.
@@ -36,16 +36,16 @@ export function parseTimestamp(ts: unknown): number | null {
 }
 
 /**
- * Derive a freshness verdict for a concept from its `timestamp` frontmatter.
+ * Derive a freshness verdict from `generated.at`, falling back to legacy `timestamp`.
  *
- * @param doc     the concept document (only `frontmatter.timestamp` is consulted).
+ * @param doc     the concept document (only meaningful-change clock fields are consulted).
  * @param options `now` (defaults to the current instant), `maxAgeMs`, and the
  *                ISO timestamps of upstream `dependsOn` artifacts.
  */
 export function freshness(doc: OkfDocument, options: FreshnessOptions = {}): FreshnessResult {
   const tsMs = parseTimestamp(meaningfulChangeTimeValue(doc.frontmatter));
   if (tsMs === null) {
-    return { verdict: "empty", reason: "no usable `timestamp` frontmatter" };
+    return { verdict: "empty", reason: "no usable meaningful-change time (`generated.at` or `timestamp`)" };
   }
 
   const now = (options.now ?? new Date()).getTime();

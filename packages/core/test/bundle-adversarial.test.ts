@@ -20,7 +20,13 @@ import {
   writeDocVersioned,
 } from "../src/bundle.js";
 import { InvalidInputError } from "../src/errors.js";
-import { normalizeV01DocumentForWrite } from "../src/document-write-policy.js";
+import {
+  applyV02MutationMetadata,
+  isOkfActor,
+  normalizeV01DocumentForWrite,
+  normalizeV02DocumentForWrite,
+  v02MeaningfulContentChanged,
+} from "../src/document-write-policy.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "../src/frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "../src/index-marker.js";
@@ -48,6 +54,47 @@ function memoryBundle(root = "mem://bundle"): Bundle {
 function doc(id: ConceptId, frontmatter: OkfDocument["frontmatter"], body = ""): OkfDocument {
   return { id, frontmatter, body };
 }
+
+test("v0.2 write policy is non-inventing, preserves verification, and owns only generated.at", () => {
+  const existing = doc("notes/a", {
+    type: "Note",
+    title: "Before",
+    generated: { at: "2026-08-01T00:00:00Z", by: "https://legacy.example/producer" },
+    verified: [{ at: "2026-08-02T00:00:00Z", by: "human:reviewer" }],
+    stale_after: "2026-12-31",
+  }, "body");
+  const normalized = normalizeV02DocumentForWrite(
+    doc("notes/new", { type: "Note", title: "New" }, "body"),
+    "Note",
+  );
+  assert.deepEqual(normalized.frontmatter, { type: "Note", title: "New" });
+
+  const changed = applyV02MutationMetadata({
+    existing,
+    candidate: { frontmatter: { type: "Note", title: "After", stale_after: "2026-12-31" }, body: "body" },
+    meaningfulChangeAt: "2026-08-03T00:00:00Z",
+  });
+  assert.deepEqual(changed.frontmatter.generated, {
+    at: "2026-08-03T00:00:00Z",
+    by: "https://legacy.example/producer",
+  });
+  assert.deepEqual(changed.frontmatter.verified, existing.frontmatter.verified);
+  assert.equal(changed.frontmatter.stale_after, "2026-12-31");
+
+  const verificationOnly = applyV02MutationMetadata({
+    existing,
+    candidate: {
+      frontmatter: { ...existing.frontmatter, verified: [{ at: "2026-08-04T00:00:00Z", by: "human:two" }] },
+      body: existing.body,
+    },
+    meaningfulChangeAt: "2026-08-05T00:00:00Z",
+  });
+  assert.equal((verificationOnly.frontmatter.generated as { at: string }).at, "2026-08-01T00:00:00Z");
+  assert.equal(v02MeaningfulContentChanged(existing, verificationOnly), false);
+  assert.equal(isOkfActor("human:mike"), true);
+  assert.equal(isOkfActor("superbee/1.0.0"), true);
+  assert.equal(isOkfActor("https://legacy.example/producer"), false);
+});
 
 test("initBundle writes one deterministic root index with expect-absent CAS and preserves it thereafter", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "okf-init-contract-"));

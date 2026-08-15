@@ -14,7 +14,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -115,6 +115,34 @@ test("link add --keep-timestamp: preserves the source's existing timestamp", asy
     const doc = await readDoc({ root: dir }, "concepts/a");
     assert.equal(doc.frontmatter.timestamp, OLD_TS);
     assert.match(doc.body, /\[concepts\/b\]\(b\.md\)/);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("link add on an explicit v0.2 bundle uses generated.at and does not reintroduce legacy metadata", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n", "utf8");
+    await writeDoc({ root: dir }, {
+      id: "concepts/a",
+      frontmatter: {
+        type: "Concept",
+        title: "A",
+        generated: { at: OLD_TS, by: "https://legacy.example/producer" },
+      },
+      body: "Body A.",
+    });
+
+    const before = Date.now();
+    const result = await linkAdd(dir, ["concepts/a", "concepts/b", "--actor", "openai/codex"]);
+    assert.equal(result.changed, true);
+    const doc = await readDoc({ root: dir }, "concepts/a");
+    const generated = doc.frontmatter.generated as { at: string; by: string };
+    assert.ok(Date.parse(generated.at) >= before);
+    assert.equal(generated.by, "https://legacy.example/producer");
+    assert.equal(doc.frontmatter.timestamp, undefined);
+    assert.equal(doc.frontmatter.actor, undefined);
   } finally {
     await cleanup();
   }

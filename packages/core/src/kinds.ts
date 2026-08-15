@@ -843,19 +843,22 @@ export interface RegistryValidationResult {
 }
 
 /**
- * Default a document timestamp before evaluating its governing kind. This ordering is
- * shared by every trusted document writer: a kind requiring `timestamp` validates the
- * value that will actually be persisted, never a still-missing pre-write candidate.
- * The registry is supplied by the caller so mutation does not perform hidden discovery.
+ * Apply edition-aware legacy timestamp defaulting before evaluating the governing kind. v0.1
+ * retains the historical default on every write; v0.2 defaults it only when the bundle-local Kind
+ * explicitly requires that extension. The registry is supplied by the caller so mutation does
+ * not perform hidden discovery.
  */
 export function defaultTimestampAndValidateAgainstRegistry(
   doc: OkfDocument,
   registry: KindRegistry,
+  options: { okfVersion?: string; now?: () => string } = {},
 ): RegistryValidationResult {
-  if (!isUsableTimestamp(doc.frontmatter.timestamp)) {
-    doc.frontmatter.timestamp = new Date().toISOString();
-  }
   const kind = registry.kinds.get(String(doc.frontmatter.type));
+  const shouldDefaultTimestamp = options.okfVersion !== "0.2"
+    || kind?.fields.required.includes("timestamp") === true;
+  if (shouldDefaultTimestamp && !isUsableTimestamp(doc.frontmatter.timestamp)) {
+    doc.frontmatter.timestamp = (options.now ?? (() => new Date().toISOString()))();
+  }
   if (!kind) return { warnings: [] };
   return { kind, warnings: validateAgainstKind(doc, kind) };
 }
