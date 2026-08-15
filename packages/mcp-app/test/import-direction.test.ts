@@ -41,28 +41,65 @@ function allowed(file: string, specifier: string): boolean {
   return resolved === sourceRoot || resolved.startsWith(`${sourceRoot}${path.sep}`);
 }
 
+function violationsIn(file: string, source: string): string[] {
+  const violations: string[] = [];
+  const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  const flag = (node: ts.Node, reason: string): void => {
+    const { line } = tree.getLineAndCharacterOfPosition(node.getStart(tree));
+    violations.push(`${path.relative(packageRoot, file)}:${line + 1} — ${reason}`);
+  };
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
+      const specifier = ts.isStringLiteral(node.moduleSpecifier)
+        ? node.moduleSpecifier.text
+        : "";
+      if (!specifier || !allowed(file, specifier)) {
+        flag(node, specifier || "non-literal import");
+      }
+    }
+    if (ts.isImportEqualsDeclaration(node)) {
+      flag(node, "import-equals declaration");
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const argument = node.arguments[0];
+      const specifier = argument && ts.isStringLiteralLike(argument)
+        ? argument.text
+        : "";
+      if (!specifier || !allowed(file, specifier)) {
+        flag(node, specifier || "non-literal dynamic import");
+      }
+    }
+    if (
+      ts.isIdentifier(node) &&
+      (node.text === "require" || node.text === "createRequire")
+    ) {
+      flag(node, `reference to "${node.text}"`);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  return violations;
+}
+
 test("mcp-app source reaches only its host-neutral dependencies and never the CLI", async () => {
   const violations: string[] = [];
   for (const file of await sourceFiles(sourceRoot)) {
-    const source = await readFile(file, "utf8");
-    const tree = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-    const visit = (node: ts.Node): void => {
-      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) {
-        const specifier = ts.isStringLiteral(node.moduleSpecifier)
-          ? node.moduleSpecifier.text
-          : "";
-        if (!specifier || !allowed(file, specifier)) {
-          const { line } = tree.getLineAndCharacterOfPosition(node.getStart(tree));
-          violations.push(
-            `${path.relative(packageRoot, file)}:${line + 1} — ${specifier || "non-literal import"}`,
-          );
-        }
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(tree);
+    violations.push(...violationsIn(file, await readFile(file, "utf8")));
   }
   assert.deepEqual(violations, []);
+});
+
+test("the import gate rejects indirect upward import channels", () => {
+  const file = path.join(sourceRoot, "probe.ts");
+  for (const source of [
+    `import "@superbee/cli";`,
+    `void import("@superbee/cli");`,
+    `import cli = require("@superbee/cli");`,
+    `require("@superbee/cli");`,
+    `createRequire(import.meta.url)("@superbee/cli");`,
+  ]) {
+    assert.ok(violationsIn(file, source).length > 0, source);
+  }
 });
 
 test("mcp-app manifest has no CLI dependency", async () => {
