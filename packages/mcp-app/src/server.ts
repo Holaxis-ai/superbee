@@ -51,6 +51,11 @@ import {
 } from "./document-contract.js";
 import { randomBytes } from "node:crypto";
 import { PendingClaimRegistry, PendingLaunchRegistry } from "./pending-launches.js";
+import {
+  createMcpBundleContext,
+  type McpBundleContext,
+  type McpBundleContextOptions,
+} from "./workspace.js";
 
 // MCP Apps hosts may preload/cache resources by URI. Keep one URI immutable to one exact shell
 // byte sequence so a newly built server cannot silently execute stale trusted-shell code.
@@ -410,43 +415,54 @@ function fallbackText(payload: McpViewPayload): string {
     : `Registered Superbee View "${payload.title}" (${payload.source.viewId}) is ready for local approval of its exact current bytes before it can read bundle data.`;
 }
 
-export interface CreateMcpAppServerOptions {
-  bundle: Bundle;
+export interface CreateMcpAppServerOptions extends McpBundleContextOptions {
   version?: string;
-  actor?: string;
-  bundleName?: string;
-  viewAuthorization?: ViewAuthorizationStore;
 }
 
-export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServer {
-  const server = new McpServer({
-    name: "Superbee Conversational Views",
-    version: options.version ?? "0.0.1",
-  });
-  const durableLaunches = new PageLaunchRegistry();
+interface McpBundleRuntime {
+  readonly context: McpBundleContext;
+  readonly launches: PageLaunchRegistry;
+  readonly durableAuthorizations: ViewAuthorizationStore;
+  readonly transientAuthorizations: ViewAuthorizationStore;
+  readonly actions: TrustedActionService;
+  readonly pendingLaunches: PendingLaunchRegistry;
+  readonly pendingDocuments: PendingClaimRegistry<DocumentPresentationPayload>;
+  readonly bridge: BridgeService;
+  readonly navigateActiveView: (
+    sourceLaunchId: string,
+    targetViewId: string,
+  ) => Promise<ActiveViewNavigation>;
+}
+
+function createMcpBundleRuntime(context: McpBundleContext): McpBundleRuntime {
+  const launches = new PageLaunchRegistry();
   const durableAuthorizations =
-    options.viewAuthorization ?? new SessionViewAuthorizationStore();
+    context.viewAuthorization ?? new SessionViewAuthorizationStore();
   const transientAuthorizations = new SessionViewAuthorizationStore();
   const activeActionAuthority = new PageActionLaunchAuthority(
-    options.bundle,
-    durableLaunches,
+    context.bundle,
+    launches,
     durableAuthorizations,
     transientAuthorizations,
   );
-  const actions = new TrustedActionService(options.bundle, activeActionAuthority, options.actor);
+  const actions = new TrustedActionService(
+    context.bundle,
+    activeActionAuthority,
+    context.actor,
+  );
   const pendingLaunches = new PendingLaunchRegistry();
   const pendingDocuments = new PendingClaimRegistry<DocumentPresentationPayload>();
-  const durableBridge = new BridgeService({
-    bundle: options.bundle,
+  const bridge = new BridgeService({
+    bundle: context.bundle,
     launches: new PageBridgeLaunchAuthority(
-      options.bundle,
-      durableLaunches,
+      context.bundle,
+      launches,
       durableAuthorizations,
       transientAuthorizations,
     ),
     config: async () => ({
       root: null,
-      name: options.bundleName ?? "Superbee bundle",
+      name: context.name,
       mode: "local-mcp",
     }),
     renderDocument: renderDocumentToStaticHtml,
@@ -472,9 +488,9 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     const operation = (async (): Promise<ActiveViewNavigation> => {
       try {
         const view = await resolveDurableViewLaunch(
-          options.bundle,
+          context.bundle,
           { viewId: targetViewId },
-          durableLaunches,
+          launches,
           durableAuthorizations,
         );
         return { status: "opened", view };
@@ -485,6 +501,26 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     navigations.set(sourceLaunchId, operation);
     return operation;
   };
+
+  return Object.freeze({
+    context,
+    launches,
+    durableAuthorizations,
+    transientAuthorizations,
+    actions,
+    pendingLaunches,
+    pendingDocuments,
+    bridge,
+    navigateActiveView,
+  });
+}
+
+export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServer {
+  const server = new McpServer({
+    name: "Superbee Conversational Views",
+    version: options.version ?? "0.0.1",
+  });
+  const runtime = createMcpBundleRuntime(createMcpBundleContext(options));
 
   registerAppTool(
     server,
@@ -509,7 +545,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     },
     async ({ docId }): Promise<CallToolResult> => {
       try {
-        const result = await readDocVersioned(options.bundle, docId);
+        const result = await readDocVersioned(runtime.context.bundle, docId);
         const rendered = renderDocumentToStaticHtml({
           id: result.doc.id,
           body: result.doc.body,
@@ -528,7 +564,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
           },
         };
         const claimId = mintClaimId();
-        pendingDocuments.record(claimId, payload);
+        runtime.pendingDocuments.record(claimId, payload);
         return {
           content: [
             {
@@ -573,7 +609,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       try {
         const { cursor } = listViewsInputSchema.parse(input);
         const afterId = decodeViewCursor(cursor);
-        const catalog = await listViewCatalogPage(options.bundle, {
+        const catalog = await listViewCatalogPage(runtime.context.bundle, {
           ...(afterId ? { afterId } : {}),
           limit: MAX_VIEW_CATALOG_PAGE,
           scanLimit: MAX_VIEW_CATALOG_SCAN,
@@ -648,22 +684,22 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
         const durable = "viewId" in parsed;
         const payload = durable
           ? await resolveDurableViewLaunch(
-              options.bundle,
+              runtime.context.bundle,
               parsed as DurableShowViewInput,
-              durableLaunches,
-              durableAuthorizations,
+              runtime.launches,
+              runtime.durableAuthorizations,
             )
           : await resolveTransientViewLaunch(
-              options.bundle,
+              runtime.context.bundle,
               parsed as TransientShowViewInput,
-              durableLaunches,
-              transientAuthorizations,
+              runtime.launches,
+              runtime.transientAuthorizations,
             );
         // Claim ticket for hosts whose tool-result notifications strip structuredContent
         // (probe-established for Claude Desktop): the marker rides the preserved text channel
         // and the App redeems it — exact-match, one-shot — via the app-only resolve_launch.
         const claimId = mintClaimId();
-        pendingLaunches.record(claimId, payload.launch.launchId);
+        runtime.pendingLaunches.record(claimId, payload.launch.launchId);
         return {
           content: [
             { type: "text", text: `${fallbackText(payload)}\n${formatClaimMarker(claimId)}` },
@@ -708,16 +744,16 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ launchId }): Promise<CallToolResult> => {
-      const launch = durableLaunches.resolveLaunch(launchId);
+      const launch = runtime.launches.resolveLaunch(launchId);
       const authorizationStore = launch?.sourceKind === "transient"
-        ? transientAuthorizations
-        : durableAuthorizations;
+        ? runtime.transientAuthorizations
+        : runtime.durableAuthorizations;
       if (
         !launch ||
         (launch.capability !== "bundle-read" && launch.capability !== "bundle-propose") ||
-        !(await launchIsCurrent(options.bundle, launch))
+        !(await launchIsCurrent(runtime.context.bundle, launch))
       ) {
-        if (launch) durableBridge.revoke(launch.launchId);
+        if (launch) runtime.bridge.revoke(launch.launchId);
         return {
           isError: true,
           content: [{ type: "text", text: "The active View changed or expired before approval." }],
@@ -726,10 +762,10 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       const subject = pageLaunchAuthorizationSubject(launch);
       await authorizationStore.authorize(subject);
       if (
-        !(await launchIsCurrent(options.bundle, launch)) ||
+        !(await launchIsCurrent(runtime.context.bundle, launch)) ||
         !(await authorizationStore.isAuthorized(subject))
       ) {
-        durableBridge.revoke(launch.launchId);
+        runtime.bridge.revoke(launch.launchId);
         return {
           isError: true,
           content: [{ type: "text", text: "The active View changed while approval was being recorded." }],
@@ -764,11 +800,11 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       try {
         const parsed = saveTransientViewInputSchema.parse(input);
         const saved = await saveTransientView(
-          options.bundle,
-          durableLaunches,
-          transientAuthorizations,
+          runtime.context.bundle,
+          runtime.launches,
+          runtime.transientAuthorizations,
           parsed,
-          { ...(options.actor ? { actor: options.actor } : {}) },
+          { ...(runtime.context.actor ? { actor: runtime.context.actor } : {}) },
         );
         return {
           content: [
@@ -825,10 +861,10 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ launchId, request }): Promise<CallToolResult> => {
-      const outcome = await durableBridge.handle(launchId, request);
+      const outcome = await runtime.bridge.handle(launchId, request);
       const navigation = outcome.openPageId === undefined
         ? undefined
-        : await navigateActiveView(launchId, outcome.openPageId);
+        : await runtime.navigateActiveView(launchId, outcome.openPageId);
       return {
         content: [{
           type: "text",
@@ -862,10 +898,10 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ launchId }): Promise<CallToolResult> => {
-      const previous = durableLaunches.resolveLaunch(launchId);
+      const previous = runtime.launches.resolveLaunch(launchId);
       const authorizationStore = previous?.sourceKind === "transient"
-        ? transientAuthorizations
-        : durableAuthorizations;
+        ? runtime.transientAuthorizations
+        : runtime.durableAuthorizations;
       if (
         !previous ||
         (previous.capability !== "bundle-read" && previous.capability !== "bundle-propose") ||
@@ -886,30 +922,30 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       try {
         const view = previous.sourceKind === "registered"
           ? await resolveDurableViewLaunch(
-              options.bundle,
+              runtime.context.bundle,
               { viewId: previous.registryId },
-              durableLaunches,
-              durableAuthorizations,
+              runtime.launches,
+              runtime.durableAuthorizations,
             )
           : await resolveTransientViewLaunch(
-              options.bundle,
+              runtime.context.bundle,
               {
                 mode: "transient",
                 title: previous.title,
                 html: new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(previous.bytes),
                 access: previous.capability,
               },
-              durableLaunches,
-              transientAuthorizations,
+              runtime.launches,
+              runtime.transientAuthorizations,
             );
-        const stillCurrent = durableLaunches.resolveLaunch(launchId);
+        const stillCurrent = runtime.launches.resolveLaunch(launchId);
         if (
           stillCurrent !== previous ||
           !(await authorizationStore.isAuthorized(
             pageLaunchAuthorizationSubject(previous),
           ))
         ) {
-          durableBridge.revoke(view.launch.launchId);
+          runtime.bridge.revoke(view.launch.launchId);
           return {
             isError: true,
             content: [
@@ -965,7 +1001,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ launchId, acknowledgeGeneration }): Promise<CallToolResult> => {
-      const poll = await durableBridge.poll(launchId, acknowledgeGeneration);
+      const poll = await runtime.bridge.poll(launchId, acknowledgeGeneration);
       return {
         content: [{ type: "text", text: `Registered View poll: ${poll.status}.` }],
         structuredContent: { poll },
@@ -992,7 +1028,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ launchId }): Promise<CallToolResult> => {
-      durableBridge.revoke(launchId);
+      runtime.bridge.revoke(launchId);
       return {
         content: [{ type: "text", text: "Closed the registered Superbee View launch." }],
         structuredContent: { closed: true },
@@ -1021,7 +1057,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
     },
     async (input): Promise<CallToolResult> => {
       const { launchId } = input;
-      const result = await actions.prepare(
+      const result = await runtime.actions.prepare(
         launchId,
         input.action as DocumentSetFieldAction,
       );
@@ -1060,7 +1096,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ launchId, approvalToken, decision }): Promise<CallToolResult> => {
-      const activeLaunch = durableLaunches.resolveLaunch(launchId);
+      const activeLaunch = runtime.launches.resolveLaunch(launchId);
       const result: ActionTerminalResult = !activeLaunch
         ? {
           status: "rejected",
@@ -1069,8 +1105,8 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
         }
         : (
           decision === "commit"
-            ? await actions.commit(approvalToken, launchId)
-            : actions.cancel(approvalToken, launchId)
+            ? await runtime.actions.commit(approvalToken, launchId)
+            : runtime.actions.cancel(approvalToken, launchId)
         );
       return {
         content: [
@@ -1167,7 +1203,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ claim }): Promise<CallToolResult> => {
-      const entry = pendingDocuments.consume(claim);
+      const entry = runtime.pendingDocuments.consume(claim);
       if (!entry) {
         return {
           isError: true,
@@ -1208,7 +1244,7 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
       _meta: { ui: { visibility: ["app"] } },
     },
     async ({ claim }): Promise<CallToolResult> => {
-      const entry = pendingLaunches.consume(claim);
+      const entry = runtime.pendingLaunches.consume(claim);
       if (!entry) {
         return {
           isError: true,
@@ -1221,11 +1257,11 @@ export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServe
         };
       }
       let payload: McpViewPayload | null = null;
-      const launch = durableLaunches.resolveLaunch(entry.launchId);
+      const launch = runtime.launches.resolveLaunch(entry.launchId);
       if (launch) {
         const authorizationStore = launch.sourceKind === "transient"
-          ? transientAuthorizations
-          : durableAuthorizations;
+          ? runtime.transientAuthorizations
+          : runtime.durableAuthorizations;
         payload = activePayload(
           launch,
           await authorizationStore.isAuthorized(pageLaunchAuthorizationSubject(launch)),
