@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 
 import {
   NetworkUnavailableError,
+  PACKAGE,
+  REGISTRY_URL,
   auditRegistryState,
   checkSourceDrift,
   checkVersionScheme,
@@ -18,6 +20,7 @@ import {
   fetchRegistryState,
   parsePhaseDeclaration,
   readBurnedDeclaration,
+  registryUrlFor,
   saneSuccessors,
 } from "./release-audit-tags.mjs";
 import { defaultReleaseManifest } from "./release-targets.mjs";
@@ -766,3 +769,22 @@ test("F2: transition tolerance covers timing, never a state the manifest forbids
   );
 });
 
+
+// ── the standing audit must follow the rename, not be pinned to the retiring name ──────────────
+// This audit runs on every pull request and every push to the default branch. It was hardcoded to
+// `@holaxis/aslite`, which meant that the moment the cutover completed it would keep watching an
+// abandoned package and never observe the live one — precisely the drift it exists to catch.
+//
+// The expectation is stated INDEPENDENTLY of the implementation: the audited package is whatever
+// the manifest's successor-stable tuple declares. A future rename moves both together, and a
+// re-pinned literal fails here.
+test("the audited package is derived from the manifest, not pinned to a name", () => {
+  const declared = committedManifest.allowed_tuples["successor-stable"].package;
+  assert.equal(PACKAGE, declared, "the standing audit must watch the successor coordinate the manifest declares");
+  assert.notEqual(PACKAGE, "@holaxis/aslite", "the audit must not remain pinned to the retiring package after cutover");
+  assert.equal(
+    REGISTRY_URL,
+    registryUrlFor(declared),
+    "the registry endpoint must follow the derived package, not a separately written URL",
+  );
+});
