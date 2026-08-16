@@ -1,3 +1,5 @@
+<img src="assets/superbee-mark-256.png" alt="" width="96" height="96">
+
 # Superbee
 
 > A markdown knowledge bundle in your repo, plus a CLI built for agents.
