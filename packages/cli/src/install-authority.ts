@@ -128,13 +128,21 @@ export function classifyPersistentInstallAuthority(
   }
 
   let selectedBin: string | null = null;
+  const prefixBin = normalize(join(prefix, "bin"));
+  const resolvedPrefixBin = input.realpath(prefixBin);
+  if (!resolvedPrefixBin) {
+    return unknown(input, "npm global prefix bin directory cannot be resolved");
+  }
   const pathDirs = (input.env.PATH ?? "").split(delimiter).filter(Boolean);
   for (const name of BIN_NAMES) {
     for (const dir of pathDirs) {
       const candidate = normalize(join(dir, name));
       const resolved = input.realpath(candidate);
       if (resolved === undefined) continue;
-      if (resolved === executable) selectedBin = candidate;
+      const resolvedDir = input.realpath(normalize(dir));
+      if (resolved === executable && resolvedDir === resolvedPrefixBin) {
+        selectedBin = normalize(join(prefixBin, name));
+      }
       // Command lookup stops at the first existing entry for an alias. A later matching entry
       // cannot rescue a shadowed one.
       break;
@@ -145,7 +153,7 @@ export function classifyPersistentInstallAuthority(
     return unknown(input, "no managed PATH bin resolves to the running executable");
   }
 
-  const supportedBins = new Set(BIN_NAMES.map((name) => normalize(join(prefix, "bin", name))));
+  const supportedBins = new Set(BIN_NAMES.map((name) => normalize(join(prefixBin, name))));
   if (!supportedBins.has(selectedBin)) {
     return unknown(input, "managed PATH bin is outside the npm global prefix bin directory");
   }
@@ -160,7 +168,7 @@ export function classifyPersistentInstallAuthority(
     return unknown(input, "running Node executable is missing or transient");
   }
   const runtime = input.realpath(input.runtime_path);
-  const stableRuntimePath = normalize(join(prefix, "bin", "node"));
+  const stableRuntimePath = normalize(join(prefixBin, "node"));
   const stableRuntime = input.realpath(stableRuntimePath);
   if (!runtime || !stableRuntime || runtime !== stableRuntime) {
     return unknown(input, "npm-prefix bin/node does not resolve to the running Node executable");

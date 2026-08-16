@@ -218,12 +218,13 @@ test("npm Skill makes authoritative document presentation a first-class human-re
   assert.match(renderedNpm, /`superbee doc open <id>`.*exact document/s);
 });
 
-test("the npm skill teaches only the bounded stable MCP PATH contract", () => {
+test("the npm skill teaches the explicit durable MCP installation contract", () => {
   assert.match(renderedNpm, /## Stable MCP launch/);
   assert.match(renderedNpm, /npm install -g superbee/);
-  assert.match(renderedNpm, /command `superbee`.*argument `mcp`/s);
-  assert.match(renderedNpm, /`superbee version --json`/);
-  assert.match(renderedNpm, /does not scan or rewrite host MCP configuration/);
+  assert.match(renderedNpm, /`superbee mcp install --host <id>`/);
+  assert.match(renderedNpm, /`codex`.*`claude-code`.*`claude-desktop`.*`opencode`/s);
+  assert.match(renderedNpm, /never an npx cache or one bundle directory/);
+  assert.match(renderedNpm, /`superbee mcp status --host <id>`/);
 });
 
 test("the typical flow creates a complete Context Note in one command", () => {

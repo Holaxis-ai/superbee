@@ -326,10 +326,12 @@ export const CLI_COMMAND_GROUPS = [
         id: "mcp",
         leaves: [
           publicLeaf("mcp", "mcp", zero, 21),
+          publicLeaf("mcpInstall", "mcp install", zero),
           publicLeaf("mcpStatus", "mcp status", zero),
+          publicLeaf("mcpUninstall", "mcp uninstall", zero),
         ],
-        usage: "mcp [status [--host <id>] [--json] | [--dir <path>] [--actor <name>]]",
-        summary: "Run the local MCP Apps adapter over the private workspace catalog (or one fixed --dir bundle), or inspect read-only user-level registration status for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode",
+        usage: "mcp [install|status|uninstall | --dir <path>]",
+        summary: "Run the local MCP Apps adapter, or explicitly install, inspect, and uninstall its user-level registration for Codex/ChatGPT, Claude Code, Claude Desktop, and OpenCode",
       },
       {
         id: "viewList",

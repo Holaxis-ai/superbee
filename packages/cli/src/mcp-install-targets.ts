@@ -4,6 +4,7 @@ import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:c
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getNodeValue, parseTree, type Node as JsoncNode, type ParseError } from "jsonc-parser";
 import {
   HOST_CONFIG_ROOTS,
   resolveClaudeUserConfigFile,
@@ -82,6 +83,8 @@ export interface McpRegistrationEntry {
   readonly name: string;
   readonly command: string;
   readonly args: readonly string[];
+  /** False when host-native fields exceed the exact shape Superbee can safely own. */
+  readonly managedShape?: boolean;
 }
 
 export interface McpHostStatus {
@@ -110,8 +113,8 @@ export interface McpStatusDeps {
   ) => string;
 }
 
-const CURRENT_REGISTRATION = "superbee";
-const LEGACY_REGISTRATIONS = ["aslite-views", "agentstate-lite-experimental"] as const;
+export const CURRENT_MCP_REGISTRATION = "superbee";
+export const LEGACY_MCP_REGISTRATIONS = ["aslite-views", "agentstate-lite-experimental"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -152,14 +155,20 @@ export function classifyMcpRegistration(
   authority: PersistentInstallAuthority,
 ): Pick<McpHostStatus, "state" | "reason"> {
   if (!entry) return { state: "absent", reason: "no Superbee registration found" };
-  if (LEGACY_REGISTRATIONS.includes(entry.name as (typeof LEGACY_REGISTRATIONS)[number])) {
+  if (LEGACY_MCP_REGISTRATIONS.includes(entry.name as (typeof LEGACY_MCP_REGISTRATIONS)[number])) {
     return {
       state: "known_legacy",
       reason: `registration '${entry.name}' is a legacy candidate; inspect it before migration`,
     };
   }
-  if (entry.name !== CURRENT_REGISTRATION) {
+  if (entry.name !== CURRENT_MCP_REGISTRATION) {
     return { state: "foreign", reason: `registration '${entry.name}' is not managed by Superbee` };
+  }
+  if (entry.managedShape === false) {
+    return {
+      state: "foreign",
+      reason: "the reserved name carries host settings outside the exact Superbee-managed shape",
+    };
   }
   const runtime = authority.evidence.runtime_path;
   const executable = authority.evidence.executable_path;
@@ -185,7 +194,10 @@ export function classifyMcpRegistration(
   return { state: "owned_current", reason: "the registration matches this durable Superbee install" };
 }
 
-function targetConfigPath(target: McpInstallTargetId, input: McpStatusEnvironment): string | undefined {
+export function resolveMcpTargetConfigPath(
+  target: McpInstallTargetId,
+  input: McpStatusEnvironment,
+): string | undefined {
   switch (target) {
     case "codex":
       return join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, input.home, input.env), "config.toml");
@@ -204,7 +216,7 @@ function targetConfigPath(target: McpInstallTargetId, input: McpStatusEnvironmen
   }
 }
 
-function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
+export function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
   const root = resolveOpenCodeGlobalConfigRoot(input.home, input.env);
   const candidates = [join(root, "opencode.json"), join(root, "opencode.jsonc")];
   const additional = input.env.OPENCODE_CONFIG?.trim();
@@ -212,9 +224,34 @@ function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
   return candidates;
 }
 
-function parseClaudeEntries(text: string): McpRegistrationEntry[] {
-  const root: unknown = JSON.parse(text);
-  if (!isRecord(root)) throw new Error("configuration root is not an object");
+function assertUniqueObjectKeys(node: JsoncNode): void {
+  if (node.type === "object") {
+    const seen = new Set<string>();
+    for (const property of node.children ?? []) {
+      const key = property.children?.[0]?.value;
+      if (typeof key !== "string") continue;
+      if (seen.has(key)) throw new Error(`configuration contains duplicate key '${key}'`);
+      seen.add(key);
+    }
+  }
+  for (const child of node.children ?? []) assertUniqueObjectKeys(child);
+}
+
+/** Parse one host JSON/JSONC file without accepting ambiguous duplicate-key ownership. */
+export function parseMcpConfigRoot(text: string): Record<string, unknown> {
+  const errors: ParseError[] = [];
+  const tree = parseTree(text, errors, { allowTrailingComma: true, disallowComments: false });
+  if (errors.length > 0) throw new Error(`configuration is not valid JSON/JSONC (error ${errors[0]?.error})`);
+  if (!tree || tree.type !== "object") throw new Error("configuration root is not an object");
+  assertUniqueObjectKeys(tree);
+  return getNodeValue(tree) as Record<string, unknown>;
+}
+
+export function parseClaudeMcpEntries(
+  text: string,
+  target: "claude-code" | "claude-desktop",
+): McpRegistrationEntry[] {
+  const root = parseMcpConfigRoot(text);
   const servers = own(root, "mcpServers");
   if (servers === undefined) return [];
   if (!isRecord(servers)) throw new Error("mcpServers is not an object");
@@ -224,30 +261,55 @@ function parseClaudeEntries(text: string): McpRegistrationEntry[] {
     const command = own(raw, "command");
     const args = own(raw, "args");
     if (typeof command === "string" && (args === undefined || stringArray(args))) {
-      result.push({ name, command, args: stringArray(args) ?? [] });
+      const keys = Object.keys(raw).sort();
+      const parsedArgs = stringArray(args);
+      const desktopShape = parsedArgs !== undefined
+        && keys.every((key) => key === "args" || key === "command");
+      const env = own(raw, "env");
+      const codeShape = parsedArgs !== undefined
+        && keys.every((key) => key === "args" || key === "command" || key === "env" || key === "type")
+        && own(raw, "type") === "stdio"
+        && isRecord(env)
+        && Object.keys(env).length === 0;
+      result.push({
+        name,
+        command,
+        args: parsedArgs ?? [],
+        managedShape: target === "claude-code" ? codeShape : desktopShape,
+      });
     }
   }
   return result;
 }
 
-function parseOpenCodeEntries(text: string): McpRegistrationEntry[] {
-  const root: unknown = JSON.parse(text);
-  if (!isRecord(root)) throw new Error("configuration root is not an object");
+export function parseOpenCodeMcpEntries(text: string): McpRegistrationEntry[] {
+  const root = parseMcpConfigRoot(text);
   const mcp = own(root, "mcp");
   if (mcp === undefined) return [];
   if (!isRecord(mcp)) throw new Error("mcp is not an object");
   const v2 = own(mcp, "servers");
   const servers = isRecord(v2) ? v2 : mcp;
+  const v2Shape = isRecord(v2);
   const result: McpRegistrationEntry[] = [];
   for (const [name, raw] of Object.entries(servers)) {
     if (name === "servers" || !isRecord(raw)) continue;
     const command = stringArray(own(raw, "command"));
-    if (command?.[0]) result.push({ name, command: command[0], args: command.slice(1) });
+    if (command?.[0]) {
+      const keys = Object.keys(raw);
+      const allowed = v2Shape
+        ? new Set(["type", "command", "disabled"])
+        : new Set(["type", "command", "enabled"]);
+      const activation = v2Shape ? own(raw, "disabled") : own(raw, "enabled");
+      const managedShape = keys.every((key) => allowed.has(key))
+        && own(raw, "type") === "local"
+        && (activation === undefined || activation === (v2Shape ? false : true));
+      result.push({ name, command: command[0], args: command.slice(1), managedShape });
+    }
   }
   return result;
 }
 
-function parseCodexEntries(text: string): McpRegistrationEntry[] {
+export function parseCodexMcpEntries(text: string): McpRegistrationEntry[] {
   const root: unknown = JSON.parse(text);
   if (!Array.isArray(root)) throw new Error("codex mcp list did not return an array");
   const result: McpRegistrationEntry[] = [];
@@ -258,14 +320,36 @@ function parseCodexEntries(text: string): McpRegistrationEntry[] {
     if (typeof name !== "string" || !isRecord(transport) || own(transport, "type") !== "stdio") continue;
     const command = own(transport, "command");
     const args = stringArray(own(transport, "args"));
-    if (typeof command === "string" && args) result.push({ name, command, args });
+    if (typeof command === "string" && args) {
+      const keys = Object.keys(transport);
+      const allowed = new Set(["type", "command", "args", "env", "env_vars", "cwd"]);
+      const env = own(transport, "env");
+      const envVars = own(transport, "env_vars");
+      const cwd = own(transport, "cwd");
+      const outerKeys = Object.keys(raw);
+      const allowedOuter = new Set([
+        "name", "enabled", "disabled_reason", "transport", "startup_timeout_sec", "tool_timeout_sec", "auth_status",
+      ]);
+      const managedShape = outerKeys.every((key) => allowedOuter.has(key))
+        && own(raw, "enabled") === true
+        && (own(raw, "disabled_reason") === undefined || own(raw, "disabled_reason") === null)
+        && (own(raw, "startup_timeout_sec") === undefined || own(raw, "startup_timeout_sec") === null)
+        && (own(raw, "tool_timeout_sec") === undefined || own(raw, "tool_timeout_sec") === null)
+        && keys.every((key) => allowed.has(key))
+        && (env === undefined || env === null)
+        && (envVars === undefined || (Array.isArray(envVars) && envVars.length === 0))
+        && (cwd === undefined || cwd === null);
+      result.push({ name, command, args, managedShape });
+    }
   }
   return result;
 }
 
-function selectedEntry(entries: readonly McpRegistrationEntry[]): McpRegistrationEntry | undefined {
-  return entries.find((entry) => entry.name === CURRENT_REGISTRATION)
-    ?? LEGACY_REGISTRATIONS.map((name) => entries.find((entry) => entry.name === name)).find(Boolean);
+export function selectMcpRegistration(
+  entries: readonly McpRegistrationEntry[],
+): McpRegistrationEntry | undefined {
+  return entries.find((entry) => entry.name === CURRENT_MCP_REGISTRATION)
+    ?? LEGACY_MCP_REGISTRATIONS.map((name) => entries.find((entry) => entry.name === name)).find(Boolean);
 }
 
 function environment(deps: McpStatusDeps): McpStatusEnvironment {
@@ -275,7 +359,7 @@ function environment(deps: McpStatusDeps): McpStatusEnvironment {
 /** Inspect one known host using a bounded, user-level read. Never writes or scans. */
 export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {}): McpHostStatus {
   const input = environment(deps);
-  const path = targetConfigPath(target.id, input);
+  const path = resolveMcpTargetConfigPath(target.id, input);
   if (!path) {
     return {
       host: target.id,
@@ -292,7 +376,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
     let entries: McpRegistrationEntry[];
     if (target.id === "codex") {
       const run = deps.execFile ?? ((file, args, options) => execFileSync(file, args, options));
-      entries = parseCodexEntries(run("codex", ["mcp", "list", "--json"], {
+      entries = parseCodexMcpEntries(run("codex", ["mcp", "list", "--json"], {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "ignore"],
         timeout: 2_000,
@@ -310,14 +394,16 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
           reportedPath = candidate;
           sources.push({
             path: candidate,
-            entries: target.id === "opencode" ? parseOpenCodeEntries(content) : parseClaudeEntries(content),
+            entries: target.id === "opencode"
+              ? parseOpenCodeMcpEntries(content)
+              : parseClaudeMcpEntries(content, target.id),
           });
         } catch (error) {
           if (!isRecord(error) || own(error, "code") !== "ENOENT") throw error;
         }
       }
       entries = sources.flatMap((source) => source.entries);
-      for (const name of [CURRENT_REGISTRATION, ...LEGACY_REGISTRATIONS]) {
+      for (const name of [CURRENT_MCP_REGISTRATION, ...LEGACY_MCP_REGISTRATIONS]) {
         const declarations = sources.filter((source) => source.entries.some((entry) => entry.name === name));
         if (declarations.length > 1) {
           throw new Error(
@@ -325,8 +411,24 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
           );
         }
       }
+      if (target.id === "opencode" && input.env.OPENCODE_CONFIG_CONTENT?.trim()) {
+        const inlineEntries = parseOpenCodeMcpEntries(input.env.OPENCODE_CONFIG_CONTENT);
+        const effective = new Map(entries.map((entry) => [entry.name, entry]));
+        for (const entry of inlineEntries) effective.set(entry.name, entry);
+        entries = [...effective.values()];
+        const inlineSelected = selectMcpRegistration(inlineEntries);
+        if (inlineSelected) {
+          reportedPath = "OPENCODE_CONFIG_CONTENT";
+        } else {
+          const selected = selectMcpRegistration(entries);
+          const owner = selected
+            ? sources.find((source) => source.entries.some((entry) => entry.name === selected.name))
+            : undefined;
+          if (owner) reportedPath = owner.path;
+        }
+      }
     }
-    const classification = classifyMcpRegistration(selectedEntry(entries), authority);
+    const classification = classifyMcpRegistration(selectMcpRegistration(entries), authority);
     return {
       host: target.id,
       label: target.label,
@@ -340,7 +442,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
       label: target.label,
       state: "unreadable",
       config: collapseHomeDirectory(reportedPath),
-      reason: `status unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      reason: "status unavailable: host configuration is unreadable",
       docs_url: target.docs_url,
     };
   }
