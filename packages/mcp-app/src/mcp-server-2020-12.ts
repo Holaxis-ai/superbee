@@ -45,8 +45,6 @@ function advertisedSchema(
  * the tools/list projection at this one server boundary.
  */
 export class McpServer202012 extends McpServer {
-  readonly #tools = new Map<string, RegisteredTool>();
-
   override registerTool<
     OutputArgs extends ZodRawShapeCompat | AnySchema,
     InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined,
@@ -56,15 +54,31 @@ export class McpServer202012 extends McpServer {
     callback: ToolCallback<InputArgs>,
   ): RegisteredTool {
     const tool = super.registerTool(name, config, callback);
-    this.#tools.set(name, tool);
+    const update = tool.update.bind(tool);
+    tool.update = ((updates) => {
+      update(updates);
+      if (typeof updates.name === "undefined") return;
+      for (const [registeredName, registeredTool] of Object.entries(this.#registeredTools())) {
+        if (registeredTool === tool && registeredName !== updates.name) {
+          delete this.#registeredTools()[registeredName];
+        }
+      }
+    }) as RegisteredTool["update"];
     this.#installToolListProjection();
     return tool;
+  }
+
+  #registeredTools(): Record<string, RegisteredTool> {
+    // McpServer exposes neither its registry nor a tools/list projection hook. Keep this temporary
+    // SDK-private dependency isolated here; the inventory/lifecycle tests fail if that shape moves.
+    return (this as unknown as { _registeredTools: Record<string, RegisteredTool> })
+      ._registeredTools;
   }
 
   #installToolListProjection(): void {
     this.server.removeRequestHandler("tools/list");
     this.server.setRequestHandler(ListToolsRequestSchema, () => ({
-      tools: Array.from(this.#tools.entries())
+      tools: Object.entries(this.#registeredTools())
         .filter(([, tool]) => tool.enabled)
         .map(([name, tool]) => ({
           name,

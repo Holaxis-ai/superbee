@@ -16,6 +16,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import Ajv2020 from "ajv/dist/2020.js";
+import { z } from "zod";
 
 import { extractClaimId } from "../src/result-recovery.js";
 import { MCP_DOCUMENT_HTML } from "../src/generated/document-html.generated.js";
@@ -44,7 +45,10 @@ import {
   type McpWorkspaceResolver,
   type McpWorkspaceSummary,
 } from "../src/index.js";
-import { MCP_JSON_SCHEMA_DIALECT } from "../src/mcp-server-2020-12.js";
+import {
+  MCP_JSON_SCHEMA_DIALECT,
+  McpServer202012,
+} from "../src/mcp-server-2020-12.js";
 import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
 
 const T = "2026-07-26T12:00:00.000Z";
@@ -69,6 +73,61 @@ function assertToolSchemasUse202012(tools: readonly Tool[]): void {
     }
   }
 }
+
+test("the 2020-12 tool projection follows SDK rename and removal lifecycle", async (t) => {
+  const server = new McpServer202012({ name: "schema-lifecycle-test", version: "test" });
+  const registered = server.registerTool(
+    "before",
+    {
+      inputSchema: z.object({ value: z.string() }).strict(),
+      outputSchema: z.object({ value: z.string() }).strict(),
+    },
+    async ({ value }) => ({
+      content: [{ type: "text", text: value }],
+      structuredContent: { value },
+    }),
+  );
+  const client = new Client(
+    { name: "schema-lifecycle-client", version: "test" },
+    { capabilities: {} },
+  );
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  t.after(async () => {
+    await client.close();
+    await server.close();
+  });
+
+  registered.update({ name: "after" });
+  registered.update({ name: "final" });
+  const renamed = await client.listTools();
+  assert.deepEqual(renamed.tools.map((tool) => tool.name), ["final"]);
+  assertToolSchemasUse202012(renamed.tools);
+  const call = await client.callTool({ name: "final", arguments: { value: "ok" } });
+  assert.equal(call.isError, undefined);
+  const originalCall = await client.callTool({
+    name: "before",
+    arguments: { value: "stale" },
+  });
+  assert.equal(originalCall.isError, true);
+  assert.match(JSON.stringify(originalCall.content), /Tool before not found/);
+  const staleCall = await client.callTool({
+    name: "after",
+    arguments: { value: "stale" },
+  });
+  assert.equal(staleCall.isError, true);
+  assert.match(JSON.stringify(staleCall.content), /Tool after not found/);
+
+  registered.remove();
+  assert.deepEqual((await client.listTools()).tools, []);
+  const removedCall = await client.callTool({
+    name: "final",
+    arguments: { value: "removed" },
+  });
+  assert.equal(removedCall.isError, true);
+  assert.match(JSON.stringify(removedCall.content), /Tool final not found/);
+});
 
 test("the App shell resource URI is derived from its exact HTML bytes", () => {
   const digest = versionOfBytes(MCP_VIEW_HTML).slice("sha256:".length);
