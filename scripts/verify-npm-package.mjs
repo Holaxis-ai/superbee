@@ -882,17 +882,17 @@ async function runInstalledProof(spec) {
 
     const setupBeforeIntegrations = parseJson(
       (
-        await runCli(target.preferred_command, ["setup", "--host", "claude-desktop", "--json"], {
+        await runCli(target.preferred_command, ["setup", "--host", "claude-code", "--json"], {
           cwd: scratch,
         })
       ).stdout,
       "setup before integrations",
     );
-    assert.equal(setupBeforeIntegrations.setup.host, "claude-desktop");
+    assert.equal(setupBeforeIntegrations.setup.host, "claude-code");
     assert.equal(setupBeforeIntegrations.setup.ready, false);
     assert.equal(
       setupBeforeIntegrations.setup.next.command,
-      "superbee mcp install --host claude-desktop",
+      "superbee skill install --scope user",
       "the installed artifact must guide the first missing host integration without exposing paths",
     );
     assert.doesNotMatch(JSON.stringify(setupBeforeIntegrations), new RegExp(scratch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
