@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Reusable loopback host for the local Superbee UI shell. CLI policy and generated assets remain consumer-owned.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,

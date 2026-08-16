@@ -70,9 +70,11 @@ test("the npm projection has unique destinations backed by real repo sources", (
   }
 });
 
-test("the npm tarball allowlist ships the generated skill and references", () => {
+test("the npm tarball allowlist ships the generated skill, references, and the Apache NOTICE", () => {
   const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "packages/cli/package.json"), "utf8"));
-  assert.deepEqual(packageJson.files, ["dist", "SKILL.md", "references"]);
+  // NOTICE must be listed explicitly. npm always ships LICENSE regardless of files[], but never
+  // NOTICE, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
+  assert.deepEqual(packageJson.files, ["dist", "SKILL.md", "references", "NOTICE"]);
 });
 
 // ---------------------------------------------------------------------------------------------

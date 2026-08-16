@@ -29,13 +29,14 @@ const receipt = {
     { path: "dist/superbee.mjs" },
     { path: "README.md" },
     { path: "LICENSE" },
+    { path: "NOTICE" },
     { path: "SKILL.md" },
     ...referenceFiles.map((relative) => ({ path: `references/${relative}` })),
   ],
 };
 const manifest = {
   name: "superbee",
-  files: ["dist", "SKILL.md", "references"],
+  files: ["dist", "SKILL.md", "references", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
     aslite: "dist/superbee.mjs",
@@ -113,6 +114,7 @@ test("root and npm READMEs teach one literal create-only, agent-driven quickstar
 test("the expected tarball set is the fixed base plus the references tree", () => {
   assert.deepEqual(expectedTarballFiles(["a.md", "b/c.md"]), [
     "LICENSE",
+    "NOTICE",
     "README.md",
     "SKILL.md",
     "dist/superbee.mjs",

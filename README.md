@@ -228,4 +228,4 @@ team develops against daily. The repo deliberately carries only this README,
 
 ## License
 
-MIT © 2026 Holaxis
+Apache-2.0 © 2026 Holaxis

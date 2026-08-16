@@ -26,7 +26,7 @@ const SUCCESSOR_ARTIFACT = SUCCESSOR_TARGET.artifact;
 const SUCCESSOR_BINS = SUCCESSOR_TARGET.bins;
 const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
 
-const baseExpectedFiles = ["LICENSE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
+const baseExpectedFiles = ["LICENSE", "NOTICE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
 
 /** The exact expected tarball file set: the fixed base plus the committed references/ tree. */
 export function expectedTarballFiles(referenceFiles) {
@@ -260,8 +260,10 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   const expectedArtifact = target.artifact;
   assert.deepEqual(
     tarballFiles,
-    ["LICENSE", "README.md", "SKILL.md", expectedArtifact, "package.json", ...referenceFiles.map((relative) => `references/${relative}`)].sort(),
-    "the npm tarball must contain only the CLI, manifest, README, license, SKILL.md, and references/",
+    expectedArtifact === SUCCESSOR_ARTIFACT
+      ? expectedTarballFiles(referenceFiles)
+      : ["LICENSE", "NOTICE", "README.md", "SKILL.md", expectedArtifact, "package.json", ...referenceFiles.map((relative) => `references/${relative}`)].sort(),
+    "the npm tarball must contain only the CLI, manifest, README, LICENSE, NOTICE, SKILL.md, and references/",
   );
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
@@ -269,7 +271,9 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
     "the tarball must carry exactly one .mjs executable (the dist bundle)",
   );
   assert.equal(manifest.name, target.package.name);
-  assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references"]);
+  // NOTICE must be listed explicitly: npm ships LICENSE regardless of files[], but NOTICE only
+  // when named, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
+  assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references", "NOTICE"]);
   assert.deepEqual(manifest.bin, target.bins);
   // Scoped packages default to restricted at publish time — the manifest must pin public.
   assert.deepEqual(manifest.publishConfig, { access: "public" }, "publishConfig.access must be public");

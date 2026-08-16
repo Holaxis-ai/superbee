@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "React SPA for `superbee ui` (plans/ui-v1.md rev 3.2): bundle Views over the wire-protocol v0 surface, served same-origin by the private ui-server workspace runtime. PRIVATE — never enters the CLI's npm dependency graph; only this package's BUILT dist/ assets are gzip-embedded into the CLI's esbuild bundle (packages/cli/scripts/embed-ui-assets.mjs).",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "prebuild": "npm run build -w @superbee/markdown-renderer",
     "build": "vite build",

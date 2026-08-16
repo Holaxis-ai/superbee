@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Shared bounded Markdown renderer for AgentState human surfaces.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,
