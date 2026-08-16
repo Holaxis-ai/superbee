@@ -128,7 +128,10 @@ async function preparePackRoot({ target, version, outDir }) {
   await rm(packRoot, { recursive: true, force: true });
   await mkdir(path.join(packRoot, "dist"), { recursive: true });
   await cp(path.join(cliRoot, "references"), path.join(packRoot, "references"), { recursive: true });
-  for (const file of ["LICENSE", "README.md", "SKILL.md"]) {
+  // NOTICE ships with LICENSE for every target, the bridge included: the bridge publishes
+  // Apache-2.0 licensed bytes under the old name, and section 4(d) requires the notice to travel
+  // with the distribution. npm adds LICENSE on its own but never NOTICE.
+  for (const file of ["LICENSE", "NOTICE", "README.md", "SKILL.md"]) {
     await cp(path.join(cliRoot, file), path.join(packRoot, file));
   }
   await cp(path.join(cliRoot, ...target.artifact.split("/")), path.join(packRoot, ...target.artifact.split("/")));
@@ -144,7 +147,10 @@ async function preparePackRoot({ target, version, outDir }) {
     repository: baseManifest.repository,
     bugs: baseManifest.bugs,
     bin: target.bins,
-    files: ["dist", "SKILL.md", "references"],
+    // Derived, never restated. This manifest is what `npm pack` obeys for a real release, so a
+    // hardcoded list here silently overrides packages/cli/package.json: a file added there would
+    // be copied into the pack root and then left out of the tarball. NOTICE hit exactly that.
+    files: baseManifest.files,
     publishConfig: { access: "public" },
     engines: baseManifest.engines,
   };

@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "The board's git channel — porcelain ops, ref-to-ref doc diffs, the sync state store, engine helpers, and the autopull mechanic. Command UX (args, rendering, envelopes, exit codes) lives in the CLI.",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,

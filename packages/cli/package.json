@@ -12,7 +12,7 @@
     "markdown",
     "context-notes"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "homepage": "https://github.com/Holaxis-ai/superbee#readme",
   "repository": {
     "type": "git",
@@ -29,7 +29,8 @@
   "files": [
     "dist",
     "SKILL.md",
-    "references"
+    "references",
+    "NOTICE"
   ],
   "publishConfig": {
     "access": "public"
