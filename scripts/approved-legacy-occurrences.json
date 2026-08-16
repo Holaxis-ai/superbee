@@ -1102,28 +1102,6 @@
       "line": 39
     },
     {
-      "file": "packages/ui-server/src/server.ts",
-      "line_sha256": "38c69cf6c229e2d03d4d5b68aa1b806d635a783f882e148fe7515a379ef302ff",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "serialized-or-protocol-identifier",
-      "treatment": "preserve-for-cross-version-compatibility",
-      "owner": "compatibility-policy",
-      "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 505
-    },
-    {
-      "file": "packages/ui-server/src/server.ts",
-      "line_sha256": "c587a369ed4b1efb020c4853b3b63cc139fd62cbeac4e92d6c634d95181a1a3d",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "serialized-or-protocol-identifier",
-      "treatment": "preserve-for-cross-version-compatibility",
-      "owner": "compatibility-policy",
-      "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 507
-    },
-    {
       "file": "packages/ui-server/src/session.ts",
       "line_sha256": "cfa6eb9ed733109758174904271fd9421295b85ad5625e51ee3264b59ab4e99d",
       "literal": "aslite",
@@ -1133,39 +1111,6 @@
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
       "line": 13
-    },
-    {
-      "file": "packages/ui/src/api/client.ts",
-      "line_sha256": "5ce461b150c6419f6794de2fb97bb990d49ad1f3c165bc8dc11a9dc318bc88ef",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "serialized-or-protocol-identifier",
-      "treatment": "preserve-for-cross-version-compatibility",
-      "owner": "compatibility-policy",
-      "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 72
-    },
-    {
-      "file": "packages/ui/src/api/pages.ts",
-      "line_sha256": "b4baf556c38abec8cdab19fd8bb4952ee559d116ebeb275bf9487ecdf9886816",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "serialized-or-protocol-identifier",
-      "treatment": "preserve-for-cross-version-compatibility",
-      "owner": "compatibility-policy",
-      "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 197
-    },
-    {
-      "file": "packages/ui/src/api/pages.ts",
-      "line_sha256": "b4baf556c38abec8cdab19fd8bb4952ee559d116ebeb275bf9487ecdf9886816",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "serialized-or-protocol-identifier",
-      "treatment": "preserve-for-cross-version-compatibility",
-      "owner": "compatibility-policy",
-      "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 208
     },
     {
       "file": "release/burned-versions.json",
@@ -1694,6 +1639,17 @@
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
       "line": 1003
+    },
+    {
+      "file": "packages/ui-server/src/server.ts",
+      "line_sha256": "09712d7c2b639745c4e922df934e08a2b48557d5e1f05d74da481f7587b0c600",
+      "literal": "agentstate-lite",
+      "ordinal": 0,
+      "category": "legacy-command-compatibility",
+      "treatment": "preserve-as-explicit-compatibility",
+      "owner": "cli-policy",
+      "reason": "the pre-rename X-Requested-With marker stays accepted so a cached UI bundle is not CSRF-rejected after the rename",
+      "line": 509
     }
   ]
 }

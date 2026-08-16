@@ -24,7 +24,7 @@ const T = "2026-07-19T00:00:00.000Z";
 const JSON_HEADERS = {
   cookie: COOKIE,
   "content-type": "application/json",
-  "x-requested-with": "agentstate-lite-ui",
+  "x-requested-with": "superbee-ui",
 };
 const PREAUTHORIZED_VIEWS = {
   async isAuthorized() { return true; },
@@ -209,6 +209,42 @@ async function prepareApproval(f: Fixture): Promise<string> {
   return response.body.approvalToken as string;
 }
 
+test("the pre-rename X-Requested-With marker is still accepted, and the message teaches the new one", async () => {
+  const f = await fixture();
+  try {
+    // A browser holding a cached copy of the previous UI bundle keeps sending the old marker. This
+    // header IS the CSRF guard, so rejecting it would 403 a user whose only mistake was not hard
+    // reloading — the rename cannot be a flag day here.
+    const legacy = await post(f.server, "/__ui/actions/prepare", { launchId: f.launchId, action: f.action }, {
+      ...JSON_HEADERS,
+      "x-requested-with": "agentstate-lite-ui",
+    });
+    assert.equal(legacy.status, 200, "the legacy marker must still authorize a mutation");
+    assert.equal(legacy.body.status, "prepared");
+    await cancelApproval(f, legacy.body.approvalToken as string);
+
+    // ...while the canonical marker is what the shipped client sends and what the 403 names, so a
+    // rejected caller is never taught the retired product name.
+    const canonical = await post(f.server, "/__ui/actions/prepare", { launchId: f.launchId, action: f.action }, {
+      ...JSON_HEADERS,
+      "x-requested-with": "superbee-ui",
+    });
+    assert.equal(canonical.status, 200);
+    await cancelApproval(f, canonical.body.approvalToken as string);
+
+    const rejected = await post(f.server, "/__ui/actions/prepare", { launchId: f.launchId, action: f.action }, {
+      ...JSON_HEADERS,
+      "x-requested-with": "some-other-app",
+    });
+    assert.equal(rejected.status, 403);
+    const message = String(rejected.body.error?.message ?? "");
+    assert.match(message, /X-Requested-With: superbee-ui/);
+    assert.doesNotMatch(message, /agentstate/, "the guidance must not name the retired product");
+  } finally {
+    await f.server.close();
+  }
+});
+
 async function cancelApproval(f: Fixture, approvalToken: string): Promise<void> {
   const response = await post(f.server, "/__ui/actions/cancel", { approvalToken });
   assert.equal(response.status, 200);
@@ -252,7 +288,7 @@ const GUARDS: Guard[] = [
   {
     name: "wrong X-Requested-With",
     status: 403,
-    message: /trusted actions require X-Requested-With: agentstate-lite-ui/,
+    message: /trusted actions require X-Requested-With: superbee-ui/,
     request: (body) => ({ body, headers: { ...JSON_HEADERS, "x-requested-with": "wrong" } }),
   },
   {
@@ -316,7 +352,7 @@ test("request ingress rejects unauthenticated and oversized chunked bodies befor
       Buffer.alloc(1024 * 1024),
       {
         "content-type": "application/json",
-        "x-requested-with": "agentstate-lite-ui",
+        "x-requested-with": "superbee-ui",
       },
     );
     assert.equal(unauthenticated.status, 403);

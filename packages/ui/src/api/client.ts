@@ -69,7 +69,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<{
   const headers: Record<string, string> = {};
   if (options.body !== undefined) headers["content-type"] = "application/json";
   if (options.ifMatch !== undefined) headers["If-Match"] = options.ifMatch;
-  if (method !== "GET" && method !== "HEAD") headers["X-Requested-With"] = "agentstate-lite-ui";
+  if (method !== "GET" && method !== "HEAD") headers["X-Requested-With"] = "superbee-ui";
 
   const res = await fetch(`${BASE}${path}`, {
     method,
