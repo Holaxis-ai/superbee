@@ -58,11 +58,13 @@ export class McpServer202012 extends McpServer {
     tool.update = ((updates) => {
       update(updates);
       if (typeof updates.name === "undefined") return;
-      for (const [registeredName, registeredTool] of Object.entries(this.#registeredTools())) {
-        if (registeredTool === tool && registeredName !== updates.name) {
-          delete this.#registeredTools()[registeredName];
+      const registry = this.#registeredTools();
+      for (const [registeredName, registeredTool] of Object.entries(registry)) {
+        if (registeredTool === tool) {
+          delete registry[registeredName];
         }
       }
+      if (updates.name) registry[updates.name] = tool;
     }) as RegisteredTool["update"];
     this.#installToolListProjection();
     return tool;

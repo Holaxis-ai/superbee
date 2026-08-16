@@ -100,6 +100,21 @@ test("the 2020-12 tool projection follows SDK rename and removal lifecycle", asy
   });
 
   registered.update({ name: "after" });
+  registered.update({ name: "before" });
+  const restored = await client.listTools();
+  assert.deepEqual(restored.tools.map((tool) => tool.name), ["before"]);
+  const restoredCall = await client.callTool({
+    name: "before",
+    arguments: { value: "restored" },
+  });
+  assert.equal(restoredCall.isError, undefined);
+  const staleIntermediateCall = await client.callTool({
+    name: "after",
+    arguments: { value: "stale" },
+  });
+  assert.equal(staleIntermediateCall.isError, true);
+  assert.match(JSON.stringify(staleIntermediateCall.content), /Tool after not found/);
+
   registered.update({ name: "final" });
   const renamed = await client.listTools();
   assert.deepEqual(renamed.tools.map((tool) => tool.name), ["final"]);
