@@ -19,19 +19,24 @@ carrying another copy of the executable:
 
 ```sh
 npm install -g superbee
-superbee --version
-superbee skill install --scope user
-superbee hook install --scope user
+superbee setup
 ```
 
-Restart Claude Code or Codex after installing the skill. `hook install` is optional: it gives
-Claude Code, Codex, and OpenCode a compact Superbee orientation at session start. To try one
-orientation command without installing anything, run `npx -y superbee`.
+`setup` is read-only and agent-friendly: without flags it lists the four supported hosts; after
+the agent selects its exact host, it inspects npm, Agent Skill, SessionStart hook, MCP registration,
+current bundle, and private workspace catalog, then returns one safe `next.command`. Fill any
+explicit placeholder it identifies, run the command, restart the named host after integration
+changes, and rerun the same setup command until the plan is complete. It never guesses a host as
+permission to edit configuration.
+
+The hook is recommended rather than required: it gives Claude Code, Codex, and OpenCode a compact
+Superbee orientation at session start. To try read-only and bootstrap commands without installing
+anything, run `npx -y superbee`; persistent integrations still require the global npm install.
 
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
 If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun
-`superbee skill install --scope user` and `superbee hook install --scope user`. The hook installer
+`superbee setup` and follow its exact next command. The hook installer
 replaces exact historical AgentState marketplace hooks rather than leaving two SessionStart hooks.
 
 ## Quickstart

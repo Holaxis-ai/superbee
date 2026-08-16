@@ -65,7 +65,7 @@ import {
   resolvePersistentInstallAuthority,
   type PersistentInstallAuthority,
 } from "../install-authority.js";
-import { normalizeInstallScope } from "../install-scope.js";
+import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
 
@@ -300,6 +300,8 @@ export interface HookStatus {
   installed: boolean;
   command?: string;
   compatibility: HookCompatibility;
+  /** Read-only install preflight result; omitted by the pure compatibility classifier. */
+  installSafe?: boolean;
 }
 
 /** Pure status scan over the same exact classifier used by install and uninstall. */
@@ -872,6 +874,63 @@ export interface HookDeps extends HookLocationDeps {
   stdout: (s: string) => void;
 }
 
+export interface HookStatusInspection {
+  targets: HookTargets;
+  hosts: {
+    claude_code: HookStatus;
+    codex: HookStatus;
+    opencode: OpenCodeHookStatus;
+  };
+  displayCommand?: string;
+}
+
+/** Read all supported hook hosts through the same exact classifiers as `hook status`. */
+export function inspectHookStatus(
+  scope: InstallScope,
+  deps: Partial<HookDeps> = {},
+): HookStatusInspection {
+  const targets = deps.base !== undefined
+    ? targetsForBase(deps.base)
+    : scope === "user"
+      ? globalHookTargets(deps.home ?? homedir(), deps.env ?? process.env)
+      : targetsForBase(deps.cwd ?? process.cwd());
+  let expectedLaunch = deps.launchSpec;
+  try {
+    if (!expectedLaunch && deps.commandBase !== undefined) {
+      expectedLaunch = {
+        program: deps.commandBase,
+        args: [HOOK_SUBCOMMAND],
+        command: sessionStartHookCommand(deps.commandBase),
+      };
+    }
+  } catch {
+    expectedLaunch = undefined;
+  }
+  const inspectSettingsTarget = (path: string): HookStatus => {
+    const status = readHookCompatibilityStatus(readSettings(path));
+    const preflight = readSettingsForInstall(path);
+    if (!preflight.ok) {
+      return { ...status, installSafe: false };
+    }
+    return { ...status, installSafe: true };
+  };
+  const claude = inspectSettingsTarget(targets.claudeSettings);
+  const codex = inspectSettingsTarget(targets.codexHooks);
+  const opencode = readOpenCodeTargetsStatus(
+    targets,
+    expectedLaunch
+      ? buildOpenCodePluginSource(expectedLaunch.program, expectedLaunch.args)
+      : undefined,
+  );
+  return {
+    targets,
+    hosts: { claude_code: claude, codex, opencode },
+    ...(claude.command ?? expectedLaunch?.command
+      ? { displayCommand: claude.command ?? expectedLaunch?.command }
+      : {}),
+  };
+}
+
 /**
  * CLI entry: dispatch the positional subcommand (install|status|uninstall). Output is TOON. An
  * unknown/missing subcommand, or an unsupported --scope, is a USAGE error.
@@ -931,35 +990,11 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     });
   }
 
-  const targets = deps.base !== undefined
-    ? targetsForBase(deps.base)
-    : scope === "user"
-      ? globalHookTargets(deps.home ?? homedir(), deps.env ?? process.env)
-      : targetsForBase(deps.cwd ?? process.cwd());
   const mode = resolveMode(values);
 
   if (sub === "status") {
-    let expectedLaunch = deps.launchSpec;
-    try {
-      if (!expectedLaunch && deps.commandBase !== undefined) {
-        expectedLaunch = {
-          program: deps.commandBase,
-          args: [HOOK_SUBCOMMAND],
-          command: sessionStartHookCommand(deps.commandBase),
-        };
-      }
-    } catch {
-      expectedLaunch = undefined;
-    }
-    const claude = readHookCompatibilityStatus(readSettings(targets.claudeSettings));
-    const codex = readHookCompatibilityStatus(readSettings(targets.codexHooks));
-    const opencode = readOpenCodeTargetsStatus(
-      targets,
-      expectedLaunch
-        ? buildOpenCodePluginSource(expectedLaunch.program, expectedLaunch.args)
-        : undefined,
-    );
-    const display = claude.command ?? expectedLaunch?.command;
+    const inspection = inspectHookStatus(scope, deps);
+    const { claude_code: claude, codex, opencode } = inspection.hosts;
     stdout(
       render(
         {
@@ -970,28 +1005,28 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
             claude_code: claude.installed,
             codex: codex.installed,
             opencode: opencode.installed,
-            ...(display !== undefined ? { command: display } : {}),
+            ...(inspection.displayCommand !== undefined ? { command: inspection.displayCommand } : {}),
             hosts: {
               claude_code: {
-                path: collapseHomeDirectory(targets.claudeSettings),
+                path: collapseHomeDirectory(inspection.targets.claudeSettings),
                 state: claude.compatibility.state,
                 compatibility: claude.compatibility,
               },
               codex: {
-                path: collapseHomeDirectory(targets.codexHooks),
+                path: collapseHomeDirectory(inspection.targets.codexHooks),
                 state: codex.compatibility.state,
                 compatibility: codex.compatibility,
               },
               opencode: {
-                path: collapseHomeDirectory(targets.opencodePlugin),
+                path: collapseHomeDirectory(inspection.targets.opencodePlugin),
                 state: opencode.compatibility.state,
                 compatibility: opencode.compatibility,
               },
             },
             targets: {
-              claude_code: collapseHomeDirectory(targets.claudeSettings),
-              codex: collapseHomeDirectory(targets.codexHooks),
-              opencode: collapseHomeDirectory(targets.opencodePlugin),
+              claude_code: collapseHomeDirectory(inspection.targets.claudeSettings),
+              codex: collapseHomeDirectory(inspection.targets.codexHooks),
+              opencode: collapseHomeDirectory(inspection.targets.opencodePlugin),
             },
           },
         },
@@ -1000,6 +1035,12 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     );
     return;
   }
+
+  const targets = deps.base !== undefined
+    ? targetsForBase(deps.base)
+    : scope === "user"
+      ? globalHookTargets(deps.home ?? homedir(), deps.env ?? process.env)
+      : targetsForBase(deps.cwd ?? process.cwd());
 
   if (sub === "install") {
     // Every host that was not installed becomes a structured refusal; the command never emits a

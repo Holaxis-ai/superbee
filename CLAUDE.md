@@ -236,6 +236,10 @@ for Codex/ChatGPT, Claude Code, Claude Desktop, or OpenCode. Mutation requires a
 durable npm-install authority, exact ownership classification, and read-back verification; it
 never detects a host as mutation authority, pins a bundle directory, or replaces/removes a foreign
 same-name entry. Bare `status` is the bounded read-only multi-host inspector.
+`superbee setup` is the read-only AXI conductor over that registration status plus the existing
+distribution, Agent Skill, SessionStart hook, bundle-selection, and private-catalog inspectors. A
+host-scoped run emits one deterministic safe next command while leaving every existing installer
+as the sole mutation authority; a hostless run only presents the four bounded supported choices.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
 `docs/core` and preserved outside the OSS repository — it is not a build or deployment target

@@ -874,10 +874,28 @@ async function runInstalledProof(spec) {
     assert.match(installedReadme, /bring source material or intent\s+to your agent/i);
     assert.match(installedReadme, /agent organizes,\s+types, links, and updates the\s+bundle/i);
     assert.match(installedReadme, /^npm install -g superbee$/m);
+    assert.match(installedReadme, /^superbee setup$/m);
     assert.match(
       installedReadme,
       /`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity\./,
     );
+
+    const setupBeforeIntegrations = parseJson(
+      (
+        await runCli(target.preferred_command, ["setup", "--host", "claude-desktop", "--json"], {
+          cwd: scratch,
+        })
+      ).stdout,
+      "setup before integrations",
+    );
+    assert.equal(setupBeforeIntegrations.setup.host, "claude-desktop");
+    assert.equal(setupBeforeIntegrations.setup.ready, false);
+    assert.equal(
+      setupBeforeIntegrations.setup.next.command,
+      "superbee mcp install --host claude-desktop",
+      "the installed artifact must guide the first missing host integration without exposing paths",
+    );
+    assert.doesNotMatch(JSON.stringify(setupBeforeIntegrations), new RegExp(scratch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 
     // ── skill-channel proof: install → status → reinstall no-op → uninstall, project + user ──
     const project = path.join(scratch, "skill-project");

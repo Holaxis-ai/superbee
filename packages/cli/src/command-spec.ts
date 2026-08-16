@@ -383,6 +383,12 @@ export const CLI_COMMAND_GROUPS = [
         usage: "skill install|status|uninstall [--scope project|user]",
         summary: "Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface — its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage",
       },
+      {
+        id: "setup",
+        leaves: [publicLeaf("setup", "setup", zero, 28)],
+        usage: "setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]",
+        summary: "Inspect npm, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command",
+      },
     ],
   },
 ] as const satisfies readonly CommandSpecGroup[];

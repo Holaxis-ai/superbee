@@ -10,6 +10,7 @@ import {
   computeHookUninstall,
   computeSessionStartHookInstall,
   hook,
+  inspectHookStatus,
   readHookCompatibilityStatus,
 } from "../src/commands/hook.js";
 import { CliError } from "../src/errors.js";
@@ -41,6 +42,26 @@ function legacyOpenCodeSource(program: string): string {
     .replace("## AXI ambient context: superbee", "## AXI ambient context: agentstate-lite")
     .replace("AxiSuperbeeAmbientContextPlugin", "AxiAgentstateLiteAmbientContextPlugin");
 }
+
+test("setup-facing hook inspection distinguishes unreadable settings from safe foreign coexistence", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-inspect-"));
+  try {
+    await mkdir(path.join(base, ".claude"), { recursive: true });
+    await mkdir(path.join(base, ".codex"), { recursive: true });
+    await writeFile(path.join(base, ".claude", "settings.json"), "{not-json", "utf8");
+    await writeFile(path.join(base, ".codex", "hooks.json"), JSON.stringify({
+      hooks: { SessionStart: [{ matcher: "", hooks: [{ type: "command", command: "echo foreign" }] }] },
+    }), "utf8");
+
+    const inspection = inspectHookStatus("project", { base });
+    assert.equal(inspection.hosts.claude_code.installSafe, false);
+    assert.equal(inspection.hosts.claude_code.compatibility.state, "absent");
+    assert.equal(inspection.hosts.codex.installSafe, true);
+    assert.equal(inspection.hosts.codex.compatibility.state, "unmanaged");
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
 
 test("JSON reconciliation owns exact generated forms and preserves every near-match", () => {
   const settings = {

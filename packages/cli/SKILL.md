@@ -28,6 +28,22 @@ Every example below assumes the `superbee` bin is on PATH. If it is not:
 - `npx -y superbee …` runs any command below with no install at all — swap the leading `superbee`
   for that prefix and the rest of the line runs unchanged.
 
+## Complete host setup
+
+After the global npm install, run:
+
+```sh
+superbee setup
+```
+
+Without `--host`, setup returns the four supported host rows. Select the exact host running
+this agent, run that row's command, then follow the one `next.command` in each host-scoped
+plan, filling any explicit placeholder it identifies. Setup is read-only: it composes npm,
+Skill, Hook, MCP, bundle, and catalog status but never treats detection as permission to write.
+Ask the human before running a returned mutating command. Restart the host after Skill, Hook,
+or MCP changes, then rerun the same setup command to verify. Foreign or unreadable state
+returns a read-only inspection command instead of overwriting it.
+
 ## Stable MCP launch
 
 For a persistent MCP integration, install the supported CLI with
@@ -119,6 +135,8 @@ Use `superbee mcp status --host <id>` to verify it and restart the host after a 
   — Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode
 - `superbee skill install|status|uninstall [--scope project|user]`
   — Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface — its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage
+- `superbee setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]`
+  — Inspect npm, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command
 
 ## Workspaces — the project's bundle lives at `.agentstate-lite/` in the project root
 
