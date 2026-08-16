@@ -725,6 +725,49 @@ function statusOutput(dir: string, status: SkillStatusResult): Record<string, un
   };
 }
 
+export interface SkillHostStatus {
+  canonical: SkillStatusResult;
+  legacy: SkillStatusResult;
+}
+
+export interface SkillStatusInspection {
+  version: string;
+  targets: SkillTargets;
+  legacyTargets: SkillTargets;
+  hosts: { claude_code: SkillHostStatus; codex: SkillHostStatus };
+}
+
+/** Read both supported hosts through the same asset and ownership authorities as `skill status`. */
+export function inspectSkillStatus(
+  scope: InstallScope,
+  deps: Pick<SkillDeps, "cwd" | "home" | "env" | "executable"> = {},
+): SkillStatusInspection {
+  const assets = resolveSkillAssets(deps.executable);
+  const targets = skillTargets(scope, deps);
+  const legacyTargets = legacySkillTargets(scope, deps);
+  const inspect = (canonicalDir: string, legacyDir: string): SkillHostStatus => ({
+    canonical: skillStatusForDir(
+      canonicalDir,
+      assets,
+      `${cliInvocation()} skill install --scope ${scope}`,
+    ),
+    legacy: skillStatusForDir(
+      legacyDir,
+      assets,
+      `${cliInvocation()} skill install --scope ${scope}`,
+    ),
+  });
+  return {
+    version: assets.version,
+    targets,
+    legacyTargets,
+    hosts: {
+      claude_code: inspect(targets.claude, legacyTargets.claude),
+      codex: inspect(targets.codex, legacyTargets.codex),
+    },
+  };
+}
+
 /** Injectable seams, defaulting to production. */
 export interface SkillDeps {
   cwd?: string;
@@ -797,37 +840,32 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     });
   }
 
+  const mode = resolveMode(values);
+
+  if (sub === "status") {
+    const inspection = inspectSkillStatus(scope, deps);
+    const hosts: Record<string, unknown> = {};
+    const rows = [
+      ["claude_code", inspection.targets.claude, inspection.legacyTargets.claude, inspection.hosts.claude_code],
+      ["codex", inspection.targets.codex, inspection.legacyTargets.codex, inspection.hosts.codex],
+    ] as const;
+    for (const [key, canonicalDir, legacyDir, status] of rows) {
+      hosts[key] = {
+        ...statusOutput(canonicalDir, status.canonical),
+        canonical: statusOutput(canonicalDir, status.canonical),
+        legacy: statusOutput(legacyDir, status.legacy),
+      };
+    }
+    stdout(render({ skill: { action: "status", scope, version: inspection.version, hosts } }, mode));
+    return;
+  }
+
   const targets = skillTargets(scope, deps);
   const legacyTargets = legacySkillTargets(scope, deps);
-  const mode = resolveMode(values);
   const hostDirs: [key: "claude_code" | "codex", canonicalDir: string, legacyDir: string][] = [
     ["claude_code", targets.claude, legacyTargets.claude],
     ["codex", targets.codex, legacyTargets.codex],
   ];
-
-  if (sub === "status") {
-    const assets = resolveSkillAssets(deps.executable);
-    const hosts: Record<string, unknown> = {};
-    for (const [key, canonicalDir, legacyDir] of hostDirs) {
-      const canonical = skillStatusForDir(
-        canonicalDir,
-        assets,
-        `${cliInvocation()} skill install --scope ${scope}`,
-      );
-      const legacy = skillStatusForDir(
-        legacyDir,
-        assets,
-        `${cliInvocation()} skill install --scope ${scope}`,
-      );
-      hosts[key] = {
-        ...statusOutput(canonicalDir, canonical),
-        canonical: statusOutput(canonicalDir, canonical),
-        legacy: statusOutput(legacyDir, legacy),
-      };
-    }
-    stdout(render({ skill: { action: "status", scope, version: assets.version, hosts } }, mode));
-    return;
-  }
 
   if (sub === "install") {
     const assets = resolveSkillAssets(deps.executable);

@@ -560,6 +560,37 @@ function renderNpmPathSection(): string[] {
   return lines;
 }
 
+function renderHostSetupSection(): string[] {
+  const lines: string[] = [];
+  lines.push("## Complete host setup");
+  lines.push("");
+  lines.push("After the global npm install, run:");
+  lines.push("");
+  lines.push("```sh");
+  lines.push("superbee setup");
+  lines.push("```");
+  lines.push("");
+  lines.push(
+    "Without `--host`, setup returns the four supported host rows. Select the exact host running",
+  );
+  lines.push(
+    "this agent, run that row's command, then follow the one `next.command` in each host-scoped",
+  );
+  lines.push(
+    "plan, filling any explicit placeholder it identifies. Setup is read-only: it composes npm,",
+  );
+  lines.push(
+    "Skill, Hook, MCP, bundle, and catalog status but never treats detection as permission to write.",
+  );
+  lines.push(
+    "Ask the human before running a returned mutating command. Restart the host after Skill, Hook,",
+  );
+  lines.push("or MCP changes, then rerun the same setup command to verify. Foreign or unreadable state");
+  lines.push("returns a read-only inspection command instead of overwriting it.");
+  lines.push("");
+  return lines;
+}
+
 export function renderNpm(): string {
   const lines: string[] = [];
   lines.push("---");
@@ -595,6 +626,7 @@ export function renderNpm(): string {
   lines.push("<!-- GENERATED from src/reference.ts by scripts/gen-skill.mjs — do not edit by hand. -->");
   lines.push("");
   lines.push(...renderNpmPathSection());
+  lines.push(...renderHostSetupSection());
   lines.push(...STABLE_MCP_LAUNCH_GUIDANCE.split("\n"), "");
   lines.push(...renderCommandsSection(COMMAND_GROUPS, NPM_BIN));
   lines.push(...renderWorkspaceLocation(NPM_BIN));

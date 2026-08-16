@@ -311,7 +311,7 @@
     },
     {
       "file": "packages/cli/README.md",
-      "line_sha256": "b6ff26c5d3ea0ea14097d021fffa4abd699fd83d09a31c1c56d8aa34d230395f",
+      "line_sha256": "b0d4e555e1d86b7681fa50dd7813f4f38eacea6979167256742a05d7c4643d48",
       "literal": "aslite",
       "ordinal": 0,
       "category": "legacy-command-compatibility",
@@ -322,14 +322,14 @@
     },
     {
       "file": "packages/cli/README.md",
-      "line_sha256": "b6ff26c5d3ea0ea14097d021fffa4abd699fd83d09a31c1c56d8aa34d230395f",
+      "line_sha256": "5146e53a737f46cbe3f32db05b2014d6be737fff5510fe31df2cbb8830b0bf8f",
       "literal": "agentstate-lite",
       "ordinal": 0,
       "category": "legacy-command-compatibility",
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 19
+      "line": 20
     },
     {
       "file": "packages/cli/references/recipes/review-workflow/references/view-authoring-v0.md",
@@ -989,7 +989,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command and installer recognition remain supported while Superbee is canonical",
-      "line": 590
+      "line": 621
     },
     {
       "file": "packages/cli/src/skill-render.ts",
@@ -1000,7 +1000,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 590
+      "line": 621
     },
     {
       "file": "packages/cli/src/update-orientation.ts",
@@ -1660,7 +1660,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 896
+      "line": 914
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1671,7 +1671,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 898
+      "line": 916
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1682,7 +1682,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 913
+      "line": 931
     },
     {
       "file": "scripts/verify-npm-package.mjs",
@@ -1693,7 +1693,7 @@
       "treatment": "rename-or-preserve-by-target",
       "owner": "package-verifier",
       "reason": "AC-29/AC-60 require verifier install roots, entrypoints, and teaching-surface assumptions to be target-aware",
-      "line": 985
+      "line": 1003
     }
   ]
 }

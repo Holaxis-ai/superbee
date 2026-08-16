@@ -16,11 +16,23 @@ prefix, resolves both command names from `PATH`, and exercises an offline bundle
 developer proof deliberately stamps `local-dev`, so it works on an in-progress/dirty checkout;
 `prepublishOnly` runs the same journey in strict `npm-package` mode and refuses unless Git proves
 an exact clean source commit.
-Install the supported default once (`superbee` is canonical; the legacy aliases `aslite` and `agentstate-lite`
-remain supported), then run the first-value flow from an ordinary project directory:
+Install the supported default once (`superbee` is canonical; the legacy aliases `aslite` and
+`agentstate-lite` remain supported), then complete host setup:
 
 ```sh
 npm install -g superbee
+superbee setup
+```
+
+`setup` is the read-only integration front door. It asks for the exact host, checks npm, Agent
+Skill, SessionStart hook, MCP, bundle, and catalog state, then returns one safe `next.command`.
+Fill any explicit placeholder it identifies, follow that command, restart the host after
+integration changes, and rerun setup to verify. It never uses host detection as permission to
+edit configuration.
+
+Then run the first-value flow from an ordinary project directory:
+
+```sh
 superbee
 superbee recipes
 superbee init --create-only --recipe work-tracking --dir .agentstate-lite
@@ -36,17 +48,12 @@ bundle through `superbee`; these commands are the plumbing, not a manual data-en
 
 `quickstart-agent` is an advisory example actor label; replace it with the actual agent identity.
 
-Existing `.agentstate-lite/` bundles and `.agentstate.json` bindings need no migration. To try one
-orientation command without installing anything, run `npx -y superbee`.
-Install the optional Agent Skill after the global install if you want guidance for Claude Code and
-Codex:
+Existing `.agentstate-lite/` bundles and `.agentstate.json` bindings need no migration. To try
+read-only and bootstrap commands without installing anything, run `npx -y superbee`; persistent
+integrations still require the global npm install.
 
-```sh
-superbee skill install --scope user # optional guidance for Claude Code + Codex
-```
-
-If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun both
-`superbee skill install --scope user` and `superbee hook install --scope user`. The hook installer
+If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun
+`superbee setup` and follow its exact next command. The hook installer
 replaces exact historical AgentState marketplace hooks instead of adding a duplicate.
 
 ## What it is

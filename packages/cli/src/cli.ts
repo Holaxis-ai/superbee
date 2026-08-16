@@ -44,6 +44,7 @@ import { indexCommand } from "./commands/index.js";
 import { artifact } from "./commands/artifact.js";
 import { versionCommand } from "./commands/version.js";
 import { view } from "./commands/view.js";
+import { setup } from "./commands/setup.js";
 import { cliVersion } from "./build-identity.js";
 import { CliError, toEnvelope, toExit } from "./errors.js";
 import { renderErrorEnvelope } from "./output.js";
@@ -122,6 +123,7 @@ export const PUBLIC_HANDLERS = Object.freeze({
   "session-start": sessionStart,
   version: versionCommand,
   view,
+  setup,
 } satisfies PublicHandlerMap);
 
 type RuntimeHandler = (args: string[]) => Promise<string>;

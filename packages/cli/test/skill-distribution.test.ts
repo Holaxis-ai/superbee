@@ -227,6 +227,14 @@ test("the npm skill teaches the explicit durable MCP installation contract", () 
   assert.match(renderedNpm, /`superbee mcp status --host <id>`/);
 });
 
+test("the npm skill makes the AXI setup conductor the complete-install front door", () => {
+  assert.match(renderedNpm, /## Complete host setup/);
+  assert.match(renderedNpm, /```sh\nsuperbee setup\n```/);
+  assert.match(renderedNpm, /one `next\.command`/);
+  assert.match(renderedNpm, /Ask the human before running a returned mutating\s+command/);
+  assert.match(renderedNpm, /Foreign or unreadable state\s+returns a read-only inspection command/);
+});
+
 test("the typical flow creates a complete Context Note in one command", () => {
   assert.match(
     renderedNpm,
