@@ -497,14 +497,30 @@ function exactOwnKeys(value: unknown, keys: readonly string[]): value is Record<
 
 const MAX_TRUSTED_ACTION_BODY_BYTES = 16 * 1024;
 
+/**
+ * The `X-Requested-With` marker a same-origin mutation must carry. Renaming the value cannot be a
+ * flag day: a browser holding a cached bundle of the previous UI keeps sending the old marker, and
+ * this check is the CSRF guard, so rejecting it would 403 a user whose only mistake was not hard
+ * reloading. The server therefore ACCEPTS both and the client SENDS the canonical one; the legacy
+ * value can be dropped once no shipped UI emits it.
+ */
+export const REQUESTED_WITH_MARKER = "superbee-ui";
+/** Pre-rename marker, still accepted from a cached UI bundle. Never sent by current code. */
+export const LEGACY_REQUESTED_WITH_MARKER = "agentstate-lite-ui";
+
+function hasRequestedWithMarker(req: Request): boolean {
+  const seen = req.headers.get("x-requested-with");
+  return seen === REQUESTED_WITH_MARKER || seen === LEGACY_REQUESTED_WITH_MARKER;
+}
+
 async function trustedPayload(
   req: Request,
   keys: readonly string[],
   label = "trusted action",
 ): Promise<Record<string, unknown> | Response> {
-  if (req.headers.get("x-requested-with") !== "agentstate-lite-ui") {
+  if (!hasRequestedWithMarker(req)) {
     const subject = label === "trusted action" ? "trusted actions" : `${label} requests`;
-    return jsonError(403, "FORBIDDEN", `${subject} require X-Requested-With: agentstate-lite-ui`);
+    return jsonError(403, "FORBIDDEN", `${subject} require X-Requested-With: ${REQUESTED_WITH_MARKER}`);
   }
   if (req.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
     return jsonError(415, "USAGE", `${label} requests require application/json`);

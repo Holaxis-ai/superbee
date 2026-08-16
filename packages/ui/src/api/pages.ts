@@ -194,7 +194,7 @@ export async function mintPageNonce(registryId: string): Promise<MintedView> {
   const res = await fetch("/__page/mint", {
     method: "POST",
     credentials: "same-origin",
-    headers: { "content-type": "application/json", "X-Requested-With": "agentstate-lite-ui" },
+    headers: { "content-type": "application/json", "X-Requested-With": "superbee-ui" },
     body: JSON.stringify({ registryId }),
   });
   if (!res.ok) throw await parseErrorEnvelope(res);
@@ -205,7 +205,7 @@ async function postTrustedShell<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(path, {
     method: "POST",
     credentials: "same-origin",
-    headers: { "content-type": "application/json", "X-Requested-With": "agentstate-lite-ui" },
+    headers: { "content-type": "application/json", "X-Requested-With": "superbee-ui" },
     body: JSON.stringify(body),
   });
   if (!res.ok) throw await parseErrorEnvelope(res);
