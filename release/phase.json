@@ -1,8 +1,8 @@
 {
   "schema": "aslite.release-phase.v1",
   "phase": "staged",
-  "kind": "stable",
-  "version": "0.1.0",
+  "kind": "prerelease",
+  "version": "0.1.0-pre.1",
   "semantics": {
     "what": "Declared release-transaction phase for @holaxis/aslite. Read by scripts/release-audit-tags.mjs (npm run release:audit-tags), which computes the expected npm dist-tag state for this phase and fails CI when the live registry disagrees. Two authorities compose there and neither restates the other: scripts/release-state.mjs resolveTags owns the phase machine, and release/targets.json owns which dist-tags a version may ever carry (a tuple's npm_tag plus npm_promote_tag). Declaring a phase that would place a version on a dist-tag its tuple never gives it is itself a violation.",
     "phase": "One of at_rest | staged | approved | promoted | failed. An absent file means at_rest. At rest before 0.1.0, each dist-tag rests on the newest published prerelease ELIGIBLE for it under release/targets.json — latest == next == newest published for versions the manifest does not constrain, but a candidate the manifest publishes to next only leaves latest where it is.",
