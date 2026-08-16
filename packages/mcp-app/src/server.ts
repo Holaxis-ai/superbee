@@ -9,7 +9,7 @@ import {
   registerAppTool,
   RESOURCE_MIME_TYPE,
 } from "@modelcontextprotocol/ext-apps/server";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { CallToolResult, ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
 import {
@@ -59,6 +59,7 @@ import {
   type McpWorkspaceResolver,
   type McpWorkspaceSummary,
 } from "./workspace.js";
+import { McpServer202012 } from "./mcp-server-2020-12.js";
 
 // MCP Apps hosts may preload/cache resources by URI. Keep one URI immutable to one exact shell
 // byte sequence so a newly built server cannot silently execute stale trusted-shell code.
@@ -774,7 +775,7 @@ function resolveDocumentClaim(
 }
 
 export function createMcpAppServer(options: CreateMcpAppServerOptions): McpServer {
-  const server = new McpServer({
+  const server = new McpServer202012({
     name: "Superbee Conversational Views",
     version: options.version ?? "0.0.1",
   });

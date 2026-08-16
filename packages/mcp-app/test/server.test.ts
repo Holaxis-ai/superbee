@@ -14,6 +14,8 @@ import {
 } from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import Ajv2020 from "ajv/dist/2020.js";
 
 import { extractClaimId } from "../src/result-recovery.js";
 import { MCP_DOCUMENT_HTML } from "../src/generated/document-html.generated.js";
@@ -42,9 +44,31 @@ import {
   type McpWorkspaceResolver,
   type McpWorkspaceSummary,
 } from "../src/index.js";
+import { MCP_JSON_SCHEMA_DIALECT } from "../src/mcp-server-2020-12.js";
 import { SessionViewAuthorizationStore } from "@superbee/view-runtime";
 
 const T = "2026-07-26T12:00:00.000Z";
+
+function assertToolSchemasUse202012(tools: readonly Tool[]): void {
+  const ajv = new Ajv2020({ strict: false });
+  for (const tool of tools) {
+    for (const [surface, schema] of [
+      ["inputSchema", tool.inputSchema],
+      ["outputSchema", tool.outputSchema],
+    ] as const) {
+      if (!schema) continue;
+      assert.equal(
+        schema.$schema,
+        MCP_JSON_SCHEMA_DIALECT,
+        `${tool.name}.${surface} must advertise JSON Schema 2020-12`,
+      );
+      assert.doesNotThrow(
+        () => ajv.compile(schema),
+        `${tool.name}.${surface} must compile in a 2020-12 validator`,
+      );
+    }
+  }
+}
 
 test("the App shell resource URI is derived from its exact HTML bytes", () => {
   const digest = versionOfBytes(MCP_VIEW_HTML).slice("sha256:".length);
@@ -232,6 +256,7 @@ test("bundle-unbound MCP exposes only a bounded path-free workspace catalog", as
     RESOLVE_DOCUMENT_TOOL_NAME,
     RESOLVE_LAUNCH_TOOL_NAME,
   ]);
+  assertToolSchemasUse202012(tools.tools);
   assert.deepEqual(tools.tools[0]?._meta?.ui?.visibility, ["model"]);
   assert.equal(tools.tools[0]?.annotations?.readOnlyHint, true);
 
@@ -915,6 +940,7 @@ test("MCP contract exposes fixed View and document App resources with invocation
     RESOLVE_DOCUMENT_TOOL_NAME,
     RESOLVE_LAUNCH_TOOL_NAME,
   ]);
+  assertToolSchemasUse202012(tools.tools);
   const showDocumentTool = tools.tools.find(
     (tool) => tool.name === SHOW_DOCUMENT_TOOL_NAME,
   );

@@ -27,16 +27,17 @@
     "test:browser": "playwright install chromium && playwright test --config playwright.config.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.5",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",
     "@superbee/view-runtime": "*",
-    "@modelcontextprotocol/ext-apps": "^1.7.5",
-    "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
     "@types/node": "^22.20.0",
+    "ajv": "^8.18.0",
     "esbuild": "^0.25.12",
     "jsdom": "^25.0.1",
     "typescript": "^5.9.3"
