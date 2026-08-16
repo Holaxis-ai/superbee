@@ -516,7 +516,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "mcp-host-integration",
       "reason": "status and mutation policy recognize the former registration name without claiming ownership",
-      "line": 115
+      "line": 117
     },
     {
       "file": "packages/cli/src/mcp-install-targets.ts",
@@ -527,7 +527,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "mcp-host-integration",
       "reason": "status and mutation policy recognize the former registration name without claiming ownership",
-      "line": 115
+      "line": 117
     },
     {
       "file": "packages/cli/src/commands/skill.ts",
@@ -857,7 +857,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 154
+      "line": 162
     },
     {
       "file": "packages/cli/src/invocation.ts",

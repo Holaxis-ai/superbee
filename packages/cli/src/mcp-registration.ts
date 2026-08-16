@@ -1,13 +1,14 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
+import { applyEdits, modify } from "jsonc-parser";
 import { atomicWriteFileSync } from "./private-config-write.js";
 import {
   classifyMcpRegistration,
   CURRENT_MCP_REGISTRATION,
   LEGACY_MCP_REGISTRATIONS,
   openCodeConfigCandidates,
+  parseMcpConfigRoot,
   parseClaudeMcpEntries,
   parseCodexMcpEntries,
   parseOpenCodeMcpEntries,
@@ -44,6 +45,7 @@ export interface McpRegistrationDeps {
   readonly authority?: () => PersistentInstallAuthority;
   readonly readFile?: (path: string) => string;
   readonly writeFile?: (path: string, content: string) => void;
+  readonly realpath?: (path: string) => string | undefined;
   readonly execFile?: (
     file: string,
     args: readonly string[],
@@ -76,7 +78,10 @@ interface RegistrationObservation {
   readonly config: string | null;
   readonly sourcePath?: string;
   readonly sourceText?: string;
+  readonly sourceExists?: boolean;
+  readonly sourceDestination?: string | null;
   readonly openCodePath?: readonly (string | number)[];
+  readonly openCodeNative?: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -95,14 +100,16 @@ function isMissing(error: unknown): boolean {
   return isRecord(error) && own(error, "code") === "ENOENT";
 }
 
-function parseConfig(text: string): unknown {
-  const errors: ParseError[] = [];
-  const value = parse(text, errors, { allowTrailingComma: true, disallowComments: false });
-  if (errors.length > 0) {
-    throw new McpRegistrationError(`configuration is not valid JSON/JSONC (error ${errors[0]?.error})`);
-  }
-  if (!isRecord(value)) throw new McpRegistrationError("configuration root is not an object");
-  return value;
+function resolvedPath(path: string, deps: McpRegistrationDeps): string | undefined {
+  const resolve = deps.realpath ?? ((candidate: string) => {
+    try {
+      return realpathSync(candidate);
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    }
+  });
+  return resolve(path);
 }
 
 function readOptional(path: string, read: (path: string) => string): string | undefined {
@@ -125,6 +132,24 @@ function nativeOptions(input: McpStatusEnvironment): ExecFileSyncOptionsWithStri
   };
 }
 
+type OpenCodeGeneration = "v1" | "v2" | "unknown";
+
+function openCodeGeneration(deps: McpRegistrationDeps, input: McpStatusEnvironment): OpenCodeGeneration {
+  const run = deps.execFile ?? ((file, args, options) => execFileSync(file, args, options));
+  try {
+    run("opencode2", ["--version"], nativeOptions(input));
+    return "v2";
+  } catch {
+    try {
+      const version = run("opencode", ["--version"], nativeOptions(input));
+      const major = Number.parseInt(version.match(/\d+/)?.[0] ?? "", 10);
+      return Number.isFinite(major) && major >= 2 ? "v2" : "v1";
+    } catch {
+      return "unknown";
+    }
+  }
+}
+
 function exactEntry(left: McpRegistrationEntry | undefined, right: McpRegistrationEntry): boolean {
   return left?.name === right.name
     && left.command === right.command
@@ -144,9 +169,9 @@ function classify(
   return result;
 }
 
-function selectedSources(
-  sources: readonly { path: string; text: string; entries: readonly McpRegistrationEntry[] }[],
-): Array<{ path: string; text: string; entries: readonly McpRegistrationEntry[] }> {
+function selectedSources<T extends { path: string; text: string; entries: readonly McpRegistrationEntry[] }>(
+  sources: readonly T[],
+): T[] {
   const reserved = new Set<string>([CURRENT_MCP_REGISTRATION, ...LEGACY_MCP_REGISTRATIONS]);
   return sources.filter((source) => source.entries.some((entry) => reserved.has(entry.name)));
 }
@@ -170,8 +195,7 @@ function inspectTarget(
       entries = parseCodexMcpEntries(run("codex", ["mcp", "list", "--json"], nativeOptions(input)));
     } catch (error) {
       throw new McpRegistrationError("Codex MCP registration is unavailable", {
-        host: target.id,
-        cause: error instanceof Error ? error.message : String(error),
+      host: target.id,
       }, [target.docs_url], "runtime");
     }
     return { entries, selected: selectMcpRegistration(entries), config: collapseHomeDirectory(path) };
@@ -185,13 +209,37 @@ function inspectTarget(
       config: collapseHomeDirectory(path),
       sourcePath: path,
       sourceText: text ?? "{}\n",
+      sourceExists: text !== undefined,
+      sourceDestination: text === undefined ? null : (resolvedPath(path, deps) ?? null),
     };
   }
 
-  const sources: Array<{ path: string; text: string; entries: readonly McpRegistrationEntry[] }> = [];
+  if (input.env.OPENCODE_CONFIG_CONTENT?.trim()) {
+    throw new McpRegistrationError(
+      "OpenCode inline configuration is active; refusing to mutate a lower-precedence file",
+      { host: target.id, config: "OPENCODE_CONFIG_CONTENT" },
+      ["Unset OPENCODE_CONFIG_CONTENT or update its MCP registration explicitly."],
+    );
+  }
+
+  const sources: Array<{
+    path: string;
+    text: string;
+    entries: readonly McpRegistrationEntry[];
+    destination: string | null;
+    exists: boolean;
+  }> = [];
   for (const candidate of openCodeConfigCandidates(input)) {
     const text = readOptional(candidate, read);
-    if (text !== undefined) sources.push({ path: candidate, text, entries: parseOpenCodeMcpEntries(text) });
+    if (text !== undefined) {
+      sources.push({
+        path: candidate,
+        text,
+        entries: parseOpenCodeMcpEntries(text),
+        destination: resolvedPath(candidate, deps) ?? null,
+        exists: true,
+      });
+    }
   }
   const owners = selectedSources(sources);
   if (owners.length > 1) {
@@ -205,7 +253,7 @@ function inspectTarget(
     const configured = input.env.OPENCODE_CONFIG?.trim();
     if (configured) {
       source = sources.find((candidate) => candidate.path === configured)
-        ?? { path: configured, text: "{}\n", entries: [] };
+        ?? { path: configured, text: "{}\n", entries: [], destination: null, exists: false };
     } else {
       const standard = sources.filter((candidate) => openCodeConfigCandidates(input).slice(0, 2).includes(candidate.path));
       if (standard.length > 1) {
@@ -214,17 +262,36 @@ function inspectTarget(
           configs: standard.map((candidate) => collapseHomeDirectory(candidate.path)),
         });
       }
-      source = standard[0] ?? { path, text: "{}\n", entries: [] };
+      source = standard[0] ?? { path, text: "{}\n", entries: [], destination: null, exists: false };
     }
   }
-  const root = parseConfig(source.text) as Record<string, unknown>;
+  const root = parseMcpConfigRoot(source.text);
   const mcp = own(root, "mcp");
   if (mcp !== undefined && !isRecord(mcp)) throw new McpRegistrationError("OpenCode mcp is not an object");
   const servers = isRecord(mcp) ? own(mcp, "servers") : undefined;
   if (servers !== undefined && !isRecord(servers)) {
     throw new McpRegistrationError("OpenCode mcp.servers is not an object");
   }
-  const entryPath = isRecord(servers)
+  const declaredGeneration: OpenCodeGeneration | undefined = isRecord(servers)
+    ? "v2"
+    : mcp !== undefined
+      ? "v1"
+      : undefined;
+  const runtimeGeneration = openCodeGeneration(deps, input);
+  if (declaredGeneration && runtimeGeneration !== "unknown" && declaredGeneration !== runtimeGeneration) {
+    throw new McpRegistrationError("OpenCode configuration does not match the installed CLI generation", {
+      host: target.id,
+      config_generation: declaredGeneration,
+      runtime_generation: runtimeGeneration,
+    }, [target.docs_url]);
+  }
+  const generation = declaredGeneration ?? runtimeGeneration;
+  if (generation === "unknown") {
+    throw new McpRegistrationError("OpenCode version could not be determined for a new MCP registration", {
+      host: target.id,
+    }, ["Install OpenCode or create a valid V1/V2 config before retrying."], "usage");
+  }
+  const entryPath = generation === "v2"
     ? ["mcp", "servers", CURRENT_MCP_REGISTRATION]
     : ["mcp", CURRENT_MCP_REGISTRATION];
   return {
@@ -233,8 +300,29 @@ function inspectTarget(
     config: collapseHomeDirectory(source.path),
     sourcePath: source.path,
     sourceText: source.text,
+    sourceExists: source.exists,
+    sourceDestination: source.destination,
     openCodePath: entryPath,
+    openCodeNative: generation === "v2"
+      && runtimeGeneration === "v2"
+      && !source.exists
+      && !input.env.OPENCODE_CONFIG?.trim()
+      && openCodeConfigCandidates(input).slice(0, 2).includes(source.path),
   };
+}
+
+function inspectForMutation(
+  target: McpInstallTarget,
+  deps: McpRegistrationDeps,
+): RegistrationObservation {
+  try {
+    return inspectTarget(target, deps);
+  } catch (error) {
+    if (error instanceof McpRegistrationError) throw error;
+    throw new McpRegistrationError(`${target.label} MCP configuration is unavailable`, {
+      host: target.id,
+    }, [target.docs_url], "runtime");
+  }
 }
 
 function editJsonc(text: string, path: readonly (string | number)[], value: unknown): string {
@@ -296,6 +384,10 @@ function applyTarget(
       if (replacing && before.selected) {
         try {
           nativeRun(deps, input, "claude", nativeAddArgs(target, before.selected));
+          const restored = inspectTarget(target, deps);
+          if (!exactEntry(restored.selected, before.selected) || restored.selected?.managedShape === false) {
+            throw new Error("rollback read-back mismatch");
+          }
         } catch {
           throw new McpRegistrationError("Claude Code update failed and the prior registration could not be restored", {
             host: target.id,
@@ -307,6 +399,12 @@ function applyTarget(
     }
     return;
   }
+  if (target.id === "opencode" && before.openCodeNative && operation === "install" && !before.selected) {
+    nativeRun(deps, input, "opencode2", [
+      "mcp", "add", CURRENT_MCP_REGISTRATION, "--global", "--", desired.command, ...desired.args,
+    ]);
+    return;
+  }
 
   if (!before.sourcePath || before.sourceText === undefined) {
     throw new McpRegistrationError(`no writable ${target.label} configuration source was resolved`);
@@ -314,7 +412,7 @@ function applyTarget(
   let path: readonly (string | number)[];
   let value: unknown;
   if (target.id === "claude-desktop") {
-    const root = parseConfig(before.sourceText) as Record<string, unknown>;
+    const root = parseMcpConfigRoot(before.sourceText);
     const servers = own(root, "mcpServers");
     if (servers !== undefined && !isRecord(servers)) {
       throw new McpRegistrationError("Claude Desktop mcpServers is not an object");
@@ -323,12 +421,20 @@ function applyTarget(
     value = operation === "install" ? { command: desired.command, args: desired.args } : undefined;
   } else {
     path = before.openCodePath ?? ["mcp", CURRENT_MCP_REGISTRATION];
+    const v2 = path[1] === "servers";
     value = operation === "install"
-      ? { type: "local", command: [desired.command, ...desired.args], enabled: true }
+      ? v2
+        ? { type: "local", command: [desired.command, ...desired.args], disabled: false }
+        : { type: "local", command: [desired.command, ...desired.args], enabled: true }
       : undefined;
   }
   const next = editJsonc(before.sourceText, path, value);
-  const write = deps.writeFile ?? ((candidate, content) => atomicWriteFileSync(candidate, content));
+  const write = deps.writeFile ?? ((candidate, content) => atomicWriteFileSync(candidate, content, {
+    expected: {
+      destination: before.sourceDestination ?? null,
+      content: before.sourceExists ? before.sourceText ?? null : null,
+    },
+  }));
   write(before.sourcePath, next);
 }
 
@@ -338,7 +444,11 @@ function desiredRegistration(
 ): McpRegistrationEntry {
   const command = authority.evidence.runtime_path;
   const executable = authority.evidence.executable_path;
-  if (!authority.allowed || !command || !executable) {
+  const durable = authority.state === "durable_global"
+    || (authority.state === "local_dev"
+      && authority.evidence.npm_prefix !== null
+      && authority.evidence.bin_path !== null);
+  if (!authority.allowed || !durable || !command || !executable) {
     throw new McpRegistrationError("the running Superbee build cannot authorize a persistent MCP registration", {
       authority: authority.state,
       reason: authority.reason,
@@ -362,7 +472,7 @@ export function mutateMcpRegistration(
   const authority = deps.authority?.()
     ?? resolvePersistentInstallAuthority({ env: input.env, platform: input.platform });
   const desired = desiredRegistration(authority, options.actor);
-  const before = inspectTarget(target, deps);
+  const before = inspectForMutation(target, deps);
   const beforeClass = classify(before, authority, desired);
 
   if (beforeClass.state === "foreign" || beforeClass.state === "unverified") {
@@ -405,7 +515,7 @@ export function mutateMcpRegistration(
   // Re-read immediately before mutation. Native host CLIs do not expose CAS, but this prevents an
   // already-observable ownership change from turning a safe plan into a name-based overwrite or
   // removal. File-backed adapters also base their JSONC edit on these freshest foreign bytes.
-  const current = inspectTarget(target, deps);
+  const current = inspectForMutation(target, deps);
   const currentClass = classify(current, authority, desired);
   const selectionUnchanged = current.selected === undefined
     ? before.selected === undefined
@@ -424,11 +534,10 @@ export function mutateMcpRegistration(
     if (error instanceof McpRegistrationError) throw error;
     throw new McpRegistrationError(`${target.label} MCP ${operation} failed`, {
       host: target.id,
-      cause: error instanceof Error ? error.message : String(error),
     }, [target.docs_url], "runtime");
   }
 
-  const after = inspectTarget(target, deps);
+  const after = inspectForMutation(target, deps);
   const afterClass = classify(after, authority, desired);
   const verified = operation === "install"
     ? afterClass.state === "owned_current" && exactEntry(after.selected, desired)

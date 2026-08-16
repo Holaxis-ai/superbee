@@ -119,6 +119,24 @@ test("OpenCode recognizes the canonical JSONC filename without guessing comment 
   assert.equal(result.state, "owned_current");
 });
 
+test("OpenCode status honors higher-precedence inline configuration without reading files", () => {
+  let reads = 0;
+  const command = stable.evidence.runtime_path!;
+  const args = [stable.evidence.executable_path!, "mcp"];
+  const result = inspectMcpHost(target("opencode"), {
+    environment: env({
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: {
+        superbee: { type: "local", command: [command, ...args], enabled: true },
+      } }),
+    }),
+    authority: () => stable,
+    readFile: () => { reads += 1; throw new Error("must not read lower precedence config"); },
+  });
+  assert.equal(result.config, "OPENCODE_CONFIG_CONTENT");
+  assert.equal(result.state, "owned_current");
+  assert.equal(reads, 0);
+});
+
 test("Claude, OpenCode v1/v2, and Codex registrations share one normalized classifier", () => {
   const command = stable.evidence.runtime_path!;
   const args = [stable.evidence.executable_path!, "mcp"];
@@ -183,6 +201,11 @@ test("commented JSONC is read losslessly while malformed config and unsupported 
       throw Object.assign(new Error("missing"), { code: "ENOENT" });
     },
   });
+  const duplicate = inspectMcpHost(target("claude-desktop"), {
+    environment: env(),
+    authority: () => stable,
+    readFile: () => '{"mcpServers":{},"mcpServers":{}}',
+  });
   const unsupported = inspectMcpHost(target("claude-desktop"), {
     environment: env({}, "linux"),
     authority: () => stable,
@@ -190,6 +213,7 @@ test("commented JSONC is read losslessly while malformed config and unsupported 
   assert.equal(commented.state, "absent");
   assert.equal(malformed.state, "unreadable");
   assert.match(malformed.reason, /status unavailable/);
+  assert.equal(duplicate.state, "unreadable");
   assert.equal(unsupported.state, "unsupported");
   assert.equal(unsupported.config, null);
 });

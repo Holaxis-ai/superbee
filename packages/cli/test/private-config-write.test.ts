@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,9 +28,55 @@ test("atomicWriteFileSync creates and replaces through same-directory rename wit
   try {
     atomicWriteFileSync(target, "first\n");
     assert.equal(await readFile(target, "utf8"), "first\n");
+    assert.equal((await stat(target)).mode & 0o777, 0o600);
+    assert.equal((await stat(path.dirname(target))).mode & 0o777, 0o700);
     atomicWriteFileSync(target, "second\n");
     assert.equal(await readFile(target, "utf8"), "second\n");
     assert.deepEqual(await readdir(path.dirname(target)), ["settings.json"]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteFileSync refuses byte drift under an expected private-config snapshot", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-cas-"));
+  const target = path.join(dir, "settings.json");
+  try {
+    await writeFile(target, "before\n");
+    const destination = await realpath(target);
+    await writeFile(target, "competing edit\n");
+    assert.throws(
+      () => atomicWriteFileSync(target, "ours\n", {
+        expected: { destination, content: "before\n" },
+      }),
+      /changed after inspection/,
+    );
+    assert.equal(await readFile(target, "utf8"), "competing edit\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteFileSync refuses a regular destination retargeted through a symlink", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-retarget-"));
+  const target = path.join(dir, "settings.json");
+  const moved = path.join(dir, "settings-original.json");
+  const unrelated = path.join(dir, "unrelated.json");
+  try {
+    await writeFile(target, "before\n");
+    const destination = await realpath(target);
+    await rename(target, moved);
+    await writeFile(unrelated, "private\n");
+    await symlink(path.basename(unrelated), target);
+    assert.throws(
+      () => atomicWriteFileSync(target, "ours\n", {
+        expected: { destination, content: "before\n" },
+      }),
+      /destination changed after inspection/,
+    );
+    assert.equal((await lstat(target)).isSymbolicLink(), true);
+    assert.equal(await readFile(unrelated, "utf8"), "private\n");
+    assert.equal(await readFile(moved, "utf8"), "before\n");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

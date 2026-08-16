@@ -14,6 +14,7 @@ function durableFixture(overrides: Record<string, unknown> = {}) {
   const stableRuntime = `${prefix}/bin/node`;
   const realpaths = new Map<string, string>([
     [prefix, prefix],
+    [`${prefix}/bin`, `${prefix}/bin`],
     [bin, executable],
     [executable, executable],
     [runtime, runtime],
@@ -38,6 +39,35 @@ test("npm-package authority requires a supported durable npm-global layout", () 
   assert.equal(result.evidence.bin_path, "/opt/superbee-npm/bin/superbee");
   assert.equal(result.evidence.npm_prefix, "/opt/superbee-npm");
   assert.equal(result.evidence.runtime_path, "/opt/superbee-npm/bin/node");
+});
+
+test("durable authority canonicalizes a symlinked npm prefix before comparing its PATH bin", () => {
+  const lexical = "/tmp/superbee-prefix";
+  const canonical = "/private/tmp/superbee-prefix";
+  const lexicalExecutable = `${lexical}/lib/node_modules/superbee/dist/superbee.mjs`;
+  const canonicalExecutable = `${canonical}/lib/node_modules/superbee/dist/superbee.mjs`;
+  const runtime = "/opt/node/bin/node";
+  const result = classifyPersistentInstallAuthority({
+    artifact_channel: "npm-package",
+    executable_path: lexicalExecutable,
+    runtime_path: runtime,
+    env: { PATH: `${lexical}/bin:/usr/bin` },
+    platform: "darwin",
+    npm_prefix_global: () => lexical,
+    realpath: (candidate: string) => {
+      const normalized = path.normalize(candidate);
+      if (normalized === lexical) return canonical;
+      if (normalized === `${lexical}/bin` || normalized === `${canonical}/bin`) return `${canonical}/bin`;
+      if (normalized === `${lexical}/bin/superbee`) return canonicalExecutable;
+      if (normalized === lexicalExecutable || normalized === canonicalExecutable) return canonicalExecutable;
+      if (normalized === runtime || normalized === `${canonical}/bin/node`) return runtime;
+      return undefined;
+    },
+  });
+  assert.equal(result.allowed, true);
+  assert.equal(result.evidence.bin_path, `${canonical}/bin/superbee`);
+  assert.equal(result.evidence.executable_path, canonicalExecutable);
+  assert.equal(result.evidence.runtime_path, `${canonical}/bin/node`);
 });
 
 test("renamed bridge package bytes can authorize legacy-bin persistent hook writes", () => {

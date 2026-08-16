@@ -4,7 +4,7 @@ import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:c
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { parse as parseJsonc, type ParseError } from "jsonc-parser";
+import { getNodeValue, parseTree, type Node as JsoncNode, type ParseError } from "jsonc-parser";
 import {
   HOST_CONFIG_ROOTS,
   resolveClaudeUserConfigFile,
@@ -83,6 +83,8 @@ export interface McpRegistrationEntry {
   readonly name: string;
   readonly command: string;
   readonly args: readonly string[];
+  /** False when host-native fields exceed the exact shape Superbee can safely own. */
+  readonly managedShape?: boolean;
 }
 
 export interface McpHostStatus {
@@ -162,6 +164,12 @@ export function classifyMcpRegistration(
   if (entry.name !== CURRENT_MCP_REGISTRATION) {
     return { state: "foreign", reason: `registration '${entry.name}' is not managed by Superbee` };
   }
+  if (entry.managedShape === false) {
+    return {
+      state: "foreign",
+      reason: "the reserved name carries host settings outside the exact Superbee-managed shape",
+    };
+  }
   const runtime = authority.evidence.runtime_path;
   const executable = authority.evidence.executable_path;
   if (!authority.allowed || !runtime || !executable) {
@@ -216,16 +224,31 @@ export function openCodeConfigCandidates(input: McpStatusEnvironment): string[] 
   return candidates;
 }
 
-function parseConfigRoot(text: string): unknown {
+function assertUniqueObjectKeys(node: JsoncNode): void {
+  if (node.type === "object") {
+    const seen = new Set<string>();
+    for (const property of node.children ?? []) {
+      const key = property.children?.[0]?.value;
+      if (typeof key !== "string") continue;
+      if (seen.has(key)) throw new Error(`configuration contains duplicate key '${key}'`);
+      seen.add(key);
+    }
+  }
+  for (const child of node.children ?? []) assertUniqueObjectKeys(child);
+}
+
+/** Parse one host JSON/JSONC file without accepting ambiguous duplicate-key ownership. */
+export function parseMcpConfigRoot(text: string): Record<string, unknown> {
   const errors: ParseError[] = [];
-  const root = parseJsonc(text, errors, { allowTrailingComma: true, disallowComments: false });
+  const tree = parseTree(text, errors, { allowTrailingComma: true, disallowComments: false });
   if (errors.length > 0) throw new Error(`configuration is not valid JSON/JSONC (error ${errors[0]?.error})`);
-  return root;
+  if (!tree || tree.type !== "object") throw new Error("configuration root is not an object");
+  assertUniqueObjectKeys(tree);
+  return getNodeValue(tree) as Record<string, unknown>;
 }
 
 export function parseClaudeMcpEntries(text: string): McpRegistrationEntry[] {
-  const root: unknown = parseConfigRoot(text);
-  if (!isRecord(root)) throw new Error("configuration root is not an object");
+  const root = parseMcpConfigRoot(text);
   const servers = own(root, "mcpServers");
   if (servers === undefined) return [];
   if (!isRecord(servers)) throw new Error("mcpServers is not an object");
@@ -235,25 +258,42 @@ export function parseClaudeMcpEntries(text: string): McpRegistrationEntry[] {
     const command = own(raw, "command");
     const args = own(raw, "args");
     if (typeof command === "string" && (args === undefined || stringArray(args))) {
-      result.push({ name, command, args: stringArray(args) ?? [] });
+      const keys = Object.keys(raw).sort();
+      const desktopShape = keys.every((key) => key === "args" || key === "command");
+      const env = own(raw, "env");
+      const codeShape = keys.every((key) => key === "args" || key === "command" || key === "env" || key === "type")
+        && own(raw, "type") === "stdio"
+        && isRecord(env)
+        && Object.keys(env).length === 0;
+      result.push({ name, command, args: stringArray(args) ?? [], managedShape: desktopShape || codeShape });
     }
   }
   return result;
 }
 
 export function parseOpenCodeMcpEntries(text: string): McpRegistrationEntry[] {
-  const root: unknown = parseConfigRoot(text);
-  if (!isRecord(root)) throw new Error("configuration root is not an object");
+  const root = parseMcpConfigRoot(text);
   const mcp = own(root, "mcp");
   if (mcp === undefined) return [];
   if (!isRecord(mcp)) throw new Error("mcp is not an object");
   const v2 = own(mcp, "servers");
   const servers = isRecord(v2) ? v2 : mcp;
+  const v2Shape = isRecord(v2);
   const result: McpRegistrationEntry[] = [];
   for (const [name, raw] of Object.entries(servers)) {
     if (name === "servers" || !isRecord(raw)) continue;
     const command = stringArray(own(raw, "command"));
-    if (command?.[0]) result.push({ name, command: command[0], args: command.slice(1) });
+    if (command?.[0]) {
+      const keys = Object.keys(raw);
+      const allowed = v2Shape
+        ? new Set(["type", "command", "disabled"])
+        : new Set(["type", "command", "enabled"]);
+      const activation = v2Shape ? own(raw, "disabled") : own(raw, "enabled");
+      const managedShape = keys.every((key) => allowed.has(key))
+        && own(raw, "type") === "local"
+        && (activation === undefined || activation === (v2Shape ? false : true));
+      result.push({ name, command: command[0], args: command.slice(1), managedShape });
+    }
   }
   return result;
 }
@@ -269,7 +309,18 @@ export function parseCodexMcpEntries(text: string): McpRegistrationEntry[] {
     if (typeof name !== "string" || !isRecord(transport) || own(transport, "type") !== "stdio") continue;
     const command = own(transport, "command");
     const args = stringArray(own(transport, "args"));
-    if (typeof command === "string" && args) result.push({ name, command, args });
+    if (typeof command === "string" && args) {
+      const keys = Object.keys(transport);
+      const allowed = new Set(["type", "command", "args", "env", "env_vars", "cwd"]);
+      const env = own(transport, "env");
+      const envVars = own(transport, "env_vars");
+      const cwd = own(transport, "cwd");
+      const managedShape = keys.every((key) => allowed.has(key))
+        && (env === undefined || env === null)
+        && (envVars === undefined || (Array.isArray(envVars) && envVars.length === 0))
+        && (cwd === undefined || cwd === null);
+      result.push({ name, command, args, managedShape });
+    }
   }
   return result;
 }
@@ -313,6 +364,9 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
         env: input.env,
         cwd: input.home,
       }));
+    } else if (target.id === "opencode" && input.env.OPENCODE_CONFIG_CONTENT?.trim()) {
+      reportedPath = "OPENCODE_CONFIG_CONTENT";
+      entries = parseOpenCodeMcpEntries(input.env.OPENCODE_CONFIG_CONTENT);
     } else {
       const read = deps.readFile ?? ((candidate) => readFileSync(candidate, "utf8"));
       const candidates = target.id === "opencode" ? openCodeConfigCandidates(input) : [path];

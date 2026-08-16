@@ -164,6 +164,36 @@ test("Claude Code restores an exact prior registration when replacement add fail
   assert.equal(addAttempts, 2);
 });
 
+test("Claude Code reports partial failure when rollback does not survive read-back", () => {
+  const prior = {
+    command: stable.evidence.runtime_path!,
+    args: [stable.evidence.executable_path!, "mcp", "--actor", "old"],
+  };
+  let current: typeof prior | undefined = prior;
+  let addAttempts = 0;
+  assert.throws(
+    () => mutateMcpRegistration("install", target("claude-code"), { actor: "new" }, {
+      environment: environment(),
+      authority: () => stable,
+      readFile: () => JSON.stringify({ mcpServers: current ? { superbee: current } : {} }),
+      execFile: (_file, args) => {
+        if (args[1] === "remove") { current = undefined; return "removed"; }
+        if (args[1] === "add") {
+          addAttempts += 1;
+          if (addAttempts === 1) throw new Error("replacement failed");
+          return "rollback claimed success";
+        }
+        throw new Error("unexpected native command");
+      },
+    }),
+    (error: unknown) => error instanceof McpRegistrationError
+      && error.category === "runtime"
+      && error.details.partial === true,
+  );
+  assert.equal(current, undefined);
+  assert.equal(addAttempts, 2);
+});
+
 test("Claude Desktop JSONC install and uninstall preserve comments and foreign entries", () => {
   const path = "/users/mike/Library/Application Support/Claude/claude_desktop_config.json";
   let text = `{
@@ -203,6 +233,11 @@ test("OpenCode updates the one explicit JSONC source and preserves its schema ge
   const deps = {
     environment: environment({ OPENCODE_CONFIG: path }),
     authority: () => stable,
+    execFile: (file: string, args: readonly string[]) => {
+      assert.equal(file, "opencode2");
+      assert.deepEqual(args, ["--version"]);
+      return "2.0.0-beta";
+    },
     readFile: (candidate: string) => candidate === path ? text : (() => { throw missing(); })(),
     writeFile: (candidate: string, content: string) => {
       assert.equal(candidate, path);
@@ -214,9 +249,163 @@ test("OpenCode updates the one explicit JSONC source and preserves its schema ge
   assert.match(text, /"servers"/);
   assert.match(text, /"superbee"/);
   assert.match(text, /"type": "local"/);
+  assert.match(text, /"disabled": false/);
+  assert.doesNotMatch(text, /"enabled"/);
   assert.equal(mutateMcpRegistration("uninstall", target("opencode"), {}, deps).changed, true);
   assert.doesNotMatch(text, /"superbee"/);
   assert.match(text, /"foreign"/);
+});
+
+test("OpenCode V2 uses its native global add when the versioned CLI is available", () => {
+  const path = "/users/mike/.config/opencode/opencode.json";
+  let text = "{}\n";
+  let exists = false;
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const execFile = (file: string, args: readonly string[]): string => {
+    calls.push({ file, args: [...args] });
+    if (file === "opencode2" && args[0] === "--version") return "2.0.0-beta";
+    if (file === "opencode2" && args[0] === "mcp") {
+      exists = true;
+      text = JSON.stringify({ mcp: { servers: {
+        superbee: { type: "local", command: [stable.evidence.runtime_path, stable.evidence.executable_path, "mcp"] },
+      } } }, null, 2);
+      return "added";
+    }
+    throw new Error("unexpected native command");
+  };
+  const receipt = mutateMcpRegistration("install", target("opencode"), {}, {
+    environment: environment({ XDG_CONFIG_HOME: "/users/mike/.config" }),
+    authority: () => stable,
+    execFile,
+    readFile: (candidate) => candidate === path && exists ? text : (() => { throw missing(); })(),
+  });
+  assert.equal(receipt.changed, true);
+  assert.deepEqual(calls.find((call) => call.args[0] === "mcp"), {
+    file: "opencode2",
+    args: [
+      "mcp", "add", "superbee", "--global", "--", stable.evidence.runtime_path!,
+      stable.evidence.executable_path!, "mcp",
+    ],
+  });
+});
+
+test("OpenCode inline config is reported by status and blocks lower-precedence mutation", () => {
+  const inline = JSON.stringify({ mcp: { superbee: {
+    type: "local",
+    command: [stable.evidence.runtime_path, stable.evidence.executable_path, "mcp"],
+    enabled: true,
+  } } });
+  let writes = 0;
+  assert.throws(
+    () => mutateMcpRegistration("install", target("opencode"), {}, {
+      environment: environment({ OPENCODE_CONFIG_CONTENT: inline }),
+      authority: () => stable,
+      writeFile: () => { writes += 1; },
+    }),
+    /inline configuration is active/,
+  );
+  assert.equal(writes, 0);
+});
+
+test("MCP mutation requires durable-global authority, not a disposable local-dev build", () => {
+  let reads = 0;
+  let writes = 0;
+  const local: PersistentInstallAuthority = {
+    allowed: true,
+    state: "local_dev",
+    reason: "developer checkout",
+    evidence: {
+      npm_prefix: null,
+      bin_path: null,
+      executable_path: "/tmp/disposable/dist/superbee.mjs",
+      runtime_path: process.execPath,
+    },
+  };
+  assert.throws(
+    () => mutateMcpRegistration("install", target("claude-desktop"), {}, {
+      environment: environment(),
+      authority: () => local,
+      readFile: () => { reads += 1; return "{}\n"; },
+      writeFile: () => { writes += 1; },
+    }),
+    /cannot authorize/,
+  );
+  assert.equal(reads, 0);
+  assert.equal(writes, 0);
+});
+
+test("duplicate-key JSONC is refused before host configuration mutation", () => {
+  let writes = 0;
+  const ambiguous = `{
+  "mcpServers": {},
+  "mcpServers": { "foreign": { "command": "/bin/foreign" } }
+}\n`;
+  assert.throws(
+    () => mutateMcpRegistration("install", target("claude-desktop"), {}, {
+      environment: environment(),
+      authority: () => stable,
+      readFile: () => ambiguous,
+      writeFile: () => { writes += 1; },
+    }),
+    /configuration is unavailable/,
+  );
+  assert.equal(writes, 0);
+});
+
+test("native host failures do not expose captured stderr or private command paths", () => {
+  const privateBytes = "/Users/private/checkout/dist/superbee.mjs: host stderr secret";
+  assert.throws(
+    () => mutateMcpRegistration("install", target("codex"), {}, {
+      environment: environment(),
+      authority: () => stable,
+      execFile: (_file, args) => {
+        if (args.join(" ") === "mcp list --json") return "[]";
+        throw new Error(privateBytes);
+      },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof McpRegistrationError);
+      assert.equal(error.category, "runtime");
+      assert.doesNotMatch(JSON.stringify({ message: error.message, details: error.details }), /private|checkout|stderr secret/);
+      return true;
+    },
+  );
+});
+
+test("file inspection failures do not expose relocated absolute paths", () => {
+  const privateBytes = "/Users/private/Library/Application Support/Claude/claude_desktop_config.json";
+  assert.throws(
+    () => mutateMcpRegistration("install", target("claude-desktop"), {}, {
+      environment: environment(),
+      authority: () => stable,
+      readFile: () => { throw Object.assign(new Error(`EACCES: ${privateBytes}`), { code: "EACCES" }); },
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof McpRegistrationError);
+      assert.equal(error.category, "runtime");
+      assert.doesNotMatch(JSON.stringify({ message: error.message, details: error.details }), /Users\/private|Application Support/);
+      return true;
+    },
+  );
+});
+
+test("Claude Code refuses same-command registrations with extra native authority fields", () => {
+  let nativeCalls = 0;
+  assert.throws(
+    () => mutateMcpRegistration("install", target("claude-code"), { actor: "new" }, {
+      environment: environment(),
+      authority: () => stable,
+      readFile: () => JSON.stringify({ mcpServers: { superbee: {
+        type: "stdio",
+        command: stable.evidence.runtime_path,
+        args: [stable.evidence.executable_path, "mcp", "--actor", "old"],
+        env: { KEEP_ME: "yes" },
+      } } }),
+      execFile: () => { nativeCalls += 1; return ""; },
+    }),
+    /outside the exact Superbee-managed shape/,
+  );
+  assert.equal(nativeCalls, 0);
 });
 
 test("persistent authority and ambiguous OpenCode sources fail before writes", () => {
