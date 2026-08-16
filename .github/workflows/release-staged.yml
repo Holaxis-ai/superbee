@@ -232,10 +232,18 @@ jobs:
           ACTUAL="sha256:$(shasum -a 256 "$ARTIFACT_DIR/$TARBALL_FILENAME" | awk '{print $1}')"
           test "$ACTUAL" = "$EXPECTED_SHA256" || { echo "::error::retained tarball digest mismatch"; exit 1; }
 
+      # NO registry-url here, deliberately. setup-node's registry-url writes an .npmrc to
+      # $RUNNER_TEMP containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and points
+      # NPM_CONFIG_USERCONFIG at it. This design holds no npm token, so NODE_AUTH_TOKEN is unset,
+      # the authToken resolves to the empty string, and npm presents THAT instead of the
+      # trusted-publisher credential it just obtained -- E401, after provenance has already been
+      # signed and logged to Sigstore. Observed in live run 31972609262. npm defaults to
+      # registry.npmjs.org anyway, so the line bought nothing and broke OIDC.
+      # release-finalize.yml keeps its registry-url: that job only READS the registry to verify
+      # signatures and provenance, where an empty token is harmless.
       - uses: actions/setup-node@v4
         with:
           node-version: 22.14.0
-          registry-url: "https://registry.npmjs.org"
 
       - name: Pin npm with staged-publishing support
         run: |
