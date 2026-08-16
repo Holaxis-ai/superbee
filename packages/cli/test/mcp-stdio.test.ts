@@ -9,10 +9,21 @@ import { fileURLToPath } from "node:url";
 import { initBundle, writeBlob, writeDoc } from "@superbee/core";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 
 const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
+const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
+
+function assertAdvertisedToolSchemaDialect(tools: readonly Tool[]): void {
+  for (const tool of tools) {
+    assert.equal(tool.inputSchema.$schema, JSON_SCHEMA_2020_12, tool.name);
+    if (tool.outputSchema) {
+      assert.equal(tool.outputSchema.$schema, JSON_SCHEMA_2020_12, tool.name);
+    }
+  }
+}
 
 async function runCli(
   args: string[],
@@ -82,6 +93,7 @@ test("built npm CLI serves the fixed MCP App contract over clean stdio", async (
     "resolve_document",
     "resolve_launch",
   ]);
+  assertAdvertisedToolSchemaDialect(tools.tools);
   assert.deepEqual(
     tools.tools
       .filter((tool) => tool._meta?.ui?.visibility?.includes("app"))
@@ -196,6 +208,7 @@ test("built bare MCP server resolves documents and Views through the private wor
     "resolve_document",
     "resolve_launch",
   ]);
+  assertAdvertisedToolSchemaDialect(tools.tools);
   const listed = await client.callTool({ name: "list_workspaces", arguments: {} });
   assert.match(JSON.stringify(listed.structuredContent), /planning/);
   assert.doesNotMatch(JSON.stringify(listed), new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
