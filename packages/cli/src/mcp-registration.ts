@@ -2,7 +2,11 @@ import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:c
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { applyEdits, modify } from "jsonc-parser";
-import { atomicWriteFileSync } from "./private-config-write.js";
+import {
+  atomicWriteFileSync,
+  capturePrivateConfigParent,
+  type PrivateConfigParentSnapshot,
+} from "./private-config-write.js";
 import {
   classifyMcpRegistration,
   CURRENT_MCP_REGISTRATION,
@@ -80,8 +84,9 @@ interface RegistrationObservation {
   readonly sourceText?: string;
   readonly sourceExists?: boolean;
   readonly sourceDestination?: string | null;
+  readonly sourceParent?: PrivateConfigParentSnapshot;
   readonly openCodePath?: readonly (string | number)[];
-  readonly openCodeNative?: boolean;
+  readonly openCodeNativeCommand?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -134,18 +139,26 @@ function nativeOptions(input: McpStatusEnvironment): ExecFileSyncOptionsWithStri
 
 type OpenCodeGeneration = "v1" | "v2" | "unknown";
 
-function openCodeGeneration(deps: McpRegistrationDeps, input: McpStatusEnvironment): OpenCodeGeneration {
+interface OpenCodeRuntime {
+  readonly generation: OpenCodeGeneration;
+  readonly command?: "opencode" | "opencode2";
+}
+
+function openCodeRuntime(deps: McpRegistrationDeps, input: McpStatusEnvironment): OpenCodeRuntime {
   const run = deps.execFile ?? ((file, args, options) => execFileSync(file, args, options));
   try {
     run("opencode2", ["--version"], nativeOptions(input));
-    return "v2";
+    return { generation: "v2", command: "opencode2" };
   } catch {
     try {
       const version = run("opencode", ["--version"], nativeOptions(input));
       const major = Number.parseInt(version.match(/\d+/)?.[0] ?? "", 10);
-      return Number.isFinite(major) && major >= 2 ? "v2" : "v1";
+      return {
+        generation: Number.isFinite(major) && major >= 2 ? "v2" : "v1",
+        command: "opencode",
+      };
     } catch {
-      return "unknown";
+      return { generation: "unknown" };
     }
   }
 }
@@ -202,7 +215,7 @@ function inspectTarget(
   }
   if (target.id !== "opencode") {
     const text = readOptional(path, read);
-    const entries = text === undefined ? [] : parseClaudeMcpEntries(text);
+    const entries = text === undefined ? [] : parseClaudeMcpEntries(text, target.id);
     return {
       entries,
       selected: selectMcpRegistration(entries),
@@ -211,6 +224,7 @@ function inspectTarget(
       sourceText: text ?? "{}\n",
       sourceExists: text !== undefined,
       sourceDestination: text === undefined ? null : (resolvedPath(path, deps) ?? null),
+      sourceParent: capturePrivateConfigParent(path),
     };
   }
 
@@ -277,15 +291,24 @@ function inspectTarget(
     : mcp !== undefined
       ? "v1"
       : undefined;
-  const runtimeGeneration = openCodeGeneration(deps, input);
-  if (declaredGeneration && runtimeGeneration !== "unknown" && declaredGeneration !== runtimeGeneration) {
+  if (isRecord(servers)) {
+    const mixedReserved = [CURRENT_MCP_REGISTRATION, ...LEGACY_MCP_REGISTRATIONS]
+      .some((name) => own(mcp as Record<string, unknown>, name) !== undefined);
+    if (mixedReserved) {
+      throw new McpRegistrationError("OpenCode configuration mixes V1 and V2 MCP declarations", {
+        host: target.id,
+      });
+    }
+  }
+  const runtime = openCodeRuntime(deps, input);
+  if (declaredGeneration === "v2" && runtime.generation === "v1") {
     throw new McpRegistrationError("OpenCode configuration does not match the installed CLI generation", {
       host: target.id,
       config_generation: declaredGeneration,
-      runtime_generation: runtimeGeneration,
+      runtime_generation: runtime.generation,
     }, [target.docs_url]);
   }
-  const generation = declaredGeneration ?? runtimeGeneration;
+  const generation = declaredGeneration ?? runtime.generation;
   if (generation === "unknown") {
     throw new McpRegistrationError("OpenCode version could not be determined for a new MCP registration", {
       host: target.id,
@@ -302,12 +325,15 @@ function inspectTarget(
     sourceText: source.text,
     sourceExists: source.exists,
     sourceDestination: source.destination,
+    sourceParent: capturePrivateConfigParent(source.path),
     openCodePath: entryPath,
-    openCodeNative: generation === "v2"
-      && runtimeGeneration === "v2"
+    openCodeNativeCommand: generation === "v2"
+      && runtime.generation === "v2"
       && !source.exists
       && !input.env.OPENCODE_CONFIG?.trim()
-      && openCodeConfigCandidates(input).slice(0, 2).includes(source.path),
+      && openCodeConfigCandidates(input).slice(0, 2).includes(source.path)
+      ? runtime.command
+      : undefined,
   };
 }
 
@@ -399,8 +425,8 @@ function applyTarget(
     }
     return;
   }
-  if (target.id === "opencode" && before.openCodeNative && operation === "install" && !before.selected) {
-    nativeRun(deps, input, "opencode2", [
+  if (target.id === "opencode" && before.openCodeNativeCommand && operation === "install" && !before.selected) {
+    nativeRun(deps, input, before.openCodeNativeCommand, [
       "mcp", "add", CURRENT_MCP_REGISTRATION, "--global", "--", desired.command, ...desired.args,
     ]);
     return;
@@ -433,6 +459,7 @@ function applyTarget(
     expected: {
       destination: before.sourceDestination ?? null,
       content: before.sourceExists ? before.sourceText ?? null : null,
+      parent: before.sourceParent,
     },
   }));
   write(before.sourcePath, next);

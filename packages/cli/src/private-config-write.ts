@@ -21,7 +21,15 @@ export interface AtomicWriteFileOptions {
   readonly expected?: {
     readonly destination: string | null;
     readonly content: string | Uint8Array | null;
+    readonly parent?: PrivateConfigParentSnapshot;
   };
+}
+
+export interface PrivateConfigParentSnapshot {
+  /** Nearest lexical ancestor that existed when the configuration was inspected. */
+  readonly path: string;
+  /** Canonical destination of that ancestor at inspection time. */
+  readonly destination: string;
 }
 
 function missing(error: unknown): boolean {
@@ -52,6 +60,21 @@ function resolveWriteDestination(path: string, followFinalSymlink: boolean): str
   }
 }
 
+/** Capture the nearest existing parent so absent-file creation cannot be redirected later. */
+export function capturePrivateConfigParent(path: string): PrivateConfigParentSnapshot {
+  let current = dirname(path);
+  while (true) {
+    try {
+      return { path: current, destination: realpathSync(current) };
+    } catch (error) {
+      if (!missing(error)) throw error;
+      const parent = dirname(current);
+      if (parent === current) throw error;
+      current = parent;
+    }
+  }
+}
+
 /**
  * Replace a private configuration file through a same-directory temporary file and rename.
  * Existing modes are preserved, final symlinks are followed by default, and temporary files are
@@ -64,6 +87,13 @@ export function atomicWriteFileSync(
 ): void {
   const destination = resolveWriteDestination(path, options.followFinalSymlink ?? true);
   if (options.expected) {
+    if (options.expected.parent) {
+      const currentParent = capturePrivateConfigParent(path);
+      if (currentParent.path !== options.expected.parent.path
+        || currentParent.destination !== options.expected.parent.destination) {
+        throw new Error("private configuration parent changed after inspection");
+      }
+    }
     let currentDestination: string | null;
     try {
       currentDestination = realpathSync(path);

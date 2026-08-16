@@ -33,13 +33,36 @@ function missing(): Error & { code: string } {
   return Object.assign(new Error("missing"), { code: "ENOENT" });
 }
 
+function claudeCodeServer(entry: { command: string; args: readonly string[] }) {
+  return { type: "stdio", command: entry.command, args: [...entry.args], env: {} };
+}
+
+function codexRow(entry: { command: string; args: readonly string[] }, enabled = true) {
+  return {
+    name: "superbee",
+    enabled,
+    disabled_reason: enabled ? null : "disabled",
+    startup_timeout_sec: null,
+    tool_timeout_sec: null,
+    auth_status: "unsupported",
+    transport: {
+      type: "stdio",
+      command: entry.command,
+      args: [...entry.args],
+      env: null,
+      env_vars: [],
+      cwd: null,
+    },
+  };
+}
+
 test("Codex native install is exact, actor-aware, idempotent, and exact-owned on uninstall", () => {
   let entry: { command: string; args: string[] } | undefined;
   const calls: Array<{ file: string; args: readonly string[] }> = [];
   const execFile = (file: string, args: readonly string[]): string => {
     calls.push({ file, args });
     if (args.join(" ") === "mcp list --json") {
-      return JSON.stringify(entry ? [{ name: "superbee", transport: { type: "stdio", ...entry } }] : []);
+      return JSON.stringify(entry ? [codexRow(entry)] : []);
     }
     if (args[0] === "mcp" && args[1] === "add") {
       const split = args.indexOf("--");
@@ -71,6 +94,27 @@ test("Codex native install is exact, actor-aware, idempotent, and exact-owned on
   assert.equal(entry, undefined);
 });
 
+test("Codex refuses a disabled exact-command entry instead of reporting it current", () => {
+  let mutations = 0;
+  const entry = {
+    command: stable.evidence.runtime_path!,
+    args: [stable.evidence.executable_path!, "mcp"],
+  };
+  assert.throws(
+    () => mutateMcpRegistration("install", target("codex"), {}, {
+      environment: environment(),
+      authority: () => stable,
+      execFile: (_file, args) => {
+        if (args.join(" ") === "mcp list --json") return JSON.stringify([codexRow(entry, false)]);
+        mutations += 1;
+        return "";
+      },
+    }),
+    /outside the exact Superbee-managed shape/,
+  );
+  assert.equal(mutations, 0);
+});
+
 test("foreign same-name and legacy registrations are refused without mutation", () => {
   for (const [name, command] of [["superbee", "/foreign/node"], ["aslite-views", stable.evidence.runtime_path!]]) {
     let writes = 0;
@@ -92,8 +136,10 @@ test("Claude Code uses user-scoped native commands and updates only exact-owned 
   const path = "/relocated/.claude.json";
   let config = JSON.stringify({ mcpServers: {
     superbee: {
+      type: "stdio",
       command: stable.evidence.runtime_path,
       args: [stable.evidence.executable_path, "mcp", "--actor", "old"],
+      env: {},
     },
     foreign: { command: "/bin/foreign", args: [] },
   } });
@@ -110,7 +156,7 @@ test("Claude Code uses user-scoped native commands and updates only exact-owned 
     if (args[1] === "add") {
       const split = args.indexOf("--");
       const root = JSON.parse(config);
-      root.mcpServers.superbee = { command: args[split + 1], args: args.slice(split + 2) };
+      root.mcpServers.superbee = claudeCodeServer({ command: args[split + 1]!, args: args.slice(split + 2) });
       config = JSON.stringify(root);
       return "added";
     }
@@ -155,7 +201,7 @@ test("Claude Code restores an exact prior registration when replacement add fail
     () => mutateMcpRegistration("install", target("claude-code"), { actor: "new" }, {
       environment: environment(),
       authority: () => stable,
-      readFile: () => JSON.stringify({ mcpServers: current ? { superbee: current } : {} }),
+      readFile: () => JSON.stringify({ mcpServers: current ? { superbee: claudeCodeServer(current) } : {} }),
       execFile,
     }),
     (error: unknown) => error instanceof McpRegistrationError && error.category === "runtime",
@@ -175,7 +221,7 @@ test("Claude Code reports partial failure when rollback does not survive read-ba
     () => mutateMcpRegistration("install", target("claude-code"), { actor: "new" }, {
       environment: environment(),
       authority: () => stable,
-      readFile: () => JSON.stringify({ mcpServers: current ? { superbee: current } : {} }),
+      readFile: () => JSON.stringify({ mcpServers: current ? { superbee: claudeCodeServer(current) } : {} }),
       execFile: (_file, args) => {
         if (args[1] === "remove") { current = undefined; return "removed"; }
         if (args[1] === "add") {
@@ -287,6 +333,74 @@ test("OpenCode V2 uses its native global add when the versioned CLI is available
       stable.evidence.executable_path!, "mcp",
     ],
   });
+});
+
+test("OpenCode carries the successful V2 probe binary into native apply", () => {
+  const path = "/users/mike/.config/opencode/opencode.json";
+  let text = "{}\n";
+  let exists = false;
+  const native: string[] = [];
+  const receipt = mutateMcpRegistration("install", target("opencode"), {}, {
+    environment: environment({ XDG_CONFIG_HOME: "/users/mike/.config" }),
+    authority: () => stable,
+    execFile: (file, args) => {
+      if (file === "opencode2") throw new Error("not installed");
+      if (file === "opencode" && args[0] === "--version") return "2.1.0";
+      if (file === "opencode" && args[0] === "mcp") {
+        native.push(file);
+        exists = true;
+        text = JSON.stringify({ mcp: { servers: {
+          superbee: { type: "local", command: [stable.evidence.runtime_path, stable.evidence.executable_path, "mcp"] },
+        } } });
+        return "added";
+      }
+      throw new Error("unexpected native command");
+    },
+    readFile: (candidate) => candidate === path && exists ? text : (() => { throw missing(); })(),
+  });
+  assert.equal(receipt.changed, true);
+  assert.deepEqual(native, ["opencode"]);
+});
+
+test("OpenCode V2 preserves and updates an existing supported V1-shaped config", () => {
+  const path = "/custom/opencode.jsonc";
+  let text = `{ "mcp": { "foreign": { "type": "local", "command": ["foreign"] } } }\n`;
+  const receipt = mutateMcpRegistration("install", target("opencode"), {}, {
+    environment: environment({ OPENCODE_CONFIG: path }),
+    authority: () => stable,
+    execFile: (file, args) => {
+      if (file === "opencode2" && args[0] === "--version") return "2.0.0";
+      throw new Error("file-backed update must not invoke native add");
+    },
+    readFile: (candidate) => candidate === path ? text : (() => { throw missing(); })(),
+    writeFile: (_candidate, content) => { text = content; },
+  });
+  assert.equal(receipt.changed, true);
+  assert.match(text, /"mcp"/);
+  assert.match(text, /"superbee"/);
+  assert.doesNotMatch(text, /"servers"/);
+});
+
+test("OpenCode refuses mixed V1/V2 reserved-name declarations before mutation", () => {
+  const path = "/custom/opencode.json";
+  const text = JSON.stringify({ mcp: {
+    superbee: { type: "local", command: [stable.evidence.runtime_path, stable.evidence.executable_path, "mcp"] },
+    servers: {},
+  } });
+  let writes = 0;
+  assert.throws(
+    () => mutateMcpRegistration("install", target("opencode"), {}, {
+      environment: environment({ OPENCODE_CONFIG: path }),
+      authority: () => stable,
+      execFile: (file, args) => file === "opencode2" && args[0] === "--version"
+        ? "2.0.0"
+        : (() => { throw new Error("unexpected native command"); })(),
+      readFile: (candidate) => candidate === path ? text : (() => { throw missing(); })(),
+      writeFile: () => { writes += 1; },
+    }),
+    /mixes V1 and V2/,
+  );
+  assert.equal(writes, 0);
 });
 
 test("OpenCode inline config is reported by status and blocks lower-precedence mutation", () => {

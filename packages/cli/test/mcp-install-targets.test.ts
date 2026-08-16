@@ -119,22 +119,28 @@ test("OpenCode recognizes the canonical JSONC filename without guessing comment 
   assert.equal(result.state, "owned_current");
 });
 
-test("OpenCode status honors higher-precedence inline configuration without reading files", () => {
+test("OpenCode status merges inline configuration over lower-precedence files", () => {
   let reads = 0;
   const command = stable.evidence.runtime_path!;
   const args = [stable.evidence.executable_path!, "mcp"];
   const result = inspectMcpHost(target("opencode"), {
     environment: env({
-      OPENCODE_CONFIG_CONTENT: JSON.stringify({ mcp: {
-        superbee: { type: "local", command: [command, ...args], enabled: true },
-      } }),
+      OPENCODE_CONFIG_CONTENT: JSON.stringify({ theme: "dark" }),
     }),
     authority: () => stable,
-    readFile: () => { reads += 1; throw new Error("must not read lower precedence config"); },
+    readFile: (path) => {
+      reads += 1;
+      if (path.endsWith("opencode.json")) {
+        return JSON.stringify({ mcp: {
+          superbee: { type: "local", command: [command, ...args], enabled: true },
+        } });
+      }
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
   });
-  assert.equal(result.config, "OPENCODE_CONFIG_CONTENT");
+  assert.match(result.config ?? "", /opencode\.json$/);
   assert.equal(result.state, "owned_current");
-  assert.equal(reads, 0);
+  assert.ok(reads > 0);
 });
 
 test("Claude, OpenCode v1/v2, and Codex registrations share one normalized classifier", () => {
@@ -144,7 +150,9 @@ test("Claude, OpenCode v1/v2, and Codex registrations share one normalized class
   const claude = inspectMcpHost(target("claude-code"), {
     environment: env(),
     authority,
-    readFile: () => JSON.stringify({ mcpServers: { superbee: { command, args } } }),
+    readFile: () => JSON.stringify({ mcpServers: {
+      superbee: { type: "stdio", command, args, env: {} },
+    } }),
   });
   const opencodeV1 = inspectMcpHost(target("opencode"), {
     environment: env(),
@@ -172,7 +180,15 @@ test("Claude, OpenCode v1/v2, and Codex registrations share one normalized class
     authority,
     execFile: (_file, passed) => {
       codexArgs = passed;
-      return JSON.stringify([{ name: "superbee", transport: { type: "stdio", command, args } }]);
+      return JSON.stringify([{
+        name: "superbee",
+        enabled: true,
+        disabled_reason: null,
+        startup_timeout_sec: null,
+        tool_timeout_sec: null,
+        auth_status: "unsupported",
+        transport: { type: "stdio", command, args, env: null, env_vars: [], cwd: null },
+      }]);
     },
   });
   assert.deepEqual([claude.state, opencodeV1.state, opencodeV2.state, codex.state], [
@@ -182,6 +198,39 @@ test("Claude, OpenCode v1/v2, and Codex registrations share one normalized class
     "owned_current",
   ]);
   assert.deepEqual(codexArgs, ["mcp", "list", "--json"]);
+});
+
+test("host-native ownership includes activation and target-specific Claude shape", () => {
+  const command = stable.evidence.runtime_path!;
+  const args = [stable.evidence.executable_path!, "mcp"];
+  const authority = () => stable;
+  const codex = (enabled: boolean, startup: number | null = null) => inspectMcpHost(target("codex"), {
+    environment: env(),
+    authority,
+    execFile: () => JSON.stringify([{
+      name: "superbee",
+      enabled,
+      disabled_reason: enabled ? null : "disabled",
+      startup_timeout_sec: startup,
+      tool_timeout_sec: null,
+      auth_status: "unsupported",
+      transport: { type: "stdio", command, args, env: null, env_vars: [], cwd: null },
+    }]),
+  });
+  assert.equal(codex(true).state, "owned_current");
+  assert.equal(codex(false).state, "foreign");
+  assert.equal(codex(true, 30).state, "foreign");
+
+  const desktopShape = JSON.stringify({ mcpServers: { superbee: { command, args } } });
+  const codeShape = JSON.stringify({ mcpServers: {
+    superbee: { type: "stdio", command, args, env: {} },
+  } });
+  assert.equal(inspectMcpHost(target("claude-code"), {
+    environment: env(), authority, readFile: () => desktopShape,
+  }).state, "foreign");
+  assert.equal(inspectMcpHost(target("claude-desktop"), {
+    environment: env(), authority, readFile: () => codeShape,
+  }).state, "foreign");
 });
 
 test("commented JSONC is read losslessly while malformed config and unsupported platforms fail closed", () => {
@@ -213,7 +262,21 @@ test("commented JSONC is read losslessly while malformed config and unsupported 
   assert.equal(commented.state, "absent");
   assert.equal(malformed.state, "unreadable");
   assert.match(malformed.reason, /status unavailable/);
+  assert.doesNotMatch(malformed.reason, /users\/mike|opencode\.jsonc/);
   assert.equal(duplicate.state, "unreadable");
   assert.equal(unsupported.state, "unsupported");
   assert.equal(unsupported.config, null);
+});
+
+test("read-only status never includes absolute host paths in unreadable reasons", () => {
+  const privatePath = "/users/mike/Library/Application Support/Claude/claude_desktop_config.json";
+  const result = inspectMcpHost(target("claude-desktop"), {
+    environment: env(),
+    authority: () => stable,
+    readFile: () => {
+      throw Object.assign(new Error(`EACCES: permission denied, open '${privatePath}'`), { code: "EACCES" });
+    },
+  });
+  assert.equal(result.state, "unreadable");
+  assert.doesNotMatch(result.reason, /users\/mike|Application Support|claude_desktop_config/);
 });

@@ -247,7 +247,10 @@ export function parseMcpConfigRoot(text: string): Record<string, unknown> {
   return getNodeValue(tree) as Record<string, unknown>;
 }
 
-export function parseClaudeMcpEntries(text: string): McpRegistrationEntry[] {
+export function parseClaudeMcpEntries(
+  text: string,
+  target: "claude-code" | "claude-desktop",
+): McpRegistrationEntry[] {
   const root = parseMcpConfigRoot(text);
   const servers = own(root, "mcpServers");
   if (servers === undefined) return [];
@@ -259,13 +262,21 @@ export function parseClaudeMcpEntries(text: string): McpRegistrationEntry[] {
     const args = own(raw, "args");
     if (typeof command === "string" && (args === undefined || stringArray(args))) {
       const keys = Object.keys(raw).sort();
-      const desktopShape = keys.every((key) => key === "args" || key === "command");
+      const parsedArgs = stringArray(args);
+      const desktopShape = parsedArgs !== undefined
+        && keys.every((key) => key === "args" || key === "command");
       const env = own(raw, "env");
-      const codeShape = keys.every((key) => key === "args" || key === "command" || key === "env" || key === "type")
+      const codeShape = parsedArgs !== undefined
+        && keys.every((key) => key === "args" || key === "command" || key === "env" || key === "type")
         && own(raw, "type") === "stdio"
         && isRecord(env)
         && Object.keys(env).length === 0;
-      result.push({ name, command, args: stringArray(args) ?? [], managedShape: desktopShape || codeShape });
+      result.push({
+        name,
+        command,
+        args: parsedArgs ?? [],
+        managedShape: target === "claude-code" ? codeShape : desktopShape,
+      });
     }
   }
   return result;
@@ -315,7 +326,16 @@ export function parseCodexMcpEntries(text: string): McpRegistrationEntry[] {
       const env = own(transport, "env");
       const envVars = own(transport, "env_vars");
       const cwd = own(transport, "cwd");
-      const managedShape = keys.every((key) => allowed.has(key))
+      const outerKeys = Object.keys(raw);
+      const allowedOuter = new Set([
+        "name", "enabled", "disabled_reason", "transport", "startup_timeout_sec", "tool_timeout_sec", "auth_status",
+      ]);
+      const managedShape = outerKeys.every((key) => allowedOuter.has(key))
+        && own(raw, "enabled") === true
+        && (own(raw, "disabled_reason") === undefined || own(raw, "disabled_reason") === null)
+        && (own(raw, "startup_timeout_sec") === undefined || own(raw, "startup_timeout_sec") === null)
+        && (own(raw, "tool_timeout_sec") === undefined || own(raw, "tool_timeout_sec") === null)
+        && keys.every((key) => allowed.has(key))
         && (env === undefined || env === null)
         && (envVars === undefined || (Array.isArray(envVars) && envVars.length === 0))
         && (cwd === undefined || cwd === null);
@@ -364,9 +384,6 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
         env: input.env,
         cwd: input.home,
       }));
-    } else if (target.id === "opencode" && input.env.OPENCODE_CONFIG_CONTENT?.trim()) {
-      reportedPath = "OPENCODE_CONFIG_CONTENT";
-      entries = parseOpenCodeMcpEntries(input.env.OPENCODE_CONFIG_CONTENT);
     } else {
       const read = deps.readFile ?? ((candidate) => readFileSync(candidate, "utf8"));
       const candidates = target.id === "opencode" ? openCodeConfigCandidates(input) : [path];
@@ -377,7 +394,9 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
           reportedPath = candidate;
           sources.push({
             path: candidate,
-            entries: target.id === "opencode" ? parseOpenCodeMcpEntries(content) : parseClaudeMcpEntries(content),
+            entries: target.id === "opencode"
+              ? parseOpenCodeMcpEntries(content)
+              : parseClaudeMcpEntries(content, target.id),
           });
         } catch (error) {
           if (!isRecord(error) || own(error, "code") !== "ENOENT") throw error;
@@ -390,6 +409,22 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
           throw new Error(
             `registration '${name}' is declared by multiple OpenCode config sources: ${declarations.map((source) => source.path).join(", ")}`,
           );
+        }
+      }
+      if (target.id === "opencode" && input.env.OPENCODE_CONFIG_CONTENT?.trim()) {
+        const inlineEntries = parseOpenCodeMcpEntries(input.env.OPENCODE_CONFIG_CONTENT);
+        const effective = new Map(entries.map((entry) => [entry.name, entry]));
+        for (const entry of inlineEntries) effective.set(entry.name, entry);
+        entries = [...effective.values()];
+        const inlineSelected = selectMcpRegistration(inlineEntries);
+        if (inlineSelected) {
+          reportedPath = "OPENCODE_CONFIG_CONTENT";
+        } else {
+          const selected = selectMcpRegistration(entries);
+          const owner = selected
+            ? sources.find((source) => source.entries.some((entry) => entry.name === selected.name))
+            : undefined;
+          if (owner) reportedPath = owner.path;
         }
       }
     }
@@ -407,7 +442,7 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
       label: target.label,
       state: "unreadable",
       config: collapseHomeDirectory(reportedPath),
-      reason: `status unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      reason: "status unavailable: host configuration is unreadable",
       docs_url: target.docs_url,
     };
   }

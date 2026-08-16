@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { atomicWriteFileSync } from "../src/private-config-write.js";
+import { atomicWriteFileSync, capturePrivateConfigParent } from "../src/private-config-write.js";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -77,6 +77,31 @@ test("atomicWriteFileSync refuses a regular destination retargeted through a sym
     assert.equal((await lstat(target)).isSymbolicLink(), true);
     assert.equal(await readFile(unrelated, "utf8"), "private\n");
     assert.equal(await readFile(moved, "utf8"), "before\n");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteFileSync refuses absent-file creation after its parent is retargeted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-parent-retarget-"));
+  const parent = path.join(dir, "host-config");
+  const moved = path.join(dir, "host-config-original");
+  const unrelated = path.join(dir, "unrelated");
+  const target = path.join(parent, "settings.json");
+  try {
+    await mkdir(parent);
+    await mkdir(unrelated);
+    const parentSnapshot = capturePrivateConfigParent(target);
+    await rename(parent, moved);
+    await symlink(path.basename(unrelated), parent);
+    assert.throws(
+      () => atomicWriteFileSync(target, "ours\n", {
+        expected: { destination: null, content: null, parent: parentSnapshot },
+      }),
+      /parent changed after inspection/,
+    );
+    await assert.rejects(readFile(path.join(unrelated, "settings.json"), "utf8"), /ENOENT/);
+    assert.deepEqual(await readdir(unrelated), []);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
