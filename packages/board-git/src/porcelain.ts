@@ -70,8 +70,44 @@ export const BOARD_BRANCH = "board";
 export const BOARD_REMOTE = "origin";
 /** The EXPLICIT remote-tracking ref every pull/rebase/count uses — never `@{u}`. */
 export const BOARD_REF = `${BOARD_REMOTE}/${BOARD_BRANCH}`;
-/** The conventional folder the board worktree is checked out at (relative to the repo top level). */
-export const BUNDLE_DIR = ".agentstate-lite";
+/**
+ * The conventional folder the board worktree is checked out at (relative to the repo top level).
+ *
+ * There are TWO recognized names and they are not interchangeable, so this module deliberately
+ * exports no single `BUNDLE_DIR`: every call site has to say which of the three things it means,
+ * and the compiler finds the ones that don't.
+ *
+ * - `CANONICAL_BUNDLE_DIR` is the ONLY name anything ever CREATES. Fresh `init`, new scaffolds and
+ *   fresh board provisioning all write `.superbee/`.
+ * - `LEGACY_BUNDLE_DIR` is recognized and operated on exactly as before, but never created. An
+ *   existing `.agentstate-lite/` bundle or board worktree keeps working and is never moved — this
+ *   is a compatibility input, not a migration target.
+ * - `BUNDLE_DIRS` is the recognition set, canonical first. Anything ASKING "is there a bundle
+ *   here?" iterates it; anything asking "where do I put a new one?" must not.
+ *
+ * Both names valid at the SAME level is a conflict that fails closed rather than picking a winner,
+ * mirroring the `.superbee.json` / `.agentstate.json` binding policy.
+ */
+export const CANONICAL_BUNDLE_DIR = ".superbee";
+/** The pre-rename folder name: recognized and supported forever, never created. */
+export const LEGACY_BUNDLE_DIR = ".agentstate-lite";
+/** Recognition order, canonical first. Never use this to choose a creation target. */
+export const BUNDLE_DIRS = [CANONICAL_BUNDLE_DIR, LEGACY_BUNDLE_DIR] as const;
+
+/**
+ * The bundle directory actually present under `top`, or null. Both present is a caller-visible
+ * conflict: returning either would silently pick a winner between two real bundles.
+ */
+export function bundleDirNameAt(
+  top: string,
+  present: (candidate: string) => boolean,
+): { name: string; conflict: false } | { name: null; conflict: boolean } {
+  const found: string[] = BUNDLE_DIRS.filter((name) => present(path.join(top, name)));
+  if (found.length > 1) return { name: null, conflict: true };
+  const only = found[0];
+  if (only !== undefined) return { name: only, conflict: false };
+  return { name: null, conflict: false };
+}
 
 /**
  * Worktree-portability config forced on every worktree-creating or repairing invocation: git >=
@@ -430,17 +466,30 @@ function repairedWorktreeIsBoard(boardPath: string, ownerTop: string): boolean {
 }
 
 /**
- * True when the conventional board worktree is genuinely provisioned for the repo containing
- * `dir`: `<toplevel>/.agentstate-lite` exists, is ITSELF a worktree root (not a plain directory
- * falling through to the parent repo), and has the `board` branch checked out.
+ * The provisioned board worktree for the repo containing `dir`, or null. A folder qualifies when
+ * `<toplevel>/<name>` exists, is ITSELF a worktree root (not a plain directory falling through to
+ * the parent repo), and has the `board` branch checked out.
+ *
+ * Either recognized name counts, canonical first — a repo whose board was established before the
+ * rename keeps working untouched, and is never moved to the canonical name. Both provisioned at
+ * once returns the canonical one rather than failing: two real board worktrees is a state the
+ * caller cannot act on here, and preferring canonical is the same order recognition uses elsewhere.
  */
-export function isProvisioned(dir: string): boolean {
+export function provisionedBoardPath(dir: string): string | null {
   const top = repoTopLevel(dir);
-  if (!top) return false;
-  const boardPath = path.join(top, BUNDLE_DIR);
-  if (!existsSync(boardPath) || !worktreeRootResolvesForOwner(boardPath, top)) return false;
-  const branch = runGit(boardPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  return branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH;
+  if (!top) return null;
+  for (const name of BUNDLE_DIRS) {
+    const boardPath = path.join(top, name);
+    if (!existsSync(boardPath) || !worktreeRootResolvesForOwner(boardPath, top)) continue;
+    const branch = runGit(boardPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    if (branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH) return boardPath;
+  }
+  return null;
+}
+
+/** True when a board worktree under either recognized name is genuinely provisioned. */
+export function isProvisioned(dir: string): boolean {
+  return provisionedBoardPath(dir) !== null;
 }
 
 // ── provisioning (self-heal) ──────────────────────────────────────────────────
@@ -1637,24 +1686,41 @@ export function boardNamespaceConflicts(top: string): string[] {
 
 // ── gitignore entry (both establish cases share the ONE idempotent transform) ──
 
-/** The `.gitignore` line that keeps the board folder out of the code branch's own index. */
-export const GITIGNORE_ENTRY = `${BUNDLE_DIR}/`;
+/**
+ * The `.gitignore` line that keeps the board folder out of the code branch's own index.
+ *
+ * Parameterized by the folder actually in play: a board provisioned at the canonical `.superbee/`
+ * must not be handed an entry naming the legacy folder, and a repo whose board still lives at
+ * `.agentstate-lite/` must keep ignoring THAT path. Defaults to canonical, which is the only name
+ * fresh provisioning ever creates.
+ */
+export function gitignoreEntryFor(dirName: string = CANONICAL_BUNDLE_DIR): string {
+  return `${dirName}/`;
+}
+
+/** Back-compat alias for the canonical entry; prefer {@link gitignoreEntryFor}. */
+export const GITIGNORE_ENTRY = gitignoreEntryFor();
 
 /**
- * Return `content` with {@link GITIGNORE_ENTRY} present — unchanged when any existing line already
- * ignores the folder (with or without leading/trailing slash), appended otherwise. Both establish
- * cases share the same idempotent transform.
+ * Return `content` with the ignore entry for `dirName` present — unchanged when any existing line
+ * already ignores that folder (with or without leading/trailing slash), appended otherwise. Both
+ * establish cases share the same idempotent transform.
+ *
+ * The coverage test is deliberately scoped to `dirName` alone rather than to both recognized names:
+ * a repo that already ignores `.agentstate-lite/` has said nothing about `.superbee/`, and treating
+ * the legacy line as coverage would leave a freshly provisioned canonical board tracked by the code
+ * branch — the exact accident this entry exists to prevent.
  */
-export function withIgnoreEntry(content: string): string {
+export function withIgnoreEntry(content: string, dirName: string = CANONICAL_BUNDLE_DIR): string {
   const covered = content.split("\n").some((l) => {
     const t = l.trim();
-    return t === BUNDLE_DIR || t === `${BUNDLE_DIR}/` || t === `/${BUNDLE_DIR}` || t === `/${BUNDLE_DIR}/`;
+    return t === dirName || t === `${dirName}/` || t === `/${dirName}` || t === `/${dirName}/`;
   });
   if (covered) return content;
   let out = content;
   if (out.length > 0 && !out.endsWith("\n")) out += "\n";
   if (out.length > 0) out += "\n";
-  out += `# the shared board — managed on the '${BOARD_BRANCH}' branch by superbee sync\n${GITIGNORE_ENTRY}\n`;
+  out += `# the shared board — managed on the '${BOARD_BRANCH}' branch by superbee sync\n${gitignoreEntryFor(dirName)}\n`;
   return out;
 }
 
