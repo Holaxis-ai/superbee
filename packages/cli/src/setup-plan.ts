@@ -121,7 +121,10 @@ function skillCapability(input: SetupPlanInput): SetupCapability {
       command: `superbee skill status --scope ${input.scope}`,
     };
   }
-  if (input.skill.canonical.compatibility?.state === "newer_contract") {
+  if (
+    input.skill.canonical.compatibility?.state === "newer_contract"
+    || input.skill.legacy.compatibility?.state === "newer_contract"
+  ) {
     return {
       id: "skill",
       requirement: "required",

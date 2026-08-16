@@ -104,6 +104,17 @@ test("foreign integration state fails closed onto a read-only inspector", () => 
     assert.equal(newerSkill.next?.action, "inspect", state);
     assert.equal(newerSkill.next?.command, "superbee skill status --scope user", state);
   }
+
+  for (const state of ["installed", "stale"] as const) {
+    const newerLegacySkill = buildSetupPlan(input({
+      skill: {
+        canonical: { state: "absent", compatibility: { state: "absent" } },
+        legacy: { state, compatibility: { state: "newer_contract" } },
+      },
+    }));
+    assert.equal(newerLegacySkill.next?.action, "inspect", state);
+    assert.equal(newerLegacySkill.next?.command, "superbee skill status --scope user", state);
+  }
 });
 
 test("bundle and catalog complete the conversational workspace journey without inventing a label", () => {
