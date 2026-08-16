@@ -232,18 +232,18 @@ jobs:
           ACTUAL="sha256:$(shasum -a 256 "$ARTIFACT_DIR/$TARBALL_FILENAME" | awk '{print $1}')"
           test "$ACTUAL" = "$EXPECTED_SHA256" || { echo "::error::retained tarball digest mismatch"; exit 1; }
 
-      # NO registry-url here, deliberately. setup-node's registry-url writes an .npmrc to
-      # $RUNNER_TEMP containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` and points
-      # NPM_CONFIG_USERCONFIG at it. This design holds no npm token, so NODE_AUTH_TOKEN is unset,
-      # the authToken resolves to the empty string, and npm presents THAT instead of the
-      # trusted-publisher credential it just obtained -- E401, after provenance has already been
-      # signed and logged to Sigstore. Observed in live run 31972609262. npm defaults to
-      # registry.npmjs.org anyway, so the line bought nothing and broke OIDC.
-      # release-finalize.yml keeps its registry-url: that job only READS the registry to verify
-      # signatures and provenance, where an empty token is harmless.
+      # registry-url matches the predecessor project's working configuration, which published its
+      # final prerelease through trusted publishing with no npm secret at all. PR #43 removed
+      # this line on the theory that setup-node's empty _authToken was overriding the OIDC
+      # credential; that was wrong. Removing it made things worse -- ENEEDAUTH instead of E401 in
+      # run 31975597582 -- because npm writes the exchanged token into the user config layer that
+      # this file creates (oidc.js:141). The reasoning error was treating "provenance signed" as
+      # proof the npm token exchange succeeded: provenance is signed against Sigstore with the
+      # GitHub token and never touches npm's exchange.
       - uses: actions/setup-node@v4
         with:
           node-version: 22.14.0
+          registry-url: "https://registry.npmjs.org"
 
       - name: Pin npm with staged-publishing support
         run: |
@@ -265,7 +265,12 @@ jobs:
           TARBALL="./$ARTIFACT_DIR/$TARBALL_FILENAME"
           if [ "$MODE" = "live" ]; then
             test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
-            npm stage publish "$TARBALL" --tag "$POLICY_TAG" --provenance --json | tee stage.json
+            # --loglevel verbose surfaces oidc.js's own diagnosis. On a failed token
+            # exchange it logs "Failed token exchange request with body message: ..." at
+            # verbose only, then returns undefined and lets publish fall through to a
+            # generic auth error -- which is why runs 31972609262 (E401) and 31975597582
+            # (ENEEDAUTH) both hid the real reason. Drop this once staging is proven.
+            npm stage publish "$TARBALL" --tag "$POLICY_TAG" --provenance --json --loglevel verbose | tee stage.json
             STAGE_ID="$(node scripts/release-verify-chain.mjs stage-id --file stage.json)"
             echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
           else
