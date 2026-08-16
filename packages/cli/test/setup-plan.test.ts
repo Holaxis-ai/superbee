@@ -73,6 +73,37 @@ test("foreign integration state fails closed onto a read-only inspector", () => 
   }));
   assert.equal(mcp.next?.action, "inspect");
   assert.equal(mcp.next?.command, "superbee mcp status --host claude-desktop");
+
+  for (const host of ["codex", "claude-code"] as const) {
+    const hook = buildSetupPlan(input({
+      host,
+      hook: {
+        installed: true,
+        installSafe: false,
+        compatibility: { state: "current", reason: "current entry beside malformed settings" },
+      },
+    }));
+    assert.equal(hook.next?.action, "inspect", host);
+    assert.equal(hook.next?.command, "superbee hook status --scope user", host);
+  }
+
+  const openCodeHook = buildSetupPlan(input({
+    host: "opencode",
+    hook: { installed: false, compatibility: { state: "unmanaged", reason: "foreign" } },
+  }));
+  assert.equal(openCodeHook.next?.action, "inspect");
+  assert.equal(openCodeHook.next?.command, "superbee hook status --scope user");
+
+  for (const state of ["installed", "stale"] as const) {
+    const newerSkill = buildSetupPlan(input({
+      skill: {
+        canonical: { state, compatibility: { state: "newer_contract" } },
+        legacy: { state: "absent", compatibility: { state: "absent" } },
+      },
+    }));
+    assert.equal(newerSkill.next?.action, "inspect", state);
+    assert.equal(newerSkill.next?.command, "superbee skill status --scope user", state);
+  }
 });
 
 test("bundle and catalog complete the conversational workspace journey without inventing a label", () => {

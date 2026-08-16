@@ -300,6 +300,8 @@ export interface HookStatus {
   installed: boolean;
   command?: string;
   compatibility: HookCompatibility;
+  /** Read-only install preflight result; omitted by the pure compatibility classifier. */
+  installSafe?: boolean;
 }
 
 /** Pure status scan over the same exact classifier used by install and uninstall. */
@@ -904,8 +906,16 @@ export function inspectHookStatus(
   } catch {
     expectedLaunch = undefined;
   }
-  const claude = readHookCompatibilityStatus(readSettings(targets.claudeSettings));
-  const codex = readHookCompatibilityStatus(readSettings(targets.codexHooks));
+  const inspectSettingsTarget = (path: string): HookStatus => {
+    const status = readHookCompatibilityStatus(readSettings(path));
+    const preflight = readSettingsForInstall(path);
+    if (!preflight.ok) {
+      return { ...status, installSafe: false };
+    }
+    return { ...status, installSafe: true };
+  };
+  const claude = inspectSettingsTarget(targets.claudeSettings);
+  const codex = inspectSettingsTarget(targets.codexHooks);
   const opencode = readOpenCodeTargetsStatus(
     targets,
     expectedLaunch

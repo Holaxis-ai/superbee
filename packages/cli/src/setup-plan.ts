@@ -5,7 +5,7 @@ import type { McpInstallTargetId, McpRegistrationState } from "./mcp-install-tar
 import type { PersistentInstallAuthorityState } from "./install-authority.js";
 import type { InstallScope } from "./install-scope.js";
 import type { HookCompatibility } from "./hook-compatibility.js";
-import type { SkillState } from "./skill-compatibility.js";
+import type { SkillCompatibilityState, SkillState } from "./skill-compatibility.js";
 
 export type SetupRequirement = "required" | "recommended" | "not_applicable";
 export type SetupCapabilityState = "ready" | "needs_action" | "blocked" | "not_applicable";
@@ -19,13 +19,20 @@ export interface SetupCapability {
 }
 
 export interface SetupSkillHostState {
-  readonly canonical: { readonly state: SkillState };
-  readonly legacy: { readonly state: SkillState };
+  readonly canonical: {
+    readonly state: SkillState;
+    readonly compatibility?: { readonly state: SkillCompatibilityState };
+  };
+  readonly legacy: {
+    readonly state: SkillState;
+    readonly compatibility?: { readonly state: SkillCompatibilityState };
+  };
 }
 
 export interface SetupHookHostState {
   readonly installed: boolean;
   readonly compatibility: HookCompatibility;
+  readonly installSafe?: boolean;
 }
 
 export interface SetupWorkspaceState {
@@ -114,6 +121,15 @@ function skillCapability(input: SetupPlanInput): SetupCapability {
       command: `superbee skill status --scope ${input.scope}`,
     };
   }
+  if (input.skill.canonical.compatibility?.state === "newer_contract") {
+    return {
+      id: "skill",
+      requirement: "required",
+      state: "blocked",
+      reason: "the installed Agent Skill uses a newer compatibility contract than this CLI",
+      command: `superbee skill status --scope ${input.scope}`,
+    };
+  }
   if (input.skill.canonical.state === "installed") {
     return {
       id: "skill",
@@ -186,6 +202,15 @@ function hookCapability(input: SetupPlanInput): SetupCapability {
       requirement: "recommended",
       state: "blocked",
       reason: "SessionStart hook status is unavailable",
+      command: `superbee hook status --scope ${input.scope}`,
+    };
+  }
+  if (input.hook.installSafe === false) {
+    return {
+      id: "hook",
+      requirement: "recommended",
+      state: "blocked",
+      reason: `the ${input.host} hook settings cannot be safely inspected for installation`,
       command: `superbee hook status --scope ${input.scope}`,
     };
   }
