@@ -477,6 +477,13 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   const passing = path.join(scratch, "passing.json");
   const violating = path.join(scratch, "violating.json");
   const repoRoot = path.dirname(path.dirname(scriptFile));
+  // This test is about CLI EXIT CODES, not about whatever release happens to be in flight. It
+  // synthesizes its own registry, so it must pin its own phase too: reading the repo's live
+  // release/phase.json coupled it to real releases and it went red the moment a staged
+  // transaction was declared (the synthesized registry publishes only the candidate, so `staged`
+  // reports no_prior_release). --phase-file is the CLI's own override for exactly this.
+  const atRest = path.join(scratch, "phase-at-rest.json");
+  await writeFile(atRest, JSON.stringify({ schema: "aslite.release-phase.v1", phase: "at_rest", kind: null, version: null }));
   const cliVersion = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8")).version;
   // Derive a scheme-consistent published set from the ACTUAL source version so this test keeps
   // passing across future version bumps (the audit reads the real package.json + phase and
@@ -492,16 +499,16 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   await writeFile(passing, JSON.stringify({ "dist-tags": { latest: cliVersion, next: cliVersion }, versions, time }));
   await writeFile(violating, JSON.stringify({ "dist-tags": { latest: "0.0.1", next: cliVersion }, versions, time }));
 
-  const pass = await runAudit(["--registry-json", passing]);
+  const pass = await runAudit(["--registry-json", passing, "--phase-file", atRest]);
   assert.equal(pass.code, 0, pass.stderr);
   assert.match(pass.stdout, /release-audit: PASS/);
 
-  const fail = await runAudit(["--registry-json", violating]);
+  const fail = await runAudit(["--registry-json", violating, "--phase-file", atRest]);
   assert.equal(fail.code, 1, fail.stderr);
   assert.match(fail.stderr, /VIOLATION\[latest_off_policy\]/);
 
   // Closed loopback port: connection refused is a NETWORK condition, never a red.
-  const network = await runAudit(["--registry-url", "http://127.0.0.1:1/@holaxis%2faslite"]);
+  const network = await runAudit(["--registry-url", "http://127.0.0.1:1/@holaxis%2faslite", "--phase-file", atRest]);
   assert.equal(network.code, 20, network.stderr);
   assert.match(network.stderr, /release-audit: NETWORK/);
 });
