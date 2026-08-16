@@ -883,7 +883,7 @@ async function runInstalledProof(spec) {
     const setupBeforeIntegrations = parseJson(
       (
         await runCli(target.preferred_command, ["setup", "--host", "claude-code", "--json"], {
-          cwd: scratch,
+          cwd: scratch, env: { CLAUDE_CONFIG_DIR: "" },
         })
       ).stdout,
       "setup before integrations",
