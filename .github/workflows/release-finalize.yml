@@ -11,7 +11,7 @@ name: Finalize release (separately dispatched)
 # write-capable job then deletes only planned asset IDs, replaces status/body evidence, re-queries
 # the draft, and proves the exact retained id/name/digest inventory before publication.
 #
-# P5S must protect the `release` environment and set ASLITE_RELEASE_LIVE_ENABLED=true there. GitHub
+# P5S must protect the `release` environment and set SUPERBEE_RELEASE_LIVE_ENABLED=true there. GitHub
 # auto-creates missing environments without protection, so absence of that explicit variable always
 # fails closed even if someone dispatches with mode=live.
 #
@@ -327,7 +327,7 @@ jobs:
 
       - name: Verify registry bytes, signatures, provenance, install, and build identity
         env:
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
           VERSION: ${{ inputs.version }}
           TARGET: ${{ inputs.target }}
         run: |
@@ -442,7 +442,7 @@ jobs:
       - name: Apply ID-only cleanup, retry-safe status --clobber, and owned body normalization
         env:
           GH_TOKEN: ${{ github.token }}
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then

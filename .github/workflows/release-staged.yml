@@ -6,7 +6,7 @@ name: Staged release (candidate -> draft -> stage)
 #
 # Fail-closed live gate: GitHub auto-creates a referenced environment without protection, so the
 # environment name alone is not a disarm mechanism. P5S must configure the protected `release`
-# environment AND set its ASLITE_RELEASE_LIVE_ENABLED variable to exactly `true`. Live dispatches
+# environment AND set its SUPERBEE_RELEASE_LIVE_ENABLED variable to exactly `true`. Live dispatches
 # also have to run from the exact v* tag ref. Missing either control makes every mutation fail.
 on:
   push:
@@ -158,7 +158,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
           TAG: ${{ needs.candidate.outputs.tag }}
           TARBALL_FILENAME: ${{ needs.candidate.outputs.tarball_filename }}
           TARBALL_SHA256: ${{ needs.candidate.outputs.tarball_sha256 }}
@@ -246,7 +246,7 @@ jobs:
       - name: Stage the literal retained tarball
         id: stage
         env:
-          LIVE_RELEASE_ENABLED: ${{ vars.ASLITE_RELEASE_LIVE_ENABLED }}
+          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
           TARBALL_FILENAME: ${{ needs.candidate.outputs.tarball_filename }}
           POLICY_TAG: ${{ needs.candidate.outputs.policy_tag }}
         run: |

@@ -185,14 +185,11 @@ export function classifyLegacyLiteral({ file, line = 1, lineText, match, ordinal
   }
 
   if (match === "AGENTSTATE_LITE" || match === "ASLITE" || match.startsWith("AGENTSTATE_LITE_") || match.startsWith("ASLITE_")) {
-    if (match.includes("RELEASE_LIVE_ENABLED")) {
-      return {
-        category: "release-live-gate-variable",
-        treatment: "rename-with-release-policy",
-        owner: "release-policy",
-        reason: "release live-gate variables are part of the AC-60 workflow authority surface",
-      };
-    }
+    // No branch for RELEASE_LIVE_ENABLED. It was renamed to SUPERBEE_RELEASE_LIVE_ENABLED, and
+    // classifying the legacy spelling as acceptable would let a reintroduced
+    // ASLITE_RELEASE_LIVE_ENABLED pass this gate quietly. Unclassified is the behaviour we want
+    // now: the inventory fails and a human reconciles it, which is the right cost for the one
+    // variable that authorizes live publication.
     if (match.includes("RELEASE_TARBALL") || match.includes("RELEASE_MANIFEST")) {
       return {
         category: "release-retained-artifact-variable",
