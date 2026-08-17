@@ -9,8 +9,10 @@
 //      and release/targets.json owns which dist-tags a version may ever carry — derived by
 //      `distTagDestiny` in scripts/release-publication-policy.mjs, the module this one reads policy
 //      from. The manifest decides eligibility, resolveTags decides the transient window.
-//   b. version scheme: pre-stable publishes are `A.B.0-pre.N` with N contiguous from 1 and
-//      publish times monotone in N (decisions/version-update-contract §1);
+//   b. version scheme: prereleases are `A.B.C-pre.N` with N contiguous from 1 within its own
+//      version line and publish times monotone in N (decisions/version-update-contract §1). The
+//      patch digit is unconstrained — see checkVersionScheme for why it stopped being pinned to 0;
+
 //   c. source-vs-registry drift: packages/cli/package.json must be the newest published
 //      version (pre-release-prep) or one sane increment ahead (staged-prep).
 //
@@ -184,10 +186,24 @@ export function checkDeclarationConsistency(declaration, sourceVersion) {
   return violations;
 }
 
-/** Contract §1 numbering: pre-stable publishes are A.B.0-pre.N, N contiguous from 1, times monotone. */
+/**
+ * Contract §1 numbering: prereleases are `A.B.C-pre.N` — one fixed `-pre.` label, N contiguous from
+ * 1 within its own version line, publish times monotone in N.
+ *
+ * The patch digit is UNCONSTRAINED. It was previously pinned to 0, which made `0.1.1-pre.1` illegal
+ * and confined previews to minor lines. Nothing in SemVer or npm requires that: `0.1.1-pre.1` is an
+ * ordinary preview of `0.1.1` and every tool orders it correctly. The restriction fit a project
+ * phase where the only preview line ran toward a first `0.1.0`, and outlived it — it blocked
+ * previewing a patch at all, and (with the matching assumption in `saneSuccessors`) left the
+ * project with no legal next stable once `0.1.0` became unreachable.
+ *
+ * What the rule still enforces earns its place: a single `-pre.` label keeps ordering predictable
+ * (`-rc.1`, `-beta` and friends stay rejected), and contiguous N means a preview number cannot be
+ * skipped silently — only by a declared burn.
+ */
 export function checkVersionScheme(versions, time, burnedVersions = []) {
   const violations = [];
-  const lines = new Map(); // "A.B" -> [{ n, version }]
+  const lines = new Map(); // "A.B.C" -> [{ n, version }]
   for (const version of versions) {
     const parsed = parseSemver(version);
     if (!parsed) {
@@ -196,23 +212,24 @@ export function checkVersionScheme(versions, time, burnedVersions = []) {
     }
     if (parsed.prerelease.length === 0) continue; // post-stable ordinary SemVer
     const m = PRERELEASE_SCHEME.exec(version);
-    if (!m || Number(m[3]) !== 0) {
+    if (!m) {
       violations.push(
-        violation("off_scheme_version", `published prerelease ${version} is off-scheme (contract allows only A.B.0-pre.N)`),
+        violation("off_scheme_version", `published prerelease ${version} is off-scheme (contract allows only A.B.C-pre.N)`),
       );
       continue;
     }
-    const line = `${m[1]}.${m[2]}`;
+    const line = `${m[1]}.${m[2]}.${m[3]}`;
     if (!lines.has(line)) lines.set(line, []);
     lines.get(line).push({ n: Number(m[4]), version });
   }
   // A declared burned number fills its contiguity hole: the number was consumed (immutable tag,
   // never published), so the published sequence legitimately skips it. Undeclared holes still red.
+  // Keyed by the FULL version line, so a burn only ever fills a hole on the line it belongs to.
   const burnedByLine = new Map();
   for (const version of burnedVersions) {
     const m = PRERELEASE_SCHEME.exec(version);
-    if (m && Number(m[3]) === 0) {
-      const line = `${m[1]}.${m[2]}`;
+    if (m) {
+      const line = `${m[1]}.${m[2]}.${m[3]}`;
       if (!burnedByLine.has(line)) burnedByLine.set(line, new Set());
       burnedByLine.get(line).add(Number(m[4]));
     }
@@ -225,7 +242,7 @@ export function checkVersionScheme(versions, time, burnedVersions = []) {
     const expected = Array.from({ length: filled.length }, (_, i) => i + 1);
     if (filled.join(",") !== expected.join(",")) {
       violations.push(
-        violation("pre_n_gap", `prerelease line ${line}.0-pre.N is not contiguous from 1: published N = [${ns.join(", ")}]${burnedNs.size > 0 ? ` with declared burns [${[...burnedNs].sort((a, b) => a - b).join(", ")}]` : ""}`),
+        violation("pre_n_gap", `prerelease line ${line}-pre.N is not contiguous from 1: published N = [${ns.join(", ")}]${burnedNs.size > 0 ? ` with declared burns [${[...burnedNs].sort((a, b) => a - b).join(", ")}]` : ""}`),
       );
     }
     for (let i = 1; i < entries.length; i += 1) {
@@ -394,20 +411,37 @@ export function expectedTagState({ declaration, versions, observedTags, destiny 
 export function saneSuccessors(newest) {
   const pre = PRERELEASE_SCHEME.exec(newest);
   if (pre) {
-    const [, major, minor, , n] = pre;
+    const [, major, minor, patch, n] = pre;
+    // The patch digit is carried, not discarded. Dropping it meant the successor of 0.1.1-pre.2 was
+    // computed as 0.1.0 — the stable of a DIFFERENT line — so a preview could never be followed by
+    // the version it was previewing. The stable a preview points at is its own line's stable.
+    //
+    // The SET of options is otherwise unchanged. Notably there is no `A.B.(C+1)-pre.1`: previewing
+    // the next patch before releasing this line's stable would skip a release, and widening the
+    // guard is not what carrying the patch digit requires.
     return [
-      `${major}.${minor}.0-pre.${Number(n) + 1}`,
+      `${major}.${minor}.${patch}-pre.${Number(n) + 1}`,
       `${major}.${Number(minor) + 1}.0-pre.1`,
-      `${major}.${minor}.0`,
+      `${major}.${minor}.${patch}`,
     ];
   }
   const parsed = parseSemver(newest);
   if (!parsed || parsed.prerelease.length > 0) return [];
   const { major, minor, patch } = parsed;
+  // Each of patch/minor/major, and the first preview of each.
+  //
+  // `A.B.(C+1)-pre.1` belongs HERE but deliberately NOT in the prerelease branch above, and the
+  // asymmetry is the whole point: from a stable, previewing the next patch skips nothing, because
+  // this line's stable has already shipped. From a PRERELEASE it would skip releasing the very
+  // version being previewed. Omitting it here left no legal way to START a patch preview from any
+  // stable -- including `0.1.0 -> 0.1.1-pre.1`, the exact transition
+  // decisions/npm-successor-version-line ratified -- so allowing patch-line prereleases to EXIST
+  // without this edge was only half a policy.
   return [
     `${major}.${minor}.${patch + 1}`,
     `${major}.${minor + 1}.0`,
     `${major + 1}.0.0`,
+    `${major}.${minor}.${patch + 1}-pre.1`,
     `${major}.${minor + 1}.0-pre.1`,
     `${major + 1}.0.0-pre.1`,
   ];
