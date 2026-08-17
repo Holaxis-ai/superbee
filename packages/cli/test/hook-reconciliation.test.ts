@@ -352,34 +352,44 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
 
 test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCode bytes", async () => {
   const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
-  for (const action of ["status", "install", "uninstall"] as const) {
-    const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-pre3-${action}-`));
-    const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
-    const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
-    try {
-      await mkdir(path.dirname(oldPlugin), { recursive: true });
-      await writeFile(oldPlugin, fixture);
-      const receipt = capture();
-      await hook([action, "--json"], {
-        base,
-        commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
-        stdout: receipt.stdout,
-      });
-      if (action === "status") {
-        assert.equal(JSON.parse(receipt.out()).hook.hosts.opencode.state, "legacy_identity");
-        assert.equal(await readFile(oldPlugin, "utf8"), fixture);
-      } else if (action === "install") {
-        await assert.rejects(() => readFile(oldPlugin, "utf8"));
-        assert.equal(
-          await readFile(newPlugin, "utf8"),
-          buildOpenCodePluginSource("/workspace/superbee/packages/cli/dist/superbee.mjs"),
-        );
-      } else {
-        await assert.rejects(() => readFile(oldPlugin, "utf8"));
-        await assert.rejects(() => readFile(newPlugin, "utf8"));
+  const sources = [
+    fixture,
+    fixture.replace('const command = "aslite";', 'const command = "agentstate-lite";'),
+    fixture.replace(
+      'const command = "aslite";',
+      'const command = "/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs";',
+    ),
+  ];
+  for (const [sourceIndex, source] of sources.entries()) {
+    for (const action of ["status", "install", "uninstall"] as const) {
+      const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-pre3-${sourceIndex}-${action}-`));
+      const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+      const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
+      try {
+        await mkdir(path.dirname(oldPlugin), { recursive: true });
+        await writeFile(oldPlugin, source);
+        const receipt = capture();
+        await hook([action, "--json"], {
+          base,
+          commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+          stdout: receipt.stdout,
+        });
+        if (action === "status") {
+          assert.equal(JSON.parse(receipt.out()).hook.hosts.opencode.state, "legacy_identity");
+          assert.equal(await readFile(oldPlugin, "utf8"), source);
+        } else if (action === "install") {
+          await assert.rejects(() => readFile(oldPlugin, "utf8"));
+          assert.equal(
+            await readFile(newPlugin, "utf8"),
+            buildOpenCodePluginSource("/workspace/superbee/packages/cli/dist/superbee.mjs"),
+          );
+        } else {
+          await assert.rejects(() => readFile(oldPlugin, "utf8"));
+          await assert.rejects(() => readFile(newPlugin, "utf8"));
+        }
+      } finally {
+        await rm(base, { recursive: true, force: true });
       }
-    } finally {
-      await rm(base, { recursive: true, force: true });
     }
   }
 });
@@ -390,6 +400,8 @@ test("edited published Aslite plugin parameters remain foreign and untouched", a
     fixture.replace("It is safe", "It is SAFE"),
     fixture.replace("const timeoutMs = 10000;", "const timeoutMs = 9000;"),
     fixture.replace('["session-start"]', '["session-stars"]'),
+    fixture.replace('const command = "aslite";', 'const command = "superbee";'),
+    fixture.replace('const command = "aslite";', 'const command = "/tmp/aslite";'),
   ];
   for (const [index, nearMatch] of variants.entries()) {
     for (const action of ["status", "install", "uninstall"] as const) {

@@ -36,7 +36,7 @@ import {
   rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, normalize, sep } from "node:path";
 import { parseArgs } from "node:util";
 import {
   computeCodexConfigUpdate,
@@ -670,6 +670,13 @@ function buildPublishedAsliteOpenCodePluginSource(
   });
 }
 
+function isPublishedAsliteOpenCodeProgram(program: string): boolean {
+  if (program === "aslite" || program === "agentstate-lite") return true;
+  if (!isAbsolute(program) || normalize(program) !== program) return false;
+  const portable = program.split(sep).join("/");
+  return /\/node_modules\/@holaxis\/aslite\/dist\/agentstate-lite\.mjs$/.test(portable);
+}
+
 /** Byte-for-byte reconstruction of the pre-argv axi-sdk-js generator for safe legacy ownership. */
 function buildLegacySdkOpenCodePluginSource(command: string, timeoutSeconds: number): string {
   return buildOpenCodePluginTemplate({
@@ -772,6 +779,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
         args.length === 1
         && args[0] === HOOK_SUBCOMMAND
         && timeoutMs === HOOK_TIMEOUT_SECONDS * 1000
+        && isPublishedAsliteOpenCodeProgram(command)
         && source === buildPublishedAsliteOpenCodePluginSource(command)
       )
     )
