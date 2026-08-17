@@ -33,9 +33,11 @@ import {
   existsSync,
   linkSync,
   lstatSync,
+  readlinkSync,
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, normalize, sep } from "node:path";
@@ -866,9 +868,12 @@ function openCodeClaimPath(path: string): string {
 
 function restoreOpenCodeClaim(claim: string, path: string): void {
   try {
-    linkSync(claim, path);
+    const entry = lstatSync(claim);
+    if (entry.isSymbolicLink()) symlinkSync(readlinkSync(claim), path);
+    else if (entry.isFile()) linkSync(claim, path);
+    else throw new Error("claimed entry is not a regular file or symlink");
   } catch (error) {
-    throw new Error(`OpenCode plugin changed during migration; recovery copy retained at ${claim}`, { cause: error });
+    throw new Error(`OpenCode plugin changed during migration; recovery copy retained at ${collapseHomeDirectory(claim)}`, { cause: error });
   }
   rmSync(claim, { force: true });
 }

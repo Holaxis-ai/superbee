@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createRequire, syncBuiltinESMExports } from "node:module";
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -472,42 +472,54 @@ test("OpenCode install and uninstall preserve a replacement made at the ownershi
   const foreign = "// concurrent user replacement\n";
   for (const entry of ["canonical", "legacy"] as const) {
     for (const action of ["install", "uninstall"] as const) {
-      const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-claim-${entry}-${action}-`));
-      const target = path.join(
-        base,
-        ".config",
-        "opencode",
-        "plugins",
-        entry === "canonical" ? "axi-superbee.js" : "axi-agentstate-lite.js",
-      );
-      const originalRename = mutableFs.renameSync;
-      try {
-        await mkdir(path.dirname(target), { recursive: true });
-        await writeFile(target, fixture);
-        let injected = false;
-        mutableFs.renameSync = ((oldPath, newPath) => {
-          if (!injected && oldPath === target && String(newPath).includes(".claim-")) {
-            injected = true;
-            mutableFs.writeFileSync(target, foreign);
-          }
-          return originalRename(oldPath, newPath);
-        }) as typeof mutableFs.renameSync;
-        syncBuiltinESMExports();
-
-        await assert.rejects(
-          () => hook([action, "--json"], {
-            base,
-            commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
-            stdout: () => {},
-          }),
-          /hook install failed|changed after inspection/,
+      for (const replacement of ["file", "symlink"] as const) {
+        const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-claim-${entry}-${action}-${replacement}-`));
+        const target = path.join(
+          base,
+          ".config",
+          "opencode",
+          "plugins",
+          entry === "canonical" ? "axi-superbee.js" : "axi-agentstate-lite.js",
         );
-        assert.equal(await readFile(target, "utf8"), foreign);
-        assert.equal((await readdir(path.dirname(target))).some((name) => name.includes(".claim-")), false);
-      } finally {
-        mutableFs.renameSync = originalRename;
-        syncBuiltinESMExports();
-        await rm(base, { recursive: true, force: true });
+        const external = path.join(base, "user-plugin.js");
+        const originalRename = mutableFs.renameSync;
+        try {
+          await mkdir(path.dirname(target), { recursive: true });
+          await writeFile(target, fixture);
+          await writeFile(external, foreign);
+          let injected = false;
+          mutableFs.renameSync = ((oldPath, newPath) => {
+            if (!injected && oldPath === target && String(newPath).includes(".claim-")) {
+              injected = true;
+              mutableFs.rmSync(target, { force: true });
+              if (replacement === "symlink") mutableFs.symlinkSync(external, target);
+              else mutableFs.writeFileSync(target, foreign);
+            }
+            return originalRename(oldPath, newPath);
+          }) as typeof mutableFs.renameSync;
+          syncBuiltinESMExports();
+
+          await assert.rejects(
+            () => hook([action, "--json"], {
+              base,
+              commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+              stdout: () => {},
+            }),
+            /hook install failed|changed after inspection/,
+          );
+          if (replacement === "symlink") {
+            assert.equal((await lstat(target)).isSymbolicLink(), true);
+            assert.equal(await readlink(target), external);
+          } else {
+            assert.equal((await lstat(target)).isFile(), true);
+          }
+          assert.equal(await readFile(target, "utf8"), foreign);
+          assert.equal((await readdir(path.dirname(target))).some((name) => name.includes(".claim-")), false);
+        } finally {
+          mutableFs.renameSync = originalRename;
+          syncBuiltinESMExports();
+          await rm(base, { recursive: true, force: true });
+        }
       }
     }
   }
