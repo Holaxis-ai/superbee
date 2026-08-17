@@ -235,6 +235,10 @@ test("the npm skill makes the AXI setup conductor the complete-install front doo
   assert.match(renderedNpm, /one `next\.command`/);
   assert.match(renderedNpm, /Ask the human before running a returned mutating\s+command/);
   assert.match(renderedNpm, /Foreign or unreadable state\s+returns a read-only inspection command/);
+  assert.match(renderedNpm, /catalog entry preserves a workspace for explicit MCP selection/);
+  assert.match(renderedNpm, /never selects that\s+workspace as the current project's context/);
+  assert.match(renderedNpm, /Do not read, write, orient from, or sync a\s+cataloged workspace/);
+  assert.match(renderedNpm, /If\s+the current checkout has no bundle, report that fact and stop bundle-oriented work/);
 });
 
 test("the typical flow creates a complete Context Note in one command", () => {

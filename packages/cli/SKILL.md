@@ -44,6 +44,12 @@ Ask the human before running a returned mutating command. Restart the host after
 or MCP changes, then rerun the same setup command to verify. Foreign or unreadable state
 returns a read-only inspection command instead of overwriting it.
 
+A catalog entry preserves a workspace for explicit MCP selection; it never selects that
+workspace as the current project's context. Do not read, write, orient from, or sync a
+cataloged workspace merely because setup or a legacy MCP registration references it. Operate
+only on a bundle resolved from the current checkout or one the user explicitly selects. If
+the current checkout has no bundle, report that fact and stop bundle-oriented work.
+
 ## Stable MCP launch
 
 For a persistent MCP integration, install the supported CLI with

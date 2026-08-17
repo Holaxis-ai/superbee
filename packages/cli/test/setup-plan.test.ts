@@ -169,4 +169,15 @@ test("bundle and catalog complete the conversational workspace journey without i
   }));
   assert.equal(catalogOnly.complete, true);
   assert.equal(catalogOnly.next, undefined);
+  assert.deepEqual(catalogOnly.workspace, {
+    current_project_bundle: "absent",
+    catalog_access: "ready",
+    catalog_selects_current_project: false,
+  });
+  const projectBundle = catalogOnly.capabilities.find((row) => row.id === "bundle")!;
+  assert.equal(projectBundle.state, "not_applicable");
+  assert.match(projectBundle.reason, /not project context/);
+  const catalog = catalogOnly.capabilities.find((row) => row.id === "catalog")!;
+  assert.equal(catalog.state, "ready");
+  assert.match(catalog.reason, /does not select current project context/);
 });

@@ -588,6 +588,20 @@ function renderHostSetupSection(): string[] {
   lines.push("or MCP changes, then rerun the same setup command to verify. Foreign or unreadable state");
   lines.push("returns a read-only inspection command instead of overwriting it.");
   lines.push("");
+  lines.push(
+    "A catalog entry preserves a workspace for explicit MCP selection; it never selects that",
+  );
+  lines.push(
+    "workspace as the current project's context. Do not read, write, orient from, or sync a",
+  );
+  lines.push(
+    "cataloged workspace merely because setup or a legacy MCP registration references it. Operate",
+  );
+  lines.push(
+    "only on a bundle resolved from the current checkout or one the user explicitly selects. If",
+  );
+  lines.push("the current checkout has no bundle, report that fact and stop bundle-oriented work.");
+  lines.push("");
   return lines;
 }
 

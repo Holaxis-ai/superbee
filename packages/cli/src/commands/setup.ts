@@ -28,6 +28,11 @@ deterministic plan. It never writes configuration or treats detected software as
 authority. Run the returned next.command, restart the named host after integration changes, and
 re-run the same setup command to verify.
 
+A catalog entry preserves a workspace for explicit MCP selection; it never selects that workspace
+as the current project's context. Do not read, write, orient from, or sync a cataloged workspace
+unless the current checkout resolves to it or the user explicitly selects it. If this checkout has
+no bundle, setup reports that state without borrowing one from another project.
+
 Options:
   --host <id>           Exact host: codex, claude-code, claude-desktop, or opencode
   --scope <scope>       Skill and hook scope: user (default) or project
