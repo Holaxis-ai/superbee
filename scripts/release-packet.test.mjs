@@ -967,7 +967,9 @@ test("transfer authority cross-attests pre-cutover history without requiring fut
         const protectedTag = targetManifest.allowed_tuples["successor-stable"].tag;
         const heads = await buildTransferBundle(input.evidence["transfer-bundle"], { extraTags: [protectedTag] });
         await writeRefEvidence(input.evidence, heads);
-      }, /protected release tag refs\/tags\/v0\.1\.0 is not transferable|transfer bundle heads differ/i],
+        // Derived from the manifest, exactly like protectedTag above. Hardcoding the tag made this
+        // go red on every tuple retarget, which is churn rather than signal.
+      }, new RegExp(`protected release tag refs/tags/${targetManifest.allowed_tuples["successor-stable"].tag.replace(/\./g, "\\.")} is not transferable|transfer bundle heads differ`, "i")],
     ]) {
       const input = await fixture(path.join(root, name));
       await mutate(input);
