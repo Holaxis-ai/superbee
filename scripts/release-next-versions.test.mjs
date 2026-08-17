@@ -275,6 +275,22 @@ test("CLI: an unsupported flag is rejected rather than silently ignored", async 
   assert.match(bogus.stderr, /unsupported flag --bogus/);
 });
 
+test("CLI: a repeated flag is a usage error, not a silent first-wins answer", async () => {
+  // `arg` resolves the first occurrence, so this used to exit 0 reporting from=0.1.1 and discard the
+  // contradictory 0.2.0 -- answering a different question than the one supplied.
+  const dupValue = await runCli(["--from", "0.1.1", "--from", "0.2.0", "--offline", "--json"]);
+  assert.equal(dupValue.code, 2, dupValue.stdout || dupValue.stderr);
+  assert.match(dupValue.stderr, /flag --from was supplied more than once/);
+
+  const dupBoolean = await runCli(["--from", "0.1.1", "--offline", "--json", "--json"]);
+  assert.equal(dupBoolean.code, 2, dupBoolean.stdout || dupBoolean.stderr);
+  assert.match(dupBoolean.stderr, /flag --json was supplied more than once/);
+
+  const dupOffline = await runCli(["--offline", "--offline"]);
+  assert.equal(dupOffline.code, 2, dupOffline.stdout || dupOffline.stderr);
+  assert.match(dupOffline.stderr, /flag --offline was supplied more than once/);
+});
+
 test("CLI: a stray positional argument is rejected", async () => {
   const r = await runCli(["0.1.1", "--offline"]);
   assert.equal(r.code, 2, r.stderr);

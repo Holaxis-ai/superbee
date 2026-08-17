@@ -196,10 +196,24 @@ function arg(argv, flag) {
  * `--from not-a-version` exited 0 with an empty table that reads as "nothing is available".
  */
 export function assertSupportedArgs(argv) {
+  const seen = new Set();
+  const claim = (flag) => {
+    // A repeated flag is not a harmless typo. `arg` resolves the FIRST occurrence, so
+    // `--from 0.1.1 --from 0.2.0` answered about 0.1.1 and reported success, silently discarding the
+    // contradictory second value -- the same class as an ignored unknown flag: answering a different
+    // question than the one supplied. There is no defensible winner between two conflicting values,
+    // so neither is chosen.
+    if (seen.has(flag)) throw new Error(`flag ${flag} was supplied more than once; remove the duplicate`);
+    seen.add(flag);
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
-    if (BOOLEAN_FLAGS.has(token)) continue;
+    if (BOOLEAN_FLAGS.has(token)) {
+      claim(token);
+      continue;
+    }
     if (VALUE_FLAGS.has(token)) {
+      claim(token);
       i += 1; // its value is consumed here; `arg` validates presence
       continue;
     }
