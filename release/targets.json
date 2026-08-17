@@ -29,13 +29,11 @@
       },
       "artifact": "dist/superbee.mjs",
       "bins": {
-        "superbee": "dist/superbee.mjs",
-        "aslite": "dist/superbee.mjs",
-        "agentstate-lite": "dist/superbee.mjs"
+        "superbee": "dist/superbee.mjs"
       },
       "tarball_basename": "superbee",
       "allow_production": true,
-      "expected_commands": ["superbee", "aslite", "agentstate-lite"],
+      "expected_commands": ["superbee"],
       "preferred_command": "superbee"
     },
     "successor-preview": {
@@ -45,13 +43,11 @@
       },
       "artifact": "dist/superbee.mjs",
       "bins": {
-        "superbee": "dist/superbee.mjs",
-        "aslite": "dist/superbee.mjs",
-        "agentstate-lite": "dist/superbee.mjs"
+        "superbee": "dist/superbee.mjs"
       },
       "tarball_basename": "superbee",
       "allow_production": true,
-      "expected_commands": ["superbee", "aslite", "agentstate-lite"],
+      "expected_commands": ["superbee"],
       "preferred_command": "superbee"
     },
     "rehearsal-reject": {

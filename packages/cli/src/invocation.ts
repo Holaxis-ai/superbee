@@ -1,7 +1,8 @@
 // Resolve the running CLI's OWN invocation for emitted follow-up commands + the home-view identity.
 //
-// The CLI is a standalone, npm-publishable package (`superbee`; legacy bin aliases
-// the legacy aliases `aslite` / `agentstate-lite` stay supported). Per AXI §7/§10 a printed
+// The CLI is a standalone, npm-publishable package (`superbee`; the successor installs only that
+// bin while legacy `aslite` / `agentstate-lite` invocations remain migration-recognized). Per AXI
+// §7/§10 a printed
 // follow-up command must be COPY-PASTE runnable and never a phantom path:
 //
 //   • cliInvocation() — the runnable command PREFIX for hints/help. If a managed bin name resolves on
@@ -18,9 +19,9 @@ import { realpathSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
 
-/** The npm package coordinate — the token used for the `npx -y <pkg>` fallback (bins stay in BIN_NAMES). */
+/** The npm package coordinate — the token used for the `npx -y <pkg>` fallback. */
 export const PACKAGE_NAME = "superbee";
-/** The bin names this package installs (see package.json `bin`); the first is preferred for hints. */
+/** Recognized current and legacy bin names; only the first is installed by the successor package. */
 export const BIN_NAMES = ["superbee", "aslite", "agentstate-lite"] as const;
 
 /** Collapse a leading $HOME to `~` (e.g. /Users/me/x → ~/x). Non-home paths pass through verbatim. */

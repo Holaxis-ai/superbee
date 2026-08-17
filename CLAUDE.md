@@ -19,7 +19,8 @@ one fixed document-reader App plus one fixed active-View shell for registered or
 Views; the reader delegates to the shared renderer, and the View shell uses the same launch,
 bridge, authorization, rendering, and governed-action authorities as the web host),
 and `packages/cli` —
-the **publishable npm package `superbee`** (the canonical bin is `superbee`; the legacy aliases `aslite` and `agentstate-lite` remain supported), an
+the **publishable npm package `superbee`** (it installs only the canonical `superbee` bin; legacy
+`aslite` and `agentstate-lite` invocations remain recognized solely for migration), an
 esbuild bundle that inlines core + board-git + server + the built UI assets + deps into one
 self-contained ESM file. The filesystem is the
 DEFAULT local backend; the storage seam is pluggable (gate 3). Hosted deployment code is outside
@@ -292,7 +293,7 @@ bundle-relative**.
   never ships (`files: ["dist"]`). Smoke-test the built CLI — at minimum `init`, `doc write`/`doc read`,
   `list`, `link add`/`show`, and `status` on `examples/sample-bundle`. Run
   `npm run verify:npm-package` to prove the exact tarball allowlist, zero-runtime-dependency
-  boundary, both command names on an isolated `PATH`, the absence of the retired marketplace
+  boundary, the canonical command on an isolated `PATH`, the absence of legacy alias bins and the retired marketplace
   executable roots, and an offline create/query workflow. The developer gate builds an honestly labeled
   `local-dev` tarball so it remains runnable on an in-progress/dirty checkout. `prepublishOnly`
   runs the same journey in strict `npm-package` mode and refuses unless Git proves an exact clean

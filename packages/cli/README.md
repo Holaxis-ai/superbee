@@ -3,8 +3,9 @@
 **An OKF-native, CLI-first, agent-facing knowledge store.** Context notes, docs, cross-links,
 and live bundle Views — as a plain folder of user-owned files that works offline,
 with an optional wire backend when a separate service hosts the bundle. `superbee` is the
-[Superbee](https://github.com/Holaxis-ai/superbee) project's CLI. Its historical `aslite` and
-`agentstate-lite` commands remain supported aliases for existing installations.
+[Superbee](https://github.com/Holaxis-ai/superbee) project's CLI. Historical `aslite` and
+`agentstate-lite` invocations are recognized for migration, but the successor package installs
+only the canonical `superbee` command.
 
 The npm artifact ships one self-contained executable file with **zero runtime dependencies**,
 plus the generated Agent Skill (`SKILL.md` and its `references/` folder — installable into host
@@ -12,12 +13,11 @@ skill folders with `superbee skill install`). npm is the sole executable distrib
 the installed Skill contains guidance and references, not a second CLI copy. Maintainers can
 reproduce the complete package proof from the
 repository root with `npm run verify:npm-package`; it builds, packs, installs into an isolated
-prefix, resolves both command names from `PATH`, and exercises an offline bundle workflow. This
+prefix, proves that only `superbee` resolves from `PATH`, and exercises an offline bundle workflow. This
 developer proof deliberately stamps `local-dev`, so it works on an in-progress/dirty checkout;
 `prepublishOnly` runs the same journey in strict `npm-package` mode and refuses unless Git proves
 an exact clean source commit.
-Install the supported default once (`superbee` is canonical; the legacy aliases `aslite` and
-`agentstate-lite` remain supported), then complete host setup:
+Install the supported default once, then complete host setup:
 
 ```sh
 npm install -g superbee
@@ -51,6 +51,10 @@ bundle through `superbee`; these commands are the plumbing, not a manual data-en
 Existing `.agentstate-lite/` bundles and `.agentstate.json` bindings need no migration. To try
 read-only and bootstrap commands without installing anything, run `npx -y superbee`; persistent
 integrations still require the global npm install.
+
+The successor package can be installed while a global `@holaxis/aslite` still supplies the old
+commands. Run `superbee setup` to migrate exact legacy integrations, then remove the old package
+with `npm uninstall -g @holaxis/aslite` when setup is complete.
 
 If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun
 `superbee setup` and follow its exact next command. The hook installer

@@ -348,7 +348,8 @@ test("npm: Superbee is the canonical skill and npm channel identity", () => {
   assert.match(renderedNpm, /^---\nname: superbee\n/);
   assert.match(renderedNpm, /npm install -g superbee/);
   assert.match(renderedNpm, /npx -y superbee/);
-  assert.match(renderedNpm, /legacy aliases `aslite` and `agentstate-lite`/);
+  assert.match(renderedNpm, /installing only the canonical `superbee` bin/);
+  assert.match(renderedNpm, /Legacy `aslite` and `agentstate-lite` invocations are recognized only for migration/);
   assert.ok(!renderedNpm.includes("npx -y agentstate-lite"), "retired npm coordinate must not appear");
   assert.ok(!renderedNpm.includes("npx -y aslite"), "retired unscoped npx coordinate must not appear");
   assert.ok(!renderedNpm.includes("@holaxis/aslite"), "legacy package coordinate must not be taught as current");

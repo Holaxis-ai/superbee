@@ -12,8 +12,8 @@ description: >-
 
 read and write a local OKF knowledge bundle (context notes, docs, cross-links, live bundle Views).
 
-It is a standalone npm package (`superbee`) installing three bins for the identical CLI: `superbee` and the
-legacy aliases `aslite` and `agentstate-lite`. Every example below uses `superbee`.
+It is a standalone npm package (`superbee`) installing only the canonical `superbee` bin.
+Legacy `aslite` and `agentstate-lite` invocations are recognized only for migration.
 
 Output is TOON on stdout (a `--json` hatch exists). Errors are structured TOON on stdout with a
 capped exit-code taxonomy (0 ok/no-op, 2 usage, 4 auth, 5 conflict, 6 not-found, 1 runtime).
@@ -24,7 +24,7 @@ capped exit-code taxonomy (0 ok/no-op, 2 usage, 4 auth, 5 conflict, 6 not-found,
 
 Every example below assumes the `superbee` bin is on PATH. If it is not:
 
-- `npm install -g superbee` puts it (and the legacy aliases `aslite` and `agentstate-lite`) on PATH.
+- `npm install -g superbee` puts the canonical `superbee` command on PATH.
 - `npx -y superbee …` runs any command below with no install at all — swap the leading `superbee`
   for that prefix and the rest of the line runs unchanged.
 
