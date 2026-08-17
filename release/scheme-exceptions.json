@@ -1,0 +1,16 @@
+{
+  "schema": "superbee.scheme-exceptions.v1",
+  "semantics": {
+    "what": "Prerelease version numbers that ARE published on the registry but do not match the contract's prerelease shape (A.B.0-pre.N). Read by scripts/release-audit-tags.mjs (npm run release:audit-tags), which skips a declared exception in its version-scheme check instead of failing the audit forever. Publication is irreversible, so a number published off-scheme can never be corrected in place - the only honest options are to widen the contract for everyone or to grandfather the specific number here. This file is the second option, and it keeps the contract intact for every future release.",
+    "rules": "Prerelease numbers only. Each entry requires a non-empty reason. An entry whose version the registry has NOT published is itself a violation (stale_scheme_exception): an exception exists to describe a published fact, so a number that was never published must be removed rather than pre-authorized. A declared exception is skipped entirely by the scheme check, so it also takes no place in its line's pre.N contiguity - the exception does not open a new prerelease line.",
+    "not_a_burn": "This is the mirror image of release/burned-versions.json and the two must never be confused. A burn covers a number consumed WITHOUT publication (immutable tag at an unreleasable commit); an exception covers a number consumed BY publication whose shape the contract does not allow. The burn ledger rejects published versions; this file rejects unpublished ones.",
+    "lifecycle": "Adding an entry is a reviewed commit that must name why the number was published off-scheme and what keeps it from recurring. Entries are permanent while the version remains published - unpublishing is not a supported remedy - so the review question is never 'should we allow this shape' but 'is this specific published number the one we are grandfathering'."
+  },
+  "reviewed_at": "2026-08-17",
+  "exceptions": [
+    {
+      "version": "0.1.1-pre.2",
+      "reason": "published 2026-08-16 as the first live exercise of the superbee OIDC trusted-publisher binding, on a 0.1.1-pre.N line the contract does not permit (prereleases are A.B.0-pre.N). The numbering was chosen to avoid burning the 0.1.0 stable number on a first live run, without checking it against the scheme rule; the release path does not consult the audit, so nothing blocked it. Publication is irreversible and the version is installable and promoted to latest, so the number stays. Future prereleases return to the contract shape on the 0.2.0-pre.N line - 0.1.0 stable is unreachable (tag v0.1.0 is spent), so the next stable is 0.1.1 and no further 0.1.x prerelease is needed."
+    }
+  ]
+}

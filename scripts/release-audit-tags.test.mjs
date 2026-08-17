@@ -21,6 +21,7 @@ import {
   parsePhaseDeclaration,
   isNameReservingPlaceholder,
   readBurnedDeclaration,
+  readSchemeExceptionsDeclaration,
   registryUrlFor,
   saneSuccessors,
 } from "./release-audit-tags.mjs";
@@ -264,6 +265,86 @@ test("off-scheme prerelease label (rc) is a violation", () => {
   assert.deepEqual(violations.map((v) => v.code), ["off_scheme_version"]);
 });
 
+// --- b2. grandfathered scheme exceptions (release/scheme-exceptions.json) ---
+//
+// Publication is irreversible: an off-scheme number on the registry would otherwise fail the audit
+// on every PR forever, since the scheme check reads the registry and no branch content can affect
+// it. An exception grandfathers exactly one published number without widening the contract.
+
+const OFF_SCHEME_TIME = { "0.1.1-pre.2": "2026-08-16T22:00:00.000Z" };
+
+test("a declared scheme exception clears the off-scheme violation for that published version", () => {
+  const withoutException = checkVersionScheme(["0.1.1-pre.2"], OFF_SCHEME_TIME);
+  assert.deepEqual(withoutException.map((v) => v.code), ["off_scheme_version"]);
+  const withException = checkVersionScheme(["0.1.1-pre.2"], OFF_SCHEME_TIME, [], ["0.1.1-pre.2"]);
+  assert.deepEqual(withException, []);
+});
+
+test("a scheme exception takes no contiguity slot — it does not open a 0.1.1 prerelease line", () => {
+  // If the excepted version were merely allowed rather than skipped, its line would hold N = [2]
+  // and trip pre_n_gap for the missing pre.1. Skipping it entirely is what keeps the audit green
+  // without also having to declare a burn on a line the contract does not recognize.
+  const violations = checkVersionScheme(["0.1.1-pre.2"], OFF_SCHEME_TIME, [], ["0.1.1-pre.2"]);
+  assert.deepEqual(violations, [], "excepted version must not be measured for pre.N contiguity");
+});
+
+test("a scheme exception the registry has NOT published is a stale_scheme_exception violation", () => {
+  const violations = checkVersionScheme(["0.1.0-pre.1"], { "0.1.0-pre.1": "2026-07-21T00:00:00.000Z" }, [], ["0.1.1-pre.9"]);
+  assert.deepEqual(violations.map((v) => v.code), ["stale_scheme_exception"]);
+});
+
+test("a scheme exception does not excuse a DIFFERENT off-scheme published version", () => {
+  const versions = ["0.1.1-pre.2", "0.2.3-pre.1"];
+  const time = { ...OFF_SCHEME_TIME, "0.2.3-pre.1": "2026-08-17T00:00:00.000Z" };
+  const violations = checkVersionScheme(versions, time, [], ["0.1.1-pre.2"]);
+  assert.deepEqual(violations.map((v) => v.code), ["off_scheme_version"]);
+  assert.match(violations[0].message, /0\.2\.3-pre\.1/);
+});
+
+test("the LIVE registry shape — 0.0.1 placeholder plus grandfathered 0.1.1-pre.2 — passes the scheme check", () => {
+  const versions = ["0.0.1", "0.1.1-pre.2"];
+  const time = { "0.0.1": "2026-08-15T00:00:00.000Z", ...OFF_SCHEME_TIME };
+  assert.deepEqual(checkVersionScheme(versions, time, [], ["0.1.1-pre.2"]), []);
+});
+
+test("scheme-exceptions declaration: absent file excepts nothing", () => {
+  assert.deepEqual(readSchemeExceptionsDeclaration(null), []);
+  assert.deepEqual(readSchemeExceptionsDeclaration(undefined), []);
+});
+
+test("scheme-exceptions declaration rejects malformed shapes rather than silently widening", () => {
+  assert.throws(() => readSchemeExceptionsDeclaration([]), /must be a JSON object/);
+  assert.throws(() => readSchemeExceptionsDeclaration({}), /requires an exceptions: \[\] array/);
+  assert.throws(() => readSchemeExceptionsDeclaration({ exceptions: ["0.1.1-pre.2"] }), /must be an object/);
+  assert.throws(() => readSchemeExceptionsDeclaration({ exceptions: [{ version: "nope", reason: "r" }] }), /is not SemVer/);
+  assert.throws(
+    () => readSchemeExceptionsDeclaration({ exceptions: [{ version: "0.1.1", reason: "r" }] }),
+    /is a STABLE version/,
+  );
+  assert.throws(
+    () => readSchemeExceptionsDeclaration({ exceptions: [{ version: "0.1.1-pre.2", reason: "  " }] }),
+    /requires a non-empty reason/,
+  );
+  assert.throws(
+    () =>
+      readSchemeExceptionsDeclaration({
+        exceptions: [
+          { version: "0.1.1-pre.2", reason: "a" },
+          { version: "0.1.1-pre.2", reason: "b" },
+        ],
+      }),
+    /declared twice/,
+  );
+});
+
+test("the COMMITTED scheme-exceptions declaration grandfathers exactly the published 0.1.1-pre.2", async () => {
+  const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  const declared = readSchemeExceptionsDeclaration(
+    JSON.parse(await readFile(path.join(root, "release", "scheme-exceptions.json"), "utf8")),
+  );
+  assert.deepEqual(declared, ["0.1.1-pre.2"], "a new exception is a reviewed act; update this test with it");
+});
+
 test("publish times out of order for pre.N is a violation", () => {
   const time = {
     "0.1.0-pre.1": "2026-07-21T00:00:00.000Z",
@@ -484,6 +565,12 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   // reports no_prior_release). --phase-file is the CLI's own override for exactly this.
   const atRest = path.join(scratch, "phase-at-rest.json");
   await writeFile(atRest, JSON.stringify({ schema: "aslite.release-phase.v1", phase: "at_rest", kind: null, version: null }));
+  // Same reasoning for the scheme exceptions: a committed exception must be PUBLISHED (an absent
+  // one is a stale_scheme_exception), and this test's synthesized registry publishes only what it
+  // derives from the source version. Pin an empty declaration so the exit-code assertions stay
+  // about exit codes rather than about which numbers the live registry happens to carry.
+  const noExceptions = path.join(scratch, "scheme-exceptions-none.json");
+  await writeFile(noExceptions, JSON.stringify({ schema: "superbee.scheme-exceptions.v1", exceptions: [] }));
   const cliVersion = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8")).version;
   // Derive a scheme-consistent published set from the ACTUAL source version so this test keeps
   // passing across future version bumps (the audit reads the real package.json + phase and
@@ -499,16 +586,16 @@ test("CLI exit codes: 0 on policy pass, 1 on violation, 20 on network failure", 
   await writeFile(passing, JSON.stringify({ "dist-tags": { latest: cliVersion, next: cliVersion }, versions, time }));
   await writeFile(violating, JSON.stringify({ "dist-tags": { latest: "0.0.1", next: cliVersion }, versions, time }));
 
-  const pass = await runAudit(["--registry-json", passing, "--phase-file", atRest]);
+  const pass = await runAudit(["--registry-json", passing, "--phase-file", atRest, "--scheme-exceptions-file", noExceptions]);
   assert.equal(pass.code, 0, pass.stderr);
   assert.match(pass.stdout, /release-audit: PASS/);
 
-  const fail = await runAudit(["--registry-json", violating, "--phase-file", atRest]);
+  const fail = await runAudit(["--registry-json", violating, "--phase-file", atRest, "--scheme-exceptions-file", noExceptions]);
   assert.equal(fail.code, 1, fail.stderr);
   assert.match(fail.stderr, /VIOLATION\[latest_off_policy\]/);
 
   // Closed loopback port: connection refused is a NETWORK condition, never a red.
-  const network = await runAudit(["--registry-url", "http://127.0.0.1:1/@holaxis%2faslite", "--phase-file", atRest]);
+  const network = await runAudit(["--registry-url", "http://127.0.0.1:1/@holaxis%2faslite", "--phase-file", atRest, "--scheme-exceptions-file", noExceptions]);
   assert.equal(network.code, 20, network.stderr);
   assert.match(network.stderr, /release-audit: NETWORK/);
 });

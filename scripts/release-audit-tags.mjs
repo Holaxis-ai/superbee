@@ -184,11 +184,32 @@ export function checkDeclarationConsistency(declaration, sourceVersion) {
   return violations;
 }
 
-/** Contract §1 numbering: pre-stable publishes are A.B.0-pre.N, N contiguous from 1, times monotone. */
-export function checkVersionScheme(versions, time, burnedVersions = []) {
+/**
+ * Contract §1 numbering: pre-stable publishes are A.B.0-pre.N, N contiguous from 1, times monotone.
+ *
+ * `schemeExceptions` are published numbers grandfathered by release/scheme-exceptions.json. An
+ * exception is skipped ENTIRELY — it raises no scheme violation and takes no place in its line's
+ * contiguity — because publication is irreversible: once an off-scheme number is on the registry,
+ * the audit either fails forever or the specific number is excepted. A declared exception the
+ * registry has not published is itself a violation, so the list cannot pre-authorize a shape.
+ */
+export function checkVersionScheme(versions, time, burnedVersions = [], schemeExceptions = []) {
   const violations = [];
+  const excepted = new Set(schemeExceptions);
+  const published = new Set(versions);
+  for (const version of schemeExceptions) {
+    if (!published.has(version)) {
+      violations.push(
+        violation(
+          "stale_scheme_exception",
+          `scheme-exceptions declaration lists ${version} but the registry has NOT published it; an exception describes a published fact, so remove it from release/scheme-exceptions.json rather than pre-authorizing the shape`,
+        ),
+      );
+    }
+  }
   const lines = new Map(); // "A.B" -> [{ n, version }]
   for (const version of versions) {
+    if (excepted.has(version)) continue; // grandfathered: no scheme check, no contiguity slot
     const parsed = parseSemver(version);
     if (!parsed) {
       violations.push(violation("invalid_semver", `published version ${version} is not SemVer`));
@@ -438,6 +459,32 @@ export function readBurnedDeclaration(raw) {
   return raw.burned.map((entry) => entry.version);
 }
 
+/**
+ * Validate the committed scheme-exceptions declaration (release/scheme-exceptions.json). `raw` is
+ * the parsed JSON object, or null for an absent file (= nothing excepted). An exception is a
+ * PUBLISHED prerelease number whose shape the contract does not allow, grandfathered explicitly
+ * with a reason because publication cannot be undone. This is the mirror image of the burn ledger
+ * and shares its failure discipline: an unreadable declaration must fail the audit, never silently
+ * widen it. The published-vs-unpublished check belongs to checkVersionScheme, which sees the
+ * registry; this validator only enforces the declaration's own shape.
+ */
+export function readSchemeExceptionsDeclaration(raw) {
+  if (raw === null || raw === undefined) return [];
+  if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("scheme-exceptions declaration must be a JSON object");
+  if (!Array.isArray(raw.exceptions)) throw new Error("scheme-exceptions declaration requires an exceptions: [] array");
+  const seen = new Set();
+  for (const entry of raw.exceptions) {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) throw new Error("each scheme-exception entry must be an object");
+    const parsed = parseSemver(entry.version);
+    if (!parsed) throw new Error(`scheme-exception entry version ${JSON.stringify(entry.version)} is not SemVer`);
+    if (parsed.prerelease.length === 0) throw new Error(`scheme-exception entry ${entry.version} is a STABLE version; the prerelease scheme constrains prereleases only`);
+    if (typeof entry.reason !== "string" || entry.reason.trim() === "") throw new Error(`scheme-exception entry ${entry.version} requires a non-empty reason`);
+    if (seen.has(entry.version)) throw new Error(`scheme-exception entry ${entry.version} is declared twice`);
+    seen.add(entry.version);
+  }
+  return raw.exceptions.map((entry) => entry.version);
+}
+
 export function checkSourceDrift(sourceVersion, versions, burnedVersions = []) {
   if (!parseSemver(sourceVersion)) {
     return { violations: [violation("invalid_source_version", `packages/cli version ${JSON.stringify(sourceVersion)} is not SemVer`)] };
@@ -498,12 +545,12 @@ export function checkSourceDrift(sourceVersion, versions, burnedVersions = []) {
  * The pure audit over one registry snapshot. Returns { violations, notes, facts }; empty
  * violations means the registry, phase declaration, and source agree with policy.
  */
-export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [], destiny = defaultDistTagDestiny(PACKAGE) }) {
+export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [], schemeExceptions = [], destiny = defaultDistTagDestiny(PACKAGE) }) {
   const { distTags, versions, time } = registry;
   const violations = [];
   const notes = [];
 
-  violations.push(...checkVersionScheme(versions, time, burnedVersions));
+  violations.push(...checkVersionScheme(versions, time, burnedVersions, schemeExceptions));
   violations.push(...checkDeclarationConsistency(declaration, sourceVersion));
 
   const tagState = expectedTagState({ declaration, versions, observedTags: distTags, destiny });
@@ -588,6 +635,7 @@ function arg(argv, flag) {
 export async function main(argv = process.argv.slice(2)) {
   const phaseFile = arg(argv, "--phase-file") ?? path.join(repoRoot, "release", "phase.json");
   const burnedFile = arg(argv, "--burned-file") ?? path.join(repoRoot, "release", "burned-versions.json");
+  const schemeExceptionsFile = arg(argv, "--scheme-exceptions-file") ?? path.join(repoRoot, "release", "scheme-exceptions.json");
   const registryJson = arg(argv, "--registry-json"); // replay hatch: audit a captured payload
   const registryUrl = arg(argv, "--registry-url") ?? REGISTRY_URL; // test hatch for the network path
 
@@ -611,6 +659,19 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(`release-audit: VIOLATION[burned_declaration]: ${error.message}`);
     return EXIT_VIOLATION;
   }
+  let schemeExceptions;
+  try {
+    let exceptionsRaw = null;
+    try {
+      exceptionsRaw = JSON.parse(await readFile(schemeExceptionsFile, "utf8"));
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    schemeExceptions = readSchemeExceptionsDeclaration(exceptionsRaw);
+  } catch (error) {
+    console.error(`release-audit: VIOLATION[scheme_exceptions_declaration]: ${error.message}`);
+    return EXIT_VIOLATION;
+  }
   const cliManifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
 
   let registry;
@@ -624,7 +685,7 @@ export async function main(argv = process.argv.slice(2)) {
     return EXIT_VIOLATION;
   }
 
-  const result = auditRegistryState({ declaration, sourceVersion: cliManifest.version, registry, burnedVersions });
+  const result = auditRegistryState({ declaration, sourceVersion: cliManifest.version, registry, burnedVersions, schemeExceptions });
   console.log(`release-audit: package ${PACKAGE}`);
   console.log(`release-audit: facts ${JSON.stringify(result.facts)}`);
   for (const note of result.notes) console.log(`release-audit: note: ${note}`);
