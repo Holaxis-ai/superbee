@@ -126,6 +126,29 @@ test("incomplete setup is a successful diagnosis with one next command", async (
   assert.equal(parsed.setup.next.command, "superbee mcp install --host claude-desktop");
 });
 
+test("known legacy MCP state returns inspection instead of an install command that will refuse it", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.inspectMcp = (targets) => targets.map((target) => ({
+    host: target.id,
+    label: target.label,
+    state: "known_legacy",
+    config: "~/.claude.json",
+    reason: "registration 'aslite-views' is a legacy candidate; inspect it before migration",
+    docs_url: target.docs_url,
+  }));
+  await setup(["--host", "claude-code", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: { ready: boolean; next: { action: string; command: string } };
+  };
+  assert.equal(parsed.setup.ready, false);
+  assert.deepEqual(parsed.setup.next, {
+    action: "inspect",
+    command: "superbee mcp status --host claude-code",
+    reason: "registration 'aslite-views' is a legacy candidate; inspect it before migration",
+  });
+});
+
 test("setup validates exact host, scope, arity, and serves offline help", async () => {
   await assert.rejects(setup(["--host", "unknown"], deps(() => {})), (error: unknown) =>
     error instanceof CliError && error.code === "USAGE");
