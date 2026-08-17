@@ -343,7 +343,30 @@ test("sane successors of a prerelease: next pre.N, next minor pre.1, the line's 
 });
 
 test("sane successors of a stable: patch, minor, major, and their first previews", () => {
-  assert.deepEqual(saneSuccessors("0.1.0"), ["0.1.1", "0.2.0", "1.0.0", "0.2.0-pre.1", "1.0.0-pre.1"]);
+  // This name always promised the patch's first preview too; the list omitted it, leaving no legal
+  // way to START a patch preview from any stable.
+  assert.deepEqual(saneSuccessors("0.1.0"), ["0.1.1", "0.2.0", "1.0.0", "0.1.1-pre.1", "0.2.0-pre.1", "1.0.0-pre.1"]);
+});
+
+test("a stable can START a patch preview — the ratified 0.1.0 -> 0.1.1-pre.1 transition is legal", () => {
+  // decisions/npm-successor-version-line selected stable on `latest` with 0.1.1-pre.1 on `next`.
+  // Allowing patch-line prereleases to EXIST while the successor authority refused to reach one made
+  // that decision unimplementable, so this asserts the decision's own transition directly.
+  assert.ok(saneSuccessors("0.1.0").includes("0.1.1-pre.1"));
+  assert.deepEqual(checkSourceDrift("0.1.1-pre.1", ["0.0.1", "0.1.0"]).violations, []);
+});
+
+test("every stable can start its next patch preview, at any position in the number space", () => {
+  for (const [from, want] of [["0.1.1", "0.1.2-pre.1"], ["0.1.2", "0.1.3-pre.1"], ["0.2.0", "0.2.1-pre.1"], ["1.0.0", "1.0.1-pre.1"]]) {
+    assert.ok(saneSuccessors(from).includes(want), `${from} -> ${want}`);
+  }
+});
+
+test("a PRERELEASE still cannot jump to the next patch's preview — it would skip its own release", () => {
+  // The counterpart of the rule above, and the reason the two branches differ. From 0.1.1-pre.2 the
+  // next patch preview would abandon 0.1.1 unreleased.
+  assert.ok(!saneSuccessors("0.1.1-pre.2").includes("0.1.2-pre.1"));
+  assert.ok(saneSuccessors("0.1.1-pre.2").includes("0.1.1"), "its own stable remains the way forward");
 });
 
 test("first-stable prep passes: source 0.1.0 over newest 0.1.0-pre.3", () => {

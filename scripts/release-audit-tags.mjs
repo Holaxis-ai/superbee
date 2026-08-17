@@ -428,10 +428,20 @@ export function saneSuccessors(newest) {
   const parsed = parseSemver(newest);
   if (!parsed || parsed.prerelease.length > 0) return [];
   const { major, minor, patch } = parsed;
+  // Each of patch/minor/major, and the first preview of each.
+  //
+  // `A.B.(C+1)-pre.1` belongs HERE but deliberately NOT in the prerelease branch above, and the
+  // asymmetry is the whole point: from a stable, previewing the next patch skips nothing, because
+  // this line's stable has already shipped. From a PRERELEASE it would skip releasing the very
+  // version being previewed. Omitting it here left no legal way to START a patch preview from any
+  // stable -- including `0.1.0 -> 0.1.1-pre.1`, the exact transition
+  // decisions/npm-successor-version-line ratified -- so allowing patch-line prereleases to EXIST
+  // without this edge was only half a policy.
   return [
     `${major}.${minor}.${patch + 1}`,
     `${major}.${minor + 1}.0`,
     `${major + 1}.0.0`,
+    `${major}.${minor}.${patch + 1}-pre.1`,
     `${major}.${minor + 1}.0-pre.1`,
     `${major + 1}.0.0-pre.1`,
   ];

@@ -52,7 +52,7 @@ import {
   registryUrlFor,
 } from "./release-publication-policy.mjs";
 import { loadReleaseTargets } from "./release-targets.mjs";
-import { compareStrictSemver } from "./strict-semver.mjs";
+import { compareStrictSemver, isStrictSemver } from "./strict-semver.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -69,13 +69,40 @@ export function nextVersionCandidates(from) {
 
 // ------------------------------------------------------------ layer 2: CONSUMED
 
-/** Tags present in the repository. A spent tag is the hardest blocker: v* refs are immutable. */
-export async function existingTags({ cwd = repoRoot } = {}) {
+/**
+ * Tags that exist, from the AUTHORITATIVE source. A spent tag is the hardest blocker, because v*
+ * refs are immutable -- so getting this wrong is the worst failure this command can have.
+ *
+ * Local `git tag --list` is NOT authoritative: a stale clone that has never fetched will happily
+ * report a remotely-existing immutable tag as absent, and the candidate then reads as USABLE. So the
+ * remote is asked first via `ls-remote` (read-only, no ref updates), and local tags are unioned in
+ * because a tag created locally but not yet pushed still consumes the number for our purposes.
+ *
+ * When the remote cannot be reached the result is INDETERMINATE (null), never the local set dressed
+ * up as complete. Callers must treat null as "not verified", not as "nothing spent".
+ */
+export async function existingTags({ cwd = repoRoot, remote = "origin", timeoutMs = 10_000 } = {}) {
+  const local = new Set();
   try {
     const { stdout } = await execFileAsync("git", ["tag", "--list", "v*"], { cwd });
-    return new Set(stdout.split("\n").map((line) => line.trim()).filter(Boolean));
+    for (const line of stdout.split("\n")) {
+      const tag = line.trim();
+      if (tag) local.add(tag);
+    }
   } catch {
-    return null; // not a git repo, or git unavailable: report unknown rather than "free"
+    return null; // not a git repo, or git unavailable
+  }
+
+  try {
+    const { stdout } = await execFileAsync("git", ["ls-remote", "--tags", "--refs", remote, "v*"], { cwd, timeout: timeoutMs });
+    const remoteTags = new Set(local);
+    for (const line of stdout.split("\n")) {
+      const ref = line.split("\t")[1]?.trim();
+      if (ref?.startsWith("refs/tags/")) remoteTags.add(ref.slice("refs/tags/".length));
+    }
+    return remoteTags;
+  } catch {
+    return null; // remote unreachable/unauthenticated: indeterminate, NOT "only what is local"
   }
 }
 
@@ -100,14 +127,19 @@ export function screenForConsumption(candidates, { published = [], tags = null, 
     const tag = `v${version}`;
     const blockers = [];
     if (publishedSet.has(version)) blockers.push(`already published as ${PACKAGE}@${version}`);
-    if (tags?.has(tag)) blockers.push(`tag ${tag} already exists and v* tags are immutable`);
+    // `tags === null` means tag existence could NOT be established (no git, or the remote was
+    // unreachable). That must never render as usable: a stale clone reporting a remotely-existing
+    // immutable tag as free is precisely the false green that makes a trusted tool dangerous.
+    const tagState = tags === null ? "unverified" : tags.has(tag) ? "spent" : "free";
+    if (tagState === "spent") blockers.push(`tag ${tag} already exists and v* tags are immutable`);
+    if (tagState === "unverified") blockers.push(`tag ${tag} existence UNVERIFIED (no authoritative tag evidence) — verify before using`);
     const claim = claimedBy.get(version);
     return {
       version,
       tag,
       usable: blockers.length === 0,
       blockers,
-      tag_state: tags === null ? "unknown" : tags.has(tag) ? "spent" : "free",
+      tag_state: tagState,
       claimed_by: claim?.id ?? null,
       claimed_for_package: claim?.package ?? null,
     };
@@ -145,12 +177,39 @@ export function classifySuccessors({ from, published = [], burned = [], tags = n
 
 // ------------------------------------------------------------------------- CLI
 
+const VALUE_FLAGS = new Set(["--from"]);
+const BOOLEAN_FLAGS = new Set(["--json", "--offline"]);
+
 function arg(argv, flag) {
   const at = argv.indexOf(flag);
   if (at === -1) return undefined;
   const value = argv[at + 1];
   if (!value || value.startsWith("--")) throw new Error(`missing value for ${flag}`);
   return value;
+}
+
+/**
+ * Reject anything not explicitly supported, rather than ignoring it.
+ *
+ * Silently ignoring an unknown flag answers a DIFFERENT question than the one asked and reports
+ * success doing it -- `--package @holaxis/aslite` would have quietly returned superbee's answer, and
+ * `--from not-a-version` exited 0 with an empty table that reads as "nothing is available".
+ */
+export function assertSupportedArgs(argv) {
+  for (let i = 0; i < argv.length; i += 1) {
+    const token = argv[i];
+    if (BOOLEAN_FLAGS.has(token)) continue;
+    if (VALUE_FLAGS.has(token)) {
+      i += 1; // its value is consumed here; `arg` validates presence
+      continue;
+    }
+    if (token.startsWith("-")) {
+      throw new Error(
+        `unsupported flag ${token} (supported: ${[...VALUE_FLAGS, ...BOOLEAN_FLAGS].sort().join(", ")})`,
+      );
+    }
+    throw new Error(`unexpected positional argument ${JSON.stringify(token)}`);
+  }
 }
 
 function newestOf(versions) {
@@ -162,7 +221,13 @@ export async function main(argv = process.argv.slice(2)) {
   let asJson;
   let offline;
   try {
+    assertSupportedArgs(argv);
     from = arg(argv, "--from");
+    if (from !== undefined && !isStrictSemver(from)) {
+      // Without this, saneSuccessors returns [] for a malformed version and the command prints an
+      // empty table and exits 0 — indistinguishable from a real "nothing is available" answer.
+      throw new Error(`--from ${JSON.stringify(from)} is not a strict SemVer version`);
+    }
     asJson = argv.includes("--json");
     offline = argv.includes("--offline");
   } catch (error) {
