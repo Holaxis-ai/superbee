@@ -11,6 +11,14 @@ import { KNOWN_COMMANDS } from "../src/cli.js";
 import { CLI_LEAVES, type PublicLeaf, type PublicLeafId } from "../src/command-spec.js";
 import { assertLeafArity } from "../src/positional-arity.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
+import { BLOBS_USAGE } from "../src/commands/blobs.js";
+import {
+  BEHAVIOR_ASSIGNMENTS,
+  BUILT_KEY_REPRESENTATIVE_IDS,
+  BUILT_REPRESENTATIVE_IDS,
+  assignmentIndex,
+  validateBehaviorCoverage,
+} from "./arity-equivalence-matrix.js";
 
 const CLI = resolve(import.meta.dirname, "../dist/superbee.mjs");
 const SURPLUS = "arity-surplus-sentinel";
@@ -185,14 +193,20 @@ test("documented paths, runtime top-level registration, arity, and executable ro
   assert.deepEqual(Object.keys(rows).sort(), Object.keys(CLI_LEAVES).sort());
   assert.deepEqual(Object.values(rows).map((row) => row.leaf.path).sort(), [...paths].sort());
   assert.deepEqual([...new Set(paths.map((path) => path.split(" ")[0]))].sort(), [...KNOWN_COMMANDS].sort());
+  assert.deepEqual(validateBehaviorCoverage(Object.keys(rows), BEHAVIOR_ASSIGNMENTS, BUILT_KEY_REPRESENTATIVE_IDS), []);
+  const assignments = assignmentIndex();
+  for (const [id, row] of Object.entries(rows) as [PublicLeafId, LeafCase][]) {
+    assert.equal(row.errorChannel ?? "stdout", assignments.get(id)?.dimensions.errorChannel, `${row.leaf.path}: error channel`);
+  }
 });
 
-test("every catalogued built leaf has a valid boundary and rejects one derived surplus with an exact envelope", () => {
+test("built key owners and review sentinels reject surplus with the exact envelope", () => {
   const ctx = createFixture();
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);
 
-  for (const [id, row] of Object.entries(rows)) {
+  for (const id of BUILT_REPRESENTATIVE_IDS) {
+    const row = rows[id];
     const contract = row.leaf.arity;
     const path = row.leaf.path;
     assert.equal(contract.kind, "exact", `${id}: matrix derivation requires an exact contract`);
@@ -201,13 +215,19 @@ test("every catalogued built leaf has a valid boundary and rejects one derived s
 
     const result = run(row.argv([...row.operands, SURPLUS]), ctx.scratch, ctx.env);
     assert.equal(result.status, 2, `${path}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
+    if (id === "pull") {
+      assert.notEqual(result.stdout, "", "pull raw-stdout mode must not hoist channel routing above arity validation");
+      assert.equal(result.stderr, "", "pull raw-stdout mode reserves stderr routing until after arity validation");
+    }
     const envelope = decodedError(result, row, path);
     assert.equal(envelope.error.code, "USAGE", path);
+    const expected = contract.count === 0
+      ? "no positional arguments"
+      : `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`;
+    assert.equal(envelope.error.message, `${row.leaf.canonical.path} expected ${expected}; received ${contract.count + 1}`, path);
     assert.deepEqual(envelope.error.details, {
       command: row.leaf.canonical.path,
-      expected: contract.count === 0
-        ? "no positional arguments"
-        : `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`,
+      expected,
       actual: contract.count + 1,
       surplus: 1,
       first_unexpected: SURPLUS,
@@ -216,11 +236,20 @@ test("every catalogued built leaf has a valid boundary and rejects one derived s
   }
 
   assert.equal(existsSync(ctx.initTarget), false);
-  assert.equal(treeSnapshot(ctx.bundle), bundleBefore, "surplus leaves, including schema-deferred new, must not mutate the bundle");
+  assert.equal(treeSnapshot(ctx.bundle), bundleBefore, "surplus representatives, including schema-deferred new, must not mutate the bundle");
 
-  const terminated = run(["new", "Context Note", "terminated", "--dir", ctx.bundle, "--", "--title", SURPLUS], ctx.scratch, ctx.env);
-  assert.equal(terminated.status, 2, terminated.stdout + terminated.stderr);
-  assert.equal(treeSnapshot(ctx.bundle), bundleBefore, "-- terminated schema-deferred surplus must leave recursive bytes unchanged");
+  const terminatedOrdinary = run(["list", "--", "--help"], ctx.scratch, ctx.env);
+  assert.equal(terminatedOrdinary.status, 2, terminatedOrdinary.stdout + terminatedOrdinary.stderr);
+  assert.equal(decodedError(terminatedOrdinary, rows.list, "list -- --help").error.details?.first_unexpected, "--help");
+
+  const terminatedSchema = run(["new", "Context Note", "terminated", "--dir", ctx.bundle, "--", "--title", SURPLUS], ctx.scratch, ctx.env);
+  assert.equal(terminatedSchema.status, 2, terminatedSchema.stdout + terminatedSchema.stderr);
+  assert.equal(decodedError(terminatedSchema, rows.new, "new -- --title").error.details?.first_unexpected, "--title");
+
+  const terminatedDynamic = run(["doc", "update", "existing", "--title", "Changed", "--dir", ctx.bundle, "--", "--help"], ctx.scratch, ctx.env);
+  assert.equal(terminatedDynamic.status, 2, terminatedDynamic.stdout + terminatedDynamic.stderr);
+  assert.equal(decodedError(terminatedDynamic, rows.docUpdate, "doc update -- --help").error.details?.first_unexpected, "--help");
+  assert.equal(treeSnapshot(ctx.bundle), bundleBefore, "terminated option-like positionals must be rejected before mutation");
 
   const explicitHome = run(["home", SURPLUS], ctx.scratch, ctx.env);
   assert.equal(explicitHome.status, 2);
@@ -230,12 +259,13 @@ test("every catalogued built leaf has a valid boundary and rejects one derived s
   assert.equal(shadow.status, 2);
 });
 
-test("selected missing boundaries and help precedence are executable across the matrix", () => {
+test("built key owners and review sentinels prove missing and help precedence", () => {
   const ctx = createFixture();
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);
 
-  for (const [id, row] of Object.entries(rows)) {
+  for (const id of BUILT_REPRESENTATIVE_IDS) {
+    const row = rows[id];
     const contract = row.leaf.arity;
     const path = row.leaf.path;
     if (contract.count > 0) {
@@ -243,13 +273,20 @@ test("selected missing boundaries and help precedence are executable across the 
       assert.equal(missing.status, 2, `${path} missing boundary\n${missing.stdout}${missing.stderr}`);
       const envelope = decodedError(missing, row, path);
       assert.equal(envelope.error.code, "USAGE", path);
-      assert.equal(envelope.error.details?.command, row.leaf.canonical.path, id);
-      assert.equal(envelope.error.details?.actual, contract.count - 1, path);
+      assert.equal(envelope.error.message, `${row.leaf.canonical.path} expected exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}; received ${contract.count - 1}`, path);
+      assert.deepEqual(envelope.error.details, {
+        command: row.leaf.canonical.path,
+        expected: `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`,
+        actual: contract.count - 1,
+      }, id);
+      assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, path);
     }
 
     const help = run([...row.argv([...row.operands, SURPLUS]), "--help"], ctx.scratch, ctx.env);
     assert.equal(help.status, 0, `${path} help precedence\nstdout=${help.stdout}\nstderr=${help.stderr}`);
     assert.notEqual(help.stdout, "", `${path}: help should be visible on stdout`);
+    assert.equal(help.stderr, "", `${path}: help must not use the error channel`);
+    if (id === "blobs") assert.equal(help.stdout, BLOBS_USAGE, "blobs --help must reach its handler-owned usage branch");
   }
 
   assert.equal(existsSync(ctx.initTarget), false);

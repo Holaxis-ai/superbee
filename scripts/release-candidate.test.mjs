@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -11,12 +11,17 @@ import {
   createReleaseCandidate,
   parseCandidateArgs,
   prepareCandidateOutputDir,
+  releaseCandidateFixtureIdentity,
+  releaseCandidateFixtureKey,
 } from "./release-candidate.mjs";
+import { createReleaseCandidateFixtureCache, createRetainedVerifierCache } from "./release-candidate-fixture.mjs";
 import { verifyRetainedTarball, fileSha256 } from "./verify-npm-package.mjs";
 import { loadReleaseTargets } from "./release-targets.mjs";
 import { buildCli } from "../packages/cli/build.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+let realFixtureRoot;
+let realFixtureCache;
 
 function headCommit() {
   try {
@@ -25,6 +30,32 @@ function headCommit() {
     return null;
   }
 }
+
+async function realCandidateFixture(targetId) {
+  const commit = headCommit();
+  if (!commit || !process.env.npm_execpath) return null;
+  if (!realFixtureRoot) {
+    realFixtureRoot = await mkdtemp(path.join(tmpdir(), "superbee-candidate-cache-"));
+    realFixtureCache = createReleaseCandidateFixtureCache({ cacheRoot: path.join(realFixtureRoot, "cache") });
+  }
+  const targets = await loadReleaseTargets();
+  const tuple = targets.allowed_tuples[targetId];
+  const out = await mkdtemp(path.join(realFixtureRoot, `private-${targetId}-`));
+  return realFixtureCache.materialize({
+    target: targetId,
+    tag: tuple.tag,
+    commit,
+    sourceFacts: { commit, dirty: false },
+  }, out);
+}
+
+after(async () => {
+  if (!realFixtureRoot) return;
+  await rm(realFixtureRoot, { recursive: true, force: true });
+  // Candidate construction intentionally rewrites the one shared dist. Keep the test file
+  // serialized and restore the ordinary dev artifact once, after every cached consumer finishes.
+  await buildCli("local-dev");
+});
 
 test("parseCandidateArgs validates the tag shape and 40-hex commit", () => {
   assert.deepEqual(parseCandidateArgs(["--target", "bridge", "--tag", "v0.1.0-pre.4", "--commit", "a".repeat(40)]), {
@@ -61,6 +92,129 @@ test("candidate source facts must match HEAD and prove a clean checkout", () => 
   assert.throws(() => assertCandidateSource(commit, { commit, dirty: null }), /requires a clean checkout/);
 });
 
+test("fixture identity keys every source, policy, tuple, package/bin, channel, and update-policy boundary", async () => {
+  const commit = headCommit();
+  if (!commit) return;
+  const described = await releaseCandidateFixtureIdentity({
+    target: "successor-preview",
+    tag: (await loadReleaseTargets()).allowed_tuples["successor-preview"].tag,
+    commit,
+    sourceFacts: { commit, dirty: false },
+  });
+  assert.deepEqual(Object.keys(described.identity).sort(), [
+    "artifact_channel", "build_inputs", "package_identity", "release_policy_sha256", "schema", "source", "tuple", "update_policy",
+  ]);
+  assert.equal(described.identity.source.commit, commit);
+  assert.match(described.identity.source.tree, /^[a-f0-9]{40}$/);
+  assert.equal(described.identity.source.source_files_sha256, described.identity.build_inputs.source_files_sha256);
+  assert.deepEqual(Object.keys(described.identity.build_inputs).sort(), [
+    "cli_package_sha256", "package_lock_sha256", "root_package_sha256", "source_files_sha256",
+  ]);
+  assert.deepEqual(described.identity.package_identity.bins, { superbee: "dist/superbee.mjs" });
+  assert.equal(described.identity.artifact_channel, "npm-package");
+
+  const mutations = [
+    (value) => { value.tuple.tag = "v9.9.9"; },
+    (value) => { value.source.commit = "f".repeat(40); },
+    (value) => { value.source.tree = "e".repeat(40); },
+    (value) => { value.source.source_files_sha256 = `sha256:${"a".repeat(64)}`; },
+    (value) => { value.release_policy_sha256 = `sha256:${"d".repeat(64)}`; },
+    (value) => { value.build_inputs.package_lock_sha256 = `sha256:${"c".repeat(64)}`; },
+    (value) => { value.package_identity.bins = { other: "dist/superbee.mjs" }; },
+    (value) => { value.package_identity.version = "9.9.9"; },
+    (value) => { value.artifact_channel = "local-dev"; },
+    (value) => { value.update_policy.enabled = !value.update_policy.enabled; },
+  ];
+  for (const mutate of mutations) {
+    const changed = structuredClone(described.identity);
+    mutate(changed);
+    assert.notEqual(releaseCandidateFixtureKey(changed), described.key);
+  }
+});
+
+test("fixture cache is exact-keyed, returns private copies, and survives A-B-A mutation order", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-candidate-cache-contract-"));
+  let serial = 0;
+  const cache = createReleaseCandidateFixtureCache({
+    cacheRoot: path.join(root, "cache"),
+    identityFor: async ({ identity }) => ({ key: releaseCandidateFixtureKey(identity), identity }),
+    buildCandidate: async ({ out, identity }) => {
+      await mkdir(out, { recursive: true });
+      const filename = `${identity.tuple.target}.tgz`;
+      await writeFile(path.join(out, filename), `immutable-${identity.tuple.target}-${++serial}\n`);
+      const candidate = { target: identity.tuple.target, tarball: { filename } };
+      await writeFile(path.join(out, "candidate.json"), `${JSON.stringify(candidate)}\n`);
+      return { outDir: out };
+    },
+  });
+  const identity = (target) => ({
+    schema: "fixture-test.v1",
+    tuple: { target },
+    source: { commit: "a".repeat(40), tree: "b".repeat(40) },
+    release_policy_sha256: `sha256:${"c".repeat(64)}`,
+    build_inputs: { source_files_sha256: `sha256:${"d".repeat(64)}` },
+    package_identity: { name: target, version: "1.0.0", bins: { [target]: "dist/superbee.mjs" } },
+    artifact_channel: "npm-package",
+    update_policy: { enabled: target === "a" },
+  });
+  try {
+    const firstA = await cache.materialize({ identity: identity("a") }, path.join(root, "first-a"));
+    const originalA = await readFile(firstA.tarballPath, "utf8");
+    await writeFile(firstA.tarballPath, "consumer mutation\n");
+    await writeFile(firstA.manifestPath, "{}\n");
+    await cache.materialize({ identity: identity("b") }, path.join(root, "only-b"));
+    const secondA = await cache.materialize({ identity: identity("a") }, path.join(root, "second-a"));
+    assert.equal(await readFile(secondA.tarballPath, "utf8"), originalA);
+    assert.equal(secondA.candidate.target, "a");
+    await cache.assertUnchanged({ identity: identity("a") });
+    assert.deepEqual(cache.stats(), { builds: 2, keys: 2 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("retained verifier reuse misses on manifest and targets bytes/path while tarball stays fixed", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-retained-cache-contract-"));
+  const targetsPath = path.join(root, "targets.json");
+  const alternateTargetsPath = path.join(root, "alternate", "targets.json");
+  const tarball = path.join(root, "candidate.tgz");
+  const manifest = path.join(root, "candidate.json");
+  await mkdir(path.dirname(alternateTargetsPath), { recursive: true });
+  await writeFile(tarball, "fixed tarball bytes\n");
+  await writeFile(manifest, '{"target":"a"}\n');
+  await writeFile(targetsPath, "policy\n");
+  await writeFile(alternateTargetsPath, "policy\n");
+  const fixedTarballSha = await fileSha256(tarball);
+  let calls = 0;
+  const cache = createRetainedVerifierCache({
+    verifier: async () => ({ proof: { serial: ++calls } }),
+  });
+  try {
+    const baseline = { tarball, manifest, targetsPath };
+    const first = await cache.verify(baseline);
+    first.proof.serial = 999;
+    assert.equal((await cache.verify(baseline)).proof.serial, 1, "consumer mutation cannot alter the cached receipt");
+
+    await writeFile(manifest, '{"target":"b"}\n');
+    assert.equal((await cache.verify(baseline)).proof.serial, 2, "manifest-only change requires a real proof");
+    await writeFile(manifest, '{"target":"a"}\n');
+
+    await writeFile(targetsPath, "changed policy\n");
+    assert.equal((await cache.verify(baseline)).proof.serial, 3, "targets-bytes-only change requires a real proof");
+    await writeFile(targetsPath, "policy\n");
+
+    assert.equal(
+      (await cache.verify({ tarball, manifest, targetsPath: alternateTargetsPath })).proof.serial,
+      4,
+      "targets-path-only change requires a real proof",
+    );
+    assert.equal(await fileSha256(tarball), fixedTarballSha, "every cache miss holds tarball bytes fixed");
+    assert.deepEqual(cache.stats(), { verifications: 4, keys: 4 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("candidate output cleanup refuses broad and foreign non-empty directories", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "aslite-out-safety-"));
   try {
@@ -86,23 +240,14 @@ test("candidate output cleanup permits an empty directory and its own later reru
 });
 
 test("build once, pack once: the retained manifest's SHA-256 is the tarball's actual bytes", async (t) => {
-  const commit = headCommit();
-  if (!commit || !process.env.npm_execpath) {
+  const result = await realCandidateFixture("bridge");
+  if (!result) {
     t.skip("requires a git checkout and npm_execpath (run via npm)");
     return;
   }
   const version = (await loadReleaseTargets()).allowed_tuples.bridge.version;
-  const out = await mkdtemp(path.join(tmpdir(), "aslite-candidate-"));
   try {
-    const { candidate, tarballPath, outDir } = await createReleaseCandidate({
-      target: "bridge",
-      tag: `v${version}`,
-      commit,
-      out,
-      verify: false, // the heavy global-install proof is exercised by verify:npm-package; here we
-      // pin build/pack-once + retention integrity deterministically.
-      sourceFacts: { commit, dirty: false },
-    });
+    const { candidate, tarballPath, outDir } = result;
     // Exactly one tarball retained, plus the manifest — never a second candidate.
     const entries = (await readdir(outDir)).filter((f) => f.endsWith(".tgz"));
     assert.equal(entries.length, 1, "exactly one retained tarball");
@@ -111,15 +256,13 @@ test("build once, pack once: the retained manifest's SHA-256 is the tarball's ac
     assert.equal(candidate.package.name, "@holaxis/aslite");
     assert.equal(candidate.tag, `v${version}`);
     assert.equal(candidate.build_identity.artifact.channel, "npm-package");
-    assert.deepEqual(candidate.source, { commit, dirty: false });
+    assert.deepEqual(candidate.source, { commit: headCommit(), dirty: false });
     // The recorded SHA-256 is exactly the retained bytes — a swap or rebuild would break this.
     assert.equal(candidate.tarball.sha256, await fileSha256(tarballPath));
     assert.ok(candidate.agreement.skill_md_sha256.startsWith("sha256:"));
     assert.ok(Object.keys(candidate.agreement.references_sha256).length > 0, "agreement pins the references tree");
   } finally {
-    await rm(out, { recursive: true, force: true });
-    // Restore the ordinary dev bundle so later gates see a local-dev dist.
-    await buildCli("local-dev");
+    await rm(result.outDir, { recursive: true, force: true });
   }
 });
 
@@ -221,24 +364,16 @@ test("the retained-tarball verifier path contains no build or pack call (structu
 });
 
 test("retained verification rejects a real same-shape tarball relabeled across rehearsal slots", async (t) => {
-  const commit = headCommit();
-  if (!commit || !process.env.npm_execpath) {
+  const result = await realCandidateFixture("rehearsal-reject");
+  if (!result) {
     t.skip("requires a git checkout and npm_execpath (run via npm)");
     return;
   }
   const targets = await loadReleaseTargets();
   const sourceTuple = targets.allowed_tuples["rehearsal-reject"];
   const claimedTuple = targets.allowed_tuples["rehearsal-approve"];
-  const out = await mkdtemp(path.join(tmpdir(), "superbee-cross-slot-"));
+  const out = result.outDir;
   try {
-    const result = await createReleaseCandidate({
-      target: sourceTuple.target,
-      tag: sourceTuple.tag,
-      commit,
-      out,
-      verify: false,
-      sourceFacts: { commit, dirty: false },
-    });
     const accepted = await verifyRetainedTarball({ tarball: result.tarballPath, manifest: result.manifestPath });
     assert.equal(accepted.package, `${sourceTuple.package}@${sourceTuple.version}`);
     const relabeledTarball = path.join(out, `superbee-release-rehearsal-${claimedTuple.version}.tgz`);
@@ -260,29 +395,20 @@ test("retained verification rejects a real same-shape tarball relabeled across r
     );
   } finally {
     await rm(out, { recursive: true, force: true });
-    await buildCli("local-dev");
   }
 });
 
 test("retained verification rejects a real Superbee tarball relabeled across successor preview/stable tuples", async (t) => {
-  const commit = headCommit();
-  if (!commit || !process.env.npm_execpath) {
+  const result = await realCandidateFixture("successor-preview");
+  if (!result) {
     t.skip("requires a git checkout and npm_execpath (run via npm)");
     return;
   }
   const targets = await loadReleaseTargets();
   const sourceTuple = targets.allowed_tuples["successor-preview"];
   const claimedTuple = targets.allowed_tuples["successor-stable"];
-  const out = await mkdtemp(path.join(tmpdir(), "superbee-successor-cross-slot-"));
+  const out = result.outDir;
   try {
-    const result = await createReleaseCandidate({
-      target: sourceTuple.target,
-      tag: sourceTuple.tag,
-      commit,
-      out,
-      verify: false,
-      sourceFacts: { commit, dirty: false },
-    });
     const accepted = await verifyRetainedTarball({ tarball: result.tarballPath, manifest: result.manifestPath });
     assert.equal(accepted.package, `${sourceTuple.package}@${sourceTuple.version}`);
     const relabeledTarball = path.join(out, `superbee-${claimedTuple.version}.tgz`);
@@ -304,28 +430,17 @@ test("retained verification rejects a real Superbee tarball relabeled across suc
     );
   } finally {
     await rm(out, { recursive: true, force: true });
-    await buildCli("local-dev");
   }
 });
 
 test("retained verification rejects omitted or self-attested compatibility claims on a real candidate", async (t) => {
-  const commit = headCommit();
-  if (!commit || !process.env.npm_execpath) {
+  const result = await realCandidateFixture("successor-preview");
+  if (!result) {
     t.skip("requires a git checkout and npm_execpath (run via npm)");
     return;
   }
-  const targets = await loadReleaseTargets();
-  const tuple = targets.allowed_tuples["successor-preview"];
-  const out = await mkdtemp(path.join(tmpdir(), "superbee-compatibility-proof-"));
+  const out = result.outDir;
   try {
-    const result = await createReleaseCandidate({
-      target: tuple.target,
-      tag: tuple.tag,
-      commit,
-      out,
-      verify: false,
-      sourceFacts: { commit, dirty: false },
-    });
     const omitted = structuredClone(result.candidate);
     delete omitted.compatibility_contracts;
     const omittedManifest = path.join(out, "candidate-compatibility-omitted.json");
@@ -346,6 +461,5 @@ test("retained verification rejects omitted or self-attested compatibility claim
     );
   } finally {
     await rm(out, { recursive: true, force: true });
-    await buildCli("local-dev");
   }
 });
