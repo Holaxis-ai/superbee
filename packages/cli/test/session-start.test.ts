@@ -357,7 +357,7 @@ test("two-clone e2e: A pushes, B's session-start renders A's changes attributed 
     assert.ok(out.includes("mike · updated Task") && out.includes("Seed one"), out);
     assert.ok(out.includes("mike · added Task") && out.includes("Fresh work"), out);
     // The render is the full home view (identity header + bundle dashboard) — not a bare receipt.
-    assert.match(out, /agentstate-lite/);
+    assert.match(out, /\.superbee/);
     assert.match(out, /bundle:/);
 
     // Cursor advanced to B's post-pull HEAD (successful pull).
@@ -537,7 +537,7 @@ test("time-box fall-through: a REAL hanging remote is killed inside the budget a
 
     assert.ok(elapsed < 5_000, `render must appear within the budget (took ${elapsed}ms)`);
     assert.match(out, /board sync offline — showing last known state/);
-    assert.match(out, /agentstate-lite/); // the full home render fell through
+    assert.match(out, /\.superbee/); // the full home render fell through
   } finally {
     process.env.PATH = prevPath;
     await rm(helperDir, { recursive: true, force: true });
@@ -610,7 +610,7 @@ test("zero budget at entry: the guard takes the offline path before ANY network 
     const out = await runSessionStart(homeB, ["--dir", topo.b.root], { budgetMs: 0 });
     assert.ok(Date.now() - t0 < 5_000, "zero budget must never wait on the network");
     assert.match(out, /board sync offline — showing last known state/);
-    assert.match(out, /agentstate-lite/);
+    assert.match(out, /\.superbee/);
   } finally {
     process.env.PATH = prevPath;
     await rm(helperDir, { recursive: true, force: true });
@@ -628,7 +628,7 @@ test("fall-through belt: an injected pull that NEVER resolves still renders home
       pull: () => new Promise(() => {}),
     });
     assert.ok(Date.now() - t0 < 3_000);
-    assert.match(out, /agentstate-lite/);
+    assert.match(out, /\.superbee/);
     assert.match(out, /commands:/);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
@@ -663,7 +663,7 @@ test("fail-soft: a THROWING injected pull still renders (offline outcome), exit 
     const out = await runSessionStart(homeDir, [], {
       pull: () => Promise.reject(new Error("boom")),
     });
-    assert.match(out, /agentstate-lite/);
+    assert.match(out, /\.superbee/);
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }

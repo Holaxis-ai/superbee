@@ -325,7 +325,7 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
     requirement: "recommended",
     state: "needs_action",
     reason: "no local bundle is selected",
-    command: "superbee init --create-only --recipe work-tracking --dir .agentstate-lite",
+    command: "superbee init --create-only --recipe work-tracking --dir .superbee",
   };
 }
 

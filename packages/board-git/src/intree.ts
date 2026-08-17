@@ -8,7 +8,7 @@
 //   • AWARENESS rides the branch's own tracking upstream: fetch the tracked remote (time-boxed,
 //     fail-soft, never touching the working tree), then diff `<cursor>..<upstream>` through THE
 //     one prefix-aware `diffDocsBetween` (ids prefix-STRIPPED before doc-id/reserved
-//     interpretation, so `.agentstate-lite/index.md` still reads as reserved). Enrichment stays
+//     interpretation, so a prefixed bundle `index.md` still reads as reserved). Enrichment stays
 //     per-doc frontmatter at the upstream ref — never commit authors.
 //   • DELIVERY is the user's normal `git pull`. Nothing here merges, rebases, or checks out —
 //     sync's "touches nothing outside the board" invariant cannot survive a write-side in-tree
@@ -33,6 +33,7 @@
 import {
   BUNDLE_DIR,
   NETWORK_TIMEOUT_MS,
+  bundleDirNameForProject,
   countUncommitted,
   runGit,
   type DocChange,
@@ -189,7 +190,7 @@ export async function inTreeFetchAndRecord(
   const sha = inTreeUpstreamSha(top, ref);
   if (sha === null) return { state: "unusable-upstream", ref };
 
-  const prefix = BUNDLE_DIR;
+  const prefix = bundleDirNameForProject(top);
   const unpushedCount = inTreeUnpushedCount(top, sha, prefix) ?? 0;
   const uncommittedCount = countUncommitted(top, prefix);
   const behind = inTreeBehindCount(top, sha, prefix) ?? 0;

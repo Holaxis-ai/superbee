@@ -27,7 +27,8 @@
 // guessing. The nearest level wins overall. The binding rung sits between explicit flags and cwd
 // discovery: explicit
 // `--remote`/`--dir` -> the local project binding -> the cwd walk (which checks each ancestor's own
-// `index.md` first, then its conventional `.agentstate-lite/index.md`). Explicit beats committed
+// `index.md` first, then its canonical `.superbee/index.md` or legacy
+// `.agentstate-lite/index.md`). Explicit beats committed
 // beats discovered, and within discovery an enclosing bundle beats the conventional project folder
 // at the same level. A relative binding path resolves against the directory containing
 // the selected binding, never the cwd, so committed pointers stay clone-portable. A malformed file
@@ -45,7 +46,7 @@
 // `getApiKeyForOrigin`). Neither is required: the reference `serve()` ignores the
 // `Authorization` header entirely (no auth enforced there), so an ungated local bundle works
 // exactly as before with no key configured.
-import { BUNDLE_DIR } from "@superbee/board-git";
+import { BUNDLE_DIR, BUNDLE_DIRS, LEGACY_BUNDLE_DIR } from "@superbee/board-git";
 import { constants, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import {
@@ -84,7 +85,8 @@ export function resolveTargetDir(dirFlag: string | undefined): string {
 
 /**
  * The conventional project-scoped bundle directory name: a bundle at
- * `<project-root>/.agentstate-lite/` is discovered by the cwd walk with NO configuration —
+ * `<project-root>/.superbee/` (or an existing legacy `.agentstate-lite/`) is discovered by the
+ * cwd walk with NO configuration —
  * the folder alone is enough, the way `git` treats `.git`. It is the DEFAULT home for a
  * project's workspace bundle (committed, so it collaborates across clones), while
  * `.agentstate.json` remains the explicit override for anything unconventional (a remote
@@ -93,11 +95,32 @@ export function resolveTargetDir(dirFlag: string | undefined): string {
 // The one sanctioned reverse edge (board-git A1): the discovery layer consumes the git
 // channel's BUNDLE_DIR constant, so the conventional folder name has ONE owner.
 export const CONVENTIONAL_BUNDLE_DIR_NAME: string = BUNDLE_DIR;
+/** Pre-rename conventional name, accepted as an existing compatibility input only. */
+export const LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME: string = LEGACY_BUNDLE_DIR;
+
+function conventionalBundleConflict(dir: string): CliError {
+  return new CliError(
+    "CONFLICT",
+    `both ${BUNDLE_DIR}/index.md and ${LEGACY_BUNDLE_DIR}/index.md exist at ${dir} — refusing to choose between two project bundles`,
+    { help: "choose the project bundle to keep, then move the other directory outside the project" },
+  );
+}
+
+/** The one indexed recognized child at this level; same-level dual presence fails closed. */
+async function conventionalBundleAt(dir: string): Promise<string | null> {
+  const found: string[] = [];
+  for (const name of BUNDLE_DIRS) {
+    const candidate = path.join(dir, name);
+    if (await exists(path.join(candidate, "index.md"))) found.push(candidate);
+  }
+  if (found.length > 1) throw conventionalBundleConflict(dir);
+  return found[0] ?? null;
+}
 
 /**
  * Walk up from `start` to the nearest bundle root; null if none. At EACH level, the
  * directory's own `index.md` is checked first (standing inside a bundle keeps winning),
- * then the conventional `.agentstate-lite/index.md` — so the nearest level wins overall,
+ * then the canonical `.superbee/index.md` or legacy `.agentstate-lite/index.md` — so the nearest level wins overall,
  * and within a level an enclosing bundle beats the conventional folder. EXPORTED for
  * session-start's `--dir` bridge (home.ts `discoverSummarizeBundle`): its `--dir` names a
  * PROJECT directory. Explicit local resolution accepts only the requested root or its direct
@@ -108,8 +131,8 @@ export async function findBundleRoot(start: string): Promise<string | null> {
   // eslint-disable-next-line no-constant-condition
   while (true) {
     if (await exists(path.join(dir, "index.md"))) return dir;
-    const conventional = path.join(dir, CONVENTIONAL_BUNDLE_DIR_NAME);
-    if (await exists(path.join(conventional, "index.md"))) return conventional;
+    const conventional = await conventionalBundleAt(dir);
+    if (conventional) return conventional;
     const parent = path.dirname(dir);
     if (parent === dir) return null;
     dir = parent;
@@ -704,20 +727,36 @@ async function existingBundleAt(
     createdDirectories,
   );
   if (own) return physicalCandidate;
-  const conventional = path.join(physicalCandidate, CONVENTIONAL_BUNDLE_DIR_NAME);
-  const conventionalInfo = await optionalLstat(io, conventional, phase, "lstat-conventional-directory", createdDirectories);
-  if (!conventionalInfo) return null;
-  if (conventionalInfo.isSymbolicLink() || !conventionalInfo.isDirectory()) {
-    createOnlyUncertainty(
-      phase,
-      "validate-conventional-directory-shape",
-      conventional,
-      Object.assign(new Error("conventional bundle path is not a physical directory"), { code: "ESHAPE" }),
-      createdDirectories,
-    );
+  return strictConventionalBundleAt(io, physicalCandidate, phase, createdDirectories, "binding-target");
+}
+
+async function strictConventionalBundleAt(
+  io: CreateOnlyFilesystem,
+  dir: string,
+  phase: CreateOnlyPhase,
+  createdDirectories: string[],
+  operation: string,
+): Promise<string | null> {
+  const found: string[] = [];
+  for (const name of BUNDLE_DIRS) {
+    const candidate = path.join(dir, name);
+    const info = await optionalLstat(io, candidate, phase, `lstat-${operation}-directory`, createdDirectories);
+    if (!info) continue;
+    if (info.isSymbolicLink() || !info.isDirectory()) {
+      createOnlyUncertainty(
+        phase,
+        `validate-${operation}-directory-shape`,
+        candidate,
+        Object.assign(new Error("conventional bundle path is not a physical directory"), { code: "ESHAPE" }),
+        createdDirectories,
+      );
+    }
+    if (await optionalLstat(io, path.join(candidate, "index.md"), phase, `lstat-${operation}-index`, createdDirectories)) {
+      found.push(candidate);
+    }
   }
-  const index = await optionalLstat(io, path.join(conventional, "index.md"), phase, "lstat-conventional-index", createdDirectories);
-  return index ? conventional : null;
+  if (found.length > 1) throw conventionalBundleConflict(dir);
+  return found[0] ?? null;
 }
 
 async function strictProjectBinding(
@@ -784,24 +823,12 @@ async function inspectCreateOnlyTarget(
         residual_created_directories: [...createdDirectories],
       });
     }
-    const conventional = path.join(target, CONVENTIONAL_BUNDLE_DIR_NAME);
-    const conventionalInfo = await optionalLstat(io, conventional, phase, "lstat-conventional-directory", createdDirectories);
-    if (conventionalInfo) {
-      if (conventionalInfo.isSymbolicLink() || !conventionalInfo.isDirectory()) {
-        createOnlyUncertainty(
-          phase,
-          "validate-conventional-directory-shape",
-          conventional,
-          Object.assign(new Error("conventional bundle path is not a physical directory"), { code: "ESHAPE" }),
-          createdDirectories,
-        );
-      }
-      if (await optionalLstat(io, path.join(conventional, "index.md"), phase, "lstat-conventional-index", createdDirectories)) {
-        createOnlyConflict(`an existing project workspace ${conventional} already serves this location — join it rather than creating a second bundle`, {
-          phase,
-          residual_created_directories: [...createdDirectories],
-        });
-      }
+    const conventional = await strictConventionalBundleAt(io, target, phase, createdDirectories, "conventional");
+    if (conventional) {
+      createOnlyConflict(`an existing project workspace ${conventional} already serves this location — join it rather than creating a second bundle`, {
+        phase,
+        residual_created_directories: [...createdDirectories],
+      });
     }
     let entries: string[];
     try {
@@ -827,24 +854,12 @@ async function inspectCreateOnlyTarget(
         residual_created_directories: [...createdDirectories],
       });
     }
-    const conventional = path.join(ancestor, CONVENTIONAL_BUNDLE_DIR_NAME);
-    const conventionalInfo = await optionalLstat(io, conventional, phase, "lstat-upward-conventional-directory", createdDirectories);
-    if (conventionalInfo) {
-      if (conventionalInfo.isSymbolicLink() || !conventionalInfo.isDirectory()) {
-        createOnlyUncertainty(
-          phase,
-          "validate-upward-conventional-directory-shape",
-          conventional,
-          Object.assign(new Error("conventional bundle path is not a physical directory"), { code: "ESHAPE" }),
-          createdDirectories,
-        );
-      }
-      if (await optionalLstat(io, path.join(conventional, "index.md"), phase, "lstat-upward-conventional-index", createdDirectories)) {
-        createOnlyConflict(`an existing project workspace ${conventional} already serves this location — join it rather than creating a second bundle`, {
-          phase,
-          residual_created_directories: [...createdDirectories],
-        });
-      }
+    const conventional = await strictConventionalBundleAt(io, ancestor, phase, createdDirectories, "upward-conventional");
+    if (conventional) {
+      createOnlyConflict(`an existing project workspace ${conventional} already serves this location — join it rather than creating a second bundle`, {
+        phase,
+        residual_created_directories: [...createdDirectories],
+      });
     }
     const parent = path.dirname(ancestor);
     if (parent === ancestor) break;
@@ -1174,13 +1189,13 @@ export async function resolveLocalBundleTarget(
 ): Promise<LocalBundleTarget> {
   if (dirFlag !== undefined) {
     const requested = path.resolve(startDir, dirFlag);
-    const conventional = path.join(requested, CONVENTIONAL_BUNDLE_DIR_NAME);
+    const conventional = await conventionalBundleAt(requested);
     // Preserve the established project-directory shorthand when its direct conventional bundle is
     // indexed. Otherwise the requested directory itself is the exact boundary, even without the
     // optional root index.md.
     const root = (await exists(path.join(requested, "index.md")))
       ? requested
-      : (await exists(path.join(conventional, "index.md")))
+      : conventional
         ? conventional
         : requested;
 

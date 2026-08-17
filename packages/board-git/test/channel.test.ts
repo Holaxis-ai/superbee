@@ -31,6 +31,7 @@ import path from "node:path";
 import {
   git,
   gitTry,
+  BUNDLE_DIR,
   initPlainBundleDir,
   isMidRebase,
   makeCommittedFolderTopology,
@@ -43,7 +44,6 @@ import {
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
-  BUNDLE_DIR,
   INDETERMINATE_TRACKED_REASON,
   INDETERMINATE_UNTRACKED_REASON,
   detectBoardChannel,
@@ -97,7 +97,7 @@ function capture(fn: () => unknown): unknown {
   assert.fail("expected the call to throw");
 }
 
-/** Root commit over `HEAD:.agentstate-lite`'s tree — what a committed-folder establishment cuts. */
+/** Root commit over the fixture's committed conventional folder — what establishment cuts. */
 function boardRootFromCommittedFolder(root: string): string {
   const treeSha = git(root, ["rev-parse", `HEAD:${BUNDLE_DIR}`]).trim();
   return git(root, ["commit-tree", treeSha, "-m", "board: bundle shared from 'main' (files only)"]).trim();
@@ -160,7 +160,7 @@ test("matrix: repo moved to a new path (the mount-move field finding) → still 
 test("foreign repo's worktree machinery parked at the conventional path is NOT rule-1 branch", async () => {
   const topo = await makeGreenfieldTopology();
   try {
-    // An unrelated repo's linked worktree at `<root>/.agentstate-lite`: worktree signature
+    // An unrelated repo's linked worktree at `<root>/.superbee`: worktree signature
     // present, but owned by a DIFFERENT common dir — rule 1 must not claim it. With no board
     // refs anywhere and a live-absent origin, the honest channel is local-only (provisioning
     // still owns the move-aside refusal for the path itself).

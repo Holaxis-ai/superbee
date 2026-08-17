@@ -10,7 +10,7 @@ import {
   BOARD_BRANCH,
   BOARD_REF,
   BOARD_REMOTE,
-  BUNDLE_DIR,
+  bundleDirNameForProject,
   identityFlags,
   mustGit,
   repoTopLevel,
@@ -55,16 +55,16 @@ export function resolveOriginRef(boardPath: string): string | null {
 export function hasLocalOnlyBundle(dir: string): boolean {
   const top = repoTopLevel(dir);
   if (!top) return false;
-  return existsSync(path.join(top, BUNDLE_DIR, "index.md"));
+  return existsSync(path.join(top, bundleDirNameForProject(top), "index.md"));
 }
 
 /**
- * The tree object of the committed `.agentstate-lite/` folder at HEAD, or null when the current
+ * The tree object of the selected committed conventional folder at HEAD, or null when the current
  * branch carries no such folder (or carries a non-directory of that name) — the structural router
  * between the greenfield and committed-folder establish cases.
  */
 export function folderTreeAtHead(top: string): string | null {
-  const r = runGit(top, ["rev-parse", "--verify", "--quiet", `HEAD:${BUNDLE_DIR}`]);
+  const r = runGit(top, ["rev-parse", "--verify", "--quiet", `HEAD:${bundleDirNameForProject(top)}`]);
   if (r.status !== 0) return null;
   const sha = r.stdout.trim();
   const t = runGit(top, ["cat-file", "-t", sha]);
@@ -74,7 +74,7 @@ export function folderTreeAtHead(top: string): string | null {
 
 /** True when any board-folder path is staged in the enclosing repo's code index. */
 export function folderPresentInCodeIndex(top: string): boolean {
-  const r = runGit(top, ["ls-files", "--", BUNDLE_DIR]);
+  const r = runGit(top, ["ls-files", "--", bundleDirNameForProject(top)]);
   return r.status === 0 && r.stdout.trim().length > 0;
 }
 
@@ -90,7 +90,7 @@ export function folderPresentInCodeIndex(top: string): boolean {
 export function behindBoardCommits(top: string, branch: string): string[] | null {
   const remoteRef = `refs/remotes/${BOARD_REMOTE}/${branch}`;
   if (runGit(top, ["rev-parse", "--verify", "--quiet", remoteRef]).status !== 0) return null;
-  return mustGit(top, ["rev-list", `HEAD..${remoteRef}`, "--", BUNDLE_DIR])
+  return mustGit(top, ["rev-list", `HEAD..${remoteRef}`, "--", bundleDirNameForProject(top)])
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
@@ -261,20 +261,21 @@ export function createBoardRootCommit(top: string, treeSha: string, branch: stri
 
 /**
  * Build the folder-removal commit with PLUMBING ONLY — HEAD's top-level tree minus the
- * `.agentstate-lite` entry, with `.gitignore` gaining the entry — parented on HEAD. The working
+ * selected bundle entry, with `.gitignore` gaining the entry — parented on HEAD. The working
  * tree, the index, and the current branch are never touched, which also means any STAGED user
  * code stays exactly as staged. `message` is the caller's commit message (the CLI owns the copy —
  * it names the invocation, which this package never resolves).
  */
 export function createRemovalCommit(top: string, message: string): string {
+  const bundleDir = bundleDirNameForProject(top);
   const headTree = mustGit(top, ["rev-parse", "HEAD^{tree}"]).trim();
   const entries = parseLsTreeZ(mustGit(top, ["ls-tree", "-z", headTree])).filter(
-    (e) => e.name !== BUNDLE_DIR,
+    (e) => e.name !== bundleDir,
   );
 
   const existing = entries.find((e) => e.name === ".gitignore");
   const base = existing ? mustGit(top, ["cat-file", "blob", existing.sha]) : "";
-  const updated = withIgnoreEntry(base);
+  const updated = withIgnoreEntry(base, bundleDir);
   if (updated !== base) {
     const blob = mustGit(top, ["hash-object", "-w", "--stdin"], { input: updated }).trim();
     if (existing) {

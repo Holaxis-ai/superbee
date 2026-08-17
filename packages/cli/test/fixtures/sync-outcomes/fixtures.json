@@ -1,8 +1,8 @@
 {
   "captured_from": "db6d8660aa6c64de579a9ebb1be5a385aa200c99",
-  "note": "Rendered-byte fixtures captured from the PRE-refactor construction sites (sync-outcome-table unit). Envelope fixtures went through renderErrorEnvelope(toEnvelope(...)); line fixtures are the raw guidance-field strings. Fixed representative params: inv=aslite, boardPath=/repo/.agentstate-lite, top=/repo, branch=main.",
+  "note": "Rendered-byte fixtures captured from the PRE-refactor construction sites (sync-outcome-table unit). Envelope fixtures went through renderErrorEnvelope(toEnvelope(...)); line fixtures are the raw guidance-field strings. Fixed representative params: inv=aslite, boardPath=/repo/.superbee, top=/repo, branch=main.",
   "captured_from_followups": "fe6bf0bc88ad77321e9bd5acca0ce381011a6adc",
-  "note_followups": "sync-copy-unification PR1's fixtures (added below the original db6d866 batch), verbatim-transcribed from the still-inline construction sites at origin/main's tip before any src change in this unit. Representative params match the batch above (inv=aslite) plus: cleanupBranch=board-cleanup, dirty rows=[{status:M,path:.agentstate-lite/tasks/a.md},{status:A,path:.agentstate-lite/tasks/b.md}] (statusRows' real StatusRow shape, TOON-tabularized), session-start fetch-skipped code=RUNTIME (a representative non-offline classifyGitError code), session-start pull-skipped reason=diverged (the one existing test's real scenario).",
+  "note_followups": "sync-copy-unification PR1's fixtures (added below the original db6d866 batch), verbatim-transcribed from the still-inline construction sites at origin/main's tip before any src change in this unit. Representative params match the batch above (inv=aslite) plus: cleanupBranch=board-cleanup, dirty rows=[{status:M,path:.superbee/tasks/a.md},{status:A,path:.superbee/tasks/b.md}] (statusRows' real StatusRow shape, TOON-tabularized), session-start fetch-skipped code=RUNTIME (a representative non-offline classifyGitError code), session-start pull-skipped reason=diverged (the one existing test's real scenario).",
   "fixtures": [
     {
       "key": "ff.git-missing",
@@ -92,13 +92,13 @@
       "key": "in-tree.sync-refusal",
       "variant": "origin",
       "kind": "envelope",
-      "bytes": "error:\n  code: USAGE\n  message: \"this board rides your code branch — '.agentstate-lite/' is committed with the code, so a full sync would have to publish the code branch itself; share board changes with your normal git commit/push, run 'aslite sync --pull-only' to fetch-and-report incoming board changes, or run 'aslite sync --establish' to move the board to a dedicated 'board' branch\"\n  details:\n    path: /repo/.agentstate-lite\n    state: in-tree\n  help: aslite sync --establish\n"
+      "bytes": "error:\n  code: USAGE\n  message: \"this board rides your code branch — '.superbee/' is committed with the code, so a full sync would have to publish the code branch itself; share board changes with your normal git commit/push, run 'aslite sync --pull-only' to fetch-and-report incoming board changes, or run 'aslite sync --establish' to move the board to a dedicated 'board' branch\"\n  details:\n    path: /repo/.superbee\n    state: in-tree\n  help: aslite sync --establish\n"
     },
     {
       "key": "in-tree.sync-refusal",
       "variant": "no-origin",
       "kind": "envelope",
-      "bytes": "error:\n  code: USAGE\n  message: \"this board rides your code branch — '.agentstate-lite/' is committed with the code, so a full sync would have to publish the code branch itself; share board changes with your normal git commit/push, run 'aslite sync --pull-only' to fetch-and-report incoming board changes, or this repo has no 'origin' remote yet — run 'git remote add origin <url>', then 'aslite sync --establish' to move the board to a dedicated 'board' branch\"\n  details:\n    path: /repo/.agentstate-lite\n    state: in-tree\n  help: git remote add origin <url>\n"
+      "bytes": "error:\n  code: USAGE\n  message: \"this board rides your code branch — '.superbee/' is committed with the code, so a full sync would have to publish the code branch itself; share board changes with your normal git commit/push, run 'aslite sync --pull-only' to fetch-and-report incoming board changes, or this repo has no 'origin' remote yet — run 'git remote add origin <url>', then 'aslite sync --establish' to move the board to a dedicated 'board' branch\"\n  details:\n    path: /repo/.superbee\n    state: in-tree\n  help: git remote add origin <url>\n"
     },
     {
       "key": "in-tree.show-incoming.no-basis",
@@ -146,13 +146,13 @@
       "key": "establish.detached-head.committed",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"the repository is on a detached HEAD — check out the branch that carries the committed .agentstate-lite/ folder, then re-run\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"the repository is on a detached HEAD — check out the branch that carries the committed .superbee/ folder, then re-run\"\n"
     },
     {
       "key": "establish.detached-head.marker",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"the repository is on a detached HEAD — check out the branch that carries the committed .agentstate-lite/ folder, then re-run 'aslite sync --establish --yes'\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"the repository is on a detached HEAD — check out the branch that carries the committed .superbee/ folder, then re-run 'aslite sync --establish --yes'\"\n"
     },
     {
       "key": "marker.shallow.refusal",
@@ -182,7 +182,7 @@
       "key": "marker.tree-changed.conflict",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: CONFLICT\n  message: .agentstate-lite/ changed on 'main' after the interrupted establishment pushed its snapshot — re-creating the folder-removal now would strand those newer board changes on the frozen folder; nothing was changed\n  details:\n    snapshot_tree: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    current_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n  help: \"the newer changes stay recoverable in 'main' history; after the cleanup PR merges and this clone joins via 'aslite sync', re-apply them with doc update\"\n"
+      "bytes": "error:\n  code: CONFLICT\n  message: .superbee/ changed on 'main' after the interrupted establishment pushed its snapshot — re-creating the folder-removal now would strand those newer board changes on the frozen folder; nothing was changed\n  details:\n    snapshot_tree: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n    current_tree: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n  help: \"the newer changes stay recoverable in 'main' history; after the cleanup PR merges and this clone joins via 'aslite sync', re-apply them with doc update\"\n"
     },
     {
       "key": "marker.unavailable.tree",
@@ -206,49 +206,49 @@
       "key": "window.pre-share",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"the 'board' branch exists on origin, but '.agentstate-lite' here is still the old folder committed on this branch — the folder-removal (cleanup) PR hasn't merged yet, or this clone hasn't pulled it: once it lands, run 'git pull', then run sync again\"\n  details:\n    path: /repo/.agentstate-lite\n    state: pre-share-window\n  help: \"git pull  # after the cleanup PR merges, then re-run sync\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"the 'board' branch exists on origin, but '.superbee' here is still the old folder committed on this branch — the folder-removal (cleanup) PR hasn't merged yet, or this clone hasn't pulled it: once it lands, run 'git pull', then run sync again\"\n  details:\n    path: /repo/.superbee\n    state: pre-share-window\n  help: \"git pull  # after the cleanup PR merges, then re-run sync\"\n"
     },
     {
       "key": "window.pre-share.no-origin",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"a previously fetched 'origin/board' ref shows this project's board was shared, but no 'origin' remote is configured here any more — '.agentstate-lite' is still the old folder committed on this branch, and sync cannot pull the shared board without the remote\"\n  details:\n    path: /repo/.agentstate-lite\n    state: pre-share-window\n    origin_configured: false\n  help: \"git remote add origin <url>  # restore the remote, 'git pull' once the cleanup PR merges, then re-run sync\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"a previously fetched 'origin/board' ref shows this project's board was shared, but no 'origin' remote is configured here any more — '.superbee' is still the old folder committed on this branch, and sync cannot pull the shared board without the remote\"\n  details:\n    path: /repo/.superbee\n    state: pre-share-window\n    origin_configured: false\n  help: \"git remote add origin <url>  # restore the remote, 'git pull' once the cleanup PR merges, then re-run sync\"\n"
     },
     {
       "key": "window.remnant",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"the 'board' branch exists on origin and the folder-removal (cleanup) commit has already been pulled here, but 1 path under '.agentstate-lite/' is still tracked on this branch — a board commit merged over the removal re-added it, so 'git pull' has nothing left to fix: untrack that path, then re-run sync\"\n  details:\n    path: /repo/.agentstate-lite\n    state: window-remnant\n    tracked_remnants:\n      shown: 1\n      total: 1\n      rows[1]: .agentstate-lite/tasks/extra.md\n  help: \"git rm -r --cached -- .agentstate-lite && git commit -m 'board: untrack leftover board paths', then mv .agentstate-lite .agentstate-lite.bak and re-run sync — it provisions the shared board; reconcile any docs from the backup afterwards with doc update\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"the 'board' branch exists on origin and the folder-removal (cleanup) commit has already been pulled here, but 1 path under '.superbee/' is still tracked on this branch — a board commit merged over the removal re-added it, so 'git pull' has nothing left to fix: untrack that path, then re-run sync\"\n  details:\n    path: /repo/.superbee\n    state: window-remnant\n    tracked_remnants:\n      shown: 1\n      total: 1\n      rows[1]: .superbee/tasks/extra.md\n  help: \"git rm -r --cached -- .superbee && git commit -m 'board: untrack leftover board paths', then mv .superbee .superbee.bak and re-run sync — it provisions the shared board; reconcile any docs from the backup afterwards with doc update\"\n"
     },
     {
       "key": "window.dual-board",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: CONFLICT\n  message: a shared 'board' branch exists on origin AND '.agentstate-lite' is committed on the current branch with content that never seeded that branch — two competing board locations; nothing is safe to adopt automatically\n  details:\n    path: /repo/.agentstate-lite\n    state: dual-board\n  help: \"choose one explicitly: keep the shared branch (reconcile the committed folder's docs onto it, then remove the folder from this branch), or keep the committed folder (coordinate with your team before retiring the remote 'board' branch)\"\n"
+      "bytes": "error:\n  code: CONFLICT\n  message: a shared 'board' branch exists on origin AND '.superbee' is committed on the current branch with content that never seeded that branch — two competing board locations; nothing is safe to adopt automatically\n  details:\n    path: /repo/.superbee\n    state: dual-board\n  help: \"choose one explicitly: keep the shared branch (reconcile the committed folder's docs onto it, then remove the folder from this branch), or keep the committed folder (coordinate with your team before retiring the remote 'board' branch)\"\n"
     },
     {
       "key": "provision.foreign",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"a non-empty '.agentstate-lite' directory already exists at /repo/.agentstate-lite but is not the shared board checkout — move it aside, then re-run sync\"\n  details:\n    path: /repo/.agentstate-lite\n  help: mv '/repo/.agentstate-lite' '/repo/.agentstate-lite.bak'  # then re-run sync; reconcile any local-only docs afterwards\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"a non-empty '.superbee' directory already exists at /repo/.superbee but is not the shared board checkout — move it aside, then re-run sync\"\n  details:\n    path: /repo/.superbee\n  help: mv '/repo/.superbee' '/repo/.superbee.bak'  # then re-run sync; reconcile any local-only docs afterwards\n"
     },
     {
       "key": "provision.foreign-checkout",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"'.agentstate-lite' at /repo/.agentstate-lite is git checkout machinery, but it belongs to a different git repository than /repo — move it aside, then re-run sync to provision this repo's board from origin/board\"\n  details:\n    path: /repo/.agentstate-lite\n  help: \"mv '/repo/.agentstate-lite' '/repo/.agentstate-lite.bak'  # then re-run sync; the existing checkout is untouched, just relocated\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"'.superbee' at /repo/.superbee is git checkout machinery, but it belongs to a different git repository than /repo — move it aside, then re-run sync to provision this repo's board from origin/board\"\n  details:\n    path: /repo/.superbee\n  help: \"mv '/repo/.superbee' '/repo/.superbee.bak'  # then re-run sync; the existing checkout is untouched, just relocated\"\n"
     },
     {
       "key": "provision.unrepairable",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"'.agentstate-lite' at /repo/.agentstate-lite looks like the board checkout with stale pointers that 'git worktree repair' could not fix (its git-internal registration is likely gone) — move it aside, then re-run sync to re-provision fresh from origin/board\"\n  details:\n    path: /repo/.agentstate-lite\n  help: \"mv '/repo/.agentstate-lite' '/repo/.agentstate-lite.bak'  # then re-run sync; recover any local-only, unpushed docs from the backup afterwards\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"'.superbee' at /repo/.superbee looks like the board checkout with stale pointers that 'git worktree repair' could not fix (its git-internal registration is likely gone) — move it aside, then re-run sync to re-provision fresh from origin/board\"\n  details:\n    path: /repo/.superbee\n  help: \"mv '/repo/.superbee' '/repo/.superbee.bak'  # then re-run sync; recover any local-only, unpushed docs from the backup afterwards\"\n"
     },
     {
       "key": "provision.wrong-branch",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"'.agentstate-lite' at /repo/.agentstate-lite is git checkout machinery (a linked worktree or nested repo), but it is not checked out to the 'board' branch (nor mid-rebase from it) — it is likely used for something else — move it aside, then re-run sync to re-provision the board fresh from origin/board\"\n  details:\n    path: /repo/.agentstate-lite\n  help: \"mv '/repo/.agentstate-lite' '/repo/.agentstate-lite.bak'  # then re-run sync; the existing checkout is untouched, just relocated\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"'.superbee' at /repo/.superbee is git checkout machinery (a linked worktree or nested repo), but it is not checked out to the 'board' branch (nor mid-rebase from it) — it is likely used for something else — move it aside, then re-run sync to re-provision the board fresh from origin/board\"\n  details:\n    path: /repo/.superbee\n  help: \"mv '/repo/.superbee' '/repo/.superbee.bak'  # then re-run sync; the existing checkout is untouched, just relocated\"\n"
     },
     {
       "key": "line.in-tree.no-basis",
@@ -272,13 +272,13 @@
       "key": "line.window-note.landed",
       "variant": "default",
       "kind": "line",
-      "bytes": "this clone still carries the committed .agentstate-lite/ folder and the folder-removal has already landed on 'main' — run 'git pull' (the folder vanishes), then 'aslite sync' (it returns as the live board)"
+      "bytes": "this clone still carries the committed .superbee/ folder and the folder-removal has already landed on 'main' — run 'git pull' (the folder vanishes), then 'aslite sync' (it returns as the live board)"
     },
     {
       "key": "line.window-note.pending",
       "variant": "default",
       "kind": "line",
-      "bytes": "this clone still carries the committed .agentstate-lite/ folder — once the folder-removal lands on the default branch: 'git pull' (the folder vanishes), then 'aslite sync' (it returns as the live board)"
+      "bytes": "this clone still carries the committed .superbee/ folder — once the folder-removal lands on the default branch: 'git pull' (the folder vanishes), then 'aslite sync' (it returns as the live board)"
     },
     {
       "key": "line.marker.story.lost-race",
@@ -362,7 +362,7 @@
       "key": "line.home.in-tree",
       "variant": "default",
       "kind": "line",
-      "bytes": "rides this branch — '.agentstate-lite/' is committed with the code; teammates' board changes arrive with your normal 'git pull'"
+      "bytes": "rides this branch — '.superbee/' is committed with the code; teammates' board changes arrive with your normal 'git pull'"
     },
     {
       "key": "line.home.unpushed",
@@ -446,7 +446,7 @@
       "key": "establish.committed-dirty",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: RUNTIME\n  message: \"establish refused: .agentstate-lite/ has uncommitted changes — commit (or discard) them first so the board branch carries the board's real current state\"\n  details:\n    uncommitted:\n      shown: 2\n      total: 2\n      rows[2]{status,path}:\n        M,.agentstate-lite/tasks/a.md\n        A,.agentstate-lite/tasks/b.md\n  help: \"commit the board changes, then re-run aslite sync --establish --yes\"\n"
+      "bytes": "error:\n  code: RUNTIME\n  message: \"establish refused: .superbee/ has uncommitted changes — commit (or discard) them first so the board branch carries the board's real current state\"\n  details:\n    uncommitted:\n      shown: 2\n      total: 2\n      rows[2]{status,path}:\n        M,.superbee/tasks/a.md\n        A,.superbee/tasks/b.md\n  help: \"commit the board changes, then re-run aslite sync --establish --yes\"\n"
     },
     {
       "key": "establish.cleanup-branch-exists",

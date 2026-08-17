@@ -154,7 +154,7 @@ test("bundle and catalog complete the conversational workspace journey without i
   const missingBundle = buildSetupPlan(input({
     workspace: { bundle: "absent", catalog: "empty", selected_registered: false },
   }));
-  assert.equal(missingBundle.next?.command, "superbee init --create-only --recipe work-tracking --dir .agentstate-lite");
+  assert.equal(missingBundle.next?.command, "superbee init --create-only --recipe work-tracking --dir .superbee");
 
   const uncataloged = buildSetupPlan(input({
     hook: { installed: false, compatibility: { state: "absent", reason: "absent" } },

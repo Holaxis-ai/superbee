@@ -46,7 +46,7 @@ const FIXTURES = (JSON.parse(readFileSync(FIXTURES_PATH, "utf8")) as { fixtures:
 
 // The fixed representative params the capture used — MUST stay in lockstep with the fixtures.
 const INV = "aslite";
-const BOARD_PATH = "/repo/.agentstate-lite";
+const BOARD_PATH = "/repo/.superbee";
 const TOP = "/repo";
 const MARKER = "3f786850e387550fdab836ed7e6dc881de23001b";
 const MARKER_PATH = "/repo/.git/agentstate.establishCommittedShare";
@@ -63,8 +63,8 @@ const SNAPSHOT_TREE = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CURRENT_TREE = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 // The committed-dirty fixture's representative statusRows() shape (PR1: sync-copy-unification).
 const DIRTY_ROWS: StatusRow[] = [
-  { status: "M", path: ".agentstate-lite/tasks/a.md" },
-  { status: "A", path: ".agentstate-lite/tasks/b.md" },
+  { status: "M", path: ".superbee/tasks/a.md" },
+  { status: "A", path: ".superbee/tasks/b.md" },
 ];
 
 test("sync-outcome agreement: every row renders byte-identical to its pre-refactor fixture", async () => {
@@ -237,6 +237,16 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
       refusal.message,
       "home's window line must render the refusal's message verbatim (one-hop guidance)",
     );
+
+    // Compatibility is selected-path behavior, not the default fixture shape: an existing
+    // legacy bundle must still be named exactly as selected in operational guidance.
+    const legacyRefusal = syncOutcomeError("in-tree.sync-refusal", {
+      inv: INV,
+      boardPath: "/repo/.agentstate-lite",
+      hasOrigin: true,
+    });
+    assert.match(legacyRefusal.message, /\.agentstate-lite\//);
+    assert.doesNotMatch(legacyRefusal.message, /\.superbee\//);
   } finally {
     await plainTop.cleanup();
     await localBoardTop.cleanup();

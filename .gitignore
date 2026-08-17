@@ -26,6 +26,7 @@ packages/worker/wrangler.local.jsonc
 .config/
 
 # the shared board — managed on the 'board' branch by superbee sync
+.superbee/
 .agentstate-lite/
 
 # retained release-candidate output (scripts/release-candidate.mjs): the built tarball + manifest

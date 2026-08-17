@@ -540,7 +540,7 @@ test("session-start fence: a pull step with NO outcome (no repo/no board/provisi
     await withHome(homeDir, () =>
       sessionStart(["--dir", topo.b.root], { stdout: cap.stdout, pull: async () => undefined }),
     );
-    assert.match(cap.text(), /agentstate-lite/, "the render still appeared");
+    assert.match(cap.text(), /\.superbee/, "the render still appeared");
     const fetches = (await shim.spawns()).filter((l) => /(^|\s)fetch(\s|$)/.test(l));
     assert.deepEqual(
       fetches,

@@ -20,6 +20,7 @@ import {
   PROJECT_BINDING_FILE_NAME,
   SUPERBEE_PROJECT_BINDING_FILE_NAME,
   CONVENTIONAL_BUNDLE_DIR_NAME,
+  LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME,
 } from "../src/bundle.js";
 import { CliError } from "../src/errors.js";
 import { list } from "../src/commands/list.js";
@@ -692,9 +693,9 @@ test("end-to-end: a bare command with a URL binding fails before any HTTP reques
   }
 });
 
-// ── conventional-folder discovery: <ancestor>/.agentstate-lite/ found with zero config ─────
+// ── conventional-folder discovery: canonical + legacy names, with dual-name refusal ─────
 
-test("openBundle: a conventional .agentstate-lite/ bundle at an ancestor is discovered bare — no flags, no env, no binding", async () => {
+test("openBundle: a conventional .superbee/ bundle at an ancestor is discovered bare — no flags, no env, no binding", async () => {
   const project = await tempDir();
   try {
     const conventional = path.join(project, CONVENTIONAL_BUNDLE_DIR_NAME);
@@ -704,6 +705,43 @@ test("openBundle: a conventional .agentstate-lite/ bundle at an ancestor is disc
     await inDir(nested, async () => {
       const bundle = await openBundle(undefined, undefined);
       assert.equal(bundle.root, conventional);
+    });
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("openBundle: an existing legacy .agentstate-lite/ bundle remains discoverable in place", async () => {
+  const project = await tempDir();
+  try {
+    const legacy = path.join(project, LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME);
+    await initBundle(legacy);
+    const nested = path.join(project, "src", "deep");
+    await mkdir(nested, { recursive: true });
+    await inDir(nested, async () => {
+      const bundle = await openBundle(undefined, undefined);
+      assert.equal(bundle.root, legacy);
+    });
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test("openBundle: same-level canonical and legacy bundles fail closed", async () => {
+  const project = await tempDir();
+  try {
+    await initBundle(path.join(project, CONVENTIONAL_BUNDLE_DIR_NAME));
+    await initBundle(path.join(project, LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME));
+    await inDir(project, async () => {
+      await assert.rejects(
+        () => openBundle(undefined, undefined),
+        (err: unknown) => {
+          assert.ok(err instanceof CliError);
+          assert.equal(err.code, "CONFLICT");
+          assert.match(err.message, /refusing to choose between two project bundles/);
+          return true;
+        },
+      );
     });
   } finally {
     await rm(project, { recursive: true, force: true });
@@ -760,7 +798,7 @@ test("openBundle: a directory-type .agentstate.json binding BEATS the convention
   }
 });
 
-test("openBundle: an explicit --dir beats the conventional folder, and a bare .agentstate-lite/ WITHOUT index.md is not a bundle (no false positive)", async () => {
+test("openBundle: an explicit --dir beats the conventional folder, and a bare .superbee/ WITHOUT index.md is not a bundle (no false positive)", async () => {
   const project = await tempDir();
   const explicit = await tempDir();
   try {
@@ -781,7 +819,7 @@ test("openBundle: an explicit --dir beats the conventional folder, and a bare .a
           (err: unknown) => {
             assert.ok(err instanceof CliError);
             assert.equal(err.code, "NOT_FOUND");
-            assert.match(err.message, /\.agentstate-lite\/index\.md/);
+            assert.match(err.message, /\.superbee\/index\.md/);
             return true;
           },
         );

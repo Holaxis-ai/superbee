@@ -11,6 +11,8 @@
 //
 // Rows carry a `code` (CliErrorCode) and NEVER an exit: the exit derives solely through errors.ts's
 // one CODE_EXIT mapping when the CliError is constructed.
+import path from "node:path";
+
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
@@ -40,13 +42,17 @@ export function upstreamHelp(inv: string): string {
  * `hasOrigin` false (no `origin` remote configured at all) names that dead end instead of
  * pointing at `sync --establish`, which would just refuse again with nothing else to try.
  */
-export function syncInTreeRefusalMessage(inv: string, hasOrigin: boolean = true): string {
+export function syncInTreeRefusalMessage(
+  inv: string,
+  hasOrigin: boolean = true,
+  bundleDir: string = BUNDLE_DIR,
+): string {
   const establishRemedy = hasOrigin
     ? `run '${inv} sync --establish' to move the board to a dedicated '${BOARD_BRANCH}' branch`
     : `this repo has no '${BOARD_REMOTE}' remote yet — run 'git remote add ${BOARD_REMOTE} <url>', ` +
       `then '${inv} sync --establish' to move the board to a dedicated '${BOARD_BRANCH}' branch`;
   return (
-    `this board rides your code branch — '${BUNDLE_DIR}/' is committed with the code, so a full ` +
+    `this board rides your code branch — '${bundleDir}/' is committed with the code, so a full ` +
     `sync would have to publish the code branch itself; share board changes with your normal git ` +
     `commit/push, run '${inv} sync --pull-only' to fetch-and-report incoming board changes, or ` +
     `${establishRemedy}`
@@ -125,9 +131,11 @@ export function boardFirstContactLine(inv: string): string {
  * it is true whether or not this render could verify freshness, so it never over-claims currency
  * the way "up to date" would for a mode whose plain render never fetches.
  */
-export const BOARD_IN_TREE_LINE =
-  `rides this branch — '${BUNDLE_DIR}/' is committed with the code; teammates' board changes ` +
-  "arrive with your normal 'git pull'";
+export function boardInTreeLine(bundleDir: string = BUNDLE_DIR): string {
+  return `rides this branch — '${bundleDir}/' is committed with the code; teammates' board changes arrive with your normal 'git pull'`;
+}
+
+export const BOARD_IN_TREE_LINE = boardInTreeLine();
 
 /** "2 incoming board changes are not yet in this checkout — run 'git pull' to get them". */
 export function inTreePullHintLine(n: number): string {
@@ -274,7 +282,7 @@ export const SYNC_OUTCOMES = {
   // The in-tree board's write refusal + the viewer's no-comparison-basis refusal.
   "in-tree.sync-refusal": row<{ inv: string; boardPath: string; hasOrigin: boolean }>({
     code: "USAGE",
-    message: (p) => syncInTreeRefusalMessage(p.inv, p.hasOrigin),
+    message: (p) => syncInTreeRefusalMessage(p.inv, p.hasOrigin, path.basename(p.boardPath)),
     details: (p) => ({ path: p.boardPath, state: "in-tree" }),
     help: (p) => (p.hasOrigin ? `${p.inv} sync --establish` : `git remote add ${BOARD_REMOTE} <url>`),
   }),

@@ -6,7 +6,7 @@
 //   • the UPSTREAM DECISION TABLE — tracking config → that ref; detached HEAD / no tracking /
 //     unusable ref → an explicit no-comparison-basis outcome, never a guessed `origin/<branch>`;
 //   • PREFIX-SCOPED awareness over the one `diffDocsBetween`: ids prefix-stripped BEFORE
-//     doc-id/reserved interpretation (`.agentstate-lite/index.md` stays reserved after the
+//     doc-id/reserved interpretation (`.superbee/index.md` stays reserved after the
 //     strip), non-ASCII ids round-trip, code-tree `.md` files never appear;
 //   • the MODE-SCOPED cursor tier (`git-intree`): a branch-mode (`"git"`) cursor reads as
 //     FOREIGN (first-contact merge-base baseline, silently replaced), and an unusable

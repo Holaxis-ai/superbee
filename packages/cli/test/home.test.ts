@@ -106,7 +106,7 @@ test("A1.3 no-bundle fallback: no bundle block, getting_started hint, commands p
   assert.match(
     view.getting_started as string,
     new RegExp(
-      `${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} init --create-only --recipe none --dir '\\.agentstate-lite'`,
+      `${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} init --create-only --recipe none --dir '\\.superbee'`,
     ),
   );
   assert.match(view.getting_started as string, new RegExp(`${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} recipes`));
@@ -138,7 +138,7 @@ test("A1.3b no-bundle --dir fallback creates in the explicit project's conventio
   });
 
   const gettingStarted = (JSON.parse(out) as Record<string, unknown>).getting_started as string;
-  const target = path.join(selected, ".agentstate-lite");
+  const target = path.join(selected, ".superbee");
   assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe none --dir '${target}'`));
   assert.ok(gettingStarted.includes(`${INVOKE} recipes`));
   assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe <name> --dir '${target}'`));

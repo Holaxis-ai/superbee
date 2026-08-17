@@ -119,7 +119,7 @@ async function handBuildLocalOnlyBoard(repo: BoardRepo, id: string, body: string
 test("establish strings: pinned constants", () => {
   assert.equal(
     ESTABLISH_DONE,
-    "the shared board is live — .agentstate-lite/ now syncs over the 'board' branch",
+    "the shared board is live — the project bundle now syncs over the 'board' branch",
   );
   assert.equal(ESTABLISH_ALREADY, "already established");
   const steps = establishNextSteps(INV);
@@ -197,7 +197,7 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
     assert.match(status, /\.gitignore/, ".gitignore itself is uncommitted");
     assert.doesNotMatch(
       status,
-      /\.agentstate-lite/,
+      /\.superbee/,
       "the board worktree itself never shows as a dirty path in the main worktree",
     );
     // never committed onto the code branch.

@@ -17,6 +17,7 @@ import {
   BOARD_REF,
   BOARD_REMOTE,
   BUNDLE_DIR,
+  bundleDirNameForProject,
   COMMITTED_MARKER_KEY,
   boardBranchRemnant,
   boardNamespaceConflicts,
@@ -80,9 +81,9 @@ export function bothWorldsLine(branch: string): string {
  * The rollout-note copy to forward to teammates BEFORE the cleanup PR merges (emitted in the
  * preview AND the receipt). The `git clean -fdx` line is COPY ONLY — nothing here executes it.
  */
-export function rolloutNote(inv: string, branch: string): string[] {
+export function rolloutNote(inv: string, branch: string, bundleDir: string = BUNDLE_DIR): string[] {
   return [
-    `after your next 'git pull', ${BUNDLE_DIR}/ disappears from '${branch}' — nothing is lost: ` +
+    `after your next 'git pull', ${bundleDir}/ disappears from '${branch}' — nothing is lost: ` +
       `the next '${inv} sync' re-creates it from the shared board branch`,
     `from then on '${inv} sync' — not 'git pull' — updates the board`,
     `you may notice a '${BOARD_BRANCH}' branch on the remote — never merge it into '${branch}'`,
@@ -93,19 +94,19 @@ export function rolloutNote(inv: string, branch: string): string[] {
 }
 
 /** The preview record — a genuinely useful dry run: what branch, what commits, what leaves where. */
-export function committedPreviewRecord(inv: string, branch: string): Record<string, unknown> {
+export function committedPreviewRecord(inv: string, branch: string, bundleDir: string = BUNDLE_DIR): Record<string, unknown> {
   return {
     establish: ESTABLISH_COMMITTED_PREVIEW,
     create:
       `a new '${BOARD_BRANCH}' branch whose ONE root commit carries the current committed files ` +
-      `of ${BUNDLE_DIR}/ — files only: the folder's history stays on '${branch}'`,
+      `of ${bundleDir}/ — files only: the folder's history stays on '${branch}'`,
     push: `the new '${BOARD_BRANCH}' branch to ${BOARD_REMOTE}, with tracking (git push -u ${BOARD_REMOTE} ${BOARD_BRANCH})`,
     commit:
-      `ONE commit on a new local '${CLEANUP_BRANCH}' branch removing ${BUNDLE_DIR}/ from ` +
+      `ONE commit on a new local '${CLEANUP_BRANCH}' branch removing ${bundleDir}/ from ` +
       `'${branch}' and adding it to .gitignore — NOT pushed: you push that branch and open the ` +
       `PR yourself; nothing on '${branch}' is pushed or changed`,
     after_merge:
-      `once the PR merges, on every clone: 'git pull' makes ${BUNDLE_DIR}/ vanish from ` +
+      `once the PR merges, on every clone: 'git pull' makes ${bundleDir}/ vanish from ` +
       `'${branch}', and the next '${inv} sync' re-creates it from the ${BOARD_BRANCH} branch — ` +
       `nothing is lost`,
     both_worlds: bothWorldsLine(branch),
@@ -113,23 +114,23 @@ export function committedPreviewRecord(inv: string, branch: string): Record<stri
       `every board writer should sync — at minimum commit — their board changes first: board work ` +
       `sitting uncommitted or unpushed on another machine cannot be detected from here, and it ` +
       `will NOT be on the new branch; worse, a clone whose unpushed board commits merge over the ` +
-      `cleanup PR keeps those ${BUNDLE_DIR}/ paths tracked on '${branch}', and sync will refuse ` +
+      `cleanup PR keeps those ${bundleDir}/ paths tracked on '${branch}', and sync will refuse ` +
       `there until they are untracked (git rm -r --cached)`,
     verified:
       `this preview already checked the machine-checkable preconditions: ${BOARD_REMOTE} is ` +
       `reachable, '${branch}' is not behind ${BOARD_REMOTE}/${branch} on board changes, and no ` +
       `'${BOARD_BRANCH}/…' branches exist (they would block creating the '${BOARD_BRANCH}' branch)`,
-    rollout_note: rolloutNote(inv, branch),
+    rollout_note: rolloutNote(inv, branch, bundleDir),
     run: `${inv} sync --establish --yes`,
   };
 }
 
 /** The receipt/recovery next-steps chain (one source — the crash-recovery path re-emits it). */
-export function committedNextSteps(inv: string, branch: string): string[] {
+export function committedNextSteps(inv: string, branch: string, bundleDir: string = BUNDLE_DIR): string[] {
   return [
     `push the cleanup branch: git push -u ${BOARD_REMOTE} ${CLEANUP_BRANCH}`,
     `open a PR from '${CLEANUP_BRANCH}' into '${branch}' and merge it`,
-    `after the merge lands: 'git pull', then '${inv} sync' — ${BUNDLE_DIR}/ vanishes from ` +
+    `after the merge lands: 'git pull', then '${inv} sync' — ${bundleDir}/ vanishes from ` +
       `'${branch}' and comes back as the live shared board`,
   ];
 }
@@ -143,9 +144,9 @@ function assertNotBehindOnBoard(top: string, inv: string, branch: string): void 
 }
 
 /** The removal commit's message (rides the human-opened cleanup PR). */
-function removalCommitMessage(inv: string, branch: string): string {
+function removalCommitMessage(inv: string, branch: string, bundleDir: string): string {
   return (
-    `board: move ${BUNDLE_DIR}/ to the '${BOARD_BRANCH}' branch\n\n` +
+    `board: move ${bundleDir}/ to the '${BOARD_BRANCH}' branch\n\n` +
     `The board now lives on its own '${BOARD_BRANCH}' branch (pushed to ${BOARD_REMOTE}) and is ` +
     `ignored on '${branch}'.\nOnce this lands: 'git pull' (the folder vanishes), then ` +
     `'${inv} sync' (it returns as the live shared board).\n`
@@ -184,7 +185,7 @@ export function clearStaleCommittedMarker(top: string): void {
 // ── the committed-folder phases ───────────────────────────────────────────────
 
 /** The guard phase's result: the branch to act on and a reusable interrupted-run remnant (if any). */
-interface CommittedPlan { branch: string; reuseBoardSha: string | null }
+interface CommittedPlan { branch: string; bundleDir: string; reuseBoardSha: string | null }
 
 /**
  * The precondition guards, verified for BOTH the preview and the execution — the preview is a dry
@@ -198,6 +199,7 @@ interface CommittedPlan { branch: string; reuseBoardSha: string | null }
  * synced their board changes — is documented comms in the preview.
  */
 function guardCommittedPreconditions(top: string, inv: string, treeSha: string): CommittedPlan {
+  const bundleDir = bundleDirNameForProject(top);
   const branch = currentBranch(top);
   if (branch === "HEAD") {
     throw syncOutcomeError("establish.detached-head.committed", {});
@@ -208,7 +210,7 @@ function guardCommittedPreconditions(top: string, inv: string, treeSha: string):
 
   assertNotBehindOnBoard(top, inv, branch);
 
-  const dirty = statusRows(top, BUNDLE_DIR);
+  const dirty = statusRows(top, bundleDir);
   if (dirty.length > 0) {
     const shown = dirty.slice(0, 20);
     throw syncOutcomeError("establish.committed-dirty", { inv, rows: shown, total: dirty.length });
@@ -233,7 +235,7 @@ function guardCommittedPreconditions(top: string, inv: string, treeSha: string):
     }
   }
 
-  return { branch, reuseBoardSha };
+  return { branch, bundleDir, reuseBoardSha };
 }
 
 /**
@@ -247,11 +249,11 @@ function guardCommittedPreconditions(top: string, inv: string, treeSha: string):
 function executeCommittedEstablishment(
   top: string, inv: string, plan: CommittedPlan, treeSha: string, mode: OutputMode, stdout: (s: string) => void,
 ): EstablishOutcome {
-  const { branch } = plan;
+  const { branch, bundleDir } = plan;
   const boardSha = plan.reuseBoardSha ?? createBoardRootCommit(top, treeSha, branch);
   writeGitDirMarker(top, COMMITTED_MARKER_KEY, boardSha);
   pushBoardUpstream(top);
-  const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch));
+  const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch, bundleDir));
   mustGit(top, ["branch", CLEANUP_BRANCH, removalSha]);
   clearGitDirMarker(top, COMMITTED_MARKER_KEY);
 
@@ -261,9 +263,9 @@ function executeCommittedEstablishment(
     pushed: `${BOARD_REMOTE}/${BOARD_BRANCH} (tracking set)`,
     cleanup_branch: CLEANUP_BRANCH,
     cleanup_commit: removalSha,
-    next_steps: committedNextSteps(inv, branch),
+    next_steps: committedNextSteps(inv, branch, bundleDir),
     both_worlds: bothWorldsLine(branch),
-    tell_your_teammates: rolloutNote(inv, branch),
+    tell_your_teammates: rolloutNote(inv, branch, bundleDir),
   };
   stdout(render(receipt, mode));
   return { already: false };
@@ -299,7 +301,7 @@ export async function establishCommitted(
   const plan = guardCommittedPreconditions(top, inv, treeSha);
 
   if (!yes) {
-    stdout(render(committedPreviewRecord(inv, plan.branch), mode));
+    stdout(render(committedPreviewRecord(inv, plan.branch, plan.bundleDir), mode));
     return { already: false };
   }
 
@@ -331,7 +333,11 @@ async function alreadyShared(
     // (a) prepared but not landed: the PR is the only thing left.
     clearGitDirMarker(top, COMMITTED_MARKER_KEY);
     rec.note = syncOutcomeLine("line.marker.prepared.note", { cleanupBranch: CLEANUP_BRANCH });
-    rec.next_steps = committedNextSteps(inv, branch === "HEAD" ? "the default branch" : branch);
+    rec.next_steps = committedNextSteps(
+      inv,
+      branch === "HEAD" ? "the default branch" : branch,
+      bundleDirNameForProject(top),
+    );
   } else if (marker) {
     // (b) this clone's own marker proves an interrupted --yes run happened HERE — but only
     // origin/board can say whether that run's push WON. Provenance before any framing.
@@ -397,7 +403,8 @@ async function alreadyShared(
           currentTree: currentTree ?? "absent",
         });
       }
-      const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch));
+      const bundleDir = bundleDirNameForProject(top);
+      const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch, bundleDir));
       mustGit(top, ["branch", CLEANUP_BRANCH, removalSha]);
       clearGitDirMarker(top, COMMITTED_MARKER_KEY);
       rec.recovered =
@@ -405,7 +412,7 @@ async function alreadyShared(
         `it has been re-created on '${CLEANUP_BRANCH}'`;
       rec.cleanup_branch = CLEANUP_BRANCH;
       rec.cleanup_commit = removalSha;
-      rec.next_steps = committedNextSteps(inv, branch);
+      rec.next_steps = committedNextSteps(inv, branch, bundleDir);
       rec.both_worlds = bothWorldsLine(branch);
     }
   } else {
@@ -425,7 +432,7 @@ async function alreadyShared(
 function windowNote(top: string, inv: string, branch: string): string {
   const guidance = boardWindowGuidance(top);
   if (guidance.state === "window-remnant") return guidance.message;
-  const landedUpstream = pathLandedAbsentOnRemoteBranch(top, branch, BUNDLE_DIR);
+  const landedUpstream = pathLandedAbsentOnRemoteBranch(top, branch, bundleDirNameForProject(top));
   return landedUpstream
     ? syncOutcomeLine("line.window-note.landed", { inv, branch })
     : syncOutcomeLine("line.window-note.pending", { inv });

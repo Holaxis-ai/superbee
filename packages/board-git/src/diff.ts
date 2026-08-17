@@ -18,7 +18,7 @@ import {
 
 export interface DiffDocsOptions {
   /**
-   * Scope the delta to docs under this repo-relative prefix (e.g. `.agentstate-lite/`), stripping
+   * Scope the delta to docs under this repo-relative prefix (e.g. `.superbee/`), stripping
    * it BEFORE doc-id/reserved-file interpretation — so `<prefix>/index.md` still reads as
    * reserved. The seam for in-tree mode (plan board-git PR C); unused by today's callers (a
    * board worktree's root IS the bundle root).

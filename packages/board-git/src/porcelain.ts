@@ -70,15 +70,53 @@ export const BOARD_BRANCH = "board";
 export const BOARD_REMOTE = "origin";
 /** The EXPLICIT remote-tracking ref every pull/rebase/count uses — never `@{u}`. */
 export const BOARD_REF = `${BOARD_REMOTE}/${BOARD_BRANCH}`;
-/** The conventional folder the board worktree is checked out at (relative to the repo top level). */
-export const BUNDLE_DIR = ".agentstate-lite";
+/** The canonical folder used for every newly-created project bundle and board worktree. */
+export const BUNDLE_DIR = ".superbee";
+/** The pre-rename conventional folder: recognized and operated in place, but never newly created. */
+export const LEGACY_BUNDLE_DIR = ".agentstate-lite";
+/** The complete recognition set. Creation sites must use {@link BUNDLE_DIR}, not this collection. */
+export const BUNDLE_DIRS = [BUNDLE_DIR, LEGACY_BUNDLE_DIR] as const;
+
+export interface BundleDirSelection {
+  name: (typeof BUNDLE_DIRS)[number] | null;
+  conflict: boolean;
+}
+
+/** Select one recognized directory; two matches are a conflict, never a precedence decision. */
+export function bundleDirNameAt(
+  top: string,
+  present: (candidate: string) => boolean,
+): BundleDirSelection {
+  const found = BUNDLE_DIRS.filter((name) => present(path.join(top, name)));
+  if (found.length > 1) return { name: null, conflict: true };
+  return { name: found[0] ?? null, conflict: false };
+}
+
+/** The existing project directory, falling back to the canonical creation target. */
+export function bundleDirNameForProject(top: string): (typeof BUNDLE_DIRS)[number] {
+  const selected = bundleDirNameAt(
+    top,
+    (candidate) => existsSync(candidate) || existsSync(`${candidate}.establish-backup`),
+  );
+  if (selected.conflict) {
+    throw new BoardGitError(
+      "CONFLICT",
+      `both '${BUNDLE_DIR}/' and '${LEGACY_BUNDLE_DIR}/' exist at ${top} — refusing to choose between two project bundles`,
+      {
+        details: { path: top, state: "bundle-directory-conflict", directories: [...BUNDLE_DIRS] },
+        help: "choose the project bundle to keep, then move the other directory outside the repository before retrying",
+      },
+    );
+  }
+  return selected.name ?? BUNDLE_DIR;
+}
 
 /**
  * Worktree-portability config forced on every worktree-creating or repairing invocation: git >=
  * 2.48's `worktree.useRelativePaths` writes both the linked worktree's
  * `.git` file and the main repo's `worktrees/<name>/gitdir` registration as paths RELATIVE to each
  * other, instead of the pre-2.48 default of absolute paths on both sides. Since the board worktree
- * always lives INSIDE the repo it belongs to (`<repoTop>/.agentstate-lite`), a relative pointer is
+ * always lives INSIDE the repo it belongs to (`<repoTop>/.superbee`), a relative pointer is
  * mount-portable by construction — a sandbox/devcontainer/CI checkout remounted at a different
  * absolute path stays self-consistent. NO version probing: an unknown `-c` config key is silently
  * ignored by git older than 2.48, so this is safe to pass unconditionally on every version.
@@ -413,7 +451,7 @@ function rebaseWasFromBoardBranch(boardPath: string): boolean {
  * The repair self-heal's ACTUAL success signal (worktree-portability): {@link worktreeRootResolves}
  * alone is NOT enough — `git worktree repair` is safe to run (and exits 0) on a worktree whose
  * pointers were never even stale, so a genuinely healthy but WRONG-branch worktree (someone's own
- * unrelated `git worktree add .agentstate-lite some-other-branch`), or one merely left on a plain
+ * unrelated `git worktree add .superbee some-other-branch`), or one merely left on a plain
  * detached HEAD for an unrelated reason (no rebase in progress at all), would otherwise be
  * misreported as a successful "repaired" board checkout — and every downstream sync step
  * (`stageAndCommit`, `fetchRebaseResolving`, `push`) would then operate against content that was
@@ -431,13 +469,13 @@ function repairedWorktreeIsBoard(boardPath: string, ownerTop: string): boolean {
 
 /**
  * True when the conventional board worktree is genuinely provisioned for the repo containing
- * `dir`: `<toplevel>/.agentstate-lite` exists, is ITSELF a worktree root (not a plain directory
+ * `dir`: the selected conventional directory exists, is ITSELF a worktree root (not a plain directory
  * falling through to the parent repo), and has the `board` branch checked out.
  */
 export function isProvisioned(dir: string): boolean {
   const top = repoTopLevel(dir);
   if (!top) return false;
-  const boardPath = path.join(top, BUNDLE_DIR);
+  const boardPath = path.join(top, bundleDirNameForProject(top));
   if (!existsSync(boardPath) || !worktreeRootResolvesForOwner(boardPath, top)) return false;
   const branch = runGit(boardPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
   return branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH;
@@ -574,15 +612,16 @@ function tryFastForwardAdoptLocalBoard(top: string, localSha: string, remoteSha:
  * null when this is NOT the remnant state (the genuine window keeps its pull-first guidance).
  */
 export function trackedBoardRemnantPaths(top: string): string[] | null {
+  const bundleDir = bundleDirNameForProject(top);
   const branch = currentBranch(top);
   if (branch === "HEAD" || branch === BOARD_BRANCH) return null;
   const remoteRef = `refs/remotes/${BOARD_REMOTE}/${branch}`;
   if (runGit(top, ["rev-parse", "--verify", "--quiet", remoteRef]).status !== 0) return null;
   // The removal must have LANDED on the remote tip…
-  if (runGit(top, ["cat-file", "-e", `${remoteRef}:${BUNDLE_DIR}`]).status === 0) return null;
+  if (runGit(top, ["cat-file", "-e", `${remoteRef}:${bundleDir}`]).status === 0) return null;
   // …and this clone must have ALREADY PULLED it (otherwise pull-first is exactly right).
   if (runGit(top, ["merge-base", "--is-ancestor", remoteRef, "HEAD"]).status !== 0) return null;
-  const ls = runGit(top, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", BUNDLE_DIR]);
+  const ls = runGit(top, ["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", bundleDir]);
   if (ls.status !== 0) return null;
   const paths = ls.stdout.split("\0").filter((p) => p.length > 0);
   return paths.length > 0 ? paths : null;
@@ -606,13 +645,14 @@ export interface BoardWindowGuidance {
 
 /** Build {@link BoardWindowGuidance} for the tracked-folder states (see {@link preShareWindowError}). */
 export function boardWindowGuidance(top: string, originConfigured = true): BoardWindowGuidance {
+  const bundleDir = bundleDirNameForProject(top);
   if (!originConfigured) {
     return {
       state: "pre-share-window",
       originConfigured,
       message:
         `a previously fetched '${BOARD_REF}' ref shows this project's board was shared, but no ` +
-        `'${BOARD_REMOTE}' remote is configured here any more — '${BUNDLE_DIR}' is still the old ` +
+        `'${BOARD_REMOTE}' remote is configured here any more — '${bundleDir}' is still the old ` +
         `folder committed on this branch, and sync cannot pull the shared board without the remote`,
       help: `git remote add ${BOARD_REMOTE} <url>  # restore the remote, 'git pull' once the cleanup PR merges, then re-run sync`,
     };
@@ -627,12 +667,12 @@ export function boardWindowGuidance(top: string, originConfigured = true): Board
       message:
         `the '${BOARD_BRANCH}' branch exists on ${BOARD_REMOTE} and the folder-removal (cleanup) ` +
         `commit has already been pulled here, but ${remnants.length} ${plural ? "paths" : "path"} under ` +
-        `'${BUNDLE_DIR}/' ${plural ? "are" : "is"} still tracked on this branch — a board commit merged ` +
+        `'${bundleDir}/' ${plural ? "are" : "is"} still tracked on this branch — a board commit merged ` +
         `over the removal re-added ${plural ? "them" : "it"}, so 'git pull' has nothing left to fix: ` +
         `untrack ${plural ? "those paths" : "that path"}, then re-run sync`,
       help:
-        `git rm -r --cached -- ${BUNDLE_DIR} && git commit -m 'board: untrack leftover board paths', ` +
-        `then mv ${BUNDLE_DIR} ${BUNDLE_DIR}.bak and re-run sync — it provisions the shared board; ` +
+        `git rm -r --cached -- ${bundleDir} && git commit -m 'board: untrack leftover board paths', ` +
+        `then mv ${bundleDir} ${bundleDir}.bak and re-run sync — it provisions the shared board; ` +
         `reconcile any docs from the backup afterwards with doc update`,
     };
   }
@@ -640,7 +680,7 @@ export function boardWindowGuidance(top: string, originConfigured = true): Board
     state: "pre-share-window",
     originConfigured,
     message:
-      `the '${BOARD_BRANCH}' branch exists on ${BOARD_REMOTE}, but '${BUNDLE_DIR}' here is ` +
+      `the '${BOARD_BRANCH}' branch exists on ${BOARD_REMOTE}, but '${bundleDir}' here is ` +
       `still the old folder committed on this branch — the folder-removal (cleanup) PR ` +
       `hasn't merged yet, or this clone hasn't pulled it: once it lands, run 'git pull', ` +
       `then run sync again`,
@@ -676,11 +716,11 @@ export function preShareWindowError(top: string, boardPath: string, originConfig
   return new BoardGitError("RUNTIME", guidance.message, { details, help: guidance.help });
 }
 
-/** How a non-empty, non-adoptable pre-existing `.agentstate-lite` directory was classified. */
+/** How a non-empty, non-adoptable pre-existing conventional directory was classified. */
 export type ExistingDirRefusalReason = "foreign" | "foreign_checkout" | "unrepairable" | "wrong_branch";
 
 /**
- * The provisioning refusal for a pre-existing `.agentstate-lite` that cannot be adopted, worded to
+ * The provisioning refusal for a pre-existing conventional directory that cannot be adopted, worded to
  * the case actually observed — never telling someone to move aside a worktree that repair simply
  * could not fix, or one that IS the board checkout, as if it were foreign junk. Every remedy stays
  * NON-DESTRUCTIVE (`mv`, never `rm`) — none of these reasons make the directory's CONTENT
@@ -688,21 +728,22 @@ export type ExistingDirRefusalReason = "foreign" | "foreign_checkout" | "unrepai
  * table can enumerate the four arms against provisioning's own bytes.
  */
 export function existingDirRefusal(reason: ExistingDirRefusalReason, boardPath: string, top: string): BoardGitError {
+  const bundleDir = path.basename(boardPath);
   const messages: Record<ExistingDirRefusalReason, { message: string; help: string }> = {
     foreign: {
-      message: `a non-empty '${BUNDLE_DIR}' directory already exists at ${boardPath} but is not the shared board checkout — move it aside, then re-run sync`,
+      message: `a non-empty '${bundleDir}' directory already exists at ${boardPath} but is not the shared board checkout — move it aside, then re-run sync`,
       help: moveAsideHelp(boardPath, "then re-run sync; reconcile any local-only docs afterwards"),
     },
     foreign_checkout: {
-      message: `'${BUNDLE_DIR}' at ${boardPath} is git checkout machinery, but it belongs to a different git repository than ${top} — move it aside, then re-run sync to provision this repo's board from origin/board`,
+      message: `'${bundleDir}' at ${boardPath} is git checkout machinery, but it belongs to a different git repository than ${top} — move it aside, then re-run sync to provision this repo's board from origin/board`,
       help: moveAsideHelp(boardPath, "then re-run sync; the existing checkout is untouched, just relocated"),
     },
     unrepairable: {
-      message: `'${BUNDLE_DIR}' at ${boardPath} looks like the board checkout with stale pointers that 'git worktree repair' could not fix (its git-internal registration is likely gone) — move it aside, then re-run sync to re-provision fresh from origin/board`,
+      message: `'${bundleDir}' at ${boardPath} looks like the board checkout with stale pointers that 'git worktree repair' could not fix (its git-internal registration is likely gone) — move it aside, then re-run sync to re-provision fresh from origin/board`,
       help: moveAsideHelp(boardPath, "then re-run sync; recover any local-only, unpushed docs from the backup afterwards"),
     },
     wrong_branch: {
-      message: `'${BUNDLE_DIR}' at ${boardPath} is git checkout machinery (a linked worktree or nested repo), but it is not checked out to the '${BOARD_BRANCH}' branch (nor mid-rebase from it) — it is likely used for something else — move it aside, then re-run sync to re-provision the board fresh from origin/board`,
+      message: `'${bundleDir}' at ${boardPath} is git checkout machinery (a linked worktree or nested repo), but it is not checked out to the '${BOARD_BRANCH}' branch (nor mid-rebase from it) — it is likely used for something else — move it aside, then re-run sync to re-provision the board fresh from origin/board`,
       help: moveAsideHelp(boardPath, "then re-run sync; the existing checkout is untouched, just relocated"),
     },
   };
@@ -716,7 +757,7 @@ export function existingDirRefusal(reason: ExistingDirRefusalReason, boardPath: 
  * SELF-HEALING board-worktree provisioning:
  * `git fetch --prune origin` runs BEFORE `board` is referenced (best-effort: offline provisioning still
  * works from a previously fetched `origin/board`); worktree absent but a board ref exists → a
- * fresh `git worktree add`; a pre-existing NON-EMPTY `.agentstate-lite/` that is NOT the board
+ * fresh `git worktree add`; a pre-existing NON-EMPTY selected bundle directory that is NOT the board
  * worktree is REFUSED with guidance (never a blind add — a pre-existing EMPTY directory is the one
  * resolvable case, removed so the add can proceed); "already checked out" from git = idempotent
  * success. The `--no-track` add reproduces the no-tracking-config state a shared board can arrive
@@ -745,7 +786,8 @@ export interface NetworkBudgetOptions {
 export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions = {}): ProvisionOutcome {
   const top = repoTopLevel(dir);
   if (!top) return { kind: "no_repo" };
-  const boardPath = path.join(top, BUNDLE_DIR);
+  const bundleDir = bundleDirNameForProject(top);
+  const boardPath = path.join(top, bundleDir);
   if (isProvisioned(top)) return { kind: "already", boardPath };
 
   // Probe the board ref explicitly: a clone's configured fetch refspec may exclude it.
@@ -847,7 +889,7 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
       if (
         hasRemote &&
         !hasWorktreeSignature(boardPath) &&
-        runGit(top, ["cat-file", "-e", `HEAD:${BUNDLE_DIR}`]).status === 0
+        runGit(top, ["cat-file", "-e", `HEAD:${bundleDir}`]).status === 0
       ) {
         throw preShareWindowError(top, boardPath, hasOrigin);
       }
@@ -1229,7 +1271,7 @@ export function snapshotBundleCommit(top: string, bundlePath: string): BundleSna
   const snapshotOptions: RunOptions = { gitDir, workTree: bundlePath, indexFile };
   try {
     mustGit(bundlePath, ["read-tree", "--empty"], snapshotOptions);
-    // A project commonly ignores `.agentstate-lite/`, and users may also carry broad global or
+    // A project commonly ignores its bundle directory, and users may also carry broad global or
     // info/exclude rules. Establish snapshots the explicit bundle source, so ignore policy must
     // not silently drop otherwise-valid bundle files from the first published commit.
     mustGit(
@@ -1645,16 +1687,16 @@ export const GITIGNORE_ENTRY = `${BUNDLE_DIR}/`;
  * ignores the folder (with or without leading/trailing slash), appended otherwise. Both establish
  * cases share the same idempotent transform.
  */
-export function withIgnoreEntry(content: string): string {
+export function withIgnoreEntry(content: string, bundleDir: string = BUNDLE_DIR): string {
   const covered = content.split("\n").some((l) => {
     const t = l.trim();
-    return t === BUNDLE_DIR || t === `${BUNDLE_DIR}/` || t === `/${BUNDLE_DIR}` || t === `/${BUNDLE_DIR}/`;
+    return t === bundleDir || t === `${bundleDir}/` || t === `/${bundleDir}` || t === `/${bundleDir}/`;
   });
   if (covered) return content;
   let out = content;
   if (out.length > 0 && !out.endsWith("\n")) out += "\n";
   if (out.length > 0) out += "\n";
-  out += `# the shared board — managed on the '${BOARD_BRANCH}' branch by superbee sync\n${GITIGNORE_ENTRY}\n`;
+  out += `# the shared board — managed on the '${BOARD_BRANCH}' branch by superbee sync\n${bundleDir}/\n`;
   return out;
 }
 
@@ -1674,7 +1716,7 @@ export function ensureBoardGitignoreWorkingTree(top: string): { changed: boolean
   } catch {
     /* absent .gitignore reads as empty */
   }
-  const updated = withIgnoreEntry(content);
+  const updated = withIgnoreEntry(content, bundleDirNameForProject(top));
   if (updated === content) return { changed: false, path: gitignorePath };
   writeFileSync(gitignorePath, updated);
   return { changed: true, path: gitignorePath };

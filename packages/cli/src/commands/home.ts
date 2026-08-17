@@ -70,7 +70,7 @@ import path from "node:path";
 import {
   BOARD_BRANCH,
   BOARD_REF,
-  BUNDLE_DIR,
+  bundleDirNameForProject,
   countUncommitted,
   folderTreeAtHead,
   hasWorktreeSignature,
@@ -147,7 +147,8 @@ export interface BundleSummary {
   /**
    * Human display name from the one derivation in `bundle-name.ts` —
    * explicit `docs/bundle` doc, else the conventional dir's PARENT folder, else the root
-   * basename — so a conventional bundle identifies its PROJECT, not the `.agentstate-lite`
+   * basename — so a conventional bundle identifies its PROJECT, not the `.superbee` (or legacy
+   * `.agentstate-lite`)
    * folder every project shares. Optional: injected test fakes may omit it (block omits the
    * field then).
    */
@@ -343,7 +344,8 @@ export async function defaultSummarizeBundle(dir?: string): Promise<BundleSummar
 
 /**
  * `defaultSummarizeBundle` with DISCOVERY semantics: walk up from `startDir` for the nearest
- * bundle root (a level's own `index.md`, else its conventional `.agentstate-lite/index.md` —
+ * bundle root (a level's own `index.md`, else its conventional `.superbee/index.md` or legacy
+ * `.agentstate-lite/index.md` —
  * bundle.ts's one walk) and summarize THAT. session-start's `--dir` bridge uses this when no
  * board resolved because its `--dir` may name a nested run directory. Ordinary explicit `--dir`
  * accepts the requested bundle or its direct conventional child, but never selects an ancestor.
@@ -404,7 +406,7 @@ export type BoardStatus =
   | { state: "unprovisioned" }
   /**
    * The BOTH-WORLDS window (or its post-cleanup remnant): a fetched `origin/board` exists while
-   * `.agentstate-lite/` is still committed at HEAD. `line` carries the ONE shared factory's truth
+   * selected bundle directory is still committed at HEAD. `line` carries the ONE shared factory's truth
    * (the same message sync's refusal renders — pull-first, or the untrack escape), so home never
    * says "run sync" for a sync that would only refuse.
    */
@@ -422,6 +424,8 @@ export type BoardStatus =
   /** An IN-TREE board (board-git PR C): the bundle committed with code on the current branch. */
   | {
       state: "in-tree";
+      /** The recognized directory this in-tree board actually occupies. */
+      bundleDir?: string;
       /** The last in-tree fetch step's awareness cache (null: never checked from this clone). */
       cache: AwarenessCache | null;
       /** Actors this clone authored (sync commits + the post-persist doc-write hook). */
@@ -440,6 +444,7 @@ import {
   BOARD_IN_TREE_LINE,
   BOARD_OFFLINE_NOTE,
   BOARD_UP_TO_DATE,
+  boardInTreeLine,
   boardFirstContactLine,
   inTreePullHintLine,
   inTreeUncommittedLine,
@@ -451,6 +456,7 @@ export {
   BOARD_IN_TREE_LINE,
   BOARD_OFFLINE_NOTE,
   BOARD_UP_TO_DATE,
+  boardInTreeLine,
   boardFirstContactLine,
   inTreePullHintLine,
   inTreeUncommittedLine,
@@ -552,7 +558,11 @@ export function buildBoardBlock(
   // The quiet in-tree state renders the mode line, not "up to date": a plain in-tree render never
   // fetched, so it cannot claim currency — the mode line is true either way (and doubles as the
   // first-contact copy: board rides this branch; pull normally).
-  if (Object.keys(rec).length === 0) return { block: inTree ? BOARD_IN_TREE_LINE : BOARD_UP_TO_DATE };
+  if (Object.keys(rec).length === 0) {
+    return {
+      block: status.state === "in-tree" ? boardInTreeLine(status.bundleDir) : BOARD_UP_TO_DATE,
+    };
+  }
   return { block: rec };
 }
 
@@ -569,12 +579,13 @@ export function buildBoardBlock(
 export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus | null> {
   try {
     // Retarget when sitting INSIDE the board worktree (exactly where an agent lands after
-    // `doc write --dir .agentstate-lite`) — otherwise the worktree reads as its OWN repo top,
-    // `<board>/.agentstate-lite` doesn't exist, and the shared refs would misreport the live
+    // `doc write --dir .superbee`) — otherwise the worktree reads as its OWN repo top,
+    // `<board>/.superbee` doesn't exist, and the shared refs would misreport the live
     // board as "unprovisioned".
     const top = repoTopLevel(retargetBoardInterior(dir ?? process.cwd()));
     if (!top) return null;
-    const boardPath = path.join(top, BUNDLE_DIR);
+    const bundleDir = bundleDirNameForProject(top);
+    const boardPath = path.join(top, bundleDir);
     if (!isProvisioned(top)) {
       const remoteRefExists =
         runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status === 0;
@@ -610,11 +621,12 @@ export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus 
         const sha = upstream.state === "ok" ? inTreeUpstreamSha(top, upstream.config.ref) : null;
         return {
           state: "in-tree",
+          bundleDir,
           cache: state.cache,
           selfActors: state.selfActors ?? [],
-          unpushed: sha === null ? null : inTreeUnpushedCount(top, sha),
-          uncommitted: countUncommitted(top, BUNDLE_DIR),
-          behind: sha === null ? null : inTreeBehindCount(top, sha),
+          unpushed: sha === null ? null : inTreeUnpushedCount(top, sha, bundleDir),
+          uncommitted: countUncommitted(top, bundleDir),
+          behind: sha === null ? null : inTreeBehindCount(top, sha, bundleDir),
         };
       }
       return null;
@@ -714,7 +726,7 @@ export function buildHomeView(
   } else if (summary) {
     const bundleBlock: Record<string, unknown> = {};
     // Identity first: the derived project name, so a conventional
-    // `.agentstate-lite` bundle reads as ITS project, not as the folder every project shares.
+    // conventional bundle reads as ITS project, not as the folder name every project shares.
     if (summary.name) {
       bundleBlock.name = summary.name;
       // Progressive disclosure: when the name is merely derived from the parent

@@ -1,7 +1,7 @@
 /**
  * `git-harness.ts` — the hermetic git test harness every downstream sync unit consumes (plan
  * [plans/sync-verb-implementation] §U0). It builds scratch repo topologies (a bare origin + two
- * clones, each with a `board` branch checked out as a linked worktree at `.agentstate-lite/`, so
+ * clones, each with a `board` branch checked out as a linked worktree at `.superbee/`, so
  * the branch root IS the bundle root) and plants every fixture the sync suites need: dirty and
  * staged user code, new/modified/deleted board docs, divergent histories (same-doc and
  * different-doc), a dangling cursor SHA (an object rewritten out of history), a worktree wedged
@@ -29,7 +29,7 @@ import { initBundle, writeDoc, readDoc, type Frontmatter } from "@superbee/core"
 /** The branch that carries ONLY the bundle; its root maps to the bundle root. */
 export const BOARD_BRANCH = "board";
 /** The conventional folder the board worktree is checked out at (branch root = this dir). */
-export const BUNDLE_DIR = ".agentstate-lite";
+export const BUNDLE_DIR = ".superbee";
 
 // ── porcelain-invariant git runner ──────────────────────────────────────────
 
@@ -150,7 +150,7 @@ export interface BoardRepo {
   readonly name: string;
   /** The clone's working directory — `main` is checked out here (user code lives here). */
   readonly root: string;
-  /** `<root>/.agentstate-lite` — the linked board worktree (exists only after {@link provisionBoard}). */
+  /** `<root>/.superbee` — the linked board worktree (exists only after {@link provisionBoard}). */
   readonly board: string;
 }
 
@@ -197,7 +197,7 @@ const SEED_DOCS: ReadonlyArray<{ id: string; frontmatter: Frontmatter; body: str
 /**
  * Build a bare origin + two clones (A, B). Each clone has `main` (with user code) checked out at its
  * root and — when provisioned — the `board` branch checked out as a linked worktree at
- * `.agentstate-lite/`, whose root carries the seeded OKF bundle (`index.md` + {@link SEED_DOCS}).
+ * `.superbee/`, whose root carries the seeded OKF bundle (`index.md` + {@link SEED_DOCS}).
  */
 export async function makeTwoCloneTopology(options: TopologyOptions = {}): Promise<TwoCloneTopology> {
   const provision = options.provision ?? true;
@@ -252,7 +252,7 @@ export async function makeTwoCloneTopology(options: TopologyOptions = {}): Promi
 /**
  * Committed-folder topology (the `sync --establish` hard case): a bare origin + two clones of a
  * project whose bundle is a PLAIN COMMITTED FOLDER on `main` — NO `board` branch exists anywhere.
- * `BoardRepo.board` names `<root>/.agentstate-lite`, which here is just a committed directory,
+ * `BoardRepo.board` names `<root>/.superbee`, which here is just a committed directory,
  * not a checkout of its own. Seeds the same user code and {@link SEED_DOCS} as
  * {@link makeTwoCloneTopology} so post-establishment assertions can check the docs survived.
  */
@@ -289,7 +289,7 @@ export async function makeCommittedFolderTopology(): Promise<TwoCloneTopology> {
 /**
  * Greenfield-establish topology (plans/sync-greenfield-establish): a bare origin + two clones of a
  * project whose bundle DOESN'T EXIST YET anywhere — no `board` branch, local or on origin, and no
- * `.agentstate-lite/` folder in either clone (`initPlainBundleDir` plants one after cloning, for
+ * `.superbee/` folder in either clone (`initPlainBundleDir` plants one after cloning, for
  * whichever clone a test wants to establish from). Same seeded user code as
  * {@link makeTwoCloneTopology} so `--establish`'s "touches nothing but the board" claim is checkable
  * against real tracked files.
@@ -319,7 +319,7 @@ export async function makeGreenfieldTopology(): Promise<TwoCloneTopology> {
 }
 
 /**
- * Plant a PLAIN, uncommitted `.agentstate-lite/` folder (`init`'s own output — just the reserved
+ * Plant a PLAIN, uncommitted `.superbee/` folder (`init`'s own output — just the reserved
  * root `index.md`, no docs) in a clone with no board branch anywhere yet — the establish
  * precondition ladder's expected starting shape. Callers add docs afterward via
  * {@link writeBoardDoc} (it only touches the filesystem, so it works before the folder is a
@@ -332,7 +332,7 @@ export async function initPlainBundleDir(repo: BoardRepo): Promise<void> {
 
 /**
  * Provision the board worktree for a clone: fetch, then check out `origin/board` as a linked
- * worktree at `.agentstate-lite/`. `--no-track` faithfully reproduces the migration machine's
+ * worktree at `.superbee/`. `--no-track` faithfully reproduces the migration machine's
  * empirical NO-tracking-config state (why the invariants use explicit `origin/board`, never `@{u}`).
  */
 export function provisionBoard(repo: BoardRepo): void {
@@ -570,7 +570,7 @@ export function holdIndexLock(repo: BoardRepo): HeldLock {
 // ── non-empty, unprovisioned bundle dir (worktree-add refusal fixture) ────────
 
 /**
- * Plant a NON-EMPTY, non-worktree `.agentstate-lite/` in an UNPROVISIONED clone — the "resolved or
+ * Plant a NON-EMPTY, non-worktree `.superbee/` in an UNPROVISIONED clone — the "resolved or
  * refused, never a blind worktree add" case for U1's self-heal. Call on a clone built with
  * `{ provision: false }`.
  */

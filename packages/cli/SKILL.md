@@ -144,9 +144,9 @@ Use `superbee mcp status --host <id>` to verify it and restart the host after a 
 - `superbee setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]`
   — Inspect npm, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command
 
-## Workspaces — the project's bundle lives at `.agentstate-lite/` in the project root
+## Workspaces — the project's bundle lives at `.superbee/` in the project root
 
-Unless the user directs otherwise, a project's workspace bundle lives in a `.agentstate-lite/`
+Unless the user directs otherwise, a project's workspace bundle lives in a `.superbee/`
 folder at the project root. Two verbs, two different jobs — `init` always creates a LOCAL
 bundle (solo use is first-class, nothing forces sharing); `sync` is how a project's board
 becomes — or stays — shared memory across clones and teammates. Three modes:
@@ -157,7 +157,7 @@ becomes — or stays — shared memory across clones and teammates. Three modes:
   `sync` on a local-only bundle reports that state honestly (its note points at `--establish`)
   — it never establishes on its own, which would silently publish a bundle nobody asked to
   share.
-- **Joining an existing shared board** — if `.agentstate-lite/` is already in the clone, there
+- **Joining an existing shared board** — if `.superbee/` or a legacy `.agentstate-lite/` is already in the clone, there
   is NOTHING to set up. If it isn't but the project already shares its board (the repo's
   remote has a `board` branch), `sync` is the setup verb — run it once and it creates the
   folder and pulls the shared state. NEVER init a project that already has a workspace: that
@@ -173,7 +173,7 @@ becomes — or stays — shared memory across clones and teammates. Three modes:
 
 ```sh
 superbee sync                            # existing shared project — provisions the board; a local-only bundle reports its state
-superbee init --dir .agentstate-lite     # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one
+superbee init --dir .superbee            # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one
 superbee sync --establish                # establish a new shared board after user approval
 ```
 
@@ -217,7 +217,7 @@ Otherwise bundle resolution stays local: explicit `--dir` → nearest `.superbee
 supported `.agentstate.json` local-path binding up-tree → the cwd walk, which at each
 ancestor checks both binding names together (both at one level fail closed), then the
 directory's own `index.md`, then its
-conventional `.agentstate-lite/index.md`. Reserve `--dir` for the exceptions: a bundle outside
+conventional `.superbee/index.md` or legacy `.agentstate-lite/index.md`. Reserve `--dir` for the exceptions: a bundle outside
 any project, a second workspace, or reaching another project's bundle from elsewhere.
 
 Two things override the default:
@@ -232,7 +232,7 @@ Two things override the default:
    it rather than creating a second one.
 
 If the user wants the workspace PRIVATE to their machine instead of shared (a personal
-scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.agentstate/<name>/`)
+scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.superbee/<name>/`)
 and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates
 share this bundle? When the user's intent is ambiguous, ask rather than defaulting silently.
 
@@ -248,7 +248,7 @@ the tradeoff and record that explicit choice; never silently substitute one for 
 ```sh
 # One-time setup at the project root (see the Workspaces section) — run ONE of these:
 superbee sync                          # existing project that shares a board — sets up AND pulls the shared board
-superbee init --dir .agentstate-lite   # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle
+superbee init --dir .superbee          # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle
 
 # If collaboration is requested, offer the explicit one-time shared-board operation:
 superbee sync --establish

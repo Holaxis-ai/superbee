@@ -14,6 +14,7 @@ import {
   BOARD_BRANCH,
   BOARD_REF,
   BUNDLE_DIR,
+  bundleDirNameForProject,
   folderTreeAtHead,
   inTreeUpstreamSha,
   readDocBytesAtRef,
@@ -102,10 +103,11 @@ export async function showIncoming(
 
     // The ref the incoming version is read FROM, and the repo-relative prefix doc paths live
     // under. Branch mode: the board ref, no prefix. In-tree (tracked conventional folder, no
-    // board refs anywhere): the branch's OWN tracking upstream, docs under `.agentstate-lite/` —
+    // board refs anywhere): the branch's OWN tracking upstream, docs under the selected bundle directory —
     // still "as of last fetch", still no implicit fetch (the resolution is local config/refs).
     let readRef = `refs/remotes/${BOARD_REF}`;
     let pathPrefix = "";
+    let inTreeBundleDir = BUNDLE_DIR;
     if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
       if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status === 0) {
         throw ffSwallowToError("no-upstream", inv, top);
@@ -116,7 +118,8 @@ export async function showIncoming(
         const sha = inTreeUpstreamSha(top, resolution.config.ref);
         if (sha === null) throw showIncomingInTreeNoBasis(inv, "unusable-upstream", resolution.config.ref);
         readRef = sha;
-        pathPrefix = `${BUNDLE_DIR}/`;
+        inTreeBundleDir = bundleDirNameForProject(top);
+        pathPrefix = `${inTreeBundleDir}/`;
       } else {
         throw syncOutcomeError("show-incoming.no-upstream", { inv });
       }
@@ -170,7 +173,9 @@ export async function showIncoming(
         sync: "show-incoming",
         id,
         as_of: SHOW_INCOMING_AS_OF,
-        state: pathPrefix === "" ? SHOW_INCOMING_ABSENT_STATE : SHOW_INCOMING_IN_TREE_ABSENT_STATE,
+        state: pathPrefix === ""
+          ? SHOW_INCOMING_ABSENT_STATE
+          : `absent upstream — not under ${inTreeBundleDir}/ on the branch's tracking upstream as of the last fetch (deleted upstream, or a new local doc)`,
       };
       // Stream mode keeps stdout a pure byte channel — the state record rides the receipt
       // channel (stderr), same as the receipt would have.

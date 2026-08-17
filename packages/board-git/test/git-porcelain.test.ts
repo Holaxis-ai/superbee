@@ -23,7 +23,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { mkdtemp, rm, writeFile, readFile, rename } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readFile, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -56,6 +56,8 @@ import {
 } from "./git-harness.js";
 
 import {
+  BUNDLE_DIR as CANONICAL_BUNDLE_DIR,
+  LEGACY_BUNDLE_DIR,
   isProvisioned,
   probeRepoTopLevel,
   repoTopLevel,
@@ -434,7 +436,7 @@ test("provision: deprovisioned clone re-provisions (self-heal), and works from a
   }
 });
 
-test("provision: pre-existing EMPTY .agentstate-lite dir is resolved (removed, then added)", async () => {
+test("provision: pre-existing EMPTY .superbee dir is resolved (removed, then added)", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
     mkdirSync(topo.a.board, { recursive: true });
@@ -446,7 +448,7 @@ test("provision: pre-existing EMPTY .agentstate-lite dir is resolved (removed, t
   }
 });
 
-test("provision: pre-existing NON-EMPTY non-worktree .agentstate-lite is REFUSED with guidance (never a blind add)", async () => {
+test("provision: pre-existing NON-EMPTY non-worktree .superbee is REFUSED with guidance (never a blind add)", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
     await plantNonEmptyBundleDir(topo.a);
@@ -476,7 +478,7 @@ test("provision: board branch checked out at a NON-conventional path = idempoten
   }
 });
 
-test("provisionBoardWorktree: a FOREIGN repo's board worktree at .agentstate-lite is refused, and the emitted remedy is executable verbatim", async () => {
+test("provisionBoardWorktree: a FOREIGN repo's board worktree at .superbee is refused, and the emitted remedy is executable verbatim", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
     const foreignRoot = await plantForeignBoardWorktreeAt(topo.dir, topo.a.board);
@@ -515,7 +517,8 @@ test("provision: a FRESH worktree add writes RELATIVE pointers when the running 
   try {
     const r = provisionBoardWorktree(topo.a.root);
     assert.equal(r.kind, "provisioned");
-    const gitFile = (await readFile(path.join(topo.a.board, ".git"), "utf8")).trim();
+    assert.ok("boardPath" in r);
+    const gitFile = (await readFile(path.join(r.boardPath, ".git"), "utf8")).trim();
     assert.match(gitFile, /^gitdir:\s*/);
     const isRelative = !gitFile.slice("gitdir:".length).trim().startsWith("/");
     if (isRelative) {
@@ -529,6 +532,38 @@ test("provision: a FRESH worktree add writes RELATIVE pointers when the running 
       );
     }
     assert.equal(isProvisioned(topo.a.root), true);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("provision: canonical and legacy bundle directories at one project level fail closed", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    for (const name of [CANONICAL_BUNDLE_DIR, LEGACY_BUNDLE_DIR]) {
+      const dir = path.join(topo.a.root, name);
+      await mkdir(dir);
+      await writeFile(path.join(dir, "index.md"), "---\nokf_version: 0.2\n---\n");
+    }
+    const err = capture(() => provisionBoardWorktree(topo.a.root));
+    assert.equal(isBoardGitError(err), true);
+    assert.equal((err as { code: string }).code, "CONFLICT");
+    assert.match((err as Error).message, /refusing to choose between two project bundles/);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("provision: an existing legacy board worktree remains selected and is never moved", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    const legacyPath = path.join(topo.a.root, LEGACY_BUNDLE_DIR);
+    git(topo.a.root, ["worktree", "move", topo.a.board, legacyPath]);
+    assert.equal(isProvisioned(topo.a.root), true);
+    const outcome = provisionBoardWorktree(topo.a.root);
+    assert.deepEqual(outcome, { kind: "already", boardPath: legacyPath });
+    assert.equal(existsSync(legacyPath), true);
+    assert.equal(existsSync(path.join(topo.a.root, CANONICAL_BUNDLE_DIR)), false);
   } finally {
     await topo.cleanup();
   }
@@ -610,7 +645,7 @@ test("provisionBoardWorktree: a worktree signature repair CANNOT fix refuses wit
 // `git worktree repair` exits 0 (a true no-op) on a worktree whose pointers were NEVER stale —
 // so a bare "did the plumbing resolve" recheck after repair cannot, by itself, prove the worktree
 // is genuinely the shared board checkout. Two ways a healthy-but-wrong worktree can sit at
-// `.agentstate-lite`: checked out to some OTHER branch entirely, or left on a plain detached HEAD
+// `.superbee`: checked out to some OTHER branch entirely, or left on a plain detached HEAD
 // for a reason that has NOTHING to do with sync's own rebase machinery. Both must REFUSE, never
 // silently adopt the directory as "repaired" — the U3a #1 never-touch guarantee is about content
 // as much as location: sync must never commit/rebase/push whatever happens to be checked out at
@@ -1132,7 +1167,7 @@ test("classifyGitError: anything else → structured RUNTIME carrying the op + f
 
 // ── isProvisioned edge: a plain (non-worktree) dir never reads as provisioned ─
 
-test("isProvisioned: false for a plain non-worktree .agentstate-lite dir (falls through to the parent repo)", async () => {
+test("isProvisioned: false for a plain non-worktree .superbee dir (falls through to the parent repo)", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
     await plantNonEmptyBundleDir(topo.a);
@@ -1290,7 +1325,8 @@ test("F2 adopt: a strict-ancestor local board branch is fast-forwarded to a LIVE
     );
     assert.equal(git(topo.b.root, ["rev-parse", `refs/heads/${BOARD_BRANCH}`]).trim(), newSha, "fast-forwarded");
     assert.equal(isProvisioned(topo.b.root), true);
-    assert.equal(existsSync(path.join(topo.b.board, "tasks", "advanced.md")), true, "the teammate's doc materialized");
+    assert.ok("boardPath" in outcome);
+    assert.equal(existsSync(path.join(outcome.boardPath, "tasks", "advanced.md")), true, "the teammate's doc materialized");
   } finally {
     await topo.cleanup();
   }

@@ -9,6 +9,7 @@ import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { BUNDLE_DIR } from "@superbee/board-git";
 import { git } from "../../board-git/test/git-harness.js";
 
 export interface OutcomeState {
@@ -29,8 +30,8 @@ export async function makePlainTop(): Promise<OutcomeState> {
 
 /**
  * The tracked-REMNANT state (`trackedBoardRemnantPaths` non-null): `origin/main`'s tip carries NO
- * `.agentstate-lite/`, that tip is an ancestor of HEAD, and HEAD still tracks exactly ONE board
- * path (`.agentstate-lite/tasks/extra.md`) — deterministic, so the remnant fixture's message count
+ * `.superbee/`, that tip is an ancestor of HEAD, and HEAD still tracks exactly ONE board
+ * path (`.superbee/tasks/extra.md`) — deterministic, so the remnant fixture's message count
  * and `tracked_remnants` rows are byte-stable.
  */
 export async function makeRemnantTop(): Promise<OutcomeState> {
@@ -44,12 +45,12 @@ export async function makeRemnantTop(): Promise<OutcomeState> {
   git(repo, ["commit", "-m", "initial (no board folder)"]);
   git(repo, ["remote", "add", "origin", origin]);
   git(repo, ["push", "-u", "origin", "main"]);
-  await mkdir(path.join(repo, ".agentstate-lite", "tasks"), { recursive: true });
+  await mkdir(path.join(repo, BUNDLE_DIR, "tasks"), { recursive: true });
   await writeFile(
-    path.join(repo, ".agentstate-lite", "tasks", "extra.md"),
+    path.join(repo, BUNDLE_DIR, "tasks", "extra.md"),
     "---\ntype: Task\ntitle: Extra\nactor: bob\n---\n# Extra\n",
   );
-  git(repo, ["add", ".agentstate-lite"]);
+  git(repo, ["add", BUNDLE_DIR]);
   git(repo, ["commit", "-m", "board: re-added over the removal"]);
   return { top: repo, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }

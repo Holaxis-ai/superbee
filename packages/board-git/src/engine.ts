@@ -11,7 +11,8 @@ import path from "node:path";
 
 import {
   BOARD_REMOTE,
-  BUNDLE_DIR,
+  BUNDLE_DIRS,
+  bundleDirNameForProject,
   abortStaleRebase,
   detectStaleRebase,
   repoTopLevel,
@@ -55,7 +56,7 @@ function hasGitFileSignature(p: string): boolean {
 
 /**
  * Path-only fallback for the mount-move case: stale worktree pointers make `repoTopLevel(dir)`
- * fail from inside `.agentstate-lite`, but the enclosing path still names the conventional board
+ * fail from inside a recognized bundle directory, but the enclosing path still names the conventional board
  * checkout. Retarget to its parent so `provisionBoardWorktree` can run the repair path. The `.git`
  * FILE gate keeps this away from plain not-yet-shared bundle directories; independent nested repos
  * with a `.git` directory still fall through to the normal no-board/no-repo classification.
@@ -63,7 +64,7 @@ function hasGitFileSignature(p: string): boolean {
 function retargetStaleBoardInteriorByPath(dir: string): string | null {
   let cur = path.resolve(dir);
   for (;;) {
-    if (path.basename(cur) === BUNDLE_DIR && hasGitFileSignature(cur)) {
+    if (BUNDLE_DIRS.includes(path.basename(cur) as (typeof BUNDLE_DIRS)[number]) && hasGitFileSignature(cur)) {
       return path.dirname(cur);
     }
     const parent = path.dirname(cur);
@@ -74,8 +75,8 @@ function retargetStaleBoardInteriorByPath(dir: string): string | null {
 
 /**
  * Sync run from INSIDE the board worktree — exactly where an agent sits right after
- * `doc write --dir .agentstate-lite` — must not leak a doubled path. The structural signature of
- * "standing inside the board" is a repo top that is BOTH named `.agentstate-lite` AND a linked
+ * `doc write --dir .superbee` (or a legacy bundle) — must not leak a doubled path. The structural signature of
+ * "standing inside the board" is a repo top that has a recognized bundle name AND is a linked
  * worktree; retarget to its parent directory (the
  * enclosing project), where the normal resolution — heal probe, then provisioning's idempotent
  * "already" branch — proceeds against the REAL board path.
@@ -83,7 +84,7 @@ function retargetStaleBoardInteriorByPath(dir: string): string | null {
 export function retargetBoardInterior(dir: string): string {
   try {
     const top = repoTopLevel(dir);
-    if (top && path.basename(top) === BUNDLE_DIR && isLinkedWorktree(top)) {
+    if (top && BUNDLE_DIRS.includes(path.basename(top) as (typeof BUNDLE_DIRS)[number]) && isLinkedWorktree(top)) {
       return path.dirname(top);
     }
   } catch {
@@ -107,7 +108,7 @@ export function healStaleRebaseBeforeProvisioning(dir: string): void {
   try {
     const top = repoTopLevel(dir);
     if (!top) return;
-    const candidateBoardPath = path.join(top, BUNDLE_DIR);
+    const candidateBoardPath = path.join(top, bundleDirNameForProject(top));
     if (!existsSync(candidateBoardPath)) return;
     const boardTop = repoTopLevel(candidateBoardPath);
     if (!boardTop || realOrSame(boardTop) !== realOrSame(candidateBoardPath)) return;
