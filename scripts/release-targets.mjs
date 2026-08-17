@@ -299,6 +299,19 @@ function normalizeManifestStructure(raw, burnedVersions) {
       `reviewed stable successor tuple version ${stableSuccessor.version} must be at or above functional successor floor ${functionalSuccessorFloor}`,
     );
   }
+  // The preview must order ABOVE the stable it accompanies. successor-stable takes `latest` and
+  // successor-preview takes `next`, and at-rest policy requires next to sit at or ahead of latest, so
+  // an inverted pair can never reach a settled state. This is easy to declare by accident: pairing
+  // stable 0.1.1 with preview 0.1.1-pre.3 reads as "the next free number on that line", but a
+  // prerelease sorts BELOW its own release, so `next` would point behind `latest` and the at-rest
+  // audit fails with next_off_policy. Rejecting it here means the manifest cannot express the
+  // mistake at all, instead of it surfacing later as a confusing dist-tag violation.
+  const previewSuccessor = allowedTuples["successor-preview"];
+  if (previewSuccessor && compareStrictSemver(previewSuccessor.version, stableSuccessor.version) !== 1) {
+    throw new Error(
+      `reviewed successor-preview version ${previewSuccessor.version} must order ABOVE successor-stable ${stableSuccessor.version}; a prerelease sorts below its own release, so next would point behind latest`,
+    );
+  }
   return {
     schema: RELEASE_TARGET_SCHEMA,
     functional_successor_floor: functionalSuccessorFloor,

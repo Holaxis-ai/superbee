@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { chmod, lstat, mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { atomicWriteFileSync, capturePrivateConfigParent } from "../src/private-config-write.js";
 
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const mutableFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
 
 test("host installers source shared private-config writing from a neutral module", async () => {
   const [writer, hook, skill] = await Promise.all([
@@ -53,6 +55,41 @@ test("atomicWriteFileSync refuses byte drift under an expected private-config sn
     );
     assert.equal(await readFile(target, "utf8"), "competing edit\n");
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("an expected-absent atomic write never overwrites a destination that appears at publication", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-appear-"));
+  const target = path.join(dir, "settings.json");
+  const originalLink = mutableFs.linkSync;
+  try {
+    let injected = false;
+    mutableFs.linkSync = ((existingPath, newPath) => {
+      if (!injected && newPath === target) {
+        injected = true;
+        mutableFs.writeFileSync(target, "competing edit\n");
+      }
+      return originalLink(existingPath, newPath);
+    }) as typeof mutableFs.linkSync;
+    syncBuiltinESMExports();
+
+    assert.throws(
+      () => atomicWriteFileSync(target, "ours\n", {
+        followFinalSymlink: false,
+        expected: {
+          destination: null,
+          content: null,
+          parent: capturePrivateConfigParent(target),
+        },
+      }),
+      /EEXIST/,
+    );
+    assert.equal(await readFile(target, "utf8"), "competing edit\n");
+    assert.deepEqual(await readdir(dir), ["settings.json"]);
+  } finally {
+    mutableFs.linkSync = originalLink;
+    syncBuiltinESMExports();
     await rm(dir, { recursive: true, force: true });
   }
 });

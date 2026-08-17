@@ -29,6 +29,10 @@
     {
       "version": "0.1.0-pre.10",
       "reason": "tag v0.1.0-pre.10 points at f64586194abb8b01c3167092effb02ca6b2c24dc rather than the reviewed packet-authority repair source; the immutable tag cannot represent bridge bytes; never published or staged"
+    },
+    {
+      "version": "0.1.1-pre.1",
+      "reason": "tag v0.1.1-pre.1 points at a tree whose release-staged.yml had setup-node's registry-url removed on an incorrect OIDC diagnosis, so its stage step cannot authenticate; the immutable tag can never pick up the revert (PR #44) and the number was never published or staged. Declared now because the published 0.1.1-pre.2 makes N=1 a real hole on the 0.1.1 line: the patch-digit restriction that previously hid this line from the audit no longer applies"
     }
   ]
 }

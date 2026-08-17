@@ -102,6 +102,113 @@ test("host-scoped setup returns a complete plan and remains path-free", async ()
   assert.doesNotMatch(output, /\/Users\/private/);
 });
 
+test("user setup surfaces a project overlay without recommending an all-host uninstall", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  const inspectHook = injected.inspectHook;
+  injected.inspectHook = (scope) => {
+    const inspection = inspectHook(scope);
+    if (scope === "user") {
+      inspection.hosts.claude_code = {
+        installed: false,
+        compatibility: { state: "absent", reason: "Claude user hook is absent" },
+      };
+    }
+    if (scope === "project") {
+      inspection.hosts.codex = {
+        installed: true,
+        compatibility: { state: "legacy_identity", reason: "legacy project hook" },
+      };
+      inspection.hosts.claude_code = {
+        installed: true,
+        compatibility: { state: "current", reason: "Claude project hook is the only effective hook" },
+      };
+    }
+    return inspection;
+  };
+  await setup(["--host", "codex", "--scope", "user", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: { complete: boolean; next: { action: string; command: string } };
+  };
+  assert.equal(parsed.setup.complete, false);
+  assert.deepEqual(parsed.setup.next, {
+    action: "inspect",
+    command: "superbee hook status --scope project",
+    reason: "a managed project SessionStart hook overlaps the current user hook",
+  });
+});
+
+test("an absent user hook is installed before a current project hook is retired", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  const inspectHook = injected.inspectHook;
+  injected.inspectHook = (scope) => {
+    const inspection = inspectHook(scope);
+    if (scope === "user") {
+      inspection.hosts.codex = {
+        installed: false,
+        compatibility: { state: "absent", reason: "absent" },
+      };
+    }
+    return inspection;
+  };
+  await setup(["--host", "codex", "--scope", "user", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: { complete: boolean; next: { action: string; command: string } };
+  };
+  assert.equal(parsed.setup.complete, false);
+  assert.deepEqual(parsed.setup.next, {
+    action: "run",
+    command: "superbee hook install --scope user",
+    reason: "the SessionStart orientation hook is absent",
+  });
+});
+
+test("user setup blocks on an unmanaged project OpenCode plugin instead of hiding it behind a current user hook", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  const inspectHook = injected.inspectHook;
+  injected.inspectHook = (scope) => {
+    const inspection = inspectHook(scope);
+    if (scope === "project") {
+      inspection.hosts.opencode = {
+        installed: false,
+        compatibility: { state: "unmanaged", reason: "unrecognized legacy project plugin" },
+      };
+    }
+    return inspection;
+  };
+  await setup(["--host", "opencode", "--scope", "user", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: { complete: boolean; next: { action: string; command: string } };
+  };
+  assert.equal(parsed.setup.complete, false);
+  assert.deepEqual(parsed.setup.next, {
+    action: "inspect",
+    command: "superbee hook status --scope project",
+    reason: "the reserved project OpenCode plugin path is not managed by Superbee",
+  });
+});
+
+test("user setup fails closed when project hook inspection is unavailable", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.inspectHook = (scope) => {
+    if (scope === "project") throw new Error("unreadable project settings");
+    return deps(() => {}).inspectHook(scope);
+  };
+  await setup(["--host", "codex", "--scope", "user", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: { complete: boolean; next: { action: string; command: string } };
+  };
+  assert.equal(parsed.setup.complete, false);
+  assert.deepEqual(parsed.setup.next, {
+    action: "inspect",
+    command: "superbee hook status --scope project",
+    reason: "the codex project hook settings could not be inspected",
+  });
+});
+
 test("setup defaults to TOON rather than JSON", async () => {
   let output = "";
   await setup(["--host", "claude-desktop"], deps((text) => { output += text; }));
@@ -124,6 +231,29 @@ test("incomplete setup is a successful diagnosis with one next command", async (
   const parsed = JSON.parse(output) as { setup: { ready: boolean; next: { command: string } } };
   assert.equal(parsed.setup.ready, false);
   assert.equal(parsed.setup.next.command, "superbee mcp install --host claude-desktop");
+});
+
+test("known legacy MCP state returns inspection instead of an install command that will refuse it", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.inspectMcp = (targets) => targets.map((target) => ({
+    host: target.id,
+    label: target.label,
+    state: "known_legacy",
+    config: "~/.claude.json",
+    reason: "registration 'aslite-views' is a legacy candidate; inspect it before migration",
+    docs_url: target.docs_url,
+  }));
+  await setup(["--host", "claude-code", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: { ready: boolean; next: { action: string; command: string } };
+  };
+  assert.equal(parsed.setup.ready, false);
+  assert.deepEqual(parsed.setup.next, {
+    action: "inspect",
+    command: "superbee mcp status --host claude-code",
+    reason: "registration 'aslite-views' is a legacy candidate; inspect it before migration",
+  });
 });
 
 test("setup validates exact host, scope, arity, and serves offline help", async () => {

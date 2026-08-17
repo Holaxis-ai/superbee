@@ -74,6 +74,17 @@ test("foreign integration state fails closed onto a read-only inspector", () => 
   assert.equal(mcp.next?.action, "inspect");
   assert.equal(mcp.next?.command, "superbee mcp status --host claude-desktop");
 
+  const legacyMcp = buildSetupPlan(input({
+    host: "claude-code",
+    mcp: { state: "known_legacy", reason: "registration 'aslite-views' is a legacy candidate" },
+  }));
+  assert.equal(legacyMcp.next?.action, "inspect");
+  assert.equal(legacyMcp.next?.command, "superbee mcp status --host claude-code");
+  assert.equal(
+    legacyMcp.capabilities.find((row) => row.id === "mcp")?.state,
+    "blocked",
+  );
+
   for (const host of ["codex", "claude-code"] as const) {
     const hook = buildSetupPlan(input({
       host,
@@ -93,6 +104,28 @@ test("foreign integration state fails closed onto a read-only inspector", () => 
   }));
   assert.equal(openCodeHook.next?.action, "inspect");
   assert.equal(openCodeHook.next?.command, "superbee hook status --scope user");
+
+  for (const host of ["codex", "claude-code"] as const) {
+    const foreignProjectHook = buildSetupPlan(input({
+      host,
+      projectHook: {
+        installed: false,
+        installSafe: true,
+        compatibility: { state: "unmanaged", reason: "foreign project hook coexists" },
+      },
+    }));
+    assert.equal(foreignProjectHook.complete, true, host);
+    assert.equal(foreignProjectHook.next, undefined, host);
+  }
+
+  const staleProjectHook = buildSetupPlan(input({
+    projectHook: {
+      installed: true,
+      compatibility: { state: "legacy_identity", reason: "legacy project hook" },
+    },
+  }));
+  assert.equal(staleProjectHook.next?.action, "inspect");
+  assert.equal(staleProjectHook.next?.command, "superbee hook status --scope project");
 
   for (const state of ["installed", "stale"] as const) {
     const newerSkill = buildSetupPlan(input({
