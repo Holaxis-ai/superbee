@@ -103,4 +103,4 @@ Design and format docs live in the repository.
 
 ## License
 
-MIT © Holaxis
+Apache-2.0 © 2026 Holaxis
