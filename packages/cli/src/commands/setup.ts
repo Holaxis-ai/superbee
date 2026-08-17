@@ -39,6 +39,8 @@ export interface SetupInspection {
   distribution: PersistentInstallAuthority;
   skill?: SkillStatusInspection;
   hook?: HookStatusInspection;
+  projectHook?: HookStatusInspection;
+  projectHookUnavailable?: boolean;
   mcp: readonly McpHostStatus[];
   workspace: SetupWorkspaceState;
 }
@@ -74,9 +76,11 @@ function hookForHost(
   host: McpInstallTargetId,
 ): SetupHookHostState | undefined {
   if (!inspection || host === "claude-desktop") return undefined;
-  if (host === "codex") return inspection.hosts.codex;
-  if (host === "claude-code") return inspection.hosts.claude_code;
-  return inspection.hosts.opencode;
+  return host === "codex"
+    ? inspection.hosts.codex
+    : host === "claude-code"
+      ? inspection.hosts.claude_code
+      : inspection.hosts.opencode;
 }
 
 function planForHost(inspection: SetupInspection, host: McpInstallTargetId, scope: InstallScope): SetupPlan {
@@ -93,6 +97,8 @@ function planForHost(inspection: SetupInspection, host: McpInstallTargetId, scop
     },
     skill: skillForHost(inspection.skill, host),
     hook: hookForHost(inspection.hook, host),
+    projectHook: scope === "user" ? hookForHost(inspection.projectHook, host) : undefined,
+    projectHookUnavailable: scope === "user" && inspection.projectHookUnavailable === true,
     mcp,
     workspace: inspection.workspace,
   });
@@ -128,6 +134,8 @@ async function inspectAll(
 ): Promise<SetupInspection> {
   let skill: SkillStatusInspection | undefined;
   let hook: HookStatusInspection | undefined;
+  let projectHook: HookStatusInspection | undefined;
+  let projectHookUnavailable = false;
   if (targets.some((target) => target.id === "codex" || target.id === "claude-code")) {
     try {
       skill = deps.inspectSkill(scope);
@@ -141,6 +149,14 @@ async function inspectAll(
     } catch {
       hook = undefined;
     }
+    if (scope === "user") {
+      try {
+        projectHook = deps.inspectHook("project");
+      } catch {
+        projectHook = undefined;
+        projectHookUnavailable = true;
+      }
+    }
   }
   const [workspace, mcp] = await Promise.all([
     inspectWorkspace(deps),
@@ -150,6 +166,8 @@ async function inspectAll(
     distribution: deps.inspectDistribution(),
     skill,
     hook,
+    projectHook,
+    projectHookUnavailable,
     mcp,
     workspace,
   };

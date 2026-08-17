@@ -52,6 +52,8 @@ export interface SetupPlanInput {
   };
   readonly skill?: SetupSkillHostState;
   readonly hook?: SetupHookHostState;
+  readonly projectHook?: SetupHookHostState;
+  readonly projectHookUnavailable?: boolean;
   readonly mcp: { readonly state: McpRegistrationState; readonly reason: string };
   readonly workspace: SetupWorkspaceState;
 }
@@ -218,6 +220,44 @@ function hookCapability(input: SetupPlanInput): SetupCapability {
     };
   }
   if (input.hook.installed && input.hook.compatibility.state === "current") {
+    if (input.scope === "user" && input.projectHookUnavailable) {
+      return {
+        id: "hook",
+        requirement: "recommended",
+        state: "blocked",
+        reason: `the ${input.host} project hook settings could not be inspected`,
+        command: "superbee hook status --scope project",
+      };
+    }
+    if (input.scope === "user" && input.projectHook) {
+      if (input.projectHook.installSafe === false) {
+        return {
+          id: "hook",
+          requirement: "recommended",
+          state: "blocked",
+          reason: `the ${input.host} project hook settings cannot be safely reconciled with the user hook`,
+          command: "superbee hook status --scope project",
+        };
+      }
+      if (input.projectHook.compatibility.state === "unmanaged") {
+        return {
+          id: "hook",
+          requirement: "recommended",
+          state: "blocked",
+          reason: "the reserved project OpenCode plugin path is not managed by Superbee",
+          command: "superbee hook status --scope project",
+        };
+      }
+      if (input.projectHook.installed) {
+        return {
+          id: "hook",
+          requirement: "recommended",
+          state: "needs_action",
+          reason: "a managed project SessionStart hook duplicates the current user hook",
+          command: "superbee hook uninstall --scope project",
+        };
+      }
+    }
     return {
       id: "hook",
       requirement: "recommended",
