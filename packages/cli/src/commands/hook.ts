@@ -31,8 +31,10 @@
 // host's configured user directory. Project-scope OpenCode stays under `<cwd>/.config/opencode/`.
 import {
   existsSync,
+  linkSync,
   lstatSync,
   readFileSync,
+  renameSync,
   rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -53,7 +55,7 @@ import {
   resolveHostConfigRoot,
   resolveOpenCodeConfigRoot,
 } from "../host-config.js";
-import { atomicWriteFileSync } from "../private-config-write.js";
+import { atomicWriteFileSync, capturePrivateConfigParent } from "../private-config-write.js";
 import {
   classifyHookCommand,
   classifyHookEntry,
@@ -858,6 +860,69 @@ function readOpenCodeTargetsStatus(
   return canonical;
 }
 
+function openCodeClaimPath(path: string): string {
+  return `${path}.claim-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function restoreOpenCodeClaim(claim: string, path: string): void {
+  try {
+    linkSync(claim, path);
+  } catch (error) {
+    throw new Error(`OpenCode plugin changed during migration; recovery copy retained at ${claim}`, { cause: error });
+  }
+  rmSync(claim, { force: true });
+}
+
+/** Atomically isolate the current directory entry, then establish ownership on the isolated bytes. */
+function claimOwnedOpenCodePlugin(path: string): string | undefined {
+  const inspected = readOpenCodeHookStatus(path);
+  if (!inspected.installed) return undefined;
+  const claim = openCodeClaimPath(path);
+  try {
+    renameSync(path, claim);
+  } catch (error) {
+    throw new Error("OpenCode plugin changed after inspection; nothing was removed", { cause: error });
+  }
+  const claimed = readOpenCodeHookStatus(claim);
+  if (!claimed.installed) {
+    restoreOpenCodeClaim(claim, path);
+    throw new Error("OpenCode plugin changed after inspection; the changed bytes were preserved");
+  }
+  return claim;
+}
+
+function removeOwnedOpenCodePlugin(path: string): boolean {
+  const claim = claimOwnedOpenCodePlugin(path);
+  if (claim === undefined) return false;
+  rmSync(claim, { force: true });
+  return true;
+}
+
+function installOpenCodePlugin(path: string, next: string): boolean {
+  const inspected = readOpenCodeHookStatus(path, next);
+  if (inspected.compatibility.state === "unmanaged") {
+    throw new Error("refusing to overwrite unmanaged OpenCode plugin");
+  }
+  if (inspected.compatibility.state === "current") return false;
+
+  const claim = inspected.installed ? claimOwnedOpenCodePlugin(path) : undefined;
+  try {
+    atomicWriteFileSync(path, next, {
+      followFinalSymlink: false,
+      expected: {
+        destination: null,
+        content: null,
+        parent: capturePrivateConfigParent(path),
+      },
+    });
+  } catch (error) {
+    if (claim !== undefined) restoreOpenCodeClaim(claim, path);
+    throw error;
+  }
+  if (claim !== undefined) rmSync(claim, { force: true });
+  return true;
+}
+
 /**
  * Re-install prompt signal (consumed by the home render): TRUE when a MANAGED
  * SessionStart hook is installed at any of the given scope bases (default: the cwd project scope
@@ -1149,20 +1214,12 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
     // OpenCode ambient-context plugin — our args-aware source, SDK-marker compatible.
     try {
       const next = buildOpenCodePluginSource(launch.program, launch.args);
-      const current = existsSync(targets.opencodePlugin)
-        ? readFileSync(targets.opencodePlugin, "utf8")
-        : undefined;
       const currentStatus = readOpenCodeHookStatus(targets.opencodePlugin, next);
-      if (current !== undefined && currentStatus.compatibility.state === "unmanaged") {
+      if (currentStatus.compatibility.state === "unmanaged") {
         refusals.push(`${collapseHomeDirectory(targets.opencodePlugin)}: refusing to overwrite unmanaged OpenCode plugin`);
       } else {
-        if (current !== next) {
-          atomicWriteFileSync(targets.opencodePlugin, next, { followFinalSymlink: false });
-        }
-        const legacyStatus = readOpenCodeHookStatus(targets.legacyOpencodePlugin);
-        if (legacyStatus.installed) {
-          rmSync(targets.legacyOpencodePlugin, { force: true });
-        }
+        installOpenCodePlugin(targets.opencodePlugin, next);
+        removeOwnedOpenCodePlugin(targets.legacyOpencodePlugin);
       }
     } catch (err) {
       failTarget(targets.opencodePlugin, err);
@@ -1206,8 +1263,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
   for (const path of [targets.opencodePlugin, targets.legacyOpencodePlugin]) {
     const openCodeStatus = readOpenCodeHookStatus(path);
     if (openCodeStatus.installed) {
-      rmSync(path, { force: true });
-      changed = true;
+      changed = removeOwnedOpenCodePlugin(path) || changed;
     } else if (openCodeStatus.compatibility.state === "unmanaged") {
       notes.push(`preserved unmanaged OpenCode plugin: ${collapseHomeDirectory(path)}`);
     }
