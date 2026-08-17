@@ -1,0 +1,59 @@
+{
+  "schema": "superbee.ci-lanes.v1",
+  "path_skipping": false,
+  "runtime_nodes": [22, 26],
+  "singleton_node": 26,
+  "required_jobs": [
+    "runtime",
+    "smoke-node-20",
+    "distribution",
+    "browser",
+    "release-policy",
+    "release-exhaustive"
+  ],
+  "components": [
+    { "id": "build", "command": "npm run build", "owner": "runtime" },
+    { "id": "typecheck", "command": "npm run typecheck", "owner": "runtime" },
+    { "id": "workspace-tests", "command": "npm test --workspaces --if-present", "owner": "runtime" },
+    { "id": "script-and-release-tests", "command": "npm run test:scripts", "owner": "release-policy" },
+    { "id": "installed-package-proof", "command": "npm run verify:npm-package", "owner": "distribution" },
+    { "id": "skill-drift-proof", "command": "npm run check:skill -w superbee", "owner": "distribution" },
+    { "id": "mcp-browser", "command": "npm run test:browser -w @superbee/mcp-app", "owner": "browser" },
+    { "id": "ui-end-to-end", "command": "npm run e2e:gate -w @superbee/ui", "owner": "browser" },
+    { "id": "all-release-targets", "command": "npm run test:packet-candidates", "owner": "release-exhaustive" }
+  ],
+  "lanes": {
+    "runtime": {
+      "script": "ci:runtime",
+      "components": ["build", "typecheck", "workspace-tests"],
+      "nodes": [22, 26]
+    },
+    "distribution": {
+      "script": "ci:distribution",
+      "components": ["installed-package-proof", "skill-drift-proof"],
+      "nodes": [26]
+    },
+    "browser": {
+      "script": "ci:browser",
+      "components": ["mcp-browser", "ui-end-to-end"],
+      "prerequisites": ["build"],
+      "nodes": [26]
+    },
+    "release-policy": {
+      "script": "ci:release-policy",
+      "components": ["script-and-release-tests"],
+      "prerequisites": ["build"],
+      "nodes": [26]
+    },
+    "release-exhaustive": {
+      "script": "check:release-exhaustive",
+      "components": ["all-release-targets"],
+      "nodes": [26]
+    },
+    "smoke-node-20": {
+      "workflow_only": true,
+      "components": [],
+      "nodes": [20]
+    }
+  }
+}

@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { buildCli } from "../packages/cli/build.mjs";
 import { currentSourceFacts } from "../packages/cli/scripts/build-bundle.mjs";
+import { canonicalJsonString } from "./canonical-json.mjs";
 import { isMainModule } from "./is-main-module.mjs";
 import { sanitizedNpmEnvironment, verifyRetainedTarball, fileSha256 } from "./verify-npm-package.mjs";
 import {
@@ -27,12 +28,87 @@ import {
   loadReleaseTargets,
   updatePolicyForTarget,
 } from "./release-targets.mjs";
-
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliRoot = path.join(repoRoot, "packages", "cli");
 const OUTPUT_OWNER = ".aslite-release-candidate-owned-v1";
 const OUTPUT_OWNER_CONTENT = "agentstate-lite release candidate output v1\n";
+export const RELEASE_CANDIDATE_FIXTURE_IDENTITY_SCHEMA = "superbee.release-candidate-fixture-identity.v1";
+
+export function releaseCandidateFixtureKey(identity) {
+  return `sha256:${createHash("sha256").update(canonicalJsonString(identity, "release candidate fixture identity")).digest("hex")}`;
+}
+
+async function sourceInputDigest(root = repoRoot) {
+  const listed = await execFileAsync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+    cwd: root,
+    encoding: "buffer",
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  const files = listed.stdout.toString("utf8").split("\0").filter(Boolean).sort();
+  const digest = createHash("sha256");
+  for (const relative of files) {
+    const bytes = await readFile(path.join(root, relative));
+    digest.update(relative);
+    digest.update("\0");
+    digest.update(createHash("sha256").update(bytes).digest("hex"));
+    digest.update("\0");
+  }
+  return `sha256:${digest.digest("hex")}`;
+}
+
+/**
+ * Complete identity for reusable test-process fixtures. The committed tree identifies the
+ * reviewed source, while source_files_sha256 also binds the tracked and non-ignored untracked
+ * bytes the local build can actually consume (including a deliberately dirty test checkout). It subsumes every
+ * workspace/build input; the lockfile and package manifests stay explicit because they are
+ * independently important release boundaries.
+ */
+export async function releaseCandidateFixtureIdentity({
+  tag,
+  commit,
+  target: targetId,
+  manifest: targetManifestPath = DEFAULT_RELEASE_TARGETS_PATH,
+  sourceFacts,
+}) {
+  const version = tag.slice(1);
+  const targetManifest = await loadReleaseTargets(targetManifestPath);
+  const target = targetManifest.targets[assertTargetId(targetId)];
+  if (!target) throw new Error(`release target ${targetId} is not listed in ${targetManifestPath}`);
+  const tuple = assertAllowedTuple(targetManifest, { target: target.id, packageName: target.package.name, version, tag });
+  assertCandidateSource(commit, sourceFacts ?? currentSourceFacts());
+  const tree = (await execFileAsync("git", ["rev-parse", `${commit}^{tree}`], { cwd: repoRoot })).stdout.trim();
+  const [releaseTargetsSha, sourceFilesSha, lockfileSha, rootPackageSha, cliPackageSha] = await Promise.all([
+    fileSha256(targetManifestPath),
+    sourceInputDigest(),
+    fileSha256(path.join(repoRoot, "package-lock.json")),
+    fileSha256(path.join(repoRoot, "package.json")),
+    fileSha256(path.join(cliRoot, "package.json")),
+  ]);
+  const updatePolicy = updatePolicyForTarget(target);
+  const identity = {
+    schema: RELEASE_CANDIDATE_FIXTURE_IDENTITY_SCHEMA,
+    tuple,
+    source: { commit, tree, dirty: false, source_files_sha256: sourceFilesSha },
+    release_policy_sha256: releaseTargetsSha,
+    build_inputs: {
+      package_lock_sha256: lockfileSha,
+      root_package_sha256: rootPackageSha,
+      cli_package_sha256: cliPackageSha,
+      source_files_sha256: sourceFilesSha,
+    },
+    package_identity: {
+      name: target.package.name,
+      version,
+      artifact: target.artifact,
+      bins: target.bins,
+    },
+    artifact_channel: "npm-package",
+    update_policy: updatePolicy,
+  };
+  const key = releaseCandidateFixtureKey(identity);
+  return { key, identity };
+}
 
 export function parseCandidateArgs(argv) {
   const json = argv.includes("--json");

@@ -61,6 +61,16 @@ let coreDistBuildPromise;
 
 const OWNED_ENTRYPOINT_PROBES = [
   {
+    relativePath: "scripts/ci-aggregate.mjs",
+    args: () => [],
+    expected: { code: 1, stderr: /required CI result payload is missing or invalid JSON/ },
+  },
+  {
+    relativePath: "scripts/ci-release-exhaustive.mjs",
+    args: () => ["--unexpected"],
+    expected: { code: 1, stderr: /usage: ci-release-exhaustive\.mjs/ },
+  },
+  {
     relativePath: "packages/cli/build.mjs",
     args: () => [],
     expected: { code: 1, stderr: /usage: buildCli\(local-dev\|npm-package\)/ },
@@ -401,6 +411,8 @@ test("positive executable authority comes from declarations plus explicit operat
     "packages/cli/build.mjs",
     "packages/cli/scripts/gen-skill.mjs",
     "packages/mcp-app/scripts/build-view.mjs",
+    "scripts/ci-aggregate.mjs",
+    "scripts/ci-release-exhaustive.mjs",
     "scripts/mutation-survivors.mjs",
     "scripts/prepublish-guard.mjs",
     "scripts/release-audit-tags.mjs",
