@@ -508,6 +508,17 @@
       "line": 110
     },
     {
+      "file": "packages/cli/src/commands/hook.ts",
+      "line_sha256": "a81f32a9c18f75bc4804f0f95e5718cc8c358868e2e5e2f89288479ed4471c5a",
+      "literal": "agentstate-lite",
+      "ordinal": 0,
+      "category": "legacy-command-compatibility",
+      "treatment": "preserve-as-read-only-migration-candidate",
+      "owner": "cli-policy",
+      "reason": "the exact published @holaxis/aslite pre.3 OpenCode generator is reconstructed solely for migration ownership",
+      "line": 669
+    },
+    {
       "file": "packages/cli/src/mcp-install-targets.ts",
       "line_sha256": "2051b877d1da60c7bfe9bba886a3ebf43e1c3cf7d60e1bf651d06239fff23b96",
       "literal": "aslite",

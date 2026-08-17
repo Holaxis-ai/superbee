@@ -350,6 +350,55 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
   }
 });
 
+test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCode bytes", async () => {
+  const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
+  for (const action of ["status", "install", "uninstall"] as const) {
+    const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-pre3-${action}-`));
+    const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+    const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
+    try {
+      await mkdir(path.dirname(oldPlugin), { recursive: true });
+      await writeFile(oldPlugin, fixture);
+      const receipt = capture();
+      await hook([action, "--json"], {
+        base,
+        commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+        stdout: receipt.stdout,
+      });
+      if (action === "status") {
+        assert.equal(JSON.parse(receipt.out()).hook.hosts.opencode.state, "legacy_identity");
+        assert.equal(await readFile(oldPlugin, "utf8"), fixture);
+      } else if (action === "install") {
+        await assert.rejects(() => readFile(oldPlugin, "utf8"));
+        assert.equal(
+          await readFile(newPlugin, "utf8"),
+          buildOpenCodePluginSource("/workspace/superbee/packages/cli/dist/superbee.mjs"),
+        );
+      } else {
+        await assert.rejects(() => readFile(oldPlugin, "utf8"));
+        await assert.rejects(() => readFile(newPlugin, "utf8"));
+      }
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  }
+});
+
+test("a one-byte near-match of the published Aslite plugin remains foreign and untouched", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-pre3-near-match-"));
+  const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+  const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
+  const nearMatch = fixture.replace("It is safe", "It is SAFE");
+  try {
+    await mkdir(path.dirname(oldPlugin), { recursive: true });
+    await writeFile(oldPlugin, nearMatch);
+    await hook(["uninstall"], { base, stdout: () => {} });
+    assert.equal(await readFile(oldPlugin, "utf8"), nearMatch);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test("hook install preserves a foreign file at the legacy OpenCode filename", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-legacy-foreign-"));
   const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
