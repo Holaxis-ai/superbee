@@ -22,9 +22,7 @@
     "url": "https://github.com/Holaxis-ai/superbee/issues"
   },
   "bin": {
-    "superbee": "dist/superbee.mjs",
-    "aslite": "dist/superbee.mjs",
-    "agentstate-lite": "dist/superbee.mjs"
+    "superbee": "dist/superbee.mjs"
   },
   "files": [
     "dist",

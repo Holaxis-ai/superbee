@@ -37,6 +37,10 @@ anything, run `npx -y superbee`; persistent integrations still require the globa
 
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
+The new package installs only `superbee`, so it can coexist with a global `@holaxis/aslite` long
+enough for `superbee setup` to inspect and migrate exact legacy integrations. Once setup is
+complete, remove the old package with `npm uninstall -g @holaxis/aslite`; the successor does not
+keep the retired `aslite` or `agentstate-lite` commands on `PATH`.
 If upgrading from the retired marketplace plugin, remove or disable that plugin, then rerun
 `superbee setup` and follow its exact next command. The hook installer
 replaces exact historical AgentState marketplace hooks rather than leaving two SessionStart hooks.

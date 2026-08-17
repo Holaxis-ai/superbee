@@ -7,8 +7,8 @@ import { STABLE_MCP_LAUNCH_GUIDANCE } from "./integration-guidance.js";
 
 export { NPM_RESOURCES, commandName };
 
-// Superbee is the canonical npm coordinate and command. The legacy aliases `aslite` and `agentstate-lite`
-// remain installed so existing users do not need to migrate.
+// Superbee is the canonical npm coordinate and the successor package's only installed command.
+// Legacy command identities remain migration inputs, not successor npm bins.
 const NPM_COORDINATE = "superbee";
 const NPM_BIN = "superbee";
 const NPX = `npx -y ${NPM_COORDINATE}`;
@@ -553,7 +553,7 @@ function renderNpmPathSection(): string[] {
   lines.push("");
   lines.push(`Every example below assumes the \`${NPM_BIN}\` bin is on PATH. If it is not:`);
   lines.push("");
-  lines.push(`- \`npm install -g ${NPM_COORDINATE}\` puts it (and the legacy aliases \`aslite\` and \`agentstate-lite\`) on PATH.`);
+  lines.push(`- \`npm install -g ${NPM_COORDINATE}\` puts the canonical \`${NPM_BIN}\` command on PATH.`);
   lines.push(`- \`${NPX} …\` runs any command below with no install at all — swap the leading \`${NPM_BIN}\``);
   lines.push("  for that prefix and the rest of the line runs unchanged.");
   lines.push("");
@@ -616,9 +616,9 @@ export function renderNpm(): string {
   lines.push(`${DESCRIPTION}.`);
   lines.push("");
   lines.push(
-    `It is a standalone npm package (\`${NPM_COORDINATE}\`) installing three bins for the identical CLI: \`${NPM_BIN}\` and the`,
+    `It is a standalone npm package (\`${NPM_COORDINATE}\`) installing only the canonical \`${NPM_BIN}\` bin.`,
   );
-  lines.push("legacy aliases `aslite` and `agentstate-lite`. Every example below uses `superbee`.");
+  lines.push("Legacy `aslite` and `agentstate-lite` invocations are recognized only for migration.");
   lines.push("");
   lines.push("Output is TOON on stdout (a `--json` hatch exists). Errors are structured TOON on stdout with a");
   lines.push("capped exit-code taxonomy (0 ok/no-op, 2 usage, 4 auth, 5 conflict, 6 not-found, 1 runtime).");

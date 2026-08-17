@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -39,12 +39,59 @@ const manifest = {
   files: ["dist", "SKILL.md", "references", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
-    aslite: "dist/superbee.mjs",
-    "agentstate-lite": "dist/superbee.mjs",
   },
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
 };
+
+test("the Superbee package installs beside Aslite and survives its removal", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-side-by-side-global-"));
+  const prefix = path.join(scratch, "prefix");
+  const legacyRoot = path.join(scratch, "legacy");
+  const successorRoot = path.join(scratch, "successor");
+  const npmUserConfig = path.join(scratch, "empty-npmrc");
+  const npmCache = path.join(scratch, "npm-cache");
+  try {
+    await Promise.all([mkdir(legacyRoot), mkdir(successorRoot), writeFile(npmUserConfig, "")]);
+    await Promise.all([
+      writeFile(
+        path.join(legacyRoot, "package.json"),
+        `${JSON.stringify({
+          name: "@holaxis/aslite",
+          version: "0.1.0-pre.11",
+          bin: { aslite: "cli.mjs", "agentstate-lite": "cli.mjs" },
+        })}\n`,
+      ),
+      writeFile(path.join(legacyRoot, "cli.mjs"), "#!/usr/bin/env node\nconsole.log('legacy')\n", { mode: 0o755 }),
+      writeFile(
+        path.join(successorRoot, "package.json"),
+        `${JSON.stringify({ name: "superbee", version: "0.1.0", bin: { superbee: "cli.mjs" } })}\n`,
+      ),
+      writeFile(path.join(successorRoot, "cli.mjs"), "#!/usr/bin/env node\nconsole.log('successor')\n", { mode: 0o755 }),
+    ]);
+    const env = sanitizedNpmEnvironment(process.env, npmUserConfig, npmCache);
+    const npm = (...args) => execFileAsync("npm", args, { cwd: scratch, env });
+    const installArgs = ["install", "--global", "--prefix", prefix, "--ignore-scripts", "--no-audit", "--no-fund"];
+    await npm(...installArgs, legacyRoot);
+    await npm(...installArgs, successorRoot);
+
+    const binDir = process.platform === "win32" ? prefix : path.join(prefix, "bin");
+    if (process.platform !== "win32") await symlink(process.execPath, path.join(binDir, "node"));
+    const commandEnv = { ...env, PATH: binDir };
+    for (const command of ["superbee", "aslite", "agentstate-lite"]) {
+      await assertCommandInBin(command, commandEnv, binDir);
+    }
+    assert.equal((await execFileAsync(await resolveCommandOnPath("superbee", commandEnv), [], { env: commandEnv })).stdout.trim(), "successor");
+    assert.equal((await execFileAsync(await resolveCommandOnPath("aslite", commandEnv), [], { env: commandEnv })).stdout.trim(), "legacy");
+
+    await npm("uninstall", "--global", "--prefix", prefix, "@holaxis/aslite");
+    await assertCommandInBin("superbee", commandEnv, binDir);
+    assert.equal(await resolveCommandOnPath("aslite", commandEnv), undefined);
+    assert.equal(await resolveCommandOnPath("agentstate-lite", commandEnv), undefined);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
 
 test("the npm verifier rejects every retired marketplace surface", async () => {
   for (const retired of [
@@ -97,6 +144,11 @@ test("root and npm READMEs teach one literal create-only, agent-driven quickstar
       readme,
       /^(?:npm install -g|npx -y) superbee@next\b/m,
       `${label} README must not teach the preview tag as the default journey`,
+    );
+    assert.match(
+      readme,
+      /npm uninstall -g @holaxis\/aslite/,
+      `${label} README must explain when the retired global package can be removed`,
     );
     assert.doesNotMatch(
       readme,

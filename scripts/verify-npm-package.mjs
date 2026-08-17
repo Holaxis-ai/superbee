@@ -492,8 +492,8 @@ async function runInstalledProof(spec) {
         : run(command, args, { cwd, env });
     };
 
-    // Every installed projection agrees with the immutable build identity. Both bin aliases resolve
-    // the same bytes, and the adjacent installed manifest is diagnostic rather than authority.
+    // Every command declared by the selected release target agrees with the immutable build
+    // identity; the adjacent installed manifest is diagnostic rather than authority.
     const preferredVersion = (await runCli(target.preferred_command, ["--version"])).stdout.trim();
     assert.equal(preferredVersion, manifest.version, `${target.preferred_command} --version must equal the package manifest`);
     for (const command of target.expected_commands.filter((command) => command !== target.preferred_command)) {
