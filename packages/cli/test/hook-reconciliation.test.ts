@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { createRequire, syncBuiltinESMExports } from "node:module";
+import { lstat, mkdtemp, mkdir, readFile, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -19,6 +20,8 @@ import {
   MISMATCHED_NPM_NODE_COMMAND,
   NONCANONICAL_MANAGED_PATH_CASES,
 } from "./hook-shell-fixtures.js";
+
+const mutableFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
 
 const FOREIGN = [
   { type: "command", command: "echo agentstate-lite", timeout: 10 },
@@ -347,6 +350,178 @@ test("hook install migrates the exact legacy OpenCode filename and source to one
     assert.equal(JSON.parse(statusCapture.out()).hook.hosts.opencode.state, "current");
   } finally {
     await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCode bytes", async () => {
+  const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
+  const sources = [
+    fixture,
+    fixture.replace('const command = "aslite";', 'const command = "agentstate-lite";'),
+    fixture.replace(
+      'const command = "aslite";',
+      'const command = "/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs";',
+    ),
+  ];
+  for (const [sourceIndex, source] of sources.entries()) {
+    for (const action of ["status", "install", "uninstall"] as const) {
+      const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-pre3-${sourceIndex}-${action}-`));
+      const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+      const newPlugin = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
+      try {
+        await mkdir(path.dirname(oldPlugin), { recursive: true });
+        await writeFile(oldPlugin, source);
+        const receipt = capture();
+        await hook([action, "--json"], {
+          base,
+          commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+          stdout: receipt.stdout,
+        });
+        if (action === "status") {
+          assert.equal(JSON.parse(receipt.out()).hook.hosts.opencode.state, "legacy_identity");
+          assert.equal(await readFile(oldPlugin, "utf8"), source);
+        } else if (action === "install") {
+          await assert.rejects(() => readFile(oldPlugin, "utf8"));
+          assert.equal(
+            await readFile(newPlugin, "utf8"),
+            buildOpenCodePluginSource("/workspace/superbee/packages/cli/dist/superbee.mjs"),
+          );
+        } else {
+          await assert.rejects(() => readFile(oldPlugin, "utf8"));
+          await assert.rejects(() => readFile(newPlugin, "utf8"));
+        }
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("edited published Aslite plugin parameters remain foreign and untouched", async () => {
+  const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
+  const variants = [
+    fixture.replace("It is safe", "It is SAFE"),
+    fixture.replace("const timeoutMs = 10000;", "const timeoutMs = 9000;"),
+    fixture.replace('["session-start"]', '["session-stars"]'),
+    fixture.replace('const command = "aslite";', 'const command = "superbee";'),
+    fixture.replace('const command = "aslite";', 'const command = "/tmp/aslite";'),
+  ];
+  for (const [index, nearMatch] of variants.entries()) {
+    for (const action of ["status", "install", "uninstall"] as const) {
+      const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-pre3-near-match-${index}-${action}-`));
+      const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+      try {
+        await mkdir(path.dirname(oldPlugin), { recursive: true });
+        await writeFile(oldPlugin, nearMatch);
+        const receipt = capture();
+        await hook([action, "--json"], {
+          base,
+          commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+          stdout: receipt.stdout,
+        });
+        assert.equal(await readFile(oldPlugin, "utf8"), nearMatch);
+        if (action === "status") {
+          assert.equal(JSON.parse(receipt.out()).hook.hosts.opencode.state, "unmanaged");
+        }
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("OpenCode install refuses a canonical plugin that appears at publication", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-appear-"));
+  const canonical = path.join(base, ".config", "opencode", "plugins", "axi-superbee.js");
+  const legacy = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+  const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
+  const foreign = "// concurrent user plugin\n";
+  const originalLink = mutableFs.linkSync;
+  try {
+    await mkdir(path.dirname(canonical), { recursive: true });
+    await writeFile(legacy, fixture);
+    let injected = false;
+    mutableFs.linkSync = ((existingPath, newPath) => {
+      if (!injected && newPath === canonical) {
+        injected = true;
+        mutableFs.writeFileSync(canonical, foreign);
+      }
+      return originalLink(existingPath, newPath);
+    }) as typeof mutableFs.linkSync;
+    syncBuiltinESMExports();
+
+    await assert.rejects(
+      () => hook(["install", "--json"], {
+        base,
+        commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+        stdout: () => {},
+      }),
+      /hook install failed/,
+    );
+    assert.equal(await readFile(canonical, "utf8"), foreign);
+    assert.equal(await readFile(legacy, "utf8"), fixture);
+  } finally {
+    mutableFs.linkSync = originalLink;
+    syncBuiltinESMExports();
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode install and uninstall preserve a replacement made at the ownership boundary", async () => {
+  const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
+  const foreign = "// concurrent user replacement\n";
+  for (const entry of ["canonical", "legacy"] as const) {
+    for (const action of ["install", "uninstall"] as const) {
+      for (const replacement of ["file", "symlink"] as const) {
+        const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-claim-${entry}-${action}-${replacement}-`));
+        const target = path.join(
+          base,
+          ".config",
+          "opencode",
+          "plugins",
+          entry === "canonical" ? "axi-superbee.js" : "axi-agentstate-lite.js",
+        );
+        const external = path.join(base, "user-plugin.js");
+        const originalRename = mutableFs.renameSync;
+        try {
+          await mkdir(path.dirname(target), { recursive: true });
+          await writeFile(target, fixture);
+          await writeFile(external, foreign);
+          let injected = false;
+          mutableFs.renameSync = ((oldPath, newPath) => {
+            if (!injected && oldPath === target && String(newPath).includes(".claim-")) {
+              injected = true;
+              mutableFs.rmSync(target, { force: true });
+              if (replacement === "symlink") mutableFs.symlinkSync(external, target);
+              else mutableFs.writeFileSync(target, foreign);
+            }
+            return originalRename(oldPath, newPath);
+          }) as typeof mutableFs.renameSync;
+          syncBuiltinESMExports();
+
+          await assert.rejects(
+            () => hook([action, "--json"], {
+              base,
+              commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+              stdout: () => {},
+            }),
+            /hook install failed|changed after inspection/,
+          );
+          if (replacement === "symlink") {
+            assert.equal((await lstat(target)).isSymbolicLink(), true);
+            assert.equal(await readlink(target), external);
+          } else {
+            assert.equal((await lstat(target)).isFile(), true);
+          }
+          assert.equal(await readFile(target, "utf8"), foreign);
+          assert.equal((await readdir(path.dirname(target))).some((name) => name.includes(".claim-")), false);
+        } finally {
+          mutableFs.renameSync = originalRename;
+          syncBuiltinESMExports();
+          await rm(base, { recursive: true, force: true });
+        }
+      }
+    }
   }
 });
 

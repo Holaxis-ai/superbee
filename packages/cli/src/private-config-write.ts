@@ -1,5 +1,6 @@
 import {
   chmodSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readFileSync,
@@ -76,9 +77,10 @@ export function capturePrivateConfigParent(path: string): PrivateConfigParentSna
 }
 
 /**
- * Replace a private configuration file through a same-directory temporary file and rename.
- * Existing modes are preserved, final symlinks are followed by default, and temporary files are
- * removed after any write or rename failure.
+ * Replace a private configuration file through a same-directory temporary file. Existing targets
+ * use rename; an expected-absent target is published with a no-clobber hard link. Existing modes
+ * are preserved, final symlinks are followed by default, and temporary files are removed after
+ * any publication failure.
  */
 export function atomicWriteFileSync(
   path: string,
@@ -130,7 +132,12 @@ export function atomicWriteFileSync(
   try {
     writeFileSync(tmp, content, { mode: mode ?? 0o600 });
     if (mode !== undefined) chmodSync(tmp, mode);
-    renameSync(tmp, destination);
+    if (options.expected?.destination === null) {
+      linkSync(tmp, destination);
+      rmSync(tmp, { force: true });
+    } else {
+      renameSync(tmp, destination);
+    }
   } catch (err) {
     rmSync(tmp, { force: true });
     throw err;
