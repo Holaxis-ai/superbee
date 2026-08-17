@@ -249,19 +249,57 @@ test("gapped pre.N (pre.2 missing) is a violation", () => {
   assert.deepEqual(codes(result), ["pre_n_gap"]);
 });
 
-test("off-scheme prerelease 0.1.1-pre.1 is a violation", () => {
+// A patch-line prerelease is LEGAL. This assertion used to run the other way — 0.1.1-pre.1 was a
+// violation — because the contract pinned the patch digit to 0. Nothing in SemVer or npm requires
+// that, and the restriction blocked previewing a patch release at all, so it was dropped.
+test("a patch-line prerelease (0.1.1-pre.1) is allowed", () => {
   const registry = registryFixture({
     versions: [...registryFixture().versions, "0.1.1-pre.1"],
     time: { ...registryFixture().time, "0.1.1-pre.1": "2026-08-05T00:00:00.000Z" },
     distTags: { latest: "0.1.1-pre.1", next: "0.1.1-pre.1" },
   });
   const result = auditRegistryState({ declaration: AT_REST, sourceVersion: "0.1.1-pre.1", registry });
-  assert.ok(codes(result).includes("off_scheme_version"), codes(result).join(","));
+  assert.deepEqual(result.violations, [], codes(result).join(","));
 });
 
-test("off-scheme prerelease label (rc) is a violation", () => {
+test("contiguity is per FULL version line: a 0.1.1 preview does not fill a 0.1.0 hole", () => {
+  // 0.1.0-pre.1 + 0.1.0-pre.3 is a genuine gap on the 0.1.0 line. Publishing 0.1.1-pre.2 alongside
+  // must not be mistaken for the missing 0.1.0-pre.2 — which is what a line keyed on "A.B" would do.
+  const versions = ["0.1.0-pre.1", "0.1.0-pre.3", "0.1.1-pre.1", "0.1.1-pre.2"];
+  const time = Object.fromEntries(versions.map((v, i) => [v, new Date(Date.UTC(2026, 6, 1 + i)).toISOString()]));
+  const violations = checkVersionScheme(versions, time);
+  assert.deepEqual(violations.map((v) => v.code), ["pre_n_gap"]);
+  assert.match(violations[0].message, /line 0\.1\.0-pre\.N/, "the gap belongs to the 0.1.0 line only");
+});
+
+test("a burn fills a hole only on its OWN patch line", () => {
+  const versions = ["0.1.1-pre.2"];
+  const time = { "0.1.1-pre.2": "2026-08-16T22:00:00.000Z" };
+  assert.deepEqual(checkVersionScheme(versions, time, ["0.1.1-pre.1"]), [], "same line fills the hole");
+  const wrongLine = checkVersionScheme(versions, time, ["0.1.0-pre.1"]);
+  assert.deepEqual(wrongLine.map((v) => v.code), ["pre_n_gap"], "a 0.1.0 burn cannot fill a 0.1.1 hole");
+});
+
+test("off-scheme prerelease label (rc) is STILL a violation — one fixed -pre. label", () => {
   const violations = checkVersionScheme(["0.1.0-rc.1"], { "0.1.0-rc.1": "2026-08-01T00:00:00.000Z" });
   assert.deepEqual(violations.map((v) => v.code), ["off_scheme_version"]);
+});
+
+test("saneSuccessors carries the patch digit, so a preview can be followed by what it previews", () => {
+  const from = saneSuccessors("0.1.1-pre.2");
+  assert.ok(from.includes("0.1.1"), `0.1.1 must be a sane successor of its own preview; got ${from.join(", ")}`);
+  assert.ok(from.includes("0.1.1-pre.3"), "the next preview on the same line");
+  assert.ok(!from.includes("0.1.0"), "0.1.0 belongs to a different line and must NOT be offered");
+  // The minor-line behaviour is unchanged for previews that really are on a .0 line.
+  const fromMinor = saneSuccessors("0.1.0-pre.3");
+  assert.ok(fromMinor.includes("0.1.0"), "a 0.1.0 preview is still followed by 0.1.0");
+  assert.ok(fromMinor.includes("0.2.0-pre.1"), "and may still jump to the next minor line");
+});
+
+test("the LIVE registry shape — 0.0.1 placeholder plus 0.1.1-pre.2 over a declared burn — is clean", () => {
+  const versions = ["0.0.1", "0.1.1-pre.2"];
+  const time = { "0.0.1": "2026-08-15T00:00:00.000Z", "0.1.1-pre.2": "2026-08-16T22:00:00.000Z" };
+  assert.deepEqual(checkVersionScheme(versions, time, ["0.1.1-pre.1"]), []);
 });
 
 test("publish times out of order for pre.N is a violation", () => {
@@ -610,9 +648,12 @@ test("the COMMITTED burned-versions declaration parses and admits the current so
   const burned = readBurnedDeclaration(committed);
   assert.ok(burned.includes("0.1.0-pre.4"), "the pre.4 burn that motivated this mechanism is declared");
   const manifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
-  // Fixture mirrors the live registry at build time: 0.1.0-pre.8 published 2026-08-11 (the first
-  // release through the staged machinery), pre.4..pre.7 burned. Update alongside real publishes.
-  const published = ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.8"];
+  // Fixture mirrors the live registry of the AUDITED package, per its own standing instruction to
+  // update alongside real publishes. It modelled the pre-rename @holaxis/aslite line
+  // (0.1.0-pre.1..pre.8); the audited package is now superbee, whose published set is the 0.0.1
+  // name-reserving placeholder plus 0.1.1-pre.2 (published 2026-08-16 through OIDC staging), with
+  // 0.1.1-pre.1 burned.
+  const published = ["0.0.1", "0.1.1-pre.2"];
   const drift = checkSourceDrift(manifest.version, published, burned);
   assert.deepEqual(drift.violations, []);
 });
@@ -812,12 +853,21 @@ test("a name-reserving placeholder is a legal at-rest state, and only in that ex
   assert.equal(isNameReservingPlaceholder({ ...placeholder, versions: ["0.0.1", "0.1.0"] }), false, "a second published version ends it");
   assert.equal(isNameReservingPlaceholder({ ...placeholder, observedTags: { latest: "0.0.1", next: "0.0.1" } }), false, "a next tag ends it");
   assert.equal(isNameReservingPlaceholder({ ...placeholder, observedTags: { next: "0.0.1" } }), false, "latest must be the tag held");
-  assert.equal(isNameReservingPlaceholder({ versions: ["0.1.0"], observedTags: { latest: "0.1.0" }, destiny }), false, "a manifest-declared version is a release, not a placeholder");
+  // Derived: the clause under test is "the manifest DECLARES this version", so the example has to be
+  // a currently-declared one. It was the literal 0.1.0, which stopped being declared when the
+  // successor tuple retargeted to a reachable number.
+  const declaredStable = committedManifest.allowed_tuples["successor-stable"].version;
+  assert.equal(isNameReservingPlaceholder({ versions: [declaredStable], observedTags: { latest: declaredStable }, destiny }), false, "a manifest-declared version is a release, not a placeholder");
 
-  // End to end, against the exact live shape the standing audit reads today.
+  // End to end over a placeholder-only registry. This is deliberately a PINNED historical scenario,
+  // not the live shape: superbee now publishes 0.0.1 AND 0.1.1-pre.2, and adding the latter here
+  // would end the placeholder state that is the whole point of this test. It previously read the
+  // live successor tuple for its source version, which coupled a placeholder-state assertion to
+  // whatever number the next release happens to target -- and 0.1.1 is legitimately NOT a sane
+  // successor of 0.0.1, so that coupling went red the moment the tuple moved off 0.1.0.
   const result = auditRegistryState({
     declaration: AT_REST,
-    sourceVersion: committedManifest.allowed_tuples["successor-stable"].version,
+    sourceVersion: "0.1.0",
     registry: { distTags: { latest: "0.0.1" }, versions: ["0.0.1"], time: { "0.0.1": "2026-08-11T00:00:00.000Z" } },
   });
   assert.deepEqual(result.violations, [], "the placeholder state the plan expects must not be a violation");

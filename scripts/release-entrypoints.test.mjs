@@ -120,6 +120,13 @@ const OWNED_ENTRYPOINT_PROBES = [
     expected: { code: 1, stderr: /phase must be one of/ },
   },
   {
+    // A flag with no value: argument parsing fails before the manifest or the registry is touched,
+    // so the probe is deterministic and needs no network.
+    relativePath: "scripts/release-next-versions.mjs",
+    args: () => ["--from"],
+    expected: { code: 2, stderr: /missing value for --from/ },
+  },
+  {
     relativePath: "scripts/release-candidate.mjs",
     args: () => [],
     expected: { code: 1, stderr: /usage: release-candidate\.mjs --target <target> --tag v<version> --commit <40-hex>/ },
@@ -399,6 +406,7 @@ test("positive executable authority comes from declarations plus explicit operat
     "scripts/release-audit-tags.mjs",
     "scripts/release-candidate.mjs",
     "scripts/release-emit-receipt.mjs",
+    "scripts/release-next-versions.mjs",
     "scripts/release-packet.mjs",
     "scripts/release-publication-policy.mjs",
     "scripts/release-resolve-target.mjs",

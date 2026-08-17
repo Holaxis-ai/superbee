@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { parseResolveTargetArgs, renderGithubOutput, resolveTargetFacts } from "./release-resolve-target.mjs";
 import { loadReleaseTargets, normalizeReleaseTargets, resolveDeclaredTarget, targetFromPackageName, updatePolicyForTarget } from "./release-targets.mjs";
+import { compareStrictSemver } from "./strict-semver.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -37,11 +38,14 @@ test("update policy is explicit per target and fails closed for identity-only re
 });
 
 test("resolveTargetFacts returns the allowlisted tuple and policy tag", async () => {
-  assert.deepEqual(await resolveTargetFacts({ target: "successor-stable", tag: "v0.1.0" }), {
+  // Version and tag come FROM the manifest; the publication policy stays written out, because the
+  // policy is what this test is about and a tuple's version/tag are deliberately mobile.
+  const tuple = (await loadReleaseTargets()).allowed_tuples["successor-stable"];
+  assert.deepEqual(await resolveTargetFacts({ target: "successor-stable", tag: tuple.tag }), {
     target: "successor-stable",
     package: "superbee",
-    version: "0.1.0",
-    tag: "v0.1.0",
+    version: tuple.version,
+    tag: tuple.tag,
     policy_tag: "next",
     npm_promote_tag: "latest",
     github_latest: true,
@@ -51,19 +55,28 @@ test("resolveTargetFacts returns the allowlisted tuple and policy tag", async ()
 
 test("the functional successor floor is independently reviewed and remains at or below the successor tuple", async () => {
   const manifest = await loadReleaseTargets();
-  assert.equal(manifest.functional_successor_floor, manifest.allowed_tuples["successor-stable"].version);
+  // At or BELOW, matching this test's name and the rule in normalizeReleaseTargets (which compares
+  // `stableSuccessor.version >= floor`). This asserted strict EQUALITY, which was only incidentally
+  // true: the floor records where the successor became functionally complete, and it does not move
+  // just because a release number was skipped. Retargeting the tuple to 0.1.1 -- 0.1.0 being
+  // permanently unreachable -- made the incidental equality fail while the actual rule still held.
+  assert.ok(
+    compareStrictSemver(manifest.functional_successor_floor, manifest.allowed_tuples["successor-stable"].version) <= 0,
+    `floor ${manifest.functional_successor_floor} must be at or below successor ${manifest.allowed_tuples["successor-stable"].version}`,
+  );
 
+  const later = "0.9.0"; // strictly above any current tuple, so the assertions below stay meaningful
   const laterSuccessor = {
     ...manifest,
     allowed_tuples: {
       ...manifest.allowed_tuples,
-      "successor-stable": { ...manifest.allowed_tuples["successor-stable"], version: "0.1.1", tag: "v0.1.1" },
+      "successor-stable": { ...manifest.allowed_tuples["successor-stable"], version: later, tag: `v${later}` },
     },
   };
   assert.equal(normalizeReleaseTargets(laterSuccessor).functional_successor_floor, manifest.functional_successor_floor);
 
   assert.throws(
-    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: "0.1.1" }),
+    () => normalizeReleaseTargets({ ...manifest, functional_successor_floor: later }),
     /must be at or above functional successor floor/,
   );
   assert.throws(
@@ -466,7 +479,10 @@ const EXPECTED_GITHUB_OUTPUT_FIELDS = Object.freeze({
 });
 
 test("renderGithubOutput refuses to render a fact set that is not the resolved target contract", async () => {
-  const facts = await resolveTargetFacts({ target: "successor-stable", tag: "v0.1.0" });
+  const facts = await resolveTargetFacts({
+    target: "successor-stable",
+    tag: (await loadReleaseTargets()).allowed_tuples["successor-stable"].tag,
+  });
   assert.deepEqual(Object.keys(facts).sort(), Object.keys(EXPECTED_GITHUB_OUTPUT_FIELDS).sort());
 
   // The finding's own scenario first: a dropped npm_promote_tag used to render `npm_promote_tag=`,
