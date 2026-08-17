@@ -252,9 +252,9 @@ function hookCapability(input: SetupPlanInput): SetupCapability {
         return {
           id: "hook",
           requirement: "recommended",
-          state: "needs_action",
-          reason: "a managed project SessionStart hook duplicates the current user hook",
-          command: "superbee hook uninstall --scope project",
+          state: "blocked",
+          reason: "a managed project SessionStart hook overlaps the current user hook",
+          command: "superbee hook status --scope project",
         };
       }
     }

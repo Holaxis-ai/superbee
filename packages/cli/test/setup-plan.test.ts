@@ -113,8 +113,8 @@ test("foreign integration state fails closed onto a read-only inspector", () => 
       compatibility: { state: "legacy_identity", reason: "legacy project hook" },
     },
   }));
-  assert.equal(staleProjectHook.next?.action, "run");
-  assert.equal(staleProjectHook.next?.command, "superbee hook uninstall --scope project");
+  assert.equal(staleProjectHook.next?.action, "inspect");
+  assert.equal(staleProjectHook.next?.command, "superbee hook status --scope project");
 
   for (const state of ["installed", "stale"] as const) {
     const newerSkill = buildSetupPlan(input({

@@ -102,16 +102,26 @@ test("host-scoped setup returns a complete plan and remains path-free", async ()
   assert.doesNotMatch(output, /\/Users\/private/);
 });
 
-test("user setup surfaces an effective legacy project hook before reporting complete", async () => {
+test("user setup surfaces a project overlay without recommending an all-host uninstall", async () => {
   let output = "";
   const injected = deps((text) => { output += text; });
   const inspectHook = injected.inspectHook;
   injected.inspectHook = (scope) => {
     const inspection = inspectHook(scope);
+    if (scope === "user") {
+      inspection.hosts.claude_code = {
+        installed: false,
+        compatibility: { state: "absent", reason: "Claude user hook is absent" },
+      };
+    }
     if (scope === "project") {
       inspection.hosts.codex = {
         installed: true,
         compatibility: { state: "legacy_identity", reason: "legacy project hook" },
+      };
+      inspection.hosts.claude_code = {
+        installed: true,
+        compatibility: { state: "current", reason: "Claude project hook is the only effective hook" },
       };
     }
     return inspection;
@@ -122,9 +132,9 @@ test("user setup surfaces an effective legacy project hook before reporting comp
   };
   assert.equal(parsed.setup.complete, false);
   assert.deepEqual(parsed.setup.next, {
-    action: "run",
-    command: "superbee hook uninstall --scope project",
-    reason: "a managed project SessionStart hook duplicates the current user hook",
+    action: "inspect",
+    command: "superbee hook status --scope project",
+    reason: "a managed project SessionStart hook overlaps the current user hook",
   });
 });
 
