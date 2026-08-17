@@ -655,13 +655,11 @@ function buildLegacyOpenCodePluginSource(
 /** Byte-for-byte reconstruction of the published @holaxis/aslite pre.3 args-aware generator. */
 function buildPublishedAsliteOpenCodePluginSource(
   program: string,
-  commandArgs: string[] = [HOOK_SUBCOMMAND],
-  timeoutSeconds: number = HOOK_TIMEOUT_SECONDS,
 ): string {
   return buildOpenCodePluginTemplate({
     program,
-    commandArgs,
-    timeoutSeconds,
+    commandArgs: [HOOK_SUBCOMMAND],
+    timeoutSeconds: HOOK_TIMEOUT_SECONDS,
     marker: LEGACY_HOOK_MARKER,
     managedMarker: LEGACY_OPENCODE_MANAGED_MARKER,
     exportName: "AxiAgentstateLiteAmbientContextPlugin",
@@ -770,7 +768,12 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
     Number.isInteger(timeoutMs) &&
     (
       source === buildLegacyOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
-      || source === buildPublishedAsliteOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
+      || (
+        args.length === 1
+        && args[0] === HOOK_SUBCOMMAND
+        && timeoutMs === HOOK_TIMEOUT_SECONDS * 1000
+        && source === buildPublishedAsliteOpenCodePluginSource(command)
+      )
     )
   ) {
     const compatibility = classifyHookCommand(

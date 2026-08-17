@@ -384,18 +384,34 @@ test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCod
   }
 });
 
-test("a one-byte near-match of the published Aslite plugin remains foreign and untouched", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "superbee-hook-opencode-pre3-near-match-"));
-  const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+test("edited published Aslite plugin parameters remain foreign and untouched", async () => {
   const fixture = await readFile(new URL("./fixtures/opencode-aslite-pre3.js", import.meta.url), "utf8");
-  const nearMatch = fixture.replace("It is safe", "It is SAFE");
-  try {
-    await mkdir(path.dirname(oldPlugin), { recursive: true });
-    await writeFile(oldPlugin, nearMatch);
-    await hook(["uninstall"], { base, stdout: () => {} });
-    assert.equal(await readFile(oldPlugin, "utf8"), nearMatch);
-  } finally {
-    await rm(base, { recursive: true, force: true });
+  const variants = [
+    fixture.replace("It is safe", "It is SAFE"),
+    fixture.replace("const timeoutMs = 10000;", "const timeoutMs = 9000;"),
+    fixture.replace('["session-start"]', '["session-stars"]'),
+  ];
+  for (const [index, nearMatch] of variants.entries()) {
+    for (const action of ["status", "install", "uninstall"] as const) {
+      const base = await mkdtemp(path.join(tmpdir(), `superbee-hook-opencode-pre3-near-match-${index}-${action}-`));
+      const oldPlugin = path.join(base, ".config", "opencode", "plugins", "axi-agentstate-lite.js");
+      try {
+        await mkdir(path.dirname(oldPlugin), { recursive: true });
+        await writeFile(oldPlugin, nearMatch);
+        const receipt = capture();
+        await hook([action, "--json"], {
+          base,
+          commandBase: "/workspace/superbee/packages/cli/dist/superbee.mjs",
+          stdout: receipt.stdout,
+        });
+        assert.equal(await readFile(oldPlugin, "utf8"), nearMatch);
+        if (action === "status") {
+          assert.equal(JSON.parse(receipt.out()).hook.hosts.opencode.state, "unmanaged");
+        }
+      } finally {
+        await rm(base, { recursive: true, force: true });
+      }
+    }
   }
 });
 
