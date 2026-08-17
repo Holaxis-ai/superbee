@@ -43,6 +43,7 @@ import type { KindRegistry } from "@superbee/core";
 
 import {
   BUNDLE_DIR,
+  LEGACY_BUNDLE_DIR,
   git,
   gitTry,
   initPlainBundleDir,
@@ -235,6 +236,23 @@ test("in-tree --pull-only: fetches the tracking upstream, reports incoming docs,
     const again = await runSyncJson(h, ["--pull-only", "--dir", topo.a.root]);
     assert.equal((again.rec.incoming as { total: number }).total, 0);
     assert.equal(again.rec.note, SYNC_IN_TREE_CURRENT);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("legacy in-tree --pull-only scopes reads and messages to .agentstate-lite", async () => {
+  const topo = await makeCommittedFolderTopology(LEGACY_BUNDLE_DIR);
+  const { home: h, cleanup } = await tempHome();
+  try {
+    await teammateShipsDoc(h, topo.b, "tasks/legacy", "sara");
+    const { rec, err } = await runSyncJson(h, ["--pull-only", "--dir", topo.a.root]);
+    assert.equal(err, undefined, err?.message);
+    assert.match(String(rec.board), /\.agentstate-lite\//);
+    assert.doesNotMatch(String(rec.board), /\.superbee\//);
+    const incoming = rec.incoming as { rows: Array<{ id: string }> };
+    assert.equal(incoming.rows[0]?.id, "tasks/legacy");
   } finally {
     await cleanup();
     await topo.cleanup();

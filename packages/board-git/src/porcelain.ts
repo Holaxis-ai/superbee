@@ -72,43 +72,70 @@ export const BOARD_REMOTE = "origin";
 export const BOARD_REF = `${BOARD_REMOTE}/${BOARD_BRANCH}`;
 /** The canonical folder used for every newly-created project bundle and board worktree. */
 export const BUNDLE_DIR = ".superbee";
-/** The pre-rename conventional folder: recognized and operated in place, but never newly created. */
+/**
+ * The pre-rename conventional folder: recognized and operated in place. A new checkout at this
+ * spelling is permitted only to complete an interrupted establish whose verified
+ * `.agentstate-lite.establish-backup/` selected the recovery path.
+ */
 export const LEGACY_BUNDLE_DIR = ".agentstate-lite";
 /** The complete recognition set. Creation sites must use {@link BUNDLE_DIR}, not this collection. */
 export const BUNDLE_DIRS = [BUNDLE_DIR, LEGACY_BUNDLE_DIR] as const;
+export type BundleDirName = (typeof BUNDLE_DIRS)[number];
 
-export interface BundleDirSelection {
-  name: (typeof BUNDLE_DIRS)[number] | null;
-  conflict: boolean;
+interface RecognizedBundlePath {
+  name: BundleDirName;
+  sourcePath: string;
+  realPath: string;
+  symlink: boolean;
 }
 
-/** Select one recognized directory; two matches are a conflict, never a precedence decision. */
-export function bundleDirNameAt(
-  top: string,
-  present: (candidate: string) => boolean,
-): BundleDirSelection {
-  const found = BUNDLE_DIRS.filter((name) => present(path.join(top, name)));
-  if (found.length > 1) return { name: null, conflict: true };
-  return { name: found[0] ?? null, conflict: false };
+/** A real directory with the reserved root index; files, empty dirs, and dangling links do not count. */
+function recognizedBundlePath(name: BundleDirName, sourcePath: string): RecognizedBundlePath | null {
+  try {
+    const link = lstatSync(sourcePath);
+    if (!statSync(sourcePath).isDirectory() || !statSync(path.join(sourcePath, "index.md")).isFile()) return null;
+    return { name, sourcePath, realPath: realpathSync(sourcePath), symlink: link.isSymbolicLink() };
+  } catch {
+    return null;
+  }
 }
 
-/** The existing project directory, falling back to the canonical creation target. */
-export function bundleDirNameForProject(top: string): (typeof BUNDLE_DIRS)[number] {
-  const selected = bundleDirNameAt(
-    top,
-    (candidate) => existsSync(candidate) || existsSync(`${candidate}.establish-backup`),
-  );
-  if (selected.conflict) {
+/** The existing valid project bundle (or recovery backup), falling back to the canonical creation target. */
+export function bundleDirNameForProject(top: string): BundleDirName {
+  const matches = BUNDLE_DIRS.flatMap((name) => {
+    const direct = path.join(top, name);
+    return [recognizedBundlePath(name, direct), recognizedBundlePath(name, `${direct}.establish-backup`)]
+      .filter((match): match is RecognizedBundlePath => match !== null);
+  });
+  const byName = new Map<BundleDirName, RecognizedBundlePath[]>();
+  for (const match of matches) byName.set(match.name, [...(byName.get(match.name) ?? []), match]);
+  if (byName.size > 1) {
+    const canonical = byName.get(BUNDLE_DIR) ?? [];
+    const legacy = byName.get(LEGACY_BUNDLE_DIR) ?? [];
+    const sharedPhysical = canonical.find((candidate) =>
+      legacy.some((other) => other.realPath === candidate.realPath),
+    )?.realPath;
+    if (sharedPhysical) {
+      const aliases = matches.filter((match) => match.realPath === sharedPhysical);
+      return [...aliases].sort((a, b) => Number(a.symlink) - Number(b.symlink))[0]!.name;
+    }
+    const sources = [...byName.values()].map((group) => group[0]!.sourcePath);
+    const shown = sources.map((source) => `'${path.relative(top, source)}/'`).join(" and ");
     throw new BoardGitError(
       "CONFLICT",
-      `both '${BUNDLE_DIR}/' and '${LEGACY_BUNDLE_DIR}/' exist at ${top} — refusing to choose between two project bundles`,
+      `${shown} contain project bundles at ${top} — refusing to choose between two project bundles`,
       {
-        details: { path: top, state: "bundle-directory-conflict", directories: [...BUNDLE_DIRS] },
+        details: {
+          path: top,
+          phase: "filesystem-bundle-selection",
+          state: "bundle-directory-conflict",
+          directories: sources.map((source) => path.relative(top, source)),
+        },
         help: "choose the project bundle to keep, then move the other directory outside the repository before retrying",
       },
     );
   }
-  return selected.name ?? BUNDLE_DIR;
+  return [...byName.keys()][0] ?? BUNDLE_DIR;
 }
 
 /**
@@ -491,7 +518,7 @@ export type ProvisionOutcome =
    * manually prepared checkout) — so an announcement never claims "materialized from
    * origin/board" for a branch that never touched origin.
    */
-  | { kind: "provisioned"; boardPath: string; source: "local" | "remote" }
+  | { kind: "provisioned"; boardPath: string; source: "local" | "remote"; gitignore?: GitignoreUpdate }
   /**
    * A pre-existing worktree carrying stale pointers after a sandbox or mount move —
    * `.git` file / `worktrees/<name>/gitdir` still name the OLD absolute path) was structurally
@@ -499,9 +526,9 @@ export type ProvisionOutcome =
    * (rewrites the pointer files) and must be ANNOUNCEABLE, never folded into the silent-no-op
    * "already" case (decisions/board-branch-sync rider 2).
    */
-  | { kind: "repaired"; boardPath: string }
+  | { kind: "repaired"; boardPath: string; gitignore?: GitignoreUpdate }
   /** Already provisioned (or the board branch is already checked out) — idempotent success. */
-  | { kind: "already"; boardPath: string }
+  | { kind: "already"; boardPath: string; gitignore?: GitignoreUpdate }
   /** `dir` is not inside a git repository at all — the caller emits `sync: nothing to sync`. */
   | { kind: "no_repo" }
   /** No local or fetched board ref exists; `remoteState` records whether origin was checked. */
@@ -611,8 +638,9 @@ function tryFastForwardAdoptLocalBoard(top: string, localSha: string, remoteSha:
  * a competing board): the only exit is untracking the remnant paths. Returns the tracked paths, or
  * null when this is NOT the remnant state (the genuine window keeps its pull-first guidance).
  */
-export function trackedBoardRemnantPaths(top: string): string[] | null {
-  const bundleDir = bundleDirNameForProject(top);
+export function trackedBoardRemnantPaths(
+  top: string, bundleDir: BundleDirName = bundleDirNameForProject(top),
+): string[] | null {
   const branch = currentBranch(top);
   if (branch === "HEAD" || branch === BOARD_BRANCH) return null;
   const remoteRef = `refs/remotes/${BOARD_REMOTE}/${branch}`;
@@ -644,8 +672,9 @@ export interface BoardWindowGuidance {
 }
 
 /** Build {@link BoardWindowGuidance} for the tracked-folder states (see {@link preShareWindowError}). */
-export function boardWindowGuidance(top: string, originConfigured = true): BoardWindowGuidance {
-  const bundleDir = bundleDirNameForProject(top);
+export function boardWindowGuidance(
+  top: string, originConfigured = true, bundleDir: BundleDirName = bundleDirNameForProject(top),
+): BoardWindowGuidance {
   if (!originConfigured) {
     return {
       state: "pre-share-window",
@@ -657,7 +686,7 @@ export function boardWindowGuidance(top: string, originConfigured = true): Board
       help: `git remote add ${BOARD_REMOTE} <url>  # restore the remote, 'git pull' once the cleanup PR merges, then re-run sync`,
     };
   }
-  const remnants = trackedBoardRemnantPaths(top);
+  const remnants = trackedBoardRemnantPaths(top, bundleDir);
   if (remnants !== null) {
     const plural = remnants.length !== 1;
     return {
@@ -706,7 +735,11 @@ export function boardWindowGuidance(top: string, originConfigured = true): Board
  *    the `git rm -r --cached` escape instead.
  */
 export function preShareWindowError(top: string, boardPath: string, originConfigured = true): BoardGitError {
-  const guidance = boardWindowGuidance(top, originConfigured);
+  const base = path.basename(boardPath);
+  const bundleDir = BUNDLE_DIRS.includes(base as BundleDirName)
+    ? base as BundleDirName
+    : bundleDirNameForProject(top);
+  const guidance = boardWindowGuidance(top, originConfigured, bundleDir);
   const details: Record<string, unknown> = { path: boardPath, state: guidance.state };
   if (!guidance.originConfigured) details.origin_configured = false;
   if (guidance.trackedRemnants) {
@@ -781,6 +814,8 @@ export interface NetworkBudgetOptions {
   connectTimeoutSeconds?: number;
   /** False prevents a branch named `board` from being adopted without explicit user consent. */
   allowLocalBranch?: boolean;
+  /** Ensure every recognized conventional bundle name is ignored in the code worktree. */
+  ensureIgnore?: boolean;
 }
 
 export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions = {}): ProvisionOutcome {
@@ -788,7 +823,12 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   if (!top) return { kind: "no_repo" };
   const bundleDir = bundleDirNameForProject(top);
   const boardPath = path.join(top, bundleDir);
-  if (isProvisioned(top)) return { kind: "already", boardPath };
+  const withIgnoreCoverage = <T extends { boardPath: string }>(outcome: T): T & { gitignore?: GitignoreUpdate } => {
+    if (!budget.ensureIgnore) return outcome;
+    const gitignore = ensureBoardGitignoreWorkingTree(top);
+    return gitignore.changed ? { ...outcome, gitignore } : outcome;
+  };
+  if (isProvisioned(top)) return withIgnoreCoverage({ kind: "already" as const, boardPath });
 
   // Probe the board ref explicitly: a clone's configured fetch refspec may exclude it.
   const hasOrigin = runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0;
@@ -913,7 +953,9 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
         // safe no-op on an ALREADY-healthy worktree regardless of which branch it's on, so a
         // sidecar worktree someone genuinely uses for something else, or one merely left on a
         // plain detached HEAD, would otherwise be silently misreported as "repaired").
-        if (repairedWorktreeIsBoard(boardPath, top)) return { kind: "repaired", boardPath };
+        if (repairedWorktreeIsBoard(boardPath, top)) {
+          return withIgnoreCoverage({ kind: "repaired" as const, boardPath });
+        }
         if (reason !== "foreign_checkout") {
           if (worktreeRootResolves(boardPath) && !sameGitCommonDir(boardPath, top)) {
             reason = "foreign_checkout";
@@ -943,6 +985,21 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     return { kind: "local_board", boardPath, remoteExists: hasRemote };
   }
 
+  // Creation normally targets `.superbee`. The only legacy create site is load-bearing recovery:
+  // an interrupted establish moved the valid legacy bundle to its deterministic backup before
+  // worktree creation. Keep this assertion next to the mutation so broadening legacy selection
+  // cannot silently turn ordinary fresh clones into new `.agentstate-lite` layouts.
+  if (
+    bundleDir === LEGACY_BUNDLE_DIR &&
+    recognizedBundlePath(LEGACY_BUNDLE_DIR, `${boardPath}.establish-backup`) === null
+  ) {
+    throw new BoardGitError(
+      "RUNTIME",
+      `refusing to create '${LEGACY_BUNDLE_DIR}/' without a valid establish recovery backup`,
+      { details: { path: boardPath, state: "legacy-create-without-recovery-backup" } },
+    );
+  }
+
   const r = hasLocal
     ? runGit(top, [...RELATIVE_WORKTREE_CONFIG, "worktree", "add", boardPath, BOARD_BRANCH])
     : runGit(top, [
@@ -963,14 +1020,18 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
     // worktree in a stable machine format — version-proof.
     const list = runGit(top, ["worktree", "list", "--porcelain"]);
     if (list.status === 0 && list.stdout.split("\n").includes(`branch refs/heads/${BOARD_BRANCH}`)) {
-      return { kind: "already", boardPath };
+      return withIgnoreCoverage({ kind: "already" as const, boardPath });
     }
     throw classifyGitError(failureOf(["worktree", "add"], r));
   }
   // A fast-forward-adopted branch's tip IS the fetched origin/board, so `remote` is the truthful
   // provenance for its announcement; a branch adopted as-is (equal, or the explicit-establish
   // path) keeps `local`.
-  return { kind: "provisioned", boardPath, source: hasLocal && ffAdopted !== true ? "local" : "remote" };
+  return withIgnoreCoverage({
+    kind: "provisioned" as const,
+    boardPath,
+    source: hasLocal && ffAdopted !== true ? "local" as const : "remote" as const,
+  });
 }
 
 // ── stale-rebase self-heal primitives consumed at sync entry ───────────────────
@@ -1679,36 +1740,41 @@ export function boardNamespaceConflicts(top: string): string[] {
 
 // ── gitignore entry (both establish cases share the ONE idempotent transform) ──
 
-/** The `.gitignore` line that keeps the board folder out of the code branch's own index. */
-export const GITIGNORE_ENTRY = `${BUNDLE_DIR}/`;
+/** Every conventional bundle spelling that must stay out of the code branch's own index. */
+export const GITIGNORE_ENTRIES = BUNDLE_DIRS.map((name) => `${name}/`);
 
 /**
- * Return `content` with {@link GITIGNORE_ENTRY} present — unchanged when any existing line already
- * ignores the folder (with or without leading/trailing slash), appended otherwise. Both establish
- * cases share the same idempotent transform.
+ * Return `content` with every recognized conventional bundle directory ignored. Existing exact
+ * spellings (with or without leading/trailing slash) are respected independently; only missing
+ * names are appended. Establish and ordinary provisioning share this idempotent transform.
  */
-export function withIgnoreEntry(content: string, bundleDir: string = BUNDLE_DIR): string {
-  const covered = content.split("\n").some((l) => {
-    const t = l.trim();
-    return t === bundleDir || t === `${bundleDir}/` || t === `/${bundleDir}` || t === `/${bundleDir}/`;
-  });
-  if (covered) return content;
+export function withIgnoreEntries(content: string): string {
+  const lines = content.split("\n").map((line) => line.trim());
+  const missing = BUNDLE_DIRS.filter((bundleDir) =>
+    !lines.some((line) =>
+      line === bundleDir || line === `${bundleDir}/` || line === `/${bundleDir}` || line === `/${bundleDir}/`
+    ),
+  );
+  if (missing.length === 0) return content;
   let out = content;
   if (out.length > 0 && !out.endsWith("\n")) out += "\n";
   if (out.length > 0) out += "\n";
-  out += `# the shared board — managed on the '${BOARD_BRANCH}' branch by superbee sync\n${bundleDir}/\n`;
+  out += `# shared boards — managed on the '${BOARD_BRANCH}' branch by superbee sync\n`;
+  out += `${missing.map((bundleDir) => `${bundleDir}/`).join("\n")}\n`;
   return out;
 }
 
 /**
- * The greenfield establish case's gitignore step: append {@link GITIGNORE_ENTRY} to
+ * Ensure all {@link GITIGNORE_ENTRIES} in
  * `<top>/.gitignore` in the WORKING TREE ONLY — never committed to the code branch (unlike the
  * committed case's version of this transform, which writes an object-database blob INTO the
- * prepared cleanup commit). Idempotent via {@link withIgnoreEntry}; a call that changes nothing reports
+ * prepared cleanup commit). Idempotent via {@link withIgnoreEntries}; a call that changes nothing reports
  * `changed: false`. Read/write failures are NOT swallowed — a caller that cannot write
  * `.gitignore` needs to know, since the receipt promises to announce it.
  */
-export function ensureBoardGitignoreWorkingTree(top: string): { changed: boolean; path: string } {
+export interface GitignoreUpdate { changed: boolean; path: string; entries: string[] }
+
+export function ensureBoardGitignoreWorkingTree(top: string): GitignoreUpdate {
   const gitignorePath = path.join(top, ".gitignore");
   let content = "";
   try {
@@ -1716,10 +1782,10 @@ export function ensureBoardGitignoreWorkingTree(top: string): { changed: boolean
   } catch {
     /* absent .gitignore reads as empty */
   }
-  const updated = withIgnoreEntry(content, bundleDirNameForProject(top));
-  if (updated === content) return { changed: false, path: gitignorePath };
+  const updated = withIgnoreEntries(content);
+  if (updated === content) return { changed: false, path: gitignorePath, entries: [...GITIGNORE_ENTRIES] };
   writeFileSync(gitignorePath, updated);
-  return { changed: true, path: gitignorePath };
+  return { changed: true, path: gitignorePath, entries: [...GITIGNORE_ENTRIES] };
 }
 
 // ── ff-only pull (the fail-soft SessionStart path) ────────────────────────────

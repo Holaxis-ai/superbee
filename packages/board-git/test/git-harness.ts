@@ -30,6 +30,8 @@ import { initBundle, writeDoc, readDoc, type Frontmatter } from "@superbee/core"
 export const BOARD_BRANCH = "board";
 /** The conventional folder the board worktree is checked out at (branch root = this dir). */
 export const BUNDLE_DIR = ".superbee";
+/** Pre-rename conventional directory used by compatibility matrix fixtures. */
+export const LEGACY_BUNDLE_DIR = ".agentstate-lite";
 
 // ── porcelain-invariant git runner ──────────────────────────────────────────
 
@@ -208,6 +210,7 @@ export async function makeTwoCloneTopology(options: TopologyOptions = {}): Promi
   // 1. Seed clone: main with user code.
   git(dir, ["init", "-b", "main", "seed"]);
   await writeFile(path.join(seed, "README.md"), "# demo project\n");
+  await writeFile(path.join(seed, ".gitignore"), `${BUNDLE_DIR}/\n${LEGACY_BUNDLE_DIR}/\n`);
   await mkdir(path.join(seed, "src"), { recursive: true });
   await writeFile(path.join(seed, "src", "app.js"), "export const x = 1;\n");
   git(seed, ["add", "-A"]);
@@ -256,7 +259,9 @@ export async function makeTwoCloneTopology(options: TopologyOptions = {}): Promi
  * not a checkout of its own. Seeds the same user code and {@link SEED_DOCS} as
  * {@link makeTwoCloneTopology} so post-establishment assertions can check the docs survived.
  */
-export async function makeCommittedFolderTopology(): Promise<TwoCloneTopology> {
+export async function makeCommittedFolderTopology(
+  bundleDir: typeof BUNDLE_DIR | typeof LEGACY_BUNDLE_DIR = BUNDLE_DIR,
+): Promise<TwoCloneTopology> {
   const dir = await realpath(await mkdtemp(path.join(tmpdir(), "aslite-git-harness-")));
   const origin = path.join(dir, "origin.git");
   const seed = path.join(dir, "seed");
@@ -265,7 +270,7 @@ export async function makeCommittedFolderTopology(): Promise<TwoCloneTopology> {
   await writeFile(path.join(seed, "README.md"), "# demo project\n");
   await mkdir(path.join(seed, "src"), { recursive: true });
   await writeFile(path.join(seed, "src", "app.js"), "export const x = 1;\n");
-  const bundleRoot = path.join(seed, BUNDLE_DIR);
+  const bundleRoot = path.join(seed, bundleDir);
   await mkdir(bundleRoot, { recursive: true });
   await initBundle(bundleRoot);
   for (const d of SEED_DOCS) {
@@ -281,8 +286,8 @@ export async function makeCommittedFolderTopology(): Promise<TwoCloneTopology> {
 
   git(dir, ["clone", "--no-local", origin, "A"]);
   git(dir, ["clone", "--no-local", origin, "B"]);
-  const a: BoardRepo = { name: "A", root: path.join(dir, "A"), board: path.join(dir, "A", BUNDLE_DIR) };
-  const b: BoardRepo = { name: "B", root: path.join(dir, "B"), board: path.join(dir, "B", BUNDLE_DIR) };
+  const a: BoardRepo = { name: "A", root: path.join(dir, "A"), board: path.join(dir, "A", bundleDir) };
+  const b: BoardRepo = { name: "B", root: path.join(dir, "B"), board: path.join(dir, "B", bundleDir) };
   return { dir, origin, a, b, cleanup: () => rm(dir, { recursive: true, force: true }) };
 }
 

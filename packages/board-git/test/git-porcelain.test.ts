@@ -23,7 +23,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile, readFile, rename } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readFile, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -58,6 +58,9 @@ import {
 import {
   BUNDLE_DIR as CANONICAL_BUNDLE_DIR,
   LEGACY_BUNDLE_DIR,
+  bundleDirNameForProject,
+  committedBundleAtHead,
+  folderPresentInCodeIndex,
   isProvisioned,
   probeRepoTopLevel,
   repoTopLevel,
@@ -554,6 +557,40 @@ test("provision: canonical and legacy bundle directories at one project level fa
   }
 });
 
+test("bundle recognition ignores empty dirs and files, deduplicates symlink aliases, and names recovery backups in conflicts", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const canonical = path.join(topo.a.root, CANONICAL_BUNDLE_DIR);
+    const legacy = path.join(topo.a.root, LEGACY_BUNDLE_DIR);
+    await mkdir(canonical);
+    await mkdir(legacy);
+    await writeFile(path.join(legacy, "index.md"), "---\nokf_version: 0.2\n---\n");
+    assert.equal(bundleDirNameForProject(topo.a.root), LEGACY_BUNDLE_DIR, "empty canonical dir is not a bundle");
+
+    await rm(canonical, { recursive: true });
+    await writeFile(canonical, "not a directory");
+    assert.equal(bundleDirNameForProject(topo.a.root), LEGACY_BUNDLE_DIR, "canonical file is not a bundle");
+
+    await rm(canonical);
+    await symlink(legacy, canonical);
+    assert.equal(bundleDirNameForProject(topo.a.root), LEGACY_BUNDLE_DIR, "two aliases of one physical bundle are not a conflict");
+
+    await rm(canonical);
+    await mkdir(canonical);
+    await writeFile(path.join(canonical, "index.md"), "---\nokf_version: 0.2\n---\n");
+    await rename(legacy, `${legacy}.establish-backup`);
+    const err = capture(() => bundleDirNameForProject(topo.a.root));
+    assert.equal(isBoardGitError(err), true);
+    assert.match((err as Error).message, /\.agentstate-lite\.establish-backup\//);
+    assert.deepEqual(
+      (err as { details: { directories: string[] } }).details.directories.sort(),
+      [CANONICAL_BUNDLE_DIR, `${LEGACY_BUNDLE_DIR}.establish-backup`].sort(),
+    );
+  } finally {
+    await topo.cleanup();
+  }
+});
+
 test("provision: an existing legacy board worktree remains selected and is never moved", async () => {
   const topo = await makeTwoCloneTopology();
   try {
@@ -564,6 +601,48 @@ test("provision: an existing legacy board worktree remains selected and is never
     assert.deepEqual(outcome, { kind: "already", boardPath: legacyPath });
     assert.equal(existsSync(legacyPath), true);
     assert.equal(existsSync(path.join(topo.a.root, CANONICAL_BUNDLE_DIR)), false);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("provision: a post-cleanup legacy clone may use the canonical checkout only after both ignore names are covered", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    deprovisionBoard(topo.b);
+    const gitignore = path.join(topo.b.root, ".gitignore");
+    await writeFile(gitignore, `${LEGACY_BUNDLE_DIR}/\n`);
+
+    const outcome = provisionBoardWorktree(topo.b.root, { ensureIgnore: true });
+    assert.equal(outcome.kind, "provisioned");
+    assert.equal("boardPath" in outcome && outcome.boardPath, path.join(topo.b.root, CANONICAL_BUNDLE_DIR));
+    assert.equal("gitignore" in outcome && outcome.gitignore?.changed, true);
+    const ignored = await readFile(gitignore, "utf8");
+    assert.match(ignored, /^\.agentstate-lite\/$/m);
+    assert.match(ignored, /^\.superbee\/$/m);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("committed bundle selection follows Git evidence when the filesystem points at the other conventional name", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const legacyPath = path.join(topo.a.root, LEGACY_BUNDLE_DIR);
+    await mkdir(legacyPath);
+    await writeFile(path.join(legacyPath, "index.md"), "---\nokf_version: 0.2\n---\n");
+    git(topo.a.root, ["add", "--force", LEGACY_BUNDLE_DIR]);
+    git(topo.a.root, ["commit", "-m", "track legacy bundle"]);
+
+    await rename(legacyPath, `${legacyPath}.moved-aside`);
+    const canonicalPath = path.join(topo.a.root, CANONICAL_BUNDLE_DIR);
+    await mkdir(canonicalPath);
+    await writeFile(path.join(canonicalPath, "index.md"), "---\nokf_version: 0.2\n---\n");
+
+    const selected = committedBundleAtHead(topo.a.root);
+    assert.equal(selected?.bundleDir, LEGACY_BUNDLE_DIR);
+    assert.equal(selected?.tree, git(topo.a.root, ["rev-parse", `HEAD:${LEGACY_BUNDLE_DIR}`]).trim());
+    assert.equal(folderPresentInCodeIndex(topo.a.root), true);
   } finally {
     await topo.cleanup();
   }

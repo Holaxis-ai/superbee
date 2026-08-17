@@ -71,8 +71,8 @@ import {
   BOARD_BRANCH,
   BOARD_REF,
   bundleDirNameForProject,
+  committedBundleAtHead,
   countUncommitted,
-  folderTreeAtHead,
   hasWorktreeSignature,
   inTreeBehindCount,
   inTreeUnpushedCount,
@@ -88,6 +88,7 @@ import {
   retargetBoardInterior,
 } from "@superbee/board-git";
 import { maybeAutoPull } from "../autopull.js";
+import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
 import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from "../cursor.js";
@@ -175,6 +176,13 @@ export interface UnreadableBundle {
   unreadable: true;
 }
 
+/** Discovery found two valid conventional bundles and refused to choose either one. */
+export interface ConflictedBundle {
+  root: string;
+  conflict: true;
+  message: string;
+}
+
 /**
  * A committed `.agentstate.json` binding home resolved for ITSELF (see the module header's
  * PROJECT-BINDING PEEK) — surfaced as a `via` annotation on the local bundle block it drove, so the
@@ -224,7 +232,7 @@ export interface HomeDeps {
    * bundle is discoverable. Defaults to {@link defaultSummarizeBundle}. Tests inject a fake here
    * instead of doing real FS I/O.
    */
-  summarizeBundle: () => Promise<BundleSummary | UnreadableBundle | null>;
+  summarizeBundle: () => Promise<BundleSummary | UnreadableBundle | ConflictedBundle | null>;
   /**
    * The board-awareness probe — LOCAL git + the per-clone state file, never a
    * network op. Defaults to {@link defaultLoadBoardStatus}; tests inject a fake.
@@ -323,12 +331,19 @@ export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter"
  * agent to `init` over a bundle that already exists. Cheap: ONE scan (the sanctioned single
  * bundle walk, gate 3), no kinds/freshness/graph load.
  */
-export async function defaultSummarizeBundle(dir?: string): Promise<BundleSummary | UnreadableBundle | null> {
+export async function defaultSummarizeBundle(
+  dir?: string,
+): Promise<BundleSummary | UnreadableBundle | ConflictedBundle | null> {
   let bundle;
   try {
     bundle = await openBundle(dir, undefined);
-  } catch {
-    return null; // no bundle discoverable up-tree (NOT_FOUND) — the offline "run init" fallback
+  } catch (err) {
+    if (err instanceof CliError && err.code === "NOT_FOUND") return null;
+    const root = collapseHomeDirectory(path.resolve(dir ?? process.cwd()));
+    if (err instanceof CliError && err.code === "CONFLICT") {
+      return { root, conflict: true, message: err.message };
+    }
+    return { root, unreadable: true };
   }
   try {
     const docs = await queryHeads(bundle);
@@ -352,12 +367,17 @@ export async function defaultSummarizeBundle(dir?: string): Promise<BundleSummar
  */
 export async function discoverSummarizeBundle(
   startDir: string,
-): Promise<BundleSummary | UnreadableBundle | null> {
+): Promise<BundleSummary | UnreadableBundle | ConflictedBundle | null> {
   try {
     const root = await findBundleRoot(path.resolve(startDir));
     return root ? defaultSummarizeBundle(root) : null;
-  } catch {
-    return null;
+  } catch (err) {
+    if (err instanceof CliError && err.code === "NOT_FOUND") return null;
+    const root = collapseHomeDirectory(path.resolve(startDir));
+    if (err instanceof CliError && err.code === "CONFLICT") {
+      return { root, conflict: true, message: err.message };
+    }
+    return { root, unreadable: true };
   }
 }
 
@@ -411,6 +431,8 @@ export type BoardStatus =
    * says "run sync" for a sync that would only refuse.
    */
   | { state: "window"; line: string }
+  /** Two independently valid conventional bundles exist; never collapse this to "run init". */
+  | { state: "conflict"; line: string }
   | {
       state: "provisioned";
       /** The last pull step's awareness cache (null: never pulled from this clone). */
@@ -524,6 +546,7 @@ export function buildBoardBlock(
   // The window line rides the firstContact slot: same above-the-fold placement, same init-hint
   // suppression — but the copy is the sync refusal's own truth, not a "run sync" that would refuse.
   if (status.state === "window") return { firstContact: status.line };
+  if (status.state === "conflict") return { firstContact: status.line };
   const inTree = status.state === "in-tree";
 
   const rec: Record<string, unknown> = {};
@@ -584,7 +607,8 @@ export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus 
     // board as "unprovisioned".
     const top = repoTopLevel(retargetBoardInterior(dir ?? process.cwd()));
     if (!top) return null;
-    const bundleDir = bundleDirNameForProject(top);
+    const committed = committedBundleAtHead(top);
+    const bundleDir = committed?.bundleDir ?? bundleDirNameForProject(top);
     const boardPath = path.join(top, bundleDir);
     if (!isProvisioned(top)) {
       const remoteRefExists =
@@ -598,7 +622,7 @@ export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus 
       // dead end. The refusal copy is reused verbatim by running channel detection with an
       // INJECTED offline probe (the fetched ref IS the evidence — no network, the offline
       // guarantee holds) and catching the typed refusal it throws.
-      if (remoteRefExists && folderTreeAtHead(top) !== null && !hasWorktreeSignature(boardPath)) {
+      if (remoteRefExists && committed !== null && !hasWorktreeSignature(boardPath)) {
         try {
           detectBoardChannel(top, { remoteBoardState: () => "exists" });
         } catch (err) {
@@ -614,7 +638,7 @@ export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus 
       // the render's offline guarantee forbids the act-time remote probe, and the mode line it
       // gates is true regardless of what a live probe would add (the folder IS committed on the
       // branch). Mode-SENSITIVE decisions (sync's routing, establish) stay with act-time detection.
-      if (folderTreeAtHead(top) !== null && !hasWorktreeSignature(boardPath)) {
+      if (committed !== null && !hasWorktreeSignature(boardPath)) {
         const key = resolveBundleKey(boardPath);
         const state = await defaultSyncStore.readSyncState(key);
         const upstream = resolveInTreeUpstream(top);
@@ -646,7 +670,14 @@ export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus 
       unpushed: unpushedCount(boardPath),
       uncommitted,
     };
-  } catch {
+  } catch (err) {
+    if (
+      isBoardGitError(err) &&
+      err.code === "CONFLICT" &&
+      err.details?.state === "bundle-directory-conflict"
+    ) {
+      return { state: "conflict", line: err.message };
+    }
     return null;
   }
 }
@@ -672,7 +703,7 @@ export function buildHomeView(
     /** Preserve an explicit home --dir selector in every emitted mutating follow-up command. */
     targetDir?: string;
   },
-  summary?: BundleSummary | UnreadableBundle | null,
+  summary?: BundleSummary | UnreadableBundle | ConflictedBundle | null,
   remote?: string,
   binding?: HomeBindingNote,
   bindingError?: string,
@@ -710,6 +741,12 @@ export function buildHomeView(
     };
     if (binding && binding.target === remote) remoteBlock.via = binding.file;
     view.remote = remoteBlock;
+  } else if (summary && "conflict" in summary) {
+    view.bundle = {
+      root: summary.root,
+      status: "conflict",
+      help: summary.message,
+    };
   } else if (summary && "unreadable" in summary) {
     // A bundle EXISTS here but could not be read (a malformed doc) — NOT "no bundle". Never emit the
     // `getting_started`/`init` hint (that would tell an agent to init over an existing bundle);
@@ -880,8 +917,8 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
 
   // A --remote scope does NOT summarize (offline guarantee — the remote block orients toward the
   // fetching commands instead). Local / `--dir` scopes read the bundle as before.
-  let summary: BundleSummary | UnreadableBundle | null = null;
-  if (!remote) {
+  let summary: BundleSummary | UnreadableBundle | ConflictedBundle | null = null;
+  if (!remote && !bindingError) {
     try {
       summary = await summarize();
     } catch {

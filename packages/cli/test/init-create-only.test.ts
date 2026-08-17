@@ -146,6 +146,22 @@ test("plain init keeps open-or-create Recipe transition and idempotence", async 
   }
 });
 
+test("plain init refuses to create the canonical sibling of an existing legacy project bundle", async () => {
+  const base = await tempDir();
+  try {
+    const legacy = path.join(base, ".agentstate-lite");
+    const canonical = path.join(base, ".superbee");
+    await runInit(["--dir", legacy, "--recipe", "none"]);
+    const before = await treeSnapshot(base);
+    const err = await expectRefusal(["--dir", canonical, "--recipe", "none"], /refusing to create a second conventional bundle/);
+    assert.equal(err.code, "CONFLICT");
+    assert.equal(existsSync(canonical), false);
+    assertSameTree(before, await treeSnapshot(base));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
 test("a target nested inside an enclosing bundle is refused; conventional ancestor workspaces too", async () => {
   const base = await tempDir();
   try {

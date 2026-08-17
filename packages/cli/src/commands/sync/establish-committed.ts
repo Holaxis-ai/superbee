@@ -30,6 +30,9 @@ import {
   currentBranch,
   fetchOrigin,
   folderTreeAtHead,
+  committedBundleAtHead,
+  type BundleDirName,
+  type CommittedBundleAtHead,
   gitDirMarkerPath,
   isAncestor,
   isProvisioned,
@@ -136,8 +139,8 @@ export function committedNextSteps(inv: string, branch: string, bundleDir: strin
 }
 
 /** Throw the behind-origin refusal when {@link behindBoardCommits} found any. */
-function assertNotBehindOnBoard(top: string, inv: string, branch: string): void {
-  const behind = behindBoardCommits(top, branch);
+function assertNotBehindOnBoard(top: string, inv: string, branch: string, bundleDir: BundleDirName): void {
+  const behind = behindBoardCommits(top, branch, bundleDir);
   if (behind !== null && behind.length > 0) {
     throw syncOutcomeError("establish.behind-origin", { inv, branch, behind });
   }
@@ -185,7 +188,7 @@ export function clearStaleCommittedMarker(top: string): void {
 // ── the committed-folder phases ───────────────────────────────────────────────
 
 /** The guard phase's result: the branch to act on and a reusable interrupted-run remnant (if any). */
-interface CommittedPlan { branch: string; bundleDir: string; reuseBoardSha: string | null }
+interface CommittedPlan { branch: string; bundleDir: BundleDirName; reuseBoardSha: string | null }
 
 /**
  * The precondition guards, verified for BOTH the preview and the execution — the preview is a dry
@@ -198,22 +201,23 @@ interface CommittedPlan { branch: string; bundleDir: string; reuseBoardSha: stri
  * this tree). The one precondition that CANNOT be checked from here — every board writer has
  * synced their board changes — is documented comms in the preview.
  */
-function guardCommittedPreconditions(top: string, inv: string, treeSha: string): CommittedPlan {
-  const bundleDir = bundleDirNameForProject(top);
+function guardCommittedPreconditions(
+  top: string, inv: string, treeSha: string, bundleDir: BundleDirName,
+): CommittedPlan {
   const branch = currentBranch(top);
   if (branch === "HEAD") {
-    throw syncOutcomeError("establish.detached-head.committed", {});
+    throw syncOutcomeError("establish.detached-head.committed", { bundleDir });
   }
   if (branch === BOARD_BRANCH) {
     throw syncOutcomeError("establish.on-board-branch", {});
   }
 
-  assertNotBehindOnBoard(top, inv, branch);
+  assertNotBehindOnBoard(top, inv, branch, bundleDir);
 
   const dirty = statusRows(top, bundleDir);
   if (dirty.length > 0) {
     const shown = dirty.slice(0, 20);
-    throw syncOutcomeError("establish.committed-dirty", { inv, rows: shown, total: dirty.length });
+    throw syncOutcomeError("establish.committed-dirty", { inv, bundleDir, rows: shown, total: dirty.length });
   }
 
   if (localBranchExists(top, CLEANUP_BRANCH)) {
@@ -253,7 +257,7 @@ function executeCommittedEstablishment(
   const boardSha = plan.reuseBoardSha ?? createBoardRootCommit(top, treeSha, branch);
   writeGitDirMarker(top, COMMITTED_MARKER_KEY, boardSha);
   pushBoardUpstream(top);
-  const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch, bundleDir));
+  const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch, bundleDir), bundleDir);
   mustGit(top, ["branch", CLEANUP_BRANCH, removalSha]);
   clearGitDirMarker(top, COMMITTED_MARKER_KEY);
 
@@ -273,15 +277,17 @@ function executeCommittedEstablishment(
 
 /** The committed-folder establishment: idempotence probe → offline refusal → guards → preview/execute. */
 export async function establishCommitted(
-  top: string, inv: string, mode: OutputMode, yes: boolean, treeSha: string, stdout: (s: string) => void,
+  top: string, inv: string, mode: OutputMode, yes: boolean, committed: CommittedBundleAtHead,
+  stdout: (s: string) => void,
 ): Promise<EstablishOutcome> {
+  const { tree: treeSha, bundleDir } = committed;
   const fetchOk = fetchOrigin(top);
 
   // IDEMPOTENCE FIRST: a board branch on origin means the establishment already happened (here,
   // on a teammate's clone, or in an interrupted run that got at least as far as the push) — exit
   // 0. Checked even off a failed fetch (the last-known origin/board still proves it).
   if (refCommit(top, `refs/remotes/${BOARD_REF}`)) {
-    await alreadyShared(top, inv, mode, yes, fetchOk, stdout);
+    await alreadyShared(top, inv, mode, yes, fetchOk, bundleDir, stdout);
     return { already: false };
   }
 
@@ -298,7 +304,7 @@ export async function establishCommitted(
     );
   }
 
-  const plan = guardCommittedPreconditions(top, inv, treeSha);
+  const plan = guardCommittedPreconditions(top, inv, treeSha, bundleDir);
 
   if (!yes) {
     stdout(render(committedPreviewRecord(inv, plan.branch, plan.bundleDir), mode));
@@ -323,7 +329,8 @@ export async function establishCommitted(
  * structurally, so leftover local crumbs cannot produce stale guidance there.
  */
 async function alreadyShared(
-  top: string, inv: string, mode: OutputMode, yes: boolean, fetchOk: boolean, stdout: (s: string) => void,
+  top: string, inv: string, mode: OutputMode, yes: boolean, fetchOk: boolean,
+  bundleDir: BundleDirName, stdout: (s: string) => void,
 ): Promise<void> {
   const rec: Record<string, unknown> = { establish: ESTABLISH_COMMITTED_ALREADY };
   const branch = currentBranch(top);
@@ -336,13 +343,13 @@ async function alreadyShared(
     rec.next_steps = committedNextSteps(
       inv,
       branch === "HEAD" ? "the default branch" : branch,
-      bundleDirNameForProject(top),
+      bundleDir,
     );
   } else if (marker) {
     // (b) this clone's own marker proves an interrupted --yes run happened HERE — but only
     // origin/board can say whether that run's push WON. Provenance before any framing.
     if (branch === "HEAD") {
-      throw syncOutcomeError("establish.detached-head.marker", { inv });
+      throw syncOutcomeError("establish.detached-head.marker", { inv, bundleDir });
     }
     const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
     const markerValid = markerCommitResolves(top, marker);
@@ -374,7 +381,7 @@ async function alreadyShared(
               story,
               markerPath: gitDirMarkerPath(top, COMMITTED_MARKER_KEY),
             });
-        rec.note = windowNote(top, inv, branch);
+        rec.note = windowNote(top, inv, branch, bundleDir);
       } else if (!yes) {
         rec.note = syncOutcomeLine("line.marker.lost-race.note", { story });
         rec.discard = syncOutcomeLine("line.marker.lost-race.discard", { inv });
@@ -389,22 +396,22 @@ async function alreadyShared(
       throw syncOutcomeError("marker.offline.refusal", {});
     } else {
       // contained && fetchOk && yes: the true interrupted-establishment recovery.
-      assertNotBehindOnBoard(top, inv, branch);
+      assertNotBehindOnBoard(top, inv, branch, bundleDir);
       const markerTree = treeOf(top, marker);
       if (!markerTree) {
         throw syncOutcomeError("marker.unavailable.commit.changed", { marker });
       }
-      const currentTree = folderTreeAtHead(top);
+      const currentTree = committedBundleAtHead(top)?.tree ?? null;
       if (currentTree !== markerTree) {
         throw syncOutcomeError("marker.tree-changed.conflict", {
           inv,
           branch,
+          bundleDir,
           snapshotTree: markerTree,
           currentTree: currentTree ?? "absent",
         });
       }
-      const bundleDir = bundleDirNameForProject(top);
-      const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch, bundleDir));
+      const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch, bundleDir), bundleDir);
       mustGit(top, ["branch", CLEANUP_BRANCH, removalSha]);
       clearGitDirMarker(top, COMMITTED_MARKER_KEY);
       rec.recovered =
@@ -417,7 +424,7 @@ async function alreadyShared(
     }
   } else {
     // (c) a clone that hasn't pulled the removal yet.
-    rec.note = windowNote(top, inv, branch);
+    rec.note = windowNote(top, inv, branch, bundleDir);
   }
 
   stdout(render(rec, mode));
@@ -429,11 +436,11 @@ async function alreadyShared(
  * or may not exist. A tracked REMNANT (removal landed AND pulled, straggler paths still tracked)
  * gets the ONE factory's untrack-escape line instead: "run 'git pull'" is a dead end there.
  */
-function windowNote(top: string, inv: string, branch: string): string {
-  const guidance = boardWindowGuidance(top);
+function windowNote(top: string, inv: string, branch: string, bundleDir: BundleDirName): string {
+  const guidance = boardWindowGuidance(top, true, bundleDir);
   if (guidance.state === "window-remnant") return guidance.message;
-  const landedUpstream = pathLandedAbsentOnRemoteBranch(top, branch, bundleDirNameForProject(top));
+  const landedUpstream = pathLandedAbsentOnRemoteBranch(top, branch, bundleDir);
   return landedUpstream
-    ? syncOutcomeLine("line.window-note.landed", { inv, branch })
-    : syncOutcomeLine("line.window-note.pending", { inv });
+    ? syncOutcomeLine("line.window-note.landed", { inv, branch, bundleDir })
+    : syncOutcomeLine("line.window-note.pending", { inv, bundleDir });
 }

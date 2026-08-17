@@ -47,6 +47,7 @@ const FIXTURES = (JSON.parse(readFileSync(FIXTURES_PATH, "utf8")) as { fixtures:
 // The fixed representative params the capture used — MUST stay in lockstep with the fixtures.
 const INV = "aslite";
 const BOARD_PATH = "/repo/.superbee";
+const BUNDLE_DIR = path.basename(BOARD_PATH);
 const TOP = "/repo";
 const MARKER = "3f786850e387550fdab836ed7e6dc881de23001b";
 const MARKER_PATH = "/repo/.git/agentstate.establishCommittedShare";
@@ -108,8 +109,8 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
       "establish.namespace-conflict.committed#default": () =>
         syncOutcomeError("establish.namespace-conflict.committed", { inv: INV, conflicts: CONFLICTING }),
       "establish.board-branch-mismatch#default": () => syncOutcomeError("establish.board-branch-mismatch", {}),
-      "establish.detached-head.committed#default": () => syncOutcomeError("establish.detached-head.committed", {}),
-      "establish.detached-head.marker#default": () => syncOutcomeError("establish.detached-head.marker", { inv: INV }),
+      "establish.detached-head.committed#default": () => syncOutcomeError("establish.detached-head.committed", { bundleDir: BUNDLE_DIR }),
+      "establish.detached-head.marker#default": () => syncOutcomeError("establish.detached-head.marker", { inv: INV, bundleDir: BUNDLE_DIR }),
       "marker.shallow.refusal#default": () => syncOutcomeError("marker.shallow.refusal", { inv: INV, marker: MARKER }),
       "marker.lost-race.conflict#valid": () =>
         syncOutcomeError("marker.lost-race.conflict", { inv: INV, marker: MARKER, markerValid: true }),
@@ -120,6 +121,7 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
         syncOutcomeError("marker.tree-changed.conflict", {
           inv: INV,
           branch: BRANCH,
+          bundleDir: BUNDLE_DIR,
           snapshotTree: SNAPSHOT_TREE,
           currentTree: CURRENT_TREE,
         }),
@@ -144,8 +146,8 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
       "line.in-tree.no-basis#no-upstream": () => syncOutcomeLine("line.in-tree.no-basis", { reason: "no-upstream" }),
       "line.in-tree.no-basis#unusable-upstream": () =>
         syncOutcomeLine("line.in-tree.no-basis", { reason: "unusable-upstream", ref: REF }),
-      "line.window-note.landed#default": () => syncOutcomeLine("line.window-note.landed", { inv: INV, branch: BRANCH }),
-      "line.window-note.pending#default": () => syncOutcomeLine("line.window-note.pending", { inv: INV }),
+      "line.window-note.landed#default": () => syncOutcomeLine("line.window-note.landed", { inv: INV, branch: BRANCH, bundleDir: BUNDLE_DIR }),
+      "line.window-note.pending#default": () => syncOutcomeLine("line.window-note.pending", { inv: INV, bundleDir: BUNDLE_DIR }),
       "line.marker.story.lost-race#default": () => storyValid,
       "line.marker.story.unverifiable#default": () => storyUnverifiable,
       "line.marker.cleared.removed#default": () => syncOutcomeLine("line.marker.cleared.removed", { story: storyValid }),
@@ -178,7 +180,7 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
       "show-incoming.no-upstream#default": () => syncOutcomeError("show-incoming.no-upstream", { inv: INV }),
       "establish.on-board-branch#default": () => syncOutcomeError("establish.on-board-branch", {}),
       "establish.committed-dirty#default": () =>
-        syncOutcomeError("establish.committed-dirty", { inv: INV, rows: DIRTY_ROWS, total: DIRTY_ROWS.length }),
+        syncOutcomeError("establish.committed-dirty", { inv: INV, bundleDir: BUNDLE_DIR, rows: DIRTY_ROWS, total: DIRTY_ROWS.length }),
       "establish.cleanup-branch-exists#default": () =>
         syncOutcomeError("establish.cleanup-branch-exists", { cleanupBranch: CLEANUP_BRANCH }),
       "establish.local-branch-unrecognized#default": () =>
@@ -247,6 +249,26 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
     });
     assert.match(legacyRefusal.message, /\.agentstate-lite\//);
     assert.doesNotMatch(legacyRefusal.message, /\.superbee\//);
+
+    const legacyRows = [
+      syncOutcomeError("establish.committed-dirty", {
+        inv: INV, bundleDir: ".agentstate-lite", rows: DIRTY_ROWS, total: DIRTY_ROWS.length,
+      }).message,
+      syncOutcomeError("establish.detached-head.committed", { bundleDir: ".agentstate-lite" }).message,
+      syncOutcomeError("establish.detached-head.marker", { inv: INV, bundleDir: ".agentstate-lite" }).message,
+      syncOutcomeError("marker.tree-changed.conflict", {
+        inv: INV, branch: BRANCH, bundleDir: ".agentstate-lite",
+        snapshotTree: SNAPSHOT_TREE, currentTree: CURRENT_TREE,
+      }).message,
+      syncOutcomeLine("line.window-note.landed", {
+        inv: INV, branch: BRANCH, bundleDir: ".agentstate-lite",
+      }),
+      syncOutcomeLine("line.window-note.pending", { inv: INV, bundleDir: ".agentstate-lite" }),
+    ];
+    for (const message of legacyRows) {
+      assert.match(message, /\.agentstate-lite\//);
+      assert.doesNotMatch(message, /\.superbee\//);
+    }
   } finally {
     await plainTop.cleanup();
     await localBoardTop.cleanup();

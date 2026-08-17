@@ -145,6 +145,26 @@ test("A1.3b no-bundle --dir fallback creates in the explicit project's conventio
   assert.ok(!gettingStarted.includes(`recipes --dir`));
 });
 
+test("home preserves a conventional-directory conflict outside Git and never suggests init", async () => {
+  const project = await tempDir();
+  try {
+    await initBundle(path.join(project, ".superbee"));
+    await initBundle(path.join(project, ".agentstate-lite"));
+    let out = "";
+    await home(["--dir", project, "--json"], {
+      ...BASE_DEPS,
+      stdout: (s) => (out += s),
+    });
+    const view = JSON.parse(out) as Record<string, unknown>;
+    const bundle = view.bundle as Record<string, unknown>;
+    assert.equal(bundle.status, "conflict");
+    assert.match(String(bundle.help), /refusing to choose between two project bundles/);
+    assert.equal(view.getting_started, undefined);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("home --json is honored (renders valid JSON, not silently ignored TOON)", async () => {
   let toon = "";
   await home([], { binPath: () => "/bin/superbee", invocation: () => INVOKE, stdout: (s) => (toon += s), summarizeBundle: async () => null });

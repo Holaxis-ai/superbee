@@ -252,7 +252,7 @@ without an explicit human decision.
 ### 5. Local-first, standards-clean
 
 Local-first: everything works with the network off. No bundled secret; credentials (if
-any) live in `~/.superbee/` with 0600/0700 discipline and are never printed. Stay
+any) live in `~/.agentstate/` with 0600/0700 discipline and are never printed. Stay
 standards-clean (plain OKF markdown; no bespoke schema). Link form is **relative
 bundle-relative**.
 

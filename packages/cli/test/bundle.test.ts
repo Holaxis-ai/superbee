@@ -559,6 +559,20 @@ test("openBundle: an explicit --dir may name a project directory containing the 
   }
 });
 
+test("openBundle: an explicit root index short-circuits conflicting conventional children", async () => {
+  const project = await tempDir();
+  try {
+    await initBundle(project);
+    await initBundle(path.join(project, CONVENTIONAL_BUNDLE_DIR_NAME));
+    await initBundle(path.join(project, LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME));
+
+    const bundle = await openBundle(project, undefined);
+    assert.equal(bundle.root, project);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
 test("openBundle: an existing explicit --dir inside another bundle remains its own exact index-less boundary", async () => {
   const project = await tempDir();
   try {

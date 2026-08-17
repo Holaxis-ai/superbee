@@ -167,15 +167,21 @@ export function toDeltaRows(changes: DocChange[]): AwarenessDeltaRow[] {
  * field, named for the outcome, `<path> — <what happened>`.
  */
 export function provisionAnnouncement(outcome: ProvisionOutcome): Record<string, string> | undefined {
+  const announcement: Record<string, string> = {};
   if (outcome.kind === "provisioned") {
     // `source` distinguishes a clone/join from a pre-existing local `board` branch, so the
     // receipt never claims remote provenance for content that came from a local-only branch.
     const detail =
       outcome.source === "remote" ? "materialized from origin/board" : "materialized from the local board branch";
-    return { provisioned: `${outcome.boardPath} — ${detail}` };
+    announcement.provisioned = `${outcome.boardPath} — ${detail}`;
   }
   if (outcome.kind === "repaired") {
-    return { repaired: `${outcome.boardPath} — worktree pointers repaired` };
+    announcement.repaired = `${outcome.boardPath} — worktree pointers repaired`;
   }
-  return undefined;
+  if ((outcome.kind === "provisioned" || outcome.kind === "repaired" || outcome.kind === "already") && outcome.gitignore) {
+    announcement.gitignore =
+      `${outcome.gitignore.path} — appended ${outcome.gitignore.entries.map((entry) => `'${entry}'`).join(" and ")} ` +
+      `(uncommitted; commit it so teammates' clones stay clean)`;
+  }
+  return Object.keys(announcement).length > 0 ? announcement : undefined;
 }

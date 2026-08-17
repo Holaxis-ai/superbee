@@ -319,10 +319,10 @@ export const SYNC_OUTCOMES = {
     details: (p) => ({ behind_board_commits: p.behind.length, commits: p.behind.slice(0, 20) }),
     help: (p) => `git pull, then re-run ${p.inv} sync --establish --yes`,
   }),
-  "establish.committed-dirty": row<{ inv: string; rows: StatusRow[]; total: number }>({
+  "establish.committed-dirty": row<{ inv: string; bundleDir: string; rows: StatusRow[]; total: number }>({
     code: "RUNTIME",
-    message: () =>
-      `establish refused: ${BUNDLE_DIR}/ has uncommitted changes — commit (or discard) them ` +
+    message: (p) =>
+      `establish refused: ${p.bundleDir}/ has uncommitted changes — commit (or discard) them ` +
       `first so the board branch carries the board's real current state`,
     details: (p) => ({ uncommitted: { shown: p.rows.length, total: p.total, rows: p.rows } }),
     help: (p) => `commit the board changes, then re-run ${p.inv} sync --establish --yes`,
@@ -360,17 +360,17 @@ export const SYNC_OUTCOMES = {
       `folder — if it is left over from an interrupted establishment, delete it ` +
       `(git branch -D ${BOARD_BRANCH}); if it is used for something else, rename it — then re-run`,
   }),
-  "establish.detached-head.committed": row<Record<string, never>>({
-    code: "RUNTIME",
-    message: () =>
-      `the repository is on a detached HEAD — check out the branch that carries the committed ` +
-      `${BUNDLE_DIR}/ folder, then re-run`,
-  }),
-  "establish.detached-head.marker": row<{ inv: string }>({
+  "establish.detached-head.committed": row<{ bundleDir: string }>({
     code: "RUNTIME",
     message: (p) =>
       `the repository is on a detached HEAD — check out the branch that carries the committed ` +
-      `${BUNDLE_DIR}/ folder, then re-run '${p.inv} sync --establish --yes'`,
+      `${p.bundleDir}/ folder, then re-run`,
+  }),
+  "establish.detached-head.marker": row<{ inv: string; bundleDir: string }>({
+    code: "RUNTIME",
+    message: (p) =>
+      `the repository is on a detached HEAD — check out the branch that carries the committed ` +
+      `${p.bundleDir}/ folder, then re-run '${p.inv} sync --establish --yes'`,
   }),
 
   // The committed-case marker (crash/lost-race provenance) refusal arms.
@@ -408,10 +408,12 @@ export const SYNC_OUTCOMES = {
       `of ${BOARD_REMOTE}; get online, then re-run`,
     details: () => ({ retryable: true }),
   }),
-  "marker.tree-changed.conflict": row<{ inv: string; branch: string; snapshotTree: string; currentTree: string }>({
+  "marker.tree-changed.conflict": row<{
+    inv: string; branch: string; bundleDir: string; snapshotTree: string; currentTree: string;
+  }>({
     code: "CONFLICT",
     message: (p) =>
-      `${BUNDLE_DIR}/ changed on '${p.branch}' after the interrupted establishment pushed its ` +
+      `${p.bundleDir}/ changed on '${p.branch}' after the interrupted establishment pushed its ` +
       `snapshot — re-creating the folder-removal now would strand those newer board changes ` +
       `on the frozen folder; nothing was changed`,
     details: (p) => ({ snapshot_tree: p.snapshotTree, current_tree: p.currentTree }),
@@ -510,15 +512,15 @@ export const SYNC_OUTCOME_LINES = {
   ),
   // establish's window notes for a clone with no local establishment work left (pull-first;
   // probed per state at the site — the remnant state renders the package factory's message).
-  "line.window-note.landed": line<{ inv: string; branch: string }>(
+  "line.window-note.landed": line<{ inv: string; branch: string; bundleDir: string }>(
     (p) =>
-      `this clone still carries the committed ${BUNDLE_DIR}/ folder and the folder-removal has ` +
+      `this clone still carries the committed ${p.bundleDir}/ folder and the folder-removal has ` +
       `already landed on '${p.branch}' — run 'git pull' (the folder vanishes), then '${p.inv} sync' ` +
       `(it returns as the live board)`,
   ),
-  "line.window-note.pending": line<{ inv: string }>(
+  "line.window-note.pending": line<{ inv: string; bundleDir: string }>(
     (p) =>
-      `this clone still carries the committed ${BUNDLE_DIR}/ folder — once the folder-removal ` +
+      `this clone still carries the committed ${p.bundleDir}/ folder — once the folder-removal ` +
       `lands on the default branch: 'git pull' (the folder vanishes), then '${p.inv} sync' ` +
       `(it returns as the live board)`,
   ),

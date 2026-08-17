@@ -13,9 +13,8 @@ import {
 import {
   BOARD_BRANCH,
   BOARD_REF,
-  BUNDLE_DIR,
   bundleDirNameForProject,
-  folderTreeAtHead,
+  committedBundleAtHead,
   inTreeUpstreamSha,
   readDocBytesAtRef,
   repoTopLevel,
@@ -40,11 +39,6 @@ export const SHOW_INCOMING_AS_OF = "last fetch";
 /** The expected-state string for a doc that is absent on origin/board (deleted upstream, or new locally). */
 export const SHOW_INCOMING_ABSENT_STATE =
   "absent upstream — not on origin/board as of the last fetch (deleted upstream, or a new local doc)";
-
-/** The in-tree variant: absence is judged under the board prefix on the branch's tracking upstream. */
-export const SHOW_INCOMING_IN_TREE_ABSENT_STATE =
-  `absent upstream — not under ${BUNDLE_DIR}/ on the branch's tracking upstream as of the last ` +
-  "fetch (deleted upstream, or a new local doc)";
 
 /** The in-tree viewer's refusal when the branch has no usable upstream to read a version from. */
 export function showIncomingInTreeNoBasis(inv: string, reason: InTreeNoBasisReason, ref?: string): CliError {
@@ -107,18 +101,19 @@ export async function showIncoming(
     // still "as of last fetch", still no implicit fetch (the resolution is local config/refs).
     let readRef = `refs/remotes/${BOARD_REF}`;
     let pathPrefix = "";
-    let inTreeBundleDir = BUNDLE_DIR;
+    let inTreeBundleDir = bundleDirNameForProject(top);
     if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status !== 0) {
       if (runGit(top, ["rev-parse", "--verify", "--quiet", `refs/heads/${BOARD_BRANCH}`]).status === 0) {
         throw ffSwallowToError("no-upstream", inv, top);
       }
-      if (folderTreeAtHead(top) !== null) {
+      const committed = committedBundleAtHead(top);
+      if (committed !== null) {
         const resolution = resolveInTreeUpstream(top);
         if (resolution.state === "none") throw showIncomingInTreeNoBasis(inv, resolution.reason);
         const sha = inTreeUpstreamSha(top, resolution.config.ref);
         if (sha === null) throw showIncomingInTreeNoBasis(inv, "unusable-upstream", resolution.config.ref);
         readRef = sha;
-        inTreeBundleDir = bundleDirNameForProject(top);
+        inTreeBundleDir = committed.bundleDir;
         pathPrefix = `${inTreeBundleDir}/`;
       } else {
         throw syncOutcomeError("show-incoming.no-upstream", { inv });

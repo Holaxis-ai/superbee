@@ -44,7 +44,7 @@ import {
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
-  INDETERMINATE_TRACKED_REASON,
+  indeterminateTrackedReason,
   INDETERMINATE_UNTRACKED_REASON,
   detectBoardChannel,
   isBoardGitError,
@@ -264,7 +264,7 @@ test("matrix: tracked folder + remote unknown → typed indeterminate — NEVER 
       kind: "indeterminate",
       probe: "remote-board",
       folderTracked: true,
-      reason: INDETERMINATE_TRACKED_REASON,
+      reason: indeterminateTrackedReason(BUNDLE_DIR),
     });
   } finally {
     await topo.cleanup();

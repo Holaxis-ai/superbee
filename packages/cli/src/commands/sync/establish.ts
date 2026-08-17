@@ -25,7 +25,7 @@ import {
   fetchOrigin,
   fetchOriginRequired,
   folderPresentInCodeIndex,
-  folderTreeAtHead,
+  committedBundleAtHead,
   isAncestor,
   isProvisioned,
   provisionBoardWorktree,
@@ -66,7 +66,7 @@ export function establishNextSteps(inv: string): string[] {
 /** Reject filesystem indirection before any ref, remote, index, or folder mutation. */
 function assertPlainBundleShape(bundlePath: string, inv: string): void {
   const bundleDir = path.basename(bundlePath);
-  const runInitHelp = `${inv} init --dir ${BUNDLE_DIR}`;
+  const runInitHelp = `${inv} init --create-only --dir ${BUNDLE_DIR}`;
   if (!existsSync(bundlePath)) {
     throw new CliError(
       "RUNTIME",
@@ -133,11 +133,10 @@ async function assertNotBoundElsewhere(top: string, boardPath: string): Promise<
 }
 
 function gitignoreNote(top: string): string {
-  const bundleDir = bundleDirNameForProject(top);
   const gi = ensureBoardGitignoreWorkingTree(top);
   return gi.changed
-    ? `${gi.path} — appended '${bundleDir}/' (uncommitted; commit it so teammates' clones stay clean)`
-    : `${gi.path} — already ignores '${bundleDir}/'`;
+    ? `${gi.path} — appended ${gi.entries.map((entry) => `'${entry}'`).join(" and ")} (uncommitted; commit it so teammates' clones stay clean)`
+    : `${gi.path} — already ignores ${gi.entries.map((entry) => `'${entry}'`).join(" and ")}`;
 }
 
 interface ConversionResult { boardPath: string; boardCommit: string; gitignore: string }
@@ -418,9 +417,9 @@ export async function establishBoard(
   // tree committed at HEAD means the greenfield safety model (rename + convert the folder) must
   // never run — the code branch still tracks those paths. A fully shared clone (folder no longer
   // committed) never enters this branch, so its leftover local crumbs can't produce stale guidance.
-  const committedTree = folderTreeAtHead(top);
-  if (committedTree !== null) {
-    return establishCommitted(top, inv, mode, Boolean(opts.yes), committedTree, stdout);
+  const committed = committedBundleAtHead(top);
+  if (committed !== null) {
+    return establishCommitted(top, inv, mode, Boolean(opts.yes), committed, stdout);
   }
   fetchOriginRequired(top);
   // The committed-case crash marker outlives its machinery once the folder leaves HEAD:

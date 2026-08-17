@@ -53,6 +53,7 @@ import path from "node:path";
 
 import {
   bundleDirNameForProject,
+  committedBundleAtHead,
   detectBoardChannel,
   inTreeFetchAndRecord,
   provisionAnnouncement,
@@ -169,7 +170,8 @@ export async function sessionStartPull(
     if (detection.channel.mode === "in-tree") {
       const top = repoTopLevel(startDir);
       if (!top) return undefined;
-      const boardPath = path.join(top, bundleDirNameForProject(top));
+      const bundleDir = committedBundleAtHead(top)?.bundleDir ?? bundleDirNameForProject(top);
+      const boardPath = path.join(top, bundleDir);
       const key = resolveBundleKey(boardPath);
       // Marker refresh: every pull step that confirmed a board exists for this repo.
       await defaultSyncStore.refreshMarker(key);
@@ -178,7 +180,7 @@ export async function sessionStartPull(
       // touched; delivery is the user's own `git pull`). State discipline mirrors the branch
       // pull: cursor/cache rewritten only on a successful check; a dead remote degrades silently
       // into the offline note; the decision table's no-comparison-basis outcomes report nothing.
-      const result = await inTreeFetchAndRecord(defaultSyncStore, top, key, {
+      const result = await inTreeFetchAndRecord(defaultSyncStore, top, key, bundleDir, {
         fetchTimeoutMs: remaining(),
         connectTimeoutSeconds: SESSION_START_CONNECT_TIMEOUT_SECONDS,
       });
@@ -204,6 +206,7 @@ export async function sessionStartPull(
         fetchTimeoutMs: remaining(),
         connectTimeoutSeconds: SESSION_START_CONNECT_TIMEOUT_SECONDS,
         allowLocalBranch: false,
+        ensureIgnore: true,
       });
     } catch {
       // Provisioning refused (a stray non-board directory, unrepairable pointers, …): the render's

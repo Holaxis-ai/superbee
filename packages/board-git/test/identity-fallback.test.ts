@@ -166,7 +166,7 @@ test("createBoardRootCommit + createRemovalCommit: both plumbing commits succeed
       assert.equal(board.author, "superbee <superbee@superbee.invalid>");
       assert.equal(board.committer, board.author);
 
-      const removalSha = createRemovalCommit(top, "board: retire the committed folder\n");
+      const removalSha = createRemovalCommit(top, "board: retire the committed folder\n", BUNDLE_DIR);
       const removal = identityOf(top, removalSha);
       assert.equal(removal.author, "superbee <superbee@superbee.invalid>");
       assert.equal(removal.committer, removal.author);

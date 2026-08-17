@@ -3,6 +3,7 @@
   "note": "Rendered-byte fixtures captured from the PRE-refactor construction sites (sync-outcome-table unit). Envelope fixtures went through renderErrorEnvelope(toEnvelope(...)); line fixtures are the raw guidance-field strings. Fixed representative params: inv=aslite, boardPath=/repo/.superbee, top=/repo, branch=main.",
   "captured_from_followups": "fe6bf0bc88ad77321e9bd5acca0ce381011a6adc",
   "note_followups": "sync-copy-unification PR1's fixtures (added below the original db6d866 batch), verbatim-transcribed from the still-inline construction sites at origin/main's tip before any src change in this unit. Representative params match the batch above (inv=aslite) plus: cleanupBranch=board-cleanup, dirty rows=[{status:M,path:.superbee/tasks/a.md},{status:A,path:.superbee/tasks/b.md}] (statusRows' real StatusRow shape, TOON-tabularized), session-start fetch-skipped code=RUNTIME (a representative non-offline classifyGitError code), session-start pull-skipped reason=diverged (the one existing test's real scenario).",
+  "canonical_directory_provenance": "The .superbee literals are the canonical representative selected by PR #51, not bytes claimed to have existed at the older captured SHAs. Compatibility rows are separately parameterized with .agentstate-lite in sync-outcomes.test.ts.",
   "fixtures": [
     {
       "key": "ff.git-missing",

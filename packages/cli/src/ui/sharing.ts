@@ -23,7 +23,7 @@ import {
   BOARD_REF,
   BOARD_REMOTE,
   bundleDirNameForProject,
-  folderTreeAtHead,
+  committedBundleAtHead,
   hasWorktreeSignature,
   localBranchExists,
   probeRepoTopLevel,
@@ -68,13 +68,15 @@ export function humanizeRemote(url: string): string {
 }
 
 /** Local-evidence reads, isolated for the classifier below. */
-function localEvidence(top: string): { originUrl: string | undefined; fetchedBoardRef: boolean; tracked: boolean } {
+function localEvidence(
+  top: string, tracked: boolean,
+): { originUrl: string | undefined; fetchedBoardRef: boolean; tracked: boolean } {
   const origin = runGit(top, ["remote", "get-url", BOARD_REMOTE]);
   const fetchedBoardRef = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status === 0;
   return {
     originUrl: origin.status === 0 ? origin.stdout.trim() : undefined,
     fetchedBoardRef,
-    tracked: folderTreeAtHead(top) !== null,
+    tracked,
   };
 }
 
@@ -89,10 +91,11 @@ export function classifySharing(bundleRoot: string, now: () => Date = () => new 
     if (repo.kind === "not_repo") return { kind: "private", as_of: asOf }; // a plain folder shares nothing
     if (repo.kind === "unavailable") return { kind: "unavailable", reason: repo.reason, as_of: asOf };
     const top = repo.top;
-    const bundleDir = bundleDirNameForProject(top);
+    const committed = committedBundleAtHead(top);
+    const bundleDir = committed?.bundleDir ?? bundleDirNameForProject(top);
     if (realOr(path.join(top, bundleDir)) !== root) return { kind: "unscoped", as_of: asOf };
 
-    const evidence = localEvidence(top);
+    const evidence = localEvidence(top, committed !== null);
     const branchMode =
       (hasWorktreeSignature(root) && worktreeRootResolvesForOwner(root, top)) ||
       (!evidence.tracked && localBranchExists(top, BOARD_BRANCH));

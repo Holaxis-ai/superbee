@@ -102,7 +102,7 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push("");
   lines.push("```sh");
   lines.push(`${prefix} sync                            # existing shared project — provisions the board; a local-only bundle reports its state`);
-  lines.push(`${prefix} init --dir .superbee            # greenfield — idempotent; creates a LOCAL bundle, or opens an existing one`);
+  lines.push(`${prefix} init --create-only --dir .superbee  # greenfield — creates one genuinely new LOCAL bundle`);
   lines.push(`${prefix} sync --establish                # establish a new shared board after user approval`);
   lines.push("```");
   lines.push("");
@@ -181,6 +181,9 @@ function renderWorkspaceLocation(prefix: string): string[] {
   lines.push(
     "conventional `.superbee/index.md` or legacy `.agentstate-lite/index.md`. Reserve `--dir` for the exceptions: a bundle outside",
   );
+  lines.push(
+    "If both conventional directories contain valid bundles at one project level, discovery refuses with a conflict; move the bundle you do not intend to use outside the project before retrying.",
+  );
   lines.push("any project, a second workspace, or reaching another project's bundle from elsewhere.");
   lines.push("");
   lines.push("Two things override the default:");
@@ -206,7 +209,7 @@ function renderWorkspaceLocation(prefix: string): string[] {
     "If the user wants the workspace PRIVATE to their machine instead of shared (a personal",
   );
   lines.push(
-    "scratch workspace), keep the bundle OUT of the repo (e.g. under `~/.superbee/<name>/`)",
+    "scratch workspace), keep the bundle OUT of the repo (e.g. under `~/superbee-workspaces/<name>/`)",
   );
   lines.push(
     "and point a git-excluded `.superbee.json` at it. Choose by one question: do teammates",
@@ -242,7 +245,7 @@ function renderTypicalFlow(prefix: string): string[] {
   lines.push("```sh");
   lines.push(`# One-time setup at the project root (see the Workspaces section) — run ONE of these:`);
   lines.push(`${prefix} sync                          # existing project that shares a board — sets up AND pulls the shared board`);
-  lines.push(`${prefix} init --dir .superbee          # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle`);
+  lines.push(`${prefix} init --create-only --dir .superbee  # GREENFIELD — never on a project that already has a workspace; makes a LOCAL bundle`);
   lines.push("");
   lines.push(`# If collaboration is requested, offer the explicit one-time shared-board operation:`);
   lines.push(`${prefix} sync --establish`);

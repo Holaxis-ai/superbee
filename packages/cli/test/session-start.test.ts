@@ -730,6 +730,26 @@ test("defaultLoadBoardStatus: provisioned board reports live counts + cache; boa
   }
 });
 
+test("home and session-start preserve a dual conventional-bundle conflict instead of suggesting init", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await tempHome();
+  try {
+    await initBundle(path.join(topo.a.root, ".superbee"));
+    await initBundle(path.join(topo.a.root, ".agentstate-lite"));
+
+    const status = await defaultLoadBoardStatus(topo.a.root);
+    assert.equal(status?.state, "conflict");
+    assert.match(status?.state === "conflict" ? status.line : "", /refusing to choose/);
+
+    const rendered = JSON.parse(await runSessionStart(homeDir, ["--dir", topo.a.root, "--json"])) as Record<string, unknown>;
+    assert.match(String(rendered.board), /refusing to choose/);
+    assert.equal(rendered.getting_started, undefined);
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 // ── 5. hook wiring (install/status/uninstall + the re-install prompt) ─────────
 
 test("hook install wires `session-start` into all three runtimes; status/uninstall agree", async () => {

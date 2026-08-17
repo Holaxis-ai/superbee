@@ -17,6 +17,7 @@ import {
   BOARD_REMOTE,
   BUNDLE_DIR,
   bundleDirNameForProject,
+  committedBundleAtHead,
   changesSince,
   countUncommitted,
   currentHead,
@@ -209,8 +210,11 @@ export function syncRemoteStateUnknownNote(inv: string, hasLocalBundle: boolean)
 
 // ── the in-tree board (read-side mode) ─────────────────────────────────────────
 
-/** The in-tree board's one-line identity, led by every in-tree receipt. */
-export const SYNC_IN_TREE_BOARD_LINE = `in-tree — board docs ride the current code branch (${BUNDLE_DIR}/ is committed with the code)`;
+/** The in-tree board's one-line identity, naming the actual recognized conventional directory. */
+export function syncInTreeBoardLine(bundleDir: string): string {
+  return `in-tree — board docs ride the current code branch (${bundleDir}/ is committed with the code)`;
+}
+export const SYNC_IN_TREE_BOARD_LINE = syncInTreeBoardLine(BUNDLE_DIR);
 
 /** The explicit "no comparison basis" state (upstream decision table: report nothing, honestly). */
 export const SYNC_IN_TREE_NO_BASIS = "no-comparison-basis";
@@ -260,7 +264,8 @@ interface SyncDelta { originDelta: DocChange[]; changes: DocChange[]; reanchorNo
 async function syncInTree(run: SyncRun): Promise<void> {
   const top = repoTopLevel(run.dir);
   if (!top) throw new CliError("RUNTIME", "not inside a git repository");
-  const boardPath = path.join(top, bundleDirNameForProject(top));
+  const bundleDir = committedBundleAtHead(top)?.bundleDir ?? bundleDirNameForProject(top);
+  const boardPath = path.join(top, bundleDir);
 
   if (!run.pullOnly) {
     const hasOrigin = runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0;
@@ -271,10 +276,10 @@ async function syncInTree(run: SyncRun): Promise<void> {
   // A confirmed board exists for this repo — same marker contract as the branch-mode pull steps.
   await defaultSyncStore.refreshMarker(key);
 
-  const result = await inTreeFetchAndRecord(defaultSyncStore, top, key);
+  const result = await inTreeFetchAndRecord(defaultSyncStore, top, key, bundleDir);
   if (result.state === "fetch-failed") throw result.failure; // classified; maps at the boundary
 
-  const rec: Record<string, unknown> = { board: SYNC_IN_TREE_BOARD_LINE };
+  const rec: Record<string, unknown> = { board: syncInTreeBoardLine(bundleDir) };
   if (result.state === "no-upstream") {
     rec.state = SYNC_IN_TREE_NO_BASIS;
     rec.note = syncOutcomeLine("line.in-tree.no-basis", { reason: result.reason });
@@ -402,7 +407,7 @@ function provisionPhase(run: SyncRun): SyncBoard | null {
     run.stdout(render(rec, run.mode));
     return null;
   };
-  const outcome = provisionBoardWorktree(run.dir, { allowLocalBranch: false });
+  const outcome = provisionBoardWorktree(run.dir, { allowLocalBranch: false, ensureIgnore: true });
   if (outcome.kind === "local_board") {
     throw outcome.remoteExists
       ? syncOutcomeError("sync.local-board.remote-exists", { inv: run.inv })
