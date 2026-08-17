@@ -34,7 +34,7 @@ import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import {
   BOARD_BRANCH,
-  GITIGNORE_ENTRY,
+  GITIGNORE_ENTRIES,
   provisionBoardWorktree,
   pushBoardCommit,
   snapshotBundleCommit,
@@ -119,7 +119,7 @@ async function handBuildLocalOnlyBoard(repo: BoardRepo, id: string, body: string
 test("establish strings: pinned constants", () => {
   assert.equal(
     ESTABLISH_DONE,
-    "the shared board is live — .agentstate-lite/ now syncs over the 'board' branch",
+    "the shared board is live — the project bundle now syncs over the 'board' branch",
   );
   assert.equal(ESTABLISH_ALREADY, "already established");
   const steps = establishNextSteps(INV);
@@ -192,12 +192,15 @@ test("combo 1: --establish — full receipt, origin gets the board, working-tree
     // gitignore: WORKING TREE only, uncommitted (decision 3).
     const gitignorePath = path.join(topo.a.root, ".gitignore");
     assert.equal(existsSync(gitignorePath), true);
-    assert.match(readFileSync(gitignorePath, "utf8"), new RegExp(GITIGNORE_ENTRY.replace("/", "\\/")));
+    const gitignore = readFileSync(gitignorePath, "utf8");
+    for (const entry of GITIGNORE_ENTRIES) {
+      assert.match(gitignore, new RegExp(entry.replace("/", "\\/")));
+    }
     const status = git(topo.a.root, ["status", "--porcelain"]);
     assert.match(status, /\.gitignore/, ".gitignore itself is uncommitted");
     assert.doesNotMatch(
       status,
-      /\.agentstate-lite/,
+      /\.superbee/,
       "the board worktree itself never shows as a dirty path in the main worktree",
     );
     // never committed onto the code branch.

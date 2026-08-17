@@ -16,8 +16,8 @@ import {
   BOARD_REMOTE,
   BUNDLE_DIR,
   ESTABLISH_MARKER_KEY,
-  GITIGNORE_ENTRY,
   assertBundleBytesMatchCommit,
+  bundleDirNameForProject,
   boardNamespaceConflicts,
   clearGitDirMarker,
   currentHead,
@@ -25,7 +25,7 @@ import {
   fetchOrigin,
   fetchOriginRequired,
   folderPresentInCodeIndex,
-  folderTreeAtHead,
+  committedBundleAtHead,
   isAncestor,
   isProvisioned,
   provisionBoardWorktree,
@@ -51,7 +51,7 @@ import { syncOutcomeError } from "../../sync-outcomes.js";
 import { clearStaleCommittedMarker, establishCommitted } from "./establish-committed.js";
 
 export const ESTABLISH_DONE =
-  "the shared board is live — .agentstate-lite/ now syncs over the 'board' branch";
+  "the shared board is live — the project bundle now syncs over the 'board' branch";
 export const ESTABLISH_ALREADY = "already established";
 
 export type EstablishOutcome = { already: true } | { already: false };
@@ -65,11 +65,12 @@ export function establishNextSteps(inv: string): string[] {
 
 /** Reject filesystem indirection before any ref, remote, index, or folder mutation. */
 function assertPlainBundleShape(bundlePath: string, inv: string): void {
-  const runInitHelp = `${inv} init --dir ${BUNDLE_DIR}`;
+  const bundleDir = path.basename(bundlePath);
+  const runInitHelp = `${inv} init --create-only --dir ${BUNDLE_DIR}`;
   if (!existsSync(bundlePath)) {
     throw new CliError(
       "RUNTIME",
-      `no '${BUNDLE_DIR}/' folder here to establish — run '${runInitHelp}' first, then re-run establish`,
+      `no '${bundleDir}/' folder here to establish — run '${runInitHelp}' first, then re-run establish`,
       { help: runInitHelp },
     );
   }
@@ -106,13 +107,14 @@ function assertPlainBundleShape(bundlePath: string, inv: string): void {
 }
 
 function assertFreshSource(top: string, boardPath: string, inv: string): void {
+  const bundleDir = path.basename(boardPath);
   assertPlainBundleShape(boardPath, inv);
   if (folderPresentInCodeIndex(top)) {
     throw new CliError(
       "RUNTIME",
-      `'${BUNDLE_DIR}/' is staged in the code branch's index — establish refuses to leave board files ` +
+      `'${bundleDir}/' is staged in the code branch's index — establish refuses to leave board files ` +
         `queued for a later code commit; unstage them, then re-run`,
-      { help: `git restore --staged -- ${BUNDLE_DIR}` },
+      { help: `git restore --staged -- ${bundleDir}` },
     );
   }
 }
@@ -125,7 +127,7 @@ async function assertNotBoundElsewhere(top: string, boardPath: string): Promise<
   throw new CliError(
     "RUNTIME",
     `a project binding (${binding.file}) points this project's bundle out of the git-sync tier ` +
-      `(the conventional path is '${BUNDLE_DIR}/')`,
+      `(the selected conventional path is '${path.basename(boardPath)}/')`,
     { help: `fix or remove ${binding.file} if you want to share this bundle over the board branch` },
   );
 }
@@ -133,8 +135,8 @@ async function assertNotBoundElsewhere(top: string, boardPath: string): Promise<
 function gitignoreNote(top: string): string {
   const gi = ensureBoardGitignoreWorkingTree(top);
   return gi.changed
-    ? `${gi.path} — appended '${GITIGNORE_ENTRY}' (uncommitted; commit it so teammates' clones stay clean)`
-    : `${gi.path} — already ignores '${BUNDLE_DIR}/'`;
+    ? `${gi.path} — appended ${gi.entries.map((entry) => `'${entry}'`).join(" and ")} (uncommitted; commit it so teammates' clones stay clean)`
+    : `${gi.path} — already ignores ${gi.entries.map((entry) => `'${entry}'`).join(" and ")}`;
 }
 
 interface ConversionResult { boardPath: string; boardCommit: string; gitignore: string }
@@ -155,7 +157,7 @@ function removeVerifiedBackup(top: string, backupPath: string, expectedCommit: s
 
 /** Finish the post-publish local swap, retaining the deterministic backup until every check passes. */
 function finishLocalConversion(top: string, sourcePath: string, publishedCommit: string, expectedTree: string, inv: string): ConversionResult {
-  const boardPath = path.join(top, BUNDLE_DIR);
+  const boardPath = path.join(top, bundleDirNameForProject(top));
   const backupPath = `${boardPath}.establish-backup`;
   const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
   if (!remoteCommit || !isAncestor(top, publishedCommit, remoteCommit)) {
@@ -262,7 +264,7 @@ interface GreenfieldState {
 }
 
 function readGreenfieldState(top: string): GreenfieldState {
-  const boardPath = path.join(top, BUNDLE_DIR);
+  const boardPath = path.join(top, bundleDirNameForProject(top));
   return {
     boardPath,
     backupPath: `${boardPath}.establish-backup`,
@@ -411,13 +413,13 @@ export async function establishBoard(
     );
   }
 
-  // The COMMITTED-FOLDER case routes structurally, before any network op: a `.agentstate-lite/`
+  // The COMMITTED-FOLDER case routes structurally, before any network op: a selected conventional
   // tree committed at HEAD means the greenfield safety model (rename + convert the folder) must
   // never run — the code branch still tracks those paths. A fully shared clone (folder no longer
   // committed) never enters this branch, so its leftover local crumbs can't produce stale guidance.
-  const committedTree = folderTreeAtHead(top);
-  if (committedTree !== null) {
-    return establishCommitted(top, inv, mode, Boolean(opts.yes), committedTree, stdout);
+  const committed = committedBundleAtHead(top);
+  if (committed !== null) {
+    return establishCommitted(top, inv, mode, Boolean(opts.yes), committed, stdout);
   }
   fetchOriginRequired(top);
   // The committed-case crash marker outlives its machinery once the folder leaves HEAD:

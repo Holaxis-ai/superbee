@@ -52,7 +52,8 @@ import { parseArgs } from "node:util";
 import path from "node:path";
 
 import {
-  BUNDLE_DIR,
+  bundleDirNameForProject,
+  committedBundleAtHead,
   detectBoardChannel,
   inTreeFetchAndRecord,
   provisionAnnouncement,
@@ -169,7 +170,8 @@ export async function sessionStartPull(
     if (detection.channel.mode === "in-tree") {
       const top = repoTopLevel(startDir);
       if (!top) return undefined;
-      const boardPath = path.join(top, BUNDLE_DIR);
+      const bundleDir = committedBundleAtHead(top)?.bundleDir ?? bundleDirNameForProject(top);
+      const boardPath = path.join(top, bundleDir);
       const key = resolveBundleKey(boardPath);
       // Marker refresh: every pull step that confirmed a board exists for this repo.
       await defaultSyncStore.refreshMarker(key);
@@ -178,7 +180,7 @@ export async function sessionStartPull(
       // touched; delivery is the user's own `git pull`). State discipline mirrors the branch
       // pull: cursor/cache rewritten only on a successful check; a dead remote degrades silently
       // into the offline note; the decision table's no-comparison-basis outcomes report nothing.
-      const result = await inTreeFetchAndRecord(defaultSyncStore, top, key, {
+      const result = await inTreeFetchAndRecord(defaultSyncStore, top, key, bundleDir, {
         fetchTimeoutMs: remaining(),
         connectTimeoutSeconds: SESSION_START_CONNECT_TIMEOUT_SECONDS,
       });
@@ -204,6 +206,7 @@ export async function sessionStartPull(
         fetchTimeoutMs: remaining(),
         connectTimeoutSeconds: SESSION_START_CONNECT_TIMEOUT_SECONDS,
         allowLocalBranch: false,
+        ensureIgnore: true,
       });
     } catch {
       // Provisioning refused (a stray non-board directory, unrepairable pointers, …): the render's
@@ -317,7 +320,7 @@ export async function sessionStart(argv: string[], deps: Partial<SessionStartDep
   // nested inside a project; home's explicit resolution never walks upward to select an ancestor.
   // So with an explicit --dir the dashboard's summarizer is redirected: board resolved →
   // summarize the BOARD bundle itself; no board (a boardless project with a committed
-  // `.agentstate-lite/`, the in-tree/window shape) → home's normal DISCOVERY walk,
+  // the conventional bundle directory, the in-tree/window shape) → home's normal DISCOVERY walk,
   // started from the given dir instead of the cwd. A bare (cwd) invocation — the installed
   // hook's shape — keeps home's byte-identical conventional discovery.
   const homeArgv: string[] = [];

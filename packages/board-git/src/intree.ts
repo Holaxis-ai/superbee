@@ -8,7 +8,7 @@
 //   • AWARENESS rides the branch's own tracking upstream: fetch the tracked remote (time-boxed,
 //     fail-soft, never touching the working tree), then diff `<cursor>..<upstream>` through THE
 //     one prefix-aware `diffDocsBetween` (ids prefix-STRIPPED before doc-id/reserved
-//     interpretation, so `.agentstate-lite/index.md` still reads as reserved). Enrichment stays
+//     interpretation, so a prefixed bundle `index.md` still reads as reserved). Enrichment stays
 //     per-doc frontmatter at the upstream ref — never commit authors.
 //   • DELIVERY is the user's normal `git pull`. Nothing here merges, rebases, or checks out —
 //     sync's "touches nothing outside the board" invariant cannot survive a write-side in-tree
@@ -31,10 +31,10 @@
 //     for it. In-tree awareness refreshes via session-start (and the explicit `sync --pull-only`
 //     fetch-and-report) only.
 import {
-  BUNDLE_DIR,
   NETWORK_TIMEOUT_MS,
   countUncommitted,
   runGit,
+  type BundleDirName,
   type DocChange,
   type NetworkBudgetOptions,
 } from "./porcelain.js";
@@ -94,7 +94,7 @@ export function inTreeUpstreamSha(top: string, ref: string): string | null {
  * Board-touching upstream commits this checkout has not pulled (`HEAD..<upstream> -- <prefix>`)
  * — the "run `git pull` to get them" count. `null` when the range cannot be computed.
  */
-export function inTreeBehindCount(top: string, upstream: string, prefix: string = BUNDLE_DIR): number | null {
+export function inTreeBehindCount(top: string, upstream: string, prefix: BundleDirName): number | null {
   const r = runGit(top, ["rev-list", "--count", `HEAD..${upstream}`, "--", prefix]);
   if (r.status !== 0) return null;
   const n = Number.parseInt(r.stdout.trim(), 10);
@@ -106,7 +106,7 @@ export function inTreeBehindCount(top: string, upstream: string, prefix: string 
  * <prefix>`) — the in-tree unpushed backstop, prefix-scoped so code commits never count. `null`
  * when the range cannot be computed (no upstream basis).
  */
-export function inTreeUnpushedCount(top: string, upstream: string, prefix: string = BUNDLE_DIR): number | null {
+export function inTreeUnpushedCount(top: string, upstream: string, prefix: BundleDirName): number | null {
   const r = runGit(top, ["rev-list", "--count", `${upstream}..HEAD`, "--", prefix]);
   if (r.status !== 0) return null;
   const n = Number.parseInt(r.stdout.trim(), 10);
@@ -156,6 +156,7 @@ export async function inTreeFetchAndRecord(
   store: SyncStore,
   top: string,
   key: string,
+  prefix: BundleDirName,
   budget: NetworkBudgetOptions = {},
   now: () => Date = () => new Date(),
 ): Promise<InTreeFetchOutcome> {
@@ -189,7 +190,6 @@ export async function inTreeFetchAndRecord(
   const sha = inTreeUpstreamSha(top, ref);
   if (sha === null) return { state: "unusable-upstream", ref };
 
-  const prefix = BUNDLE_DIR;
   const unpushedCount = inTreeUnpushedCount(top, sha, prefix) ?? 0;
   const uncommittedCount = countUncommitted(top, prefix);
   const behind = inTreeBehindCount(top, sha, prefix) ?? 0;

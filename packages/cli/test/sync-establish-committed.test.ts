@@ -49,11 +49,12 @@ import {
   committedPreviewRecord,
   rolloutNote,
 } from "../src/commands/sync-establish.js";
-import { GITIGNORE_ENTRY, withIgnoreEntry } from "@superbee/board-git";
+import { GITIGNORE_ENTRIES, withIgnoreEntries } from "@superbee/board-git";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import {
   BUNDLE_DIR,
+  LEGACY_BUNDLE_DIR,
   git,
   gitTry,
   makeCommittedFolderTopology,
@@ -158,7 +159,7 @@ test("committed-case strings: pinned constants, rollout note, and no forbidden v
     "the board branch is live on origin — push the cleanup branch and open its PR to finish",
   );
   assert.equal(CLEANUP_BRANCH, "board-cleanup");
-  assert.equal(GITIGNORE_ENTRY, ".agentstate-lite/");
+  assert.deepEqual(GITIGNORE_ENTRIES, [".superbee/", ".agentstate-lite/"]);
 
   const note = rolloutNote(INV, "main");
   assert.equal(note.length, 5);
@@ -197,18 +198,21 @@ test("committed-case strings: pinned constants, rollout note, and no forbidden v
   assert.doesNotMatch(everything, FORBIDDEN);
 });
 
-test("withIgnoreEntry: appends once, idempotent, respects existing spellings", () => {
-  const appended = withIgnoreEntry("node_modules/\n");
+test("withIgnoreEntries: appends both names once, is idempotent, and respects existing spellings", () => {
+  const appended = withIgnoreEntries("node_modules/\n");
   assert.match(appended, /managed on the 'board' branch by superbee sync/);
   assert.doesNotMatch(appended, /by aslite sync/);
-  assert.match(appended, /^node_modules\/\n\n#.*\n\.agentstate-lite\/\n$/s);
-  assert.equal(withIgnoreEntry(appended), appended, "idempotent");
-  for (const spelling of [".agentstate-lite", ".agentstate-lite/", "/.agentstate-lite", "/.agentstate-lite/"]) {
-    assert.equal(withIgnoreEntry(`${spelling}\n`), `${spelling}\n`, `existing '${spelling}' respected`);
+  assert.match(appended, /^node_modules\/\n\n#.*\n\.superbee\/\n\.agentstate-lite\/\n$/s);
+  assert.equal(withIgnoreEntries(appended), appended, "idempotent");
+  for (const spelling of [".superbee", ".superbee/", "/.superbee", "/.superbee/"]) {
+    const covered = withIgnoreEntries(`${spelling}\n`);
+    assert.equal(covered.startsWith(`${spelling}\n`), true, `existing '${spelling}' respected`);
+    assert.match(covered, /\.agentstate-lite\/\n$/);
   }
-  const fresh = withIgnoreEntry("");
+  const fresh = withIgnoreEntries("");
   assert.equal(fresh.startsWith("#"), true, "no leading blank line in a fresh .gitignore");
-  assert.match(fresh, /\.agentstate-lite\/\n$/);
+  assert.match(fresh, /\.superbee\/\n\.agentstate-lite\/\n$/);
+  assert.equal(withIgnoreEntries(fresh), fresh);
 });
 
 // ── preview (no --yes): a dry run that mutates nothing ────────────────────────
@@ -224,6 +228,50 @@ test("sync --establish on a committed folder without --yes: pinned preview, noth
     assertPristine(topo, topo.a.root, preHead);
     assert.equal(git(topo.a.root, ["status", "--porcelain"]).trim(), "", "working tree untouched");
     assert.doesNotMatch(JSON.stringify(rec), FORBIDDEN);
+  } finally {
+    await topo.cleanup();
+    await cleanup();
+  }
+});
+
+test("legacy committed-folder establish keeps .agentstate-lite selected in preview, guards, cleanup, and ignore coverage", async () => {
+  const topo = await makeCommittedFolderTopology(LEGACY_BUNDLE_DIR);
+  const { home, cleanup } = await tempHome();
+  try {
+    const preview = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
+    assert.match(JSON.stringify(preview), /\.agentstate-lite/);
+
+    await writeFile(path.join(topo.a.board, "local-change.md"), "# local\n");
+    const dirty = await runSync(home, ["--establish", "--yes", "--dir", topo.a.root]);
+    assert.match(dirty.err?.message ?? "", /\.agentstate-lite\/ has uncommitted changes/);
+    await rm(path.join(topo.a.board, "local-change.md"));
+
+    const complete = await runSyncJson(home, ["--establish", "--yes", "--dir", topo.a.root]);
+    const cleanupTree = git(topo.a.root, ["show", `${complete.cleanup_commit}:.gitignore`]);
+    assert.match(cleanupTree, /^\.superbee\/$/m);
+    assert.match(cleanupTree, /^\.agentstate-lite\/$/m);
+    assert.equal(gitTry(topo.a.root, ["cat-file", "-e", `${complete.cleanup_commit}:${LEGACY_BUNDLE_DIR}`]).status, 128);
+  } finally {
+    await topo.cleanup();
+    await cleanup();
+  }
+});
+
+test("sync --establish never treats a Git-tracked legacy bundle as greenfield when a canonical filesystem bundle also exists", async () => {
+  const topo = await makeCommittedFolderTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    const canonical = path.join(topo.a.root, BUNDLE_DIR);
+    const legacy = path.join(topo.a.root, ".agentstate-lite");
+    git(topo.a.root, ["mv", BUNDLE_DIR, ".agentstate-lite"]);
+    git(topo.a.root, ["commit", "-m", "keep the committed bundle at its legacy path"]);
+    await rename(legacy, `${legacy}.moved-aside`);
+    await writeFile(canonical, "occupied");
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "RUNTIME");
+    assert.match(err?.message ?? "", /uncommitted changes/i);
+    assert.equal(gitTry(topo.origin, ["rev-parse", "refs/heads/board"]).status, 128);
   } finally {
     await topo.cleanup();
     await cleanup();
@@ -278,9 +326,9 @@ test("sync --establish --yes on a committed folder: files-not-history board bran
     assert.equal(git(topo.a.root, ["rev-parse", `refs/heads/${CLEANUP_BRANCH}`]).trim(), removalSha);
     assert.equal(git(topo.a.root, ["rev-parse", `${CLEANUP_BRANCH}~1`]).trim(), preHead, "exactly one commit on top of main");
     const removalTree = git(topo.a.root, ["ls-tree", "--name-only", CLEANUP_BRANCH]);
-    assert.doesNotMatch(removalTree, /\.agentstate-lite/, "folder removed from the cleanup branch's tree");
+    assert.doesNotMatch(removalTree, /\.superbee/, "folder removed from the cleanup branch's tree");
     const gitignore = git(topo.a.root, ["show", `${CLEANUP_BRANCH}:.gitignore`]);
-    assert.match(gitignore, /^\.agentstate-lite\/$/m, "gitignore entry present");
+    assert.match(gitignore, /^\.superbee\/$/m, "gitignore entry present");
     assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), preHead, "current branch did not move");
     assert.equal(git(topo.a.root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main", "still on main");
     assert.equal(
@@ -429,11 +477,11 @@ test("committed-case establish refuses on uncommitted board changes, naming them
     for (const argv of [["--establish", "--yes"], ["--establish"]]) {
       const { err } = await runSync(home, [...argv, "--dir", topo.a.root, "--json"]);
       assert.equal(err?.code, "RUNTIME");
-      assert.match(err!.message, /establish refused: \.agentstate-lite\/ has uncommitted changes/);
+      assert.match(err!.message, /establish refused: \.superbee\/ has uncommitted changes/);
       const uncommitted = (err!.details as { uncommitted: { total: number; rows: Array<{ path: string }> } }).uncommitted;
       assert.equal(uncommitted.total, 2);
       const paths = uncommitted.rows.map((r) => r.path).sort();
-      assert.deepEqual(paths, [".agentstate-lite/stray-note.md", ".agentstate-lite/tasks/seed-one.md"]);
+      assert.deepEqual(paths, [".superbee/stray-note.md", ".superbee/tasks/seed-one.md"]);
       assert.match(err!.help ?? "", /sync --establish --yes$/);
       assertPristine(topo, topo.a.root, preHead);
     }
@@ -521,8 +569,8 @@ test("crash window (killed between push -u and the removal commit): re-run offer
     const removalSha = (rec.cleanup_commit as string).trim();
     assert.equal(git(topo.a.root, ["rev-parse", `refs/heads/${CLEANUP_BRANCH}`]).trim(), removalSha);
     assert.equal(git(topo.a.root, ["rev-parse", `${CLEANUP_BRANCH}~1`]).trim(), preHead, "one commit on top of main");
-    assert.doesNotMatch(git(topo.a.root, ["ls-tree", "--name-only", CLEANUP_BRANCH]), /\.agentstate-lite/);
-    assert.match(git(topo.a.root, ["show", `${CLEANUP_BRANCH}:.gitignore`]), /^\.agentstate-lite\/$/m);
+    assert.doesNotMatch(git(topo.a.root, ["ls-tree", "--name-only", CLEANUP_BRANCH]), /\.superbee/);
+    assert.match(git(topo.a.root, ["show", `${CLEANUP_BRANCH}:.gitignore`]), /^\.superbee\/$/m);
     assert.equal((rec.next_steps as string[])[0], `push the cleanup branch: git push -u origin ${CLEANUP_BRANCH}`);
     assert.equal(git(topo.origin, ["rev-parse", "refs/heads/board"]).trim(), rootSha, "board on origin untouched");
     assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), preHead, "current branch untouched");
@@ -979,7 +1027,7 @@ test("F3 wedge: a clone whose unpushed board commit merged over the cleanup PR g
     assert.equal(details.state, "window-remnant");
     const remnants = details.tracked_remnants as { shown: number; total: number; rows: string[] };
     assert.deepEqual(remnants.rows, [`${BUNDLE_DIR}/tasks/extra.md`], "the refusal names the actual tracked paths");
-    assert.match(wedged.err!.help ?? "", /git rm -r --cached -- \.agentstate-lite/);
+    assert.match(wedged.err!.help ?? "", /git rm -r --cached -- \.superbee/);
     assert.doesNotMatch(`${wedged.err!.message} ${wedged.err!.help ?? ""}`, FORBIDDEN);
 
     // F5 (wedge face): home's offline board line carries the SAME truth, one hop.

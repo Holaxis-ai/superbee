@@ -16,6 +16,8 @@ import {
   BOARD_BRANCH,
   BOARD_REMOTE,
   BUNDLE_DIR,
+  bundleDirNameForProject,
+  committedBundleAtHead,
   changesSince,
   countUncommitted,
   currentHead,
@@ -73,7 +75,7 @@ Usage:
   superbee sync --establish [--yes] [--dir <path>] [--json]
   superbee sync --show-incoming <id> [--out <file>] [--dir <path>] [--json]
 
-Shares this repo's board (\`.agentstate-lite\`, kept on its own \`board\` branch) with your
+Shares this repo's board (\`.superbee\`, or an existing legacy \`.agentstate-lite\`, kept on its own \`board\` branch) with your
 teammates: ordinary sync commits pending local doc changes, pulls theirs, and pushes yours without
 touching code files. The one-time \`--establish\` transition also appends the board path to the
 root working-tree \`.gitignore\` and reports that edit. \`--pull-only\` skips commit + push and
@@ -82,7 +84,7 @@ only fast-forwards from origin
 publishing local ones.
 
 \`init\` creates a LOCAL bundle; sharing it is a separate, explicit act. \`sync --establish\` turns
-this project's local \`.agentstate-lite/\` into the shared board: it snapshots and publishes the
+this project's local \`.superbee/\` (or legacy \`.agentstate-lite/\`) into the shared board: it snapshots and publishes the
 bundle, then checks out the new \`board\` branch at the same path — never automatic, never inferred
 from a bare \`sync\` (which never publishes a bundle nobody has chosen to share). Once established
 (here or by a teammate), plain \`sync\` is everyone's setup AND ongoing verb: on a project that
@@ -92,7 +94,7 @@ board changes.
 and proceeds as an ordinary sync.
 
 On a repo that has never had the board checkout materialized locally (a fresh clone, or the first
-\`superbee\` invocation after one), sync provisions \`.agentstate-lite\` itself from \`origin/board\` —
+\`superbee\` invocation after one), sync provisions \`.superbee\` itself from \`origin/board\` —
 never silently: the receipt carries a \`provisioned: <path>\` line. If the checkout already exists
 but its pointers went stale (e.g. it was moved or remounted at a different path), sync self-heals
 it via \`git worktree repair\` and reports \`repaired: <path>\` the same way — a repair is a git
@@ -123,7 +125,7 @@ If the push fails after a local commit already landed (offline, revoked/expired 
 locked repository), the receipt still reports what committed/pulled successfully — your work is
 saved locally either way, and re-running sync retries the push.
 
-A board can also ride IN-TREE: \`.agentstate-lite/\` committed WITH the code on the current
+A board can also ride IN-TREE: \`.superbee/\` or legacy \`.agentstate-lite/\` committed WITH the code on the current
 branch, with no dedicated \`board\` branch anywhere. That is a supported, read-side mode — sync
 recognizes it and behaves accordingly: \`sync --pull-only\` fetches the branch's own tracking
 upstream and reports incoming board doc changes (your normal \`git pull\` delivers them);
@@ -142,7 +144,7 @@ changes is always this verb. Set SUPERBEE_NO_AUTOPULL to any non-empty value to 
 auto-pull (note: "0" disables it too — the variable's PRESENCE is the switch) for CI or scripted
 runs that must never touch the network. Legacy AGENTSTATE_LITE_NO_AUTOPULL remains supported.
 
-\`--establish\` also handles the project whose \`.agentstate-lite/\` folder is ALREADY COMMITTED
+\`--establish\` also handles the project whose \`.superbee/\` or legacy \`.agentstate-lite/\` folder is ALREADY COMMITTED
 on the current branch: it creates the \`board\` branch carrying the folder's CURRENT files (files
 only — the folder's history stays where it is), pushes it to origin with tracking, and prepares
 ONE local commit on a new \`board-cleanup\` branch that removes the folder from the current branch
@@ -150,7 +152,7 @@ and gitignores it — you push that branch and open the PR yourself; nothing on 
 is pushed or changed. Until that PR merges the old committed folder is a frozen snapshot: sync no
 longer updates it, so treat it as read-only. Without \`--yes\`, the committed case prints a
 preview (a dry run, including the rollout note to send teammates) and changes nothing. It refuses
-while \`.agentstate-lite/\` has uncommitted changes, when the current branch is behind origin on
+while the selected bundle folder has uncommitted changes, when the current branch is behind origin on
 commits touching the folder (pull first — a teammate's board commit must never be stranded on
 the frozen copy), when origin is unreachable (the freshness check and the push both need it),
 and when any \`board/...\` branch exists locally or on the remote (git cannot create a \`board\`
@@ -160,7 +162,7 @@ interrupted run left it missing. Coordinate first: every board writer syncs (at 
 their board work before anyone establishes.
 
 Two edge states are ACCEPTED rather than auto-resolved. (1) On a case-insensitive filesystem, a
-committed folder whose name differs from \`.agentstate-lite\` only by case (a state this CLI never
+committed folder whose name differs from \`.superbee\` only by case (a state this CLI never
 creates) can misroute establishment — rename it to the exact lowercase spelling first. (2) Deleting
 the remote \`board\` branch in the middle of the both-worlds window (a deliberate, destructive,
 out-of-band act) leaves the prepared cleanup PR pointing at a board that no longer exists — do not
@@ -208,8 +210,11 @@ export function syncRemoteStateUnknownNote(inv: string, hasLocalBundle: boolean)
 
 // ── the in-tree board (read-side mode) ─────────────────────────────────────────
 
-/** The in-tree board's one-line identity, led by every in-tree receipt. */
-export const SYNC_IN_TREE_BOARD_LINE = `in-tree — board docs ride the current code branch (${BUNDLE_DIR}/ is committed with the code)`;
+/** The in-tree board's one-line identity, naming the actual recognized conventional directory. */
+export function syncInTreeBoardLine(bundleDir: string): string {
+  return `in-tree — board docs ride the current code branch (${bundleDir}/ is committed with the code)`;
+}
+export const SYNC_IN_TREE_BOARD_LINE = syncInTreeBoardLine(BUNDLE_DIR);
 
 /** The explicit "no comparison basis" state (upstream decision table: report nothing, honestly). */
 export const SYNC_IN_TREE_NO_BASIS = "no-comparison-basis";
@@ -259,7 +264,8 @@ interface SyncDelta { originDelta: DocChange[]; changes: DocChange[]; reanchorNo
 async function syncInTree(run: SyncRun): Promise<void> {
   const top = repoTopLevel(run.dir);
   if (!top) throw new CliError("RUNTIME", "not inside a git repository");
-  const boardPath = path.join(top, BUNDLE_DIR);
+  const bundleDir = committedBundleAtHead(top)?.bundleDir ?? bundleDirNameForProject(top);
+  const boardPath = path.join(top, bundleDir);
 
   if (!run.pullOnly) {
     const hasOrigin = runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0;
@@ -270,10 +276,10 @@ async function syncInTree(run: SyncRun): Promise<void> {
   // A confirmed board exists for this repo — same marker contract as the branch-mode pull steps.
   await defaultSyncStore.refreshMarker(key);
 
-  const result = await inTreeFetchAndRecord(defaultSyncStore, top, key);
+  const result = await inTreeFetchAndRecord(defaultSyncStore, top, key, bundleDir);
   if (result.state === "fetch-failed") throw result.failure; // classified; maps at the boundary
 
-  const rec: Record<string, unknown> = { board: SYNC_IN_TREE_BOARD_LINE };
+  const rec: Record<string, unknown> = { board: syncInTreeBoardLine(bundleDir) };
   if (result.state === "no-upstream") {
     rec.state = SYNC_IN_TREE_NO_BASIS;
     rec.note = syncOutcomeLine("line.in-tree.no-basis", { reason: result.reason });
@@ -335,7 +341,7 @@ function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
   if (values.migrate) {
     throw new CliError(
       "USAGE",
-      "--migrate was retired — 'sync --establish' now handles a committed .agentstate-lite/ folder " +
+      "--migrate was retired — 'sync --establish' now handles a committed .superbee/ or legacy .agentstate-lite/ folder " +
         "too (preview first; --yes executes)",
       { help: `${inv} sync --establish` },
     );
@@ -401,7 +407,7 @@ function provisionPhase(run: SyncRun): SyncBoard | null {
     run.stdout(render(rec, run.mode));
     return null;
   };
-  const outcome = provisionBoardWorktree(run.dir, { allowLocalBranch: false });
+  const outcome = provisionBoardWorktree(run.dir, { allowLocalBranch: false, ensureIgnore: true });
   if (outcome.kind === "local_board") {
     throw outcome.remoteExists
       ? syncOutcomeError("sync.local-board.remote-exists", { inv: run.inv })

@@ -73,7 +73,7 @@ import path from "node:path";
 import { realpathSync, statSync } from "node:fs";
 
 import {
-  BUNDLE_DIR,
+  BUNDLE_DIRS,
   countUncommitted,
   currentHead,
   ffPull,
@@ -120,11 +120,11 @@ function hasGitFileSignature(p: string): boolean {
 
 /**
  * The FS-ONLY pre-gate (module header, "detection is cheap"): walk up from `start` looking for a
- * provisioned-LOOKING board checkout — either an ancestor NAMED `.agentstate-lite` carrying the
+ * provisioned-LOOKING board checkout — either an ancestor with a recognized bundle name carrying the
  * `.git`-FILE signature (the caller may stand inside the board worktree, so this retarget is
  * resolved without a spawn), or an ancestor directory whose
- * `.agentstate-lite/.git` is a file (the conventional project-top shape). ZERO process spawns:
- * one `stat` per level (two on a `.agentstate-lite`-named level). A hit is a CANDIDATE only — a
+ * recognized child whose `.git` is a file (the conventional project-top shape). ZERO process spawns.
+ * A hit is a CANDIDATE only — a
  * submodule or an unrelated linked worktree shares this signature — so the STALE path re-verifies
  * with the real spawn-level `isProvisioned` before any state write or network op; the fresh-cache
  * and non-board paths never need the distinction (a false candidate keys a state file that no
@@ -134,11 +134,12 @@ function hasGitFileSignature(p: string): boolean {
 export function findBoardCandidate(start: string): { top: string; boardPath: string } | null {
   let cur = path.resolve(start);
   for (;;) {
-    if (path.basename(cur) === BUNDLE_DIR && hasGitFileSignature(cur)) {
+    if (BUNDLE_DIRS.includes(path.basename(cur) as (typeof BUNDLE_DIRS)[number]) && hasGitFileSignature(cur)) {
       return { top: path.dirname(cur), boardPath: cur };
     }
-    const candidate = path.join(cur, BUNDLE_DIR);
-    if (hasGitFileSignature(candidate)) return { top: cur, boardPath: candidate };
+    const candidates = BUNDLE_DIRS.map((name) => path.join(cur, name)).filter(hasGitFileSignature);
+    if (candidates.length > 1) return null;
+    if (candidates[0]) return { top: cur, boardPath: candidates[0] };
     const parent = path.dirname(cur);
     if (parent === cur) return null;
     cur = parent;
@@ -310,7 +311,7 @@ export async function maybeAutoPull(
     const gitTop = repoTopLevel(candidate.top);
     if (
       !gitTop ||
-      realOrSame(path.join(gitTop, BUNDLE_DIR)) !== realOrSame(boardPath) ||
+      realOrSame(path.join(gitTop, path.basename(boardPath))) !== realOrSame(boardPath) ||
       !isProvisioned(gitTop)
     ) {
       return "no-board";

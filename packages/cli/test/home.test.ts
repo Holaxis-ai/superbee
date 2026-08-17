@@ -106,7 +106,7 @@ test("A1.3 no-bundle fallback: no bundle block, getting_started hint, commands p
   assert.match(
     view.getting_started as string,
     new RegExp(
-      `${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} init --create-only --recipe none --dir '\\.agentstate-lite'`,
+      `${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} init --create-only --recipe none --dir '\\.superbee'`,
     ),
   );
   assert.match(view.getting_started as string, new RegExp(`${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} recipes`));
@@ -138,11 +138,31 @@ test("A1.3b no-bundle --dir fallback creates in the explicit project's conventio
   });
 
   const gettingStarted = (JSON.parse(out) as Record<string, unknown>).getting_started as string;
-  const target = path.join(selected, ".agentstate-lite");
+  const target = path.join(selected, ".superbee");
   assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe none --dir '${target}'`));
   assert.ok(gettingStarted.includes(`${INVOKE} recipes`));
   assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe <name> --dir '${target}'`));
   assert.ok(!gettingStarted.includes(`recipes --dir`));
+});
+
+test("home preserves a conventional-directory conflict outside Git and never suggests init", async () => {
+  const project = await tempDir();
+  try {
+    await initBundle(path.join(project, ".superbee"));
+    await initBundle(path.join(project, ".agentstate-lite"));
+    let out = "";
+    await home(["--dir", project, "--json"], {
+      ...BASE_DEPS,
+      stdout: (s) => (out += s),
+    });
+    const view = JSON.parse(out) as Record<string, unknown>;
+    const bundle = view.bundle as Record<string, unknown>;
+    assert.equal(bundle.status, "conflict");
+    assert.match(String(bundle.help), /refusing to choose between two project bundles/);
+    assert.equal(view.getting_started, undefined);
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
 });
 
 test("home --json is honored (renders valid JSON, not silently ignored TOON)", async () => {

@@ -261,11 +261,11 @@ test("recipes: no-bundle inventory succeeds without opening or creating a bundle
     views: [],
   });
   assert.deepEqual(contextNotes.commands, {
-    create_bundle: `${cliInvocation()} init --create-only --recipe context-notes --dir '.agentstate-lite'`,
+    create_bundle: `${cliInvocation()} init --create-only --recipe context-notes --dir '.superbee'`,
     add_to_bundle: `${cliInvocation()} recipe add context-notes`,
   });
   assert.deepEqual(result.help, [
-    `${cliInvocation()} init --create-only --recipe <name> --dir '.agentstate-lite'`,
+    `${cliInvocation()} init --create-only --recipe <name> --dir '.superbee'`,
     `${cliInvocation()} recipe add <name-or-path>`,
   ]);
 });

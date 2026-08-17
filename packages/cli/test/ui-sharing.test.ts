@@ -205,6 +205,7 @@ test("a REAL provisioned board worktree (git worktree add) classifies through th
     git(dir, "branch", "board");
     git(dir, "worktree", "add", path.join(dir, ".agentstate-lite"), "board");
     const board = path.join(dir, ".agentstate-lite");
+    await writeFile(path.join(board, "index.md"), "---\nokf_version: 0.2\n---\n");
     // No remote: a real worktree that never left this machine.
     assert.equal(classifySharing(board).kind, "private_local_branch");
     // Remote + fetched board evidence: shared.

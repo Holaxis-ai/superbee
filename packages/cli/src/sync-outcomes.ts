@@ -11,6 +11,8 @@
 //
 // Rows carry a `code` (CliErrorCode) and NEVER an exit: the exit derives solely through errors.ts's
 // one CODE_EXIT mapping when the CliError is constructed.
+import path from "node:path";
+
 import {
   BOARD_BRANCH,
   BOARD_REMOTE,
@@ -40,13 +42,17 @@ export function upstreamHelp(inv: string): string {
  * `hasOrigin` false (no `origin` remote configured at all) names that dead end instead of
  * pointing at `sync --establish`, which would just refuse again with nothing else to try.
  */
-export function syncInTreeRefusalMessage(inv: string, hasOrigin: boolean = true): string {
+export function syncInTreeRefusalMessage(
+  inv: string,
+  hasOrigin: boolean = true,
+  bundleDir: string = BUNDLE_DIR,
+): string {
   const establishRemedy = hasOrigin
     ? `run '${inv} sync --establish' to move the board to a dedicated '${BOARD_BRANCH}' branch`
     : `this repo has no '${BOARD_REMOTE}' remote yet — run 'git remote add ${BOARD_REMOTE} <url>', ` +
       `then '${inv} sync --establish' to move the board to a dedicated '${BOARD_BRANCH}' branch`;
   return (
-    `this board rides your code branch — '${BUNDLE_DIR}/' is committed with the code, so a full ` +
+    `this board rides your code branch — '${bundleDir}/' is committed with the code, so a full ` +
     `sync would have to publish the code branch itself; share board changes with your normal git ` +
     `commit/push, run '${inv} sync --pull-only' to fetch-and-report incoming board changes, or ` +
     `${establishRemedy}`
@@ -125,9 +131,11 @@ export function boardFirstContactLine(inv: string): string {
  * it is true whether or not this render could verify freshness, so it never over-claims currency
  * the way "up to date" would for a mode whose plain render never fetches.
  */
-export const BOARD_IN_TREE_LINE =
-  `rides this branch — '${BUNDLE_DIR}/' is committed with the code; teammates' board changes ` +
-  "arrive with your normal 'git pull'";
+export function boardInTreeLine(bundleDir: string = BUNDLE_DIR): string {
+  return `rides this branch — '${bundleDir}/' is committed with the code; teammates' board changes arrive with your normal 'git pull'`;
+}
+
+export const BOARD_IN_TREE_LINE = boardInTreeLine();
 
 /** "2 incoming board changes are not yet in this checkout — run 'git pull' to get them". */
 export function inTreePullHintLine(n: number): string {
@@ -274,7 +282,7 @@ export const SYNC_OUTCOMES = {
   // The in-tree board's write refusal + the viewer's no-comparison-basis refusal.
   "in-tree.sync-refusal": row<{ inv: string; boardPath: string; hasOrigin: boolean }>({
     code: "USAGE",
-    message: (p) => syncInTreeRefusalMessage(p.inv, p.hasOrigin),
+    message: (p) => syncInTreeRefusalMessage(p.inv, p.hasOrigin, path.basename(p.boardPath)),
     details: (p) => ({ path: p.boardPath, state: "in-tree" }),
     help: (p) => (p.hasOrigin ? `${p.inv} sync --establish` : `git remote add ${BOARD_REMOTE} <url>`),
   }),
@@ -311,10 +319,10 @@ export const SYNC_OUTCOMES = {
     details: (p) => ({ behind_board_commits: p.behind.length, commits: p.behind.slice(0, 20) }),
     help: (p) => `git pull, then re-run ${p.inv} sync --establish --yes`,
   }),
-  "establish.committed-dirty": row<{ inv: string; rows: StatusRow[]; total: number }>({
+  "establish.committed-dirty": row<{ inv: string; bundleDir: string; rows: StatusRow[]; total: number }>({
     code: "RUNTIME",
-    message: () =>
-      `establish refused: ${BUNDLE_DIR}/ has uncommitted changes — commit (or discard) them ` +
+    message: (p) =>
+      `establish refused: ${p.bundleDir}/ has uncommitted changes — commit (or discard) them ` +
       `first so the board branch carries the board's real current state`,
     details: (p) => ({ uncommitted: { shown: p.rows.length, total: p.total, rows: p.rows } }),
     help: (p) => `commit the board changes, then re-run ${p.inv} sync --establish --yes`,
@@ -352,17 +360,17 @@ export const SYNC_OUTCOMES = {
       `folder — if it is left over from an interrupted establishment, delete it ` +
       `(git branch -D ${BOARD_BRANCH}); if it is used for something else, rename it — then re-run`,
   }),
-  "establish.detached-head.committed": row<Record<string, never>>({
-    code: "RUNTIME",
-    message: () =>
-      `the repository is on a detached HEAD — check out the branch that carries the committed ` +
-      `${BUNDLE_DIR}/ folder, then re-run`,
-  }),
-  "establish.detached-head.marker": row<{ inv: string }>({
+  "establish.detached-head.committed": row<{ bundleDir: string }>({
     code: "RUNTIME",
     message: (p) =>
       `the repository is on a detached HEAD — check out the branch that carries the committed ` +
-      `${BUNDLE_DIR}/ folder, then re-run '${p.inv} sync --establish --yes'`,
+      `${p.bundleDir}/ folder, then re-run`,
+  }),
+  "establish.detached-head.marker": row<{ inv: string; bundleDir: string }>({
+    code: "RUNTIME",
+    message: (p) =>
+      `the repository is on a detached HEAD — check out the branch that carries the committed ` +
+      `${p.bundleDir}/ folder, then re-run '${p.inv} sync --establish --yes'`,
   }),
 
   // The committed-case marker (crash/lost-race provenance) refusal arms.
@@ -400,10 +408,12 @@ export const SYNC_OUTCOMES = {
       `of ${BOARD_REMOTE}; get online, then re-run`,
     details: () => ({ retryable: true }),
   }),
-  "marker.tree-changed.conflict": row<{ inv: string; branch: string; snapshotTree: string; currentTree: string }>({
+  "marker.tree-changed.conflict": row<{
+    inv: string; branch: string; bundleDir: string; snapshotTree: string; currentTree: string;
+  }>({
     code: "CONFLICT",
     message: (p) =>
-      `${BUNDLE_DIR}/ changed on '${p.branch}' after the interrupted establishment pushed its ` +
+      `${p.bundleDir}/ changed on '${p.branch}' after the interrupted establishment pushed its ` +
       `snapshot — re-creating the folder-removal now would strand those newer board changes ` +
       `on the frozen folder; nothing was changed`,
     details: (p) => ({ snapshot_tree: p.snapshotTree, current_tree: p.currentTree }),
@@ -502,15 +512,15 @@ export const SYNC_OUTCOME_LINES = {
   ),
   // establish's window notes for a clone with no local establishment work left (pull-first;
   // probed per state at the site — the remnant state renders the package factory's message).
-  "line.window-note.landed": line<{ inv: string; branch: string }>(
+  "line.window-note.landed": line<{ inv: string; branch: string; bundleDir: string }>(
     (p) =>
-      `this clone still carries the committed ${BUNDLE_DIR}/ folder and the folder-removal has ` +
+      `this clone still carries the committed ${p.bundleDir}/ folder and the folder-removal has ` +
       `already landed on '${p.branch}' — run 'git pull' (the folder vanishes), then '${p.inv} sync' ` +
       `(it returns as the live board)`,
   ),
-  "line.window-note.pending": line<{ inv: string }>(
+  "line.window-note.pending": line<{ inv: string; bundleDir: string }>(
     (p) =>
-      `this clone still carries the committed ${BUNDLE_DIR}/ folder — once the folder-removal ` +
+      `this clone still carries the committed ${p.bundleDir}/ folder — once the folder-removal ` +
       `lands on the default branch: 'git pull' (the folder vanishes), then '${p.inv} sync' ` +
       `(it returns as the live board)`,
   ),

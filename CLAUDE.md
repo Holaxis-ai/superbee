@@ -28,7 +28,7 @@ this OSS repository; the former Cloudflare implementation is preserved only as a
 reference.
 
 Before changing anything, read the PROJECT BUNDLE — this repo's own knowledge bundle at
-`.agentstate-lite/`, shared on a dedicated `board` branch via `superbee sync` (gitignored on
+`.superbee/`, shared on a dedicated `board` branch via `superbee sync` (gitignored on
 `main`, NOT committed with code). A fresh clone materializes it with one `sync` — the
 SessionStart hook does a best-effort pull for you — after which the conventional-folder walk
 discovers it with zero config, so a bare `doc read docs/core` just works: `docs/core` (the ONE-PAGE
@@ -103,7 +103,7 @@ explicit legacy-compatibility path. Existing bundles always retain their declare
   consumer** (`--remote <url>` on every bundle command, `packages/cli/src/bundle.ts`), not just a
   test-suite exerciser — so a wiring bug here is a user-facing bug, not a contract-test gap.
 - **Flagship remote backend = document-centric** (per-doc identity, per-doc/namespace
-  access, per-doc CAS concurrency), carrying canonical AgentState's proven versioning model:
+  access, per-doc CAS concurrency), carrying canonical Superbee's proven versioning model:
   content-addressed snapshots + a head with a version + compare-and-swap writes + actor
   attribution. Git is an **export / interop + optional** adapter (OKF bundles are just
   files), **not** the flagship — it is repo-coarse for granular sharing and awkward for
@@ -388,7 +388,7 @@ bundle-relative**.
   fix privately, merge, then disclose — never a public PR comment or board doc.
   Pre-merge review findings stay public by default. The board is public: the
   write-time scrub discipline covers vulnerability details, not just secrets.
-- **Records live on the PROJECT BUNDLE (the in-repo board at `.agentstate-lite/`) — the
+- **Records live on the PROJECT BUNDLE (the in-repo board at `.superbee/`) — the
   product tracks its own build.** Unit-close means: update `tasks/<unit>` (bare
   `doc update tasks/<unit> --progress_status …`, with the description carrying the record — what shipped, commit hash,
   honest caveats) and, when the shipped list or sequence changed, the bundle's `roadmap`
@@ -399,7 +399,7 @@ bundle-relative**.
   records may lag the code. Work is CLAIMED before it is built: flip `tasks/<unit>` to
   `in_progress` with `--actor` — the CAS write IS the claim (see the bundle's Task convention).
   **Board writes are not code commits.** Board/bundle writes (records, claims, context
-  notes, task updates — anything under `.agentstate-lite/` with no code alongside) go through
+  notes, task updates — anything under `.superbee/` with no code alongside) go through
   `superbee sync`, which shares them on the repo's own `board` branch. The board was MIGRATED off
   `main` (it is gitignored there now), so there is no longer a `board:`-prefixed direct-commit-to-main
   path — `sync` is the one channel, and it touches nothing outside the board. Code ships via branch +

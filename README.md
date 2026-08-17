@@ -50,10 +50,10 @@ replaces exact historical AgentState marketplace hooks rather than leaving two S
 ```sh
 superbee                                   # confirm that no bundle is selected yet
 superbee recipes                           # compare the workspace setups shipped offline
-superbee init --create-only --recipe work-tracking --dir .agentstate-lite
+superbee init --create-only --recipe work-tracking --dir .superbee
 superbee new "Task" first-task --title "Plan the first change" --progress_status todo \
-  --actor quickstart-agent --dir .agentstate-lite
-superbee --dir .agentstate-lite            # see the Task in the live bundle summary
+  --actor quickstart-agent --dir .superbee
+superbee --dir .superbee                   # see the Task in the live bundle summary
 ```
 
 `--create-only` refuses an occupied, nested, bound, or concurrently claimed target before it
@@ -68,7 +68,7 @@ New bundles use Superbee's current portable format automatically. Existing older
 supported in place; Superbee detects their declared format and applies compatibility behavior
 without requiring an ordinary-use migration.
 
-The conventional `.agentstate-lite/` folder at the project root is discovered with zero
+The conventional `.superbee/` folder at the project root is discovered with zero
 config (the way git finds `.git`) — every command after setup runs bare from anywhere in
 the project tree. A bundle stays local until `sync --establish` explicitly shares it on the
 repository's dedicated `board` branch.
@@ -77,6 +77,9 @@ Existing `.agentstate-lite/` bundles and `.agentstate.json` bindings continue to
 Superbee; no migration is required. When the first task needs a roadmap, run
 `superbee recipe add roadmap`. To share the local bundle, run `superbee sync --establish`; that
 explicit step creates the remote `board` branch, and teammates then use ordinary `superbee sync`.
+If valid `.superbee/` and `.agentstate-lite/` bundles exist at the same project level, Superbee
+reports a conflict and refuses to choose; move the bundle you do not intend to use outside the
+project before retrying.
 
 **When the conventional project folder does not fit:**
 
@@ -87,14 +90,14 @@ explicit step creates the remote `board` branch, and teammates then use ordinary
   ambient: pass `--remote <url>` explicitly. Legacy URL bindings and `AGENTSTATE_LITE_REMOTE`
   fail with migration guidance instead of activating HTTP.
 - **Private workspace:** the bundle lives outside the repo (for example,
-  `~/.agentstate/<name>/`); a git-excluded binding points at it, and nothing enters the repo.
+  `~/superbee-workspaces/<name>/`); a git-excluded binding points at it, and nothing enters the repo.
 - **Personal catalog:** register any local bundle under a user- or agent-defined label so it is
   visible when an agent starts outside that project. The catalog is explicit and machine-local:
   it never crawls, clones, or creates an ambient active workspace. Resolve a label to a path, then
   pass that path to an ordinary command:
 
   ```sh
-  superbee catalog add personal --dir ~/.agentstate/personal
+  superbee catalog add personal --dir ~/superbee-workspaces/personal
   superbee catalog list
   superbee catalog resolve personal --field path
   ```
@@ -130,14 +133,16 @@ your normal commit/push/pull, `sync --pull-only` fetches the branch's upstream a
 incoming board changes (session start shows the same awareness), and a full `sync` refuses
 with guidance — `sync --establish` is the explicit conversion to a dedicated board branch.
 
-`sync --establish` also handles the project that already committed `.agentstate-lite/` to
+`sync --establish` also handles a project that already committed `.superbee/` or legacy
+`.agentstate-lite/` to
 its code branch: it prints a preview first, and `--yes` executes — publishing the board
 branch from the folder's current files and preparing a cleanup commit on a side branch
 that you open as a PR (the folder leaves the code branch; the board takes over after the
 merge).
 
-Establishment also appends `.agentstate-lite/` to the root working-tree `.gitignore` and
-reports that uncommitted edit; ordinary sync does not modify code-project files.
+Establishment appends both recognized bundle directories (`.superbee/` and `.agentstate-lite/`) to
+the root working-tree `.gitignore` and reports that uncommitted edit. Ordinary sync performs the
+same reported repair when provisioning discovers that either ignore entry is missing.
 
 **If you see a `board` branch** in a repo that uses Superbee: that is the shared
 board — an orphan branch carrying only the knowledge bundle, written by `superbee sync`. It
@@ -188,7 +193,7 @@ and preserves existing legacy bundles without rewriting their declared edition.
   escape hatches, idempotent mutations, a small stable exit-code taxonomy.
 - The byte channel (`promote`/`pull`) for artifacts that should never enter a model's
   context window.
-- Project discovery: a committed `.agentstate-lite/` folder (or an explicit `.superbee.json` /
+- Project discovery: a committed `.superbee/` or legacy `.agentstate-lite/` folder (or an explicit `.superbee.json` /
   supported `.agentstate.json` binding) resolves the bundle for any agent on any machine with zero
   prior context.
 

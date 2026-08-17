@@ -62,7 +62,7 @@ test("topology: two clones, each with a board worktree whose ROOT carries the bu
       // main is checked out at the clone root (user code present).
       assert.equal(git(repo.root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "main");
       assert.ok(existsSync(path.join(repo.root, "src", "app.js")));
-      // The board worktree exists at .agentstate-lite with the bundle root files.
+      // The board worktree exists at .superbee with the bundle root files.
       assert.ok(existsSync(path.join(repo.board, "index.md")), "reserved root index.md at board root");
       assert.ok(existsSync(path.join(repo.board, "tasks", "seed-one.md")), "seed doc at board root");
       assert.equal(git(repo.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH);
@@ -217,7 +217,7 @@ test("holdIndexLock: a held index.lock blocks an index-touching git op until rel
 
 // ── non-empty unprovisioned bundle dir ────────────────────────────────────────
 
-test("plantNonEmptyBundleDir: a non-empty, non-worktree .agentstate-lite makes worktree add refuse", async () => {
+test("plantNonEmptyBundleDir: a non-empty, non-worktree .superbee makes worktree add refuse", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
     await plantNonEmptyBundleDir(topo.a);

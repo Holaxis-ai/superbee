@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
-import { resolveTargetDir, withCreateOnlyTarget } from "../bundle.js";
+import { assertPlainInitTarget, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -142,7 +142,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     root = result.root;
     bundle = result.value;
   } else {
-    root = resolveTargetDir(values.dir);
+    root = await assertPlainInitTarget(values.dir);
     bundle = await (deps.initBundleImpl ?? initBundle)(root, {
       okfVersion,
     });

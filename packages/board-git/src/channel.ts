@@ -22,8 +22,8 @@ import {
   BOARD_BRANCH,
   BOARD_REF,
   BOARD_REMOTE,
-  BUNDLE_DIR,
   NETWORK_TIMEOUT_MS,
+  bundleDirNameForProject,
   hasWorktreeSignature,
   preShareWindowError,
   repoTopLevel,
@@ -33,7 +33,7 @@ import {
   worktreeRootResolvesForOwner,
   type NetworkBudgetOptions,
 } from "./porcelain.js";
-import { folderTreeAtHead, localBranchExists, refCommit, treeOf } from "./flow.js";
+import { committedBundleAtHead, folderTreeAtHead, localBranchExists, refCommit, treeOf } from "./flow.js";
 
 /**
  * The channel a project's board rides. `branch` is the dedicated-board-branch mode (checked out
@@ -69,10 +69,11 @@ export type ChannelDetection =
   | { kind: "indeterminate"; probe: ChannelProbeName; folderTracked: boolean; reason: string };
 
 /** Why a tracked-folder detection refuses to decide under an unknown remote (fail closed). */
-export const INDETERMINATE_TRACKED_REASON =
-  `'${BUNDLE_DIR}/' is committed on the current branch, but ${BOARD_REMOTE} could not be checked ` +
-  `for a shared '${BOARD_BRANCH}' branch — refusing to classify: an existing shared board must ` +
-  `never be shadowed by guessing in-tree`;
+export function indeterminateTrackedReason(bundleDir: string): string {
+  return `'${bundleDir}/' is committed on the current branch, but ${BOARD_REMOTE} could not be checked ` +
+    `for a shared '${BOARD_BRANCH}' branch — refusing to classify: an existing shared board must ` +
+    `never be shadowed by guessing in-tree`;
+}
 
 /** Why an untracked-folder detection refuses to decide under an unknown remote (fail closed). */
 export const INDETERMINATE_UNTRACKED_REASON =
@@ -142,17 +143,17 @@ export function probeRemoteBoardState(top: string, budget: NetworkBudgetOptions 
  * `.git` FILE with no registration here (e.g. a `cp -r`'d board folder from another repo) is NOT
  * this repo's board and falls through to the tracked/untracked rows.
  */
-function ownerRegistersBoardWorktree(top: string): boolean {
+function ownerRegistersBoardWorktree(top: string, bundleDir: string): boolean {
   const r = runGit(top, ["worktree", "list", "--porcelain"]);
   if (r.status !== 0) return false;
   return r.stdout
     .split("\n")
-    .some((l) => l.startsWith("worktree ") && path.basename(l.slice("worktree ".length).trim()) === BUNDLE_DIR);
+    .some((l) => l.startsWith("worktree ") && path.basename(l.slice("worktree ".length).trim()) === bundleDir);
 }
 
 /**
  * True ONLY when locally held `origin/board` objects PROVE the shared branch was never seeded
- * from this folder: every root commit's tree differs from `HEAD:.agentstate-lite`'s tree. Any
+ * from this folder: every root commit's tree differs from the selected folder's tree. Any
  * unverifiable state (no fetched ref, unreadable history) returns false, deliberately routing to
  * the pre-share-window arm — its pull-first guidance is the safe default for a
  * tracked folder facing an existing remote board, and it is what today's provisioning emits for
@@ -177,9 +178,10 @@ function verifiedForeignBoardRoot(top: string): boolean {
  * Exported (additively) so the CLI's sync-outcome table can enumerate it as a package-side row.
  */
 export function dualBoardError(boardPath: string): BoardGitError {
+  const bundleDir = path.basename(boardPath);
   return new BoardGitError(
     "CONFLICT",
-    `a shared '${BOARD_BRANCH}' branch exists on ${BOARD_REMOTE} AND '${BUNDLE_DIR}' is committed ` +
+    `a shared '${BOARD_BRANCH}' branch exists on ${BOARD_REMOTE} AND '${bundleDir}' is committed ` +
       `on the current branch with content that never seeded that branch — two competing board ` +
       `locations; nothing is safe to adopt automatically`,
     {
@@ -212,7 +214,7 @@ export function dualBoardError(boardPath: string): BoardGitError {
  *  9. untracked + remote unknown → typed indeterminate;
  * 10. no git repo at all → `local-only`.
  *
- * "Tracked" means the CONVENTIONAL `.agentstate-lite/` folder is a tree at HEAD — a bundle
+ * "Tracked" means the selected canonical or legacy conventional folder is a tree at HEAD — a bundle
  * committed anywhere else is not this seam's business (v1 scoping). READ-ONLY throughout; callers
  * compose it after `retargetBoardInterior` + the entry heal, exactly where sync's own resolution
  * runs today.
@@ -221,17 +223,19 @@ export function detectBoardChannel(dir: string, options: DetectBoardChannelOptio
   const top = repoTopLevel(dir);
   if (!top) return localOnlyChannel();
 
-  const boardPath = path.join(top, BUNDLE_DIR);
+  const committed = committedBundleAtHead(top);
+  const bundleDir = committed?.bundleDir ?? bundleDirNameForProject(top);
+  const boardPath = path.join(top, bundleDir);
 
   if (hasWorktreeSignature(boardPath)) {
     if (worktreeRootResolvesForOwner(boardPath, top)) return branchChannel();
-    if (!worktreeRootResolves(boardPath) && ownerRegistersBoardWorktree(top)) return branchChannel();
+    if (!worktreeRootResolves(boardPath) && ownerRegistersBoardWorktree(top, bundleDir)) return branchChannel();
     // Resolvable-but-foreign machinery (another repo's checkout parked here, a submodule), or an
     // unregistered dangling `.git` file: not this repo's board — fall through to the tracked/
     // untracked rows; the provisioning state machine owns the refusal guidance for the path.
   }
 
-  const tracked = folderTreeAtHead(top) !== null;
+  const tracked = committed !== null;
 
   if (!tracked && localBranchExists(top, BOARD_BRANCH)) return branchChannel();
 
@@ -245,7 +249,7 @@ export function detectBoardChannel(dir: string, options: DetectBoardChannelOptio
       // is straggler paths, not a competing board — its tree never matching the branch roots is
       // exactly why the dual-board probe would otherwise misclassify it. The factory carries the
       // untrack escape.
-      if (trackedBoardRemnantPaths(top) === null && verifiedForeignBoardRoot(top)) {
+      if (trackedBoardRemnantPaths(top, bundleDir) === null && verifiedForeignBoardRoot(top)) {
         throw dualBoardError(boardPath);
       }
       // The truth-fix arm (PR C): "exists" off stale fetched evidence with no configured remote
@@ -255,7 +259,12 @@ export function detectBoardChannel(dir: string, options: DetectBoardChannelOptio
     if (remote === "absent") {
       return { kind: "channel", channel: { mode: "in-tree" } };
     }
-    return { kind: "indeterminate", probe: "remote-board", folderTracked: true, reason: INDETERMINATE_TRACKED_REASON };
+    return {
+      kind: "indeterminate",
+      probe: "remote-board",
+      folderTracked: true,
+      reason: indeterminateTrackedReason(bundleDir),
+    };
   }
 
   if (remote === "exists") return branchChannel();

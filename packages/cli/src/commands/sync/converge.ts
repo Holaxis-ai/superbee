@@ -294,10 +294,9 @@ export function buildPushFailurePartial(
   outcome: ProvisionOutcome, warning: string, commitDocs: CommitResult["docs"],
   originDelta: DocChange[], limit: number, reanchorNote?: string,
 ): Record<string, unknown> {
-  const partial: Record<string, unknown> = {};
+  const partial: Record<string, unknown> = { warning };
   const announcement = provisionAnnouncement(outcome);
   if (announcement) Object.assign(partial, announcement);
-  partial.warning = warning;
   assignCounts(partial, commitDocs, 0, originDelta, limit);
   if (reanchorNote) partial.note = reanchorNote;
   return partial;

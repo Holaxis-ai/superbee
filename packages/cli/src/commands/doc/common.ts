@@ -55,7 +55,7 @@ Options:
 
 Examples:
   superbee doc open docs/core
-  superbee doc open tasks/42 --dir .agentstate-lite
+  superbee doc open tasks/42 --dir .superbee
 `;
 
 export const DOC_WRITE_USAGE = `superbee doc write — create or overwrite a generic OKF concept document

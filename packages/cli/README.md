@@ -35,10 +35,10 @@ Then run the first-value flow from an ordinary project directory:
 ```sh
 superbee
 superbee recipes
-superbee init --create-only --recipe work-tracking --dir .agentstate-lite
+superbee init --create-only --recipe work-tracking --dir .superbee
 superbee new "Task" first-task --title "Plan the first change" \
-  --progress_status todo --actor quickstart-agent --dir .agentstate-lite
-superbee --dir .agentstate-lite
+  --progress_status todo --actor quickstart-agent --dir .superbee
+superbee --dir .superbee
 ```
 
 `--create-only` fails before writing when the selected target is occupied or ambiguous. Use

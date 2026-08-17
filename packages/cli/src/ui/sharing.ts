@@ -14,7 +14,7 @@
 //  - never fabricate in EITHER direction — a wrong "shared" equals a wrong "private";
 //  - any classification failure is `unavailable` with a reason, never a guessed state;
 //  - the WRONG-TARGET guard: sharing is claimed ONLY for the repo's conventional board
-//    (`<top>/.agentstate-lite`); any other served bundle inside a repo is `unscoped` (no claim).
+//    (`<top>/.superbee` or legacy `<top>/.agentstate-lite`); any other served bundle inside a repo is `unscoped` (no claim).
 import path from "node:path";
 import { realpathSync } from "node:fs";
 import type { SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
@@ -22,8 +22,8 @@ import {
   BOARD_BRANCH,
   BOARD_REF,
   BOARD_REMOTE,
-  BUNDLE_DIR,
-  folderTreeAtHead,
+  bundleDirNameForProject,
+  committedBundleAtHead,
   hasWorktreeSignature,
   localBranchExists,
   probeRepoTopLevel,
@@ -68,13 +68,15 @@ export function humanizeRemote(url: string): string {
 }
 
 /** Local-evidence reads, isolated for the classifier below. */
-function localEvidence(top: string): { originUrl: string | undefined; fetchedBoardRef: boolean; tracked: boolean } {
+function localEvidence(
+  top: string, tracked: boolean,
+): { originUrl: string | undefined; fetchedBoardRef: boolean; tracked: boolean } {
   const origin = runGit(top, ["remote", "get-url", BOARD_REMOTE]);
   const fetchedBoardRef = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status === 0;
   return {
     originUrl: origin.status === 0 ? origin.stdout.trim() : undefined,
     fetchedBoardRef,
-    tracked: folderTreeAtHead(top) !== null,
+    tracked,
   };
 }
 
@@ -83,15 +85,17 @@ export function classifySharing(bundleRoot: string, now: () => Date = () => new 
   const asOf = now().toISOString();
   try {
     const root = realOr(bundleRoot);
-    // The board lives at <project>/.agentstate-lite; probe the PROJECT (the parent), so a linked
+    // The board lives at a recognized conventional child; probe the PROJECT (the parent), so a linked
     // board WORKTREE (whose own top-level is the board folder itself) still anchors on the repo.
     const repo = probeRepoTopLevel(path.dirname(root));
     if (repo.kind === "not_repo") return { kind: "private", as_of: asOf }; // a plain folder shares nothing
     if (repo.kind === "unavailable") return { kind: "unavailable", reason: repo.reason, as_of: asOf };
     const top = repo.top;
-    if (realOr(path.join(top, BUNDLE_DIR)) !== root) return { kind: "unscoped", as_of: asOf };
+    const committed = committedBundleAtHead(top);
+    const bundleDir = committed?.bundleDir ?? bundleDirNameForProject(top);
+    if (realOr(path.join(top, bundleDir)) !== root) return { kind: "unscoped", as_of: asOf };
 
-    const evidence = localEvidence(top);
+    const evidence = localEvidence(top, committed !== null);
     const branchMode =
       (hasWorktreeSignature(root) && worktreeRootResolvesForOwner(root, top)) ||
       (!evidence.tracked && localBranchExists(top, BOARD_BRANCH));
@@ -111,7 +115,7 @@ export function classifySharing(bundleRoot: string, now: () => Date = () => new 
         // A determinate refusal state — reported as unavailable-with-reason, never a guess.
         return {
           kind: "unavailable",
-          reason: `both a committed ${BUNDLE_DIR}/ folder and a fetched ${BOARD_REF} exist — run sync for guidance`,
+          reason: `both a committed ${bundleDir}/ folder and a fetched ${BOARD_REF} exist — run sync for guidance`,
           as_of: asOf,
         };
       }
@@ -123,7 +127,7 @@ export function classifySharing(bundleRoot: string, now: () => Date = () => new 
       // remote NAMED is the tracking remote's, not origin's.
       const upstream = resolveInTreeUpstream(top);
       if (upstream.state === "ok" && upstream.config.remote !== null) {
-        const onUpstream = runGit(top, ["cat-file", "-e", `${upstream.config.ref}:${BUNDLE_DIR}`]).status === 0;
+        const onUpstream = runGit(top, ["cat-file", "-e", `${upstream.config.ref}:${bundleDir}`]).status === 0;
         if (onUpstream) {
           const tracking = runGit(top, ["remote", "get-url", upstream.config.remote]);
           const url = tracking.status === 0 ? tracking.stdout.trim() : evidence.originUrl;

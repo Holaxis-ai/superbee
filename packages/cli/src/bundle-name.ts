@@ -1,7 +1,7 @@
 // The ONE bundle display-name derivation (tasks/bundle-display-name).
 //
 // PROBLEM: the conventional-folder convention makes every project's bundle root basename the
-// SAME string (".agentstate-lite"), so any surface labeling a bundle by its root basename shows
+// SAME conventional string (`.superbee`, or legacy `.agentstate-lite`), so any surface labeling a bundle by its root basename shows
 // the folder convention instead of the project — two projects' UIs become indistinguishable.
 //
 // CHAIN (first hit wins; every failure degrades silently to the next rung — this function NEVER
@@ -15,7 +15,7 @@
 //           doc update docs/bundle --title "<display name>"
 //       A `docs/bundle` doc with any OTHER type is IGNORED and the chain continues. A committed
 //       doc, so the name syncs to teammates.
-//   (b) CONVENTIONAL — a root named `.agentstate-lite` displays as its PARENT directory's
+//   (b) CONVENTIONAL — a root named `.superbee` or legacy `.agentstate-lite` displays as its PARENT directory's
 //       basename (the project folder): offline, zero-config, per-project distinct.
 //   (c) FALLBACK — the root basename (the pre-existing behavior for standalone bundles).
 //
@@ -27,7 +27,10 @@
 // tasks/workspace-catalog-dogfood-checkpoint); do not fork a second derivation.
 import path from "node:path";
 import { readDoc, type Bundle } from "@superbee/core";
-import { CONVENTIONAL_BUNDLE_DIR_NAME } from "./bundle.js";
+import {
+  CONVENTIONAL_BUNDLE_DIR_NAME,
+  LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME,
+} from "./bundle.js";
 
 /**
  * The well-known concept id carrying a bundle's explicit display name. NOT the bundle-root
@@ -87,7 +90,7 @@ export async function deriveBundleDisplayName(bundle: Bundle): Promise<BundleDis
     // Absent or unreadable doc — the common case; fall through to the path-derived rungs.
   }
   const base = path.basename(bundle.root);
-  if (base === CONVENTIONAL_BUNDLE_DIR_NAME) {
+  if (base === CONVENTIONAL_BUNDLE_DIR_NAME || base === LEGACY_CONVENTIONAL_BUNDLE_DIR_NAME) {
     const parent = path.basename(path.dirname(bundle.root));
     if (parent) return { name: parent, source: "conventional-parent" };
   }

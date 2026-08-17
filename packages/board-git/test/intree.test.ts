@@ -6,7 +6,7 @@
 //   • the UPSTREAM DECISION TABLE — tracking config → that ref; detached HEAD / no tracking /
 //     unusable ref → an explicit no-comparison-basis outcome, never a guessed `origin/<branch>`;
 //   • PREFIX-SCOPED awareness over the one `diffDocsBetween`: ids prefix-stripped BEFORE
-//     doc-id/reserved interpretation (`.agentstate-lite/index.md` stays reserved after the
+//     doc-id/reserved interpretation (`.superbee/index.md` stays reserved after the
 //     strip), non-ASCII ids round-trip, code-tree `.md` files never appear;
 //   • the MODE-SCOPED cursor tier (`git-intree`): a branch-mode (`"git"`) cursor reads as
 //     FOREIGN (first-contact merge-base baseline, silently replaced), and an unusable
@@ -95,7 +95,7 @@ test("decision table: detached HEAD → no comparison basis; nothing fetched, no
   try {
     git(topo.a.root, ["checkout", "--detach"]);
     assert.deepEqual(resolveInTreeUpstream(topo.a.root), { state: "none", reason: "detached-head" });
-    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.deepEqual(out, { state: "no-upstream", reason: "detached-head" });
     assert.equal(await store.readCursor(KEY), null, "no cursor minted without a basis");
     assert.equal(await store.readCache(KEY), null, "no cache written without a basis");
@@ -110,7 +110,7 @@ test("decision table: a branch with NO tracking config → no comparison basis (
   try {
     git(topo.a.root, ["checkout", "-b", "feature"]);
     assert.deepEqual(resolveInTreeUpstream(topo.a.root), { state: "none", reason: "no-upstream" });
-    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.deepEqual(out, { state: "no-upstream", reason: "no-upstream" });
     assert.equal(await store.readCursor(KEY), null);
   } finally {
@@ -125,7 +125,7 @@ test("decision table: tracking ref deleted on the remote → unusable after the 
     git(topo.a.root, ["checkout", "-b", "feature"]);
     git(topo.a.root, ["push", "-u", "origin", "feature"]);
     git(topo.origin, ["update-ref", "-d", "refs/heads/feature"]);
-    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.equal(out.state, "unusable-upstream");
     assert.equal(out.state === "unusable-upstream" && out.ref, "origin/feature");
     assert.equal(await store.readCursor(KEY), null);
@@ -140,7 +140,7 @@ test("fetch failure (dead remote) → classified, and NOTHING is recorded (state
   const store = tempStore(topo);
   try {
     git(topo.a.root, ["remote", "set-url", "origin", path.join(topo.dir, "does-not-exist.git")]);
-    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.equal(out.state, "fetch-failed");
     assert.ok(out.state === "fetch-failed" && isBoardGitError(out.failure), "the failure is the typed taxonomy");
     assert.equal(await store.readCursor(KEY), null, "cursor advances only on a successful check");
@@ -174,7 +174,7 @@ test("awareness: prefix-stripped ids; reserved index.md stays reserved after the
     git(topo.b.root, ["push", "origin", "main"]);
 
     const headBefore = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
-    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.equal(out.state, "refreshed");
     if (out.state !== "refreshed") throw new Error("unreachable");
     const ids = out.changes.map((c) => c.docId).sort();
@@ -197,7 +197,7 @@ test("awareness: prefix-stripped ids; reserved index.md stays reserved after the
     assert.equal(git(topo.a.root, ["status", "--porcelain"]).trim(), "", "working tree untouched");
 
     // Steady state: a second check reports nothing new.
-    const again = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const again = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.equal(again.state === "refreshed" && again.changes.length, 0);
   } finally {
     await topo.cleanup();
@@ -226,7 +226,7 @@ test("mode flip (branch → in-tree): a 'git'-tier cursor is FOREIGN — merge-b
     const rootCommit = git(topo.a.root, ["rev-list", "--max-parents=0", "HEAD"]).trim();
     await store.writeCursor(KEY, { tier: "git", token: rootCommit });
 
-    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.equal(out.state, "refreshed");
     if (out.state !== "refreshed") throw new Error("unreachable");
     // The foreign token was ignored: first-contact merge-base baseline → nothing to report.
@@ -250,7 +250,7 @@ test("a git-intree token that no longer sits behind upstream (history reposition
     const nonAncestor = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
     await store.writeCursor(KEY, { tier: IN_TREE_CURSOR_TIER, token: nonAncestor });
 
-    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, topo.a.root, KEY, BUNDLE_DIR);
     assert.equal(out.state, "refreshed");
     if (out.state !== "refreshed") throw new Error("unreachable");
     assert.equal(out.reanchored, true);
@@ -283,11 +283,11 @@ test("backstops: unpushed/uncommitted/behind count board-touching work ONLY (a b
     await writeFile(path.join(a.root, BUNDLE_DIR, "tasks", "wip.md"), "---\ntype: Task\ntitle: W\n---\nwip\n");
 
     const upstream = git(a.root, ["rev-parse", "origin/main"]).trim();
-    assert.equal(inTreeUnpushedCount(a.root, upstream), 1, "only the board-touching commit counts");
+    assert.equal(inTreeUnpushedCount(a.root, upstream, BUNDLE_DIR), 1, "only the board-touching commit counts");
     assert.equal(countUncommitted(a.root, BUNDLE_DIR), 1, "only the board-touching dirt counts");
-    assert.equal(inTreeBehindCount(a.root, upstream), 0);
+    assert.equal(inTreeBehindCount(a.root, upstream, BUNDLE_DIR), 0);
 
-    const out = await inTreeFetchAndRecord(store, a.root, KEY);
+    const out = await inTreeFetchAndRecord(store, a.root, KEY, BUNDLE_DIR);
     assert.equal(out.state === "refreshed" && out.unpushedCount, 1);
     assert.equal(out.state === "refreshed" && out.uncommittedCount, 1);
     const cache = await store.readCache(KEY);
