@@ -64,6 +64,11 @@ export interface SetupPlan {
   readonly scope: InstallScope;
   readonly ready: boolean;
   readonly complete: boolean;
+  readonly workspace: {
+    readonly current_project_bundle: SetupWorkspaceState["bundle"];
+    readonly catalog_access: SetupWorkspaceState["catalog"];
+    readonly catalog_selects_current_project: false;
+  };
   readonly capabilities: readonly SetupCapability[];
   readonly next?: {
     readonly action: "run" | "inspect" | "choose_value";
@@ -311,8 +316,8 @@ function bundleCapability(input: SetupPlanInput): SetupCapability {
     return {
       id: "bundle",
       requirement: "recommended",
-      state: "ready",
-      reason: "the private catalog provides a workspace; no local project bundle is selected",
+      state: "not_applicable",
+      reason: "no current-project bundle is selected; catalog entries remain available only by explicit selection and are not project context",
     };
   }
   return {
@@ -332,7 +337,7 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
       state: "ready",
       reason: input.workspace.bundle === "selected"
         ? "the selected bundle is registered for bundle-unbound MCP access"
-        : "the private workspace catalog has at least one available bundle",
+        : "the private workspace catalog has at least one explicitly selectable bundle; cataloging does not select current project context",
     };
   }
   if (input.workspace.catalog === "unreadable") {
@@ -382,6 +387,11 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
     scope: input.scope,
     ready: required.every((capability) => capability.state === "ready"),
     complete: capabilities.every((capability) => capability.state === "ready" || capability.state === "not_applicable"),
+    workspace: {
+      current_project_bundle: input.workspace.bundle,
+      catalog_access: input.workspace.catalog,
+      catalog_selects_current_project: false,
+    },
     capabilities,
     ...(actionable?.command
       ? {

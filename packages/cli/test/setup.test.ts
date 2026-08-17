@@ -209,6 +209,56 @@ test("user setup fails closed when project hook inspection is unavailable", asyn
   });
 });
 
+test("cataloging a legacy workspace never selects it as the current project bundle", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.resolveBundle = async () => {
+    throw new CliError("NOT_FOUND", "no bundle in the current checkout");
+  };
+  injected.listCatalog = async () => [{
+    id: "bnd_00000000000000000000000000000000",
+    label: "legacy-project",
+    locator: { kind: "local-path", path: "/Users/private/other-project/.agentstate-lite" },
+    available: true,
+  }];
+  const inspectHook = injected.inspectHook;
+  injected.inspectHook = (scope) => {
+    const inspection = inspectHook(scope);
+    if (scope === "project") {
+      inspection.hosts.codex = {
+        installed: false,
+        compatibility: { state: "absent", reason: "no project hook" },
+      };
+    }
+    return inspection;
+  };
+
+  await setup(["--host", "codex", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: {
+      complete: boolean;
+      workspace: {
+        current_project_bundle: string;
+        catalog_access: string;
+        catalog_selects_current_project: boolean;
+      };
+      capabilities: Array<{ id: string; state: string; reason: string }>;
+      next?: unknown;
+    };
+  };
+  assert.equal(parsed.setup.complete, true);
+  assert.equal(parsed.setup.next, undefined);
+  assert.deepEqual(parsed.setup.workspace, {
+    current_project_bundle: "absent",
+    catalog_access: "ready",
+    catalog_selects_current_project: false,
+  });
+  const bundle = parsed.setup.capabilities.find((row) => row.id === "bundle")!;
+  assert.equal(bundle.state, "not_applicable");
+  assert.match(bundle.reason, /not project context/);
+  assert.doesNotMatch(output, /other-project|\/Users\/private/);
+});
+
 test("setup defaults to TOON rather than JSON", async () => {
   let output = "";
   await setup(["--host", "claude-desktop"], deps((text) => { output += text; }));
@@ -266,4 +316,6 @@ test("setup validates exact host, scope, arity, and serves offline help", async 
   let help = "";
   await setup(["--help"], { stdout: (text) => { help += text; } });
   assert.match(help, /one safe next command/);
+  assert.match(help, /catalog entry preserves a workspace for explicit MCP selection/);
+  assert.match(help, /never selects that workspace\s+as the current project's context/);
 });
