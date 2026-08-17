@@ -11,8 +11,10 @@ import { KNOWN_COMMANDS } from "../src/cli.js";
 import { CLI_LEAVES, type PublicLeaf, type PublicLeafId } from "../src/command-spec.js";
 import { assertLeafArity } from "../src/positional-arity.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
+import { BLOBS_USAGE } from "../src/commands/blobs.js";
 import {
   BEHAVIOR_ASSIGNMENTS,
+  BUILT_KEY_REPRESENTATIVE_IDS,
   BUILT_REPRESENTATIVE_IDS,
   assignmentIndex,
   validateBehaviorCoverage,
@@ -191,14 +193,14 @@ test("documented paths, runtime top-level registration, arity, and executable ro
   assert.deepEqual(Object.keys(rows).sort(), Object.keys(CLI_LEAVES).sort());
   assert.deepEqual(Object.values(rows).map((row) => row.leaf.path).sort(), [...paths].sort());
   assert.deepEqual([...new Set(paths.map((path) => path.split(" ")[0]))].sort(), [...KNOWN_COMMANDS].sort());
-  assert.deepEqual(validateBehaviorCoverage(Object.keys(rows), BEHAVIOR_ASSIGNMENTS, BUILT_REPRESENTATIVE_IDS), []);
+  assert.deepEqual(validateBehaviorCoverage(Object.keys(rows), BEHAVIOR_ASSIGNMENTS, BUILT_KEY_REPRESENTATIVE_IDS), []);
   const assignments = assignmentIndex();
   for (const [id, row] of Object.entries(rows) as [PublicLeafId, LeafCase][]) {
     assert.equal(row.errorChannel ?? "stdout", assignments.get(id)?.dimensions.errorChannel, `${row.leaf.path}: error channel`);
   }
 });
 
-test("one built representative per behavior key rejects surplus with the exact envelope", () => {
+test("built key owners and review sentinels reject surplus with the exact envelope", () => {
   const ctx = createFixture();
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);
@@ -213,6 +215,10 @@ test("one built representative per behavior key rejects surplus with the exact e
 
     const result = run(row.argv([...row.operands, SURPLUS]), ctx.scratch, ctx.env);
     assert.equal(result.status, 2, `${path}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
+    if (id === "pull") {
+      assert.notEqual(result.stdout, "", "pull raw-stdout mode must not hoist channel routing above arity validation");
+      assert.equal(result.stderr, "", "pull raw-stdout mode reserves stderr routing until after arity validation");
+    }
     const envelope = decodedError(result, row, path);
     assert.equal(envelope.error.code, "USAGE", path);
     const expected = contract.count === 0
@@ -253,7 +259,7 @@ test("one built representative per behavior key rejects surplus with the exact e
   assert.equal(shadow.status, 2);
 });
 
-test("one built representative per behavior key proves missing and help precedence", () => {
+test("built key owners and review sentinels prove missing and help precedence", () => {
   const ctx = createFixture();
   const rows = leafCases(ctx);
   const bundleBefore = treeSnapshot(ctx.bundle);
@@ -280,6 +286,7 @@ test("one built representative per behavior key proves missing and help preceden
     assert.equal(help.status, 0, `${path} help precedence\nstdout=${help.stdout}\nstderr=${help.stderr}`);
     assert.notEqual(help.stdout, "", `${path}: help should be visible on stdout`);
     assert.equal(help.stderr, "", `${path}: help must not use the error channel`);
+    if (id === "blobs") assert.equal(help.stdout, BLOBS_USAGE, "blobs --help must reach its handler-owned usage branch");
   }
 
   assert.equal(existsSync(ctx.initTarget), false);

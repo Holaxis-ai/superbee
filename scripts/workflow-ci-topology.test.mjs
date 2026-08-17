@@ -41,9 +41,40 @@ function assertAggregator(job, label) {
   assert.match(job, /run: npm run ci:aggregate/);
 }
 
-test("CI runs every lane unconditionally with the declared runtime topology", () => {
-  const jobs = extractJobs(workflow);
-  for (const required of manifest.required_jobs) assert.ok(jobs[required], `missing required job ${required}`);
+function displayNameOf(job) {
+  return /^ {4}name: (.+)\s*$/m.exec(job)?.[1] ?? null;
+}
+
+function assertSmokeJob(job, lane) {
+  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2, "floor smoke needs build and floor runtimes");
+  assert.deepEqual(
+    [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => match[1]),
+    [String(manifest.singleton_node), String(lane.runtime_setup_node)],
+    "the second setup-node invocation must select the declared engine floor",
+  );
+  assert.ok(job.includes(lane.version_guard), "floor smoke must self-check the active Node major");
+  assert.match(job, new RegExp(`CLI=${lane.built_cli.replaceAll("/", "\\/")}`));
+  const commands = [...job.matchAll(/^ {10}node "\$CLI" (.+)$/gm)].map((match) => match[1]);
+  const surface = [...new Set(commands.map((argv) => {
+    return [...lane.built_cli_commands]
+      .sort((left, right) => right.length - left.length)
+      .find((command) => argv === command || argv.startsWith(`${command} `)) ?? `<unknown:${argv}>`;
+  }))].sort();
+  assert.deepEqual(surface, [...lane.built_cli_commands].sort(), "floor smoke built-CLI command surface drifted");
+}
+
+function validateCiTopology(text, candidate = manifest) {
+  const jobs = extractJobs(text);
+  assert.deepEqual(
+    [...candidate.required_jobs].sort(),
+    Object.keys(candidate.lanes).sort(),
+    "required_jobs must equal the complete lane set",
+  );
+  assert.doesNotMatch(text, /^\s+continue-on-error:/m, "required CI jobs cannot mask a failing step");
+  for (const required of candidate.required_jobs) {
+    assert.ok(jobs[required], `missing required job ${required}`);
+    assert.equal(displayNameOf(jobs[required]), candidate.lanes[required].display_name, `${required} display name drifted`);
+  }
   assert.match(jobs.runtime, /node-version: \[22, 26\]/);
   assert.match(jobs.runtime, /run: npm run ci:runtime/);
   for (const [job, script] of [
@@ -56,12 +87,24 @@ test("CI runs every lane unconditionally with the declared runtime topology", ()
   }
   assert.match(jobs["release-exhaustive"], /check:release-exhaustive -- --expected-sha "\$EXPECTED_SOURCE_SHA"/);
   assert.match(jobs["release-exhaustive"], /fetch-depth: 0/, "exact-SHA proof needs complete history");
-  assert.doesNotMatch(workflow, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
-  assert.doesNotMatch(workflow, /^\s*merge_group:/m, "merge_group remains deferred without repository support evidence");
+  assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
+  assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
+  assert.equal(
+    /^ {2}merge_group:/m.test(text),
+    candidate.merge_queue.enabled,
+    "workflow trigger must match the recorded current merge-queue posture",
+  );
+  assert.equal(typeof candidate.merge_queue.evidence, "string");
+  assert.equal(typeof candidate.merge_queue.enablement_requirement, "string");
+  return jobs;
+}
+
+test("CI runs every lane unconditionally with the declared runtime topology", () => {
+  validateCiTopology(workflow);
 });
 
 test("canonical and legacy compatibility contexts are identical fail-closed aggregators", () => {
-  const jobs = extractJobs(workflow);
+  const jobs = validateCiTopology(workflow);
   assert.match(jobs.required, /name: CI required lanes/);
   assert.match(jobs["compatibility-gate-node-22"], /name: gate \(node 22\)/);
   assert.match(jobs["compatibility-gate-node-26"], /name: gate \(node 26\)/);
@@ -80,4 +123,34 @@ test("renamed or removed aggregator dependencies are detected statically", () =>
   assert.throws(() => assertAggregator(renamed, "renamed"), /needs every required lane/);
   const conditional = jobs.required.replace("if: ${{ always() }}", "if: ${{ success() }}");
   assert.throws(() => assertAggregator(conditional, "conditional"), /must run after every conclusion/);
+});
+
+test("workflow mutation attacks cannot hide failures or weaken required job identity", () => {
+  assert.throws(
+    () => validateCiTopology(workflow.replace("        run: npm run ci:runtime", "        run: npm run ci:runtime\n        continue-on-error: true")),
+    /cannot mask a failing step/,
+  );
+  assert.throws(
+    () => validateCiTopology(workflow.replace("name: distribution package and installed behavior", "name: distribution")),
+    /distribution display name drifted/,
+  );
+  for (const [from, to, error] of [
+    ["          node-version: 20", "          node-version: 22", /second setup-node/],
+    ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
+    ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
+  ]) {
+    assert.throws(() => validateCiTopology(workflow.replace(from, to)), error);
+  }
+  const incomplete = structuredClone(manifest);
+  incomplete.required_jobs.pop();
+  assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the complete lane set/);
+});
+
+test("merge-queue posture is current configuration, not a permanent prohibition", () => {
+  assert.equal(manifest.merge_queue.enabled, false);
+  const enabled = structuredClone(manifest);
+  enabled.merge_queue.enabled = true;
+  const withMergeGroup = workflow.replace("on:\n", "on:\n  merge_group:\n");
+  assert.doesNotThrow(() => validateCiTopology(withMergeGroup, enabled));
+  assert.throws(() => validateCiTopology(workflow, enabled), /merge-queue posture/);
 });

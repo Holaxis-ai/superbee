@@ -173,35 +173,43 @@ test("fixture cache is exact-keyed, returns private copies, and survives A-B-A m
   }
 });
 
-test("retained verifier reuse is byte-keyed and returns private immutable receipts", async () => {
+test("retained verifier reuse misses on manifest and targets bytes/path while tarball stays fixed", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-retained-cache-contract-"));
   const targetsPath = path.join(root, "targets.json");
-  const inputs = async (id) => {
-    const directory = path.join(root, id);
-    await mkdir(directory, { recursive: true });
-    const tarball = path.join(directory, "candidate.tgz");
-    const manifest = path.join(directory, "candidate.json");
-    await writeFile(tarball, `tarball-${id}\n`);
-    await writeFile(manifest, `${JSON.stringify({ target: id })}\n`);
-    return { tarball, manifest, targetsPath };
-  };
+  const alternateTargetsPath = path.join(root, "alternate", "targets.json");
+  const tarball = path.join(root, "candidate.tgz");
+  const manifest = path.join(root, "candidate.json");
+  await mkdir(path.dirname(alternateTargetsPath), { recursive: true });
+  await writeFile(tarball, "fixed tarball bytes\n");
+  await writeFile(manifest, '{"target":"a"}\n');
   await writeFile(targetsPath, "policy\n");
+  await writeFile(alternateTargetsPath, "policy\n");
+  const fixedTarballSha = await fileSha256(tarball);
   let calls = 0;
   const cache = createRetainedVerifierCache({
-    verifier: async ({ manifest }) => ({ proof: { manifest, serial: ++calls } }),
+    verifier: async () => ({ proof: { serial: ++calls } }),
   });
   try {
-    const a = await inputs("a");
-    const b = await inputs("b");
-    const firstA = await cache.verify(a);
-    firstA.proof.serial = 999;
-    await cache.verify(b);
-    const secondA = await cache.verify(a);
-    assert.equal(secondA.proof.serial, 1, "consumer mutation cannot alter the cached receipt");
-    assert.deepEqual(cache.stats(), { verifications: 2, keys: 2 });
-    await writeFile(a.tarball, "changed tarball\n");
-    const changedA = await cache.verify(a);
-    assert.equal(changedA.proof.serial, 3, "changed retained bytes require a new real proof");
+    const baseline = { tarball, manifest, targetsPath };
+    const first = await cache.verify(baseline);
+    first.proof.serial = 999;
+    assert.equal((await cache.verify(baseline)).proof.serial, 1, "consumer mutation cannot alter the cached receipt");
+
+    await writeFile(manifest, '{"target":"b"}\n');
+    assert.equal((await cache.verify(baseline)).proof.serial, 2, "manifest-only change requires a real proof");
+    await writeFile(manifest, '{"target":"a"}\n');
+
+    await writeFile(targetsPath, "changed policy\n");
+    assert.equal((await cache.verify(baseline)).proof.serial, 3, "targets-bytes-only change requires a real proof");
+    await writeFile(targetsPath, "policy\n");
+
+    assert.equal(
+      (await cache.verify({ tarball, manifest, targetsPath: alternateTargetsPath })).proof.serial,
+      4,
+      "targets-path-only change requires a real proof",
+    );
+    assert.equal(await fileSha256(tarball), fixedTarballSha, "every cache miss holds tarball bytes fixed");
+    assert.deepEqual(cache.stats(), { verifications: 4, keys: 4 });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

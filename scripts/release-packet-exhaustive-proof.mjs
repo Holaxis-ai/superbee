@@ -68,6 +68,7 @@ export async function writeExhaustiveReleaseProof({ out, sourceCommit, packetFil
     harness: {
       packet_candidates_sha256: await fileSha256(path.join(root, "scripts", "release-packet-candidates.test.mjs")),
       candidate_builder_sha256: await fileSha256(path.join(root, "scripts", "release-candidate.mjs")),
+      candidate_fixture_sha256: await fileSha256(path.join(root, "scripts", "release-candidate-fixture.mjs")),
     },
     packet_sha256: await fileSha256(packetFile),
     candidates: await candidateProofRows(candidateDirs, targets),
@@ -83,13 +84,14 @@ export async function verifyExhaustiveReleaseProof({ proof, commit, root = repoR
   assert.deepEqual(Object.keys(receipt).sort(), ["candidates", "harness", "packet_sha256", "release_targets_sha256", "schema", "source"]);
   assert.equal(receipt.schema, EXHAUSTIVE_RELEASE_PROOF_SCHEMA);
   assert.deepEqual(Object.keys(receipt.source).sort(), ["commit", "dirty", "tree"]);
-  assert.deepEqual(Object.keys(receipt.harness).sort(), ["candidate_builder_sha256", "packet_candidates_sha256"]);
+  assert.deepEqual(Object.keys(receipt.harness).sort(), ["candidate_builder_sha256", "candidate_fixture_sha256", "packet_candidates_sha256"]);
   const source = await assertExactExhaustiveSource(commit, root);
   assert.deepEqual(receipt.source, { commit: source.commit, tree: source.tree, dirty: false });
   assert.equal(receipt.release_targets_sha256, await fileSha256(path.join(root, "release", "targets.json")));
   assert.deepEqual(receipt.harness, {
     packet_candidates_sha256: await fileSha256(path.join(root, "scripts", "release-packet-candidates.test.mjs")),
     candidate_builder_sha256: await fileSha256(path.join(root, "scripts", "release-candidate.mjs")),
+    candidate_fixture_sha256: await fileSha256(path.join(root, "scripts", "release-candidate-fixture.mjs")),
   });
   assert.match(receipt.packet_sha256, SHA);
   const targets = await loadReleaseTargets(path.join(root, "release", "targets.json"), {

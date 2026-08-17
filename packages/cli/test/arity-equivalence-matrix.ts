@@ -140,8 +140,8 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("setup", 0),
 ] as const satisfies readonly BehaviorAssignment[];
 
-/** One built subprocess row for every real key above. */
-export const BUILT_REPRESENTATIVE_IDS = [
+/** Exactly one built subprocess owner for every real key above. */
+export const BUILT_KEY_REPRESENTATIVE_IDS = [
   "bundleLocate",
   "catalogAdd",
   "catalogResolve",
@@ -155,6 +155,23 @@ export const BUILT_REPRESENTATIVE_IDS = [
   "kindFieldAdd",
   "hookInstall",
   "mcp",
+] as const satisfies readonly PublicLeafId[];
+
+/**
+ * Review-proven leaf-local boundaries that the cross-leaf key cannot safely substitute. These
+ * sentinels cover handler-owned help/output routing and same-family selector outcomes without
+ * pretending those local branches are new global parser-equivalence dimensions.
+ */
+export const BUILT_REVIEW_SENTINEL_IDS = [
+  "skillStatus",
+  "kindFieldRemove",
+  "blobs",
+  "pull",
+] as const satisfies readonly PublicLeafId[];
+
+export const BUILT_REPRESENTATIVE_IDS = [
+  ...BUILT_KEY_REPRESENTATIVE_IDS,
+  ...BUILT_REVIEW_SENTINEL_IDS,
 ] as const satisfies readonly PublicLeafId[];
 
 export function behaviorKey(dimensions: BehaviorDimensions): string {

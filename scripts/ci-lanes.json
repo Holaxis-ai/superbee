@@ -3,6 +3,11 @@
   "path_skipping": false,
   "runtime_nodes": [22, 26],
   "singleton_node": 26,
+  "merge_queue": {
+    "enabled": false,
+    "evidence": "No merge-queue workflow or repository-settings evidence exists at this revision",
+    "enablement_requirement": "Set enabled true and add the merge_group trigger before enabling merge queue"
+  },
   "required_jobs": [
     "runtime",
     "smoke-node-20",
@@ -24,36 +29,50 @@
   ],
   "lanes": {
     "runtime": {
+      "display_name": "runtime compatibility (node ${{ matrix.node-version }})",
       "script": "ci:runtime",
       "components": ["build", "typecheck", "workspace-tests"],
       "nodes": [22, 26]
     },
     "distribution": {
+      "display_name": "distribution package and installed behavior",
       "script": "ci:distribution",
       "components": ["installed-package-proof", "skill-drift-proof"],
       "nodes": [26]
     },
     "browser": {
+      "display_name": "browser and UI",
       "script": "ci:browser",
       "components": ["mcp-browser", "ui-end-to-end"],
       "prerequisites": ["build"],
       "nodes": [26]
     },
     "release-policy": {
+      "display_name": "deterministic release policy",
       "script": "ci:release-policy",
       "components": ["script-and-release-tests"],
       "prerequisites": ["build"],
       "nodes": [26]
     },
     "release-exhaustive": {
+      "display_name": "exhaustive release targets",
       "script": "check:release-exhaustive",
+      "wrapper": "scripts/ci-release-exhaustive.mjs",
+      "wrapper_component_literals": {
+        "all-release-targets": "test:packet-candidates"
+      },
       "components": ["all-release-targets"],
       "nodes": [26]
     },
     "smoke-node-20": {
+      "display_name": "built-CLI smoke on the engines floor (node 20)",
       "workflow_only": true,
       "components": [],
-      "nodes": [20]
+      "nodes": [20],
+      "runtime_setup_node": 20,
+      "version_guard": "node --version | grep -q '^v20\\.'",
+      "built_cli": "packages/cli/dist/superbee.mjs",
+      "built_cli_commands": ["init", "doc write", "doc read", "link add", "link show", "list", "status"]
     }
   }
 }

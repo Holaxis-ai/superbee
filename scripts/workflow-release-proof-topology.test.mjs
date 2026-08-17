@@ -33,9 +33,21 @@ function needsOf(job) {
   return scalar ? [scalar[1]] : [];
 }
 
+const REQUIRED_MUTATION_CONDITION = "needs.candidate.outputs.workflow_contract == 'full'";
+
+function assertMutationJobCondition(job, name) {
+  const conditions = [...job.matchAll(/^ {4}if: (.+)\s*$/gm)].map((match) => match[1]);
+  assert.deepEqual(
+    conditions,
+    [REQUIRED_MUTATION_CONDITION],
+    `${name} must retain the exact dependency-success-sensitive job condition`,
+  );
+}
+
 function validateProofChain(text) {
   const jobs = extractJobs(text);
   assert.deepEqual(Object.keys(jobs).sort(), ["candidate", "draft", "stage"]);
+  assert.doesNotMatch(text, /^\s+continue-on-error:/m, "release proofs and mutation jobs cannot mask failure");
   const candidate = jobs.candidate;
   const exhaustiveAt = candidate.indexOf("check:release-exhaustive -- --expected-sha");
   const selectedAt = candidate.indexOf("verify:npm-package:tarball -- \"$ARTIFACT_DIR/$TARBALL_FILENAME\" --manifest \"$ARTIFACT_DIR/candidate.json\"");
@@ -48,6 +60,8 @@ function validateProofChain(text) {
     "all-five proof -> selected retained verification -> retained upload");
   assert.deepEqual(needsOf(jobs.draft), ["candidate"], "draft mutation must require both candidate proofs");
   assert.deepEqual(needsOf(jobs.stage).sort(), ["candidate", "draft"], "stage must require both proofs and draft");
+  assertMutationJobCondition(jobs.draft, "draft");
+  assertMutationJobCondition(jobs.stage, "stage");
   assert.doesNotMatch(candidate, /name: Prove all five[^\n]*\n {8}if:/, "proof steps cannot be conditionally skipped");
   assert.doesNotMatch(candidate, /name: Independently verify[^\n]*\n {8}if:/, "proof steps cannot be conditionally skipped");
 }
@@ -66,10 +80,26 @@ test("removed, renamed, or conditionally skipped proofs fail the topology contra
   assert.throws(() => validateProofChain(staged.replace("needs: candidate", "needs: []")), /draft mutation/);
 });
 
-test("failed, canceled, skipped, neutral, or missing proof-job conclusions block descendants", () => {
-  const mayRun = (result) => result === "success";
-  assert.equal(mayRun("success"), true);
-  for (const result of ["failure", "cancelled", "skipped", "neutral", "timed_out", undefined]) {
-    assert.equal(mayRun(result), false, String(result));
-  }
+test("job-level status overrides and continue-on-error fail the workflow-derived contract", () => {
+  assert.throws(
+    () => validateProofChain(staged.replace(
+      `if: ${REQUIRED_MUTATION_CONDITION}`,
+      "if: ${{ always() }}",
+    )),
+    /draft must retain the exact dependency-success-sensitive job condition/,
+  );
+  const stageCondition = `if: ${REQUIRED_MUTATION_CONDITION}`;
+  const stageAt = staged.lastIndexOf(stageCondition);
+  const stageOverride = staged.slice(0, stageAt) + "if: ${{ always() }}" + staged.slice(stageAt + stageCondition.length);
+  assert.throws(
+    () => validateProofChain(stageOverride),
+    /stage must retain the exact dependency-success-sensitive job condition/,
+  );
+  assert.throws(
+    () => validateProofChain(staged.replace(
+      "        run: npm run check:release-exhaustive",
+      "        continue-on-error: true\n        run: npm run check:release-exhaustive",
+    )),
+    /cannot mask failure/,
+  );
 });

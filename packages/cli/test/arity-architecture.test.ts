@@ -7,7 +7,9 @@ import { CLI_LEAVES } from "../src/command-spec.js";
 import {
   BEHAVIOR_ASSIGNMENTS,
   BEHAVIOR_DIMENSION_VALUES,
+  BUILT_KEY_REPRESENTATIVE_IDS,
   BUILT_REPRESENTATIVE_IDS,
+  BUILT_REVIEW_SENTINEL_IDS,
   assignmentIndex,
   behaviorKey,
   validateBehaviorCoverage,
@@ -121,8 +123,14 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
 
 test("behavioral-equivalence taxonomy is exhaustive, coherent, and materially smaller", () => {
   const leafIds = Object.keys(CLI_LEAVES);
-  assert.deepEqual(validateBehaviorCoverage(leafIds, BEHAVIOR_ASSIGNMENTS, BUILT_REPRESENTATIVE_IDS), []);
-  assert.equal(BUILT_REPRESENTATIVE_IDS.length < leafIds.length / 2, true, "built classes must materially reduce subprocess rows");
+  assert.deepEqual(validateBehaviorCoverage(leafIds, BEHAVIOR_ASSIGNMENTS, BUILT_KEY_REPRESENTATIVE_IDS), []);
+  assert.deepEqual(BUILT_REVIEW_SENTINEL_IDS, ["skillStatus", "kindFieldRemove", "blobs", "pull"]);
+  assert.equal(
+    new Set(BUILT_REPRESENTATIVE_IDS).size,
+    BUILT_KEY_REPRESENTATIVE_IDS.length + BUILT_REVIEW_SENTINEL_IDS.length,
+    "key owners and review sentinels must be unique and disjoint",
+  );
+  assert.equal(BUILT_REPRESENTATIVE_IDS.length < leafIds.length / 2, true, "built rows must remain materially smaller than the leaf catalog");
 
   const assignments = assignmentIndex();
   assert.deepEqual([...assignments.keys()].sort(), leafIds.sort());
@@ -178,7 +186,7 @@ test("every key dimension creates an uncovered class until a built representativ
       { leafId: synthetic, dimensions: novel },
     ];
     assert.equal(
-      validateBehaviorCoverage([...leafIds, synthetic], assignments, BUILT_REPRESENTATIVE_IDS)
+      validateBehaviorCoverage([...leafIds, synthetic], assignments, BUILT_KEY_REPRESENTATIVE_IDS)
         .some((message) => message.startsWith("behavioral-equivalence key has no built representative:")),
       true,
       `${dimension}: a new key must fail closed without a representative`,
@@ -189,11 +197,11 @@ test("every key dimension creates an uncovered class until a built representativ
 test("coverage validator rejects unmapped and multiply mapped leaves", () => {
   const leafIds = Object.keys(CLI_LEAVES);
   const missing = BEHAVIOR_ASSIGNMENTS.filter((row) => row.leafId !== "setup");
-  assert.equal(validateBehaviorCoverage(leafIds, missing, BUILT_REPRESENTATIVE_IDS).includes("leaf has no behavioral-equivalence key: setup"), true);
+  assert.equal(validateBehaviorCoverage(leafIds, missing, BUILT_KEY_REPRESENTATIVE_IDS).includes("leaf has no behavioral-equivalence key: setup"), true);
 
   const duplicated = [...BEHAVIOR_ASSIGNMENTS, BEHAVIOR_ASSIGNMENTS[0]!];
   assert.equal(
-    validateBehaviorCoverage(leafIds, duplicated, BUILT_REPRESENTATIVE_IDS)
+    validateBehaviorCoverage(leafIds, duplicated, BUILT_KEY_REPRESENTATIVE_IDS)
       .includes("leaf has 2 behavioral-equivalence keys: bundleLocate"),
     true,
   );

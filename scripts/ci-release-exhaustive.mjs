@@ -2,11 +2,14 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { isMainModule } from "./is-main-module.mjs";
 import { verifyExhaustiveReleaseProof } from "./release-packet-exhaustive-proof.mjs";
 
-function git(...args) {
-  const result = spawnSync("git", args, { encoding: "utf8" });
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function git(root, ...args) {
+  const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr.trim() || `git ${args.join(" ")} failed`);
   return result.stdout.trim();
 }
@@ -19,14 +22,14 @@ export function parseExpectedSha(argv) {
   return argv[1];
 }
 
-export function assertExactCheckout(expectedSha) {
-  const head = git("rev-parse", "HEAD");
+export function assertExactCheckout(expectedSha, root = repoRoot) {
+  const head = git(root, "rev-parse", "HEAD");
   if (expectedSha && head !== expectedSha) {
     throw new Error(`exhaustive release proof expected ${expectedSha}, checked out ${head}`);
   }
   if (expectedSha) {
-    const dirty = git("status", "--porcelain", "--untracked-files=no");
-    if (dirty) throw new Error("exact-SHA exhaustive release proof requires a clean tracked checkout");
+    const dirty = git(root, "status", "--porcelain", "--untracked-files=all");
+    if (dirty) throw new Error("exact-SHA exhaustive release proof requires a clean checkout");
   }
   return head;
 }

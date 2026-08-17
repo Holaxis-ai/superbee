@@ -111,6 +111,7 @@ export function createRetainedVerifierCache({ verifier = verifyRetainedTarball }
     const identity = {
       tarball_sha256: await fileSha256(tarball),
       candidate_manifest_sha256: await fileSha256(manifest),
+      targets_path: path.resolve(targetsPath),
       release_targets_sha256: await fileSha256(targetsPath),
     };
     return { key: canonicalJsonString(identity, "retained verifier cache identity"), identity };
