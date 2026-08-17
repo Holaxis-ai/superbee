@@ -174,13 +174,22 @@ function mcpCapability(input: SetupPlanInput): SetupCapability {
       reason: "the host registration matches this durable Superbee install",
     };
   }
-  if (input.mcp.state === "absent" || input.mcp.state === "owned_stale" || input.mcp.state === "known_legacy") {
+  if (input.mcp.state === "absent" || input.mcp.state === "owned_stale") {
     return {
       id: "mcp",
       requirement: "required",
       state: "needs_action",
       reason: input.mcp.reason,
       command: `superbee mcp install --host ${input.host}`,
+    };
+  }
+  if (input.mcp.state === "known_legacy") {
+    return {
+      id: "mcp",
+      requirement: "required",
+      state: "blocked",
+      reason: input.mcp.reason,
+      command: `superbee mcp status --host ${input.host}`,
     };
   }
   return {

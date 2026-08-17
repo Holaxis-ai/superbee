@@ -74,6 +74,17 @@ test("foreign integration state fails closed onto a read-only inspector", () => 
   assert.equal(mcp.next?.action, "inspect");
   assert.equal(mcp.next?.command, "superbee mcp status --host claude-desktop");
 
+  const legacyMcp = buildSetupPlan(input({
+    host: "claude-code",
+    mcp: { state: "known_legacy", reason: "registration 'aslite-views' is a legacy candidate" },
+  }));
+  assert.equal(legacyMcp.next?.action, "inspect");
+  assert.equal(legacyMcp.next?.command, "superbee mcp status --host claude-code");
+  assert.equal(
+    legacyMcp.capabilities.find((row) => row.id === "mcp")?.state,
+    "blocked",
+  );
+
   for (const host of ["codex", "claude-code"] as const) {
     const hook = buildSetupPlan(input({
       host,
