@@ -516,7 +516,51 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the exact published @holaxis/aslite pre.3 OpenCode generator is reconstructed solely for migration ownership",
-      "line": 669
+      "line": 667
+    },
+    {
+      "file": "packages/cli/src/commands/hook.ts",
+      "line_sha256": "e78682401c7584245d604bca2519ab2b320fe5e9a3deb8b1dc938716801fbdc2",
+      "literal": "aslite",
+      "ordinal": 0,
+      "category": "legacy-command-compatibility",
+      "treatment": "preserve-as-read-only-migration-candidate",
+      "owner": "cli-policy",
+      "reason": "the published pre.3 migration recognizer accepts only the two bare command names that the old hook writer could emit",
+      "line": 674
+    },
+    {
+      "file": "packages/cli/src/commands/hook.ts",
+      "line_sha256": "e78682401c7584245d604bca2519ab2b320fe5e9a3deb8b1dc938716801fbdc2",
+      "literal": "agentstate-lite",
+      "ordinal": 0,
+      "category": "legacy-command-compatibility",
+      "treatment": "preserve-as-read-only-migration-candidate",
+      "owner": "cli-policy",
+      "reason": "the published pre.3 migration recognizer accepts only the two bare command names that the old hook writer could emit",
+      "line": 674
+    },
+    {
+      "file": "packages/cli/src/commands/hook.ts",
+      "line_sha256": "74595964ac7a39ec350cb08471dd00ce95bb1b844c11ecd5522c2dc16ae4888f",
+      "literal": "aslite",
+      "ordinal": 0,
+      "category": "legacy-command-compatibility",
+      "treatment": "preserve-as-read-only-migration-candidate",
+      "owner": "cli-policy",
+      "reason": "the published pre.3 migration recognizer accepts only the canonical absolute old-package entry path",
+      "line": 677
+    },
+    {
+      "file": "packages/cli/src/commands/hook.ts",
+      "line_sha256": "74595964ac7a39ec350cb08471dd00ce95bb1b844c11ecd5522c2dc16ae4888f",
+      "literal": "agentstate-lite",
+      "ordinal": 0,
+      "category": "legacy-command-compatibility",
+      "treatment": "preserve-as-read-only-migration-candidate",
+      "owner": "cli-policy",
+      "reason": "the published pre.3 migration recognizer accepts only the canonical absolute old-package entry path",
+      "line": 677
     },
     {
       "file": "packages/cli/src/mcp-install-targets.ts",
