@@ -239,7 +239,7 @@ function hookCapability(input: SetupPlanInput): SetupCapability {
           command: "superbee hook status --scope project",
         };
       }
-      if (input.projectHook.compatibility.state === "unmanaged") {
+      if (input.host === "opencode" && input.projectHook.compatibility.state === "unmanaged") {
         return {
           id: "hook",
           requirement: "recommended",

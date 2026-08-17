@@ -94,6 +94,19 @@ test("foreign integration state fails closed onto a read-only inspector", () => 
   assert.equal(openCodeHook.next?.action, "inspect");
   assert.equal(openCodeHook.next?.command, "superbee hook status --scope user");
 
+  for (const host of ["codex", "claude-code"] as const) {
+    const foreignProjectHook = buildSetupPlan(input({
+      host,
+      projectHook: {
+        installed: false,
+        installSafe: true,
+        compatibility: { state: "unmanaged", reason: "foreign project hook coexists" },
+      },
+    }));
+    assert.equal(foreignProjectHook.complete, true, host);
+    assert.equal(foreignProjectHook.next, undefined, host);
+  }
+
   const staleProjectHook = buildSetupPlan(input({
     projectHook: {
       installed: true,
