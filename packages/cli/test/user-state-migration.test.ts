@@ -11,10 +11,12 @@ import { loadCredentials, saveApiKeyForOrigin } from "../src/credentials.js";
 import { CliError } from "../src/errors.js";
 import {
   canonicalUserStateDir,
+  inspectCanonicalUserStateRoot,
   legacyUserStateDir,
   readUserStateMarker,
   supersededUserStateDirs,
   USER_STATE_MARKER_BYTES,
+  USER_STATE_QUARANTINE_COMMAND,
   userStateDirForPackage,
 } from "../src/user-state.js";
 import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
@@ -196,6 +198,13 @@ test("migration draws from an ORDERED source list, so every superseded root is c
     );
     assert.equal(await readFile(join(canonical, "view-authorizations", authorizationName), "utf8"), `${authorization}\n`);
     assert.equal(await readUserStateMarker(root), USER_STATE_MARKER_BYTES);
+
+    // A MIGRATED root must end up as unstageable as one created by `ensureUserStateRoot`: the
+    // promised total .gitignore lands after the marker and the journal removal, never during the
+    // exact-topology staging that would have seen it as foreign stock.
+    assert.equal(await readFile(join(canonical, ".gitignore"), "utf8"), "*\n");
+    assert.equal((await stat(join(canonical, ".gitignore"))).mode & 0o777, 0o600);
+    assert.equal(await absent(join(canonical, ".migration.json")), true, "the journal is gone");
 
     // Every source is PRESERVED, never moved or deleted.
     assert.equal(await absent(join(bridge, "catalog.json")), false);
@@ -418,5 +427,66 @@ test("migration rejects symlinked roots, non-regular legacy records, and unexpec
     assert.equal(await absent(join(canonicalUserStateDir(staged), "state.json")), true);
   } finally {
     await Promise.all([linked, fifoHome, staged].map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
+/** Run one emitted shell remediation EXACTLY as printed, under a throwaway $HOME. */
+async function runEmittedShell(command: string, home: string): Promise<number> {
+  return new Promise((resolveRun) => {
+    execFile("/bin/sh", ["-c", command], { env: { ...process.env, HOME: home } }, (error) => {
+      resolveRun(error ? (error as NodeJS.ErrnoException & { code?: number }).code as number ?? 1 : 0);
+    });
+  });
+}
+
+/**
+ * The quarantine remediation is only an exit node if it actually EXECUTES from the states that
+ * emit it. A fixed `.unrecognized` destination fails outright against a pre-existing regular file
+ * (leaving the block un-cleared) and cannot run twice, so this runs the emitted string verbatim
+ * against both collisions and re-inspects afterwards.
+ */
+test("the emitted quarantine command executes and clears the block even against a colliding name", async () => {
+  const collidingFile = await home();
+  const collidingDir = await home();
+  const twice = await home();
+  try {
+    for (const [label, root, collide] of [
+      ["pre-existing file", collidingFile, "file"],
+      ["pre-existing directory", collidingDir, "dir"],
+    ] as const) {
+      const canonical = canonicalUserStateDir(root);
+      await mkdir(canonical, { mode: 0o700 });
+      await writeLegacy(join(canonical, "state.json"), "{\"product\":\"foreign\"}\n");
+      const collision = `${canonical}.unrecognized`;
+      if (collide === "file") await writeFile(collision, "PRIOR EVIDENCE\n", { mode: 0o600 });
+      else await mkdir(collision, { mode: 0o700 });
+      assert.equal(await inspectCanonicalUserStateRoot(root), "conflict", label);
+
+      assert.equal(await runEmittedShell(USER_STATE_QUARANTINE_COMMAND, root), 0, label);
+      assert.equal(await inspectCanonicalUserStateRoot(root), "absent", `${label}: the block is cleared`);
+      if (collide === "file") {
+        assert.equal(await readFile(collision, "utf8"), "PRIOR EVIDENCE\n", `${label}: prior evidence survives`);
+      }
+      const quarantined = (await readdir(root)).filter((entry) => entry.startsWith(".superbee-state.unrecognized."));
+      assert.equal(quarantined.length, 1, `${label}: exactly one fresh quarantine destination`);
+      assert.deepEqual(await readdir(join(root, quarantined[0]!)), [".superbee-state"], label);
+      assert.equal((await stat(join(root, quarantined[0]!))).mode & 0o777, 0o700, `${label}: private mode`);
+    }
+
+    // Twice in a row: the second run must not collide with the first run's own output.
+    for (const round of ["first", "second"]) {
+      const canonical = canonicalUserStateDir(twice);
+      await mkdir(canonical, { mode: 0o700 });
+      await writeLegacy(join(canonical, "state.json"), `{"round":"${round}"}\n`);
+      assert.equal(await runEmittedShell(USER_STATE_QUARANTINE_COMMAND, twice), 0, round);
+      assert.equal(await inspectCanonicalUserStateRoot(twice), "absent", round);
+    }
+    assert.equal(
+      (await readdir(twice)).filter((entry) => entry.startsWith(".superbee-state.unrecognized.")).length,
+      2,
+      "each run gets its own destination — no evidence is overwritten",
+    );
+  } finally {
+    await Promise.all([collidingFile, collidingDir, twice].map((dir) => rm(dir, { recursive: true, force: true })));
   }
 });

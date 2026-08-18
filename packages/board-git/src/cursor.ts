@@ -286,6 +286,12 @@ export interface SyncStoreOptions {
   writeAtomic: (dir: string, fileName: string, content: string) => Promise<void>;
 }
 
+/**
+ * The one spelling of the conflict-export subdirectory under a sync state directory. Exported so a
+ * consumer can name the whole export tree without re-spelling it.
+ */
+export const SYNC_EXPORTS_DIR_NAME = "exports";
+
 /** The per-bundle sync state store — ONE owning implementation behind {@link createSyncStore}. */
 export interface SyncStore {
   /** The absolute state-file path for `key`. */
@@ -326,7 +332,7 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
   const stateDir = (): string =>
     typeof options.stateDir === "function" ? options.stateDir() : options.stateDir;
   const statePath = (key: string): string => join(stateDir(), `${keyDigest(key)}.json`);
-  const exportsDir = (key: string): string => join(stateDir(), "exports", keyDigest(key));
+  const exportsDir = (key: string): string => join(stateDir(), SYNC_EXPORTS_DIR_NAME, keyDigest(key));
   const readText = options.readText ?? ((file: string) => readFile(file, "utf8"));
 
   /**

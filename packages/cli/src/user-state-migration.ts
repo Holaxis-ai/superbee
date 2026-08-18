@@ -23,6 +23,7 @@ import { assertMigratableCredentials, CRED_FILE_NAME } from "./credentials.js";
 import { CliError } from "./errors.js";
 import {
   canonicalUserStateDir,
+  ensureStateRootGitignore,
   inspectCanonicalUserStateRoot,
   LEGACY_BRIDGE_PACKAGE_NAME,
   legacyUserStateDir,
@@ -430,5 +431,8 @@ export async function migrateUserState(
   }
   await unlink(join(root, MIGRATION_JOURNAL_FILE_NAME)).catch(() => {});
   await chmod(root, DIR_MODE);
+  // The exact-topology assertions above are over, so the promised `*` .gitignore can finally be
+  // published: a migrated root must be as unstageable as one created by `ensureUserStateRoot`.
+  await ensureStateRootGitignore(root);
   return receipt("migrated", true, records);
 }

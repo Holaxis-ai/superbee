@@ -17,8 +17,6 @@
 // "product kind + opt-in convention"): this command works whether or not a bundle declares the
 // Artifact Convention — strict validation applies only when it does. This is NOT a thin alias for
 // the generic path (the reason `note` was deleted): it owns a fumble-prone multi-step sequence.
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import { parseArgs } from "node:util";
 import {
   loadKinds,
@@ -37,7 +35,7 @@ import { resolveActor } from "../actor.js";
 import { render, type OutputMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
-import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { readExternalFileBytes } from "../external-file.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
@@ -123,8 +121,6 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
       help: `${cliInvocation()} artifact create <file> --title <title>`,
     });
   }
-  // The byte channel must not carry private operational state into publishable bundle content.
-  assertPathOutsidePrivateState(path.resolve(file));
   const title = (values.title as string | undefined)?.trim();
   if (!title) {
     throw new CliError("USAGE", "artifact create requires --title <title>", {
@@ -136,8 +132,10 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   // nothing created.
   let bytes: Buffer;
   try {
-    bytes = await fs.readFile(file);
+    bytes = await readExternalFileBytes(file);
   } catch (err) {
+    // A private-state boundary refusal is a CONFLICT verdict, not an I/O failure.
+    if (err instanceof CliError) throw err;
     if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
       throw new CliError("USAGE", `no such file: '${file}'`, {
         help: `${cliInvocation()} artifact create <file> --title <title>`,

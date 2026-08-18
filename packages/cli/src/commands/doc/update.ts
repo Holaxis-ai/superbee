@@ -1,7 +1,6 @@
 // `doc update <id>` — the field-level PATCH verb; see `../doc.ts`'s header comment for the full
 // rationale (Fork 1/Fork 2 of `plans/kind-aware-doc-surface.md`). Dynamic fields also accept the
 // version-aware logical aliases declared by core's Kind field-coordinate policy.
-import { promises as fs } from "node:fs";
 import { parseArgs } from "node:util";
 import {
   loadKinds,
@@ -22,6 +21,7 @@ import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../../legacy-page.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
 import { resolveActor } from "../../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
+import { readExternalTextFile } from "../../external-file.js";
 import {
   DOC_UPDATE_USAGE,
   type DocCliDeps,
@@ -348,7 +348,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
 
       let nextBody = existing.body;
       if (p.body !== undefined) nextBody = p.body;
-      else if (p.bodyFile) nextBody = await fs.readFile(p.bodyFile, "utf8");
+      else if (p.bodyFile) nextBody = await readExternalTextFile(p.bodyFile);
       else if (stdinBody !== undefined) nextBody = stdinBody;
 
       // Link-drop guard (data loss): a body replace must not silently drop outbound cross-links the

@@ -27,6 +27,7 @@ import {
   relateToPrivateState,
   type PrivateStateRelation,
 } from "../src/private-state-bundle-boundary.js";
+import { syncExportsRoot } from "../src/cursor.js";
 import {
   canonicalUserStateDir,
   ensureUserStateRoot,
@@ -424,6 +425,11 @@ test("every byte-channel crossing point refuses a private-state path", async () 
       ["sync --show-incoming --out", ["sync", "--show-incoming", "notes/a", "--out", path.join(stateRoot, "incoming.md"), "--dir", ".superbee", "--json"]],
       // Nested destinations are the same boundary, not a special case.
       ["doc read --out (nested)", ["doc", "read", "notes/a", "--out", path.join(stateRoot, "deep", "nested.md"), "--dir", ".superbee", "--json"]],
+      // `--body-file` is byte INGRESS, exactly like the source positionals above: all three verbs
+      // acquire caller-supplied bytes through the one guarded reader in `external-file.ts`.
+      ["doc write --body-file", ["doc", "write", "leak/written", "--type", "Note", "--body-file", credential, "--dir", ".superbee", "--json"]],
+      ["doc update --body-file", ["doc", "update", "notes/a", "--body-file", credential, "--dir", ".superbee", "--json"]],
+      ["new --body-file", ["new", "Context Note", "leak-scaffolded", "--title", "Leak", "--body-file", credential, "--dir", ".superbee", "--json"]],
     ];
     for (const [label, argv] of sites) {
       const result = run(process.execPath, [CLI, ...argv], project, { HOME: home });
@@ -439,6 +445,83 @@ test("every byte-channel crossing point refuses a private-state path", async () 
     const listed = run(process.execPath, [CLI, "list", "--dir", ".superbee", "--json"], project, { HOME: home });
     assert.equal(listed.status, 0, listed.stderr || listed.stdout);
     assert.doesNotMatch(listed.stdout, /leak/, "no refused source positional reached the bundle");
+    // A refused `doc update --body-file` must also leave the TARGET's existing body intact — the
+    // refusal has to land before the patch, not after a partial write.
+    assert.equal(
+      readFileSync(path.join(project, ".superbee", "notes", "a.md"), "utf8").includes("api_key"),
+      false,
+      "no private-state byte reached an existing document",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The ingress guard's ONE exemption, pinned by its exact edge: sync exports the local version of a
+ * conflicted BUNDLE document into `<state>/sync/exports/…` and then emits
+ * `doc update --body-file <that export>` as the reconcile chain, so those bytes must read back. Its
+ * SIBLING — the per-bundle sync state file one directory up — must not.
+ */
+test("the ingress guard exempts sync's conflict exports and nothing beside them", async () => {
+  const root = scratch();
+  try {
+    const { home, project, stateRoot } = await crossingFixture(root);
+    const exported = path.join(syncExportsRoot(home), "abc123", "notes", "a.md");
+    mkdirSync(path.dirname(exported), { recursive: true, mode: 0o700 });
+    writeFileSync(exported, "# Yours\n\nthe local version sync saved\n", { mode: 0o600 });
+    // A sibling under the same sync state directory, one level ABOVE the exports tree.
+    const syncState = path.join(stateRoot, "sync", "abc123.json");
+    writeFileSync(syncState, '{"schema_version":1}\n', { mode: 0o600 });
+
+    const reconciled = run(
+      process.execPath,
+      [CLI, "doc", "update", "notes/a", "--body-file", exported, "--dir", ".superbee", "--json"],
+      project,
+      { HOME: home },
+    );
+    assert.equal(reconciled.status, 0, reconciled.stderr || reconciled.stdout);
+    const read = run(process.execPath, [CLI, "doc", "read", "notes/a", "--dir", ".superbee", "--json"], project, { HOME: home });
+    assert.match(read.stdout, /the local version sync saved/, "the exported bundle content reads back");
+
+    const refused = run(
+      process.execPath,
+      [CLI, "doc", "update", "notes/a", "--body-file", syncState, "--dir", ".superbee", "--json"],
+      project,
+      { HOME: home },
+    );
+    assert.equal(refused.status, 5, refused.stderr || refused.stdout);
+    assert.match(refused.stdout, /private user-state directory/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The positive control for the ingress guard: the SAME three verbs, the same flag, an ordinary
+ * project file. A guard that refused everything would satisfy the refusal table above.
+ */
+test("the --body-file ingress still reads an ordinary project file", async () => {
+  const root = scratch();
+  try {
+    const { home, project } = await crossingFixture(root);
+    const source = path.join(project, "body.md");
+    writeFileSync(source, "# Summary\n\nordinary project content\n");
+
+    const sites: Array<[string, string[]]> = [
+      ["doc write --body-file", ["doc", "write", "notes/from-file", "--type", "Note", "--body-file", source, "--dir", ".superbee", "--json"]],
+      ["doc update --body-file", ["doc", "update", "notes/a", "--body-file", source, "--dir", ".superbee", "--json"]],
+      ["new --body-file", ["new", "Context Note", "from-file", "--title", "From File", "--body-file", source, "--dir", ".superbee", "--json"]],
+    ];
+    for (const [label, argv] of sites) {
+      const result = run(process.execPath, [CLI, ...argv], project, { HOME: home });
+      assert.equal(result.status, 0, `${label}: ${result.stderr || result.stdout}`);
+    }
+    for (const id of ["notes/from-file", "notes/a", "context-notes/from-file"]) {
+      const read = run(process.execPath, [CLI, "doc", "read", id, "--dir", ".superbee", "--json"], project, { HOME: home });
+      assert.equal(read.status, 0, read.stderr || read.stdout);
+      assert.match(read.stdout, /ordinary project content/, id);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

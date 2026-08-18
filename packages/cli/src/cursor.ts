@@ -18,6 +18,7 @@ import {
   bundleKey,
   REANCHOR_NOTE,
   SELF_ACTORS_CAP,
+  SYNC_EXPORTS_DIR_NAME,
   type AwarenessCache,
   type AwarenessDeltaRow,
   type BoardPendingMarker,
@@ -80,6 +81,15 @@ export function syncStatePath(key: string, home: string = homedir()): string {
  */
 export function syncExportsDir(key: string, home: string = homedir()): string {
   return storeForHome(home).exportsDir(key);
+}
+
+/**
+ * `~/.superbee-state/sync/exports` — the parent of every per-bundle conflict-export directory.
+ * Everything under it is BUNDLE content sync exported, which is why it is the one part of private
+ * state the caller-supplied-content reader may acquire from (see `external-file.ts`).
+ */
+export function syncExportsRoot(home: string = homedir()): string {
+  return join(syncStateDir(home), SYNC_EXPORTS_DIR_NAME);
 }
 
 /**

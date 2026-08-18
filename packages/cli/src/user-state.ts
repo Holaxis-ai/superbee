@@ -61,9 +61,15 @@ export const USER_STATE_DIR_DISPLAY = `~/${SUPERBEE_USER_STATE_PATH_SEGMENTS.joi
 /**
  * The one exit node out of an unrecognized or half-created canonical root: quarantine by RENAME so
  * the evidence survives inspection. Never a delete, and never a bare rerun of the failing command.
+ *
+ * The destination is a FRESH `mktemp -d` directory rather than a fixed `.unrecognized` name: a
+ * fixed name fails outright against a pre-existing regular file (leaving the block un-cleared, so
+ * the command is no exit node at all) and refuses a second run against its own earlier output. A
+ * per-run unique 0700 destination is collision-free on repeat, never overwrites prior evidence, and
+ * still starts with `mv`.
  */
 export const USER_STATE_QUARANTINE_COMMAND =
-  `mv ${USER_STATE_DIR_DISPLAY} ${USER_STATE_DIR_DISPLAY}.unrecognized`;
+  `mv ${USER_STATE_DIR_DISPLAY} "$(mktemp -d ${USER_STATE_DIR_DISPLAY}.unrecognized.XXXXXX)"/`;
 
 export const LEGACY_USER_STATE_DIR_NAME = ".agentstate";
 export const LEGACY_BRIDGE_PACKAGE_NAME = "@holaxis/aslite";
@@ -208,11 +214,12 @@ export async function writeFileAtomic0600(
 /**
  * A state root that some git work tree already encloses must not be offered up by `git add -A`.
  * Written opportunistically on every ensure so roots created by earlier versions gain it, strictly
- * AFTER the ownership assertion (a foreign or half-created root never receives product bytes), and
- * never during migration staging, which asserts an exact topology and does not run through ensure.
+ * AFTER the ownership assertion (a foreign or half-created root never receives product bytes).
+ * Migration calls it too, but only once its exact-topology assertions and journal removal are
+ * complete — never during staging, which would see the file as foreign stock.
  * Inert for an ALREADY-TRACKED root, which is why it is hardening rather than the whole answer.
  */
-async function ensureStateRootGitignore(root: string): Promise<void> {
+export async function ensureStateRootGitignore(root: string): Promise<void> {
   try {
     if (await readPrivateStateFile(join(root, STATE_ROOT_GITIGNORE_FILE_NAME), 64) === STATE_ROOT_GITIGNORE_BYTES) return;
   } catch {

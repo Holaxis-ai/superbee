@@ -1,7 +1,6 @@
 // `doc write <id>` — see `../doc.ts`'s header comment for the full F1 (P1, data loss) rationale and
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
-import { promises as fs } from "node:fs";
 import { loadKinds, type Frontmatter, type OkfDocument } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
@@ -14,6 +13,7 @@ import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../../legacy-page.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
 import { resolveActor } from "../../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
+import { readExternalTextFile } from "../../external-file.js";
 import {
   DOC_WRITE_USAGE,
   type DocCliDeps,
@@ -89,7 +89,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     body = values.body;
     bodySourceGiven = true;
   } else if (values["body-file"]) {
-    body = await fs.readFile(values["body-file"], "utf8");
+    body = await readExternalTextFile(values["body-file"]);
     bodySourceGiven = true;
   } else {
     const stdinRead = await readStdin();
