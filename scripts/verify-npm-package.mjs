@@ -1103,11 +1103,11 @@ async function runInstalledProof(spec) {
       assert.match(migrationOutput, /status: migrated/);
       assert.equal(await readFile(path.join(legacyState, "catalog.json"), "utf8"), legacyCatalog);
       assert.equal(
-        await readFile(path.join(home, ".config", "superbee", "catalog.json"), "utf8"),
+        await readFile(path.join(home, ".superbee-state", "catalog.json"), "utf8"),
         legacyCatalog,
       );
       assert.equal(
-        await readFile(path.join(home, ".config", "superbee", "state.json"), "utf8"),
+        await readFile(path.join(home, ".superbee-state", "state.json"), "utf8"),
         '{"product":"superbee","schema_version":1}\n',
       );
       const setupAfterMigration = parseJson(
