@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertStrictSemver, compareStrictSemver } from "./strict-semver.mjs";
+import { assertStrictSemver, compareStrictSemver, parseStrictSemver } from "./strict-semver.mjs";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(scriptPath), "..");
@@ -159,6 +159,17 @@ function canonicalJson(value) {
   return canonicalJsonString(value, "cutover policy surface");
 }
 
+function prereleasesExactStable(previewVersion, stableVersion) {
+  const preview = parseStrictSemver(previewVersion);
+  const stable = parseStrictSemver(stableVersion);
+  if (!preview || !stable) return false;
+  return preview.prerelease !== null
+    && stable.prerelease === null
+    && preview.major === stable.major
+    && preview.minor === stable.minor
+    && preview.patch === stable.patch;
+}
+
 /**
  * The slice of a normalized manifest a human reviewer approves for the cutover: who publishes,
  * with what release authority, under which publication policy. Versions and tags are deliberately
@@ -299,17 +310,17 @@ function normalizeManifestStructure(raw, burnedVersions) {
       `reviewed stable successor tuple version ${stableSuccessor.version} must be at or above functional successor floor ${functionalSuccessorFloor}`,
     );
   }
-  // The preview must order ABOVE the stable it accompanies. successor-stable takes `latest` and
-  // successor-preview takes `next`, and at-rest policy requires next to sit at or ahead of latest, so
-  // an inverted pair can never reach a settled state. This is easy to declare by accident: pairing
-  // stable 0.1.1 with preview 0.1.1-pre.3 reads as "the next free number on that line", but a
-  // prerelease sorts BELOW its own release, so `next` would point behind `latest` and the at-rest
-  // audit fails with next_off_policy. Rejecting it here means the manifest cannot express the
-  // mistake at all, instead of it surfacing later as a confusing dist-tag violation.
+  // A preview may lead into the planned stable on the same version line, or it may open a later
+  // line. Anything older cannot be the stable successor's preview and would leave `next` behind
+  // `latest` once the stable release is promoted.
   const previewSuccessor = allowedTuples["successor-preview"];
-  if (previewSuccessor && compareStrictSemver(previewSuccessor.version, stableSuccessor.version) !== 1) {
+  if (
+    previewSuccessor
+    && compareStrictSemver(previewSuccessor.version, stableSuccessor.version) !== 1
+    && !prereleasesExactStable(previewSuccessor.version, stableSuccessor.version)
+  ) {
     throw new Error(
-      `reviewed successor-preview version ${previewSuccessor.version} must order ABOVE successor-stable ${stableSuccessor.version}; a prerelease sorts below its own release, so next would point behind latest`,
+      `reviewed successor-preview version ${previewSuccessor.version} must order ABOVE successor-stable ${stableSuccessor.version} or prerelease that exact stable version`,
     );
   }
   return {
