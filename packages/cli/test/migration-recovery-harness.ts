@@ -122,7 +122,7 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
   const root = await realpath(await mkdtemp(path.join(tmpdir(), `superbee-migration-${topology}-`)));
   const home = path.join(root, "home");
   const project = path.join(root, "project");
-  const stateRoot = path.join(home, ".agentstate", "migrations", "superbee");
+  const stateRoot = path.join(home, ".superbee", "migrations", "superbee");
   const unrelatedPath = path.join(root, "unrelated.bin");
   const unrelatedBytes = Buffer.from([0x75, 0x6e, 0x72, 0x65, 0x6c, 0x00, 0xff]);
   await mkdir(home, { recursive: true });
@@ -142,7 +142,7 @@ export async function createMigrationFixture(topology: MigrationTopology): Promi
     bindingPath = path.join(project, ".agentstate.json");
     canonicalBindingPath = path.join(project, ".superbee.json");
     await writeFile(bindingPath, `${JSON.stringify({ bundle: source }, null, 2)}\n`, "utf8");
-    catalogPath = path.join(home, ".agentstate", "catalog.json");
+    catalogPath = path.join(home, ".superbee", "catalog.json");
     await mkdir(path.dirname(catalogPath), { recursive: true });
     await writeFile(
       catalogPath,

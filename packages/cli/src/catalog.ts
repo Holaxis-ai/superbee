@@ -1,18 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
+import { open, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 import { resolveLocalBundleTarget } from "./bundle.js";
-import { credentialsDir, writeFileAtomic0600 } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
+import {
+  ensurePrivateUserStateDirectory,
+  legacyUserStateDir,
+  readPrivateStateFile,
+  readUserStateText,
+  userStateDir,
+  writeFileAtomic0600,
+} from "./user-state.js";
 
 export const CATALOG_FILE_NAME = "catalog.json";
 export const CATALOG_LOCK_FILE_NAME = "catalog.lock";
 export const CATALOG_SCHEMA_VERSION = 1;
 
-const DIR_MODE = 0o700;
 const LOCK_MODE = 0o600;
 const DEFAULT_LOCK_WAIT_MS = 2_000;
 const DEFAULT_LOCK_POLL_MS = 25;
@@ -59,7 +65,7 @@ interface MutationResult<T> {
 }
 
 function catalogDir(home: string): string {
-  return credentialsDir(home);
+  return userStateDir(home);
 }
 
 export function catalogPath(home: string = homedir()): string {
@@ -68,6 +74,10 @@ export function catalogPath(home: string = homedir()): string {
 
 export function catalogLockPath(home: string = homedir()): string {
   return path.join(catalogDir(home), CATALOG_LOCK_FILE_NAME);
+}
+
+function legacyCatalogPath(home: string): string {
+  return path.join(legacyUserStateDir(home), CATALOG_FILE_NAME);
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -165,20 +175,16 @@ export function parseCatalog(raw: string, file: string): CatalogFile {
 
 export async function loadCatalog(home: string = homedir(), signal?: AbortSignal): Promise<CatalogFile> {
   const file = catalogPath(home);
-  let raw: string;
+  let selected;
   try {
-    if (!(await stat(file)).isFile()) {
-      throw new CliError("RUNTIME", `workspace catalog ${file} is not a regular file`);
-    }
-    raw = await readFile(file, { encoding: "utf8", signal });
+    selected = await readUserStateText(file, legacyCatalogPath(home), signal);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { schema_version: CATALOG_SCHEMA_VERSION, entries: [] };
-    }
     if (err instanceof CliError) throw err;
-    throw new CliError("RUNTIME", `could not read workspace catalog ${file}: ${err instanceof Error ? err.message : String(err)}`);
+    const failedPath = (err as NodeJS.ErrnoException).path ?? file;
+    throw new CliError("RUNTIME", `could not read workspace catalog ${failedPath}: ${err instanceof Error ? err.message : String(err)}`);
   }
-  return parseCatalog(raw, file);
+  if (!selected) return { schema_version: CATALOG_SCHEMA_VERSION, entries: [] };
+  return parseCatalog(selected.content, selected.path);
 }
 
 function defaultProcessExists(pid: number): boolean {
@@ -224,8 +230,9 @@ async function acquireCatalogLock(options: CatalogOptions): Promise<() => Promis
   const token = randomUUID();
   const started = now();
 
-  await mkdir(dir, { recursive: true, mode: DIR_MODE });
-  await chmod(dir, DIR_MODE);
+  // Validate the canonical product root BEFORE lock creation. A symlink here must never route
+  // chmod, catalog.lock, or catalog bytes into the read-only legacy root.
+  await ensurePrivateUserStateDirectory(dir);
 
   while (true) {
     try {
@@ -242,7 +249,7 @@ async function acquireCatalogLock(options: CatalogOptions): Promise<() => Promis
       await handle.close();
       return async () => {
         try {
-          const current = readLockMetadata(await readFile(lockPath, "utf8"));
+          const current = readLockMetadata(await readPrivateStateFile(lockPath));
           if (current?.token === token) await unlink(lockPath);
         } catch (err) {
           if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -255,7 +262,7 @@ async function acquireCatalogLock(options: CatalogOptions): Promise<() => Promis
     let owner: LockMetadata | null = null;
     let malformedAgeMs: number | null = null;
     try {
-      owner = readLockMetadata(await readFile(lockPath, "utf8"));
+      owner = readLockMetadata(await readPrivateStateFile(lockPath));
       if (!owner) malformedAgeMs = now() - (await stat(lockPath)).mtimeMs;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") continue;

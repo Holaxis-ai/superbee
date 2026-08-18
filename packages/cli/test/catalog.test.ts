@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -16,6 +16,7 @@ import {
   resolveCatalogEntry,
 } from "../src/catalog.js";
 import { CliError } from "../src/errors.js";
+import { legacyUserStateDir } from "../src/user-state.js";
 
 async function fixture(): Promise<{ root: string; home: string; first: string; second: string }> {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-test-")));
@@ -44,6 +45,61 @@ test("catalog add is durable, private, sorted, and idempotent for the same label
     assert.deepEqual((await loadCatalog(f.home)).entries.map((entry) => entry.label), ["alpha", "zeta"]);
     assert.equal((await stat(path.dirname(catalogPath(f.home)))).mode & 0o777, 0o700);
     assert.equal((await stat(catalogPath(f.home))).mode & 0o777, 0o600);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("a legacy catalog is read-only fallback and migrates atomically on the next catalog mutation", async () => {
+  const f = await fixture();
+  try {
+    const legacyPath = path.join(legacyUserStateDir(f.home), "catalog.json");
+    const legacy = JSON.stringify({
+      schema_version: 1,
+      entries: [{ id: id("1"), label: "one", locator: { kind: "local-path", path: f.first } }],
+    }, null, 2) + "\n";
+    await mkdir(path.dirname(legacyPath), { recursive: true, mode: 0o755 });
+    await writeFile(legacyPath, legacy, { mode: 0o600 });
+    await chmod(path.dirname(legacyPath), 0o755);
+
+    assert.deepEqual((await loadCatalog(f.home)).entries.map((entry) => entry.label), ["one"]);
+    await assert.rejects(() => stat(catalogPath(f.home)), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+    assert.equal((await stat(path.dirname(legacyPath))).mode & 0o777, 0o755);
+
+    await addCatalogEntry("two", f.second, { home: f.home, createId: () => id("2") });
+    assert.deepEqual((await loadCatalog(f.home)).entries.map((entry) => entry.label), ["one", "two"]);
+    assert.equal(await readFile(legacyPath, "utf8"), legacy);
+    assert.equal((await stat(path.dirname(legacyPath))).mode & 0o777, 0o755);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked canonical root cannot route catalog locking or mutation into legacy state", async () => {
+  const f = await fixture();
+  try {
+    const legacyRoot = legacyUserStateDir(f.home);
+    const legacyPath = path.join(legacyRoot, "catalog.json");
+    const legacy = JSON.stringify({
+      schema_version: 1,
+      entries: [{ id: id("1"), label: "one", locator: { kind: "local-path", path: f.first } }],
+    }, null, 2) + "\n";
+    await mkdir(legacyRoot, { mode: 0o755 });
+    await writeFile(legacyPath, legacy, { mode: 0o600 });
+    await chmod(legacyRoot, 0o755);
+    const legacyMode = (await stat(legacyRoot)).mode & 0o777;
+    await symlink(legacyRoot, path.dirname(catalogPath(f.home)));
+
+    await assert.rejects(
+      addCatalogEntry("two", f.second, { home: f.home, createId: () => id("2") }),
+      /not a real directory/,
+    );
+    assert.equal(await readFile(legacyPath, "utf8"), legacy);
+    assert.equal((await stat(legacyRoot)).mode & 0o777, legacyMode);
+    await assert.rejects(
+      stat(path.join(legacyRoot, "catalog.lock")),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }

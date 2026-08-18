@@ -35,7 +35,7 @@ Domain-neutral operations, typed results, and injected stores/adapters:
   CLI `errors.ts`'s `cliErrorFromBoardGit`, the ONE mapping layer).
 - **State store** (`src/cursor.ts`): `createSyncStore({stateDir, writeAtomic})` — the factory is
   the injection point; the CLI wires the default instance from its own credentials discipline
-  (`~/.agentstate/sync`, `writeFileAtomic0600`). Plus the pure key/schema vocabulary
+  (`~/.superbee/sync`, `writeFileAtomic0600`, with exact-record legacy fallback). Plus the pure key/schema vocabulary
   (`bundleKey`, cursor/cache/marker types).
 - **Neutral engine helpers** (`src/engine.ts`): `retargetBoardInterior`,
   `healStaleRebaseBeforeProvisioning`, `resolveBundleKey`, `toDeltaRows`, `singleActor`,

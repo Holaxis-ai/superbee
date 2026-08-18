@@ -15,7 +15,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdtemp, mkdir, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -30,6 +31,8 @@ import {
   refreshMarker,
   syncStateDir,
   syncStatePath,
+  legacySyncStateDir,
+  legacySyncStatePath,
   writeCache,
   writeCursor,
   writeSyncState,
@@ -38,7 +41,7 @@ import {
   type AwarenessCache,
   type SyncCursor,
 } from "../src/cursor.js";
-import { credentialsDir } from "../src/credentials.js";
+import { userStateDir } from "../src/user-state.js";
 import {
   BUNDLE_DIR,
   boardHead,
@@ -137,7 +140,7 @@ test("cursor: writing a shape-invalid cursor is a programmer error (throws), nev
 
 // ── atomic write + permissions ────────────────────────────────────────────────
 
-test("permissions: state file 0600; sync dir AND ~/.agentstate both 0700; no temp files left behind", async () => {
+test("permissions: state file 0600; sync dir AND ~/.superbee both 0700; no temp files left behind", async () => {
   const home = await tempHome();
   try {
     const key = bundleKey({ remoteUrl: "https://github.com/org/repo", subpath: BUNDLE_DIR, checkoutRoot: "/w/clone-a/.agentstate-lite" });
@@ -146,11 +149,80 @@ test("permissions: state file 0600; sync dir AND ~/.agentstate both 0700; no tem
     const fileMode = (await stat(syncStatePath(key, home))).mode & 0o777;
     assert.equal(fileMode, 0o600, "state file is 0600");
     assert.equal((await stat(syncStateDir(home))).mode & 0o777, 0o700, "sync dir is 0700");
-    assert.equal((await stat(credentialsDir(home))).mode & 0o777, 0o700, "~/.agentstate is 0700");
+    assert.equal((await stat(userStateDir(home))).mode & 0o777, 0o700, "~/.superbee is 0700");
 
     // The O_EXCL temp is renamed over the target — a completed write leaves no `.tmp` strays.
     const entries = await readdir(syncStateDir(home));
     assert.deepEqual(entries, [path.basename(syncStatePath(key, home))]);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("legacy sync state is read without mutation and migrates per bundle on the next canonical write", async () => {
+  const home = await tempHome();
+  try {
+    const key = bundleKey({ root: "/tmp/legacy-bundle" });
+    const legacyCursor = { tier: "git", token: "a".repeat(40) };
+    await mkdir(legacySyncStateDir(home), { recursive: true, mode: 0o755 });
+    const legacyBytes = JSON.stringify({ key, cursor: legacyCursor }, null, 2) + "\n";
+    await writeFile(legacySyncStatePath(key, home), legacyBytes, { mode: 0o600 });
+    await chmod(legacySyncStateDir(home), 0o755);
+    await chmod(path.dirname(legacySyncStateDir(home)), 0o755);
+
+    assert.deepEqual(await readCursor(key, home), legacyCursor);
+    await assert.rejects(() => stat(syncStatePath(key, home)), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+    assert.equal((await stat(legacySyncStateDir(home))).mode & 0o777, 0o755);
+    assert.equal((await stat(path.dirname(legacySyncStateDir(home)))).mode & 0o777, 0o755);
+
+    await writeCache(key, sampleCache(), home);
+    assert.deepEqual(await readCursor(key, home), legacyCursor, "the first canonical write carries the legacy cursor forward");
+    assert.deepEqual(await readCache(key, undefined, home), sampleCache());
+    assert.equal(await readFile(legacySyncStatePath(key, home), "utf8"), legacyBytes);
+    assert.equal((await stat(legacySyncStateDir(home))).mode & 0o777, 0o755);
+
+    await writeFile(
+      legacySyncStatePath(key, home),
+      JSON.stringify({ key, cursor: { tier: "git", token: "b".repeat(40) } }) + "\n",
+    );
+    assert.deepEqual(await readCursor(key, home), legacyCursor, "canonical state wins after migration");
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("canonical symlinks win closed and legacy FIFOs return promptly without blocking", { timeout: 2_000 }, async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink and mkfifo semantics");
+    return;
+  }
+  const home = await tempHome();
+  try {
+    const symlinkKey = bundleKey({ root: "/tmp/symlink-state" });
+    const legacyCursor = { tier: "git", token: "a".repeat(40) };
+    await mkdir(legacySyncStateDir(home), { recursive: true });
+    await writeFile(
+      legacySyncStatePath(symlinkKey, home),
+      JSON.stringify({ key: symlinkKey, cursor: legacyCursor }) + "\n",
+    );
+    await mkdir(syncStateDir(home), { recursive: true });
+    await symlink(legacySyncStatePath(symlinkKey, home), syncStatePath(symlinkKey, home));
+    assert.equal(await readCursor(symlinkKey, home), null, "canonical symlink presence suppresses fallback");
+
+    const fifoKey = bundleKey({ root: "/tmp/fifo-state" });
+    const fifo = legacySyncStatePath(fifoKey, home);
+    execFileSync("mkfifo", [fifo]);
+    let rescued = false;
+    const rescue = setTimeout(() => {
+      rescued = true;
+      void writeFile(fifo, "{}\n").catch(() => {});
+    }, 750);
+    try {
+      assert.equal(await readCursor(fifoKey, home), null);
+      assert.equal(rescued, false, "the nonblocking reader returned before the rescue writer");
+    } finally {
+      clearTimeout(rescue);
+    }
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -429,7 +501,7 @@ test("createSyncStore: injected stateDir + writeAtomic own persistence — reads
     assert.deepEqual(await store.readCursor(key), { tier: "git", token: "a".repeat(40) });
 
     // Persistence went through the INJECTED seams: the write named the injected dir, and the
-    // state file sits under it (nothing under ~/.agentstate).
+    // state file sits under it (nothing under the default ~/.superbee).
     assert.equal(writes.length, 1);
     assert.equal(writes[0]!.dir, stateDir);
     assert.equal(path.dirname(store.statePath(key)), stateDir);

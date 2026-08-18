@@ -90,6 +90,9 @@ export function filesystemMutationLockRoot(portableRoot?: string): string {
   const tempParent = canonicalExistingPath(process.platform === "win32" ? tmpdir() : "/tmp");
   const homeParent = canonicalExistingPath(homedir());
   const ownerKey = runtimeOwnerKey();
+  // These runtime names are a cross-version lock protocol, not product configuration. Old Aslite
+  // and pre-migration Superbee processes must contend with new Superbee processes for the same
+  // physical target; renaming either namespace would split the CAS lock domain.
   const candidates = [
     path.join(tempParent, `agentstate-lite-mutation-locks-${ownerKey}`),
     path.join(homeParent, ".agentstate", `mutation-locks-${ownerKey}`),

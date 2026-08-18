@@ -264,10 +264,10 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
   const home = await mkdtemp(path.join(tmpdir(), "aslite-ws-home-"));
   const bundleRoot = path.join(home, "proj", ".agentstate-lite");
   try {
-    await mkdir(path.join(home, ".agentstate"), { recursive: true });
+    await mkdir(path.join(home, ".superbee"), { recursive: true });
     await mkdir(bundleRoot, { recursive: true });
     await writeFile(
-      path.join(home, ".agentstate", "catalog.json"),
+      path.join(home, ".superbee", "catalog.json"),
       JSON.stringify({
         schema_version: 1,
         entries: [

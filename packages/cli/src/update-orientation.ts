@@ -18,7 +18,7 @@ import {
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
-import { credentialsDir, writeFileAtomic0600 } from "./credentials.js";
+import { userStateDir, writeFileAtomic0600 } from "./user-state.js";
 import { staticBuildIdentity } from "./build-identity.js";
 import { currentExecutableRealPath, PACKAGE_NAME } from "./invocation.js";
 import {
@@ -324,11 +324,11 @@ export function isUpdateLeaseToken(value: string): boolean {
 }
 
 export function updateCachePath(home: string): string {
-  return join(credentialsDir(home), UPDATE_CACHE_FILE_NAME);
+  return join(userStateDir(home), UPDATE_CACHE_FILE_NAME);
 }
 
 export function updateLeasePath(home: string): string {
-  return join(credentialsDir(home), UPDATE_LEASE_FILE_NAME);
+  return join(userStateDir(home), UPDATE_LEASE_FILE_NAME);
 }
 
 function errno(error: unknown): string | undefined {
@@ -342,7 +342,7 @@ function privateOwnerAndMode(stats: Stats, mode: number): boolean {
 }
 
 function inspectStateDirectory(home: string, create: boolean): "safe" | "missing" | "unsafe" {
-  const directory = credentialsDir(home);
+  const directory = userStateDir(home);
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0);
   let descriptor: number;
   try {
@@ -572,7 +572,7 @@ function createActiveLease(now: Date, token: string): ActiveUpdateLease | undefi
 }
 
 function publishActiveClaim(home: string, lease: ActiveUpdateLease): boolean {
-  const directory = credentialsDir(home);
+  const directory = userStateDir(home);
   let temporary: string | undefined;
   try {
     temporary = writeCompleteTemp(
@@ -616,7 +616,7 @@ function transitionStaleActiveToCooldown(
   let temporary: string | undefined;
   try {
     temporary = writeCompleteTemp(
-      credentialsDir(home),
+      userStateDir(home),
       UPDATE_LEASE_FILE_NAME,
       serializeUpdateLease(cooldown),
       UPDATE_LEASE_MAX_BYTES,
@@ -654,7 +654,7 @@ function quarantineMatchingLease(
 ): boolean {
   const fixed = updateLeasePath(home);
   const quarantine = join(
-    credentialsDir(home),
+    userStateDir(home),
     `.${UPDATE_LEASE_FILE_NAME}.${randomBytes(16).toString("hex")}.quarantine`,
   );
   try {
@@ -791,7 +791,7 @@ function transitionMatchingActiveToCooldown(home: string, token: string, now: Da
   let temporary: string | undefined;
   try {
     temporary = writeCompleteTemp(
-      credentialsDir(home),
+      userStateDir(home),
       UPDATE_LEASE_FILE_NAME,
       serializeUpdateLease(cooldown),
       UPDATE_LEASE_MAX_BYTES,
@@ -957,7 +957,7 @@ export async function runUpdateRefreshWorker(
   }
 
   try {
-    await writeFileAtomic0600(credentialsDir(home), UPDATE_CACHE_FILE_NAME, serialized, {
+    await writeFileAtomic0600(userStateDir(home), UPDATE_CACHE_FILE_NAME, serialized, {
       beforeCommit: () => {
         deps.beforeCacheCommit?.();
         return activeLeaseAuthority(home, token, now()) !== undefined;

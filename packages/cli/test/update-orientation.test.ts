@@ -348,7 +348,7 @@ test("handle-based cache inspection distinguishes safe invalid state from unsafe
       state: "refreshable",
     });
 
-    const stateDir = path.join(home, ".agentstate");
+    const stateDir = path.join(home, ".superbee");
     mkdirSync(stateDir, { mode: 0o700 });
     writeFileSync(updateCachePath(home), serializeUpdateCache(successfulCheck()), { mode: 0o600 });
     assert.equal(
@@ -382,7 +382,7 @@ test("cache safety is bounded, nonblocking for FIFO, and fail-closed on modes an
   for (const [label, plant] of variants) {
     const home = tempHome();
     try {
-      const stateDir = path.join(home, ".agentstate");
+      const stateDir = path.join(home, ".superbee");
       mkdirSync(stateDir, { mode: 0o700 });
       const cache = updateCachePath(home);
       plant(home, cache);
@@ -400,11 +400,11 @@ test("cache safety is bounded, nonblocking for FIFO, and fail-closed on modes an
 
   const looseHome = tempHome();
   try {
-    mkdirSync(path.join(looseHome, ".agentstate"), { mode: 0o755 });
+    mkdirSync(path.join(looseHome, ".superbee"), { mode: 0o755 });
     assert.deepEqual(inspectUpdateCache({ home: looseHome, runningVersion: RUNNING, now: NOW }), {
       state: "unsafe",
     });
-    assert.equal(lstatSync(path.join(looseHome, ".agentstate")).mode & 0o777, 0o755);
+    assert.equal(lstatSync(path.join(looseHome, ".superbee")).mode & 0o777, 0o755);
   } finally {
     rmSync(looseHome, { recursive: true, force: true });
   }
@@ -539,7 +539,7 @@ test("passive parent returns cached notice or launches one exact detached privat
 
   const cachedHome = tempHome();
   try {
-    mkdirSync(path.join(cachedHome, ".agentstate"), { mode: 0o700 });
+    mkdirSync(path.join(cachedHome, ".superbee"), { mode: 0o700 });
     writeFileSync(updateCachePath(cachedHome), serializeUpdateCache(successfulCheck()), {
       mode: 0o600,
     });
@@ -562,7 +562,7 @@ test("passive parent returns cached notice or launches one exact detached privat
 test("post-claim cache recheck releases an unused claim and spawn failure releases only its token", () => {
   const home = tempHome();
   try {
-    mkdirSync(path.join(home, ".agentstate"), { mode: 0o700 });
+    mkdirSync(path.join(home, ".superbee"), { mode: 0o700 });
     writeFileSync(updateCachePath(home), "{}\n", { mode: 0o600 });
     let spawns = 0;
     const notice = runPassiveUpdateOrientation({
@@ -649,7 +649,7 @@ test("private worker requires active token authority, caches success, and cools 
       },
     });
     assert.equal(checks, 0);
-    assert.equal(existsSync(path.join(invalidHome, ".agentstate")), false);
+    assert.equal(existsSync(path.join(invalidHome, ".superbee")), false);
   } finally {
     rmSync(invalidHome, { recursive: true, force: true });
   }
@@ -836,7 +836,7 @@ test("built hidden route is silent, private, and invalid/no-authority invocation
       assert.equal(result.status, 0, `${argv.join(" ")} stderr=${result.stderr}`);
       assert.equal(result.stdout, "", argv.join(" "));
       assert.equal(result.stderr, "", argv.join(" "));
-      assert.equal(existsSync(path.join(home, ".agentstate")), false, argv.join(" "));
+      assert.equal(existsSync(path.join(home, ".superbee")), false, argv.join(" "));
     }
     const help = spawnSync(process.execPath, [BUILT_CLI, "--help"], {
       env: { ...process.env, ASLITE_NO_UPDATE_CHECK: "1" },
@@ -874,7 +874,7 @@ test("built JSON and suppressed default routes perform zero update-state work", 
       });
       assert.equal(result.status, 0, `${argv.join(" ")} stderr=${result.stderr}`);
       assert.equal(result.stderr, "");
-      assert.equal(existsSync(path.join(home, ".agentstate")), false, argv.join(" "));
+      assert.equal(existsSync(path.join(home, ".superbee")), false, argv.join(" "));
       if (argv.includes("--json")) assert.doesNotThrow(() => JSON.parse(result.stdout));
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -954,7 +954,7 @@ test("barrier/IPC: expired-cooldown ABA starts only the successor's worker", asy
   const parentA = startConcurrencyFixture({ home, mode: "aba-parent-a", now, token: tokenA });
   const parentB = startConcurrencyFixture({ home, mode: "passive-parent", now, token: tokenB });
   try {
-    mkdirSync(path.join(home, ".agentstate"), { mode: 0o700 });
+    mkdirSync(path.join(home, ".superbee"), { mode: 0o700 });
     writeFileSync(
       updateLeasePath(home),
       serializeUpdateLease({
@@ -1018,7 +1018,7 @@ test("barrier/IPC: paused parent rechecks newly published cache after claim and 
     token: "b".repeat(64),
   });
   try {
-    mkdirSync(path.join(home, ".agentstate"), { mode: 0o700 });
+    mkdirSync(path.join(home, ".superbee"), { mode: 0o700 });
     writeFileSync(updateCachePath(home), "{}\n", { mode: 0o600 });
     child.send("go");
     assert.deepEqual(await nextChildMessage(child), { type: "after-initial-cache-read" });

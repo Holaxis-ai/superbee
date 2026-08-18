@@ -62,7 +62,7 @@ test("built CLI: concurrent catalog writers preserve every distinct registration
       receipt.entries.map((entry) => entry.label),
       Array.from({ length: 8 }, (_, index) => `workspace-${index}`),
     );
-    const persisted = await readFile(path.join(home, ".agentstate", "catalog.json"), "utf8");
+    const persisted = await readFile(path.join(home, ".superbee", "catalog.json"), "utf8");
     assert.doesNotThrow(() => JSON.parse(persisted));
   } finally {
     await rm(root, { recursive: true, force: true });

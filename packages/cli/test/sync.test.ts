@@ -10,7 +10,7 @@
 //   1. Pure-function unit tests (no git, no filesystem) for the message-pack string builders and
 //      the swallow/classification mappers — fast, and pin the exact strings directly.
 //   2. Integration tests over `git-harness.ts`'s real scratch topologies, driving `sync()` itself.
-//      Cursor/cache/marker state lives under `~/.agentstate/sync/` (U2), keyed PER CLONE (remote
+//      Cursor/cache/marker state lives under `~/.superbee/sync/` (U2), keyed PER CLONE (remote
 //      URL + checkout root — PR#13 review item 4), so two clones under ONE home keep separate
 //      state files (the dedicated cross-clone isolation tests below drive exactly that, the
 //      agent-worktree same-machine shape). Scenarios simulating two DIFFERENT founders on two

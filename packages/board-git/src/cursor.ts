@@ -12,11 +12,9 @@
 // Writes use the injected atomic seam. Cross-process last-writer-wins is acceptable because this
 // state is advisory and re-derivable. Reads never throw: absent, malformed, foreign, unreadable,
 // or stale state returns `null`, and missing state must never turn into an `init` recommendation.
-import { chmod, mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, dirname, join, resolve } from "node:path";
-
-const DIR_MODE = 0o700;
+import { basename, join, resolve } from "node:path";
 
 /**
  * The honest re-anchor note recorded when the stored cursor can no longer be diffed from —
@@ -282,6 +280,10 @@ export interface SyncStoreOptions {
    * per-call `home` parameters were.
    */
   stateDir: string | (() => string);
+  /** Read-only fallback directories consulted in order only when the canonical state file is absent. */
+  fallbackStateDirs?: readonly string[] | (() => readonly string[]);
+  /** Exact-record reader. The CLI injects its nonblocking, no-symlink private-state authority. */
+  readText?: (file: string) => Promise<string>;
   /** The atomic 0600 write discipline (default: credentials.ts's `writeFileAtomic0600`). */
   writeAtomic: (dir: string, fileName: string, content: string) => Promise<void>;
 }
@@ -325,8 +327,17 @@ export interface SyncStore {
 export function createSyncStore(options: SyncStoreOptions): SyncStore {
   const stateDir = (): string =>
     typeof options.stateDir === "function" ? options.stateDir() : options.stateDir;
+  const fallbackStateDirs = (): readonly string[] => {
+    const configured = typeof options.fallbackStateDirs === "function"
+      ? options.fallbackStateDirs()
+      : (options.fallbackStateDirs ?? []);
+    return configured.filter((dir, index) => dir !== stateDir() && configured.indexOf(dir) === index);
+  };
   const statePath = (key: string): string => join(stateDir(), `${keyDigest(key)}.json`);
+  const fallbackStatePaths = (key: string): string[] =>
+    fallbackStateDirs().map((dir) => join(dir, `${keyDigest(key)}.json`));
   const exportsDir = (key: string): string => join(stateDir(), "exports", keyDigest(key));
+  const readText = options.readText ?? ((file: string) => readFile(file, "utf8"));
 
   /**
    * Read the whole per-bundle state record. NEVER throws: absent file, unreadable file, invalid
@@ -334,30 +345,34 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
    * so one malformed section reads null without taking the others down.
    */
   async function readSyncState(key: string): Promise<SyncState> {
-    let raw: string;
-    try {
-      raw = await readFile(statePath(key), "utf8");
-    } catch {
-      return { ...EMPTY_STATE }; // absent or unreadable — both are just "no state yet"
+    for (const candidate of [statePath(key), ...fallbackStatePaths(key)]) {
+      let raw: string;
+      try {
+        raw = await readText(candidate);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        return { ...EMPTY_STATE };
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return { ...EMPTY_STATE };
+      }
+      if (!isRecord(parsed)) return { ...EMPTY_STATE };
+      // Canonical state wins even when malformed or foreign. Only its absence permits fallback;
+      // stale legacy state can never silently revive behind a present canonical record.
+      if (parsed.key !== key) return { ...EMPTY_STATE };
+      return {
+        cursor: asCursor(parsed.cursor),
+        cache: asCache(parsed.cache),
+        marker: asMarker(parsed.marker),
+        selfActors: asSelfActors(parsed.selfActors),
+        autoPullAttemptAt: isTimestamp(parsed.autoPullAttemptAt) ? parsed.autoPullAttemptAt : null,
+        hookHintedAt: isTimestamp(parsed.hookHintedAt) ? parsed.hookHintedAt : null,
+      };
     }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return { ...EMPTY_STATE };
-    }
-    if (!isRecord(parsed)) return { ...EMPTY_STATE };
-    // Foreign-file guard: the key is stored INSIDE the file too; a truncated-hash collision (or a
-    // hand-copied file) must read as absent for this key, never as another bundle's state.
-    if (parsed.key !== key) return { ...EMPTY_STATE };
-    return {
-      cursor: asCursor(parsed.cursor),
-      cache: asCache(parsed.cache),
-      marker: asMarker(parsed.marker),
-      selfActors: asSelfActors(parsed.selfActors),
-      autoPullAttemptAt: isTimestamp(parsed.autoPullAttemptAt) ? parsed.autoPullAttemptAt : null,
-      hookHintedAt: isTimestamp(parsed.hookHintedAt) ? parsed.hookHintedAt : null,
-    };
+    return { ...EMPTY_STATE };
   }
 
   /**
@@ -366,11 +381,10 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
    */
   async function writeSyncState(key: string, patch: Partial<SyncState>): Promise<SyncState> {
     const next: SyncState = { ...(await readSyncState(key)), ...patch };
-    // Force the PARENT (e.g. `~/.agentstate/`) to 0700 too (writeAtomic only governs the leaf dir).
     const dir = stateDir();
-    const parent = dirname(dir);
-    await mkdir(parent, { recursive: true, mode: DIR_MODE });
-    await chmod(parent, DIR_MODE);
+    // Directory creation and permission enforcement belong to the injected writer. Keeping them
+    // out of this neutral store is essential for migrations: this layer must never follow or chmod
+    // a product-state parent before the CLI has validated its canonical root.
     const record = {
       key,
       cursor: next.cursor ?? undefined,

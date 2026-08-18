@@ -978,7 +978,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 94
+      "line": 97
     },
     {
       "file": "packages/core/src/index-marker.ts",

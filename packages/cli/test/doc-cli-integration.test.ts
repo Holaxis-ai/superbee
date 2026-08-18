@@ -509,7 +509,7 @@ test("built CLI: `doc update` with NO field flags and an OPEN-never-written pipe
 
 test("built CLI: default auto-pull wiring is LIVE — `list` pulls a stale board with the knob deleted from the child env; '0' still disables", async () => {
   const topo = await makeTwoCloneTopology();
-  const childHomeA = await tempDir(); // isolated ~/.agentstate for the first child (no state → stale)
+  const childHomeA = await tempDir(); // isolated ~/.superbee for the first child (no state → stale)
   const childHomeB = await tempDir(); // …and a separate one for the knob="0" child (also stale)
   try {
     await writeBoardDoc(topo.a, "tasks/wired-in", {

@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -18,6 +18,7 @@ import {
   getApiKeyForOrigin,
   saveApiKeyForOrigin,
   credentialsPath,
+  legacyCredentialsPath,
 } from "../src/credentials.js";
 
 async function tempHome(): Promise<string> {
@@ -86,6 +87,49 @@ test("saveApiKeyForOrigin: the on-disk file keeps 0600 perms (same atomic write 
     // Sanity: the file is real, valid JSON, and the key value is present in it.
     const raw = await readFile(credentialsPath(home), "utf8");
     assert.match(raw, /"k"/);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("legacy credentials are read without mutating their root and migrate on the next canonical write", async () => {
+  const home = await tempHome();
+  try {
+    const legacyPath = legacyCredentialsPath(home);
+    await mkdir(path.dirname(legacyPath), { recursive: true, mode: 0o755 });
+    await writeFile(
+      legacyPath,
+      JSON.stringify({ remotes: { "https://legacy.example": { api_key: "legacy-key" } } }) + "\n",
+      { mode: 0o600 },
+    );
+    await chmod(path.dirname(legacyPath), 0o755);
+    const legacyBytes = await readFile(legacyPath, "utf8");
+
+    assert.equal(await getApiKeyForOrigin("https://legacy.example", home), "legacy-key");
+    assert.equal((await stat(path.dirname(legacyPath))).mode & 0o777, 0o755, "fallback reads never chmod the legacy root");
+    await assert.rejects(() => stat(credentialsPath(home)), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+
+    await saveApiKeyForOrigin("https://new.example", "new-key", home);
+    assert.equal(await getApiKeyForOrigin("https://legacy.example", home), "legacy-key");
+    assert.equal(await getApiKeyForOrigin("https://new.example", home), "new-key");
+    assert.equal((await stat(path.dirname(credentialsPath(home)))).mode & 0o777, 0o700);
+    assert.equal(await readFile(legacyPath, "utf8"), legacyBytes, "migration never rewrites the legacy source");
+    assert.equal((await stat(path.dirname(legacyPath))).mode & 0o777, 0o755);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("canonical credentials win over a conflicting legacy record", async () => {
+  const home = await tempHome();
+  try {
+    await mkdir(path.dirname(legacyCredentialsPath(home)), { recursive: true });
+    await writeFile(
+      legacyCredentialsPath(home),
+      JSON.stringify({ remotes: { "https://worker.example": { api_key: "legacy" } } }) + "\n",
+    );
+    await saveCredentials({ remotes: { "https://worker.example": { api_key: "canonical" } } }, home);
+    assert.equal(await getApiKeyForOrigin("https://worker.example", home), "canonical");
   } finally {
     await rm(home, { recursive: true, force: true });
   }

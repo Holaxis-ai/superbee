@@ -1,12 +1,16 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type {
   RegisteredViewAuthorizationSubject,
   ViewAuthorizationStore,
   ViewAuthorizationSubject,
 } from "@superbee/ui-server";
-import { credentialsDir, writeFileAtomic0600 } from "../credentials.js";
+import {
+  legacyUserStateDir,
+  readUserStateText,
+  userStateDir,
+  writeFileAtomic0600,
+} from "../user-state.js";
 
 const STORE_DIR = "view-authorizations";
 
@@ -62,13 +66,13 @@ export class LocalViewAuthorizationStore implements ViewAuthorizationStore {
     if (subject.sourceKind !== "registered") return false;
     const expected = serialized(this.bundleIdentity, subject);
     try {
-      const raw = await readFile(
-        join(credentialsDir(this.home), STORE_DIR, fileName(this.bundleIdentity, subject)),
-        "utf8",
+      const name = fileName(this.bundleIdentity, subject);
+      const selected = await readUserStateText(
+        join(userStateDir(this.home), STORE_DIR, name),
+        join(legacyUserStateDir(this.home), STORE_DIR, name),
       );
-      return raw.trimEnd() === expected;
+      return selected?.content.trimEnd() === expected;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
     }
   }
@@ -78,9 +82,10 @@ export class LocalViewAuthorizationStore implements ViewAuthorizationStore {
       throw new Error("transient View approvals are process-local and cannot be persisted");
     }
     await writeFileAtomic0600(
-      join(credentialsDir(this.home), STORE_DIR),
+      join(userStateDir(this.home), STORE_DIR),
       fileName(this.bundleIdentity, subject),
       `${serialized(this.bundleIdentity, subject)}\n`,
+      { rootDir: userStateDir(this.home) },
     );
   }
 }
