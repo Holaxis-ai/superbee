@@ -163,6 +163,28 @@ test("root and npm READMEs teach one literal create-only, agent-driven quickstar
   }
 });
 
+test("root and npm package license declarations agree", async () => {
+  const [rootManifest, npmManifest, rootReadme, npmReadme] = await Promise.all([
+    readFile(path.join(repoRoot, "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "README.md"), "utf8"),
+    readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8"),
+  ]);
+
+  assert.equal(npmManifest.license, rootManifest.license, "root and npm package manifests must use one license");
+  const expectedNotice = `${rootManifest.license} \u00a9 2026 Holaxis`;
+  for (const [label, readme] of [
+    ["root", rootReadme],
+    ["npm", npmReadme],
+  ]) {
+    assert.equal(
+      readme.match(/^## License\n\n([^\n]+)$/m)?.[1],
+      expectedNotice,
+      `${label} README license notice must agree with package metadata`,
+    );
+  }
+});
+
 test("the expected tarball set is the fixed base plus the references tree", () => {
   assert.deepEqual(expectedTarballFiles(["a.md", "b/c.md"]), [
     "LICENSE",

@@ -874,6 +874,11 @@ async function runInstalledProof(spec) {
     );
 
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
+    assert.equal(
+      installedReadme.match(/^## License\n\n([^\n]+)$/m)?.[1],
+      `${manifest.license} \u00a9 2026 Holaxis`,
+      "the installed README license notice must agree with the published package metadata",
+    );
     assert.match(installedReadme, /init --create-only --recipe work-tracking/);
     assert.match(installedReadme, /bring source material or intent\s+to your agent/i);
     assert.match(installedReadme, /agent organizes,\s+types, links, and updates the\s+bundle/i);
