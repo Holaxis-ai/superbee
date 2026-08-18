@@ -38,11 +38,14 @@ superbee setup
 
 Without `--host`, setup returns the four supported host rows. Select the exact host running
 this agent, run that row's command, then follow the one `next.command` in each host-scoped
-plan, filling any explicit placeholder it identifies. Setup is read-only: it composes npm,
-Skill, Hook, MCP, bundle, and catalog status but never treats detection as permission to write.
+plan, filling any explicit placeholder it identifies. Bare and host-scoped setup are read-only: they compose npm,
+Skill, Hook, MCP, bundle, and catalog status but never treat detection as permission to write.
 Ask the human before running a returned mutating command. Restart the host after Skill, Hook,
 or MCP changes, then rerun the same setup command to verify. Foreign or unreadable state
 returns a read-only inspection command instead of overwriting it.
+If setup returns `superbee setup migrate-state`, that exact explicit command copies only
+validated private operational records into Superbee's canonical state root; it never moves
+bundles or deletes legacy bytes.
 
 A catalog entry preserves a workspace for explicit MCP selection; it never selects that
 workspace as the current project's context. Do not read, write, orient from, or sync a
@@ -141,8 +144,8 @@ Use `superbee mcp status --host <id>` to verify it and restart the host after a 
   — Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode
 - `superbee skill install|status|uninstall [--scope project|user]`
   — Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface — its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage
-- `superbee setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]`
-  — Inspect npm, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command
+- `superbee setup [migrate-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]`
+  — Inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command
 
 ## Workspaces — the project's bundle lives at `.superbee/` in the project root
 

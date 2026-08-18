@@ -1,8 +1,8 @@
-// `superbee setup` — one read-only AXI conductor over the existing integration authorities.
+// `superbee setup` — one read-only AXI conductor plus one explicit, bounded state-migration leaf.
 
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
-import { parseLeafOrUsage } from "../args.js";
+import { parseSelectorOrUsage } from "../args.js";
 import { resolveLocalBundleTarget, type LocalBundleTarget } from "../bundle.js";
 import { listCatalogEntries, type CatalogEntryView } from "../catalog.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -14,12 +14,19 @@ import { render, resolveMode } from "../output.js";
 import { buildSetupPlan, type SetupHookHostState, type SetupPlan, type SetupSkillHostState, type SetupWorkspaceState } from "../setup-plan.js";
 import { inspectHookStatus, type HookStatusInspection } from "./hook.js";
 import { inspectSkillStatus, type SkillStatusInspection } from "./skill.js";
+import {
+  inspectUserStateMigration,
+  migrateUserState,
+  type UserStateMigrationInspection,
+  type UserStateMigrationReceipt,
+} from "../user-state-migration.js";
 
 export const SETUP_USAGE = `superbee setup — inspect the complete host integration and emit one safe next command
 
 Usage:
   superbee setup [--host codex|claude-code|claude-desktop|opencode]
                  [--scope project|user] [--json]
+  superbee setup migrate-state [--json]
 
 Without --host, the command reports the four bounded supported host surfaces and asks the agent to
 select the exact host. With --host, it composes the existing distribution, Agent Skill,
@@ -27,6 +34,10 @@ SessionStart hook, MCP registration, local bundle, and private catalog inspector
 deterministic plan. It never writes configuration or treats detected software as mutation
 authority. Run the returned next.command, restart the named host after integration changes, and
 re-run the same setup command to verify.
+
+When setup reports validated legacy operational state, migrate-state copies only the private
+catalog, remote credentials, and immutable View approvals into Superbee's canonical state root.
+It never moves bundles or deletes legacy bytes. The explicit command is the authorization event.
 
 A catalog entry preserves a workspace for explicit MCP selection; it never selects that workspace
 as the current project's context. Do not read, write, orient from, or sync a cataloged workspace
@@ -48,6 +59,7 @@ export interface SetupInspection {
   projectHookUnavailable?: boolean;
   mcp: readonly McpHostStatus[];
   workspace: SetupWorkspaceState;
+  state: UserStateMigrationInspection;
 }
 
 export interface SetupDeps {
@@ -60,6 +72,8 @@ export interface SetupDeps {
   inspectMcp: (targets: readonly McpInstallTarget[]) => readonly McpHostStatus[];
   resolveBundle: (startDir: string) => Promise<LocalBundleTarget>;
   listCatalog: (home: string) => Promise<CatalogEntryView[]>;
+  inspectState: (home: string) => Promise<UserStateMigrationInspection>;
+  migrateState: (home: string) => Promise<UserStateMigrationReceipt>;
 }
 
 function setupHost(value: string | undefined): McpInstallTargetId | undefined {
@@ -106,6 +120,7 @@ function planForHost(inspection: SetupInspection, host: McpInstallTargetId, scop
     projectHookUnavailable: scope === "user" && inspection.projectHookUnavailable === true,
     mcp,
     workspace: inspection.workspace,
+    state: inspection.state,
   });
 }
 
@@ -163,9 +178,10 @@ async function inspectAll(
       }
     }
   }
-  const [workspace, mcp] = await Promise.all([
+  const [workspace, mcp, state] = await Promise.all([
     inspectWorkspace(deps),
     Promise.resolve(deps.inspectMcp(targets)),
+    deps.inspectState(deps.home()),
   ]);
   return {
     distribution: deps.inspectDistribution(),
@@ -175,12 +191,13 @@ async function inspectAll(
     projectHookUnavailable,
     mcp,
     workspace,
+    state,
   };
 }
 
 export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): Promise<void> {
   const stdout = injected.stdout ?? ((text: string) => void process.stdout.write(text));
-  const { values } = parseLeafOrUsage(
+  const parsed = parseSelectorOrUsage(
     () => parseArgs({
       args: argv,
       options: {
@@ -191,11 +208,37 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
       },
       allowPositionals: true,
     }),
-    CLI_LEAVES.setup,
+    "setup",
+    (positionals) => {
+      if (positionals.length === 0) {
+        return {
+          kind: "selected",
+          leaf: CLI_LEAVES.setup,
+          data: [],
+          payload: { action: "inspect" as "inspect" | "migrate" },
+        };
+      }
+      const [subcommand, ...data] = positionals;
+      if (subcommand === "migrate-state") {
+        return {
+          kind: "selected",
+          leaf: CLI_LEAVES.setupMigrateState,
+          data,
+          payload: { action: "migrate" as "inspect" | "migrate" },
+        };
+      }
+      return { kind: "unknown", token: subcommand };
+    },
   );
+  const { values } = parsed;
   if (values.help) {
     stdout(SETUP_USAGE);
     return;
+  }
+  if (parsed.selection.kind === "unknown" || parsed.selection.kind === "navigation") {
+    throw new CliError("USAGE", `unknown setup subcommand: ${parsed.selection.kind === "unknown" ? parsed.selection.token : ""}`, {
+      help: "superbee setup --help",
+    });
   }
   const scope = normalizeInstallScope(values.scope ?? "user");
   if (!scope) {
@@ -220,7 +263,18 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     inspectMcp: injected.inspectMcp ?? ((targets) => inspectMcpHosts(targets)),
     resolveBundle: injected.resolveBundle ?? ((startDir) => resolveLocalBundleTarget(undefined, startDir)),
     listCatalog: injected.listCatalog ?? listCatalogEntries,
+    inspectState: injected.inspectState ?? inspectUserStateMigration,
+    migrateState: injected.migrateState ?? migrateUserState,
   };
+  if (parsed.selection.kind === "selected" && parsed.selection.payload.action === "migrate") {
+    if (values.host !== undefined || values.scope !== undefined) {
+      throw new CliError("USAGE", "setup migrate-state does not accept --host or --scope", {
+        help: "superbee setup migrate-state [--json]",
+      });
+    }
+    stdout(render({ migration: await deps.migrateState(deps.home()) }, resolveMode(values)));
+    return;
+  }
   if (requestedHost) {
     const target = MCP_INSTALL_TARGETS.find((candidate) => candidate.id === requestedHost)!;
     const inspection = await inspectAll(scope, [target], deps);

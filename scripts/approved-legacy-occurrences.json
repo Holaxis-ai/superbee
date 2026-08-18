@@ -76,7 +76,7 @@
       "treatment": "retire-after-explicit-package-removal",
       "owner": "cli-policy",
       "reason": "upgrade guidance explains that the retired aliases disappear when the old package is removed",
-      "line": 43
+      "line": 46
     },
     {
       "file": "README.md",
@@ -87,7 +87,7 @@
       "treatment": "retire-after-explicit-package-removal",
       "owner": "cli-policy",
       "reason": "upgrade guidance explains that the retired aliases disappear when the old package is removed",
-      "line": 43
+      "line": 46
     },
     {
       "file": "examples/recipes/personal-task-system/references/view-authoring-v0.md",
@@ -934,7 +934,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 638
+      "line": 641
     },
     {
       "file": "packages/cli/src/skill-render.ts",
@@ -945,7 +945,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 638
+      "line": 641
     },
     {
       "file": "packages/cli/src/update-orientation.ts",
@@ -956,7 +956,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 33
+      "line": 34
     },
     {
       "file": "packages/cli/src/update-orientation.ts",
@@ -967,7 +967,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 34
+      "line": 35
     },
     {
       "file": "packages/core/src/filesystem-lock.ts",

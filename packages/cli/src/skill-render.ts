@@ -580,16 +580,19 @@ function renderHostSetupSection(): string[] {
     "this agent, run that row's command, then follow the one `next.command` in each host-scoped",
   );
   lines.push(
-    "plan, filling any explicit placeholder it identifies. Setup is read-only: it composes npm,",
+    "plan, filling any explicit placeholder it identifies. Bare and host-scoped setup are read-only: they compose npm,",
   );
   lines.push(
-    "Skill, Hook, MCP, bundle, and catalog status but never treats detection as permission to write.",
+    "Skill, Hook, MCP, bundle, and catalog status but never treat detection as permission to write.",
   );
   lines.push(
     "Ask the human before running a returned mutating command. Restart the host after Skill, Hook,",
   );
   lines.push("or MCP changes, then rerun the same setup command to verify. Foreign or unreadable state");
   lines.push("returns a read-only inspection command instead of overwriting it.");
+  lines.push("If setup returns `superbee setup migrate-state`, that exact explicit command copies only");
+  lines.push("validated private operational records into Superbee's canonical state root; it never moves");
+  lines.push("bundles or deletes legacy bytes.");
   lines.push("");
   lines.push(
     "A catalog entry preserves a workspace for explicit MCP selection; it never selects that",

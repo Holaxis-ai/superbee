@@ -17,7 +17,7 @@ import { initBundle, writeDoc, type OkfDocument } from "@superbee/core";
 // HERMETIC CWD + HOME: `home()` peeks at project bindings from the cwd and at the user-scoped
 // workspace catalog, so a REAL `.agentstate.json` anywhere above the test process's cwd — including
 // the repo's own untracked one — leaks into every in-process test in this file and changes the
-// dashboard/remote-pointer output; a real ~/.agentstate/catalog.json would likewise leak catalog
+// dashboard/remote-pointer output; a real ~/.config/superbee/catalog.json would likewise leak catalog
 // entries. node --test runs each file in its own process, so module-top temp roots make the file
 // hermetic; tests that
 // chdir themselves capture and restore their OWN `origCwd`, which composes with this.
@@ -37,6 +37,7 @@ import {
 } from "../src/commands/home.js";
 import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
+import { canonicalUserStateDir, USER_STATE_MARKER_BYTES } from "../src/user-state.js";
 
 const INVOKE = "npx -y superbee";
 const DEFAULT_INVOKE = "npx -y superbee";
@@ -312,10 +313,11 @@ test("default workspace loader sorts labels but does not probe or expose ids and
 test("built home rejects a FIFO catalog and exits after its fail-soft receipt", async () => {
   const root = await realpath(await tempDir());
   const homeDir = path.join(root, "home");
-  const stateDir = path.join(homeDir, ".agentstate");
+  const stateDir = canonicalUserStateDir(homeDir);
   const fifo = path.join(stateDir, "catalog.json");
   try {
-    await mkdir(stateDir, { recursive: true });
+    await mkdir(stateDir, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(stateDir, "state.json"), USER_STATE_MARKER_BYTES, { mode: 0o600 });
     await new Promise<void>((resolve, reject) => {
       execFile("mkfifo", [fifo], (err) => (err ? reject(err) : resolve()));
     });

@@ -16,6 +16,7 @@ import {
   resolveCatalogEntry,
 } from "../src/catalog.js";
 import { CliError } from "../src/errors.js";
+import { ensureUserStateRoot } from "../src/user-state.js";
 
 async function fixture(): Promise<{ root: string; home: string; first: string; second: string }> {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-test-")));
@@ -109,7 +110,7 @@ test("catalog parser rejects drift-prone or ambiguous persisted state", () => {
 test("a newer catalog schema refuses mutation without rewriting bytes", async () => {
   const f = await fixture();
   try {
-    await mkdir(path.dirname(catalogPath(f.home)), { recursive: true });
+    await ensureUserStateRoot(f.home);
     const future = JSON.stringify({ schema_version: 2, entries: [], future: true }) + "\n";
     await writeFile(catalogPath(f.home), future);
     await assert.rejects(
@@ -157,7 +158,7 @@ test("active and stale locks fail deterministically without unsafe lock stealing
   const f = await fixture();
   try {
     const lock = catalogLockPath(f.home);
-    await mkdir(path.dirname(lock), { recursive: true });
+    await ensureUserStateRoot(f.home);
     await writeFile(lock, JSON.stringify({ pid: 4242, created_at_ms: 1_000, token: "owner" }) + "\n");
     await chmod(lock, 0o600);
 
@@ -197,7 +198,7 @@ test("an old empty lock from a crash is diagnosed as malformed and never silentl
   const f = await fixture();
   try {
     const lock = catalogLockPath(f.home);
-    await mkdir(path.dirname(lock), { recursive: true });
+    await ensureUserStateRoot(f.home);
     await writeFile(lock, "");
     await utimes(lock, new Date(1_000), new Date(1_000));
 

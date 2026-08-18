@@ -1,4 +1,4 @@
-// Credential persistence: ~/.agentstate/okf-config.json (file 0600, dir 0700).
+// Credential persistence: ~/.config/superbee/okf-config.json (file 0600, dir 0700).
 //
 // Token VALUES are never logged. The home directory is injectable so unit tests can point at a temp
 // dir. The on-disk field SHAPE stays compatible with holaxis-agentstate `packages/cli/src/credentials.ts`
@@ -13,10 +13,10 @@
 // same 0700 dir, then renamed over okf-config.json — so the secret is never momentarily exposed at
 // looser perms, a crash mid-write can never truncate a good file into unparseable JSON, and O_EXCL
 // refuses to follow / write through a planted symlink at the temp path.
-import { chmod, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+
+import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "./user-state.js";
 
 export interface Credentials {
   /**
@@ -32,62 +32,54 @@ export interface Credentials {
   remotes?: Record<string, { api_key: string }>;
 }
 
-export const CRED_DIR_NAME = ".agentstate";
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sorted = [...expected].sort();
+  return actual.length === sorted.length && actual.every((key, index) => key === sorted[index]);
+}
+
+/** Exact historical disk contract accepted by the explicit one-shot migration. */
+export function assertMigratableCredentials(raw: string): void {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error("legacy credentials are not valid JSON");
+  }
+  if (!isRecord(value) || !hasExactKeys(value, ["remotes"]) || !isRecord(value.remotes)) {
+    throw new Error("legacy credentials do not use the supported origin-keyed schema");
+  }
+  for (const [origin, entry] of Object.entries(value.remotes)) {
+    let url: URL;
+    try {
+      url = new URL(origin);
+    } catch {
+      throw new Error("legacy credentials contain an invalid remote origin");
+    }
+    if (
+      url.origin !== origin
+      || !isRecord(entry)
+      || !hasExactKeys(entry, ["api_key"])
+      || typeof entry.api_key !== "string"
+      || entry.api_key.length === 0
+    ) {
+      throw new Error("legacy credentials contain an unsupported remote entry");
+    }
+  }
+}
+
 export const CRED_FILE_NAME = "okf-config.json";
-const DIR_MODE = 0o700;
-const FILE_MODE = 0o600;
 
 export function credentialsDir(home: string = homedir()): string {
-  return join(home, CRED_DIR_NAME);
+  return userStateDir(home);
 }
 
 export function credentialsPath(home: string = homedir()): string {
   return join(credentialsDir(home), CRED_FILE_NAME);
-}
-
-/**
- * THE `~/.agentstate/` atomic-write discipline, shared by every module that persists state under
- * that directory (credentials here; the per-bundle sync/cursor state in `cursor.ts`). ONE
- * implementation — do not fork it.
- *
- * Ensures `dir` exists at 0700 (enforced even if it pre-existed with looser bits — mkdir mode is
- * masked by umask), then writes `content` to a freshly O_EXCL-created temp file (mode 0600) in the
- * SAME dir and renames it over `<dir>/<fileName>` — so the payload is never momentarily exposed at
- * looser perms, a crash mid-write can never truncate a good file into unparseable JSON, and O_EXCL
- * refuses to follow / write through a planted symlink at the temp path.
- */
-export async function writeFileAtomic0600(
-  dir: string,
-  fileName: string,
-  content: string,
-  options: { beforeCommit?: () => boolean | Promise<boolean> } = {},
-): Promise<void> {
-  await mkdir(dir, { recursive: true, mode: DIR_MODE });
-  await chmod(dir, DIR_MODE);
-
-  const path = join(dir, fileName);
-  const tmpPath = join(dir, `.${fileName}.${randomBytes(8).toString("hex")}.tmp`);
-  // "wx" = O_CREAT|O_EXCL|O_WRONLY: fail if the temp path already exists, never follow a
-  // symlink. The unique random suffix keeps concurrent writers from colliding on it.
-  const handle = await open(tmpPath, "wx", FILE_MODE);
-  try {
-    await handle.writeFile(content);
-    // Enforce exact perms even though umask may have masked the create mode above.
-    await handle.chmod(FILE_MODE);
-  } finally {
-    await handle.close();
-  }
-  try {
-    if (options.beforeCommit && !(await options.beforeCommit())) {
-      throw new Error("atomic write commit authority was withdrawn");
-    }
-    // Atomic on the same filesystem: the target is replaced in one step, so a reader sees
-    // either the old complete file or the new complete file — never a partial write.
-    await rename(tmpPath, path);
-  } catch (err) {
-    await unlink(tmpPath).catch(() => {});
-    throw err;
-  }
 }
 
 /** Write credentials atomically (temp + rename) with 0600/0700 perms. */
@@ -95,7 +87,8 @@ export async function saveCredentials(
   creds: Credentials,
   home: string = homedir(),
 ): Promise<void> {
-  await writeFileAtomic0600(
+  await writeUserStateFileAtomic0600(
+    home,
     credentialsDir(home),
     CRED_FILE_NAME,
     JSON.stringify(creds, null, 2) + "\n",
@@ -108,7 +101,7 @@ export async function loadCredentials(
 ): Promise<Credentials | null> {
   let raw: string;
   try {
-    raw = await readFile(credentialsPath(home), "utf8");
+    raw = await readUserStateFile(home, credentialsPath(home), 1024 * 1024);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;

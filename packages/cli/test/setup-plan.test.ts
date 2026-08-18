@@ -16,6 +16,7 @@ function input(overrides: Partial<SetupPlanInput> = {}): SetupPlanInput {
     host: "codex",
     scope: "user",
     distribution: { allowed: true, state: "durable_global", reason: "durable", persistent: true },
+    state: { state: "ready", reason: "current", records: 0 },
     skill: CURRENT_SKILL,
     hook: CURRENT_HOOK,
     mcp: { state: "owned_current", reason: "current" },
@@ -30,12 +31,36 @@ test("setup plan agreement: every supported host can reach a complete host-nativ
     assert.equal(plan.ready, true, host);
     assert.equal(plan.complete, true, host);
     assert.equal(plan.next, undefined, host);
-    assert.equal(plan.capabilities.length, 6, host);
+    assert.equal(plan.capabilities.length, 7, host);
     const skill = plan.capabilities.find((row) => row.id === "skill")!;
     const hook = plan.capabilities.find((row) => row.id === "hook")!;
     assert.equal(skill.state, host === "claude-desktop" || host === "opencode" ? "not_applicable" : "ready", host);
     assert.equal(hook.state, host === "claude-desktop" ? "not_applicable" : "ready", host);
   }
+});
+
+test("legacy operational state is one explicit setup action before host integration", () => {
+  const plan = buildSetupPlan(input({
+    state: { state: "migratable", reason: "validated legacy operational state is ready to migrate", records: 2 },
+    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+  }));
+  assert.deepEqual(plan.next, {
+    action: "run",
+    command: "superbee setup migrate-state",
+    reason: "validated legacy operational state is ready to migrate",
+  });
+  assert.equal(plan.ready, false);
+});
+
+test("uncertain canonical user state blocks setup without an inferred mutator", () => {
+  const plan = buildSetupPlan(input({
+    state: { state: "blocked", reason: "the canonical Superbee user-state root is unrecognized", records: 0 },
+  }));
+  assert.deepEqual(plan.next, {
+    action: "inspect",
+    command: "superbee setup",
+    reason: "the canonical Superbee user-state root is unrecognized",
+  });
 });
 
 test("setup plan emits exactly one deterministic next command in dependency order", () => {

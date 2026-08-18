@@ -67,6 +67,21 @@ function deps(write: (text: string) => void): SetupDeps {
       locator: { kind: "local-path", path: "/Users/private/project/.agentstate-lite" },
       available: true,
     }],
+    inspectState: async () => ({ state: "ready", reason: "current", records: 0 }),
+    migrateState: async () => ({
+      schema_version: 1,
+      status: "migrated",
+      changed: true,
+      records: {
+        catalog: "migrated",
+        credentials: "absent",
+        view_authorizations: 0,
+        sync_state: "rederived",
+        ephemeral_state: "rederived",
+      },
+      legacy_preserved: true,
+      next: { command: "superbee setup" },
+    }),
   };
 }
 
@@ -316,6 +331,36 @@ test("setup validates exact host, scope, arity, and serves offline help", async 
   let help = "";
   await setup(["--help"], { stdout: (text) => { help += text; } });
   assert.match(help, /one safe next command/);
+  assert.match(help, /setup migrate-state/);
   assert.match(help, /catalog entry preserves a workspace for explicit MCP selection/);
   assert.match(help, /never selects that workspace\s+as the current project's context/);
+});
+
+test("setup projects and executes the one-shot state migration without host inference", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.inspectState = async () => ({
+    state: "migratable",
+    reason: "validated legacy operational state is ready to migrate",
+    records: 1,
+  });
+  await setup(["--host", "codex", "--json"], injected);
+  const plan = JSON.parse(output) as { setup: { next: { command: string } } };
+  assert.equal(plan.setup.next.command, "superbee setup migrate-state");
+
+  output = "";
+  let called = 0;
+  const expected = await deps(() => {}).migrateState("/Users/private");
+  injected.migrateState = async () => {
+    called += 1;
+    return expected;
+  };
+  await setup(["migrate-state", "--json"], injected);
+  assert.equal(called, 1);
+  const receipt = JSON.parse(output) as { migration: { status: string; legacy_preserved: boolean } };
+  assert.equal(receipt.migration.status, "migrated");
+  assert.equal(receipt.migration.legacy_preserved, true);
+  assert.doesNotMatch(output, /\/Users\/private/);
+  await assert.rejects(setup(["migrate-state", "--host", "codex"], injected), (error: unknown) =>
+    error instanceof CliError && error.code === "USAGE");
 });

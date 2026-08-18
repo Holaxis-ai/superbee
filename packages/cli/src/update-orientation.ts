@@ -18,7 +18,8 @@ import {
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
-import { credentialsDir, writeFileAtomic0600 } from "./credentials.js";
+import { credentialsDir } from "./credentials.js";
+import { ensureUserStateRootSync, inspectUserStateRootSync, writeUserStateFileAtomic0600 } from "./user-state.js";
 import { staticBuildIdentity } from "./build-identity.js";
 import { currentExecutableRealPath, PACKAGE_NAME } from "./invocation.js";
 import {
@@ -343,6 +344,16 @@ function privateOwnerAndMode(stats: Stats, mode: number): boolean {
 
 function inspectStateDirectory(home: string, create: boolean): "safe" | "missing" | "unsafe" {
   const directory = credentialsDir(home);
+  if (create) {
+    try {
+      ensureUserStateRootSync(home);
+    } catch {
+      return "unsafe";
+    }
+  }
+  const rootState = inspectUserStateRootSync(home);
+  if (rootState === "absent") return "missing";
+  if (rootState === "conflict") return "unsafe";
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0);
   let descriptor: number;
   try {
@@ -957,7 +968,7 @@ export async function runUpdateRefreshWorker(
   }
 
   try {
-    await writeFileAtomic0600(credentialsDir(home), UPDATE_CACHE_FILE_NAME, serialized, {
+    await writeUserStateFileAtomic0600(home, credentialsDir(home), UPDATE_CACHE_FILE_NAME, serialized, {
       beforeCommit: () => {
         deps.beforeCacheCommit?.();
         return activeLeaseAuthority(home, token, now()) !== undefined;

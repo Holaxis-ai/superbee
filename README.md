@@ -24,12 +24,15 @@ npm install -g superbee
 superbee setup
 ```
 
-`setup` is read-only and agent-friendly: without flags it lists the four supported hosts; after
+Bare and host-scoped `setup` are read-only and agent-friendly: without flags it lists the four supported hosts; after
 the agent selects its exact host, it inspects npm, Agent Skill, SessionStart hook, MCP registration,
 current bundle, and private workspace catalog, then returns one safe `next.command`. Fill any
 explicit placeholder it identifies, run the command, restart the named host after integration
 changes, and rerun the same setup command until the plan is complete. It never guesses a host as
 permission to edit configuration.
+If setup returns `superbee setup migrate-state`, that explicit command copies validated legacy
+operational records into Superbee's private state root while preserving every legacy byte; it does
+not move project bundles.
 
 The hook is recommended rather than required: it gives Claude Code, Codex, and OpenCode a compact
 Superbee orientation at session start. To try read-only and bootstrap commands without installing

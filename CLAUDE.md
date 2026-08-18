@@ -237,13 +237,16 @@ for Codex/ChatGPT, Claude Code, Claude Desktop, or OpenCode. Mutation requires a
 durable npm-install authority, exact ownership classification, and read-back verification; it
 never detects a host as mutation authority, pins a bundle directory, or replaces/removes a foreign
 same-name entry. Bare `status` is the bounded read-only multi-host inspector.
-`superbee setup` is the read-only AXI conductor over that registration status plus the existing
+Bare and host-scoped `superbee setup` are the read-only AXI conductor over that registration status plus the existing
 distribution, Agent Skill, SessionStart hook, bundle-selection, and private-catalog inspectors. A
 host-scoped run emits one deterministic safe next command while leaving every existing installer
 as the sole mutation authority; a hostless run only presents the four bounded supported choices.
 The private catalog is explicit MCP inventory, never ambient current-project selection: setup
 reports catalog access separately from the bundle resolved by the current checkout, and a legacy
 registration's referenced bundle cannot authorize project orientation, writes, or sync.
+The only legacy operational-state bridge is the explicit `superbee setup migrate-state` leaf:
+ordinary Superbee readers use `~/.config/superbee` exclusively, and migration never moves bundles
+or deletes `~/.agentstate` bytes.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
 `docs/core` and preserved outside the OSS repository — it is not a build or deployment target
@@ -252,7 +255,7 @@ without an explicit human decision.
 ### 5. Local-first, standards-clean
 
 Local-first: everything works with the network off. No bundled secret; credentials (if
-any) live in `~/.agentstate/` with 0600/0700 discipline and are never printed. Stay
+any) live in `~/.config/superbee/` with 0600/0700 discipline and are never printed. Stay
 standards-clean (plain OKF markdown; no bespoke schema). Link form is **relative
 bundle-relative**.
 

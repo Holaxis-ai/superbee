@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { classifySharing, createSharingLoader, createWorkspacesLoader, humanizeRemote } from "../src/ui/sharing.js";
+import { credentialsDir } from "../src/credentials.js";
+import { ensureUserStateRoot } from "../src/user-state.js";
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });
@@ -264,10 +266,10 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
   const home = await mkdtemp(path.join(tmpdir(), "aslite-ws-home-"));
   const bundleRoot = path.join(home, "proj", ".agentstate-lite");
   try {
-    await mkdir(path.join(home, ".agentstate"), { recursive: true });
+    await ensureUserStateRoot(home);
     await mkdir(bundleRoot, { recursive: true });
     await writeFile(
-      path.join(home, ".agentstate", "catalog.json"),
+      path.join(credentialsDir(home), "catalog.json"),
       JSON.stringify({
         schema_version: 1,
         entries: [

@@ -1072,6 +1072,53 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(remaining, [], "hook uninstall must remove the managed SessionStart hook");
 
+    if (target.package.name === SUCCESSOR_PACKAGE_NAME) {
+      // Installed one-shot state proof: a clean HOME first reached ordinary setup above, then
+      // exact validated legacy state causes setup to emit one command. Execute those emitted
+      // tokens character-for-character, prove source preservation, and prove ordinary setup
+      // continues from the canonical root rather than reading legacy state ambiently.
+      const legacyState = path.join(home, ".agentstate");
+      const legacyCatalog = `${JSON.stringify({
+        schema_version: 1,
+        entries: [{
+          id: "bnd_00000000000000000000000000000001",
+          label: "quickstart",
+          locator: { kind: "local-path", path: bundle },
+        }],
+      }, null, 2)}\n`;
+      await mkdir(legacyState, { mode: 0o700 });
+      await writeFile(path.join(legacyState, "catalog.json"), legacyCatalog, { mode: 0o600 });
+      const legacySetup = parseJson(
+        (await runCli(target.preferred_command, ["setup", "--host", "claude-code", "--json"], {
+          cwd: scratch, env: { CLAUDE_CONFIG_DIR: "" },
+        })).stdout,
+        "setup with legacy user state",
+      );
+      const migrationCommand = legacySetup.setup.next.command;
+      assert.equal(migrationCommand, "superbee setup migrate-state");
+      const [migrationBin, ...migrationArgs] = migrationCommand.split(" ");
+      assert.equal(migrationBin, target.preferred_command);
+      const migrationOutput = (await runCli(migrationBin, migrationArgs, { cwd: scratch })).stdout;
+      assert.match(migrationOutput, /^migration:/);
+      assert.match(migrationOutput, /status: migrated/);
+      assert.equal(await readFile(path.join(legacyState, "catalog.json"), "utf8"), legacyCatalog);
+      assert.equal(
+        await readFile(path.join(home, ".config", "superbee", "catalog.json"), "utf8"),
+        legacyCatalog,
+      );
+      assert.equal(
+        await readFile(path.join(home, ".config", "superbee", "state.json"), "utf8"),
+        '{"product":"superbee","schema_version":1}\n',
+      );
+      const setupAfterMigration = parseJson(
+        (await runCli(target.preferred_command, ["setup", "--host", "claude-code", "--json"], {
+          cwd: scratch, env: { CLAUDE_CONFIG_DIR: "" },
+        })).stdout,
+        "setup after one-shot state migration",
+      );
+      assert.equal(setupAfterMigration.setup.next.command, "superbee skill install --scope user");
+    }
+
     return {
       mode: spec.mode,
       package: `${manifest.name}@${manifest.version}`,

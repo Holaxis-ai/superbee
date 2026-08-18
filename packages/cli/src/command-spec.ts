@@ -385,9 +385,12 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "setup",
-        leaves: [publicLeaf("setup", "setup", zero, 28)],
-        usage: "setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]",
-        summary: "Inspect npm, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command",
+        leaves: [
+          publicLeaf("setup", "setup", zero, 28),
+          publicLeaf("setupMigrateState", "setup migrate-state", zero),
+        ],
+        usage: "setup [migrate-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]",
+        summary: "Inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command",
       },
     ],
   },

@@ -2,12 +2,13 @@ import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { initBundle } from "@superbee/core";
+import { credentialsDir } from "../src/credentials.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
@@ -42,6 +43,7 @@ test("built CLI: concurrent catalog writers preserve every distinct registration
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-process-")));
   try {
     const home = path.join(root, "home");
+    await mkdir(home);
     const bundles = await Promise.all(
       Array.from({ length: 8 }, async (_, index) => {
         const bundle = path.join(root, `bundle-${index}`);
@@ -62,7 +64,7 @@ test("built CLI: concurrent catalog writers preserve every distinct registration
       receipt.entries.map((entry) => entry.label),
       Array.from({ length: 8 }, (_, index) => `workspace-${index}`),
     );
-    const persisted = await readFile(path.join(home, ".agentstate", "catalog.json"), "utf8");
+    const persisted = await readFile(path.join(credentialsDir(home), "catalog.json"), "utf8");
     assert.doesNotThrow(() => JSON.parse(persisted));
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -73,6 +75,7 @@ test("built CLI: racing labels for one path produces one winner and one stable c
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-conflict-")));
   try {
     const home = path.join(root, "home");
+    await mkdir(home);
     const bundle = path.join(root, "bundle");
     await initBundle(bundle);
     const results = await Promise.all([
