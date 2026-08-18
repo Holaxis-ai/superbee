@@ -246,7 +246,9 @@ reports catalog access separately from the bundle resolved by the current checko
 registration's referenced bundle cannot authorize project orientation, writes, or sync.
 The only legacy operational-state bridge is the explicit `superbee setup migrate-state` leaf:
 ordinary Superbee readers use `~/.config/superbee` exclusively, and migration never moves bundles
-or deletes `~/.agentstate` bytes.
+or deletes `~/.agentstate` bytes. Private operational state is categorically not a Knowledge
+Bundle: its coordinate must be absolute, and local bundle selection/creation plus sync publication
+independently refuse any filesystem identity equal to the private state root.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
 `docs/core` and preserved outside the OSS repository — it is not a build or deployment target

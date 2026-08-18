@@ -49,6 +49,7 @@ import { render, type OutputMode } from "../../output.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
 import { syncOutcomeError } from "../../sync-outcomes.js";
 import { clearStaleCommittedMarker, establishCommitted } from "./establish-committed.js";
+import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 
 export const ESTABLISH_DONE =
   "the shared board is live — the project bundle now syncs over the 'board' branch";
@@ -419,6 +420,7 @@ export async function establishBoard(
   // committed) never enters this branch, so its leftover local crumbs can't produce stale guidance.
   const committed = committedBundleAtHead(top);
   if (committed !== null) {
+    assertBundleOutsidePrivateState(path.join(top, committed.bundleDir));
     return establishCommitted(top, inv, mode, Boolean(opts.yes), committed, stdout);
   }
   fetchOriginRequired(top);
@@ -428,6 +430,7 @@ export async function establishBoard(
   clearStaleCommittedMarker(top);
 
   const st = readGreenfieldState(top);
+  assertBundleOutsidePrivateState(st.boardPath);
 
   if (isProvisioned(top) && st.remoteCommit) {
     return resumeProvisionedEstablishment(top, st, st.remoteCommit, inv);

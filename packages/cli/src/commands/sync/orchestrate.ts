@@ -67,6 +67,7 @@ import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
+import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -266,6 +267,7 @@ async function syncInTree(run: SyncRun): Promise<void> {
   if (!top) throw new CliError("RUNTIME", "not inside a git repository");
   const bundleDir = committedBundleAtHead(top)?.bundleDir ?? bundleDirNameForProject(top);
   const boardPath = path.join(top, bundleDir);
+  assertBundleOutsidePrivateState(boardPath);
 
   if (!run.pullOnly) {
     const hasOrigin = runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0;
@@ -601,6 +603,14 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   }
   const run: SyncRun = { ...dispatch.options, inv, stdout, deps };
 
+  // Refuse the private-state identity before provisioning, fetching, committing, or publishing.
+  // Later phase-local checks retain the invariant across any path re-resolution.
+  const initialTop = repoTopLevel(run.dir);
+  if (initialTop) {
+    const initialBundleDir = committedBundleAtHead(initialTop)?.bundleDir ?? bundleDirNameForProject(initialTop);
+    assertBundleOutsidePrivateState(path.join(initialTop, initialBundleDir));
+  }
+
   // `--establish` dispatches before ordinary provisioning; an already-shared board falls through
   // to the ordinary sync flow with an idempotence note.
   let establishAlreadyNote: string | undefined;
@@ -629,6 +639,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
 
   const board = provisionPhase(run);
   if (board === null) return;
+  assertBundleOutsidePrivateState(board.boardPath);
 
   const baseline = await baselinePhase(board);
   const commitResult = await commitPhase(board, run.pullOnly);

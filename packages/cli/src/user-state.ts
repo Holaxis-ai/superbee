@@ -44,12 +44,19 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MARKER_MAX_BYTES = 256;
 
+function absoluteStateRoot(root: string): string {
+  if (!isAbsolute(root)) {
+    throw new Error("private Superbee user-state root must be an absolute path");
+  }
+  return root;
+}
+
 export function canonicalUserStateDir(home: string = homedir()): string {
-  return join(home, SUPERBEE_USER_STATE_PARENT_DIR_NAME, SUPERBEE_USER_STATE_DIR_NAME);
+  return absoluteStateRoot(join(home, SUPERBEE_USER_STATE_PARENT_DIR_NAME, SUPERBEE_USER_STATE_DIR_NAME));
 }
 
 export function legacyUserStateDir(home: string = homedir()): string {
-  return join(home, LEGACY_USER_STATE_DIR_NAME);
+  return absoluteStateRoot(join(home, LEGACY_USER_STATE_DIR_NAME));
 }
 
 export function userStateDirForPackage(home: string, packageName: string): string {
@@ -320,6 +327,30 @@ function assertInsideRoot(root: string, file: string): void {
   }
 }
 
+/** Every existing directory between the owned root and a private record must stay private. */
+async function assertPrivateDirectoryChain(root: string, file: string): Promise<void> {
+  const parent = dirname(file);
+  const child = relative(root, parent);
+  if (child === "") return;
+  if (child.startsWith("..") || isAbsolute(child)) {
+    throw new Error("private user-state record escapes its product root");
+  }
+  let current = root;
+  for (const component of child.split(/[\\/]+/u).filter(Boolean)) {
+    current = join(current, component);
+    const status = await lstat(current);
+    const currentUid = process.getuid?.();
+    if (
+      status.isSymbolicLink()
+      || !status.isDirectory()
+      || (status.mode & 0o077) !== 0
+      || (currentUid !== undefined && status.uid !== currentUid)
+    ) {
+      throw new Error("private user-state record has an unsafe containing directory");
+    }
+  }
+}
+
 /** Read one record only after the running package's root proves its exact ownership boundary. */
 export async function readUserStateFile(
   home: string,
@@ -352,6 +383,7 @@ export async function readUserStateFile(
     if (state === "absent") throw missingStateError(file);
     if (state === "conflict") throw new Error("canonical Superbee user-state root is not owned by this product");
   }
+  await assertPrivateDirectoryChain(root, file);
   return readPrivateStateFile(file, maxBytes, signal);
 }
 

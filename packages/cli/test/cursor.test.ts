@@ -187,7 +187,7 @@ test("reads never throw: absent, garbage JSON, non-object JSON, foreign key, unr
     assert.deepEqual(await readSyncState(key, home), { cursor: null, cache: null, marker: null, selfActors: null, autoPullAttemptAt: null, hookHintedAt: null });
 
     // Garbage JSON.
-    await mkdir(syncStateDir(home), { recursive: true });
+    await mkdir(syncStateDir(home), { recursive: true, mode: 0o700 });
     await writeFile(syncStatePath(key, home), "{ not json", "utf8");
     assert.deepEqual(await readSyncState(key, home), { cursor: null, cache: null, marker: null, selfActors: null, autoPullAttemptAt: null, hookHintedAt: null });
 
@@ -218,7 +218,7 @@ test("section independence: one malformed section reads null while the valid sec
   try {
     const key = bundleKey({ root: "/tmp/bundle-a" });
     await ensureUserStateRoot(home);
-    await mkdir(syncStateDir(home), { recursive: true });
+    await mkdir(syncStateDir(home), { recursive: true, mode: 0o700 });
     await writeFile(
       syncStatePath(key, home),
       JSON.stringify({
@@ -227,7 +227,7 @@ test("section independence: one malformed section reads null while the valid sec
         cache: { ...sampleCache(), delta: [{ docId: "x" }] }, // malformed: incomplete row
         marker: { updatedAt: "2026-07-07T12:00:00.000Z", origin: "seen" }, // valid (+ extra field)
       }),
-      "utf8",
+      { encoding: "utf8", mode: 0o600 },
     );
     const state = await readSyncState(key, home);
     assert.equal(state.cursor, null);

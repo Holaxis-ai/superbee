@@ -63,6 +63,7 @@ import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { normalizeServer } from "./config.js";
 import { getApiKeyForOrigin } from "./credentials.js";
+import { assertBundleOutsidePrivateState } from "./private-state-bundle-boundary.js";
 import {
   LEGACY_API_KEY_ENV,
   SUPERBEE_API_KEY_ENV,
@@ -90,6 +91,7 @@ export function resolveTargetDir(dirFlag: string | undefined): string {
  */
 export async function assertPlainInitTarget(dirFlag: string | undefined): Promise<string> {
   const target = resolveTargetDir(dirFlag);
+  assertBundleOutsidePrivateState(target);
   const ownIndex = await exists(path.join(target, "index.md"));
   const base = path.basename(target);
   if (BUNDLE_DIRS.includes(base as (typeof BUNDLE_DIRS)[number])) {
@@ -1104,6 +1106,7 @@ export async function withCreateOnlyTarget<T>(
   const logical = path.resolve(startDir, dirFlag ?? startDir);
   const initial = await inspectCreateOnlyTarget(logical, io, "preflight");
   const target = initial.target;
+  assertBundleOutsidePrivateState(target);
   const createdDirectories: string[] = [];
   let criticalSectionEntered = false;
   let publicationState: CreateOnlyPublicationState = "not-started";
@@ -1235,6 +1238,7 @@ export async function resolveLocalBundleTarget(
         `no local bundle directory at ${root}`,
         `${cliInvocation()} init --create-only --dir ${dirFlag}`,
       );
+      assertBundleOutsidePrivateState(canonicalRoot);
       return { root, canonicalRoot, selectedBy: "explicit-dir" };
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
@@ -1262,6 +1266,7 @@ export async function resolveLocalBundleTarget(
       `no local bundle directory at ${binding.target} — from project binding ${binding.file}`,
       `${cliInvocation()} init --create-only --dir ${binding.target}`,
     );
+    assertBundleOutsidePrivateState(canonicalRoot);
     return {
       root: binding.target,
       canonicalRoot,
@@ -1283,6 +1288,7 @@ export async function resolveLocalBundleTarget(
     `no OKF bundle at ${discovered} (no index.md)`,
     `${cliInvocation()} init --create-only --dir ${CONVENTIONAL_BUNDLE_DIR_NAME}`,
   );
+  assertBundleOutsidePrivateState(canonicalRoot);
   return { root: discovered, canonicalRoot, selectedBy: "discovery" };
 }
 
