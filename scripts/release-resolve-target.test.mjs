@@ -53,12 +53,7 @@ test("resolveTargetFacts returns the allowlisted tuple and policy tag", async ()
   });
 });
 
-test("the preview tuple must order ABOVE the stable tuple, or next would point behind latest", async () => {
-  // The mistake this guard exists to prevent, from an independent review of this change: pairing
-  // stable 0.1.1 with preview 0.1.1-pre.3 reads as "the next free number on that line", but a
-  // prerelease sorts BELOW its own release. successor-stable takes `latest` and successor-preview
-  // takes `next`, and at-rest policy requires next to be at or ahead of latest, so the pair could
-  // never settle -- the audit rejected it with next_off_policy.
+test("the preview tuple may prerelease its planned stable but rejects an older release line", async () => {
   const manifest = await loadReleaseTargets();
   assert.equal(
     compareStrictSemver(
@@ -69,18 +64,34 @@ test("the preview tuple must order ABOVE the stable tuple, or next would point b
     "the COMMITTED pair must already satisfy the invariant",
   );
 
-  const inverted = {
+  const stableVersion = manifest.allowed_tuples["successor-stable"].version;
+  const sameLinePreview = {
     ...manifest,
     allowed_tuples: {
       ...manifest.allowed_tuples,
       "successor-preview": {
         ...manifest.allowed_tuples["successor-preview"],
-        version: `${manifest.allowed_tuples["successor-stable"].version}-pre.3`,
-        tag: `v${manifest.allowed_tuples["successor-stable"].version}-pre.3`,
+        version: `${stableVersion}-pre.3`,
+        tag: `v${stableVersion}-pre.3`,
       },
     },
   };
-  assert.throws(() => normalizeReleaseTargets(inverted), /must order ABOVE successor-stable/);
+  assert.equal(
+    normalizeReleaseTargets(sameLinePreview).allowed_tuples["successor-preview"].version,
+    `${stableVersion}-pre.3`,
+  );
+
+  const olderLinePreview = structuredClone(sameLinePreview);
+  olderLinePreview.allowed_tuples["successor-preview"].version = "0.1.0-pre.999";
+  olderLinePreview.allowed_tuples["successor-preview"].tag = "v0.1.0-pre.999";
+  assert.throws(() => normalizeReleaseTargets(olderLinePreview), /must order ABOVE successor-stable/);
+
+  const prereleaseStable = structuredClone(sameLinePreview);
+  prereleaseStable.allowed_tuples["successor-stable"].version = "0.1.1-pre.1";
+  prereleaseStable.allowed_tuples["successor-stable"].tag = "v0.1.1-pre.1";
+  prereleaseStable.allowed_tuples["successor-preview"].version = "0.1.1-pre.2";
+  prereleaseStable.allowed_tuples["successor-preview"].tag = "v0.1.1-pre.2";
+  assert.throws(() => normalizeReleaseTargets(prereleaseStable), /successor-stable.*must be a stable version/);
 });
 
 test("the functional successor floor is independently reviewed and remains at or below the successor tuple", async () => {
@@ -101,8 +112,7 @@ test("the functional successor floor is independently reviewed and remains at or
     allowed_tuples: {
       ...manifest.allowed_tuples,
       "successor-stable": { ...manifest.allowed_tuples["successor-stable"], version: later, tag: `v${later}` },
-      // The preview must stay above the stable, so it moves too; raising the stable alone would trip
-      // the preview-ordering guard instead of exercising the floor.
+      // Keep the preview compatible with the moved stable so this fixture exercises the floor.
       "successor-preview": { ...manifest.allowed_tuples["successor-preview"], version: "0.9.1-pre.1", tag: "v0.9.1-pre.1" },
     },
   };
@@ -326,15 +336,17 @@ test("an explicit --manifest path still gets the burn ledger and checked-in CLI 
   const raw = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
 
   const burnedLedger = JSON.parse(await readFile(path.join(repoRoot, "release", "burned-versions.json"), "utf8"));
-  const burnedVersion = burnedLedger.burned[0].version;
-  // The burn is planted on the BRIDGE tuple, not successor-preview. Every declared burn orders below
-  // the current stable successor, and successor-preview must order ABOVE it, so a burned preview is
-  // rejected by the ordering invariant before the burn ledger is ever consulted -- which would make
-  // this test pass for the wrong reason, and make the burnedFile:null opt-out below unreachable. The
-  // bridge tuple carries no ordering relationship, so the burn check is what fires.
+  const stableVersion = raw.allowed_tuples["successor-stable"].version;
+  const burnedVersion = burnedLedger.burned
+    .map((entry) => entry.version)
+    .find((version) => version.startsWith(`${stableVersion}-`));
+  assert.ok(burnedVersion, `fixture requires a burned prerelease of ${stableVersion}`);
+  // The burned version is a valid same-line preview of the planned stable, so only the burn ledger
+  // rejects it. This keeps the burnedFile:null opt-out below reachable and proves the two guards are
+  // independent.
   const burning = structuredClone(raw);
-  burning.allowed_tuples.bridge.version = burnedVersion;
-  burning.allowed_tuples.bridge.tag = `v${burnedVersion}`;
+  burning.allowed_tuples["successor-preview"].version = burnedVersion;
+  burning.allowed_tuples["successor-preview"].tag = `v${burnedVersion}`;
   const burningPath = path.join(scratch, "burning-targets.json");
   await writeFile(burningPath, JSON.stringify(burning, null, 2));
   await assert.rejects(loadReleaseTargets(burningPath), new RegExp(`uses burned version ${burnedVersion.replace(/\./g, "\\.")}`));
@@ -343,8 +355,7 @@ test("an explicit --manifest path still gets the burn ledger and checked-in CLI 
   driftedCli.allowed_tuples["successor-stable"].version = "9.9.9";
   driftedCli.allowed_tuples["successor-stable"].tag = "v9.9.9";
   driftedCli.functional_successor_floor = "9.9.9";
-  // The preview rides along, because it must order above the stable. Raising the stable alone builds
-  // an incoherent manifest that trips the preview-ordering guard first, masking the pin under test.
+  // Keep the preview compatible with the moved stable so the checked-in CLI pin is the failing guard.
   driftedCli.allowed_tuples["successor-preview"].version = "9.9.10-pre.1";
   driftedCli.allowed_tuples["successor-preview"].tag = "v9.9.10-pre.1";
   const driftedCliPath = path.join(scratch, "drifted-cli-targets.json");
@@ -358,7 +369,7 @@ test("an explicit --manifest path still gets the burn ledger and checked-in CLI 
 
   // Opting out stays possible, but only by saying so at the call site.
   assert.equal(
-    (await loadReleaseTargets(burningPath, { burnedFile: null })).allowed_tuples.bridge.version,
+    (await loadReleaseTargets(burningPath, { burnedFile: null })).allowed_tuples["successor-preview"].version,
     burnedVersion,
   );
 });
