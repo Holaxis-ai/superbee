@@ -1,11 +1,13 @@
-// The five-tuple release packet, end to end, with nothing synthetic in the path that matters.
+// The five-tuple release packet, end to end. The ordinary developer gate uses a synthetic fixture
+// commit so it works from an edited checkout. The staged/CI wrapper supplies
+// SUPERBEE_EXHAUSTIVE_SOURCE_COMMIT and gets the same proof bound to the clean checked-out SHA.
 //
 // F14: every packet test in scripts/release-packet.test.mjs injects a stand-in retained-tarball
 // verifier over 19-byte text "tarballs", because the real one builds, packs, and installs. That
 // leaves the deliverable — five reviewed tuples proven through the real verifier — never executed.
 // This lane does execute it: `scripts/release-candidate.mjs` builds and packs all five candidates,
-// and the packet is created and verified with the DEFAULT verifier, which installs each retained
-// tarball into a scratch prefix and proves its identity.
+// and the packet is created and verified through the real verifier. Each byte-identical retained
+// candidate is installed once; the packet recheck reuses only that successful exact-byte receipt.
 //
 // It is opt-in because it costs about a minute: `npm run test:packet-candidates`, wired into
 // `npm run check` so CI runs it. It must run through npm — the retained-tarball proof needs a real
@@ -21,39 +23,78 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createReleaseCandidate } from "./release-candidate.mjs";
+import { createRetainedVerifierCache } from "./release-candidate-fixture.mjs";
+import { assertExactExhaustiveSource, writeExhaustiveReleaseProof } from "./release-packet-exhaustive-proof.mjs";
 import { REF_ASSERTIONS_SCHEMA, TRANSFER_ALLOWLIST_SCHEMA } from "./release-packet.mjs";
 import { captureRepositorySettings } from "./release-settings-capture.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const targetManifest = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
 const gitAuthorArgs = ["-c", "user.name=packet-test", "-c", "user.email=packet-test@example.invalid"];
 const liveTagRef = "refs/tags/v0.1.0-pre.10";
+const exactSourceCommit = process.env.SUPERBEE_EXHAUSTIVE_SOURCE_COMMIT;
+const proofOutput = process.env.SUPERBEE_EXHAUSTIVE_PROOF_OUT;
+if (proofOutput && !exactSourceCommit) {
+  throw new Error("SUPERBEE_EXHAUSTIVE_PROOF_OUT requires SUPERBEE_EXHAUSTIVE_SOURCE_COMMIT");
+}
+
+async function linkDependencies(root) {
+  await mkdir(path.join(root, "node_modules"), { recursive: true });
+  for (const entry of await readdir(path.join(repoRoot, "node_modules"))) {
+    await symlink(path.join(repoRoot, "node_modules", entry), path.join(root, "node_modules", entry));
+  }
+}
+
+function installScenarioRefs(root, commit) {
+  execFileSync("git", ["checkout", "--quiet", "--detach", commit], { cwd: root, stdio: "pipe" });
+  const listed = execFileSync(
+    "git",
+    ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags", "refs/notes"],
+    { cwd: root, encoding: "utf8" },
+  ).split("\n").filter(Boolean);
+  for (const ref of listed) execFileSync("git", ["update-ref", "-d", ref], { cwd: root, stdio: "pipe" });
+  execFileSync("git", ["update-ref", liveTagRef, commit], { cwd: root, stdio: "pipe" });
+  const scenarioRefs = execFileSync(
+    "git",
+    ["for-each-ref", "--format=%(refname)", "refs/heads", "refs/tags", "refs/notes"],
+    { cwd: root, encoding: "utf8" },
+  ).split("\n").filter(Boolean);
+  assert.deepEqual(scenarioRefs, [liveTagRef], "fixture refs must describe the reviewed pre-cutover scenario only");
+  assert.equal(execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(), commit);
+}
 
 /**
- * The candidates come from the REAL packer running in this checkout; the packet runs against a
- * complete repository built from the same working tree. CI checks out at depth one, where the
- * checked-out commit's parents do not exist locally, so no bundle containing that commit can carry
- * a complete history and the packet's pack validator correctly refuses one. The artifacts under
- * test are unaffected — they are built from this working tree either way.
+ * The ordinary developer proof creates a complete synthetic repository from the tracked working
+ * bytes. Exact-SHA CI/release mode instead clones the clean full-history checkout so the packet's
+ * commit and tree are the literal workflow source. Both paths build the five candidate tuples from
+ * the same bytes used by their packet source.
  */
 async function createFixtureRepository() {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-candidates-source-"));
+  if (exactSourceCommit) {
+    await assertExactExhaustiveSource(exactSourceCommit);
+    const shallow = execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: repoRoot, encoding: "utf8" }).trim();
+    if (shallow !== "false") {
+      throw new Error("exact exhaustive proof requires complete Git history; use actions/checkout with fetch-depth: 0");
+    }
+    execFileSync("git", ["clone", "--quiet", "--shared", "--no-checkout", repoRoot, root], { stdio: "pipe" });
+    execFileSync("git", ["checkout", "--quiet", "--detach", exactSourceCommit], { cwd: root, stdio: "pipe" });
+    await linkDependencies(root);
+    installScenarioRefs(root, exactSourceCommit);
+    return { root, commit: exactSourceCommit, module: await import(`${pathToFileURL(path.join(root, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`) };
+  }
   for (const relative of execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encoding: "utf8" }).split("\0").filter(Boolean)) {
     const from = path.join(repoRoot, relative);
     if (!existsSync(from)) continue;
     await mkdir(path.join(root, path.dirname(relative)), { recursive: true });
     await cp(from, path.join(root, relative));
   }
-  await mkdir(path.join(root, "node_modules"), { recursive: true });
-  for (const entry of await readdir(path.join(repoRoot, "node_modules"))) {
-    await symlink(path.join(repoRoot, "node_modules", entry), path.join(root, "node_modules", entry));
-  }
+  await linkDependencies(root);
   execFileSync("git", ["init", "--quiet", "--initial-branch=main"], { cwd: root, stdio: "pipe" });
   execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
   execFileSync("git", [...gitAuthorArgs, "commit", "--quiet", "-m", "candidate fixture source"], { cwd: root, stdio: "pipe" });
   const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
-  execFileSync("git", ["update-ref", liveTagRef, commit], { cwd: root, stdio: "pipe" });
+  installScenarioRefs(root, commit);
   return { root, commit, module: await import(`${pathToFileURL(path.join(root, "scripts", "release-packet.mjs")).href}?fixture=${Date.now()}`) };
 }
 
@@ -61,6 +102,7 @@ const fixtureRepository = await createFixtureRepository();
 const sourceRoot = fixtureRepository.root;
 const head = fixtureRepository.commit;
 const { createReleasePacket, verifyReleasePacket } = fixtureRepository.module;
+const targetManifest = JSON.parse(await readFile(path.join(sourceRoot, "release", "targets.json"), "utf8"));
 process.on("exit", () => rmSync(sourceRoot, { recursive: true, force: true }));
 const SETTINGS_REPOSITORY = "packet-test-org/packet-test-repo";
 const GZIP_MAGIC = Buffer.from([0x1f, 0x8b]);
@@ -149,9 +191,9 @@ async function packEveryCandidate(root) {
       // The packet runs the retained-tarball proof for every candidate; running it here too would
       // double the slowest step in this lane and prove nothing extra.
       verify: false,
-      // The packer is real; only the source identity is supplied, and it is the fixture
-      // repository's commit — the same commit the packet binds itself to — so the candidate
-      // manifests and the packet agree on one reviewed source rather than two.
+      // The packer is real; its source identity is the same commit the packet binds. In exact mode
+      // that is the checked-out workflow SHA; in the editable developer gate it is the synthetic
+      // commit made from the tracked working bytes.
       sourceFacts: { commit: head, dirty: false },
     });
     candidates[id] = out;
@@ -169,6 +211,7 @@ test("a packet of all five reviewed tuples is built by the real packer and prove
   const candidates = await packEveryCandidate(root);
   const evidence = await realEvidence(root);
   const out = path.join(root, "packet");
+  const retainedProofs = createRetainedVerifierCache();
 
   const { packet } = await createReleasePacket({
     commit: head,
@@ -177,6 +220,7 @@ test("a packet of all five reviewed tuples is built by the real packer and prove
     candidates,
     evidence,
     observedSource: { commit: head, dirty: false },
+    retainedVerifier: retainedProofs.verify,
   });
 
   assert.deepEqual(Object.keys(packet.candidates).sort(), Object.keys(targetManifest.allowed_tuples).sort());
@@ -195,7 +239,12 @@ test("a packet of all five reviewed tuples is built by the real packer and prove
     assert.equal(manifest.build_identity.artifact.channel, "npm-package", id);
   }
 
-  await verifyReleasePacket({ packet: path.join(out, "release-packet.json"), observedSource: { commit: head, dirty: false } });
+  await verifyReleasePacket({
+    packet: path.join(out, "release-packet.json"),
+    observedSource: { commit: head, dirty: false },
+    retainedVerifier: retainedProofs.verify,
+  });
+  assert.deepEqual(retainedProofs.stats(), { verifications: 5, keys: 5 }, "each tuple is really installed once; packet recheck reuses only exact bytes");
 
   // Prove the real verifier is load-bearing here: corrupt one retained tarball and re-record its
   // digest so every byte-level check still agrees, leaving only the install proof to fail.
@@ -219,7 +268,17 @@ test("a packet of all five reviewed tuples is built by the real packer and prove
       candidates: { ...candidates, bridge: forged },
       evidence: await realEvidence(path.join(root, "forged-evidence")),
       observedSource: { commit: head, dirty: false },
+      retainedVerifier: retainedProofs.verify,
     }),
     /candidate bridge retained-tarball proof failed/,
   );
+
+  if (proofOutput) {
+    await writeExhaustiveReleaseProof({
+      out: path.resolve(proofOutput),
+      sourceCommit: exactSourceCommit,
+      packetFile: path.join(out, "release-packet.json"),
+      candidateDirs: candidates,
+    });
+  }
 });

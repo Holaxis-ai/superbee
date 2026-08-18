@@ -60,6 +60,8 @@ jobs:
       run_id: ${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve the exact tag + commit facts
         id: facts
@@ -90,6 +92,11 @@ jobs:
 
       - run: npm ci
 
+      - name: Prove all five release targets from the exact tag SHA
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: npm run check:release-exhaustive -- --expected-sha "$EXPECTED_SOURCE_SHA"
+
       - name: Create the retained release candidate
         id: candidate
         env:
@@ -109,6 +116,11 @@ jobs:
             echo "manifest_sha256=$MANIFEST_SHA"
             echo "integrity=$INTEGRITY"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Independently verify the selected retained tarball
+        env:
+          TARBALL_FILENAME: ${{ steps.candidate.outputs.tarball_filename }}
+        run: npm run verify:npm-package:tarball -- "$ARTIFACT_DIR/$TARBALL_FILENAME" --manifest "$ARTIFACT_DIR/candidate.json"
 
       - name: Retain the candidate artifact (tgz + manifest)
         id: upload

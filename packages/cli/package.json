@@ -39,7 +39,8 @@
   "scripts": {
     "build": "node build.mjs local-dev",
     "typecheck": "tsc --noEmit",
-    "test": "node build.mjs local-dev && ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
+    "pretest": "node build.mjs local-dev",
+    "test": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
     "mutation": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid stryker run",
     "gen:skill": "node scripts/gen-skill.mjs",
     "check:skill": "node scripts/gen-skill.mjs --check",

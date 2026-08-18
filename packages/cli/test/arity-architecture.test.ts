@@ -4,6 +4,19 @@ import { join, relative } from "node:path";
 import test from "node:test";
 
 import { CLI_LEAVES } from "../src/command-spec.js";
+import {
+  BEHAVIOR_ASSIGNMENTS,
+  BEHAVIOR_DIMENSION_VALUES,
+  BUILT_KEY_REPRESENTATIVE_IDS,
+  BUILT_REPRESENTATIVE_IDS,
+  BUILT_REVIEW_SENTINEL_IDS,
+  assignmentIndex,
+  behaviorKey,
+  validateBehaviorCoverage,
+  type BehaviorAssignment,
+  type BehaviorDimension,
+  type BehaviorDimensions,
+} from "./arity-equivalence-matrix.js";
 import { scanArityArchitecture, type ArchitectureFacts } from "./support/arity-architecture-scanner.js";
 
 const SRC = join(import.meta.dirname, "../src");
@@ -76,6 +89,122 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
     return id;
   });
   assert.equal(new Set(publicOrdinaryIds).size, publicOrdinaryIds.length, "ordinary leaves must not be duplicated or substituted");
+
+  const classified = assignmentIndex();
+  const mappedOrdinaryIds = [...new Set([...classified]
+    .filter(([, row]) => row.dimensions.parserAuthority === "ordinary")
+    .map(([id]) => CLI_LEAVES[id].canonical.id))]
+    .sort();
+  assert.deepEqual(publicOrdinaryIds.filter((id) => id !== "new").sort(), mappedOrdinaryIds);
+  assert.deepEqual(
+    [...classified]
+      .filter(([, row]) => row.dimensions.parserAuthority === "selector")
+      .map(([id]) => id)
+      .sort(),
+    [
+      "bundleLocate", "catalogAdd", "catalogList", "catalogResolve", "hookInstall", "hookStatus",
+      "hookUninstall", "indexGenerate", "kindFieldAdd", "kindFieldRemove", "skillInstall",
+      "skillStatus", "skillUninstall", "viewList",
+    ],
+  );
+  assert.deepEqual(
+    [...classified]
+      .filter(([, row]) => row.dimensions.parserAuthority === "schema-deferred")
+      .map(([id]) => id),
+    ["new"],
+  );
+  assert.deepEqual(
+    [...classified]
+      .filter(([, row]) => row.dimensions.parserAuthority === "dynamic-deferred")
+      .map(([id]) => id),
+    ["docUpdate"],
+  );
+});
+
+test("behavioral-equivalence taxonomy is exhaustive, coherent, and materially smaller", () => {
+  const leafIds = Object.keys(CLI_LEAVES);
+  assert.deepEqual(validateBehaviorCoverage(leafIds, BEHAVIOR_ASSIGNMENTS, BUILT_KEY_REPRESENTATIVE_IDS), []);
+  assert.deepEqual(BUILT_REVIEW_SENTINEL_IDS, ["skillStatus", "kindFieldRemove", "blobs", "pull"]);
+  assert.equal(
+    new Set(BUILT_REPRESENTATIVE_IDS).size,
+    BUILT_KEY_REPRESENTATIVE_IDS.length + BUILT_REVIEW_SENTINEL_IDS.length,
+    "key owners and review sentinels must be unique and disjoint",
+  );
+  assert.equal(BUILT_REPRESENTATIVE_IDS.length < leafIds.length / 2, true, "built rows must remain materially smaller than the leaf catalog");
+
+  const assignments = assignmentIndex();
+  assert.deepEqual([...assignments.keys()].sort(), leafIds.sort());
+  for (const [leafId, assignment] of assignments) {
+    const leaf = CLI_LEAVES[leafId];
+    const dimensions = assignment.dimensions;
+    assert.equal(dimensions.positionalCount, leaf.arity.count, `${leaf.path}: positional count`);
+    assert.equal(
+      dimensions.canonicalIdentity,
+      leaf.canonical === leaf ? "canonical" : "alias",
+      `${leaf.path}: canonical alias identity`,
+    );
+    assert.equal(dimensions.selectorLayout === "none", dimensions.parserAuthority !== "selector", `${leaf.path}: selector layout`);
+
+    if (dimensions.parserAuthority === "schema-deferred") {
+      assert.equal(dimensions.helpPrecedence, "schema-before-arity", leaf.path);
+      assert.equal(dimensions.terminatorPrecedence, "schema-reparse-before-arity", leaf.path);
+      assert.equal(dimensions.preValidationEffect, "schema-bundle-read", leaf.path);
+    } else if (dimensions.parserAuthority === "dynamic-deferred") {
+      assert.equal(dimensions.helpPrecedence, "token-walk-before-arity", leaf.path);
+      assert.equal(dimensions.terminatorPrecedence, "token-walk-before-arity", leaf.path);
+      assert.equal(dimensions.preValidationEffect, "none", leaf.path);
+    } else {
+      assert.equal(dimensions.helpPrecedence, "owned-before-arity", leaf.path);
+      assert.equal(dimensions.terminatorPrecedence, "parseargs-before-arity", leaf.path);
+      assert.equal(dimensions.preValidationEffect, "none", leaf.path);
+    }
+  }
+});
+
+test("every key dimension creates an uncovered class until a built representative is added", () => {
+  const leafIds = Object.keys(CLI_LEAVES);
+  const coveredKeys = new Set(BEHAVIOR_ASSIGNMENTS.map((row) => behaviorKey(row.dimensions)));
+
+  for (const dimension of Object.keys(BEHAVIOR_DIMENSION_VALUES) as BehaviorDimension[]) {
+    let novel: BehaviorDimensions | undefined;
+    for (const assignment of BEHAVIOR_ASSIGNMENTS) {
+      const candidates = BEHAVIOR_DIMENSION_VALUES[dimension] as readonly BehaviorDimensions[typeof dimension][];
+      for (const candidate of candidates) {
+        if (candidate === assignment.dimensions[dimension]) continue;
+        const dimensions = { ...assignment.dimensions, [dimension]: candidate } as BehaviorDimensions;
+        if (!coveredKeys.has(behaviorKey(dimensions))) {
+          novel = dimensions;
+          break;
+        }
+      }
+      if (novel) break;
+    }
+    assert.ok(novel, `${dimension}: test fixture needs a novel value combination`);
+    const synthetic = `synthetic-${dimension}`;
+    const assignments: readonly BehaviorAssignment<string>[] = [
+      ...BEHAVIOR_ASSIGNMENTS,
+      { leafId: synthetic, dimensions: novel },
+    ];
+    assert.equal(
+      validateBehaviorCoverage([...leafIds, synthetic], assignments, BUILT_KEY_REPRESENTATIVE_IDS)
+        .some((message) => message.startsWith("behavioral-equivalence key has no built representative:")),
+      true,
+      `${dimension}: a new key must fail closed without a representative`,
+    );
+  }
+});
+
+test("coverage validator rejects unmapped and multiply mapped leaves", () => {
+  const leafIds = Object.keys(CLI_LEAVES);
+  const missing = BEHAVIOR_ASSIGNMENTS.filter((row) => row.leafId !== "setup");
+  assert.equal(validateBehaviorCoverage(leafIds, missing, BUILT_KEY_REPRESENTATIVE_IDS).includes("leaf has no behavioral-equivalence key: setup"), true);
+
+  const duplicated = [...BEHAVIOR_ASSIGNMENTS, BEHAVIOR_ASSIGNMENTS[0]!];
+  assert.equal(
+    validateBehaviorCoverage(leafIds, duplicated, BUILT_KEY_REPRESENTATIVE_IDS)
+      .includes("leaf has 2 behavioral-equivalence keys: bundleLocate"),
+    true,
+  );
 });
 
 test("scanner rejects local aliases, namespace destructuring, storage, and computed access", () => {

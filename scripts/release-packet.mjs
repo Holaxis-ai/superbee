@@ -44,6 +44,11 @@ const EXPLICIT_PACKET_INPUTS = [
   "package.json", // the script authority every workflow `npm run` resolves through
   "package-lock.json", // the exact dependency closure those scripts execute against
   "packages/cli/SKILL.md", // shipped inside every candidate tarball and byte-compared by the verifier
+  // ci-release-exhaustive spawns npm's test:packet-candidates script dynamically, beyond the
+  // static ESM/workflow closure. These two files own exact-byte retained-proof reuse and the
+  // all-five harness, so the release packet must bind them explicitly.
+  "scripts/release-candidate-fixture.mjs",
+  "scripts/release-packet-candidates.test.mjs",
 ];
 const EXTERNAL_IMPORTS = new Set(["es-module-lexer", "esbuild", "pako"]); // Directly declared and lockfile-pinned build dependencies.
 const EVIDENCE = [
