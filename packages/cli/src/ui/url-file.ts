@@ -1,5 +1,5 @@
 // One-click re-entry for the `ui` command after a restart (tasks/ui-pages-spike B6). On boot the
-// command records the CURRENT run's tokenized URL to `~/.config/superbee/ui-url` (0600, dir 0700, the
+// command records the CURRENT run's tokenized URL to `~/.superbee-state/ui-url` (0600, dir 0700, the
 // same discipline credentials use). Combined with the stable per-bundle PORT, a human whose tab
 // died on a restart re-opens the freshly-printed URL in one click instead of copy-pasting a
 // rotating token from the terminal.

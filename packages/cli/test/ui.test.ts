@@ -287,7 +287,7 @@ test("ui --dir: prints a tokenized receipt, boots a real listener enforcing the 
       openBrowser: (url) => {
         opened = url;
       },
-      // Inject no-ops so the test never writes to the real ~/.config/superbee/ui-url.
+      // Inject no-ops so the test never writes to the real ~/.superbee-state/ui-url.
       writeUrlFile: async () => {},
       clearUrlFile: async () => {},
     });

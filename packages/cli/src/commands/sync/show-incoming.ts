@@ -27,6 +27,7 @@ import { ffSwallowToError, syncOutcomeError, type InTreeNoBasisReason } from "..
 import { CliError, asHandled, toExit } from "../../errors.js";
 import { render, renderErrorEnvelope, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
+import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 import { BODY_PREVIEW_LIMIT } from "../doc/common.js";
 // `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches
 // implicitly — the refusal string lives in THE sync-outcome table; this re-export keeps the
@@ -76,6 +77,9 @@ export async function showIncoming(
   const streamMode = out === "-";
 
   const run = async (): Promise<void> => {
+    // A destination inside private state would land 0644 over an operational record.
+    if (out && !streamMode) assertPathOutsidePrivateState(path.resolve(out));
+
     // Same location resolution as sync itself (board-interior invocations retarget to the
     // enclosing project); refs/remotes are SHARED across a repo's worktrees, so any directory
     // inside the repo can read the last-fetched origin/board state — no provisioning required.

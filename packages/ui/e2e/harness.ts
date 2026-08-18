@@ -127,7 +127,7 @@ function waitForReceipt(child: UiChild, getStderr: () => string): Promise<UiRece
 }
 
 async function bootUi(args: string[]): Promise<RunningUi> {
-  // Point the child's HOME at a throwaway dir so its `~/.config/superbee/ui-url` write (0600 re-entry
+  // Point the child's HOME at a throwaway dir so its `~/.superbee-state/ui-url` write (0600 re-entry
   // pointer) lands in an isolated home, never the real one.
   const fakeHome = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-home-"));
   const child = spawn(process.execPath, [CLI_DIST, "ui", ...args, "--port", "0", "--json"], {

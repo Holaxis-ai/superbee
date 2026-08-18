@@ -10,6 +10,7 @@ import {
   open,
   readdir,
   readFile,
+  stat,
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -26,8 +27,10 @@ import {
   LEGACY_BRIDGE_PACKAGE_NAME,
   legacyUserStateDir,
   readPrivateStateFile,
+  supersededUserStateDirs,
   USER_STATE_MARKER_BYTES,
   USER_STATE_MARKER_FILE_NAME,
+  USER_STATE_QUARANTINE_COMMAND,
 } from "./user-state.js";
 import { assertMigratableViewAuthorization } from "./ui/view-authorizations.js";
 
@@ -172,8 +175,18 @@ async function preflightDurableRecords(root: string): Promise<MigrationRecord[]>
   return records;
 }
 
-async function preflightLegacy(home: string): Promise<MigrationRecord[]> {
-  const root = legacyUserStateDir(home);
+/**
+ * Every root migration may draw FROM, highest precedence first. `~/.agentstate` is the released
+ * bridge root; `~/.config/superbee` is the superseded canonical root — it never shipped, but a
+ * tester who ran a pre-release build has one locally. Ordered, not merged blindly: the first source
+ * that supplies a given record wins, so precedence is a property of this list rather than of
+ * directory-walk order.
+ */
+export function migrationSourceRoots(home: string): string[] {
+  return [...new Set([legacyUserStateDir(home), ...supersededUserStateDirs(home)])];
+}
+
+async function preflightSourceRoot(root: string): Promise<MigrationRecord[]> {
   try {
     const status = await lstat(root);
     if (status.isSymbolicLink() || !status.isDirectory()) return [];
@@ -184,6 +197,19 @@ async function preflightLegacy(home: string): Promise<MigrationRecord[]> {
   const records = await preflightDurableRecords(root);
   if (records.length > 0) await assertPrivateDirectory(root);
   return records;
+}
+
+async function preflightLegacy(home: string): Promise<MigrationRecord[]> {
+  const merged: MigrationRecord[] = [];
+  const claimed = new Set<string>();
+  for (const root of migrationSourceRoots(home)) {
+    for (const record of await preflightSourceRoot(root)) {
+      if (claimed.has(record.relative)) continue;
+      claimed.add(record.relative);
+      merged.push(record);
+    }
+  }
+  return merged;
 }
 
 export async function inspectUserStateMigration(home: string = homedir()): Promise<UserStateMigrationInspection> {
@@ -210,8 +236,9 @@ async function ensureMigrationParent(home: string): Promise<void> {
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;
   }
-  const status = await lstat(parent);
-  if (status.isSymbolicLink() || !status.isDirectory()) throw new Error("canonical state parent is unsafe");
+  // The canonical root's parent is $HOME itself; a symlinked home directory is the operator's own
+  // configuration. Only the ROOT must be a real, non-symlink directory.
+  if (!(await stat(parent)).isDirectory()) throw new Error("canonical state parent is unsafe");
 }
 
 async function writeNoReplace(root: string, relative: string, bytes: string): Promise<void> {
@@ -393,7 +420,13 @@ export async function migrateUserState(
     await assertSourceUnchanged(home, records);
     await writeNoReplace(root, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES);
   } catch {
-    throw new CliError("CONFLICT", "user state changed during migration; legacy state remains preserved", { help: "superbee setup migrate-state" });
+    // A real exit node, never a bare rerun of the command that just failed: the half-built
+    // canonical root is what blocks the retry, and legacy state is preserved either way.
+    throw new CliError(
+      "CONFLICT",
+      "user state changed during migration; legacy state remains preserved",
+      { help: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup migrate-state` },
+    );
   }
   await unlink(join(root, MIGRATION_JOURNAL_FILE_NAME)).catch(() => {});
   await chmod(root, DIR_MODE);

@@ -6,7 +6,7 @@
 //      (e); machine-honest per the cursor-honesty adjudication) and `buildBoardBlock`'s folding —
 //      the exact strings are PINNED here.
 //   2. Integration tests over `git-harness.ts` topologies, driving `sessionStart()` /
-//      `sessionStartPull()` / `home()` with real git, real `~/.config/superbee/sync` state (HOME
+//      `sessionStartPull()` / `home()` with real git, real `~/.superbee-state/sync` state (HOME
 //      swapped to a temp dir), and — for the time-box test — a REAL hanging remote (a `hang://`
 //      remote helper that sleeps; spawnSync's timeout kill is the enforcement under test,
 //      empirically verified to unblock even while the helper grandchild still holds the pipes).

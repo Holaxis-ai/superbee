@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildSetupPlan, type SetupPlanInput } from "../src/setup-plan.js";
+import { USER_STATE_QUARANTINE_COMMAND } from "../src/user-state.js";
 
 const CURRENT_SKILL = {
   canonical: { state: "installed" as const },
@@ -52,15 +53,20 @@ test("legacy operational state is one explicit setup action before host integrat
   assert.equal(plan.ready, false);
 });
 
-test("uncertain canonical user state blocks setup without an inferred mutator", () => {
+test("uncertain canonical user state blocks setup with a real exit node, not a self-pointing rerun", () => {
   const plan = buildSetupPlan(input({
     state: { state: "blocked", reason: "the canonical Superbee user-state root is unrecognized", records: 0 },
   }));
   assert.deepEqual(plan.next, {
     action: "inspect",
-    command: "superbee setup",
+    command: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup`,
     reason: "the canonical Superbee user-state root is unrecognized",
   });
+  // The whole point: rerunning the command that reported the block cannot clear it, so the emitted
+  // command must CHANGE something first — by rename, never by delete.
+  assert.notEqual(plan.next?.command, "superbee setup");
+  assert.match(plan.next?.command ?? "", /^mv /);
+  assert.doesNotMatch(plan.next?.command ?? "", /\brm\b/);
 });
 
 test("setup plan emits exactly one deterministic next command in dependency order", () => {

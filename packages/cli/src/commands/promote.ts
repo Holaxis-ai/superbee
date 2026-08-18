@@ -30,6 +30,7 @@
 // bundle. Principle: commands are the control channel, files are the content channel.
 import { parseArgs } from "node:util";
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import {
   writeBlob,
   parseMarkdown,
@@ -45,6 +46,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
+import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 
@@ -135,6 +137,9 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
       help: `${cliInvocation()} promote <file> --doc-key <key>`,
     });
   }
+  // The byte channel must not carry private operational state (credentials, catalog, View
+  // authorizations) into publishable bundle content.
+  assertPathOutsidePrivateState(path.resolve(file));
   const key = values["doc-key"]?.trim();
   if (!key) {
     throw new CliError("USAGE", "--doc-key <key> is required", {

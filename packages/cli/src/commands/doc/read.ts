@@ -23,6 +23,7 @@ import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, renderErrorEnvelope } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
+import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 import { DOC_READ_USAGE, type DocCliDeps, BODY_PREVIEW_LIMIT, readErrorToCliError } from "./common.js";
 
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
@@ -135,7 +136,11 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
   if (bodyOutPresent) {
     const bodyOut = bodyOutValue.trim();
     const streamMode = bodyOut === "-";
-    if (!streamMode) await assertSafeBodyOutTarget(bundle, bodyOut, id);
+    if (!streamMode) {
+      // A destination inside private state would land 0644 over an operational record.
+      assertPathOutsidePrivateState(path.resolve(bodyOut));
+      await assertSafeBodyOutTarget(bundle, bodyOut, id);
+    }
     const runToTarget = async (): Promise<void> => {
       let parsed: OkfDocument;
       let version: Version;
@@ -243,6 +248,8 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
 
   // Byte channel: read the raw markdown file bytes and write them to disk or stream to stdout.
   const streamMode = out === "-";
+  // A destination inside private state would land 0644 over an operational record.
+  if (!streamMode) assertPathOutsidePrivateState(path.resolve(out));
 
   const runToTarget = async (): Promise<void> => {
     let bytes: Uint8Array;

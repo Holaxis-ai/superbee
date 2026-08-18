@@ -2,7 +2,7 @@
 //
 // The mechanic (staleness window, fs-only pre-gate, attempt throttle, the shared
 // pull-and-record step) lives in `@superbee/board-git`; this module binds its two
-// injected seams to the CLI's own facts — `defaultSyncStore` (the `~/.config/superbee/sync`
+// injected seams to the CLI's own facts — `defaultSyncStore` (the `~/.superbee-state/sync`
 // credentials discipline) and `findBundleRoot` (the conventional-folder discovery walk) — and
 // re-exports the trigger under its historical signatures so every call site (list, doc read,
 // status, home, link show, session-start) stays unchanged.

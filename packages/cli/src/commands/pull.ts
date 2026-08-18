@@ -34,6 +34,7 @@
 // destination path itself looks like a concept doc.
 import { parseArgs } from "node:util";
 import { promises as fs } from "node:fs";
+import path from "node:path";
 import {
   readDocVersioned,
   readBlob,
@@ -48,6 +49,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, renderErrorEnvelope, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
+import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { inBundlePollutionWarning, readErrorToCliError } from "./doc.js";
 
 export const PULL_USAGE = `superbee pull — pull a doc or blob's bytes out of the store (the reverse of 'promote')
@@ -193,6 +195,10 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
       help: `${cliInvocation()} pull --doc-key ${key} --out <path>`,
     });
   }
+
+  // `pull --out <stateRoot>/state.json` would otherwise exit 0, destroy the private-state marker
+  // through a plain 0644 write, and brick every later private-state command — reached by a READ.
+  if (out !== "-") assertPathOutsidePrivateState(path.resolve(out));
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
   const mode: OutputMode = resolveMode(values);

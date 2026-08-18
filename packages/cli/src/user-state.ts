@@ -1,8 +1,12 @@
 // One authority for private, user-scoped CLI state.
 //
-// The Superbee package owns ~/.config/superbee. The separately published Aslite bridge keeps its
+// The Superbee package owns ~/.superbee-state. The separately published Aslite bridge keeps its
 // historical ~/.agentstate root until that bridge is retired. Ordinary Superbee readers never
-// consult the legacy root; only setup's explicit one-shot migration module may inspect it.
+// consult a superseded root; only setup's explicit one-shot migration module may inspect them.
+//
+// The location is stored back in $HOME rather than under ~/.config because nothing kept here is
+// user-editable configuration, and a `-config` name signals dotfile/backup tooling to sweep it.
+// ~/.config itself is commonly tracked wholesale; $HOME rarely is.
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
@@ -14,7 +18,10 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   rmdirSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -25,6 +32,7 @@ import {
   readFile,
   rename,
   rmdir,
+  stat,
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -32,8 +40,31 @@ import { dirname, isAbsolute, join, relative } from "node:path";
 
 import { staticBuildIdentity } from "./build-identity.js";
 
-export const SUPERBEE_USER_STATE_PARENT_DIR_NAME = ".config";
-export const SUPERBEE_USER_STATE_DIR_NAME = "superbee";
+/**
+ * THE ONE definition of Superbee's private user-state location, relative to $HOME. Guarded roots,
+ * migration targets, help text, and every fixture derive from it, so relocating the store is a
+ * one-line change and no other module encodes the name.
+ */
+export const SUPERBEE_USER_STATE_PATH_SEGMENTS: readonly string[] = Object.freeze([".superbee-state"]);
+
+/**
+ * Superseded state roots, newest first. A root stays here while it remains a migration SOURCE, and
+ * this list only ever grows: every entry is also a guarded bundle boundary.
+ */
+export const SUPERSEDED_USER_STATE_PATH_SEGMENTS: readonly (readonly string[])[] = Object.freeze([
+  Object.freeze([".config", "superbee"]),
+]);
+
+/** `~/.superbee-state` — the display spelling, derived from the one constant above. */
+export const USER_STATE_DIR_DISPLAY = `~/${SUPERBEE_USER_STATE_PATH_SEGMENTS.join("/")}`;
+
+/**
+ * The one exit node out of an unrecognized or half-created canonical root: quarantine by RENAME so
+ * the evidence survives inspection. Never a delete, and never a bare rerun of the failing command.
+ */
+export const USER_STATE_QUARANTINE_COMMAND =
+  `mv ${USER_STATE_DIR_DISPLAY} ${USER_STATE_DIR_DISPLAY}.unrecognized`;
+
 export const LEGACY_USER_STATE_DIR_NAME = ".agentstate";
 export const LEGACY_BRIDGE_PACKAGE_NAME = "@holaxis/aslite";
 export const USER_STATE_MARKER_FILE_NAME = "state.json";
@@ -43,6 +74,8 @@ export const USER_STATE_MARKER_BYTES = `${JSON.stringify(USER_STATE_MARKER)}\n`;
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 const MARKER_MAX_BYTES = 256;
+const STATE_ROOT_GITIGNORE_FILE_NAME = ".gitignore";
+const STATE_ROOT_GITIGNORE_BYTES = "*\n";
 
 function absoluteStateRoot(root: string): string {
   if (!isAbsolute(root)) {
@@ -52,11 +85,16 @@ function absoluteStateRoot(root: string): string {
 }
 
 export function canonicalUserStateDir(home: string = homedir()): string {
-  return absoluteStateRoot(join(home, SUPERBEE_USER_STATE_PARENT_DIR_NAME, SUPERBEE_USER_STATE_DIR_NAME));
+  return absoluteStateRoot(join(home, ...SUPERBEE_USER_STATE_PATH_SEGMENTS));
 }
 
 export function legacyUserStateDir(home: string = homedir()): string {
   return absoluteStateRoot(join(home, LEGACY_USER_STATE_DIR_NAME));
+}
+
+/** Every superseded canonical root, newest first: still a migration source, still guarded. */
+export function supersededUserStateDirs(home: string = homedir()): string[] {
+  return SUPERSEDED_USER_STATE_PATH_SEGMENTS.map((segments) => absoluteStateRoot(join(home, ...segments)));
 }
 
 export function userStateDirForPackage(home: string, packageName: string): string {
@@ -78,13 +116,20 @@ async function assertRealDirectory(directory: string): Promise<void> {
   }
 }
 
+/**
+ * The canonical root's parent is $HOME itself. A symlinked home directory is the operator's own
+ * configuration and `homedir()` is already the trusted input, so the parent is checked as a
+ * DIRECTORY (following links); only the state ROOT must be a real, non-symlink directory.
+ */
 async function ensureParentDirectory(directory: string): Promise<void> {
   try {
     await mkdir(directory, { recursive: true, mode: DIR_MODE });
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;
   }
-  await assertRealDirectory(directory);
+  if (!(await stat(directory)).isDirectory()) {
+    throw new Error("private user-state parent is not a directory");
+  }
 }
 
 /** Read one bounded private record without following a final symlink or blocking on a FIFO. */
@@ -160,6 +205,53 @@ export async function writeFileAtomic0600(
   }
 }
 
+/**
+ * A state root that some git work tree already encloses must not be offered up by `git add -A`.
+ * Written opportunistically on every ensure so roots created by earlier versions gain it, strictly
+ * AFTER the ownership assertion (a foreign or half-created root never receives product bytes), and
+ * never during migration staging, which asserts an exact topology and does not run through ensure.
+ * Inert for an ALREADY-TRACKED root, which is why it is hardening rather than the whole answer.
+ */
+async function ensureStateRootGitignore(root: string): Promise<void> {
+  try {
+    if (await readPrivateStateFile(join(root, STATE_ROOT_GITIGNORE_FILE_NAME), 64) === STATE_ROOT_GITIGNORE_BYTES) return;
+  } catch {
+    // Absent, unreadable, or stale — fall through and (re)publish it.
+  }
+  try {
+    await writeFileAtomic0600(root, STATE_ROOT_GITIGNORE_FILE_NAME, STATE_ROOT_GITIGNORE_BYTES);
+  } catch {
+    // Best effort only: hardening must never fail an otherwise-valid ensure.
+  }
+}
+
+function ensureStateRootGitignoreSync(root: string): void {
+  try {
+    if (readFileSync(join(root, STATE_ROOT_GITIGNORE_FILE_NAME), "utf8") === STATE_ROOT_GITIGNORE_BYTES) return;
+  } catch {
+    // Absent, unreadable, or stale — fall through and (re)publish it.
+  }
+  const temporary = join(root, `.${STATE_ROOT_GITIGNORE_FILE_NAME}.${randomBytes(8).toString("hex")}.tmp`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, FILE_MODE);
+    writeFileSync(descriptor, STATE_ROOT_GITIGNORE_BYTES, "utf8");
+    fchmodSync(descriptor, FILE_MODE);
+    closeSync(descriptor);
+    descriptor = undefined;
+    renameSync(temporary, join(root, STATE_ROOT_GITIGNORE_FILE_NAME));
+  } catch {
+    // Best effort only: hardening must never fail an otherwise-valid ensure.
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // Already renamed into place, or never created.
+    }
+  }
+}
+
 async function initializeCanonicalRoot(root: string): Promise<void> {
   const parent = dirname(root);
   await ensureParentDirectory(parent);
@@ -191,6 +283,7 @@ async function initializeCanonicalRoot(root: string): Promise<void> {
     throw new Error("canonical Superbee user-state root is not owned by this product");
   }
   await chmod(root, DIR_MODE);
+  await ensureStateRootGitignore(root);
 }
 
 /** Ensure the running package's one writable state root exists and is safe. */
@@ -205,6 +298,7 @@ export async function ensureUserStateRoot(home: string = homedir()): Promise<str
     }
     await assertRealDirectory(root);
     await chmod(root, DIR_MODE);
+    await ensureStateRootGitignore(root);
     return root;
   }
   await initializeCanonicalRoot(root);
@@ -247,16 +341,19 @@ export function ensureUserStateRootSync(home: string = homedir()): string {
     }
     ensureRealDirectorySync(root);
     chmodSync(root, DIR_MODE);
+    ensureStateRootGitignoreSync(root);
     return root;
   }
 
   const parent = dirname(root);
   try {
-    mkdirSync(parent, { mode: DIR_MODE });
+    mkdirSync(parent, { recursive: true, mode: DIR_MODE });
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;
   }
-  ensureRealDirectorySync(parent);
+  if (!statSync(parent).isDirectory()) {
+    throw new Error("private user-state parent is not a directory");
+  }
   let created = false;
   try {
     mkdirSync(root, { mode: DIR_MODE });
@@ -287,6 +384,7 @@ export function ensureUserStateRootSync(home: string = homedir()): string {
     throw new Error("canonical Superbee user-state root is not owned by this product");
   }
   chmodSync(root, DIR_MODE);
+  ensureStateRootGitignoreSync(root);
   return root;
 }
 

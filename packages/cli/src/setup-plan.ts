@@ -7,6 +7,7 @@ import type { InstallScope } from "./install-scope.js";
 import type { HookCompatibility } from "./hook-compatibility.js";
 import type { SkillCompatibilityState, SkillState } from "./skill-compatibility.js";
 import type { UserStateMigrationInspection } from "./user-state-migration.js";
+import { USER_STATE_QUARANTINE_COMMAND } from "./user-state.js";
 
 export type SetupRequirement = "required" | "recommended" | "not_applicable";
 export type SetupCapabilityState = "ready" | "needs_action" | "blocked" | "not_applicable";
@@ -78,12 +79,14 @@ function stateCapability(input: SetupPlanInput): SetupCapability {
       command: "superbee setup migrate-state",
     };
   }
+  // A blocked state root cannot be un-blocked by rerunning the command that reported it. The exit
+  // node quarantines the unrecognized root by RENAME — never a delete — and then re-inspects.
   return {
     id: "state",
     requirement: "required",
     state: "blocked",
     reason: input.state.reason,
-    command: "superbee setup",
+    command: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup`,
   };
 }
 

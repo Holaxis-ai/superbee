@@ -1104,6 +1104,16 @@ export async function withCreateOnlyTarget<T>(
 ): Promise<CreateOnlyTargetReceipt<T>> {
   const io = createOnlyIo(deps);
   const logical = path.resolve(startDir, dirFlag ?? startDir);
+  // Ordered before the create-only preflight so a private-state target reads as the boundary
+  // refusal it is, rather than as an incidental "target exists and is not empty" that also leaks the
+  // private coordinate. A target the relation cannot resolve at all (a symlink loop, an unreadable
+  // ancestor) is left to the inspection below, which refuses it structurally before anything is
+  // created; `target` is re-checked against the boundary immediately after.
+  try {
+    assertBundleOutsidePrivateState(logical);
+  } catch (error) {
+    if (error instanceof CliError && error.code === "CONFLICT") throw error;
+  }
   const initial = await inspectCreateOnlyTarget(logical, io, "preflight");
   const target = initial.target;
   assertBundleOutsidePrivateState(target);

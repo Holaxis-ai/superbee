@@ -245,10 +245,17 @@ The private catalog is explicit MCP inventory, never ambient current-project sel
 reports catalog access separately from the bundle resolved by the current checkout, and a legacy
 registration's referenced bundle cannot authorize project orientation, writes, or sync.
 The only legacy operational-state bridge is the explicit `superbee setup migrate-state` leaf:
-ordinary Superbee readers use `~/.config/superbee` exclusively, and migration never moves bundles
-or deletes `~/.agentstate` bytes. Private operational state is categorically not a Knowledge
-Bundle: its coordinate must be absolute, and local bundle selection/creation plus sync publication
-independently refuse any filesystem identity equal to the private state root.
+ordinary Superbee readers use `~/.superbee-state` exclusively, migration draws from an ORDERED
+source list (`~/.agentstate`, then the superseded `~/.config/superbee`), and it never moves bundles
+or deletes source bytes. The location is ONE constant in `user-state.ts`; it lives back in `$HOME`
+because nothing stored is user-editable configuration and a `-config` name invites dotfile/backup
+tooling to sweep it. Private operational state is categorically not a Knowledge Bundle, and the
+invariant is CONTAINMENT rather than identity: one inode-based relation
+(`private-state-bundle-boundary.ts`) classifies every target against every guarded root
+(canonical + `~/.agentstate` + every superseded root, on both builds), and `--dir` resolution,
+init, board-path derivation, the `promote`/`artifact create` source positionals, and the
+`pull`/`doc read`/`sync --show-incoming` `--out` destinations all answer to it. The state root
+carries a `.gitignore` of `*`, written after its ownership assertion.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
 `docs/core` and preserved outside the OSS repository — it is not a build or deployment target
@@ -257,7 +264,7 @@ without an explicit human decision.
 ### 5. Local-first, standards-clean
 
 Local-first: everything works with the network off. No bundled secret; credentials (if
-any) live in `~/.config/superbee/` with 0600/0700 discipline and are never printed. Stay
+any) live in `~/.superbee-state/` with 0600/0700 discipline and are never printed. Stay
 standards-clean (plain OKF markdown; no bespoke schema). Link form is **relative
 bundle-relative**.
 

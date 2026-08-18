@@ -4,7 +4,7 @@
 // The neutral store implementation (the `createSyncStore` factory, the store interface, the
 // cursor/cache/marker record types, key derivation and schema validation) lives in
 // `@superbee/board-git`. THIS module is what stays behind: it wires the neutral factory to the
-// CLI's own private-state discipline (`~/.config/superbee/sync`), exposes
+// CLI's own private-state discipline (`~/.superbee-state/sync`), exposes
 // `defaultSyncStore` — THE production instance every consumer (sync, establish, autopull,
 // session-start, home) uses — and re-exports the neutral types/factory so every existing import
 // site keeps working unchanged.
@@ -48,7 +48,7 @@ export {
 /** The subdirectory of the private Superbee state root holding per-bundle sync state files. */
 export const SYNC_STATE_DIR_NAME = "sync";
 
-/** `~/.config/superbee/sync` — the 0700 directory holding one state file per bundle key. */
+/** `~/.superbee-state/sync` — the 0700 directory holding one state file per bundle key. */
 export function syncStateDir(home: string = homedir()): string {
   return join(credentialsDir(home), SYNC_STATE_DIR_NAME);
 }
@@ -69,7 +69,7 @@ export function syncStatePath(key: string, home: string = homedir()): string {
 }
 
 /**
- * `~/.config/superbee/sync/exports/<key-digest>` — the per-bundle directory sync's CONVERGING conflict
+ * `~/.superbee-state/sync/exports/<key-digest>` — the per-bundle directory sync's CONVERGING conflict
  * mechanic exports the LOCAL version of each conflicted doc into ("yours saved at <path>").
  * Deliberately OUTSIDE any worktree (the board worktree must end every sync pristine) and under
  * the same per-clone key discipline as the cursor/cache/marker state — exports for two different

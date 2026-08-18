@@ -13,10 +13,11 @@ import {
   canonicalUserStateDir,
   legacyUserStateDir,
   readUserStateMarker,
+  supersededUserStateDirs,
   USER_STATE_MARKER_BYTES,
   userStateDirForPackage,
 } from "../src/user-state.js";
-import { inspectUserStateMigration, migrateUserState } from "../src/user-state-migration.js";
+import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
 
 const BUILT_CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
@@ -131,6 +132,74 @@ test("plain built CLI leaves legacy migration discoverable until an explicit sta
     assert.equal(plan.setup.capabilities.find((capability) => capability.id === "state")?.state, "needs_action");
     assert.equal(plan.setup.next.command, "superbee setup migrate-state");
     assert.equal(await absent(canonicalUserStateDir(root)), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("migration draws from an ORDERED source list, so every superseded root is carried forward", async () => {
+  const root = await home();
+  try {
+    const sources = migrationSourceRoots(root);
+    assert.deepEqual(sources, [legacyUserStateDir(root), ...supersededUserStateDirs(root)]);
+    assert.ok(sources.length > 1, "a superseded canonical root is still a migration source");
+    const [bridge, superseded] = sources as [string, string];
+
+    const catalog = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
+    const winning = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "from-bridge" } } })}\n`;
+    const losing = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "from-superseded" } } })}\n`;
+    const authorization = JSON.stringify({
+      bundle: "/bundles/planning",
+      subject: {
+        registryId: "views-registry/roadmap",
+        contentVersion: "sha256:exact-html",
+        contentType: "text/html; charset=utf-8",
+        capability: "bundle-read",
+        execution: "active",
+        policyVersion: "active-view-v1",
+      },
+    });
+    const authorizationName = `${createHash("sha256").update(authorization).digest("hex")}.json`;
+
+    // The released bridge root supplies the catalog and the WINNING credentials.
+    await mkdir(bridge, { recursive: true, mode: 0o700 });
+    await chmod(bridge, 0o700);
+    await writeLegacy(join(bridge, "catalog.json"), catalog);
+    await writeLegacy(join(bridge, "okf-config.json"), winning);
+
+    // The superseded canonical root — which never shipped, but a tester on this branch may have
+    // one — supplies a View authorization and a LOSING copy of the same credential record.
+    const supersededAuthorizations = join(superseded, "view-authorizations");
+    await mkdir(supersededAuthorizations, { recursive: true, mode: 0o700 });
+    await chmod(dirname(superseded), 0o700);
+    await chmod(superseded, 0o700);
+    await chmod(supersededAuthorizations, 0o700);
+    await writeLegacy(join(superseded, "okf-config.json"), losing);
+    await writeLegacy(join(supersededAuthorizations, authorizationName), `${authorization}\n`);
+
+    const inspection = await inspectUserStateMigration(root);
+    assert.equal(inspection.state, "migratable");
+    assert.equal(inspection.records, 3, "records from BOTH sources are carried forward");
+
+    const receipt = await migrateUserState(root);
+    assert.equal(receipt.status, "migrated");
+    assert.equal(receipt.records.catalog, "migrated");
+    assert.equal(receipt.records.credentials, "migrated");
+    assert.equal(receipt.records.view_authorizations, 1);
+
+    const canonical = canonicalUserStateDir(root);
+    assert.equal(await readFile(join(canonical, "catalog.json"), "utf8"), catalog);
+    assert.equal(
+      await readFile(join(canonical, "okf-config.json"), "utf8"),
+      winning,
+      "a record present in both roots resolves by ORDER, not by walk accident",
+    );
+    assert.equal(await readFile(join(canonical, "view-authorizations", authorizationName), "utf8"), `${authorization}\n`);
+    assert.equal(await readUserStateMarker(root), USER_STATE_MARKER_BYTES);
+
+    // Every source is PRESERVED, never moved or deleted.
+    assert.equal(await absent(join(bridge, "catalog.json")), false);
+    assert.equal(await absent(join(superseded, "okf-config.json")), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
