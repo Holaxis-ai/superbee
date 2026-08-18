@@ -74,16 +74,6 @@ interface MigrationJournal {
   records: Array<{ relative: string; sha256: string }>;
 }
 
-interface DirectoryIdentity {
-  dev: number;
-  ino: number;
-}
-
-interface MigrationAuthority {
-  parent: { path: string; identity: DirectoryIdentity };
-  root: { path: string; identity: DirectoryIdentity };
-}
-
 export interface UserStateMigrationHooks {
   /** Test seam immediately before the exclusive canonical-root claim. */
   beforeCanonicalClaim?: () => void | Promise<void>;
@@ -122,36 +112,6 @@ async function assertPrivateDirectory(directory: string): Promise<void> {
   ) {
     throw new Error("legacy private state directory is unsafe");
   }
-}
-
-async function captureDirectoryIdentity(directory: string, requirePrivate: boolean): Promise<DirectoryIdentity> {
-  const status = await lstat(directory);
-  const currentUid = process.getuid?.();
-  if (
-    status.isSymbolicLink()
-    || !status.isDirectory()
-    || (requirePrivate && (status.mode & 0o077) !== 0)
-    || (requirePrivate && currentUid !== undefined && status.uid !== currentUid)
-  ) {
-    throw new Error("migration directory authority is unsafe");
-  }
-  return { dev: status.dev, ino: status.ino };
-}
-
-async function assertDirectoryIdentity(
-  directory: string,
-  expected: DirectoryIdentity,
-  requirePrivate: boolean,
-): Promise<void> {
-  const actual = await captureDirectoryIdentity(directory, requirePrivate);
-  if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
-    throw new Error("migration directory authority changed");
-  }
-}
-
-async function assertMigrationAuthority(authority: MigrationAuthority): Promise<void> {
-  await assertDirectoryIdentity(authority.parent.path, authority.parent.identity, false);
-  await assertDirectoryIdentity(authority.root.path, authority.root.identity, true);
 }
 
 async function assertPrivateRegularFile(file: string): Promise<void> {
@@ -243,19 +203,18 @@ export async function inspectUserStateMigration(home: string = homedir()): Promi
   }
 }
 
-async function ensureMigrationParent(home: string): Promise<{ path: string; identity: DirectoryIdentity }> {
+async function ensureMigrationParent(home: string): Promise<void> {
   const parent = dirname(canonicalUserStateDir(home));
   try {
     await mkdir(parent, { mode: DIR_MODE });
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;
   }
-  return { path: parent, identity: await captureDirectoryIdentity(parent, false) };
+  const status = await lstat(parent);
+  if (status.isSymbolicLink() || !status.isDirectory()) throw new Error("canonical state parent is unsafe");
 }
 
-async function writeNoReplace(authority: MigrationAuthority, relative: string, bytes: string): Promise<void> {
-  await assertMigrationAuthority(authority);
-  const root = authority.root.path;
+async function writeNoReplace(root: string, relative: string, bytes: string): Promise<void> {
   const destination = join(root, relative);
   const directory = dirname(destination);
   if (directory !== root) {
@@ -266,12 +225,7 @@ async function writeNoReplace(authority: MigrationAuthority, relative: string, b
     }
     await assertPrivateDirectory(directory);
   }
-  await assertMigrationAuthority(authority);
-  const directoryIdentity = await captureDirectoryIdentity(directory, true);
-  const temporary = join(
-    directory,
-    `.migration-${digest(bytes)}-${randomBytes(12).toString("hex")}.tmp`,
-  );
+  const temporary = join(directory, `.migration-${randomBytes(12).toString("hex")}.tmp`);
   const handle = await open(temporary, "wx", FILE_MODE);
   try {
     await handle.writeFile(bytes);
@@ -281,14 +235,10 @@ async function writeNoReplace(authority: MigrationAuthority, relative: string, b
     await handle.close();
   }
   try {
-    await assertMigrationAuthority(authority);
-    await assertDirectoryIdentity(directory, directoryIdentity, true);
     await link(temporary, destination);
   } finally {
     await unlink(temporary).catch(() => {});
   }
-  await assertMigrationAuthority(authority);
-  await assertDirectoryIdentity(directory, directoryIdentity, true);
 }
 
 function journalFor(records: MigrationRecord[]): MigrationJournal {
@@ -319,94 +269,18 @@ function parseJournal(raw: string): MigrationJournal | null {
   }
 }
 
-const MIGRATION_TEMP_NAME = /^\.migration-([a-f0-9]{64})-[a-f0-9]{24}\.tmp$/;
-
-async function isOwnedInterruptedTemp(file: string, expected: string): Promise<boolean> {
-  const flags = constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0);
-  const handle = await open(file, flags);
-  try {
-    const status = await handle.stat();
-    const currentUid = process.getuid?.();
-    if (
-      !status.isFile()
-      || (status.mode & 0o077) !== 0
-      || (currentUid !== undefined && status.uid !== currentUid)
-      || status.size > Buffer.byteLength(expected)
-    ) {
-      return false;
-    }
-    const actual = await handle.readFile();
-    return Buffer.from(expected).subarray(0, actual.byteLength).equals(actual);
-  } finally {
-    await handle.close();
-  }
-}
-
-async function cleanupOwnedTempsInDirectory(
-  authority: MigrationAuthority,
-  directory: string,
-  expectedPayloads: readonly string[],
-): Promise<void> {
-  await assertMigrationAuthority(authority);
-  const directoryIdentity = await captureDirectoryIdentity(directory, true);
-  const byDigest = new Map(expectedPayloads.map((bytes) => [digest(bytes), bytes]));
-  const entries = await readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    const match = MIGRATION_TEMP_NAME.exec(entry.name);
-    if (!match) continue;
-    const expected = byDigest.get(match[1]!);
-    if (!expected || !entry.isFile() || entry.isSymbolicLink()) continue;
-    const file = join(directory, entry.name);
-    if (!(await isOwnedInterruptedTemp(file, expected))) continue;
-    await assertMigrationAuthority(authority);
-    await assertDirectoryIdentity(directory, directoryIdentity, true);
-    await unlink(file);
-  }
-  await assertMigrationAuthority(authority);
-  await assertDirectoryIdentity(directory, directoryIdentity, true);
-}
-
-async function cleanupOwnedInterruptedTemps(
-  authority: MigrationAuthority,
-  records: MigrationRecord[],
-): Promise<void> {
-  const rootPayloads = [
-    journalBytes(records),
-    USER_STATE_MARKER_BYTES,
-    ...records.filter((record) => !record.relative.includes("/")).map((record) => record.bytes),
-  ];
-  await cleanupOwnedTempsInDirectory(authority, authority.root.path, rootPayloads);
-  const authorizationPayloads = records
-    .filter((record) => record.relative.startsWith(`${VIEW_AUTHORIZATION_DIR_NAME}/`))
-    .map((record) => record.bytes);
-  if (authorizationPayloads.length === 0) return;
-  const directory = join(authority.root.path, VIEW_AUTHORIZATION_DIR_NAME);
-  try {
-    await cleanupOwnedTempsInDirectory(authority, directory, authorizationPayloads);
-  } catch (error) {
-    if (errno(error) !== "ENOENT") throw error;
-  }
-}
-
-async function destinationMatches(authority: MigrationAuthority, record: MigrationRecord): Promise<boolean> {
-  await assertMigrationAuthority(authority);
-  const root = authority.root.path;
+async function destinationMatches(root: string, record: MigrationRecord): Promise<boolean> {
   try {
     await assertPrivateRegularFile(join(root, record.relative));
-    const matches = digest(
-      await readPrivateStateFile(join(root, record.relative), Buffer.byteLength(record.bytes)),
-    ) === record.sha256;
-    await assertMigrationAuthority(authority);
-    return matches;
+    return digest(await readPrivateStateFile(join(root, record.relative), Buffer.byteLength(record.bytes))) === record.sha256;
   } catch (error) {
     if (errno(error) === "ENOENT") return false;
     throw error;
   }
 }
 
-async function assertExactStagingTopology(authority: MigrationAuthority, records: MigrationRecord[]): Promise<void> {
-  await assertMigrationAuthority(authority);
-  const root = authority.root.path;
+async function assertExactStagingTopology(root: string, records: MigrationRecord[]): Promise<void> {
+  await assertPrivateDirectory(root);
   const rootAllowed = new Set<string>([MIGRATION_JOURNAL_FILE_NAME]);
   if (records.some((record) => record.relative === CATALOG_FILE_NAME)) rootAllowed.add(CATALOG_FILE_NAME);
   if (records.some((record) => record.relative === CRED_FILE_NAME)) rootAllowed.add(CRED_FILE_NAME);
@@ -436,7 +310,6 @@ async function assertExactStagingTopology(authority: MigrationAuthority, records
     }
     for (const name of authorizationNames) await assertPrivateRegularFile(join(directory, name));
   }
-  await assertMigrationAuthority(authority);
 }
 
 async function assertSourceUnchanged(home: string, expected: MigrationRecord[]): Promise<void> {
@@ -482,16 +355,11 @@ export async function migrateUserState(
     throw new CliError("CONFLICT", "legacy operational state is not safe to migrate automatically", { help: "superbee setup" });
   });
   if (records.length === 0 && canonical === "absent") return receipt("nothing_to_migrate", false, []);
-  let authority: MigrationAuthority;
   if (canonical === "conflict") {
     let raw: string;
     try {
-      const parent = await ensureMigrationParent(home);
-      const rootIdentity = await captureDirectoryIdentity(root, true);
-      authority = { parent, root: { path: root, identity: rootIdentity } };
-      await assertMigrationAuthority(authority);
+      await assertPrivateDirectory(root);
       raw = await readPrivateStateFile(join(root, MIGRATION_JOURNAL_FILE_NAME), MAX_CATALOG_BYTES);
-      await assertMigrationAuthority(authority);
     } catch {
       throw new CliError("CONFLICT", "canonical Superbee user state already exists but is not recognized", { help: "superbee setup" });
     }
@@ -500,49 +368,34 @@ export async function migrateUserState(
       throw new CliError("CONFLICT", "an incomplete or foreign canonical user-state root requires inspection", { help: "superbee setup" });
     }
   } else {
-    const parent = await ensureMigrationParent(home);
+    await ensureMigrationParent(home);
     try {
       await hooks.beforeCanonicalClaim?.();
-      await assertDirectoryIdentity(parent.path, parent.identity, false);
       await mkdir(root, { mode: DIR_MODE });
-      authority = {
-        parent,
-        root: { path: root, identity: await captureDirectoryIdentity(root, true) },
-      };
-      await assertMigrationAuthority(authority);
     } catch (error) {
       throw new CliError("CONFLICT", "canonical Superbee user state appeared during migration", { help: "superbee setup" });
     }
-    await writeNoReplace(authority, MIGRATION_JOURNAL_FILE_NAME, journalBytes(records));
+    await writeNoReplace(root, MIGRATION_JOURNAL_FILE_NAME, journalBytes(records));
   }
 
-  await cleanupOwnedInterruptedTemps(authority, records).catch(() => {
-    throw new CliError("CONFLICT", "canonical Superbee user state changed during migration", { help: "superbee setup" });
-  });
   for (const record of records) {
-    if (await destinationMatches(authority, record)) continue;
+    if (await destinationMatches(root, record)) continue;
     try {
       await hooks.beforeRecordPublish?.(record.relative);
-      await writeNoReplace(authority, record.relative, record.bytes);
+      await writeNoReplace(root, record.relative, record.bytes);
     } catch {
       throw new CliError("CONFLICT", "canonical Superbee user state changed during migration", { help: "superbee setup" });
     }
   }
   try {
     await hooks.beforeMarkerPublish?.();
-    await assertMigrationAuthority(authority);
-    await cleanupOwnedInterruptedTemps(authority, records);
-    await assertExactStagingTopology(authority, records);
+    await assertExactStagingTopology(root, records);
     await assertSourceUnchanged(home, records);
-    await assertMigrationAuthority(authority);
-    await writeNoReplace(authority, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES);
+    await writeNoReplace(root, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES);
   } catch {
     throw new CliError("CONFLICT", "user state changed during migration; legacy state remains preserved", { help: "superbee setup migrate-state" });
   }
-  await assertMigrationAuthority(authority);
   await unlink(join(root, MIGRATION_JOURNAL_FILE_NAME)).catch(() => {});
-  await assertMigrationAuthority(authority);
   await chmod(root, DIR_MODE);
-  await assertMigrationAuthority(authority);
   return receipt("migrated", true, records);
 }

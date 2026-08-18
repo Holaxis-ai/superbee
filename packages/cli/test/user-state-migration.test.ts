@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
@@ -309,73 +309,6 @@ test("source drift before completion preserves a resumable copy and a ready root
     assert.equal(await readFile(residue, "utf8"), "foreign residue\n", "a ready root never deletes an unowned journal path");
   } finally {
     await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("an exact interrupted record temp resumes, while ancestor and claimed-root swaps refuse", async () => {
-  const interrupted = await home();
-  const ancestorSwap = await home();
-  const rootSwap = await home();
-  try {
-    for (const root of [interrupted, ancestorSwap, rootSwap]) {
-      await mkdir(legacyUserStateDir(root), { mode: 0o700 });
-      await writeLegacy(
-        join(legacyUserStateDir(root), "catalog.json"),
-        `${JSON.stringify({ schema_version: 1, entries: [] })}\n`,
-      );
-    }
-
-    const interruptedBytes = await readFile(join(legacyUserStateDir(interrupted), "catalog.json"), "utf8");
-    const interruptedName = `.migration-${createHash("sha256").update(interruptedBytes).digest("hex")}-${"a".repeat(24)}.tmp`;
-    await assert.rejects(
-      () => migrateUserState(interrupted, {
-        beforeRecordPublish: async (relative) => {
-          if (relative !== "catalog.json") return;
-          await writeLegacy(
-            join(canonicalUserStateDir(interrupted), interruptedName),
-            interruptedBytes.slice(0, Math.floor(interruptedBytes.length / 2)),
-          );
-          throw new Error("simulated interruption");
-        },
-      }),
-      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
-    );
-    assert.equal((await migrateUserState(interrupted)).status, "migrated");
-    assert.equal(await absent(join(canonicalUserStateDir(interrupted), interruptedName)), true);
-
-    const foreignParent = join(ancestorSwap, "foreign-config");
-    const originalParent = join(ancestorSwap, "original-config");
-    await mkdir(foreignParent, { mode: 0o700 });
-    await assert.rejects(
-      () => migrateUserState(ancestorSwap, {
-        beforeCanonicalClaim: async () => {
-          await rename(join(ancestorSwap, ".config"), originalParent);
-          await symlink(foreignParent, join(ancestorSwap, ".config"), "dir");
-        },
-      }),
-      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
-    );
-    assert.equal(await absent(join(foreignParent, "superbee")), true);
-
-    const abandonedRoot = join(rootSwap, "abandoned-superbee");
-    await assert.rejects(
-      () => migrateUserState(rootSwap, {
-        beforeRecordPublish: async (relative) => {
-          if (relative !== "catalog.json") return;
-          const canonical = canonicalUserStateDir(rootSwap);
-          const journal = await readFile(join(canonical, ".migration.json"), "utf8");
-          await rename(canonical, abandonedRoot);
-          await mkdir(canonical, { mode: 0o700 });
-          await writeLegacy(join(canonical, ".migration.json"), journal);
-        },
-      }),
-      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
-    );
-    assert.equal(await absent(join(canonicalUserStateDir(rootSwap), "catalog.json")), true);
-    assert.equal(await absent(join(canonicalUserStateDir(rootSwap), "state.json")), true);
-    assert.equal((await lstat(join(abandonedRoot, ".migration.json"))).isFile(), true);
-  } finally {
-    await Promise.all([interrupted, ancestorSwap, rootSwap].map((dir) => rm(dir, { recursive: true, force: true })));
   }
 });
 
