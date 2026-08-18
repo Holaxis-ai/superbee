@@ -3,8 +3,9 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { loadCredentials, saveApiKeyForOrigin } from "../src/credentials.js";
 import { CliError } from "../src/errors.js";
@@ -16,6 +17,8 @@ import {
   userStateDirForPackage,
 } from "../src/user-state.js";
 import { inspectUserStateMigration, migrateUserState } from "../src/user-state-migration.js";
+
+const BUILT_CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
 async function home(): Promise<string> {
   return mkdtemp(join(tmpdir(), "superbee-user-state-"));
@@ -33,6 +36,24 @@ async function absent(file: string): Promise<boolean> {
   } catch {
     return true;
   }
+}
+
+async function runBuiltCli(
+  args: string[],
+  options: { home: string; cwd: string },
+): Promise<{ stdout: string; stderr: string }> {
+  const env = { ...process.env, HOME: options.home };
+  delete env.SUPERBEE_NO_UPDATE_CHECK;
+  delete env.AGENTSTATE_LITE_NO_UPDATE_CHECK;
+  return new Promise((resolveRun, reject) => {
+    execFile(process.execPath, [BUILT_CLI, ...args], { cwd: options.cwd, env }, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      resolveRun({ stdout, stderr });
+    });
+  });
 }
 
 test("package identity keeps the Aslite bridge on the legacy root while Superbee is canonical-only", async () => {
@@ -84,6 +105,34 @@ test("setup inspection distinguishes fresh, unknown-only, malformed, and conflic
     assert.equal((await inspectUserStateMigration(conflicting)).state, "blocked");
   } finally {
     await Promise.all([fresh, unknown, malformed, conflicting].map((dir) => rm(dir, { recursive: true, force: true })));
+  }
+});
+
+test("plain built CLI leaves legacy migration discoverable until an explicit state mutation", async () => {
+  const root = await home();
+  try {
+    const legacy = legacyUserStateDir(root);
+    await mkdir(legacy, { mode: 0o700 });
+    await writeLegacy(
+      join(legacy, "catalog.json"),
+      `${JSON.stringify({ schema_version: 1, entries: [] })}\n`,
+    );
+
+    await runBuiltCli([], { home: root, cwd: root });
+    assert.equal(await absent(canonicalUserStateDir(root)), true);
+
+    const { stdout } = await runBuiltCli(["setup", "--host", "codex", "--json"], {
+      home: root,
+      cwd: root,
+    });
+    const plan = JSON.parse(stdout) as {
+      setup: { capabilities: Array<{ id: string; state: string }>; next: { command: string } };
+    };
+    assert.equal(plan.setup.capabilities.find((capability) => capability.id === "state")?.state, "needs_action");
+    assert.equal(plan.setup.next.command, "superbee setup migrate-state");
+    assert.equal(await absent(canonicalUserStateDir(root)), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

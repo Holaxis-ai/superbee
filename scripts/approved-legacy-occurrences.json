@@ -956,7 +956,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 34
+      "line": 33
     },
     {
       "file": "packages/cli/src/update-orientation.ts",
@@ -967,7 +967,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 35
+      "line": 34
     },
     {
       "file": "packages/core/src/filesystem-lock.ts",

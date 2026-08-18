@@ -7,7 +7,6 @@ import {
   fstatSync,
   fsyncSync,
   linkSync,
-  mkdirSync,
   openSync,
   readSync,
   renameSync,
@@ -19,7 +18,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 import { credentialsDir } from "./credentials.js";
-import { ensureUserStateRootSync, inspectUserStateRootSync, writeUserStateFileAtomic0600 } from "./user-state.js";
+import { inspectUserStateRootSync, writeUserStateFileAtomic0600 } from "./user-state.js";
 import { staticBuildIdentity } from "./build-identity.js";
 import { currentExecutableRealPath, PACKAGE_NAME } from "./invocation.js";
 import {
@@ -342,15 +341,8 @@ function privateOwnerAndMode(stats: Stats, mode: number): boolean {
   return currentUid === undefined || stats.uid === currentUid;
 }
 
-function inspectStateDirectory(home: string, create: boolean): "safe" | "missing" | "unsafe" {
+function inspectStateDirectory(home: string): "safe" | "missing" | "unsafe" {
   const directory = credentialsDir(home);
-  if (create) {
-    try {
-      ensureUserStateRootSync(home);
-    } catch {
-      return "unsafe";
-    }
-  }
   const rootState = inspectUserStateRootSync(home);
   if (rootState === "absent") return "missing";
   if (rootState === "conflict") return "unsafe";
@@ -359,13 +351,7 @@ function inspectStateDirectory(home: string, create: boolean): "safe" | "missing
   try {
     descriptor = openSync(directory, flags);
   } catch (error) {
-    if (errno(error) !== "ENOENT" || !create) return errno(error) === "ENOENT" ? "missing" : "unsafe";
-    try {
-      mkdirSync(directory, { mode: 0o700 });
-      descriptor = openSync(directory, flags);
-    } catch {
-      return "unsafe";
-    }
+    return errno(error) === "ENOENT" ? "missing" : "unsafe";
   }
   try {
     const stats = fstatSync(descriptor);
@@ -433,7 +419,7 @@ export function inspectUpdateCache(input: {
   runningVersion: string;
   now: Date;
 }): UpdateCacheInspection {
-  const directory = inspectStateDirectory(input.home, false);
+  const directory = inspectStateDirectory(input.home);
   if (directory === "missing") return { state: "refreshable" };
   if (directory === "unsafe") return { state: "unsafe" };
   const file = readPrivateFile(updateCachePath(input.home), UPDATE_CACHE_MAX_BYTES);
@@ -725,7 +711,11 @@ export function claimUpdateLease(input: {
   /** Deterministic test barrier after quarantine removes the fixed path. */
   afterExpiredCooldownCapture?: () => void;
 }): UpdateLeaseClaimResult {
-  if (inspectStateDirectory(input.home, true) !== "safe") return { state: "occupied" };
+  // Passive update orientation must never become the first owner of Superbee's durable state
+  // root. Setup needs an absent root to remain distinguishable from completed canonical state so
+  // it can offer the explicit one-shot legacy migration. A real state mutation initializes the
+  // root; update checks then use it unchanged.
+  if (inspectStateDirectory(input.home) !== "safe") return { state: "occupied" };
   const token = input.token ?? randomBytes(32).toString("hex");
   const candidate = createActiveLease(input.now, token);
   if (!candidate) return { state: "occupied" };
@@ -764,7 +754,7 @@ export function claimUpdateLease(input: {
 }
 
 export function releaseActiveUpdateLease(home: string, token: string): boolean {
-  if (!isUpdateLeaseToken(token) || inspectStateDirectory(home, false) !== "safe") return false;
+  if (!isUpdateLeaseToken(token) || inspectStateDirectory(home) !== "safe") return false;
   return quarantineMatchingLease(
     home,
     (lease) => lease.state === "active" && lease.token === token,
@@ -772,7 +762,7 @@ export function releaseActiveUpdateLease(home: string, token: string): boolean {
 }
 
 function activeLeaseAuthority(home: string, token: string, now: Date): ActiveUpdateLease | undefined {
-  if (!isUpdateLeaseToken(token) || inspectStateDirectory(home, false) !== "safe") return undefined;
+  if (!isUpdateLeaseToken(token) || inspectStateDirectory(home) !== "safe") return undefined;
   const inspected = inspectUpdateLease(home);
   if (inspected.state !== "valid" || inspected.lease.state !== "active") return undefined;
   const nowMs = now.getTime();

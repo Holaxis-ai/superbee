@@ -47,7 +47,7 @@ import { render } from "../src/output.js";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { fileURLToPath } from "node:url";
 import { credentialsDir } from "../src/credentials.js";
-import { ensureUserStateRootSync } from "../src/user-state.js";
+import { canonicalUserStateDir, ensureUserStateRootSync } from "../src/user-state.js";
 
 const RUNNING = "0.1.0-pre.3";
 const SELECTED = "0.1.0-pre.4";
@@ -441,6 +441,7 @@ test("hard-link claim, continuous stale conversion, cooldown cleanup, and token-
   const tokenA = "a".repeat(64);
   const tokenB = "b".repeat(64);
   try {
+    ensureUserStateRootSync(home);
     const first = claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA });
     assert.equal(first.state, "claimed");
     assert.deepEqual(parseUpdateLeaseText(readFileSync(updateLeasePath(home), "utf8")), activeLease(tokenA));
@@ -494,11 +495,42 @@ class FakeDetachedChild extends EventEmitter {
   }
 }
 
+test("passive update orientation never initializes an absent durable state root", () => {
+  const home = tempHome();
+  let spawns = 0;
+  try {
+    assert.equal(
+      runPassiveUpdateOrientation({
+        home,
+        runningVersion: RUNNING,
+        now: () => NOW,
+        executablePath: () => "/opt/superbee/dist/superbee.mjs",
+        spawn: () => {
+          spawns += 1;
+          return new FakeDetachedChild();
+        },
+        token: () => "a".repeat(64),
+      }),
+      undefined,
+    );
+    assert.equal(spawns, 0);
+    assert.equal(existsSync(canonicalUserStateDir(home)), false);
+    assert.deepEqual(
+      claimUpdateLease({ home, now: NOW, token: "a".repeat(64) }),
+      { state: "occupied" },
+    );
+    assert.equal(existsSync(canonicalUserStateDir(home)), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("passive parent returns cached notice or launches one exact detached private worker", () => {
   const home = tempHome();
   const calls: Array<{ command: string; argv: string[]; options: Record<string, unknown> }> = [];
   const child = new FakeDetachedChild();
   try {
+    ensureUserStateRootSync(home);
     const notice = runPassiveUpdateOrientation({
       home,
       runningVersion: RUNNING,
@@ -595,6 +627,7 @@ test("post-claim cache recheck releases an unused claim and spawn failure releas
 
   const throwHome = tempHome();
   try {
+    ensureUserStateRootSync(throwHome);
     runPassiveUpdateOrientation({
       home: throwHome,
       runningVersion: RUNNING,
@@ -618,6 +651,7 @@ test("asynchronous spawn error is swallowed and releases the matching active cla
   const home = tempHome();
   const child = new FakeDetachedChild();
   try {
+    ensureUserStateRootSync(home);
     runPassiveUpdateOrientation({
       home,
       runningVersion: RUNNING,
@@ -658,6 +692,7 @@ test("private worker requires active token authority, caches success, and cools 
   const successHome = tempHome();
   const token = "a".repeat(64);
   try {
+    ensureUserStateRootSync(successHome);
     assert.equal(claimUpdateLease({ home: successHome, now: new Date(CHECKED_AT), token }).state, "claimed");
     await runUpdateRefreshWorker(token, {
       home: successHome,
@@ -680,6 +715,7 @@ test("private worker requires active token authority, caches success, and cools 
 
   const unavailableHome = tempHome();
   try {
+    ensureUserStateRootSync(unavailableHome);
     assert.equal(claimUpdateLease({ home: unavailableHome, now: new Date(CHECKED_AT), token }).state, "claimed");
     const unavailable: UpdateCheckResult = {
       ...successfulCheck(),
@@ -710,6 +746,7 @@ test("worker revalidates token immediately before cache commit", async () => {
   const tokenA = "a".repeat(64);
   const tokenB = "b".repeat(64);
   try {
+    ensureUserStateRootSync(home);
     assert.equal(claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA }).state, "claimed");
     await runUpdateRefreshWorker(tokenA, {
       home,
@@ -885,6 +922,7 @@ test("built JSON and suppressed default routes perform zero update-state work", 
 
 test("barrier/IPC: concurrent processes produce exactly one hard-link claim winner", async () => {
   const home = tempHome();
+  ensureUserStateRootSync(home);
   const children = Array.from({ length: 6 }, (_, index) =>
     startConcurrencyFixture({
       home,
@@ -916,6 +954,7 @@ test("barrier/IPC: stale active replacement stays occupied before and after the 
     token: "b".repeat(64),
   });
   try {
+    ensureUserStateRootSync(home);
     assert.equal(claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA }).state, "claimed");
     child.send("go");
     assert.deepEqual(await nextChildMessage(child), { type: "before-stale-replace" });
