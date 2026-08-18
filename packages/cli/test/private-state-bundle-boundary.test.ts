@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { assertBundleOutsidePrivateState } from "../src/private-state-bundle-boundary.js";
-import { canonicalUserStateDir, legacyUserStateDir } from "../src/user-state.js";
+import { canonicalUserStateDir, ensureUserStateRoot, legacyUserStateDir } from "../src/user-state.js";
 
 const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
 
@@ -84,6 +84,22 @@ test("built init refuses the private state root before creating bundle bytes", (
       assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
       assert.equal(existsSync(stateRoot), false);
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("explicit bundle selection preserves the path-free private-state conflict", async () => {
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const stateRoot = await ensureUserStateRoot(home);
+    const result = run(process.execPath, [CLI, "bundle", "locate", "--dir", stateRoot, "--json"], root, { HOME: home });
+    assert.equal(result.status, 5, result.stderr || result.stdout);
+    assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
+    assert.doesNotMatch(result.stdout, /NOT_FOUND|init --create-only/);
+    assert.equal(result.stdout.includes(stateRoot), false, "the private coordinate never enters the envelope");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

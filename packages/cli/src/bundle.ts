@@ -1232,14 +1232,13 @@ export async function resolveLocalBundleTarget(
     const conventional = ownIndex ? null : await conventionalBundleAt(requested);
     const root = ownIndex ? requested : conventional ?? requested;
 
+    let canonicalRoot: string;
     try {
-      const canonicalRoot = await canonicalDirectoryRoot(
+      canonicalRoot = await canonicalDirectoryRoot(
         root,
         `no local bundle directory at ${root}`,
         `${cliInvocation()} init --create-only --dir ${dirFlag}`,
       );
-      assertBundleOutsidePrivateState(canonicalRoot);
-      return { root, canonicalRoot, selectedBy: "explicit-dir" };
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
       // A typo must not silently retarget an ancestor, but existing discovery still prevents
@@ -1255,6 +1254,8 @@ export async function resolveLocalBundleTarget(
         },
       );
     }
+    assertBundleOutsidePrivateState(canonicalRoot);
+    return { root, canonicalRoot, selectedBy: "explicit-dir" };
   }
 
   const binding = await resolveProjectBinding(startDir);
