@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -57,7 +57,7 @@ test("private state coordinates are absolute and cannot be bundle identities", (
       "physical identity catches an alias even though the lexical names differ",
     );
 
-    rmSync(canonicalUserStateDir(home));
+    unlinkSync(canonicalUserStateDir(home));
     const futureBundle = path.join(root, "future-project", ".superbee");
     mkdirSync(path.dirname(futureBundle), { recursive: true });
     symlinkSync(futureBundle, canonicalUserStateDir(home), "dir");
@@ -67,6 +67,25 @@ test("private state coordinates are absolute and cannot be bundle identities", (
       "a dangling state-root alias cannot become a bundle later",
     );
     assert.equal(existsSync(futureBundle), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("missing case variants cannot become the private state identity", () => {
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    const caseVariant = path.join(home, ".CONFIG", "superbee");
+    mkdirSync(home, { recursive: true });
+
+    assert.throws(
+      () => assertBundleOutsidePrivateState(caseVariant, home),
+      /private user-state directory cannot be used as an OKF bundle/,
+      "future identity comparison must fail closed before a case-insensitive filesystem creates the alias",
+    );
+    assert.equal(existsSync(caseVariant), false);
+    assert.equal(existsSync(canonicalUserStateDir(home)), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -83,6 +102,24 @@ test("built init refuses the private state root before creating bundle bytes", (
       assert.equal(result.status, 5, result.stderr || result.stdout);
       assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
       assert.equal(existsSync(stateRoot), false);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("built init refuses a missing portable case variant before creating bundle bytes", () => {
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const caseVariant = path.join(home, ".CONFIG", "superbee");
+    for (const extra of [[], ["--create-only"]]) {
+      const result = run(process.execPath, [CLI, "init", ...extra, "--dir", caseVariant, "--json"], root, { HOME: home });
+      assert.equal(result.status, 5, result.stderr || result.stdout);
+      assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
+      assert.equal(existsSync(caseVariant), false);
+      assert.equal(existsSync(canonicalUserStateDir(home)), false);
     }
   } finally {
     rmSync(root, { recursive: true, force: true });

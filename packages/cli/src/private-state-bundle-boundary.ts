@@ -12,8 +12,13 @@ function code(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
 }
 
+interface PhysicalCoordinate {
+  path: string;
+  unresolved: boolean;
+}
+
 /** Resolve an existing path, or anchor its missing suffix beneath the nearest existing real dir. */
-function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set()): string {
+function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set()): PhysicalCoordinate {
   if (!path.isAbsolute(candidate)) {
     throw new CliError("RUNTIME", "private state and bundle identities require absolute filesystem paths");
   }
@@ -21,7 +26,10 @@ function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set(
   const missing: string[] = [];
   for (;;) {
     try {
-      return path.resolve(realpathSync(cursor), ...missing.reverse());
+      return {
+        path: path.resolve(realpathSync(cursor), ...missing.reverse()),
+        unresolved: missing.length > 0,
+      };
     } catch (error) {
       if (code(error) !== "ENOENT") {
         throw new CliError("RUNTIME", "cannot verify that the bundle is separate from private Superbee state");
@@ -51,13 +59,25 @@ function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set(
   }
 }
 
+/**
+ * Missing path components do not have an inode yet, so their future physical identity depends on
+ * the containing filesystem's case and Unicode-normalization rules. Fail closed on the portable
+ * equivalence class until both coordinates exist and realpath can distinguish them.
+ */
+function samePhysicalCoordinate(left: PhysicalCoordinate, right: PhysicalCoordinate): boolean {
+  if (left.path === right.path) return true;
+  if (!left.unresolved && !right.unresolved) return false;
+  const portableKey = (coordinate: string): string => coordinate.normalize("NFC").toLowerCase();
+  return portableKey(left.path) === portableKey(right.path);
+}
+
 export function assertBundleOutsidePrivateState(
   bundleRoot: string,
   home: string = homedir(),
 ): void {
   const bundleIdentity = physicalCoordinate(path.resolve(bundleRoot));
   const stateIdentity = physicalCoordinate(canonicalUserStateDir(home));
-  if (bundleIdentity !== stateIdentity) return;
+  if (!samePhysicalCoordinate(bundleIdentity, stateIdentity)) return;
   throw new CliError(
     "CONFLICT",
     "Superbee's private user-state directory cannot be used as an OKF bundle",
