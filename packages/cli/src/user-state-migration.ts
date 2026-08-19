@@ -313,6 +313,39 @@ async function ensureMigrationParent(home: string): Promise<void> {
   if (!(await stat(parent)).isDirectory()) throw new Error("canonical state parent is unsafe");
 }
 
+/**
+ * The one shape a staging temporary may take. Kept beside its generator so cleanup below can never
+ * drift from what this module actually writes.
+ */
+const MIGRATION_TEMPORARY_PATTERN = /^\.migration-[0-9a-f]+\.tmp$/;
+
+function migrationTemporaryName(): string {
+  return `.migration-${randomBytes(12).toString("hex")}.tmp`;
+}
+
+/**
+ * `writeNoReplace` unlinks its own temporary in a `finally`, but a kill between the create and that
+ * unlink — SIGKILL, Ctrl-C, sleep, OOM — leaves one behind, and `assertExactStagingTopology` then
+ * rejects the root on every later run. No marker has been published at that point, so the leftover
+ * bricks private state product-wide rather than merely stalling migration.
+ *
+ * Cleanup authority binds to DURABLE OWNERSHIP, never to a matching name alone: the caller has
+ * already proven this root is this migration's own staging — a journal that parses and names
+ * exactly this record set, or a root this process exclusively created — and only the directories
+ * that record set can reach are swept. Best-effort by design: a survivor still trips the exactness
+ * assertion rather than being quietly published over.
+ */
+async function sweepOwnedStagingTemporaries(root: string, records: MigrationRecord[]): Promise<void> {
+  const directories = new Set<string>([root, ...records.map((record) => dirname(join(root, record.relative)))]);
+  for (const directory of directories) {
+    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (!entry.isFile() || !MIGRATION_TEMPORARY_PATTERN.test(entry.name)) continue;
+      await unlink(join(directory, entry.name)).catch(() => {});
+    }
+  }
+}
+
 async function writeNoReplace(root: string, relative: string, bytes: string): Promise<void> {
   const destination = join(root, relative);
   const directory = dirname(destination);
@@ -324,7 +357,7 @@ async function writeNoReplace(root: string, relative: string, bytes: string): Pr
     }
     await assertPrivateDirectory(directory);
   }
-  const temporary = join(directory, `.migration-${randomBytes(12).toString("hex")}.tmp`);
+  const temporary = join(directory, migrationTemporaryName());
   const handle = await open(temporary, "wx", FILE_MODE);
   try {
     await handle.writeFile(bytes);
@@ -477,6 +510,10 @@ export async function migrateUserState(
     }
     await writeNoReplace(root, MIGRATION_JOURNAL_FILE_NAME, journalBytes(records));
   }
+  // Ownership is durable from here: the journal validated as this migration's own staging, or this
+  // process exclusively created the root and wrote it. That proof — not the file name — is what
+  // authorizes clearing an interrupted predecessor's leftovers.
+  await sweepOwnedStagingTemporaries(root, records);
 
   for (const record of records) {
     if (await destinationMatches(root, record)) continue;

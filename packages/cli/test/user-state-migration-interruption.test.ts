@@ -12,7 +12,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -29,6 +29,23 @@ import { migrateUserState, type UserStateMigrationHooks } from "../src/user-stat
 const CATALOG = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
 const CREDENTIALS = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "carried" } } })}\n`;
 const JOURNAL_FILE_NAME = ".migration.json";
+const AUTHORIZATION_DIR_NAME = "view-authorizations";
+// A record in the nested store, so every row exercises the directory `writeNoReplace` creates on
+// the way to a destination — the second place an interrupted copy can strand a temporary.
+const AUTHORIZATION = JSON.stringify({
+  bundle: "/bundles/planning",
+  subject: {
+    registryId: "views-registry/roadmap",
+    contentVersion: "sha256:exact-html",
+    contentType: "text/html; charset=utf-8",
+    capability: "bundle-read",
+    execution: "active",
+    policyVersion: "active-view-v1",
+  },
+});
+const AUTHORIZATION_NAME = `${createHash("sha256").update(AUTHORIZATION).digest("hex")}.json`;
+/** The residue a kill between the temporary's create and its unlink leaves behind. */
+const LEFTOVER_TEMPORARY = ".migration-deadbeefdeadbeef.tmp";
 
 type Stage = "none" | "beforeCanonicalClaim" | "beforeRecordPublish" | "beforeMarkerPublish";
 
@@ -95,22 +112,43 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
     lossy: false,
   },
   {
-    label: "M-I3 — during record copying, leaving a temporary file behind",
+    label: "M-I3 — during record copying, leaving a temporary in the root",
     stage: "beforeRecordPublish",
     abort: true,
     damage: (canonical) => {
-      writeFileSync(join(canonical, ".migration-deadbeefdeadbeef.tmp"), "partial\n", { mode: 0o600 });
+      writeFileSync(join(canonical, LEFTOVER_TEMPORARY), "partial\n", { mode: 0o600 });
     },
     expectedState: (_canonical, entries) => {
       assert.ok(entries.includes(JOURNAL_FILE_NAME), "the journal survives, so the run is resumable in principle");
+      assert.ok(entries.includes(LEFTOVER_TEMPORARY), "and the residue the rerun must clear is really there");
     },
-    // REQUIRED: resumable without operator intervention.
+    // REQUIRED: resumable without operator intervention. The rerun's journal validation is the
+    // durable ownership proof that authorizes clearing the leftover.
     expectedExitNode: "resumes",
     lossy: false,
-    skip: "VIOLATED (specification M-I3, unfixed here): the rerun refuses permanently — the exact-topology "
-      + "assertion sees the leftover `.migration-<hex>.tmp` as an unexpected entry — and recovery needs the "
-      + "operator to run the quarantine command. It is non-lossy only because legacy state is preserved and "
-      + "the canonical root holds nothing but copies. Delete this skip when a rerun resumes unaided.",
+  },
+  {
+    label: "M-I3b — during record copying, leaving a temporary in the nested authorization store",
+    stage: "beforeRecordPublish",
+    abort: true,
+    damage: (canonical) => {
+      const store = join(canonical, AUTHORIZATION_DIR_NAME);
+      mkdirSync(store, { recursive: true, mode: 0o700 });
+      chmodSync(store, 0o700);
+      writeFileSync(join(store, LEFTOVER_TEMPORARY), "partial\n", { mode: 0o600 });
+    },
+    expectedState: (canonical, entries) => {
+      assert.ok(entries.includes(AUTHORIZATION_DIR_NAME), "the store the interrupted copy created survives");
+      assert.deepEqual(
+        readdirSync(join(canonical, AUTHORIZATION_DIR_NAME)),
+        [LEFTOVER_TEMPORARY],
+        "holding nothing but the residue",
+      );
+    },
+    // Cleanup that only swept the root would leave this one, and the nested exactness check refuses
+    // it just as permanently.
+    expectedExitNode: "resumes",
+    lossy: false,
   },
   {
     label: "M-I4 — between marker publication and journal unlink",
@@ -130,9 +168,14 @@ class Interrupted extends Error {}
 async function legacyFixture(): Promise<{ home: string; legacy: string; canonical: string; digest: string }> {
   const home = await mkdtemp(join(tmpdir(), "superbee-migration-interruption-"));
   const legacy = legacyUserStateDir(home);
-  await mkdir(legacy, { recursive: true, mode: 0o700 });
+  await mkdir(join(legacy, AUTHORIZATION_DIR_NAME), { recursive: true, mode: 0o700 });
   await chmod(legacy, 0o700);
-  for (const [name, bytes] of [["catalog.json", CATALOG], ["okf-config.json", CREDENTIALS]] as const) {
+  await chmod(join(legacy, AUTHORIZATION_DIR_NAME), 0o700);
+  for (const [name, bytes] of [
+    ["catalog.json", CATALOG],
+    ["okf-config.json", CREDENTIALS],
+    [`${AUTHORIZATION_DIR_NAME}/${AUTHORIZATION_NAME}`, `${AUTHORIZATION}\n`],
+  ] as const) {
     await writeFile(join(legacy, name), bytes, { mode: 0o600 });
     await chmod(join(legacy, name), 0o600);
   }
@@ -151,6 +194,20 @@ async function entriesOf(directory: string): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
+}
+
+/** Every file under `directory` as `relative:bytes`, so a nested source compares byte for byte. */
+async function snapshotOf(directory: string, prefix = ""): Promise<string[]> {
+  const rows: string[] = [];
+  for (const name of await entriesOf(directory)) {
+    const path = join(directory, name);
+    rows.push(
+      ...((await stat(path)).isDirectory()
+        ? await snapshotOf(path, `${prefix}${name}/`)
+        : [`${prefix}${name}:${await readFile(path, "utf8")}`]),
+    );
+  }
+  return rows;
 }
 
 function hooksFor(row: InterruptionRow, canonical: string): UserStateMigrationHooks {
@@ -180,9 +237,7 @@ test("migration interruption: one row per kill point, with the exit node a rerun
     await t.test(row.label, row.skip === undefined ? {} : { skip: row.skip }, async () => {
       const fixture = await legacyFixture();
       try {
-        const legacyBefore = await Promise.all(
-          (await entriesOf(fixture.legacy)).map(async (name) => `${name}:${await readFile(join(fixture.legacy, name), "utf8")}`),
-        );
+        const legacyBefore = await snapshotOf(fixture.legacy);
 
         if (row.stage === "none") {
           const receipt = await migrateUserState(fixture.home);
@@ -193,9 +248,7 @@ test("migration interruption: one row per kill point, with the exit node a rerun
         row.expectedState(fixture.canonical, await entriesOf(fixture.canonical));
 
         // MUST PRESERVE: the source is byte-identical whatever happened downstream.
-        const legacyAfter = await Promise.all(
-          (await entriesOf(fixture.legacy)).map(async (name) => `${name}:${await readFile(join(fixture.legacy, name), "utf8")}`),
-        );
+        const legacyAfter = await snapshotOf(fixture.legacy);
         assert.deepEqual(legacyAfter, legacyBefore, `${row.label}: legacy state must be preserved`);
         assert.equal(row.lossy, false, "a lossy exit node must be marked and justified in the row");
 
@@ -206,6 +259,20 @@ test("migration interruption: one row per kill point, with the exit node a rerun
           assert.equal(await readFile(join(fixture.canonical, "catalog.json"), "utf8"), CATALOG);
           assert.equal(await readFile(join(fixture.canonical, "okf-config.json"), "utf8"), CREDENTIALS);
           assert.equal((await stat(join(fixture.canonical, "okf-config.json"))).mode & 0o777, 0o600);
+          assert.equal(
+            await readFile(join(fixture.canonical, AUTHORIZATION_DIR_NAME, AUTHORIZATION_NAME), "utf8"),
+            `${AUTHORIZATION}\n`,
+          );
+          assert.deepEqual(
+            (await entriesOf(join(fixture.canonical, AUTHORIZATION_DIR_NAME))),
+            [AUTHORIZATION_NAME],
+            "a resumed migration leaves no staging residue in the nested store",
+          );
+          assert.deepEqual(
+            (await entriesOf(fixture.canonical)).filter((name) => name.startsWith(".migration-")),
+            [],
+            "nor in the root",
+          );
         } else {
           const expected = row.expectedExitNode;
           await assert.rejects(
