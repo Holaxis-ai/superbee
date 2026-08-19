@@ -60,7 +60,8 @@ the one red probe) and nothing as a pre-report ritual. A packet that explicitly 
 overrides this default; that is the packet author's cost to justify.
 
 **The orchestrating session owns `push` and `dispatch`.** Integrate the sub-agents' commits,
-push the branch once, and start the authoritative gate on that SHA with
+push the branch once, and make sure the authoritative gate is running on that SHA: if a PR is
+already open on the branch, the push itself started it; if not, start it with
 `gh workflow run "CI tests" --ref <branch>` — once per pushed SHA, never per sub-agent. Do not
 re-run a sub-agent's smoke and do not run `npm run check`: CI is a strict superset of it (it
 adds `check:release-exhaustive` and a node-20 engines-floor smoke) and finishes in about five
@@ -71,10 +72,10 @@ passed. Before rewriting history you have already pushed, check `gh pr view`: if
 the PR in between, the open-PR force-push rule is now active. A solo session with no sub-agents
 owns every verb and follows both paragraphs.
 
-**CI owns the verdict.** A feature-branch push alone does not start it — only a pull request, a
-push to `main`, or the dispatch above does. The dispatched run is not the PR's required check,
-so opening the PR runs CI again on the same SHA: redundant execution on GitHub's clock, accepted
-knowingly because it is off the critical path and buys the early signal.
+**CI owns the verdict.** A push to a branch with no PR does not start it — only a pull request
+event, a push to `main`, or the dispatch above does. A pre-PR dispatched run is not the PR's
+required check, so opening the PR later runs CI again on the same SHA: redundant execution on
+GitHub's clock, accepted knowingly because it is off the critical path and buys the early signal.
 
 ## Standing gates (honor these before shipping)
 
