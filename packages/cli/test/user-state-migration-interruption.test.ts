@@ -1,8 +1,8 @@
 // THE migration-interruption table (boundary specification section 7).
 //
 // Migration is the one mechanic that legitimately reads one guarded root and writes another, and
-// the interesting failures are all in the middle of it. `migrateUserState` already exposes three
-// kill points; this table gives them a home, one row per stage:
+// the interesting failures are all in the middle of it. `migrateUserState` exposes four kill
+// points; this table gives them a home, one row per stage:
 //
 //     [stageHook, expectedState, expectedExitNode, lossy?]
 //
@@ -44,10 +44,18 @@ const AUTHORIZATION = JSON.stringify({
   },
 });
 const AUTHORIZATION_NAME = `${createHash("sha256").update(AUTHORIZATION).digest("hex")}.json`;
-/** The residue a kill between the temporary's create and its unlink leaves behind. */
-const LEFTOVER_TEMPORARY = ".migration-deadbeefdeadbeef.tmp";
+/**
+ * The residue a kill between a temporary's create and its unlink leaves behind: the temporary's
+ * name is derived from the destination it stages, so the interrupted predecessor's leftover for a
+ * given record sits at one knowable path. Mirrors the private derivation in the source.
+ */
+function ownTemporaryFor(relative: string): string {
+  return `.migration-${createHash("sha256").update(relative).digest("hex").slice(0, 24)}.tmp`;
+}
+/** A pattern-matching temporary that is NOT at any owned path — residue migration must not touch. */
+const FOREIGN_TEMPORARY = ".migration-deadbeefdeadbeef.tmp";
 
-type Stage = "none" | "beforeCanonicalClaim" | "beforeRecordPublish" | "beforeMarkerPublish";
+type Stage = "none" | "beforeCanonicalClaim" | "beforeRecordPublish" | "beforeMarkerPublish" | "afterMarkerPublish";
 
 interface InterruptionRow {
   readonly label: string;
@@ -63,6 +71,8 @@ interface InterruptionRow {
   readonly expectedExitNode: "resumes" | { readonly message: RegExp; readonly help: RegExp };
   /** Can following the stated exit node destroy bytes? */
   readonly lossy: boolean;
+  /** For a refusal row: a path (relative to the canonical root) that MUST still exist after the rerun. */
+  readonly residueSurvives?: string;
   readonly skip?: string;
 }
 
@@ -112,36 +122,57 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
     lossy: false,
   },
   {
-    label: "M-I3 — during record copying, leaving a temporary in the root",
+    label: "M-I3 — during record copying, leaving OUR OWN temporary in the root",
     stage: "beforeRecordPublish",
     abort: true,
     damage: (canonical) => {
-      writeFileSync(join(canonical, LEFTOVER_TEMPORARY), "partial\n", { mode: 0o600 });
+      writeFileSync(join(canonical, ownTemporaryFor("okf-config.json")), "partial\n", { mode: 0o600 });
     },
     expectedState: (_canonical, entries) => {
       assert.ok(entries.includes(JOURNAL_FILE_NAME), "the journal survives, so the run is resumable in principle");
-      assert.ok(entries.includes(LEFTOVER_TEMPORARY), "and the residue the rerun must clear is really there");
+      assert.ok(entries.includes(ownTemporaryFor("okf-config.json")), "and the residue the rerun must clear is really there");
     },
-    // REQUIRED: resumable without operator intervention. The rerun's journal validation is the
-    // durable ownership proof that authorizes clearing the leftover.
+    // REQUIRED: resumable without operator intervention. The journal records the record set, the
+    // temporary's path derives from a recorded record — that is the ownership that authorizes the unlink.
     expectedExitNode: "resumes",
     lossy: false,
   },
   {
-    label: "M-I3b — during record copying, leaving a temporary in the nested authorization store",
+    label: "M-I3x — during record copying, a FOREIGN pattern-matching temporary in the root",
+    stage: "beforeRecordPublish",
+    abort: true,
+    damage: (canonical) => {
+      writeFileSync(join(canonical, FOREIGN_TEMPORARY), "not ours\n", { mode: 0o600 });
+    },
+    expectedState: (_canonical, entries) => {
+      assert.ok(entries.includes(JOURNAL_FILE_NAME));
+      assert.ok(entries.includes(FOREIGN_TEMPORARY));
+    },
+    // The red probe that found the defect: a journal proves the root and the record set, not
+    // ownership of every name that matches the temporary pattern. Unrecognized residue stays and
+    // the exactness assertion refuses — a stated, non-lossy exit node, never a silent unlink.
+    expectedExitNode: {
+      message: /user state changed during migration; legacy state remains preserved/,
+      help: /superbee setup migrate-state/,
+    },
+    lossy: false,
+    residueSurvives: FOREIGN_TEMPORARY,
+  },
+  {
+    label: "M-I3b — during record copying, leaving OUR OWN temporary in the nested authorization store",
     stage: "beforeRecordPublish",
     abort: true,
     damage: (canonical) => {
       const store = join(canonical, AUTHORIZATION_DIR_NAME);
       mkdirSync(store, { recursive: true, mode: 0o700 });
       chmodSync(store, 0o700);
-      writeFileSync(join(store, LEFTOVER_TEMPORARY), "partial\n", { mode: 0o600 });
+      writeFileSync(join(store, ownTemporaryFor(`${AUTHORIZATION_DIR_NAME}/${AUTHORIZATION_NAME}`)), "partial\n", { mode: 0o600 });
     },
     expectedState: (canonical, entries) => {
       assert.ok(entries.includes(AUTHORIZATION_DIR_NAME), "the store the interrupted copy created survives");
       assert.deepEqual(
         readdirSync(join(canonical, AUTHORIZATION_DIR_NAME)),
-        [LEFTOVER_TEMPORARY],
+        [ownTemporaryFor(`${AUTHORIZATION_DIR_NAME}/${AUTHORIZATION_NAME}`)],
         "holding nothing but the residue",
       );
     },
@@ -151,15 +182,50 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
     lossy: false,
   },
   {
-    label: "M-I4 — between marker publication and journal unlink",
+    label: "M-I3bx — during record copying, a FOREIGN temporary in the nested authorization store",
+    stage: "beforeRecordPublish",
+    abort: true,
+    damage: (canonical) => {
+      const store = join(canonical, AUTHORIZATION_DIR_NAME);
+      mkdirSync(store, { recursive: true, mode: 0o700 });
+      chmodSync(store, 0o700);
+      writeFileSync(join(store, FOREIGN_TEMPORARY), "not ours\n", { mode: 0o600 });
+    },
+    expectedState: (canonical) => {
+      assert.deepEqual(readdirSync(join(canonical, AUTHORIZATION_DIR_NAME)), [FOREIGN_TEMPORARY]);
+    },
+    expectedExitNode: {
+      message: /user state changed during migration; legacy state remains preserved/,
+      help: /superbee setup migrate-state/,
+    },
+    lossy: false,
+    residueSurvives: `${AUTHORIZATION_DIR_NAME}/${FOREIGN_TEMPORARY}`,
+  },
+  {
+    label: "M-I3c — after every copy, before marker publication",
     stage: "beforeMarkerPublish",
-    expectedState: () => {},
+    abort: true,
+    expectedState: (_canonical, entries) => {
+      assert.equal(entries.includes(USER_STATE_MARKER_FILE_NAME), false, "no marker: the root is still staging");
+      assert.ok(entries.includes(JOURNAL_FILE_NAME), "the journal is the resume authority");
+      assert.ok(entries.includes("okf-config.json"), "and the copies are already in place");
+    },
+    // Every destination already matches, so the rerun writes nothing and only publishes the marker.
     expectedExitNode: "resumes",
     lossy: false,
-    skip: "UNKNOWN (specification M-I4): there is NO kill point between the marker write and the journal "
-      + "unlink — `beforeMarkerPublish` fires before both — so this stage is unreachable from the existing "
-      + "hooks. Adding one is a source change this unit deliberately does not make. Delete this skip when "
-      + "the hook exists; the residue to check is a stale `.migration.json` holding the credential digest.",
+  },
+  {
+    label: "M-I4 — between marker publication and journal unlink",
+    stage: "afterMarkerPublish",
+    abort: true,
+    expectedState: (_canonical, entries) => {
+      assert.ok(entries.includes(USER_STATE_MARKER_FILE_NAME), "the marker is published: the root is complete and usable");
+      assert.ok(entries.includes(JOURNAL_FILE_NAME), "and the journal is the residue this window leaves");
+    },
+    // Usable and non-lossy: readers ignore the journal, so the root is `already_current`; the
+    // rerun removes the stale journal (it parses as ours) rather than leaving it forever.
+    expectedExitNode: "resumes",
+    lossy: false,
   },
 ];
 
@@ -229,6 +295,7 @@ function hooksFor(row: InterruptionRow, canonical: string): UserStateMigrationHo
     };
   }
   if (row.stage === "beforeRecordPublish") return { beforeRecordPublish: () => fire() };
+  if (row.stage === "afterMarkerPublish") return { afterMarkerPublish: () => fire() };
   return { beforeMarkerPublish: () => fire() };
 }
 
@@ -273,6 +340,7 @@ test("migration interruption: one row per kill point, with the exit node a rerun
             [],
             "nor in the root",
           );
+          assert.equal((await entriesOf(fixture.canonical)).includes(JOURNAL_FILE_NAME), false, "a completed root carries no journal");
         } else {
           const expected = row.expectedExitNode;
           await assert.rejects(
@@ -285,6 +353,9 @@ test("migration interruption: one row per kill point, with the exit node a rerun
               return true;
             },
           );
+          if (row.residueSurvives !== undefined) {
+            await stat(join(fixture.canonical, row.residueSurvives));
+          }
         }
       } finally {
         await rm(fixture.home, { recursive: true, force: true });
@@ -295,7 +366,7 @@ test("migration interruption: one row per kill point, with the exit node a rerun
 
 test("migration interruption: every kill point the source exposes has a row", () => {
   const covered = new Set(INTERRUPTIONS.map((row) => row.stage));
-  for (const stage of ["beforeCanonicalClaim", "beforeRecordPublish", "beforeMarkerPublish"] as const) {
+  for (const stage of ["beforeCanonicalClaim", "beforeRecordPublish", "beforeMarkerPublish", "afterMarkerPublish"] as const) {
     assert.ok(covered.has(stage), `no row exercises the ${stage} kill point`);
   }
   assert.ok(covered.has("none"), "the table needs its control row");

@@ -1,6 +1,6 @@
 // Explicit, one-shot migration from Superbee's historical operational-state root into its one
 // canonical root. This module is imported only by `setup`; ordinary state readers stay single-root.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import {
   chmod,
@@ -94,6 +94,8 @@ export interface UserStateMigrationHooks {
   beforeRecordPublish?: (relative: string) => void | Promise<void>;
   /** Test seam after all copies and immediately before source revalidation + marker publication. */
   beforeMarkerPublish?: () => void | Promise<void>;
+  /** Test seam after the marker is published and immediately before the journal is unlinked. */
+  afterMarkerPublish?: () => void | Promise<void>;
 }
 
 function errno(error: unknown): string | undefined {
@@ -314,13 +316,14 @@ async function ensureMigrationParent(home: string): Promise<void> {
 }
 
 /**
- * The one shape a staging temporary may take. Kept beside its generator so cleanup below can never
- * drift from what this module actually writes.
+ * A staging temporary's name is a pure function of the destination it stages, so the set of
+ * temporaries this migration can ever create is fixed by the record set — which the journal
+ * records durably BEFORE any record temporary exists. Ownership of a temporary is therefore
+ * derivable, never inferred from a name pattern.
  */
-const MIGRATION_TEMPORARY_PATTERN = /^\.migration-[0-9a-f]+\.tmp$/;
-
-function migrationTemporaryName(): string {
-  return `.migration-${randomBytes(12).toString("hex")}.tmp`;
+function migrationTemporaryPath(root: string, relative: string): string {
+  const digest = createHash("sha256").update(relative).digest("hex").slice(0, 24);
+  return join(root, dirname(relative), `.migration-${digest}.tmp`);
 }
 
 /**
@@ -329,20 +332,20 @@ function migrationTemporaryName(): string {
  * rejects the root on every later run. No marker has been published at that point, so the leftover
  * bricks private state product-wide rather than merely stalling migration.
  *
- * Cleanup authority binds to DURABLE OWNERSHIP, never to a matching name alone: the caller has
- * already proven this root is this migration's own staging — a journal that parses and names
- * exactly this record set, or a root this process exclusively created — and only the directories
- * that record set can reach are swept. Best-effort by design: a survivor still trips the exactness
- * assertion rather than being quietly published over.
+ * Cleanup authority binds to RECORDED OWNERSHIP: the caller has already proven this root is this
+ * migration's own staging — a journal that parses and names exactly this record set, or a root this
+ * process exclusively created — and only the temporaries that record set (plus the marker) can
+ * reach are unlinked, each at its one derived path. A pattern-matching file at any other name is
+ * not ours to touch: it stays, and the exactness assertion refuses the root. Best-effort by design:
+ * a survivor trips that assertion rather than being quietly published over.
  */
 async function sweepOwnedStagingTemporaries(root: string, records: MigrationRecord[]): Promise<void> {
-  const directories = new Set<string>([root, ...records.map((record) => dirname(join(root, record.relative)))]);
-  for (const directory of directories) {
-    const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      if (!entry.isFile() || !MIGRATION_TEMPORARY_PATTERN.test(entry.name)) continue;
-      await unlink(join(directory, entry.name)).catch(() => {});
-    }
+  const owned = [...records.map((record) => record.relative), USER_STATE_MARKER_FILE_NAME];
+  for (const relative of owned) {
+    const temporary = migrationTemporaryPath(root, relative);
+    const status = await lstat(temporary).catch(() => null);
+    if (!status?.isFile()) continue;
+    await unlink(temporary).catch(() => {});
   }
 }
 
@@ -357,7 +360,7 @@ async function writeNoReplace(root: string, relative: string, bytes: string): Pr
     }
     await assertPrivateDirectory(directory);
   }
-  const temporary = join(directory, migrationTemporaryName());
+  const temporary = migrationTemporaryPath(root, relative);
   const handle = await open(temporary, "wx", FILE_MODE);
   try {
     await handle.writeFile(bytes);
@@ -383,6 +386,19 @@ function journalFor(records: MigrationRecord[]): MigrationJournal {
 
 function journalBytes(records: MigrationRecord[]): string {
   return `${JSON.stringify(journalFor(records))}\n`;
+}
+
+/**
+ * A kill between marker publication and the journal unlink leaves a marker-proven, complete root
+ * that still carries its journal. Readers ignore it (`preflightDurableRecords` reads known names
+ * only), so the root is usable; this removes the residue on the next run. Only a file that parses
+ * as this module's own journal is touched — anything else at that name is left for inspection.
+ */
+async function removeStaleJournal(root: string): Promise<void> {
+  const path = join(root, MIGRATION_JOURNAL_FILE_NAME);
+  const raw = await readPrivateStateFile(path, MAX_CATALOG_BYTES).catch(() => null);
+  if (raw === null || parseJournal(raw) === null) return;
+  await unlink(path).catch(() => {});
 }
 
 function parseJournal(raw: string): MigrationJournal | null {
@@ -480,6 +496,7 @@ export async function migrateUserState(
     const current = await preflightDurableRecords(root).catch(() => {
       throw new CliError("CONFLICT", "canonical Superbee user state contains an invalid durable record", { help: "superbee setup" });
     });
+    await removeStaleJournal(root);
     return receipt("already_current", false, current);
   }
 
@@ -538,6 +555,7 @@ export async function migrateUserState(
       { help: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup migrate-state` },
     );
   }
+  await hooks.afterMarkerPublish?.();
   await unlink(join(root, MIGRATION_JOURNAL_FILE_NAME)).catch(() => {});
   await chmod(root, DIR_MODE);
   // The exact-topology assertions above are over, so the promised `*` .gitignore can finally be
