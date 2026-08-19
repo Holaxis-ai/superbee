@@ -6,12 +6,13 @@ import type { PersistentInstallAuthorityState } from "./install-authority.js";
 import type { InstallScope } from "./install-scope.js";
 import type { HookCompatibility } from "./hook-compatibility.js";
 import type { SkillCompatibilityState, SkillState } from "./skill-compatibility.js";
+import type { UserStateMigrationInspection } from "./user-state-migration.js";
 
 export type SetupRequirement = "required" | "recommended" | "not_applicable";
 export type SetupCapabilityState = "ready" | "needs_action" | "blocked" | "not_applicable";
 
 export interface SetupCapability {
-  readonly id: "distribution" | "skill" | "mcp" | "hook" | "bundle" | "catalog";
+  readonly id: "distribution" | "state" | "skill" | "mcp" | "hook" | "bundle" | "catalog";
   readonly requirement: SetupRequirement;
   readonly state: SetupCapabilityState;
   readonly reason: string;
@@ -50,12 +51,53 @@ export interface SetupPlanInput {
     readonly reason: string;
     readonly persistent: boolean;
   };
+  readonly state: UserStateMigrationInspection;
   readonly skill?: SetupSkillHostState;
   readonly hook?: SetupHookHostState;
   readonly projectHook?: SetupHookHostState;
   readonly projectHookUnavailable?: boolean;
   readonly mcp: { readonly state: McpRegistrationState; readonly reason: string };
   readonly workspace: SetupWorkspaceState;
+}
+
+function stateCapability(input: SetupPlanInput): SetupCapability {
+  if (input.state.state === "ready" || input.state.state === "fresh") {
+    return {
+      id: "state",
+      requirement: "required",
+      state: "ready",
+      reason: input.state.reason,
+    };
+  }
+  if (input.state.state === "migratable") {
+    return {
+      id: "state",
+      requirement: "required",
+      state: "needs_action",
+      reason: input.state.reason,
+      command: "superbee setup migrate-state",
+    };
+  }
+  // A root this product RECOGNIZES is repaired, never quarantined: it may hold the only copy of
+  // the catalog, credentials, and View approvals, and nothing re-imports a quarantined root.
+  if (input.state.state === "repairable") {
+    return {
+      id: "state",
+      requirement: "required",
+      state: "needs_action",
+      reason: input.state.reason,
+      command: input.state.command,
+    };
+  }
+  // A blocked state root cannot be un-blocked by rerunning the command that reported it, and the
+  // exit node depends on WHICH root is blocked, so the inspection supplies it.
+  return {
+    id: "state",
+    requirement: "required",
+    state: "blocked",
+    reason: input.state.reason,
+    command: input.state.command,
+  };
 }
 
 export interface SetupPlan {
@@ -365,6 +407,7 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
 export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const capabilities = [
     distributionCapability(input),
+    stateCapability(input),
     skillCapability(input),
     mcpCapability(input),
     bundleCapability(input),

@@ -61,6 +61,7 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
     "commands/hook.ts:hook",
     "commands/index.ts:indexCommand",
     "commands/kind.ts:kind",
+    "commands/setup.ts:setup",
     "commands/skill.ts:skill",
     "commands/view.ts:view",
   ]);
@@ -103,8 +104,8 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
       .sort(),
     [
       "bundleLocate", "catalogAdd", "catalogList", "catalogResolve", "hookInstall", "hookStatus",
-      "hookUninstall", "indexGenerate", "kindFieldAdd", "kindFieldRemove", "skillInstall",
-      "skillStatus", "skillUninstall", "viewList",
+      "hookUninstall", "indexGenerate", "kindFieldAdd", "kindFieldRemove", "setup",
+      "setupMigrateState", "skillInstall", "skillStatus", "skillUninstall", "viewList",
     ],
   );
   assert.deepEqual(

@@ -64,6 +64,10 @@ import { cliInvocation } from "./invocation.js";
 import { normalizeServer } from "./config.js";
 import { getApiKeyForOrigin } from "./credentials.js";
 import {
+  assertBundleOutsidePrivateState,
+  assertSearchDirOutsidePrivateState,
+} from "./private-state-bundle-boundary.js";
+import {
   LEGACY_API_KEY_ENV,
   SUPERBEE_API_KEY_ENV,
   resolveCompatibleScalarEnv,
@@ -90,6 +94,7 @@ export function resolveTargetDir(dirFlag: string | undefined): string {
  */
 export async function assertPlainInitTarget(dirFlag: string | undefined): Promise<string> {
   const target = resolveTargetDir(dirFlag);
+  assertBundleOutsidePrivateState(target);
   const ownIndex = await exists(path.join(target, "index.md"));
   const base = path.basename(target);
   if (BUNDLE_DIRS.includes(base as (typeof BUNDLE_DIRS)[number])) {
@@ -158,8 +163,15 @@ async function conventionalBundleAt(dir: string): Promise<string | null> {
  * session-start's `--dir` bridge (home.ts `discoverSummarizeBundle`): its `--dir` names a
  * PROJECT directory. Explicit local resolution accepts only the requested root or its direct
  * conventional child; this walk additionally discovers bundles from nested descendants.
+ *
+ * THE one place a "no bundle here" verdict is reached, so it is also the one place that verdict is
+ * denied to private state: a start directory that IS or lives INSIDE a guarded root refuses with the
+ * boundary conflict instead of walking up and reporting absence. Without it every discovery consumer
+ * answers "no OKF bundle found" for a guarded root and offers a relative `init --dir .superbee` that
+ * lands inside it.
  */
 export async function findBundleRoot(start: string): Promise<string | null> {
+  assertSearchDirOutsidePrivateState(start);
   let dir = path.resolve(start);
   // eslint-disable-next-line no-constant-condition
   while (true) {
@@ -1102,8 +1114,19 @@ export async function withCreateOnlyTarget<T>(
 ): Promise<CreateOnlyTargetReceipt<T>> {
   const io = createOnlyIo(deps);
   const logical = path.resolve(startDir, dirFlag ?? startDir);
+  // Ordered before the create-only preflight so a private-state target reads as the boundary
+  // refusal it is, rather than as an incidental "target exists and is not empty" that also leaks the
+  // private coordinate. A target the relation cannot resolve at all (a symlink loop, an unreadable
+  // ancestor) is left to the inspection below, which refuses it structurally before anything is
+  // created; `target` is re-checked against the boundary immediately after.
+  try {
+    assertBundleOutsidePrivateState(logical);
+  } catch (error) {
+    if (error instanceof CliError && error.code === "CONFLICT") throw error;
+  }
   const initial = await inspectCreateOnlyTarget(logical, io, "preflight");
   const target = initial.target;
+  assertBundleOutsidePrivateState(target);
   const createdDirectories: string[] = [];
   let criticalSectionEntered = false;
   let publicationState: CreateOnlyPublicationState = "not-started";
@@ -1222,6 +1245,10 @@ export async function resolveLocalBundleTarget(
 ): Promise<LocalBundleTarget> {
   if (dirFlag !== undefined) {
     const requested = path.resolve(startDir, dirFlag);
+    // Ordered BEFORE existence resolution: the relation does not depend on the target existing, and
+    // an absent target inside a guarded root must not fall through to the NOT_FOUND below, whose
+    // help echoes `--dir` back as an `init --create-only` command pointing into private state.
+    assertBundleOutsidePrivateState(requested);
     // Preserve the established project-directory shorthand when its direct conventional bundle is
     // indexed, but an own index is the higher-precedence exact boundary and must short-circuit
     // before inspecting conventional children (including a conflicting child pair).
@@ -1229,13 +1256,13 @@ export async function resolveLocalBundleTarget(
     const conventional = ownIndex ? null : await conventionalBundleAt(requested);
     const root = ownIndex ? requested : conventional ?? requested;
 
+    let canonicalRoot: string;
     try {
-      const canonicalRoot = await canonicalDirectoryRoot(
+      canonicalRoot = await canonicalDirectoryRoot(
         root,
         `no local bundle directory at ${root}`,
         `${cliInvocation()} init --create-only --dir ${dirFlag}`,
       );
-      return { root, canonicalRoot, selectedBy: "explicit-dir" };
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
       // A typo must not silently retarget an ancestor, but existing discovery still prevents
@@ -1251,17 +1278,23 @@ export async function resolveLocalBundleTarget(
         },
       );
     }
+    assertBundleOutsidePrivateState(canonicalRoot);
+    return { root, canonicalRoot, selectedBy: "explicit-dir" };
   }
 
   const binding = await resolveProjectBinding(startDir);
   if (binding) {
     // A committed local binding is also an exact declared boundary. Like explicit --dir, it does
     // not need the optional root index.md; malformed and unavailable targets still fail closed.
+    // Same ordering as explicit `--dir`: an ABSENT binding target inside a guarded root would
+    // otherwise emit an `init --create-only --dir <private path>` help.
+    assertBundleOutsidePrivateState(path.resolve(binding.target));
     const canonicalRoot = await canonicalDirectoryRoot(
       binding.target,
       `no local bundle directory at ${binding.target} — from project binding ${binding.file}`,
       `${cliInvocation()} init --create-only --dir ${binding.target}`,
     );
+    assertBundleOutsidePrivateState(canonicalRoot);
     return {
       root: binding.target,
       canonicalRoot,
@@ -1283,6 +1316,7 @@ export async function resolveLocalBundleTarget(
     `no OKF bundle at ${discovered} (no index.md)`,
     `${cliInvocation()} init --create-only --dir ${CONVENTIONAL_BUNDLE_DIR_NAME}`,
   );
+  assertBundleOutsidePrivateState(canonicalRoot);
   return { root: discovered, canonicalRoot, selectedBy: "discovery" };
 }
 

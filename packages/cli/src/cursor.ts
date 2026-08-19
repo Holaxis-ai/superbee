@@ -4,19 +4,21 @@
 // The neutral store implementation (the `createSyncStore` factory, the store interface, the
 // cursor/cache/marker record types, key derivation and schema validation) lives in
 // `@superbee/board-git`. THIS module is what stays behind: it wires the neutral factory to the
-// CLI's own credentials discipline (`~/.agentstate/sync`, `writeFileAtomic0600`), exposes
+// CLI's own private-state discipline (`~/.superbee-state/sync`), exposes
 // `defaultSyncStore` — THE production instance every consumer (sync, establish, autopull,
 // session-start, home) uses — and re-exports the neutral types/factory so every existing import
 // site keeps working unchanged.
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { credentialsDir, writeFileAtomic0600 } from "./credentials.js";
+import { credentialsDir } from "./credentials.js";
+import { readUserStateFile, writeUserStateFileAtomic0600 } from "./user-state.js";
 import {
   createSyncStore,
   bundleKey,
   REANCHOR_NOTE,
   SELF_ACTORS_CAP,
+  SYNC_EXPORTS_DIR_NAME,
   type AwarenessCache,
   type AwarenessDeltaRow,
   type BoardPendingMarker,
@@ -44,17 +46,22 @@ export {
   type SyncStoreOptions,
 };
 
-/** The subdirectory of `~/.agentstate/` holding per-bundle sync state files. */
+/** The subdirectory of the private Superbee state root holding per-bundle sync state files. */
 export const SYNC_STATE_DIR_NAME = "sync";
 
-/** `~/.agentstate/sync` — the 0700 directory holding one state file per bundle key. */
+/** `~/.superbee-state/sync` — the 0700 directory holding one state file per bundle key. */
 export function syncStateDir(home: string = homedir()): string {
   return join(credentialsDir(home), SYNC_STATE_DIR_NAME);
 }
 
-/** A store over `home`'s `~/.agentstate/sync` with the credentials-grade atomic write. */
+/** A store over `home`'s canonical Superbee sync state with the private atomic write. */
 function storeForHome(home: string): SyncStore {
-  return createSyncStore({ stateDir: () => syncStateDir(home), writeAtomic: writeFileAtomic0600 });
+  return createSyncStore({
+    stateDir: () => syncStateDir(home),
+    readText: (file: string) => readUserStateFile(home, file, 1024 * 1024),
+    writeAtomic: (dir: string, fileName: string, content: string) =>
+      writeUserStateFileAtomic0600(home, dir, fileName, content),
+  });
 }
 
 /** The absolute path of the state file for `key` (filename = truncated sha256 of the key). */
@@ -63,7 +70,7 @@ export function syncStatePath(key: string, home: string = homedir()): string {
 }
 
 /**
- * `~/.agentstate/sync/exports/<key-digest>` — the per-bundle directory sync's CONVERGING conflict
+ * `~/.superbee-state/sync/exports/<key-digest>` — the per-bundle directory sync's CONVERGING conflict
  * mechanic exports the LOCAL version of each conflicted doc into ("yours saved at <path>").
  * Deliberately OUTSIDE any worktree (the board worktree must end every sync pristine) and under
  * the same per-clone key discipline as the cursor/cache/marker state — exports for two different
@@ -77,13 +84,24 @@ export function syncExportsDir(key: string, home: string = homedir()): string {
 }
 
 /**
+ * `~/.superbee-state/sync/exports` — the parent of every per-bundle conflict-export directory.
+ * Everything under it is BUNDLE content sync exported, which is why it is the one part of private
+ * state the caller-supplied-content reader may acquire from (see `external-file.ts`).
+ */
+export function syncExportsRoot(home: string = homedir()): string {
+  return join(syncStateDir(home), SYNC_EXPORTS_DIR_NAME);
+}
+
+/**
  * THE production instance every consumer (sync, establish, autopull, session-start, home) uses.
  * `stateDir` is a thunk so the home directory resolves PER OPERATION (the `HOME`-swapping test
  * pattern keeps working), exactly as the old per-call `home = homedir()` defaults did.
  */
 export const defaultSyncStore: SyncStore = createSyncStore({
   stateDir: () => syncStateDir(),
-  writeAtomic: writeFileAtomic0600,
+  readText: (file: string) => readUserStateFile(homedir(), file, 1024 * 1024),
+  writeAtomic: (dir: string, fileName: string, content: string) =>
+    writeUserStateFileAtomic0600(homedir(), dir, fileName, content),
 });
 
 // ── per-home projections (the historical free-function surface; same one implementation) ──

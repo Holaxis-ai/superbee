@@ -55,7 +55,7 @@ directory's name.
 No --host flag in v1 — always binds 127.0.0.1 (loopback-only; a network-exposed key proxy is a
 separate, unreviewed feature). The printed URL carries a per-run session token; the first load
 exchanges it for an HttpOnly, SameSite=Strict cookie. One thing IS persisted: the current run's
-tokenized URL is written to ~/.agentstate/ui-url (0600) for one-click re-entry — a live
+tokenized URL is written to ~/.superbee-state/ui-url (0600) for one-click re-entry — a live
 credential while this run lasts, removed on clean shutdown; after a crash the leftover token is
 dead (the server is gone, and the secret rotates next boot).
 `;
@@ -66,7 +66,7 @@ export interface UiCliDeps {
   bootUiServer: (options: UiServerOptions) => Promise<UiServerHandle>;
   waitForShutdown: () => Promise<void>;
   openBrowser: (url: string) => void;
-  /** Record the current tokenized URL for one-click re-entry (default: `~/.agentstate/ui-url`, 0600). Injectable so tests never touch the real home dir. */
+  /** Record the current tokenized URL for one-click re-entry (default: `~/.superbee-state/ui-url`, 0600). Injectable so tests never touch the real home dir. */
   writeUrlFile: (url: string) => Promise<void>;
   /** Remove the URL file on clean shutdown (default: the real one, only if it still points at `url`). */
   clearUrlFile: (url: string) => Promise<void>;
@@ -281,7 +281,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
   }
   const url = launchUrl.toString();
 
-  // Record this run's tokenized URL for one-click re-entry after a restart (~/.agentstate/ui-url).
+  // Record this run's tokenized URL for one-click re-entry after a restart (~/.superbee-state/ui-url).
   // While this run lasts the file holds a LIVE credential — the URL embeds the session token —
   // which is why it gets the credentials-file discipline (0600, dir 0700), is overwritten on the
   // next boot, and is removed on clean shutdown. A crash leaves only a token the next boot's
@@ -297,7 +297,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
         root: rootLabel,
         ...(documentId !== undefined ? { document: documentId } : {}),
         auth:
-          "per-run session SECRET, minted fresh each boot; the first load exchanges the URL token for an HttpOnly, SameSite=Strict cookie. The current TOKENIZED URL — a live credential while this run lasts, since it embeds the token — is written to ~/.agentstate/ui-url (0600) for one-click re-entry and cleared on clean shutdown; a crash leaves only a stale URL whose token dies with this process (the secret rotates next boot)",
+          "per-run session SECRET, minted fresh each boot; the first load exchanges the URL token for an HttpOnly, SameSite=Strict cookie. The current TOKENIZED URL — a live credential while this run lasts, since it embeds the token — is written to ~/.superbee-state/ui-url (0600) for one-click re-entry and cleared on clean shutdown; a crash leaves only a stale URL whose token dies with this process (the secret rotates next boot)",
         help: [
           `open ${url} in a browser`,
           ...(usedStablePort

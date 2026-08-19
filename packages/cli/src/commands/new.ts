@@ -49,7 +49,6 @@
 // satisfies an explicitly required `actor` Kind field, with control semantics (blank-value guard,
 // trim).
 import { parseArgs } from "node:util";
-import { promises as fs } from "node:fs";
 import {
   loadKinds,
   kindInputFieldNames,
@@ -73,6 +72,7 @@ import { mutateDoc } from "../mutate.js";
 import { isKnownShippedLegacyPageConvention, isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
+import { readExternalTextFile } from "../external-file.js";
 import { addLink } from "./link.js";
 
 export const NEW_USAGE = `superbee new — create a new instance of a bundle-declared kind
@@ -522,8 +522,11 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       });
     }
     try {
-      suppliedBody = await fs.readFile(bodyFile, "utf8");
+      suppliedBody = await readExternalTextFile(bodyFile);
     } catch (err) {
+      // A private-state boundary refusal is a CONFLICT verdict, not an I/O failure — never let the
+      // "could not read" wrapper below demote it to USAGE.
+      if (err instanceof CliError) throw err;
       throw new CliError(
         "USAGE",
         `could not read --body-file ${JSON.stringify(bodyFile)}: ${err instanceof Error ? err.message : String(err)}`,

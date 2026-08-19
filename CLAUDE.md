@@ -237,13 +237,29 @@ for Codex/ChatGPT, Claude Code, Claude Desktop, or OpenCode. Mutation requires a
 durable npm-install authority, exact ownership classification, and read-back verification; it
 never detects a host as mutation authority, pins a bundle directory, or replaces/removes a foreign
 same-name entry. Bare `status` is the bounded read-only multi-host inspector.
-`superbee setup` is the read-only AXI conductor over that registration status plus the existing
+Bare and host-scoped `superbee setup` are the read-only AXI conductor over that registration status plus the existing
 distribution, Agent Skill, SessionStart hook, bundle-selection, and private-catalog inspectors. A
 host-scoped run emits one deterministic safe next command while leaving every existing installer
 as the sole mutation authority; a hostless run only presents the four bounded supported choices.
 The private catalog is explicit MCP inventory, never ambient current-project selection: setup
 reports catalog access separately from the bundle resolved by the current checkout, and a legacy
 registration's referenced bundle cannot authorize project orientation, writes, or sync.
+The only legacy operational-state bridge is the explicit `superbee setup migrate-state` leaf:
+ordinary Superbee readers use `~/.superbee-state` exclusively, migration draws from an ORDERED
+source list (`~/.agentstate`, then the superseded `~/.config/superbee`), and it never moves bundles
+or deletes source bytes. The location is ONE constant in `user-state.ts`; it lives back in `$HOME`
+because nothing stored is user-editable configuration and a `-config` name invites dotfile/backup
+tooling to sweep it. Private operational state is categorically not a Knowledge Bundle, and the
+invariant is CONTAINMENT rather than identity: one inode-based relation
+(`private-state-bundle-boundary.ts`) classifies every target against every guarded root
+(canonical + `~/.agentstate` + every superseded root, on both builds), and EVERY resolution path
+answers to it: `--dir`, the committed project binding, the cwd discovery walk (`findBundleRoot` —
+the one place a "no bundle here" verdict is reached, so the one place it is denied to private
+state), `sync`/`session-start`'s run directories, init, board-path derivation, the
+`promote`/`artifact create` source positionals, and the `pull`/`doc read`/`sync --show-incoming`
+`--out` destinations. A guarded root is reported as the CONFLICT it is — never as absence, and
+never with a next command whose path lands inside it. The state root
+carries a `.gitignore` of `*`, written after its ownership assertion.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
 `docs/core` and preserved outside the OSS repository — it is not a build or deployment target
@@ -252,7 +268,7 @@ without an explicit human decision.
 ### 5. Local-first, standards-clean
 
 Local-first: everything works with the network off. No bundled secret; credentials (if
-any) live in `~/.agentstate/` with 0600/0700 discipline and are never printed. Stay
+any) live in `~/.superbee-state/` with 0600/0700 discipline and are never printed. Stay
 standards-clean (plain OKF markdown; no bespoke schema). Link form is **relative
 bundle-relative**.
 

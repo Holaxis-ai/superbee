@@ -12,11 +12,9 @@
 // Writes use the injected atomic seam. Cross-process last-writer-wins is acceptable because this
 // state is advisory and re-derivable. Reads never throw: absent, malformed, foreign, unreadable,
 // or stale state returns `null`, and missing state must never turn into an `init` recommendation.
-import { chmod, mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, dirname, join, resolve } from "node:path";
-
-const DIR_MODE = 0o700;
+import { basename, join, resolve } from "node:path";
 
 /**
  * The honest re-anchor note recorded when the stored cursor can no longer be diffed from —
@@ -282,9 +280,17 @@ export interface SyncStoreOptions {
    * per-call `home` parameters were.
    */
   stateDir: string | (() => string);
-  /** The atomic 0600 write discipline (default: credentials.ts's `writeFileAtomic0600`). */
+  /** Optional product-owned exact-record reader; defaults to ordinary UTF-8 file reads. */
+  readText?: (file: string) => Promise<string>;
+  /** The product-owned atomic 0600 write discipline. */
   writeAtomic: (dir: string, fileName: string, content: string) => Promise<void>;
 }
+
+/**
+ * The one spelling of the conflict-export subdirectory under a sync state directory. Exported so a
+ * consumer can name the whole export tree without re-spelling it.
+ */
+export const SYNC_EXPORTS_DIR_NAME = "exports";
 
 /** The per-bundle sync state store — ONE owning implementation behind {@link createSyncStore}. */
 export interface SyncStore {
@@ -326,7 +332,8 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
   const stateDir = (): string =>
     typeof options.stateDir === "function" ? options.stateDir() : options.stateDir;
   const statePath = (key: string): string => join(stateDir(), `${keyDigest(key)}.json`);
-  const exportsDir = (key: string): string => join(stateDir(), "exports", keyDigest(key));
+  const exportsDir = (key: string): string => join(stateDir(), SYNC_EXPORTS_DIR_NAME, keyDigest(key));
+  const readText = options.readText ?? ((file: string) => readFile(file, "utf8"));
 
   /**
    * Read the whole per-bundle state record. NEVER throws: absent file, unreadable file, invalid
@@ -336,7 +343,7 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
   async function readSyncState(key: string): Promise<SyncState> {
     let raw: string;
     try {
-      raw = await readFile(statePath(key), "utf8");
+      raw = await readText(statePath(key));
     } catch {
       return { ...EMPTY_STATE }; // absent or unreadable — both are just "no state yet"
     }
@@ -366,11 +373,10 @@ export function createSyncStore(options: SyncStoreOptions): SyncStore {
    */
   async function writeSyncState(key: string, patch: Partial<SyncState>): Promise<SyncState> {
     const next: SyncState = { ...(await readSyncState(key)), ...patch };
-    // Force the PARENT (e.g. `~/.agentstate/`) to 0700 too (writeAtomic only governs the leaf dir).
     const dir = stateDir();
-    const parent = dirname(dir);
-    await mkdir(parent, { recursive: true, mode: DIR_MODE });
-    await chmod(parent, DIR_MODE);
+    // Product-root creation and permission enforcement belong to the injected writer. This
+    // neutral package must not create or chmod a product-state parent before that owner validates
+    // its namespace and migration marker.
     const record = {
       key,
       cursor: next.cursor ?? undefined,

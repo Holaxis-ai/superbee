@@ -71,6 +71,7 @@ import { cliInvocation } from "../invocation.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
+import { assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
 export const SESSION_START_PULL_BUDGET_MS = 7_000;
@@ -143,6 +144,11 @@ export async function sessionStartPull(
   const deadline = now() + budgetMs;
   const remaining = () => Math.max(0, deadline - now());
   try {
+    // A run directory that IS or lives INSIDE a guarded root has no board to pull, and must not be
+    // silently replaced by one derived from an enclosing repo — the render owes the conflict, which
+    // it can only report while `boardPath` stays undefined. The throw lands in this function's
+    // fail-soft catch (its documented posture for every "could not verify the board" outcome).
+    assertSearchDirOutsidePrivateState(path.resolve(dir ?? process.cwd()));
     const startDir = retargetBoardInterior(dir ?? process.cwd());
 
     // Budget guard at the first network boundary: retargetBoardInterior above

@@ -117,6 +117,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     skillStatus: simple(CLI_LEAVES.skillStatus, ["skill", "status"], [], ["--scope", "project"]),
     skillUninstall: simple(CLI_LEAVES.skillUninstall, ["skill", "uninstall"], [], ["--scope", "project"]),
     setup: simple(CLI_LEAVES.setup, ["setup"], [], ["--host", "claude-desktop", "--json"]),
+    setupMigrateState: simple(CLI_LEAVES.setupMigrateState, ["setup", "migrate-state"], []),
   };
 }
 

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rename, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ViewAuthorizationSubject } from "@superbee/ui-server";
@@ -49,6 +49,28 @@ test("local View approval persists only for the exact bundle, bytes, access, and
     const files = await readdir(directory);
     assert.equal(files.length, 1);
     assert.equal((await stat(join(directory, files[0]!))).mode & 0o777, 0o600);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("View approval reads and writes both reject an unsafe containing directory", async () => {
+  const home = await mkdtemp(join(tmpdir(), "superbee-view-auth-container-"));
+  try {
+    const store = new LocalViewAuthorizationStore("/bundles/a", home);
+    await store.authorize(subject);
+    const directory = join(credentialsDir(home), "view-authorizations");
+    const external = join(home, "external-authorizations");
+    await rename(directory, external);
+    await chmod(external, 0o777);
+    await symlink(external, directory, "dir");
+
+    await assert.rejects(
+      store.isAuthorized(subject),
+      /unsafe containing directory/,
+      "a valid approval file cannot gain trust through a symlinked public container",
+    );
+    await assert.rejects(store.authorize(subject), /private user-state path is not a real directory/);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

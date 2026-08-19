@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, open, readFile, stat, unlink } from "node:fs/promises";
+import { open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
 import { resolveLocalBundleTarget } from "./bundle.js";
-import { credentialsDir, writeFileAtomic0600 } from "./credentials.js";
+import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
+import { ensureUserStateRoot, readUserStateFile, writeUserStateFileAtomic0600 } from "./user-state.js";
 
 export const CATALOG_FILE_NAME = "catalog.json";
 export const CATALOG_LOCK_FILE_NAME = "catalog.lock";
@@ -170,7 +171,7 @@ export async function loadCatalog(home: string = homedir(), signal?: AbortSignal
     if (!(await stat(file)).isFile()) {
       throw new CliError("RUNTIME", `workspace catalog ${file} is not a regular file`);
     }
-    raw = await readFile(file, { encoding: "utf8", signal });
+    raw = await readUserStateFile(home, file, 4 * 1024 * 1024, signal);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
       return { schema_version: CATALOG_SCHEMA_VERSION, entries: [] };
@@ -224,8 +225,7 @@ async function acquireCatalogLock(options: CatalogOptions): Promise<() => Promis
   const token = randomUUID();
   const started = now();
 
-  await mkdir(dir, { recursive: true, mode: DIR_MODE });
-  await chmod(dir, DIR_MODE);
+  await ensureUserStateRoot(home);
 
   while (true) {
     try {
@@ -297,7 +297,7 @@ async function mutateCatalog<T>(
         schema_version: CATALOG_SCHEMA_VERSION,
         entries: [...result.next.entries].sort((a, b) => a.label.localeCompare(b.label)),
       };
-      await writeFileAtomic0600(catalogDir(home), CATALOG_FILE_NAME, JSON.stringify(next, null, 2) + "\n");
+      await writeUserStateFileAtomic0600(home, catalogDir(home), CATALOG_FILE_NAME, JSON.stringify(next, null, 2) + "\n");
     }
     return { value: result.value, changed: result.changed };
   } finally {

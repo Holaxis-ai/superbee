@@ -113,8 +113,10 @@ test("COMMAND_GROUPS: the 'doc history' one-line summary names backend-dependenc
 
 test("helpIndexText: the rendered top-level index carries doc history's honest, backend-dependent summary verbatim", () => {
   const text = helpIndexText(INV);
-  assert.match(
-    text,
-    /doc history <id> \[--limit <n>\] \[--remote <url>\] — Show a doc's version history \(newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision\) — the tokens for --expected-version/,
-  );
+  // The rendered line is derived from the registry row, so a legitimate USAGE edit (adding a flag
+  // the leaf really accepts) cannot fail this test — only losing or mangling the summary can.
+  const docHistory = COMMAND_GROUPS.flatMap((g) => g.commands).find((c) => c.usage.startsWith("doc history"));
+  assert.ok(docHistory, "expected a 'doc history' command entry in COMMAND_GROUPS");
+  assert.match(docHistory!.summary, /a history-keeping backend returns the full attributed chain, a local bundle just the current revision/);
+  assert.ok(text.includes(`${docHistory!.usage} — ${docHistory!.summary}`), text);
 });

@@ -38,11 +38,14 @@ superbee setup
 
 Without `--host`, setup returns the four supported host rows. Select the exact host running
 this agent, run that row's command, then follow the one `next.command` in each host-scoped
-plan, filling any explicit placeholder it identifies. Setup is read-only: it composes npm,
-Skill, Hook, MCP, bundle, and catalog status but never treats detection as permission to write.
+plan, filling any explicit placeholder it identifies. Bare and host-scoped setup are read-only: they compose npm,
+Skill, Hook, MCP, bundle, and catalog status but never treat detection as permission to write.
 Ask the human before running a returned mutating command. Restart the host after Skill, Hook,
 or MCP changes, then rerun the same setup command to verify. Foreign or unreadable state
 returns a read-only inspection command instead of overwriting it.
+If setup returns `superbee setup migrate-state`, that exact explicit command copies only
+validated private operational records into Superbee's canonical state root; it never moves
+bundles or deletes legacy bytes.
 
 A catalog entry preserves a workspace for explicit MCP selection; it never selects that
 workspace as the current project's context. Do not read, write, orient from, or sync a
@@ -70,52 +73,52 @@ Use `superbee mcp status --host <id>` to verify it and restart the host after a 
   — Create (or open) an OKF knowledge bundle in a directory — greenfield setup; a project that already shares a board is set up by sync, not init. --create-only requires a genuinely NEW target and refuses existing, non-empty, symlinked, enclosing, bound, or concurrent targets before publication; runtime failures retain and report any empty directories they created instead of deleting them — 'recipe add' modifies a verified existing bundle
 - `superbee index generate [--dir <path>] [--check] [--force] [--actor <name>]`
   — Generate complete portable Markdown navigation explicitly; refuses curated indexes unless --force adopts them
-- `superbee status [--limit <n>] [--remote <url>]`
+- `superbee status [--limit <n>] [--dir <path>] [--remote <url>]`
   — Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)
 
 ### Documents & links
 
-- `superbee doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--remote <url>]`
+- `superbee doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>] [--remote <url>]`
   — Write a generic OKF concept document
-- `superbee doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]`
+- `superbee doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]`
   — Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version
-- `superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]`
+- `superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url>]`
   — Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting
 - `superbee doc open <id> [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]`
   — Open one exact authoritative document in the existing rendered browser UI
-- `superbee doc history <id> [--limit <n>] [--remote <url>]`
+- `superbee doc history <id> [--limit <n>] [--dir <path>] [--remote <url>]`
   — Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) — the tokens for --expected-version
-- `superbee doc delete <id> [--expected-version <v>] [--remote <url>]`
+- `superbee doc delete <id> [--expected-version <v>] [--dir <path>] [--remote <url>]`
   — Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)
-- `superbee list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--remote <url>]`
+- `superbee list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>] [--remote <url>]`
   — Query concepts over their frontmatter (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)
-- `superbee link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--remote <url>]`
+- `superbee link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url>]`
   — Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text
 
 ### Artifacts
 
-- `superbee artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--remote <url>]`
+- `superbee artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--dir <path>] [--remote <url>]`
   — Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record
-- `superbee promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--remote <url>]`
+- `superbee promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--dir <path>] [--remote <url>]`
   — Move a local file's bytes into the store (a .md key routes through the engine; else a blob)
-- `superbee pull --doc-key <key> --out (<path> | -) [--remote <url>]`
+- `superbee pull --doc-key <key> --out (<path> | -) [--dir <path>] [--remote <url>]`
   — Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)
-- `superbee blobs [--prefix <p>] [--limit <n>] [--remote <url>]`
+- `superbee blobs [--prefix <p>] [--limit <n>] [--dir <path>] [--remote <url>]`
   — List the store's blob (non-document) keys (documents are listed by 'list'/'query')
-- `superbee delete --doc-key <key> [--expected-version <v>] [--remote <url>]`
+- `superbee delete --doc-key <key> [--expected-version <v>] [--dir <path>] [--remote <url>]`
   — Hard-delete a doc or blob by key (idempotent: absent -> deleted:false, exit 0)
 
 ### Kinds
 
-- `superbee new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--remote <url>]`
+- `superbee new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>] [--remote <url>]`
   — Create a new instance of a bundle-declared kind — initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step
-- `superbee kinds [--remote <url>]`
+- `superbee kinds [--dir <path>] [--remote <url>]`
   — List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)
-- `superbee kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--remote <url>]`
+- `superbee kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--dir <path>] [--remote <url>]`
   — Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)
 - `superbee recipes [--dir <path>] [--remote <url>]`
   — Browse built-in recipes before or after init; with a bundle, also show whether each is already applied
-- `superbee recipe add <name-or-path> [--remote <url>]`
+- `superbee recipe add <name-or-path> [--dir <path>] [--remote <url>]`
   — Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently
 
 ### Remote
@@ -141,8 +144,8 @@ Use `superbee mcp status --host <id>` to verify it and restart the host after a 
   — Install the SessionStart hook (runs session-start: pull the board, then render) for Claude Code, Codex, OpenCode
 - `superbee skill install|status|uninstall [--scope project|user]`
   — Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface — its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage
-- `superbee setup [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]`
-  — Inspect npm, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command
+- `superbee setup [migrate-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]`
+  — Inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command
 
 ## Workspaces — the project's bundle lives at `.superbee/` in the project root
 
@@ -281,7 +284,9 @@ while leaving code-project files untouched.
 
 On a shared board, run it whenever you close a unit of work — a task finished, a decision recorded, a session
 ending. Local-only work remains complete locally. Three known empty states (all exit 0):
-outside any git repo or workspace it prints `sync: nothing to sync`; a LOCAL-ONLY board (a
+in an ordinary directory outside any git repo or workspace it prints `sync: nothing to sync`
+(inside Superbee's private user-state root it refuses — that is a conflict, not an empty
+state); a LOCAL-ONLY board (a
 bundle with no shared `board` branch — a supported mode) reports itself as local-only, with
 nothing committed, pulled, or pushed, and its note points at `--establish` — but bare `sync`
 NEVER establishes on its own (that would silently publish a bundle nobody asked to share);

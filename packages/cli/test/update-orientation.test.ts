@@ -46,6 +46,8 @@ import { sessionStart } from "../src/commands/session-start.js";
 import { render } from "../src/output.js";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { fileURLToPath } from "node:url";
+import { credentialsDir } from "../src/credentials.js";
+import { canonicalUserStateDir, ensureUserStateRootSync } from "../src/user-state.js";
 
 const RUNNING = "0.1.0-pre.3";
 const SELECTED = "0.1.0-pre.4";
@@ -348,8 +350,7 @@ test("handle-based cache inspection distinguishes safe invalid state from unsafe
       state: "refreshable",
     });
 
-    const stateDir = path.join(home, ".agentstate");
-    mkdirSync(stateDir, { mode: 0o700 });
+    ensureUserStateRootSync(home);
     writeFileSync(updateCachePath(home), serializeUpdateCache(successfulCheck()), { mode: 0o600 });
     assert.equal(
       inspectUpdateCache({ home, runningVersion: RUNNING, now: NOW }).state,
@@ -382,8 +383,7 @@ test("cache safety is bounded, nonblocking for FIFO, and fail-closed on modes an
   for (const [label, plant] of variants) {
     const home = tempHome();
     try {
-      const stateDir = path.join(home, ".agentstate");
-      mkdirSync(stateDir, { mode: 0o700 });
+      ensureUserStateRootSync(home);
       const cache = updateCachePath(home);
       plant(home, cache);
       const started = Date.now();
@@ -400,11 +400,12 @@ test("cache safety is bounded, nonblocking for FIFO, and fail-closed on modes an
 
   const looseHome = tempHome();
   try {
-    mkdirSync(path.join(looseHome, ".agentstate"), { mode: 0o755 });
+    mkdirSync(path.dirname(credentialsDir(looseHome)), { recursive: true, mode: 0o700 });
+    mkdirSync(credentialsDir(looseHome), { mode: 0o755 });
     assert.deepEqual(inspectUpdateCache({ home: looseHome, runningVersion: RUNNING, now: NOW }), {
       state: "unsafe",
     });
-    assert.equal(lstatSync(path.join(looseHome, ".agentstate")).mode & 0o777, 0o755);
+    assert.equal(lstatSync(credentialsDir(looseHome)).mode & 0o777, 0o755);
   } finally {
     rmSync(looseHome, { recursive: true, force: true });
   }
@@ -440,6 +441,7 @@ test("hard-link claim, continuous stale conversion, cooldown cleanup, and token-
   const tokenA = "a".repeat(64);
   const tokenB = "b".repeat(64);
   try {
+    ensureUserStateRootSync(home);
     const first = claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA });
     assert.equal(first.state, "claimed");
     assert.deepEqual(parseUpdateLeaseText(readFileSync(updateLeasePath(home), "utf8")), activeLease(tokenA));
@@ -493,11 +495,42 @@ class FakeDetachedChild extends EventEmitter {
   }
 }
 
+test("passive update orientation never initializes an absent durable state root", () => {
+  const home = tempHome();
+  let spawns = 0;
+  try {
+    assert.equal(
+      runPassiveUpdateOrientation({
+        home,
+        runningVersion: RUNNING,
+        now: () => NOW,
+        executablePath: () => "/opt/superbee/dist/superbee.mjs",
+        spawn: () => {
+          spawns += 1;
+          return new FakeDetachedChild();
+        },
+        token: () => "a".repeat(64),
+      }),
+      undefined,
+    );
+    assert.equal(spawns, 0);
+    assert.equal(existsSync(canonicalUserStateDir(home)), false);
+    assert.deepEqual(
+      claimUpdateLease({ home, now: NOW, token: "a".repeat(64) }),
+      { state: "occupied" },
+    );
+    assert.equal(existsSync(canonicalUserStateDir(home)), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("passive parent returns cached notice or launches one exact detached private worker", () => {
   const home = tempHome();
   const calls: Array<{ command: string; argv: string[]; options: Record<string, unknown> }> = [];
   const child = new FakeDetachedChild();
   try {
+    ensureUserStateRootSync(home);
     const notice = runPassiveUpdateOrientation({
       home,
       runningVersion: RUNNING,
@@ -539,7 +572,7 @@ test("passive parent returns cached notice or launches one exact detached privat
 
   const cachedHome = tempHome();
   try {
-    mkdirSync(path.join(cachedHome, ".agentstate"), { mode: 0o700 });
+    ensureUserStateRootSync(cachedHome);
     writeFileSync(updateCachePath(cachedHome), serializeUpdateCache(successfulCheck()), {
       mode: 0o600,
     });
@@ -562,7 +595,7 @@ test("passive parent returns cached notice or launches one exact detached privat
 test("post-claim cache recheck releases an unused claim and spawn failure releases only its token", () => {
   const home = tempHome();
   try {
-    mkdirSync(path.join(home, ".agentstate"), { mode: 0o700 });
+    ensureUserStateRootSync(home);
     writeFileSync(updateCachePath(home), "{}\n", { mode: 0o600 });
     let spawns = 0;
     const notice = runPassiveUpdateOrientation({
@@ -594,6 +627,7 @@ test("post-claim cache recheck releases an unused claim and spawn failure releas
 
   const throwHome = tempHome();
   try {
+    ensureUserStateRootSync(throwHome);
     runPassiveUpdateOrientation({
       home: throwHome,
       runningVersion: RUNNING,
@@ -617,6 +651,7 @@ test("asynchronous spawn error is swallowed and releases the matching active cla
   const home = tempHome();
   const child = new FakeDetachedChild();
   try {
+    ensureUserStateRootSync(home);
     runPassiveUpdateOrientation({
       home,
       runningVersion: RUNNING,
@@ -649,7 +684,7 @@ test("private worker requires active token authority, caches success, and cools 
       },
     });
     assert.equal(checks, 0);
-    assert.equal(existsSync(path.join(invalidHome, ".agentstate")), false);
+    assert.equal(existsSync(credentialsDir(invalidHome)), false);
   } finally {
     rmSync(invalidHome, { recursive: true, force: true });
   }
@@ -657,6 +692,7 @@ test("private worker requires active token authority, caches success, and cools 
   const successHome = tempHome();
   const token = "a".repeat(64);
   try {
+    ensureUserStateRootSync(successHome);
     assert.equal(claimUpdateLease({ home: successHome, now: new Date(CHECKED_AT), token }).state, "claimed");
     await runUpdateRefreshWorker(token, {
       home: successHome,
@@ -679,6 +715,7 @@ test("private worker requires active token authority, caches success, and cools 
 
   const unavailableHome = tempHome();
   try {
+    ensureUserStateRootSync(unavailableHome);
     assert.equal(claimUpdateLease({ home: unavailableHome, now: new Date(CHECKED_AT), token }).state, "claimed");
     const unavailable: UpdateCheckResult = {
       ...successfulCheck(),
@@ -709,6 +746,7 @@ test("worker revalidates token immediately before cache commit", async () => {
   const tokenA = "a".repeat(64);
   const tokenB = "b".repeat(64);
   try {
+    ensureUserStateRootSync(home);
     assert.equal(claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA }).state, "claimed");
     await runUpdateRefreshWorker(tokenA, {
       home,
@@ -836,7 +874,7 @@ test("built hidden route is silent, private, and invalid/no-authority invocation
       assert.equal(result.status, 0, `${argv.join(" ")} stderr=${result.stderr}`);
       assert.equal(result.stdout, "", argv.join(" "));
       assert.equal(result.stderr, "", argv.join(" "));
-      assert.equal(existsSync(path.join(home, ".agentstate")), false, argv.join(" "));
+      assert.equal(existsSync(credentialsDir(home)), false, argv.join(" "));
     }
     const help = spawnSync(process.execPath, [BUILT_CLI, "--help"], {
       env: { ...process.env, ASLITE_NO_UPDATE_CHECK: "1" },
@@ -874,7 +912,7 @@ test("built JSON and suppressed default routes perform zero update-state work", 
       });
       assert.equal(result.status, 0, `${argv.join(" ")} stderr=${result.stderr}`);
       assert.equal(result.stderr, "");
-      assert.equal(existsSync(path.join(home, ".agentstate")), false, argv.join(" "));
+      assert.equal(existsSync(credentialsDir(home)), false, argv.join(" "));
       if (argv.includes("--json")) assert.doesNotThrow(() => JSON.parse(result.stdout));
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -884,6 +922,7 @@ test("built JSON and suppressed default routes perform zero update-state work", 
 
 test("barrier/IPC: concurrent processes produce exactly one hard-link claim winner", async () => {
   const home = tempHome();
+  ensureUserStateRootSync(home);
   const children = Array.from({ length: 6 }, (_, index) =>
     startConcurrencyFixture({
       home,
@@ -915,6 +954,7 @@ test("barrier/IPC: stale active replacement stays occupied before and after the 
     token: "b".repeat(64),
   });
   try {
+    ensureUserStateRootSync(home);
     assert.equal(claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA }).state, "claimed");
     child.send("go");
     assert.deepEqual(await nextChildMessage(child), { type: "before-stale-replace" });
@@ -954,7 +994,7 @@ test("barrier/IPC: expired-cooldown ABA starts only the successor's worker", asy
   const parentA = startConcurrencyFixture({ home, mode: "aba-parent-a", now, token: tokenA });
   const parentB = startConcurrencyFixture({ home, mode: "passive-parent", now, token: tokenB });
   try {
-    mkdirSync(path.join(home, ".agentstate"), { mode: 0o700 });
+    ensureUserStateRootSync(home);
     writeFileSync(
       updateLeasePath(home),
       serializeUpdateLease({
@@ -1018,7 +1058,7 @@ test("barrier/IPC: paused parent rechecks newly published cache after claim and 
     token: "b".repeat(64),
   });
   try {
-    mkdirSync(path.join(home, ".agentstate"), { mode: 0o700 });
+    ensureUserStateRootSync(home);
     writeFileSync(updateCachePath(home), "{}\n", { mode: 0o600 });
     child.send("go");
     assert.deepEqual(await nextChildMessage(child), { type: "after-initial-cache-read" });

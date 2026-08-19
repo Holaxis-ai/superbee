@@ -39,6 +39,7 @@ import {
   type SyncCursor,
 } from "../src/cursor.js";
 import { credentialsDir } from "../src/credentials.js";
+import { ensureUserStateRoot } from "../src/user-state.js";
 import {
   BUNDLE_DIR,
   boardHead,
@@ -137,7 +138,7 @@ test("cursor: writing a shape-invalid cursor is a programmer error (throws), nev
 
 // ── atomic write + permissions ────────────────────────────────────────────────
 
-test("permissions: state file 0600; sync dir AND ~/.agentstate both 0700; no temp files left behind", async () => {
+test("permissions: state file 0600; sync dir and canonical state root both 0700; no temp files left behind", async () => {
   const home = await tempHome();
   try {
     const key = bundleKey({ remoteUrl: "https://github.com/org/repo", subpath: BUNDLE_DIR, checkoutRoot: "/w/clone-a/.agentstate-lite" });
@@ -146,7 +147,7 @@ test("permissions: state file 0600; sync dir AND ~/.agentstate both 0700; no tem
     const fileMode = (await stat(syncStatePath(key, home))).mode & 0o777;
     assert.equal(fileMode, 0o600, "state file is 0600");
     assert.equal((await stat(syncStateDir(home))).mode & 0o777, 0o700, "sync dir is 0700");
-    assert.equal((await stat(credentialsDir(home))).mode & 0o777, 0o700, "~/.agentstate is 0700");
+    assert.equal((await stat(credentialsDir(home))).mode & 0o777, 0o700, "canonical state root is 0700");
 
     // The O_EXCL temp is renamed over the target — a completed write leaves no `.tmp` strays.
     const entries = await readdir(syncStateDir(home));
@@ -186,7 +187,7 @@ test("reads never throw: absent, garbage JSON, non-object JSON, foreign key, unr
     assert.deepEqual(await readSyncState(key, home), { cursor: null, cache: null, marker: null, selfActors: null, autoPullAttemptAt: null, hookHintedAt: null });
 
     // Garbage JSON.
-    await mkdir(syncStateDir(home), { recursive: true });
+    await mkdir(syncStateDir(home), { recursive: true, mode: 0o700 });
     await writeFile(syncStatePath(key, home), "{ not json", "utf8");
     assert.deepEqual(await readSyncState(key, home), { cursor: null, cache: null, marker: null, selfActors: null, autoPullAttemptAt: null, hookHintedAt: null });
 
@@ -216,7 +217,8 @@ test("section independence: one malformed section reads null while the valid sec
   const home = await tempHome();
   try {
     const key = bundleKey({ root: "/tmp/bundle-a" });
-    await mkdir(syncStateDir(home), { recursive: true });
+    await ensureUserStateRoot(home);
+    await mkdir(syncStateDir(home), { recursive: true, mode: 0o700 });
     await writeFile(
       syncStatePath(key, home),
       JSON.stringify({
@@ -225,7 +227,7 @@ test("section independence: one malformed section reads null while the valid sec
         cache: { ...sampleCache(), delta: [{ docId: "x" }] }, // malformed: incomplete row
         marker: { updatedAt: "2026-07-07T12:00:00.000Z", origin: "seen" }, // valid (+ extra field)
       }),
-      "utf8",
+      { encoding: "utf8", mode: 0o600 },
     );
     const state = await readSyncState(key, home);
     assert.equal(state.cursor, null);
@@ -429,7 +431,7 @@ test("createSyncStore: injected stateDir + writeAtomic own persistence — reads
     assert.deepEqual(await store.readCursor(key), { tier: "git", token: "a".repeat(40) });
 
     // Persistence went through the INJECTED seams: the write named the injected dir, and the
-    // state file sits under it (nothing under ~/.agentstate).
+    // state file sits under the injected root (nothing under the product root).
     assert.equal(writes.length, 1);
     assert.equal(writes[0]!.dir, stateDir);
     assert.equal(path.dirname(store.statePath(key)), stateDir);
