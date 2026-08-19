@@ -44,6 +44,38 @@ folder is the resolution path). Ground
 every change in the ACTUAL current code, not assumptions — including the claims in THIS
 file: when this guide and the code disagree, the code wins and this file gets fixed.
 
+## Three layers, three verbs
+
+Your position in the pipeline is defined by the verb you own, not by what your packet implies.
+
+**A dispatched sub-agent owns `commit`.** Produce one claim's worth of change, run the pre-commit
+smoke — `npm run build && npm run typecheck` plus the touched package's tests
+(`npm test -w <pkg>`) — commit, and report the SHA plus the exit code you read directly. The
+smoke is not a gate: it says your commit compiles and its own package passes, nothing more. Never
+push, open a PR, dispatch CI, publish, emit a release asset, or `superbee sync` the board — those
+verbs belong to the orchestrating session, so you are never the last step and never have to
+decide whether you are. If your deliverable is not a commit — a review, a research note — you
+have no gate to run before reporting; do exactly what the review requires (the sampled re-run,
+the one red probe) and nothing as a pre-report ritual. A packet that explicitly names a gate
+overrides this default; that is the packet author's cost to justify.
+
+**The orchestrating session owns `push` and `dispatch`.** Integrate the sub-agents' commits,
+push the branch once, and start the authoritative gate on that SHA with
+`gh workflow run "CI tests" --ref <branch>` — once per pushed SHA, never per sub-agent. Do not
+re-run a sub-agent's smoke and do not run `npm run check`: CI is a strict superset of it (it
+adds `check:release-exhaustive` and a node-20 engines-floor smoke) and finishes in about five
+minutes of parallel wall clock against roughly seven minutes serial locally for less coverage.
+Report to the human the moment the dispatch is in flight, with the run URL — do not wait for
+green, or the blocked time has only moved. Publish or emit release assets only from a SHA CI has
+passed. Before rewriting history you have already pushed, check `gh pr view`: if the human opened
+the PR in between, the open-PR force-push rule is now active. A solo session with no sub-agents
+owns every verb and follows both paragraphs.
+
+**CI owns the verdict.** A feature-branch push alone does not start it — only a pull request, a
+push to `main`, or the dispatch above does. The dispatched run is not the PR's required check,
+so opening the PR runs CI again on the same SHA: redundant execution on GitHub's clock, accepted
+knowingly because it is off the critical path and buys the early signal.
+
 ## Standing gates (honor these before shipping)
 
 ### 1. AXI-conformance is a pre-ship check for the CLI
@@ -312,16 +344,16 @@ bundle-relative**.
   failure matches and a bounded tail. Inspect summaries before potentially large diffs or searches.
   When uncertain, capture output instead of streaming it.
 
-- **Which gate to run: lanes while iterating, the full gate before shipping.** Before a
-  hand-off, a commit you intend someone to merge, or any release step, the gate is
-  `npm run check` — or CI green on that exact SHA, which is the same thing run by someone
-  else. While iterating, run the LANE that covers what you touched. `npm run check` is always
-  correct and always sufficient. When it is disproportionate, run the LANE that covers what you
-  touched — `ci:runtime`, `ci:distribution`, `ci:browser`, `ci:release-policy`, and
-  `check:release-exhaustive` are exactly the lanes CI runs, so a lane result means what the
-  corresponding CI lane will mean. What is NOT safe is assembling your own subset: a gate of
-  `build && typecheck && test` is not any lane, and it omits the packaging and release proofs
-  entirely — that exact combination has shipped a red CI at least once. Rough mapping:
+- **Which gate to run: CI on the pushed SHA is the gate; locally, run the lane for what you
+  are iterating on.** Who pushes and who dispatches is settled by the verb you own (see "Three
+  layers, three verbs" above). CI is a strict superset of `npm run check`; run `npm run check`
+  locally only when CI is unreachable and you need the fullest local stand-in. While iterating
+  on one area, run the LANE that covers it — `ci:runtime`, `ci:distribution`, `ci:browser`,
+  `ci:release-policy`, and `check:release-exhaustive` are exactly the lanes CI runs, so a lane
+  result means what the corresponding CI lane will mean. What is NOT safe is presenting a subset
+  as the shipping record: `build && typecheck && test` is the pre-commit smoke, not a lane, and
+  it omits the packaging and release proofs — reported as "the gate is green" it has shipped a
+  red CI at least once. Rough mapping:
 
   | Touched | Run at minimum |
   | --- | --- |
@@ -343,9 +375,10 @@ bundle-relative**.
   input to. CI is the backstop for a wrong guess — but only on the platforms CI runs, which is Linux
   alone, so a guess about Windows or case-folding behavior is caught by nothing.
 
-- Build/verify gate: **`npm run check` must exit 0 before shipping** — not `npm run build &&
-  npm run typecheck && npm test`, which is a subset that omits the packaging and release proofs
-  and has shipped a red CI here. Those three (`build`, `typecheck`, and `npm test
+- Build/verify gate: **CI on the pushed SHA is the authoritative gate; `npm run check` is its
+  fullest local stand-in** (see "Three layers, three verbs"). Never present
+  `npm run build && npm run typecheck && npm test` as either: it is the pre-commit smoke, it
+  omits the packaging and release proofs, and reported as the gate it has shipped a red CI here. Those three (`build`, `typecheck`, and `npm test
   --workspaces --if-present`: board-git + core + cli + server + ui suites) are the fast inner
   loop, not the gate. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
   the installed-tarball proof (`verify:npm-package`), and the npm-target SKILL.md drift gate
@@ -431,28 +464,28 @@ bundle-relative**.
   change-type — retire or thin it there deliberately (a recorded decision, not silent decay).
   A stage that keeps finding real defects keeps its place. Words like "verified" and "proven"
   remain testable claims at every stage.
-- **Dispatching sub-agents: scope the gate and the unit, never the probing.** A dispatched
-  agent inherits whatever gate its packet names, so naming `npm run check` for a change that
-  cannot reach most lanes makes it wait on Chromium, 20 Playwright specs, and five release
-  tarballs for nothing. Name the LANE that covers what the agent will touch, per the mapping
-  above. Keep one claim per agent - a packet carrying four units produces one long-running
-  agent where four concurrent ones would do. Reuse a warm worktree when isolation is not
-  required for correctness; a cold `npm ci` per worktree is minutes each, repeated. And do not
-  dispatch an agent to do a read a grep would answer. What must NOT be traded for speed is
+- **Dispatching sub-agents: scope the unit, name no gate, never trade away the probing.** A
+  dispatched agent inherits whatever gate its packet names, so naming `npm run check` for a
+  change that cannot reach most lanes makes it wait on Chromium, 20 Playwright specs, and five
+  release tarballs for nothing — and puts all of it on the human's critical path. Name no gate:
+  the sub-agent's default is the pre-commit smoke and CI on the integrated SHA is the gate. Keep
+  one claim per agent - a packet carrying four INDEPENDENT units produces one long-running agent
+  where four concurrent ones would do, and the human waits on the sum instead of the slowest.
+  And do not dispatch an agent to do a read a grep would answer. What must NOT be traded for speed is
   empirical probing: real concurrent processes, real interruption, real invocations of the
   built artifact. That is slow and it is what finds defects that reasoning about the code
   does not.
 
-- **Tell a dispatched agent its position in the pipeline, or it will gate like it is shipping.**
-  A packet that says "build it, gate it, commit it" reads as "you are the last step", so the
-  agent runs the full gate - then the orchestrator runs it again, then CI runs it. Three runs,
-  one piece of evidence. Only CI's is authoritative: it runs on the exact SHA, branch protection
-  enforces it, and no dirty tree or stale build can fool it.
+- **A dispatched agent's position is fixed by the verbs it owns, not by its packet** (see
+  "Three layers, three verbs" above). Three gate runs for one piece of evidence was the failure
+  this replaces: the agent gated like the last step, the orchestrator re-ran it, CI ran it again.
+  Only CI's is authoritative: it runs on the exact SHA, branch protection enforces it, and no
+  dirty tree or stale build can fool it.
 
   | Layer | Question it answers | Runs |
   | --- | --- | --- |
-  | sub-agent | did I break what I touched? | the LANE for its change |
-  | orchestrator | is this commit what it claims to be? | nothing - see below |
+  | sub-agent | does my commit compile and pass its own package? | the pre-commit smoke |
+  | orchestrator | is this commit what it claims to be? | nothing - pushes once, dispatches CI |
   | CI | is this SHA shippable? | the full gate, authoritative |
 
   **Verifying the commit and re-running the gate are different jobs.** Checking the parent, that
@@ -460,11 +493,10 @@ bundle-relative**.
   scope is cheap, is duplicated nowhere else, and is what the orchestrator is actually positioned
   to do. Re-running tests the agent already ran is duplication wearing the word "verify".
 
-  Two cases where the orchestrator legitimately runs a gate: INTEGRATING several agents' work,
-  because the combination is untested even when each part passed; and when the agent's evidence
-  is void - it did not read the exit code directly, or the tree changed after the run. Where a
-  CI round-trip is expensive, running the lane locally first is a latency judgement, not a
-  correctness requirement.
+  The combination of several agents' work is untested even when each part passed; that is what
+  the dispatch on the integrated SHA is for, not a local gate. The one case for re-running
+  locally is void evidence - the agent did not read the exit code directly, or the tree changed
+  after its run - and then re-run its smoke, not `npm run check`.
 
 - **When independent review or QA is required, use these review-process conventions:**
   - Agents that touch git or run tests work in an ISOLATED worktree/checkout, never the
