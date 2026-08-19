@@ -297,6 +297,27 @@ bundle-relative**.
   failure matches and a bounded tail. Inspect summaries before potentially large diffs or searches.
   When uncertain, capture output instead of streaming it.
 
+- **Which gate to run: match CI's lanes, do not invent a subset.** `npm run check` is always
+  correct and always sufficient. When it is disproportionate, run the LANE that covers what you
+  touched — `ci:runtime`, `ci:distribution`, `ci:browser`, `ci:release-policy`, and
+  `check:release-exhaustive` are exactly the lanes CI runs, so a lane result means what the
+  corresponding CI lane will mean. What is NOT safe is assembling your own subset: a gate of
+  `build && typecheck && test` is not any lane, and it omits the packaging and release proofs
+  entirely — that exact combination has shipped a red CI at least once. Rough mapping:
+
+  | Touched | Run at minimum |
+  | --- | --- |
+  | `packages/*/src`, tests | `ci:runtime` |
+  | a `package.json`, `scripts/`, release or packaging code | `ci:distribution` AND `ci:release-policy` |
+  | `packages/ui`, `packages/mcp-app`, the embedded SPA | `ci:browser` |
+  | `release/`, candidate or tarball proofs | `check:release-exhaustive` too |
+  | `.github/workflows`, `scripts/ci-lanes.json` | `ci:release-policy` (carries the topology tests) |
+
+  A manifest edit is the counter-intuitive case: it looks trivial and the two EXPENSIVE lanes are
+  precisely the relevant ones, because the release and packaging proofs are what the manifest is an
+  input to. CI is the backstop for a wrong guess — but only on the platforms CI runs, which is Linux
+  alone, so a guess about Windows or case-folding behavior is caught by nothing.
+
 - Build/verify gate: `npm run build` and `npm run typecheck` must exit 0, and `npm test`
   (`--workspaces --if-present`: board-git + core + cli + server + ui suites) must pass, before
   shipping. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
