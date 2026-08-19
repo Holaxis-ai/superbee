@@ -21,10 +21,12 @@ export function meaningfulChangeOrderKey(
 
 /** Newest usable meaningful-change clock first; canonical ID ascending for all ties. */
 export function compareByMeaningfulChange(a: MeaningfulChangeOrderKey, b: MeaningfulChangeOrderKey): number {
-  if (a.timestampMs !== null && b.timestampMs !== null && a.timestampMs !== b.timestampMs) {
-    return b.timestampMs - a.timestampMs;
+  if (a.timestampMs !== null && b.timestampMs !== null) {
+    if (a.timestampMs !== b.timestampMs) return b.timestampMs - a.timestampMs;
+  } else if (a.timestampMs !== null) {
+    return -1;
+  } else if (b.timestampMs !== null) {
+    return 1;
   }
-  if (a.timestampMs !== null) return -1;
-  if (b.timestampMs !== null) return 1;
   return a.id.localeCompare(b.id);
 }

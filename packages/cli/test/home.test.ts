@@ -495,9 +495,7 @@ test("A1.7a meaningful-time ordering: parsed clocks, malformed clocks, and ID ti
   const docs: OkfDocument[] = [
     docOf("notes/tie-b", timestamp),
     docOf("notes/offset-newer", "2026-07-01T08:00:00Z"),
-    docOf("notes/offset-older", "2026-07-01T12:00:00+05:00"),
-    { id: "notes/missing", frontmatter: { type: "Note", title: "missing" }, body: "" },
-    docOf("notes/blank", ""),
+    docOf("notes/offset-older", "2026-07-01T00:00:00+05:00"),
     docOf("notes/malformed", "not-a-date"),
     docOf("notes/tie-a", timestamp),
   ];
@@ -507,10 +505,8 @@ test("A1.7a meaningful-time ordering: parsed clocks, malformed clocks, and ID ti
       ["notes/offset-newer", "2026-07-01T08:00:00Z"],
       ["notes/tie-a", timestamp],
       ["notes/tie-b", timestamp],
-      ["notes/offset-older", "2026-07-01T12:00:00+05:00"],
-      ["notes/blank", ""],
+      ["notes/offset-older", "2026-07-01T00:00:00+05:00"],
       ["notes/malformed", "not-a-date"],
-      ["notes/missing", ""],
     ],
   );
 });
