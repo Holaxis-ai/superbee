@@ -538,24 +538,22 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   },
   { leaf: "viewList", surface: "--dir", argv: (t) => ["view", "list", "--dir", t, "--json"] },
   {
+    // Sync never resolves a bundle through `resolveLocalBundleTarget`, so its run directory answers
+    // to the relation at sync's own resolution point (orchestrate.ts, before retargeting or any git
+    // probe). It used to exit 0 with `nothing to sync` — absence where the answer is the conflict.
     leaf: "sync",
     surface: "--dir",
     argv: (t) => ["sync", "--dir", t, "--json"],
-    skip: "DISCOVERED BY THIS TABLE, unfixed here: `sync --dir <guarded root>` neither refuses nor names "
-      + "the boundary — it exits 0 with `nothing to sync`, inside a git work tree as well as outside one, "
-      + "because sync short-circuits before the bundle target is resolved. Nothing is read or written, so "
-      + "the harm is nil; what F1 requires of a command that never resolves the bundle is the open "
-      + "question. Delete this skip once that is decided (expected: CONFLICT 5).",
   },
   {
+    // session-start is the SessionStart hook payload: like `home` below it must not exit nonzero,
+    // so the row pins exit 0 PLUS the boundary message — the same conflict `home --dir` reports,
+    // through the same render. It used to report `no OKF bundle found` and emit an
+    // `init --create-only --dir <guarded root>/.superbee` hint pointing INSIDE private state.
     leaf: "sessionStart",
     surface: "--dir",
     argv: (t) => ["session-start", "--dir", t, "--no-update-check"],
-    skip: "DISCOVERED BY THIS TABLE, unfixed here: `session-start --dir <guarded root>` exits 0 reporting "
-      + "`no OKF bundle found` and emits an `init --create-only --dir <guarded root>/.superbee` hint — a "
-      + "copy-pasteable command pointing INSIDE private state, which init itself then refuses. Its sibling "
-      + "`home --dir` reports the boundary conflict instead (the row above). Delete this skip when "
-      + "session-start reports the same conflict.",
+    expect: 0,
   },
   {
     // `home` is the session render: it consults the guard, reports `bundle.status: conflict` with the
@@ -743,19 +741,20 @@ const TARGET_SHAPE_ROWS: readonly TargetShapeRow[] = [
     boundary: true,
   },
   {
-    // The same path, asked by a read verb. The code DIFFERS because existence resolution runs
-    // before the boundary check — contradiction C2, pinned here as the observed fact so that
-    // fixing it is a visible edit to this row rather than a silent change.
-    label: "F7 — the same absent path via `status`: NOT_FOUND, not CONFLICT (contradiction C2)",
+    // The same path, asked by a read verb. This ANSWERED 6 while init answered 5, because existence
+    // resolution ran before the boundary check — and the NOT_FOUND it produced echoed `--dir` back
+    // as an `init --create-only` command pointing into private state. `resolveLocalBundleTarget`
+    // now consults the relation BEFORE resolving existence, closing both halves at once.
+    label: "F7 — the same absent path via `status`: CONFLICT, as init answers",
     argv: (f) => ["status", "--dir", path.join(f.stateRoot, "nope"), "--json"],
-    expect: 6,
-    boundary: false,
+    expect: 5,
+    boundary: true,
   },
   {
-    label: "F7 — and via `list`, the same divergence",
+    label: "F7 — and via `list`, the same verdict",
     argv: (f) => ["list", "--dir", path.join(f.stateRoot, "nope"), "--json"],
-    expect: 6,
-    boundary: false,
+    expect: 5,
+    boundary: true,
   },
   {
     // D14: `bundle-contains-state` is meaningless for a single FILE target, so a destination that
@@ -767,14 +766,12 @@ const TARGET_SHAPE_ROWS: readonly TargetShapeRow[] = [
     boundary: false,
   },
   {
+    // A4's agreement claim, on a THIRD verb so it is not a copy of the F7 status row: what this
+    // pins is that the verdict does not depend on which verb asks, not any one verb's exit code.
     label: "A4 — every verb returns the SAME verdict for the same absent path inside a guarded root",
-    argv: (f) => ["status", "--dir", path.join(f.stateRoot, "nope"), "--json"],
+    argv: (f) => ["doc", "read", "notes/a", "--dir", path.join(f.stateRoot, "nope"), "--json"],
     expect: 5,
     boundary: true,
-    skip: "VIOLATED (specification A4 / contradiction C2, unfixed here): the read verbs answer NOT_FOUND (6) "
-      + "where init answers CONFLICT (5), because existence resolution runs before the boundary check. Both "
-      + "refuse, which is why no test noticed. Delete this skip when the verdict stops depending on the verb "
-      + "— and update the two F7 rows above in the same change.",
   },
 ];
 
@@ -795,6 +792,127 @@ test("target shapes at a crossing point", async (t) => {
       readFileSync(path.join(fixture.stateRoot, USER_STATE_MARKER_FILE_NAME), "utf8"),
       USER_STATE_MARKER_BYTES,
     );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// ── RESOLUTION PATHS ──────────────────────────────────────────────────────────
+//
+// The crossing-point table varies the COMMAND and the shape table varies the TARGET. These rows
+// vary the ROUTE by which a guarded root becomes the resolved bundle. `--dir` is only one of three
+// — the cwd discovery walk and a committed project binding are the others — and while every
+// `--dir` row above refused, both of the others answered `no OKF bundle found` and offered an
+// `init --create-only --dir .superbee` that resolves INSIDE the guarded root the caller is standing
+// in. Same class, different route, and the route is what nobody enumerated.
+//
+// Each row asserts three things: the exit code, that the envelope names the boundary, and that NO
+// `--dir` token anywhere in the output resolves inside a guarded root. That third assertion is the
+// guidance half, which is a SEPARATE defect from the degradation: a command can report the conflict
+// correctly and still hand back a next command that lands in private state.
+
+/**
+ * Every `--dir <target>` token in `text` that, resolved against the cwd it was emitted for, lands
+ * in a guarded root. A RELATIVE hint is as dangerous as an absolute one — `--dir .superbee` read
+ * from inside private state creates a bundle there — so resolution, not spelling, decides.
+ */
+function guardedDirHints(text: string, cwd: string, home: string): string[] {
+  const roots = guardedStateRoots(home);
+  const hits: string[] = [];
+  for (const match of text.matchAll(/--dir\s+'?([^\s'"`,]+)/g)) {
+    const token = match[1]!;
+    // Only path-shaped tokens: `--dir <path>` placeholders and prose ("an explicit --dir wins")
+    // are not emitted commands.
+    if (!/^[~./]/.test(token) && !token.includes("/")) continue;
+    const expanded = token.startsWith("~/") ? path.join(home, token.slice(2)) : token;
+    const resolved = path.resolve(cwd, expanded);
+    if (roots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) {
+      hits.push(`${token} -> ${resolved}`);
+    }
+  }
+  return hits;
+}
+
+interface ResolutionRow {
+  readonly label: string;
+  /** Where the run happens. Default: the fixture project (an ordinary, unrelated cwd). */
+  readonly cwd?: (fixture: BoundaryFixture) => string;
+  /** A committed `.superbee.json` directory binding written at the cwd before the run. */
+  readonly binding?: (fixture: BoundaryFixture) => string;
+  readonly argv: readonly string[];
+  /** Default CONFLICT (5); the two session renders report the conflict at exit 0. */
+  readonly expect?: number;
+  readonly skip?: string;
+}
+
+const RESOLUTION_ROWS: readonly ResolutionRow[] = [
+  // ── Route 2: the cwd discovery walk. `findBundleRoot` is THE one place a "no bundle here"
+  // verdict is reached, so it is the one place that verdict is denied to private state. ──
+  { label: "cwd IS a guarded root — list", cwd: (f) => f.stateRoot, argv: ["list", "--json"] },
+  { label: "cwd IS a guarded root — status", cwd: (f) => f.stateRoot, argv: ["status", "--json"] },
+  { label: "cwd IS a guarded root — bundle locate", cwd: (f) => f.stateRoot, argv: ["bundle", "locate", "--json"] },
+  { label: "cwd IS a guarded root — recipes", cwd: (f) => f.stateRoot, argv: ["recipes", "--json"] },
+  { label: "cwd IS a guarded root — catalog add", cwd: (f) => f.stateRoot, argv: ["catalog", "add", "probe", "--json"] },
+  { label: "cwd IS a guarded root — sync", cwd: (f) => f.stateRoot, argv: ["sync", "--json"] },
+  { label: "cwd IS a guarded root — home reports it at exit 0", cwd: (f) => f.stateRoot, argv: ["home", "--json"], expect: 0 },
+  {
+    label: "cwd IS a guarded root — session-start reports it at exit 0",
+    cwd: (f) => f.stateRoot,
+    argv: ["session-start", "--json", "--no-update-check"],
+    expect: 0,
+  },
+  {
+    label: "cwd is INSIDE a guarded root — list",
+    cwd: (f) => path.join(f.stateRoot, "sync"),
+    argv: ["list", "--json"],
+  },
+  {
+    label: "cwd is INSIDE a guarded root — home reports it at exit 0",
+    cwd: (f) => path.join(f.stateRoot, "sync"),
+    argv: ["home", "--json"],
+    expect: 0,
+  },
+
+  // ── Route 3: a committed project binding. It is an exact declared boundary like `--dir`, and an
+  // ABSENT target used to reach the same NOT_FOUND-plus-private-init-hint. ──
+  { label: "a project binding naming a guarded root — list", binding: (f) => f.stateRoot, argv: ["list", "--json"] },
+  {
+    label: "a project binding naming an ABSENT path inside a guarded root — list",
+    binding: (f) => path.join(f.stateRoot, "nope"),
+    argv: ["list", "--json"],
+  },
+  {
+    label: "a project binding naming an ABSENT path inside a guarded root — home reports it at exit 0",
+    binding: (f) => path.join(f.stateRoot, "nope"),
+    argv: ["home", "--json"],
+    expect: 0,
+  },
+];
+
+test("every resolution path that can select a guarded root refuses, and points nowhere inside one", async (t) => {
+  const fixture = await boundaryFixture();
+  try {
+    for (const row of RESOLUTION_ROWS) {
+      await t.test(row.label, row.skip === undefined ? {} : { skip: row.skip }, () => {
+        const cwd = row.binding ? path.join(fixture.root, "bound") : (row.cwd?.(fixture) ?? fixture.project);
+        mkdirSync(cwd, { recursive: true });
+        if (row.binding) {
+          writeFileSync(path.join(cwd, ".superbee.json"), JSON.stringify({ bundle: row.binding(fixture) }));
+        }
+        const result = runCli(row.argv, { cwd, home: fixture.home });
+        assert.notEqual(result.status, 2, `${row.label}: incomplete invocation (USAGE): ${result.stdout}`);
+        assert.equal(result.status, row.expect ?? 5, `${row.label}: ${result.stderr || result.stdout}`);
+        assert.match(result.stdout, BOUNDARY_MESSAGE, row.label);
+        assert.deepEqual(
+          guardedDirHints(result.stdout, cwd, fixture.home),
+          [],
+          `${row.label}: emitted a next command whose --dir lands inside a guarded root`,
+        );
+      });
+    }
+    // Nothing was created inside private state by any refused resolution.
+    assert.equal(existsSync(path.join(fixture.stateRoot, ".superbee")), false);
+    assert.equal(existsSync(path.join(fixture.stateRoot, "nope")), false);
   } finally {
     fixture.cleanup();
   }

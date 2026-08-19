@@ -934,7 +934,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 641
+      "line": 647
     },
     {
       "file": "packages/cli/src/skill-render.ts",
@@ -945,7 +945,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 641
+      "line": 647
     },
     {
       "file": "packages/cli/src/update-orientation.ts",

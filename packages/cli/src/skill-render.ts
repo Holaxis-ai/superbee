@@ -289,7 +289,13 @@ function renderSyncSection(prefix: string): string[] {
     "ending. Local-only work remains complete locally. Three known empty states (all exit 0):",
   );
   lines.push(
-    "outside any git repo or workspace it prints `sync: nothing to sync`; a LOCAL-ONLY board (a",
+    "in an ordinary directory outside any git repo or workspace it prints `sync: nothing to sync`",
+  );
+  lines.push(
+    "(inside Superbee's private user-state root it refuses — that is a conflict, not an empty",
+  );
+  lines.push(
+    "state); a LOCAL-ONLY board (a",
   );
   lines.push(
     "bundle with no shared `board` branch — a supported mode) reports itself as local-only, with",

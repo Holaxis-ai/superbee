@@ -252,9 +252,13 @@ because nothing stored is user-editable configuration and a `-config` name invit
 tooling to sweep it. Private operational state is categorically not a Knowledge Bundle, and the
 invariant is CONTAINMENT rather than identity: one inode-based relation
 (`private-state-bundle-boundary.ts`) classifies every target against every guarded root
-(canonical + `~/.agentstate` + every superseded root, on both builds), and `--dir` resolution,
-init, board-path derivation, the `promote`/`artifact create` source positionals, and the
-`pull`/`doc read`/`sync --show-incoming` `--out` destinations all answer to it. The state root
+(canonical + `~/.agentstate` + every superseded root, on both builds), and EVERY resolution path
+answers to it: `--dir`, the committed project binding, the cwd discovery walk (`findBundleRoot` —
+the one place a "no bundle here" verdict is reached, so the one place it is denied to private
+state), `sync`/`session-start`'s run directories, init, board-path derivation, the
+`promote`/`artifact create` source positionals, and the `pull`/`doc read`/`sync --show-incoming`
+`--out` destinations. A guarded root is reported as the CONFLICT it is — never as absence, and
+never with a next command whose path lands inside it. The state root
 carries a `.gitignore` of `*`, written after its ownership assertion.
 
 The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc

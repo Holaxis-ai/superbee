@@ -274,6 +274,21 @@ export function assertBundleOutsidePrivateState(bundleRoot: string, home: string
 }
 
 /**
+ * Guard for a directory the CLI RUNS FROM or SEARCHES IN — the cwd/`--dir` a command walks for a
+ * bundle, or hands to the board channel — as opposed to a path that BECOMES a bundle root.
+ * `bundle-contains-state` deliberately does NOT refuse: every ancestor of a guarded root, `$HOME`
+ * and `/` included, is a legitimate place to stand. `identical` and `bundle-inside-state` do, and
+ * they refuse with the SAME error the bundle-root guard raises, because the answer a command owes
+ * here is the conflict — never its own "nothing found" verdict, and never a next command derived
+ * from a private coordinate.
+ */
+export function assertSearchDirOutsidePrivateState(dir: string, home: string = homedir()): void {
+  const finding = classifyAgainstPrivateState(path.resolve(dir), home);
+  if (finding.relation !== "identical" && finding.relation !== "bundle-inside-state") return;
+  throw bundleBoundaryError(finding);
+}
+
+/**
  * File-target guard for source positionals and `--out` destinations. `contains` is meaningless for a
  * single file, so only `identical` and `inside` refuse: reading a credential out of private state
  * into a bundle, or writing bundle bytes over the marker, are the reachable harms. `--out` is the

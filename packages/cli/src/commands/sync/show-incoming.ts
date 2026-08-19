@@ -27,7 +27,10 @@ import { ffSwallowToError, syncOutcomeError, type InTreeNoBasisReason } from "..
 import { CliError, asHandled, toExit } from "../../errors.js";
 import { render, renderErrorEnvelope, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
-import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
+import {
+  assertPathOutsidePrivateState,
+  assertSearchDirOutsidePrivateState,
+} from "../../private-state-bundle-boundary.js";
 import { BODY_PREVIEW_LIMIT } from "../doc/common.js";
 // `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches
 // implicitly — the refusal string lives in THE sync-outcome table; this re-export keeps the
@@ -83,6 +86,9 @@ export async function showIncoming(
     // Same location resolution as sync itself (board-interior invocations retarget to the
     // enclosing project); refs/remotes are SHARED across a repo's worktrees, so any directory
     // inside the repo can read the last-fetched origin/board state — no provisioning required.
+    // The viewer's run directory answers to the relation at its own resolution point, exactly as
+    // sync's does: a guarded root is a conflict to report, not a repo that turns out to be absent.
+    assertSearchDirOutsidePrivateState(path.resolve(values.dir ?? process.cwd()));
     const dir = retargetBoardInterior(values.dir ?? process.cwd());
     const top = repoTopLevel(dir);
     if (!top) {

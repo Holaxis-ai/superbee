@@ -67,7 +67,10 @@ import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
-import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
+import {
+  assertBundleOutsidePrivateState,
+  assertSearchDirOutsidePrivateState,
+} from "../../private-state-bundle-boundary.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -101,9 +104,10 @@ but its pointers went stale (e.g. it was moved or remounted at a different path)
 it via \`git worktree repair\` and reports \`repaired: <path>\` the same way — a repair is a git
 mutation too, and both lines appear even on an otherwise-empty run.
 
-Three definitive empty states (exit 0): no git repo — or a repo with neither a board branch nor
-a bundle — prints 'sync: nothing to sync'; a repo whose bundle is known to have no board branch
-anywhere is a LOCAL-ONLY board; a clean shared board prints 'sync: already up to date'. If origin
+Three definitive empty states (exit 0): an ordinary directory with no git repo — or a repo with
+neither a board branch nor a bundle — prints 'sync: nothing to sync' (a run directory inside
+Superbee's private user-state root is a CONFLICT, never an empty state); a repo whose bundle is
+known to have no board branch anywhere is a LOCAL-ONLY board; a clean shared board prints 'sync: already up to date'. If origin
 cannot be checked and no board ref is available, sync reports the shared-board state as unknown
 and recommends retrying when origin is reachable.
 Otherwise the receipt reports { committed, pushed, pulled, actor, incoming } — \`incoming\` is the
@@ -391,6 +395,12 @@ function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
     }
     limit = Number(raw);
   }
+
+  // Sync never resolves a bundle through resolveLocalBundleTarget, so its run directory answers to
+  // the relation HERE — before retargeting, provisioning, or any git probe. Without it a guarded
+  // root exits 0 with `nothing to sync`, reporting absence where the honest answer is the conflict.
+  // Ordered after argv validation so a USAGE error still wins.
+  assertSearchDirOutsidePrivateState(path.resolve(values.dir ?? process.cwd()));
 
   // Standing inside the board worktree retargets to the enclosing project so provisioning's
   // idempotent path resolves the REAL board (see retargetBoardInterior).

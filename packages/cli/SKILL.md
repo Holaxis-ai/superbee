@@ -284,7 +284,9 @@ while leaving code-project files untouched.
 
 On a shared board, run it whenever you close a unit of work — a task finished, a decision recorded, a session
 ending. Local-only work remains complete locally. Three known empty states (all exit 0):
-outside any git repo or workspace it prints `sync: nothing to sync`; a LOCAL-ONLY board (a
+in an ordinary directory outside any git repo or workspace it prints `sync: nothing to sync`
+(inside Superbee's private user-state root it refuses — that is a conflict, not an empty
+state); a LOCAL-ONLY board (a
 bundle with no shared `board` branch — a supported mode) reports itself as local-only, with
 nothing committed, pulled, or pushed, and its note points at `--establish` — but bare `sync`
 NEVER establishes on its own (that would silently publish a bundle nobody asked to share);
