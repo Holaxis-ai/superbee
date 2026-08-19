@@ -390,7 +390,9 @@ test("source drift before completion preserves a resumable copy and a ready root
   }
 });
 
-test("migration rejects symlinked roots, non-regular legacy records, and unexpected staging entries", async () => {
+// The SOURCE side of "symlinked root" lives in `user-state-migration-sources.test.ts`; this name
+// once claimed both and constructed only the canonical case.
+test("migration rejects a symlinked CANONICAL root, non-regular legacy records, and unexpected staging entries", async () => {
   const linked = await home();
   const fifoHome = await home();
   const staged = await home();

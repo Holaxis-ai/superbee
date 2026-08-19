@@ -24,11 +24,14 @@ import { CliError } from "./errors.js";
 import {
   canonicalUserStateDir,
   ensureStateRootGitignore,
+  homeRelativeDisplay,
   inspectCanonicalUserStateRoot,
+  inspectCanonicalUserStateRootDetail,
   LEGACY_BRIDGE_PACKAGE_NAME,
   legacyUserStateDir,
   readPrivateStateFile,
   supersededUserStateDirs,
+  USER_STATE_HARDEN_COMMAND,
   USER_STATE_MARKER_BYTES,
   USER_STATE_MARKER_FILE_NAME,
   USER_STATE_QUARANTINE_COMMAND,
@@ -49,7 +52,13 @@ export type UserStateMigrationInspection =
   | { state: "ready"; reason: string; records: number }
   | { state: "fresh"; reason: string; records: 0 }
   | { state: "migratable"; reason: string; records: number }
-  | { state: "blocked"; reason: string; records: number };
+  /** Recognized as ours, usable, and carrying repairable permission drift. Never quarantined. */
+  | { state: "repairable"; reason: string; records: 0; command: string }
+  /**
+   * Unusable. The command is CAUSE-SPECIFIC: the canonical root and a migration source have
+   * different exit nodes, and neither may be handed the other's.
+   */
+  | { state: "blocked"; reason: string; records: number; command: string };
 
 export interface UserStateMigrationReceipt {
   schema_version: 1;
@@ -187,24 +196,61 @@ export function migrationSourceRoots(home: string): string[] {
   return [...new Set([legacyUserStateDir(home), ...supersededUserStateDirs(home)])];
 }
 
-async function preflightSourceRoot(root: string): Promise<MigrationRecord[]> {
+/**
+ * A source root the product cannot decide about. It names the root in `~`-relative form and
+ * carries its OWN exit node: a source-side block is not cleared by quarantining the canonical
+ * root, and on a fresh machine that root does not even exist.
+ */
+export class UnsafeMigrationSource extends Error {
+  readonly display: string;
+  readonly detail: string;
+  readonly command: string;
+
+  constructor(display: string, detail: string, command: string) {
+    super(`${display} ${detail}`);
+    this.name = "UnsafeMigrationSource";
+    this.display = display;
+    this.detail = detail;
+    this.command = command;
+  }
+}
+
+/**
+ * ENOENT is the only absence. Every other outcome — a symlinked root (an ordinary dotfile
+ * layout), a regular file, an unreadable ancestor — is DETECTED UNCERTAINTY, and uncertainty fails
+ * closed. Returning `[]` here reported a live catalog, credential, and View-approval store as
+ * "nothing to migrate".
+ */
+async function preflightSourceRoot(root: string, display: string): Promise<MigrationRecord[]> {
+  let status;
   try {
-    const status = await lstat(root);
-    if (status.isSymbolicLink() || !status.isDirectory()) return [];
+    status = await lstat(root);
   } catch (error) {
     if (errno(error) === "ENOENT") return [];
-    throw error;
+    throw new UnsafeMigrationSource(display, "cannot be inspected", `ls -ld ${display}`);
   }
-  const records = await preflightDurableRecords(root);
-  if (records.length > 0) await assertPrivateDirectory(root);
-  return records;
+  if (status.isSymbolicLink() || !status.isDirectory()) {
+    throw new UnsafeMigrationSource(display, "exists but is not a real directory", `ls -ld ${display}`);
+  }
+  try {
+    const records = await preflightDurableRecords(root);
+    if (records.length > 0) await assertPrivateDirectory(root);
+    return records;
+  } catch (error) {
+    if (error instanceof UnsafeMigrationSource) throw error;
+    throw new UnsafeMigrationSource(
+      display,
+      "holds operational state that is not safe to migrate automatically",
+      `ls -la ${display}`,
+    );
+  }
 }
 
 async function preflightLegacy(home: string): Promise<MigrationRecord[]> {
   const merged: MigrationRecord[] = [];
   const claimed = new Set<string>();
   for (const root of migrationSourceRoots(home)) {
-    for (const record of await preflightSourceRoot(root)) {
+    for (const record of await preflightSourceRoot(root, homeRelativeDisplay(home, root))) {
       if (claimed.has(record.relative)) continue;
       claimed.add(record.relative);
       merged.push(record);
@@ -213,20 +259,45 @@ async function preflightLegacy(home: string): Promise<MigrationRecord[]> {
   return merged;
 }
 
+/** One projection of a source-side failure, shared by the inspector and the migration leaf. */
+function blockedSource(error: unknown): { reason: string; command: string } {
+  return error instanceof UnsafeMigrationSource
+    ? { reason: `legacy operational state at ${error.display} ${error.detail}`, command: error.command }
+    : { reason: "legacy operational state is not safe to migrate automatically", command: "superbee setup" };
+}
+
 export async function inspectUserStateMigration(home: string = homedir()): Promise<UserStateMigrationInspection> {
   if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
     return { state: "ready", reason: "the separately published Aslite bridge retains its legacy state root", records: 0 };
   }
-  const canonical = await inspectCanonicalUserStateRoot(home);
-  if (canonical === "ready") return { state: "ready", reason: "the canonical Superbee user-state root is ready", records: 0 };
-  if (canonical === "conflict") return { state: "blocked", reason: "the canonical Superbee user-state root is unrecognized", records: 0 };
+  const canonical = await inspectCanonicalUserStateRootDetail(home);
+  if (canonical.state === "ready") {
+    // Recognized and usable. Loose permissions are drift this product repairs on its next write,
+    // so the exit node is the repair — never the quarantine a foreign root gets.
+    return canonical.hardening === "loose"
+      ? {
+          state: "repairable",
+          reason: "the canonical Superbee user-state root is recognized but its permissions are group- or world-accessible",
+          records: 0,
+          command: USER_STATE_HARDEN_COMMAND,
+        }
+      : { state: "ready", reason: "the canonical Superbee user-state root is ready", records: 0 };
+  }
+  if (canonical.state === "conflict") {
+    return {
+      state: "blocked",
+      reason: "the canonical Superbee user-state root is unrecognized",
+      records: 0,
+      command: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup`,
+    };
+  }
   try {
     const records = await preflightLegacy(home);
     return records.length === 0
       ? { state: "fresh", reason: "no legacy operational state requires migration", records: 0 }
       : { state: "migratable", reason: "validated legacy operational state is ready to migrate", records: records.length };
-  } catch {
-    return { state: "blocked", reason: "legacy operational state is not safe to migrate automatically", records: 0 };
+  } catch (error) {
+    return { state: "blocked", records: 0, ...blockedSource(error) };
   }
 }
 
@@ -379,8 +450,9 @@ export async function migrateUserState(
     return receipt("already_current", false, current);
   }
 
-  const records = await preflightLegacy(home).catch(() => {
-    throw new CliError("CONFLICT", "legacy operational state is not safe to migrate automatically", { help: "superbee setup" });
+  const records = await preflightLegacy(home).catch((error: unknown) => {
+    const blocked = blockedSource(error);
+    throw new CliError("CONFLICT", blocked.reason, { help: blocked.command });
   });
   if (records.length === 0 && canonical === "absent") return receipt("nothing_to_migrate", false, []);
   if (canonical === "conflict") {

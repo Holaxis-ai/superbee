@@ -36,7 +36,7 @@ import {
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { staticBuildIdentity } from "./build-identity.js";
 
@@ -69,7 +69,27 @@ export const USER_STATE_DIR_DISPLAY = `~/${SUPERBEE_USER_STATE_PATH_SEGMENTS.joi
  * still starts with `mv`.
  */
 export const USER_STATE_QUARANTINE_COMMAND =
-  `mv ${USER_STATE_DIR_DISPLAY} "$(mktemp -d ${USER_STATE_DIR_DISPLAY}.unrecognized.XXXXXX)"/`;
+  `superbee_quarantine="$(mktemp -d ${USER_STATE_DIR_DISPLAY}.unrecognized.XXXXXX)" `
+  + `&& mv ${USER_STATE_DIR_DISPLAY} "$superbee_quarantine"/ `
+  + `&& echo "preserved: $superbee_quarantine/${SUPERBEE_USER_STATE_PATH_SEGMENTS.join("/")}"`;
+
+/**
+ * The proportionate exit node for a root this product RECOGNIZES but whose filesystem permissions
+ * drifted: tighten them. Never a quarantine — quarantine is for a root carrying no evidence that it
+ * is ours, and a recognized root may hold the only copy of the catalog, credentials, and View
+ * approvals. Recursive because the drift can be on the root, on the marker, or on a record.
+ */
+export const USER_STATE_HARDEN_COMMAND = `chmod -R go-rwx ${USER_STATE_DIR_DISPLAY}`;
+
+/**
+ * `~`-relative spelling of a path under $HOME. Every refusal names a guarded root through this, so
+ * no resolved private path reaches a message, a help string, or a receipt.
+ */
+export function homeRelativeDisplay(home: string, target: string): string {
+  const child = relative(home, target);
+  if (child === "" || child.startsWith("..") || isAbsolute(child)) return target;
+  return `~/${child.split(sep).join("/")}`;
+}
 
 export const LEGACY_USER_STATE_DIR_NAME = ".agentstate";
 export const LEGACY_BRIDGE_PACKAGE_NAME = "@holaxis/aslite";
@@ -160,19 +180,34 @@ export async function readPrivateStateFile(file: string, maxBytes: number, signa
   }
 }
 
-export async function hasExactUserStateMarker(root: string): Promise<boolean> {
+/**
+ * "Carries our ownership marker" and "is hardened" are INDEPENDENT facts, and conflating them is
+ * what let a root with a perfectly valid marker be reported as unrecognized and handed a
+ * quarantine. RECOGNITION is decided by ownership evidence only — a real regular file, our uid,
+ * our exact bytes. Permissions decide HARDENING, which is drift this product repairs.
+ */
+interface UserStateMarkerInspection {
+  readonly recognized: boolean;
+  readonly hardened: boolean;
+}
+
+async function inspectUserStateMarker(root: string): Promise<UserStateMarkerInspection> {
   try {
     const marker = join(root, USER_STATE_MARKER_FILE_NAME);
     const status = await lstat(marker);
     const currentUid = process.getuid?.();
-    return !status.isSymbolicLink()
+    const recognized = !status.isSymbolicLink()
       && status.isFile()
-      && (status.mode & 0o077) === 0
       && (currentUid === undefined || status.uid === currentUid)
       && await readPrivateStateFile(marker, MARKER_MAX_BYTES) === USER_STATE_MARKER_BYTES;
+    return { recognized, hardened: recognized && (status.mode & 0o077) === 0 };
   } catch {
-    return false;
+    return { recognized: false, hardened: false };
   }
+}
+
+export async function hasExactUserStateMarker(root: string): Promise<boolean> {
+  return (await inspectUserStateMarker(root)).recognized;
 }
 
 /** Atomic 0600 write inside a caller-validated private directory. */
@@ -286,10 +321,14 @@ async function initializeCanonicalRoot(root: string): Promise<void> {
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
     }
   }
-  if (!(await hasExactUserStateMarker(root))) {
+  const marker = await inspectUserStateMarker(root);
+  if (!marker.recognized) {
     throw new Error("canonical Superbee user-state root is not owned by this product");
   }
+  // Ownership is proven, so drifted permissions are repaired rather than refused — the directory
+  // first, so the marker is re-tightened inside an already-private root.
   await chmod(root, DIR_MODE);
+  if (!marker.hardened) await chmod(join(root, USER_STATE_MARKER_FILE_NAME), FILE_MODE);
   await ensureStateRootGitignore(root);
 }
 
@@ -391,6 +430,9 @@ export function ensureUserStateRootSync(home: string = homedir()): string {
     throw new Error("canonical Superbee user-state root is not owned by this product");
   }
   chmodSync(root, DIR_MODE);
+  if ((lstatSync(join(root, USER_STATE_MARKER_FILE_NAME)).mode & 0o077) !== 0) {
+    chmodSync(join(root, USER_STATE_MARKER_FILE_NAME), FILE_MODE);
+  }
   ensureStateRootGitignoreSync(root);
   return root;
 }
@@ -407,18 +449,43 @@ export async function writeUserStateFileAtomic0600(
   await writeFileAtomic0600(dir, fileName, content, options);
 }
 
-/** Marker read used by setup inspection; it does not create or repair anything. */
-export async function inspectCanonicalUserStateRoot(home: string = homedir()): Promise<"absent" | "ready" | "conflict"> {
+export type UserStateRootState = "absent" | "ready" | "conflict";
+
+export interface UserStateRootInspection {
+  readonly state: UserStateRootState;
+  /**
+   * `loose` = recognized as ours, with group- or world-accessible permissions on the root or its
+   * marker. That is repairable drift, not a foreign root: an ordinary write tightens it, so the
+   * inspector must agree that the root is usable rather than prescribing a quarantine.
+   */
+  readonly hardening: "hardened" | "loose";
+}
+
+/**
+ * Marker read used by setup inspection; it does not create or repair anything. It reports the two
+ * independent facts separately so no caller has to re-derive one from the other.
+ */
+export async function inspectCanonicalUserStateRootDetail(
+  home: string = homedir(),
+): Promise<UserStateRootInspection> {
   const root = canonicalUserStateDir(home);
+  let looseRoot = false;
   try {
     await assertRealDirectory(root);
     const status = await lstat(root);
     const currentUid = process.getuid?.();
-    if ((status.mode & 0o077) !== 0 || (currentUid !== undefined && status.uid !== currentUid)) return "conflict";
+    if (currentUid !== undefined && status.uid !== currentUid) return { state: "conflict", hardening: "hardened" };
+    looseRoot = (status.mode & 0o077) !== 0;
   } catch (error) {
-    return errno(error) === "ENOENT" ? "absent" : "conflict";
+    return { state: errno(error) === "ENOENT" ? "absent" : "conflict", hardening: "hardened" };
   }
-  return await hasExactUserStateMarker(root) ? "ready" : "conflict";
+  const marker = await inspectUserStateMarker(root);
+  if (!marker.recognized) return { state: "conflict", hardening: "hardened" };
+  return { state: "ready", hardening: looseRoot || !marker.hardened ? "loose" : "hardened" };
+}
+
+export async function inspectCanonicalUserStateRoot(home: string = homedir()): Promise<UserStateRootState> {
+  return (await inspectCanonicalUserStateRootDetail(home)).state;
 }
 
 function missingStateError(file: string): NodeJS.ErrnoException {
@@ -492,14 +559,14 @@ export async function readUserStateFile(
   return readPrivateStateFile(file, maxBytes, signal);
 }
 
-export function inspectUserStateRootSync(home: string = homedir()): "absent" | "ready" | "conflict" {
+export function inspectUserStateRootSync(home: string = homedir()): UserStateRootState {
   const packageName = staticBuildIdentity().package.name;
   const root = userStateDirForPackage(home, packageName);
   try {
     ensureRealDirectorySync(root);
     const rootStatus = lstatSync(root);
     const currentUid = process.getuid?.();
-    if ((rootStatus.mode & 0o077) !== 0 || (currentUid !== undefined && rootStatus.uid !== currentUid)) return "conflict";
+    if (currentUid !== undefined && rootStatus.uid !== currentUid) return "conflict";
   } catch (error) {
     return errno(error) === "ENOENT" ? "absent" : "conflict";
   }
@@ -516,7 +583,6 @@ export function inspectUserStateRootSync(home: string = homedir()): "absent" | "
       status.isSymbolicLink()
       || !status.isFile()
       || status.size > MARKER_MAX_BYTES
-      || (status.mode & 0o077) !== 0
       || (currentUid !== undefined && status.uid !== currentUid)
     ) return "conflict";
     return readFileSync(descriptor, "utf8") === USER_STATE_MARKER_BYTES ? "ready" : "conflict";

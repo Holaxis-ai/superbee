@@ -8,7 +8,18 @@
 // Adding a refusal: one row `[trigger, help, remedy]`. The remedy is extracted from the emitted
 // output — never retyped — so a row cannot drift from what the CLI actually prints.
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -46,11 +57,55 @@ interface RecoverabilityRow {
    * has to run.
    */
   readonly effect: "changes-state" | "guidance-only";
-  /** Re-inspect AFTER the remedy ran. This is what makes the third column a measurement. */
-  readonly verify: (fixture: Fixture) => void;
+  /** Re-inspect AFTER the remedy ran, with what the remedy PRINTED. This is what makes the third
+   * column a measurement. */
+  readonly verify: (fixture: Fixture, executed: { readonly stdout: string }) => void;
   /** Shape the fixture this row needs before the trigger runs. */
   readonly arrange?: (fixture: Fixture) => void;
+  /** Interrogate the refusal BEFORE its remedy runs — proportionality is a claim about the emitted
+   * command, so it has to be checked where the command is emitted. */
+  readonly inspectRefusal?: (output: string, fixture: Fixture) => void;
   readonly skip?: string;
+}
+
+/** The durable records a canonical root can be the ONLY copy of (specification R7). */
+const CREDENTIAL_BYTES = '{"remotes":{"x":{"api_key":"secret"}}}\n';
+const CATALOG_BYTES = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
+const AUTHORIZATION_BYTES = JSON.stringify({
+  bundle: "/bundles/planning",
+  subject: {
+    registryId: "views-registry/roadmap",
+    contentVersion: "sha256:exact-html",
+    contentType: "text/html; charset=utf-8",
+    capability: "bundle-read",
+    execution: "active",
+    policyVersion: "active-view-v1",
+  },
+});
+const AUTHORIZATION_NAME = `${createHash("sha256").update(AUTHORIZATION_BYTES).digest("hex")}.json`;
+
+/** Everything a recognized root may hold, so a remedy that loses any of it is a failing row. */
+function withDurableRecords(f: Fixture): void {
+  assert.equal(readFileSync(f.credential, "utf8"), CREDENTIAL_BYTES, "the fixture's credential bytes");
+  writeFileSync(path.join(f.stateRoot, "catalog.json"), CATALOG_BYTES, { mode: 0o600 });
+  mkdirSync(path.join(f.stateRoot, "view-authorizations"), { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(f.stateRoot, "view-authorizations", AUTHORIZATION_NAME), AUTHORIZATION_BYTES, { mode: 0o600 });
+}
+
+function assertDurableRecordsIntact(f: Fixture): void {
+  assert.equal(readFileSync(f.credential, "utf8"), CREDENTIAL_BYTES, "the credential must survive the remedy");
+  assert.equal(readFileSync(path.join(f.stateRoot, "catalog.json"), "utf8"), CATALOG_BYTES, "the catalog must survive");
+  assert.equal(
+    readFileSync(path.join(f.stateRoot, "view-authorizations", AUTHORIZATION_NAME), "utf8"),
+    AUTHORIZATION_BYTES,
+    "the View approval must survive",
+  );
+}
+
+function stateRow(output: string): { readonly state: string; readonly reason: string; readonly command?: string } {
+  const row = (JSON.parse(output) as SetupEnvelope).setup.capabilities.find((entry) => entry.id === "state");
+  assert.ok(row, "setup must report a private-state row");
+  return row;
 }
 
 interface Fixture extends BoundaryFixture {
@@ -126,10 +181,10 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     // `setup` is a read-only conductor: it REPORTS the block and prescribes the exit node.
     expectStatus: 0,
     // The emitted command travels inside a JSON string, so its quotes arrive backslash-escaped.
-    help: /mv ~\/\.superbee-state \\"\$\(mktemp -d ~\/\.superbee-state\.unrecognized\.XXXXXX\)\\"\/ && superbee setup/,
+    help: /mv ~\/\.superbee-state \\"\$superbee_quarantine\\"\/ && echo \\"preserved: \$superbee_quarantine\/\.superbee-state\\"/,
     remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
     effect: "changes-state",
-    verify: (f) => {
+    verify: (f, executed) => {
       assert.equal(existsSync(f.stateRoot), false, "the blocked root must be moved aside");
       const quarantined = readdirSync(f.home).filter((entry) => entry.startsWith(".superbee-state.unrecognized."));
       assert.equal(quarantined.length, 1, "exactly one collision-safe quarantine directory");
@@ -137,6 +192,11 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
         readFileSync(path.join(f.home, quarantined[0]!, ".superbee-state", "foreign.json"), "utf8"),
         "foreign evidence\n",
         "quarantine is a RENAME: the evidence survives inspection",
+      );
+      assert.match(
+        executed.stdout,
+        new RegExp(`preserved: .*${quarantined[0]!}/\\.superbee-state`),
+        "the emitted command PRINTS where it preserved the root — otherwise the path to recovery is lost",
       );
       const rerun = runCli(["setup", "migrate-state", "--json"], { cwd: f.project, home: f.home });
       assert.equal(rerun.status, 0, "the rerun the remedy points at must now succeed");
@@ -159,34 +219,113 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
       + "hostless conductor carries the state row (then `effect` becomes measurable).",
   },
   {
+    // The 0755 DIRECTORY mode with a valid 0600 marker: a root this product recognizes and repairs
+    // on its next write. Its exit node must therefore be the repair, not the foreign-root remedy.
     label: "R6 — remedy proportionality for a root the product itself repairs",
+    arrange: (f) => {
+      withDurableRecords(f);
+      chmodSync(f.stateRoot, 0o755);
+    },
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
+    // `setup` is a read-only conductor: it REPORTS the drift and prescribes the exit node.
     expectStatus: 0,
-    help: /state.*needs_action/,
-    remedy: () => ({ command: "superbee setup --host codex --json" }),
-    effect: "guidance-only",
-    verify: () => {},
-    skip: "VIOLATED (specification R6 / P4, unfixed here): a 0755 root with a VALID 0600 marker is offered "
-      + "the same quarantine `mv` as a foreign root, while an ordinary write repairs it silently. Delete "
-      + "this skip when the remedy names the repair instead of a quarantine.",
+    help: /"command":"chmod -R go-rwx ~\/\.superbee-state"/,
+    inspectRefusal: (output) => {
+      const row = stateRow(output);
+      assert.equal(row.state, "needs_action", "a recognized, repairable root is not blocked");
+      assert.doesNotMatch(row.reason, /unrecognized/, "and it is never described as unrecognized");
+      assert.doesNotMatch(row.command ?? "", /\bmv\b/, "proportionality: no quarantine for a root we repair");
+    },
+    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    effect: "changes-state",
+    verify: (f) => {
+      assert.equal(statSync(f.stateRoot).mode & 0o777, 0o700, "the emitted repair must actually tighten the root");
+      assert.equal(statSync(path.join(f.stateRoot, "state.json")).mode & 0o777, 0o600, "and its marker");
+      assertDurableRecordsIntact(f);
+      const rerun = runCli(["setup", "--host", "codex", "--json"], { cwd: f.project, home: f.home });
+      assert.equal(rerun.status, 0, rerun.stderr || rerun.stdout);
+      assert.equal(stateRow(rerun.stdout).state, "ready", "the repair must clear the finding it was emitted for");
+    },
   },
   {
+    // The 0644 MARKER mode: the class specification R7 names as reachable data loss, because this
+    // root holds the ONLY copy of the catalog, credentials, and View approvals and nothing
+    // re-imports a quarantined canonical root.
     label: "R7 — quarantine must not be the remedy for a root holding the only copy",
+    arrange: (f) => {
+      withDurableRecords(f);
+      chmodSync(path.join(f.stateRoot, "state.json"), 0o644);
+    },
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
     expectStatus: 0,
-    help: /state/,
-    remedy: () => ({ command: "superbee setup --host codex --json" }),
+    help: /"command":"chmod -R go-rwx ~\/\.superbee-state"/,
+    inspectRefusal: (output) => {
+      const row = stateRow(output);
+      assert.equal(row.state, "needs_action");
+      assert.doesNotMatch(row.command ?? "", /\bmv\b/, "a quarantine here would destroy the only copy");
+      assert.doesNotMatch(row.command ?? "", /\brm\b/);
+    },
+    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    effect: "changes-state",
+    verify: (f) => {
+      assertDurableRecordsIntact(f);
+      assert.equal(statSync(path.join(f.stateRoot, "state.json")).mode & 0o777, 0o600, "the marker mode is repaired");
+      const listed = runCli(["catalog", "list", "--json"], { cwd: f.project, home: f.home });
+      assert.equal(listed.status, 0, "and the records stay reachable THROUGH the product");
+    },
+  },
+  {
+    // The migration SOURCE side of the same property: `~/.agentstate -> ~/dotfiles/agentstate` is
+    // an ordinary dotfile layout, and reporting it as absent abandoned everything it held.
+    label: "R8 — a migration source that exists but is not a real directory",
+    arrange: (f) => {
+      rmSync(f.stateRoot, { recursive: true, force: true });
+      const real = path.join(f.home, "dotfiles", "agentstate");
+      mkdirSync(real, { recursive: true, mode: 0o700 });
+      chmodSync(real, 0o700);
+      for (const [name, bytes] of [["catalog.json", CATALOG_BYTES], ["okf-config.json", CREDENTIAL_BYTES]] as const) {
+        writeFileSync(path.join(real, name), bytes, { mode: 0o600 });
+        chmodSync(path.join(real, name), 0o600);
+      }
+      symlinkSync(real, path.join(f.home, ".agentstate"), "dir");
+    },
+    trigger: () => ({
+      argv: ["setup", "migrate-state", "--json"],
+      commandLine: "superbee setup migrate-state --json",
+    }),
+    expectStatus: 5,
+    help: /help: ls -ld ~\/\.agentstate/,
+    inspectRefusal: (output) => {
+      assert.match(output, /legacy operational state at ~\/\.agentstate exists but is not a real directory/);
+      assert.doesNotMatch(output, /nothing_to_migrate/, "detected uncertainty must never read as absence");
+    },
+    remedy: (output) => {
+      const start = output.indexOf("help: ") + "help: ".length;
+      const end = output.indexOf("\n", start);
+      return { command: output.slice(start, end === -1 ? undefined : end).trim() };
+    },
+    // The exit node here is an inspection: what to do with a symlinked dotfile root is the
+    // operator's decision, and no rearrangement of their $HOME may be prescribed for them.
     effect: "guidance-only",
-    verify: () => {},
-    skip: "VIOLATED (specification R7, unfixed here): for the loose-marker-mode class (P6) the canonical root "
-      + "holds the ONLY copy of the catalog, credentials, and View approvals, and migration's source list "
-      + "never re-imports a quarantined canonical root — so executing the emitted remedy is DATA LOSS. "
-      + "This row is deliberately not executed until the remedy stops being lossy.",
+    verify: (f) => {
+      const real = path.join(f.home, "dotfiles", "agentstate");
+      assert.equal(readFileSync(path.join(real, "okf-config.json"), "utf8"), CREDENTIAL_BYTES, "sources are preserved");
+      assert.equal(readFileSync(path.join(real, "catalog.json"), "utf8"), CATALOG_BYTES);
+      assert.equal(existsSync(f.stateRoot), false, "a blocked source never claims the canonical root");
+      const conducted = runCli(["setup", "--host", "codex", "--json"], { cwd: f.project, home: f.home });
+      const row = stateRow(conducted.stdout);
+      assert.equal(row.state, "blocked", "the conductor agrees with the leaf");
+      assert.match(row.reason, /~\/\.agentstate/, "and the reason names the root that is blocking");
+      assert.doesNotMatch(row.command ?? "", /\.superbee-state/, "never the other root's exit node");
+    },
   },
 ];
 
 interface SetupEnvelope {
-  readonly setup: { readonly next: { readonly command: string } };
+  readonly setup: {
+    readonly next: { readonly command: string };
+    readonly capabilities: readonly { readonly id: string; readonly state: string; readonly reason: string; readonly command?: string }[];
+  };
 }
 
 /**
@@ -198,11 +337,13 @@ function snapshot(directory: string, rows: string[] = [], prefix = ""): string[]
     if (entry.name === ".git") continue;
     const absolute = path.join(directory, entry.name);
     const relative = `${prefix}${entry.name}`;
+    const status = statSync(absolute, { throwIfNoEntry: false });
+    const mode = status === undefined ? "?" : (status.mode & 0o777).toString(8);
     if (entry.isDirectory()) {
-      rows.push(`dir ${relative}`);
+      rows.push(`dir ${relative} ${mode}`);
       snapshot(absolute, rows, `${relative}/`);
     } else {
-      rows.push(`${entry.isSymbolicLink() ? "link" : "file"} ${relative} ${statSync(absolute, { throwIfNoEntry: false })?.size ?? "?"}`);
+      rows.push(`${entry.isSymbolicLink() ? "link" : "file"} ${relative} ${status?.size ?? "?"} ${mode}`);
     }
   }
   return rows;
@@ -232,6 +373,7 @@ test("recoverability: every refusal names an exit node, and the exit node is EXE
         const refusal = runCli(argv, { cwd: f.project, home: f.home, env: triggerEnv(f) });
         assert.equal(refusal.status, row.expectStatus, `${row.label}: ${refusal.stderr || refusal.stdout}`);
         assert.match(refusal.stdout, row.help, `${row.label}: the emitted exit node`);
+        row.inspectRefusal?.(refusal.stdout, f);
 
         const remedy = row.remedy(refusal.stdout, f);
         assert.notEqual(
@@ -248,7 +390,7 @@ test("recoverability: every refusal names an exit node, and the exit node is EXE
         } else {
           assert.equal(after, before, `${row.label}: a guidance-only exit node must not mutate the workspace`);
         }
-        row.verify(f);
+        row.verify(f, executed);
       } finally {
         f.cleanup();
       }
@@ -261,7 +403,7 @@ test("recoverability: every row in the table is accounted for", () => {
   assert.equal(labels.length, new Set(labels).size, "duplicate rows");
   assert.deepEqual(
     labels.map((label) => label.slice(0, 2)),
-    ["R1", "R2", "R3", "R4", "R5", "R6", "R7"],
+    ["R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8"],
     "the table covers the specification's section 8 in order; a new refusal appends a row",
   );
 });

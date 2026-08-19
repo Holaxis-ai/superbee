@@ -55,7 +55,12 @@ test("legacy operational state is one explicit setup action before host integrat
 
 test("uncertain canonical user state blocks setup with a real exit node, not a self-pointing rerun", () => {
   const plan = buildSetupPlan(input({
-    state: { state: "blocked", reason: "the canonical Superbee user-state root is unrecognized", records: 0 },
+    state: {
+      state: "blocked",
+      reason: "the canonical Superbee user-state root is unrecognized",
+      records: 0,
+      command: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup`,
+    },
   }));
   assert.deepEqual(plan.next, {
     action: "inspect",
@@ -63,10 +68,46 @@ test("uncertain canonical user state blocks setup with a real exit node, not a s
     reason: "the canonical Superbee user-state root is unrecognized",
   });
   // The whole point: rerunning the command that reported the block cannot clear it, so the emitted
-  // command must CHANGE something first — by rename, never by delete.
+  // command must CHANGE something first — by rename, never by delete — and must say WHERE it put
+  // the root, or the preserved bytes are unreachable.
   assert.notEqual(plan.next?.command, "superbee setup");
-  assert.match(plan.next?.command ?? "", /^mv /);
+  assert.match(plan.next?.command ?? "", /\bmv ~\/\.superbee-state\b/);
+  assert.match(plan.next?.command ?? "", /echo "preserved: /);
   assert.doesNotMatch(plan.next?.command ?? "", /\brm\b/);
+});
+
+test("a blocked state row carries its OWN exit node, never the other root's", () => {
+  const source = buildSetupPlan(input({
+    state: {
+      state: "blocked",
+      reason: "legacy operational state at ~/.agentstate exists but is not a real directory",
+      records: 0,
+      command: "ls -ld ~/.agentstate",
+    },
+  }));
+  assert.deepEqual(source.next, {
+    action: "inspect",
+    command: "ls -ld ~/.agentstate",
+    reason: "legacy operational state at ~/.agentstate exists but is not a real directory",
+  });
+  assert.doesNotMatch(source.next?.command ?? "", /superbee-state/);
+});
+
+test("a RECOGNIZED root with drifted permissions is repaired, never quarantined", () => {
+  const plan = buildSetupPlan(input({
+    state: {
+      state: "repairable",
+      reason: "the canonical Superbee user-state root is recognized but its permissions are group- or world-accessible",
+      records: 0,
+      command: "chmod -R go-rwx ~/.superbee-state",
+    },
+  }));
+  const row = plan.capabilities.find((capability) => capability.id === "state");
+  assert.equal(row?.state, "needs_action", "a repairable root is not blocked");
+  assert.equal(plan.next?.action, "run");
+  assert.equal(plan.next?.command, "chmod -R go-rwx ~/.superbee-state");
+  assert.doesNotMatch(plan.next?.command ?? "", /\bmv\b|\brm\b/, "the remedy for a root we own destroys nothing");
+  assert.equal(plan.ready, false, "and it is still reported, not hidden");
 });
 
 test("setup plan emits exactly one deterministic next command in dependency order", () => {

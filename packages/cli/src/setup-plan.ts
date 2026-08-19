@@ -7,7 +7,6 @@ import type { InstallScope } from "./install-scope.js";
 import type { HookCompatibility } from "./hook-compatibility.js";
 import type { SkillCompatibilityState, SkillState } from "./skill-compatibility.js";
 import type { UserStateMigrationInspection } from "./user-state-migration.js";
-import { USER_STATE_QUARANTINE_COMMAND } from "./user-state.js";
 
 export type SetupRequirement = "required" | "recommended" | "not_applicable";
 export type SetupCapabilityState = "ready" | "needs_action" | "blocked" | "not_applicable";
@@ -79,14 +78,25 @@ function stateCapability(input: SetupPlanInput): SetupCapability {
       command: "superbee setup migrate-state",
     };
   }
-  // A blocked state root cannot be un-blocked by rerunning the command that reported it. The exit
-  // node quarantines the unrecognized root by RENAME — never a delete — and then re-inspects.
+  // A root this product RECOGNIZES is repaired, never quarantined: it may hold the only copy of
+  // the catalog, credentials, and View approvals, and nothing re-imports a quarantined root.
+  if (input.state.state === "repairable") {
+    return {
+      id: "state",
+      requirement: "required",
+      state: "needs_action",
+      reason: input.state.reason,
+      command: input.state.command,
+    };
+  }
+  // A blocked state root cannot be un-blocked by rerunning the command that reported it, and the
+  // exit node depends on WHICH root is blocked, so the inspection supplies it.
   return {
     id: "state",
     requirement: "required",
     state: "blocked",
     reason: input.state.reason,
-    command: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup`,
+    command: input.state.command,
   };
 }
 

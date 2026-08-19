@@ -13,6 +13,7 @@ import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import {
   canonicalUserStateDir,
+  homeRelativeDisplay,
   legacyUserStateDir,
   supersededUserStateDirs,
 } from "./user-state.js";
@@ -219,21 +220,13 @@ export function guardedStateRoots(home: string = homedir()): string[] {
   ];
 }
 
-/** `~`-relative spelling of a guarded root, so diagnostics never carry the resolved private path. */
-function displayRoot(home: string, root: string): string {
-  const relative = path.relative(home, root);
-  return relative && !relative.startsWith("..") && !path.isAbsolute(relative)
-    ? `~/${relative.split(path.sep).join("/")}`
-    : root;
-}
-
 /** Classify a target against every guarded root, returning the first collision in root order. */
 function classifyAgainstPrivateState(candidate: string, home: string = homedir()): PrivateStateFinding {
   for (const root of guardedStateRoots(home)) {
     const relation = relateToPrivateState(candidate, root);
-    if (relation !== "unrelated") return { relation, root: displayRoot(home, root) };
+    if (relation !== "unrelated") return { relation, root: homeRelativeDisplay(home, root) };
   }
-  return { relation: "unrelated", root: displayRoot(home, canonicalUserStateDir(home)) };
+  return { relation: "unrelated", root: homeRelativeDisplay(home, canonicalUserStateDir(home)) };
 }
 
 function bundleBoundaryError(finding: PrivateStateFinding): CliError {

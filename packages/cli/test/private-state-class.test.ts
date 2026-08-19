@@ -17,7 +17,7 @@ import test from "node:test";
 import {
   canonicalUserStateDir,
   ensureUserStateRoot,
-  inspectCanonicalUserStateRoot,
+  inspectCanonicalUserStateRootDetail,
   inspectUserStateRootSync,
   readUserStateFile,
   USER_STATE_MARKER_BYTES,
@@ -31,6 +31,12 @@ const RECORD_BYTES = '{"version":1,"entries":[]}\n';
 const MAX_RECORD_BYTES = 64 * 1024;
 
 type Inspection = "absent" | "ready" | "conflict";
+/**
+ * The SECOND, independent fact about a root (specification C4): does it carry group- or
+ * world-accessible permissions? `n/a` where the root is not recognized as ours, because hardening
+ * is only a question about a root this product owns.
+ */
+type Hardening = "hardened" | "loose" | "n/a";
 /** `ok` = succeeded, `absent` = ENOENT (degrade), `denied` = refused (fail closed). */
 type Access = "ok" | "absent" | "denied";
 
@@ -43,6 +49,8 @@ interface StateClassRow {
   /** Is the guarded root an existing DIRECTORY? (drives the section-6 equivalences) */
   readonly directory: boolean;
   readonly inspect: Inspection;
+  /** Carrying our marker and being hardened are INDEPENDENT: this is the second cell. */
+  readonly hardening: Hardening;
   /** The synchronous inspector's verdict — the specification's A3, previously UNKNOWN. */
   readonly inspectSync: Inspection;
   /** Read of an EXISTING record. Omitted when the class cannot hold one. */
@@ -70,6 +78,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: false,
     directory: false,
     inspect: "absent",
+    hardening: "n/a",
     inspectSync: "absent",
     readAbsent: "absent",
     write: "ok",
@@ -83,6 +92,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: true,
     inspect: "ready",
+    hardening: "hardened",
     inspectSync: "ready",
     readExisting: "ok",
     readAbsent: "absent",
@@ -98,6 +108,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: true,
     inspect: "conflict",
+    hardening: "n/a",
     inspectSync: "conflict",
     readExisting: "denied",
     readAbsent: "absent",
@@ -114,6 +125,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: true,
     inspect: "conflict",
+    hardening: "n/a",
     inspectSync: "conflict",
     readExisting: "denied",
     readAbsent: "absent",
@@ -131,6 +143,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: false,
     inspect: "conflict",
+    hardening: "n/a",
     inspectSync: "conflict",
     readExisting: "denied",
     readAbsent: "absent",
@@ -146,6 +159,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: false,
     directory: false,
     inspect: "conflict",
+    hardening: "n/a",
     inspectSync: "conflict",
     readAbsent: "denied",
     write: "denied",
@@ -163,6 +177,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: true,
     inspect: "conflict",
+    hardening: "n/a",
     inspectSync: "conflict",
     readExisting: "denied",
     readAbsent: "absent",
@@ -179,14 +194,11 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     directory: true,
     // The REQUIRED cells: this root is ours and repairable, so the three authorities must agree.
     inspect: "ready",
+    hardening: "loose",
     inspectSync: "ready",
     readExisting: "ok",
     readAbsent: "absent",
     write: "ok",
-    skip: "VIOLATED (specification P4 / A1 / A6 / R6, unfixed here): inspect reports `conflict` and setup "
-      + "prescribes a quarantine `mv`, a read of an existing record fails, and a WRITE succeeds and "
-      + "silently tightens the mode to 0700 — three authorities, three verdicts, one directory. Delete "
-      + "this skip when they agree.",
   },
   {
     label: "valid marker with a LOOSE marker mode (0644)",
@@ -200,14 +212,32 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     // The REQUIRED cells: either repair the marker mode (as the directory mode is repaired) or
     // refuse with a remedy that names the actual fix.
     inspect: "ready",
+    hardening: "loose",
     inspectSync: "ready",
     readExisting: "ok",
     readAbsent: "absent",
     write: "ok",
-    skip: "VIOLATED (specification P6 / R7, unfixed here): every write fails forever, the marker mode is "
-      + "never repaired, and the only offered remedy is a quarantine that would destroy the only copy of "
-      + "the catalog, credentials, and View approvals. Delete this skip when the class is repaired or "
-      + "given an accurate remedy.",
+  },
+  {
+    // The WIDEST drift the repair covers, recorded because it is the cost of the convergence:
+    // read and inspect follow the write path, and the write path chmods any recognized root back
+    // to 0700. Group- or world-WRITABLE therefore reads as repairable drift rather than a
+    // refusal. Narrowing this cell to `denied` is a separate decision about the write path (an
+    // ensure that refuses instead of repairing), not a change to this table alone.
+    label: "recognized root opened to group and world (0777)",
+    build: async (home) => {
+      await ensureUserStateRoot(home);
+      await withRecord(canonicalUserStateDir(home));
+      await chmod(canonicalUserStateDir(home), 0o777);
+    },
+    record: true,
+    directory: true,
+    inspect: "ready",
+    hardening: "loose",
+    inspectSync: "ready",
+    readExisting: "ok",
+    readAbsent: "absent",
+    write: "ok",
   },
   {
     label: "every GUARDED root carries an ownership marker",
@@ -215,6 +245,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: false,
     directory: true,
     inspect: "ready",
+    hardening: "hardened",
     inspectSync: "ready",
     readAbsent: "absent",
     write: "ok",
@@ -229,6 +260,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: true,
     inspect: "conflict",
+    hardening: "n/a",
     inspectSync: "conflict",
     readExisting: "denied",
     readAbsent: "absent",
@@ -242,6 +274,7 @@ const STATE_CLASSES: readonly StateClassRow[] = [
     record: true,
     directory: true,
     inspect: "ready",
+    hardening: "hardened",
     inspectSync: "ready",
     readExisting: "ok",
     readAbsent: "absent",
@@ -268,10 +301,18 @@ async function access(operation: () => Promise<unknown>): Promise<Access> {
 interface Observation {
   readonly row: StateClassRow;
   readonly inspect: Inspection;
+  readonly hardening: Hardening;
   readonly inspectSync: Inspection;
   readonly readExisting?: Access;
   readonly readAbsent: Access;
   readonly write: Access;
+  /** Hardening AFTER the write, so "a write repairs drift" is measured rather than asserted. */
+  readonly hardeningAfterWrite: Hardening;
+}
+
+async function inspectDetail(home: string): Promise<{ inspect: Inspection; hardening: Hardening }> {
+  const detail = await inspectCanonicalUserStateRootDetail(home);
+  return { inspect: detail.state, hardening: detail.state === "ready" ? detail.hardening : "n/a" };
 }
 
 async function observe(row: StateClassRow): Promise<Observation> {
@@ -279,14 +320,23 @@ async function observe(row: StateClassRow): Promise<Observation> {
   try {
     await row.build(home);
     const root = canonicalUserStateDir(home);
-    const inspect = await inspectCanonicalUserStateRoot(home);
+    const { inspect, hardening } = await inspectDetail(home);
     const inspectSync = inspectUserStateRootSync(home);
     const readExisting = row.record
       ? await access(() => readUserStateFile(home, join(root, RECORD_FILE_NAME), MAX_RECORD_BYTES))
       : undefined;
     const readAbsent = await access(() => readUserStateFile(home, join(root, "absent.json"), MAX_RECORD_BYTES));
     const write = await access(() => writeUserStateFileAtomic0600(home, root, "probe.json", "{}\n"));
-    return { row, inspect, inspectSync, readExisting, readAbsent, write };
+    return {
+      row,
+      inspect,
+      hardening,
+      inspectSync,
+      readExisting,
+      readAbsent,
+      write,
+      hardeningAfterWrite: (await inspectDetail(home)).hardening,
+    };
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -300,6 +350,7 @@ test("state classes: inspect / read-existing / read-absent / write, one row per 
       const seen = await observe(row);
       observations.push(seen);
       assert.equal(seen.inspect, row.inspect, `${row.label}: inspect`);
+      assert.equal(seen.hardening, row.hardening, `${row.label}: hardening`);
       assert.equal(seen.inspectSync, row.inspectSync, `${row.label}: inspect (sync)`);
       assert.equal(seen.readExisting, row.readExisting, `${row.label}: read of an EXISTING record`);
       assert.equal(seen.readAbsent, row.readAbsent, `${row.label}: read of an ABSENT record`);
@@ -340,6 +391,20 @@ test("A3 — the async and the synchronous inspector return the same verdict for
   for (const seen of observations) {
     assert.equal(seen.inspectSync, seen.inspect, seen.row.label);
   }
+});
+
+test("a WRITE hardens every root it adopts, so `loose` is drift rather than a standing state", () => {
+  for (const seen of observations.filter((candidate) => candidate.write === "ok")) {
+    assert.equal(
+      seen.hardeningAfterWrite,
+      "hardened",
+      `${seen.row.label}: a write succeeded but left the root ${seen.hardeningAfterWrite}`,
+    );
+  }
+  assert.ok(
+    observations.some((candidate) => candidate.hardening === "loose"),
+    "the table would be vacuous without a drifted class",
+  );
 });
 
 test("A6 — no write repairs what an inspect calls unrecoverable", () => {
