@@ -44,9 +44,11 @@ import {
   readKindField,
   progressStatusCoordinate,
   projectKindForAuthoring,
+  parseTimestamp,
   type KindRegistry,
   type QueryFilter,
 } from "@superbee/core";
+import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -83,7 +85,7 @@ Options:
                        bundle where NO kind declares a terminal set, --open filters nothing (a help
                        line says so, so the flag is never silently meaningless). Composes with
                        --type/--field/--prefix.
-  --limit <n>          Cap the number of rows returned (default: 100; 0 = unlimited). A truncated
+  --limit <n>          Cap the newest-first rows returned (default: 100; 0 = unlimited). A truncated
                        result reports \`shown\` alongside the total \`count\`.
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
@@ -94,6 +96,8 @@ Options:
 A --type-scoped query of a kind-governed type projects that kind's declared fields as columns
 ({id, title, ...fields}) instead of the minimal schema; --fields overrides. An unscoped query, or a
 query of an ungoverned type, always keeps the minimal {id,type,title,timestamp} schema.
+Results are ordered by each document's meaningful change time, newest first (v0.2 \`generated.at\`
+when present, otherwise \`timestamp\`); invalid or missing times sort last, with canonical ID ties.
 Use the logical field name progress_status when querying workflow state. Superbee resolves the
 bundle's compatible storage coordinate through each document's declared Kind.
 `;
@@ -296,6 +300,18 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
       });
     }
   }
+
+  // Core owns the storage-facing canonical-ID ordering. The CLI presents a different, orientation
+  // facing order only after every CLI filter has settled: newest meaningful change first, then
+  // canonical ID. Invalid or missing clocks remain visible at the end rather than being dropped.
+  docs.sort((a, b) => {
+    const aTime = parseTimestamp(meaningfulChangeTimeValue(a.frontmatter));
+    const bTime = parseTimestamp(meaningfulChangeTimeValue(b.frontmatter));
+    if (aTime !== null && bTime !== null && aTime !== bTime) return aTime > bTime ? -1 : 1;
+    if (aTime !== null && bTime === null) return -1;
+    if (aTime === null && bTime !== null) return 1;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
 
   // Cap a projected cell so one long field can't dominate a row (AXI §2/§3 — long-form content
   // belongs in `doc read`, not a list cell). SHARED by the `--fields` projection and the kind-aware
