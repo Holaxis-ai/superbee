@@ -291,13 +291,17 @@ bundle-relative**.
   do not leave two paths with a comment declaring which one should win.
 - A recurring bug class is API-design feedback. Move the invariant into one owning primitive so
   callers cannot reproduce the mistake; do not keep patching consumers or adding reminders.
-- Keep verification output out of agent context. Run `npm run check`, workspace-wide tests,
-  browser/E2E suites, mutation tests, and other full-repository gates with complete output
-  redirected to a temporary log. On success, inspect nothing further; on failure, inspect only
+- Keep verification output out of agent context. Whichever gate you run (see the next bullet
+  for choosing one), send complete output to a temporary log rather than the terminal — that
+  applies equally to `npm run check`, a single lane, workspace-wide tests, browser/E2E suites,
+  and mutation runs. On success, inspect nothing further; on failure, inspect only
   failure matches and a bounded tail. Inspect summaries before potentially large diffs or searches.
   When uncertain, capture output instead of streaming it.
 
-- **Which gate to run: match CI's lanes, do not invent a subset.** `npm run check` is always
+- **Which gate to run: lanes while iterating, the full gate before shipping.** Before a
+  hand-off, a commit you intend someone to merge, or any release step, the gate is
+  `npm run check` — or CI green on that exact SHA, which is the same thing run by someone
+  else. While iterating, run the LANE that covers what you touched. `npm run check` is always
   correct and always sufficient. When it is disproportionate, run the LANE that covers what you
   touched — `ci:runtime`, `ci:distribution`, `ci:browser`, `ci:release-policy`, and
   `check:release-exhaustive` are exactly the lanes CI runs, so a lane result means what the
@@ -318,9 +322,11 @@ bundle-relative**.
   input to. CI is the backstop for a wrong guess — but only on the platforms CI runs, which is Linux
   alone, so a guess about Windows or case-folding behavior is caught by nothing.
 
-- Build/verify gate: `npm run build` and `npm run typecheck` must exit 0, and `npm test`
-  (`--workspaces --if-present`: board-git + core + cli + server + ui suites) must pass, before
-  shipping. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
+- Build/verify gate: **`npm run check` must exit 0 before shipping** — not `npm run build &&
+  npm run typecheck && npm test`, which is a subset that omits the packaging and release proofs
+  and has shipped a red CI here. Those three (`build`, `typecheck`, and `npm test
+  --workspaces --if-present`: board-git + core + cli + server + ui suites) are the fast inner
+  loop, not the gate. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
   the installed-tarball proof (`verify:npm-package`), and the npm-target SKILL.md drift gate
   (`check:skill`) in one shot. npm is the sole executable distribution authority: the package
   ships the CLI plus a generated, optional Agent Skill containing guidance and references only.
