@@ -149,6 +149,78 @@ test("list (unscoped): stays the minimal {id,type,title,timestamp} schema across
   }
 });
 
+test("list orders meaningful change time newest-first after filters and before limit, with deterministic invalid-clock and ID ties over local and live remote", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle: Bundle = { root: dir };
+    await initBundle(dir, { okfVersion: "0.2" });
+    for (const [id, frontmatter] of [
+      ["notes/z-oldest", { type: "Context Note", timestamp: "2026-01-01T00:00:00.000Z" }],
+      ["notes/a-newer", { type: "Context Note", timestamp: "2026-02-01T00:00:00.000Z" }],
+      ["notes/z-tie", { type: "Context Note", timestamp: "2026-03-01T00:00:00.000Z" }],
+      ["notes/a-tie", { type: "Context Note", timestamp: "2026-03-01T00:00:00.000Z" }],
+      [
+        "notes/y-generated-wins",
+        {
+          type: "Context Note",
+          timestamp: "2026-01-01T00:00:00.000Z",
+          generated: { at: "2026-04-01T00:00:00.000Z", by: "producer/1" },
+        },
+      ],
+      [
+        "notes/b-invalid-generated",
+        {
+          type: "Context Note",
+          timestamp: "2099-01-01T00:00:00.000Z",
+          generated: { at: "not-a-date", by: "producer/1" },
+        },
+      ],
+      ["notes/a-missing", { type: "Context Note" }],
+    ] as const) {
+      await writeDoc(bundle, { id, frontmatter, body: "" });
+    }
+
+    const expected = [
+      "notes/y-generated-wins",
+      "notes/a-tie",
+      "notes/z-tie",
+      "notes/a-newer",
+      "notes/z-oldest",
+      "notes/a-missing",
+      "notes/b-invalid-generated",
+    ];
+    const local = await runJson(["--type", "Context Note", "--limit", "0", "--dir", dir]);
+    assert.equal(local.count, expected.length);
+    assert.deepEqual((local.docs as Array<{ id: string }>).map((row) => row.id), expected);
+    assert.deepEqual(
+      (local.docs as Array<{ id: string; timestamp: string }>).map(({ id, timestamp }) => [id, timestamp]),
+      [
+        ["notes/y-generated-wins", "2026-04-01T00:00:00.000Z"],
+        ["notes/a-tie", "2026-03-01T00:00:00.000Z"],
+        ["notes/z-tie", "2026-03-01T00:00:00.000Z"],
+        ["notes/a-newer", "2026-02-01T00:00:00.000Z"],
+        ["notes/z-oldest", "2026-01-01T00:00:00.000Z"],
+        ["notes/a-missing", ""],
+        ["notes/b-invalid-generated", "not-a-date"],
+      ],
+    );
+
+    const limited = await runJson(["--type", "Context Note", "--limit", "3", "--dir", dir]);
+    assert.equal(limited.count, expected.length);
+    assert.deepEqual((limited.docs as Array<{ id: string }>).map((row) => row.id), expected.slice(0, 3));
+
+    const handle: ServerHandle = await serve({ bundle, port: 0 });
+    try {
+      const remote = await runJson(["--type", "Context Note", "--limit", "0", "--remote", `http://${handle.host}:${handle.port}`]);
+      assert.deepEqual(remote, local);
+    } finally {
+      await handle.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("list --type Task --fields foo: --fields ALWAYS overrides kind columns (minimal schema + foo, kind columns suppressed)", async () => {
   const { dir, cleanup } = await makeTwoKindBundle();
   try {
