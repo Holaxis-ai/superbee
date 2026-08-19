@@ -10,6 +10,32 @@ export interface ExactPositionalArity {
   readonly count: number;
 }
 
+/**
+ * What a caller-supplied path token BECOMES. The private-state boundary is a property of the ACT,
+ * not of the command (see the boundary specification's table F), so the registry records the act:
+ *
+ * - `bundle-root`  the token names a bundle root or board path (`--dir`).
+ * - `ingress`      the token's BYTES are read (`--body-file`, `promote`/`artifact create <file>`).
+ * - `egress`       the token is a destination the CLI writes to (`--out`, `--body-out`).
+ * - `recipe-source` a recipe ROOT, deliberately NOT routed through the ingress guard (its adapter
+ *   carries its own containment authority) — recorded so the exclusion is a decision, not a gap.
+ * - `rejected`     a shared selector parse config accepts the flag on this leaf, which then rejects
+ *   it as a USAGE error before it can become a filesystem target (`catalog list --dir`).
+ */
+export type CliPathRole = "bundle-root" | "ingress" | "egress" | "recipe-source" | "rejected";
+
+/** One path-valued option this leaf's parser accepts, and what the value becomes. */
+export interface CliPathFlag {
+  readonly flag: string;
+  readonly role: CliPathRole;
+}
+
+/** One path-valued POSITIONAL this leaf consumes, by index within the leaf's own data. */
+export interface CliPathPositional {
+  readonly index: number;
+  readonly role: CliPathRole;
+}
+
 export interface CliLeafSpec<
   Id extends string = string,
   Path extends string = string,
@@ -22,6 +48,20 @@ export interface CliLeafSpec<
   readonly canonical: CliLeafSpec;
   readonly exposure: Exposure;
   readonly commandOrder?: number;
+  /**
+   * Every path-valued option this leaf accepts. This is the ENUMERATION the boundary coverage
+   * tables derive their required rows from: a new path-accepting command declares itself here (and
+   * `cli-path-surface.test.ts` proves the declaration against the shipped parser), so the coverage
+   * table cannot silently miss it the way four hand-kept lists did.
+   */
+  readonly pathFlags: readonly CliPathFlag[];
+  /** Path-valued positionals, same purpose as `pathFlags`. */
+  readonly pathPositionals: readonly CliPathPositional[];
+  /**
+   * This leaf's parser accepts UNDECLARED `--flag` tokens as document fields (`strict:false`), so
+   * "an undeclared flag is rejected" is not observable for it.
+   */
+  readonly dynamicFieldFlags?: true;
   readonly [CLI_LEAF_BRAND]: true;
 }
 
@@ -55,8 +95,73 @@ const zero = exactPositionalArity(0);
 const one = exactPositionalArity(1);
 const two = exactPositionalArity(2);
 
+function pathFlags(...flags: readonly CliPathFlag[]): readonly CliPathFlag[] {
+  return Object.freeze(flags.map((entry) => Object.freeze({ ...entry })));
+}
+
+/** Shared path-surface shapes. Named so a new leaf reuses a vetted set instead of inventing one. */
+const NO_PATHS = pathFlags();
+const BUNDLE_DIR = pathFlags({ flag: "dir", role: "bundle-root" });
+const BUNDLE_DIR_REJECTED = pathFlags({ flag: "dir", role: "rejected" });
+const BUNDLE_DIR_AND_BODY_FILE = pathFlags(
+  { flag: "dir", role: "bundle-root" },
+  { flag: "body-file", role: "ingress" },
+);
+const NO_PATH_POSITIONALS: readonly CliPathPositional[] = Object.freeze([]);
+const FIRST_POSITIONAL_IS_INGRESS: readonly CliPathPositional[] = Object.freeze([
+  Object.freeze({ index: 0, role: "ingress" as const }),
+]);
+
+interface LeafPathSurface {
+  readonly flags?: readonly CliPathFlag[];
+  readonly positionals?: readonly CliPathPositional[];
+  readonly dynamicFieldFlags?: true;
+}
+
+const DIR_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR });
+const DIR_REJECTED_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_REJECTED });
+const DIR_BODY_FILE_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_AND_BODY_FILE });
+const DIR_BODY_FILE_DYNAMIC_SURFACE: LeafPathSurface = Object.freeze({
+  flags: BUNDLE_DIR_AND_BODY_FILE,
+  dynamicFieldFlags: true,
+});
+const DIR_OUT_SURFACE: LeafPathSurface = Object.freeze({
+  flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "out", role: "egress" }),
+});
+const DIR_OUT_BODY_OUT_SURFACE: LeafPathSurface = Object.freeze({
+  flags: pathFlags(
+    { flag: "dir", role: "bundle-root" },
+    { flag: "out", role: "egress" },
+    { flag: "body-out", role: "egress" },
+  ),
+});
+const DIR_RECIPE_SURFACE: LeafPathSurface = Object.freeze({
+  flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "recipe", role: "recipe-source" }),
+});
+const DIR_INGRESS_FILE_SURFACE: LeafPathSurface = Object.freeze({
+  flags: BUNDLE_DIR,
+  positionals: FIRST_POSITIONAL_IS_INGRESS,
+});
+const DIR_RECIPE_ROOT_SURFACE: LeafPathSurface = Object.freeze({
+  flags: BUNDLE_DIR,
+  positionals: Object.freeze([Object.freeze({ index: 0, role: "recipe-source" as const })]),
+});
+
 function firstWord<Path extends string>(path: Path): FirstWord<Path> {
   return path.split(" ", 1)[0] as FirstWord<Path>;
+}
+
+function surfaceOf(surface: LeafPathSurface | undefined, arity: ExactPositionalArity): {
+  pathFlags: readonly CliPathFlag[];
+  pathPositionals: readonly CliPathPositional[];
+} {
+  const positionals = surface?.positionals ?? NO_PATH_POSITIONALS;
+  for (const entry of positionals) {
+    if (!Number.isSafeInteger(entry.index) || entry.index < 0 || entry.index >= arity.count) {
+      throw new TypeError(`path positional index ${entry.index} is outside the leaf's arity`);
+    }
+  }
+  return { pathFlags: surface?.flags ?? NO_PATHS, pathPositionals: positionals };
 }
 
 function publicLeaf<const Id extends string, const Path extends string>(
@@ -64,6 +169,7 @@ function publicLeaf<const Id extends string, const Path extends string>(
   path: Path,
   arity: ExactPositionalArity,
   commandOrder?: number,
+  surface?: LeafPathSurface,
 ): CliLeafSpec<Id, Path, "public"> {
   if (commandOrder !== undefined && (!Number.isSafeInteger(commandOrder) || commandOrder < 0)) {
     throw new TypeError(`command order must be a non-negative safe integer; received ${commandOrder}`);
@@ -76,6 +182,8 @@ function publicLeaf<const Id extends string, const Path extends string>(
     canonical: undefined as unknown as CliLeafSpec,
     exposure: "public" as const,
     ...(commandOrder === undefined ? {} : { commandOrder }),
+    ...surfaceOf(surface, arity),
+    ...(surface?.dynamicFieldFlags ? { dynamicFieldFlags: true as const } : {}),
     [CLI_LEAF_BRAND]: true as const,
   };
   mutable.canonical = mutable;
@@ -98,6 +206,11 @@ function publicAlias<const Id extends string, const Path extends string, Canonic
     canonical: canonical.canonical,
     exposure: "public" as const,
     ...(commandOrder === undefined ? {} : { commandOrder }),
+    // An alias is the same executable surface under a second spelling: its path metadata is the
+    // canonical leaf's, never a second declaration that could drift.
+    pathFlags: canonical.pathFlags,
+    pathPositionals: canonical.pathPositionals,
+    ...(canonical.dynamicFieldFlags ? { dynamicFieldFlags: true as const } : {}),
     [CLI_LEAF_BRAND]: true as const,
   };
   OWNED_CLI_LEAVES.add(mutable);
@@ -108,6 +221,7 @@ function hiddenLeaf<const Id extends string, const Path extends string>(
   id: Id,
   path: Path,
   arity: ExactPositionalArity,
+  surface?: LeafPathSurface,
 ): CliLeafSpec<Id, Path, "hidden"> {
   const mutable = {
     id,
@@ -116,6 +230,7 @@ function hiddenLeaf<const Id extends string, const Path extends string>(
     arity,
     canonical: undefined as unknown as CliLeafSpec,
     exposure: "hidden" as const,
+    ...surfaceOf(surface, arity),
     [CLI_LEAF_BRAND]: true as const,
   };
   mutable.canonical = mutable;
@@ -123,7 +238,7 @@ function hiddenLeaf<const Id extends string, const Path extends string>(
   return Object.freeze(mutable);
 }
 
-const listLeaf = publicLeaf("list", "list", zero, 10);
+const listLeaf = publicLeaf("list", "list", zero, 10, DIR_SURFACE);
 
 export const CLI_COMMAND_GROUPS = [
   {
@@ -131,37 +246,37 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "bundleLocate",
-        leaves: [publicLeaf("bundleLocate", "bundle locate", zero, 1)],
+        leaves: [publicLeaf("bundleLocate", "bundle locate", zero, 1, DIR_SURFACE)],
         usage: "bundle locate [--dir <path>]",
         summary: "Resolve the exact canonical local bundle path and report why it won selection",
       },
       {
         id: "catalog",
         leaves: [
-          publicLeaf("catalogAdd", "catalog add", one, 2),
-          publicLeaf("catalogList", "catalog list", zero),
-          publicLeaf("catalogResolve", "catalog resolve", one),
+          publicLeaf("catalogAdd", "catalog add", one, 2, DIR_SURFACE),
+          publicLeaf("catalogList", "catalog list", zero, undefined, DIR_REJECTED_SURFACE),
+          publicLeaf("catalogResolve", "catalog resolve", one, undefined, DIR_REJECTED_SURFACE),
         ],
         usage: "catalog (add <label> [--dir <path>] | list | resolve <label-or-id> [--field path])",
         summary: "Register and deterministically resolve this user's explicitly named local workspaces",
       },
       {
         id: "init",
-        leaves: [publicLeaf("init", "init", zero, 0)],
+        leaves: [publicLeaf("init", "init", zero, 0, DIR_RECIPE_SURFACE)],
         usage: "init [--dir <path>] [--okf-version <v>] [--recipe <name-or-path>] [--create-only]",
         summary:
           "Create (or open) an OKF knowledge bundle in a directory — greenfield setup; a project that already shares a board is set up by sync, not init. --create-only requires a genuinely NEW target and refuses existing, non-empty, symlinked, enclosing, bound, or concurrent targets before publication; runtime failures retain and report any empty directories they created instead of deleting them — 'recipe add' modifies a verified existing bundle",
       },
       {
         id: "indexGenerate",
-        leaves: [publicLeaf("indexGenerate", "index generate", zero, 3)],
+        leaves: [publicLeaf("indexGenerate", "index generate", zero, 3, DIR_SURFACE)],
         usage: "index generate [--dir <path>] [--check] [--force] [--actor <name>]",
         summary: "Generate complete portable Markdown navigation explicitly; refuses curated indexes unless --force adopts them",
       },
       {
         id: "status",
-        leaves: [publicLeaf("status", "status", zero, 18)],
-        usage: "status [--limit <n>] [--remote <url>]",
+        leaves: [publicLeaf("status", "status", zero, 18, DIR_SURFACE)],
+        usage: "status [--limit <n>] [--dir <path>] [--remote <url>]",
         summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)",
       },
     ],
@@ -171,61 +286,61 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "docWrite",
-        leaves: [publicLeaf("docWrite", "doc write", one, 4)],
+        leaves: [publicLeaf("docWrite", "doc write", one, 4, DIR_BODY_FILE_SURFACE)],
         usage:
-          "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--remote <url>]",
+          "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary: "Write a generic OKF concept document",
       },
       {
         id: "docUpdate",
-        leaves: [publicLeaf("docUpdate", "doc update", one)],
+        leaves: [publicLeaf("docUpdate", "doc update", one, undefined, DIR_BODY_FILE_DYNAMIC_SURFACE)],
         usage:
-          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--remote <url>]",
+          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {
         id: "docRead",
-        leaves: [publicLeaf("docRead", "doc read", one)],
+        leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_OUT_BODY_OUT_SURFACE)],
         usage:
-          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--remote <url>]",
+          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url>]",
         summary:
           "Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting",
       },
       {
         id: "docOpen",
-        leaves: [publicLeaf("docOpen", "doc open", one)],
+        leaves: [publicLeaf("docOpen", "doc open", one, undefined, DIR_SURFACE)],
         usage: "doc open <id> [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]",
         summary: "Open one exact authoritative document in the existing rendered browser UI",
       },
       {
         id: "docHistory",
-        leaves: [publicLeaf("docHistory", "doc history", one)],
-        usage: "doc history <id> [--limit <n>] [--remote <url>]",
+        leaves: [publicLeaf("docHistory", "doc history", one, undefined, DIR_SURFACE)],
+        usage: "doc history <id> [--limit <n>] [--dir <path>] [--remote <url>]",
         summary:
           "Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) — the tokens for --expected-version",
       },
       {
         id: "docDelete",
-        leaves: [publicLeaf("docDelete", "doc delete", one)],
-        usage: "doc delete <id> [--expected-version <v>] [--remote <url>]",
+        leaves: [publicLeaf("docDelete", "doc delete", one, undefined, DIR_SURFACE)],
+        usage: "doc delete <id> [--expected-version <v>] [--dir <path>] [--remote <url>]",
         summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)",
       },
       {
         id: "list",
         leaves: [listLeaf, publicAlias("query", "query", listLeaf, 11)],
-        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--remote <url>]",
+        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>] [--remote <url>]",
         summary:
           "Query concepts over their frontmatter (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
       },
       {
         id: "link",
         leaves: [
-          publicLeaf("linkAdd", "link add", two, 9),
-          publicLeaf("linkShow", "link show", one),
-          publicLeaf("linkList", "link list", zero),
+          publicLeaf("linkAdd", "link add", two, 9, DIR_SURFACE),
+          publicLeaf("linkShow", "link show", one, undefined, DIR_SURFACE),
+          publicLeaf("linkList", "link list", zero, undefined, DIR_SURFACE),
         ],
         usage:
-          "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--remote <url>]",
+          "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url>]",
         summary:
           "Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text",
       },
@@ -236,32 +351,32 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "artifactCreate",
-        leaves: [publicLeaf("artifactCreate", "artifact create", one, 13)],
-        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--remote <url>]",
+        leaves: [publicLeaf("artifactCreate", "artifact create", one, 13, DIR_INGRESS_FILE_SURFACE)],
+        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary: "Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record",
       },
       {
         id: "promote",
-        leaves: [publicLeaf("promote", "promote", one, 5)],
-        usage: "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--remote <url>]",
+        leaves: [publicLeaf("promote", "promote", one, 5, DIR_INGRESS_FILE_SURFACE)],
+        usage: "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--dir <path>] [--remote <url>]",
         summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob)",
       },
       {
         id: "pull",
-        leaves: [publicLeaf("pull", "pull", zero, 6)],
-        usage: "pull --doc-key <key> --out (<path> | -) [--remote <url>]",
+        leaves: [publicLeaf("pull", "pull", zero, 6, DIR_OUT_SURFACE)],
+        usage: "pull --doc-key <key> --out (<path> | -) [--dir <path>] [--remote <url>]",
         summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)",
       },
       {
         id: "blobs",
-        leaves: [publicLeaf("blobs", "blobs", zero, 7)],
-        usage: "blobs [--prefix <p>] [--limit <n>] [--remote <url>]",
+        leaves: [publicLeaf("blobs", "blobs", zero, 7, DIR_SURFACE)],
+        usage: "blobs [--prefix <p>] [--limit <n>] [--dir <path>] [--remote <url>]",
         summary: "List the store's blob (non-document) keys (documents are listed by 'list'/'query')",
       },
       {
         id: "delete",
-        leaves: [publicLeaf("delete", "delete", zero, 8)],
-        usage: "delete --doc-key <key> [--expected-version <v>] [--remote <url>]",
+        leaves: [publicLeaf("delete", "delete", zero, 8, DIR_SURFACE)],
+        usage: "delete --doc-key <key> [--expected-version <v>] [--dir <path>] [--remote <url>]",
         summary: "Hard-delete a doc or blob by key (idempotent: absent -> deleted:false, exit 0)",
       },
     ],
@@ -271,37 +386,37 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "new",
-        leaves: [publicLeaf("new", "new", two, 12)],
+        leaves: [publicLeaf("new", "new", two, 12, DIR_BODY_FILE_SURFACE)],
         usage:
-          'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--remote <url>]',
+          'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>] [--remote <url>]',
         summary:
           "Create a new instance of a bundle-declared kind — initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step",
       },
       {
         id: "kinds",
-        leaves: [publicLeaf("kinds", "kinds", zero, 14)],
-        usage: "kinds [--remote <url>]",
+        leaves: [publicLeaf("kinds", "kinds", zero, 14, DIR_SURFACE)],
+        usage: "kinds [--dir <path>] [--remote <url>]",
         summary: "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)",
       },
       {
         id: "kindField",
         leaves: [
-          publicLeaf("kindFieldAdd", "kind field add", two, 15),
-          publicLeaf("kindFieldRemove", "kind field remove", two),
+          publicLeaf("kindFieldAdd", "kind field add", two, 15, DIR_SURFACE),
+          publicLeaf("kindFieldRemove", "kind field remove", two, undefined, DIR_SURFACE),
         ],
-        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--remote <url>]',
+        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--dir <path>] [--remote <url>]',
         summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
       },
       {
         id: "recipes",
-        leaves: [publicLeaf("recipes", "recipes", zero, 16)],
+        leaves: [publicLeaf("recipes", "recipes", zero, 16, DIR_SURFACE)],
         usage: "recipes [--dir <path>] [--remote <url>]",
         summary: "Browse built-in recipes before or after init; with a bundle, also show whether each is already applied",
       },
       {
         id: "recipeAdd",
-        leaves: [publicLeaf("recipeAdd", "recipe add", one, 17)],
-        usage: "recipe add <name-or-path> [--remote <url>]",
+        leaves: [publicLeaf("recipeAdd", "recipe add", one, 17, DIR_RECIPE_ROOT_SURFACE)],
+        usage: "recipe add <name-or-path> [--dir <path>] [--remote <url>]",
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
     ],
@@ -311,13 +426,13 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "serve",
-        leaves: [publicLeaf("serve", "serve", zero, 19)],
+        leaves: [publicLeaf("serve", "serve", zero, 19, DIR_SURFACE)],
         usage: "serve [--dir <path>] [--host <h>] [--port <p>]",
         summary: "Boot the reference wire-protocol server over a local bundle (loopback, no auth)",
       },
       {
         id: "ui",
-        leaves: [publicLeaf("ui", "ui", zero, 20)],
+        leaves: [publicLeaf("ui", "ui", zero, 20, DIR_SURFACE)],
         usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open]",
         summary:
           'Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle\'s docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register — see status\'s legacy_naming finding), and see a live activity feed, the bundle\'s sharing status, and your registered workspaces. The header shows the bundle\'s display name — derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"',
@@ -325,7 +440,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "mcp",
         leaves: [
-          publicLeaf("mcp", "mcp", zero, 21),
+          publicLeaf("mcp", "mcp", zero, 21, DIR_SURFACE),
           publicLeaf("mcpInstall", "mcp install", zero),
           publicLeaf("mcpStatus", "mcp status", zero),
           publicLeaf("mcpUninstall", "mcp uninstall", zero),
@@ -335,13 +450,13 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "viewList",
-        leaves: [publicLeaf("viewList", "view list", zero, 27)],
+        leaves: [publicLeaf("viewList", "view list", zero, 27, DIR_SURFACE)],
         usage: "view list [--limit <n>] [--dir <path> | --remote <url>]",
         summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views",
       },
       {
         id: "sync",
-        leaves: [publicLeaf("sync", "sync", zero, 22)],
+        leaves: [publicLeaf("sync", "sync", zero, 22, DIR_OUT_SURFACE)],
         usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]",
         summary:
           "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). `init` makes a LOCAL bundle; --establish is the separate, explicit act that starts sharing it (creates the board branch, pushes; never automatic). A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it",
@@ -359,7 +474,7 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "sessionStart",
-        leaves: [publicLeaf("sessionStart", "session-start", zero, 25)],
+        leaves: [publicLeaf("sessionStart", "session-start", zero, 25, DIR_SURFACE)],
         usage: "session-start [--dir <path>] [--no-update-check]",
         summary: "The SessionStart hook payload: pull then render; default TOON uses a nonblocking 24-hour cached latest check, while --no-update-check or SUPERBEE_NO_UPDATE_CHECK/NO_UPDATE_NOTIFIER/CI presence disables both display and refresh (legacy ASLITE_NO_UPDATE_CHECK remains supported); npm receives only the public package request and ordinary network metadata, never installed version, cwd, bundle, actor, or usage data",
       },
@@ -435,7 +550,7 @@ export function assertCliLeaf(value: unknown): asserts value is CliLeafSpec {
 
 export const PUBLIC_LEAVES = Object.freeze(publicLeaves(CLI_COMMAND_GROUPS));
 export const CLI_LEAVES = indexLeaves(CLI_COMMAND_GROUPS);
-export const HOME_LEAF = hiddenLeaf("home", "home", zero);
+export const HOME_LEAF = hiddenLeaf("home", "home", zero, DIR_SURFACE);
 
 export type PublicLeafId = keyof typeof CLI_LEAVES;
 export type PublicLeaf = (typeof PUBLIC_LEAVES)[number];

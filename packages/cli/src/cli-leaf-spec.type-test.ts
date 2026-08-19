@@ -2,7 +2,8 @@ import type { CliLeafSpec } from "./command-spec.js";
 import { PUBLIC_HANDLERS, type PublicHandlerMap } from "./cli.js";
 
 // A direct structural leaf must remain impossible. If the private brand is removed, typecheck
-// fails because this @ts-expect-error becomes unused.
+// fails because this @ts-expect-error becomes unused. Every OTHER required member is supplied, so
+// the brand is the only thing this literal is missing.
 // @ts-expect-error CliLeafSpec values are produced only by the canonical command-spec module.
 const forgedLeaf: CliLeafSpec = {
   id: "forged",
@@ -11,6 +12,8 @@ const forgedLeaf: CliLeafSpec = {
   arity: { kind: "exact", count: 0 },
   canonical: undefined as never,
   exposure: "public",
+  pathFlags: [],
+  pathPositionals: [],
 };
 void forgedLeaf;
 
