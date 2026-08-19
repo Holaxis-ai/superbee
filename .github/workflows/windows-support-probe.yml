@@ -1,0 +1,86 @@
+# Diagnostic, not a gate. Settles one question: can the private-state layer's POSIX mode
+# assertions ever pass on Windows?
+#
+# `user-state.ts` asserts `(status.mode & 0o077) === 0` at five sites with no `win32` branch,
+# and every CI job runs on ubuntu. libuv synthesizes `st_mode` on Windows as 0o666 for a
+# writable file and 0o777 for a directory, and `chmod` there only toggles the read-only bit.
+# If that holds, the assertion is false everywhere on Windows and the layer has never worked
+# on a platform the package claims to support.
+#
+# NOTE: `superbee catalog list` is NOT a valid probe - it passes vacuously, because an absent
+# state root returns "absent" and the command prints an empty catalog at rc 0.
+#
+# Deliberately a separate workflow rather than a lane in ci-tests.yml: the required-lane
+# manifest and aggregator are topology-tested, and a diagnostic has no business in the
+# required set before its answer is known.
+name: Windows support probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/windows-support-probe]
+
+jobs:
+  mode-semantics:
+    name: Can the mode assertions pass on Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The decisive test. POSIX prints "600 700". If Windows prints "666 777" the
+      # assertion `(mode & 0o077) === 0` is false for both, and cannot be satisfied.
+      - name: Probe the mode Node reports for a 0600 file and a 0700 directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "
+            const { statSync, writeFileSync, mkdirSync } = require('fs');
+            mkdirSync('probe', { recursive: true, mode: 0o700 });
+            writeFileSync('probe/x', 'y', { mode: 0o600 });
+            const f = statSync('probe/x').mode & 0o777;
+            const d = statSync('probe').mode & 0o777;
+            const ok = (f & 0o077) === 0 && (d & 0o077) === 0;
+            console.log('file_mode=' + f.toString(8));
+            console.log('dir_mode=' + d.toString(8));
+            console.log('assertion_can_pass=' + ok);
+          " | tee probe.txt
+          {
+            echo '## Windows mode semantics'
+            echo
+            echo '| value | result |'
+            echo '| --- | --- |'
+            sed 's/^\(.*\)=\(.*\)$/| `\1` | `\2` |/' probe.txt
+            echo
+            if grep -q 'assertion_can_pass=false' probe.txt; then
+              echo 'CONCLUSION: the private-state mode assertions CANNOT pass on Windows.'
+              echo 'The layer has never worked there. Decide: add a win32 branch substituting'
+              echo 'containment under %LOCALAPPDATA% (per-user by OS ACL), or declare Windows'
+              echo 'unsupported via an `os` field so npm refuses the install rather than'
+              echo 'shipping a silently broken layer.'
+            else
+              echo 'CONCLUSION: the assertions CAN pass. The hypothesis is wrong; see the'
+              echo 'suite result below for whether the layer actually works.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install and build
+        shell: bash
+        run: npm ci && npm run build
+
+      # Recorded, never swallowed. The exit code is captured explicitly rather than with
+      # continue-on-error, so a failure is reported as a value instead of disappearing.
+      - name: Run the private-state suite on Windows
+        shell: bash
+        run: |
+          set +e
+          npm test -w superbee > suite.log 2>&1
+          echo "suite_exit=$?" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '<details><summary>tail</summary>' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          tail -60 suite.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo '</details>' >> "$GITHUB_STEP_SUMMARY"
