@@ -297,6 +297,27 @@ bundle-relative**.
   failure matches and a bounded tail. Inspect summaries before potentially large diffs or searches.
   When uncertain, capture output instead of streaming it.
 
+- **Which gate to run: match CI's lanes, do not invent a subset.** `npm run check` is always
+  correct and always sufficient. When it is disproportionate, run the LANE that covers what you
+  touched — `ci:runtime`, `ci:distribution`, `ci:browser`, `ci:release-policy`, and
+  `check:release-exhaustive` are exactly the lanes CI runs, so a lane result means what the
+  corresponding CI lane will mean. What is NOT safe is assembling your own subset: a gate of
+  `build && typecheck && test` is not any lane, and it omits the packaging and release proofs
+  entirely — that exact combination has shipped a red CI at least once. Rough mapping:
+
+  | Touched | Run at minimum |
+  | --- | --- |
+  | `packages/*/src`, tests | `ci:runtime` |
+  | a `package.json`, `scripts/`, release or packaging code | `ci:distribution` AND `ci:release-policy` |
+  | `packages/ui`, `packages/mcp-app`, the embedded SPA | `ci:browser` |
+  | `release/`, candidate or tarball proofs | `check:release-exhaustive` too |
+  | `.github/workflows`, `scripts/ci-lanes.json` | `ci:release-policy` (carries the topology tests) |
+
+  A manifest edit is the counter-intuitive case: it looks trivial and the two EXPENSIVE lanes are
+  precisely the relevant ones, because the release and packaging proofs are what the manifest is an
+  input to. CI is the backstop for a wrong guess — but only on the platforms CI runs, which is Linux
+  alone, so a guess about Windows or case-folding behavior is caught by nothing.
+
 - Build/verify gate: `npm run build` and `npm run typecheck` must exit 0, and `npm test`
   (`--workspaces --if-present`: board-git + core + cli + server + ui suites) must pass, before
   shipping. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
@@ -383,6 +404,18 @@ bundle-relative**.
   change-type — retire or thin it there deliberately (a recorded decision, not silent decay).
   A stage that keeps finding real defects keeps its place. Words like "verified" and "proven"
   remain testable claims at every stage.
+- **Dispatching sub-agents: scope the gate and the unit, never the probing.** A dispatched
+  agent inherits whatever gate its packet names, so naming `npm run check` for a change that
+  cannot reach most lanes makes it wait on Chromium, 20 Playwright specs, and five release
+  tarballs for nothing. Name the LANE that covers what the agent will touch, per the mapping
+  above. Keep one claim per agent - a packet carrying four units produces one long-running
+  agent where four concurrent ones would do. Reuse a warm worktree when isolation is not
+  required for correctness; a cold `npm ci` per worktree is minutes each, repeated. And do not
+  dispatch an agent to do a read a grep would answer. What must NOT be traded for speed is
+  empirical probing: real concurrent processes, real interruption, real invocations of the
+  built artifact. That is slow and it is what finds defects that reasoning about the code
+  does not.
+
 - **When independent review or QA is required, use these review-process conventions:**
   - Agents that touch git or run tests work in an ISOLATED worktree/checkout, never the
     shared working tree; reviewers detach onto the exact sha under review.
