@@ -404,6 +404,18 @@ bundle-relative**.
   change-type — retire or thin it there deliberately (a recorded decision, not silent decay).
   A stage that keeps finding real defects keeps its place. Words like "verified" and "proven"
   remain testable claims at every stage.
+- **Dispatching sub-agents: scope the gate and the unit, never the probing.** A dispatched
+  agent inherits whatever gate its packet names, so naming `npm run check` for a change that
+  cannot reach most lanes makes it wait on Chromium, 20 Playwright specs, and five release
+  tarballs for nothing. Name the LANE that covers what the agent will touch, per the mapping
+  above. Keep one claim per agent - a packet carrying four units produces one long-running
+  agent where four concurrent ones would do. Reuse a warm worktree when isolation is not
+  required for correctness; a cold `npm ci` per worktree is minutes each, repeated. And do not
+  dispatch an agent to do a read a grep would answer. What must NOT be traded for speed is
+  empirical probing: real concurrent processes, real interruption, real invocations of the
+  built artifact. That is slow and it is what finds defects that reasoning about the code
+  does not.
+
 - **When independent review or QA is required, use these review-process conventions:**
   - Agents that touch git or run tests work in an ISOLATED worktree/checkout, never the
     shared working tree; reviewers detach onto the exact sha under review.
