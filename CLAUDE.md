@@ -289,6 +289,20 @@ bundle-relative**.
   authentication, migration, reconnect/replay, and destructive writes.
 - Consolidation removes the superseded implementation, tests, and commentary in the same unit;
   do not leave two paths with a comment declaring which one should win.
+- **A discovery needs somewhere to go, or it gets re-derived rather than recorded.** When a
+  defect class has a shared row table, its fix adds a ROW to that table, never a one-off test
+  beside the fix — that is this repo's "risky mechanic and its test ship together" rule applied
+  to a class instead of an instance. If recording a finding would need new scaffolding rather
+  than a new row, the table is shaped wrong; say so instead of working around it. The
+  private-state boundary went four rounds rediscovering the same class because several kinds of
+  discovery — state-class, read/write agreement, interruption, recoverability — had no home at
+  all. Bundle doc `docs/boundary-finding-routing` routes each finding type to its table.
+- **A specification statement is not a commitment.** Tables ratchet BEHAVIOR; nothing ratchets
+  the WORK. A statement marked VIOLATED describes a defect; a task commits to fixing it. Before
+  any release, every VIOLATED statement must have either a task or a recorded decision to accept
+  it, and the same for every UNKNOWN — "we know about it" is the state that lets a blocker ship.
+  Found the hard way: of thirteen violations, the release-blocking one had no task and survived a
+  merge as a line in a 494-line document.
 - A recurring bug class is API-design feedback. Move the invariant into one owning primitive so
   callers cannot reproduce the mistake; do not keep patching consumers or adding reminders.
 - Keep verification output out of agent context. Whichever gate you run (see the next bullet
@@ -316,6 +330,13 @@ bundle-relative**.
   | `packages/ui`, `packages/mcp-app`, the embedded SPA | `ci:browser` |
   | `release/`, candidate or tarball proofs | `check:release-exhaustive` too |
   | `.github/workflows`, `scripts/ci-lanes.json` | `ci:release-policy` (carries the topology tests) |
+
+  **Adding a workflow file costs more than it looks.** Every workflow enters the release
+  packet-input closure, so the committed manifest must be regenerated and whatever the workflow
+  reaches must be pinned. A workflow that runs `npm test -w superbee` also fails topology
+  validation, because that resolves to a glob rather than a tracked file. Both were hit for real
+  while adding a ten-second diagnostic, and the diagnostic was dropped rather than carry the
+  ongoing cost.
 
   A manifest edit is the counter-intuitive case: it looks trivial and the two EXPENSIVE lanes are
   precisely the relevant ones, because the release and packaging proofs are what the manifest is an
