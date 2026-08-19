@@ -330,7 +330,7 @@ export const CLI_COMMAND_GROUPS = [
         leaves: [listLeaf, publicAlias("query", "query", listLeaf, 11)],
         usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>] [--remote <url>]",
         summary:
-          "Query concepts over their frontmatter (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
+          "Query concepts newest-first by meaningful change time (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
       },
       {
         id: "link",

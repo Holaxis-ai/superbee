@@ -54,6 +54,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
+import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
 
 export const LIST_USAGE = `superbee list — query concepts over their frontmatter (alias: query)
 
@@ -83,7 +84,7 @@ Options:
                        bundle where NO kind declares a terminal set, --open filters nothing (a help
                        line says so, so the flag is never silently meaningless). Composes with
                        --type/--field/--prefix.
-  --limit <n>          Cap the number of rows returned (default: 100; 0 = unlimited). A truncated
+  --limit <n>          Cap the newest-first rows returned (default: 100; 0 = unlimited). A truncated
                        result reports \`shown\` alongside the total \`count\`.
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
@@ -94,6 +95,8 @@ Options:
 A --type-scoped query of a kind-governed type projects that kind's declared fields as columns
 ({id, title, ...fields}) instead of the minimal schema; --fields overrides. An unscoped query, or a
 query of an ungoverned type, always keeps the minimal {id,type,title,timestamp} schema.
+Results are ordered by each document's meaningful change time, newest first (v0.2 \`generated.at\`
+when present, otherwise \`timestamp\`); invalid or missing times sort last, with canonical ID ties.
 Use the logical field name progress_status when querying workflow state. Superbee resolves the
 bundle's compatible storage coordinate through each document's declared Kind.
 `;
@@ -297,6 +300,14 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     }
   }
 
+  // Core owns the storage-facing canonical-ID ordering. The CLI presents a different, orientation
+  // facing order only after every CLI filter has settled: newest meaningful change first, then
+  // canonical ID. Invalid or missing clocks remain visible at the end rather than being dropped.
+  const recency = docs.map((doc) => ({ doc, key: meaningfulChangeOrderKey(doc.id, doc.frontmatter) }));
+  recency.sort((a, b) => compareByMeaningfulChange(a.key, b.key));
+  docs = recency.map(({ doc }) => doc);
+  const meaningfulTimestampById = new Map(recency.map(({ key }) => [key.id, key.timestamp]));
+
   // Cap a projected cell so one long field can't dominate a row (AXI §2/§3 — long-form content
   // belongs in `doc read`, not a list cell). SHARED by the `--fields` projection and the kind-aware
   // columns below, so both truncate identically.
@@ -319,7 +330,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
         typeof d.frontmatter.title === "string"
           ? d.frontmatter.title
           : (d.id.split("/").pop() ?? d.id),
-      timestamp: typeof d.frontmatter.timestamp === "string" ? d.frontmatter.timestamp : "",
+      timestamp: meaningfulTimestampById.get(d.id) ?? "",
     };
     // The `--fields` hatch caps each cell the SAME way kind columns do — a long field (e.g.
     // `--fields description`) is truncated per row rather than dumped in full.

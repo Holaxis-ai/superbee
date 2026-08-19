@@ -91,7 +91,7 @@ Use `superbee mcp status --host <id>` to verify it and restart the host after a 
 - `superbee doc delete <id> [--expected-version <v>] [--dir <path>] [--remote <url>]`
   — Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)
 - `superbee list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>] [--remote <url>]`
-  — Query concepts over their frontmatter (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)
+  — Query concepts newest-first by meaningful change time (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)
 - `superbee link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url>]`
   — Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text
 
