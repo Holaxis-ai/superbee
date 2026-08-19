@@ -24,6 +24,7 @@ import { BUNDLE_DIRS, resolveBundleKey } from "@superbee/board-git";
 import type { Bundle } from "@superbee/core";
 
 import { defaultSyncStore } from "./cursor.js";
+import { boundBoardOwnerForBundle } from "./bound-board-owner.js";
 
 /**
  * Build the post-persist hook for one mutation, or `undefined` when there is nothing to record:
@@ -40,10 +41,13 @@ export function boardPostPersistHook(
 ): (() => Promise<void>) | undefined {
   if (!actor || actor === "unknown") return undefined;
   if (bundle.backend !== undefined) return undefined;
-  if (!BUNDLE_DIRS.includes(path.basename(bundle.root) as (typeof BUNDLE_DIRS)[number])) return undefined;
+  const owner = boundBoardOwnerForBundle(bundle);
+  if (!owner && !BUNDLE_DIRS.includes(path.basename(bundle.root) as (typeof BUNDLE_DIRS)[number])) return undefined;
   return async () => {
     try {
-      await defaultSyncStore.recordSelfActors(resolveBundleKey(bundle.root), [actor]);
+      // Bound runs were proven before the first persistence operation. Reusing the captured key
+      // prevents a post-write cwd/public-repository probe from retaking authority.
+      await defaultSyncStore.recordSelfActors(owner?.stateKey ?? resolveBundleKey(bundle.root), [actor]);
     } catch {
       /* best-effort by contract — attribution must never fail a successful write */
     }

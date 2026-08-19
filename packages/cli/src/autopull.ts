@@ -15,7 +15,8 @@ import {
 } from "@superbee/board-git";
 
 import { defaultSyncStore } from "./cursor.js";
-import { findBundleRoot } from "./bundle.js";
+import { findBundleRoot, resolveLocalBundleTarget } from "./bundle.js";
+import { validateBoundBoardOwner } from "./bound-board-owner.js";
 
 export {
   AUTO_PULL_BUDGET_MS,
@@ -31,6 +32,25 @@ export {
 
 /** See the package's `maybeAutoPull` — this binds the CLI's store + bundle discovery. */
 export async function maybeAutoPull(dir?: string, opts: AutoPullOptions = {}) {
+  // A project binding must be proven before board-git's candidate walk can inspect a cwd-derived
+  // public checkout.  On success the candidate and state key are rooted at the frozen private
+  // board; on failure the read's subsequent openBundle emits the structured binding diagnostic.
+  if (dir === undefined) {
+    try {
+      const target = await resolveLocalBundleTarget(undefined);
+      const owner = await validateBoundBoardOwner(target);
+      if (owner) {
+        return maybeAutoPullWith(
+          { store: defaultSyncStore, resolveBundleRoot: async () => owner.bundleRoot },
+          owner.bundleRoot,
+          opts,
+        );
+      }
+    } catch {
+      // Preserve autopull's fail-soft contract; openBundle is the command-visible validator.
+      return "error";
+    }
+  }
   return maybeAutoPullWith({ store: defaultSyncStore, resolveBundleRoot: findBundleRoot }, dir, opts);
 }
 

@@ -9,7 +9,8 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
-import { assertPlainInitTarget, withCreateOnlyTarget } from "../bundle.js";
+import { assertPlainInitTarget, resolveLocalBundleTarget, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
+import { validateBoundBoardOwner } from "../bound-board-owner.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -101,6 +102,18 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
       // Both halves of this two-step hint must resolve for the actual running executable (AXI
       // §7/§10); a hard-coded bare command would fail when the CLI is running through npx.
       { help: `${cliInvocation()} init --dir <path> (then ${cliInvocation()} serve --dir <path>)` },
+    );
+  }
+
+  // `init` is a write-first command. A bare project binding deliberately selects an existing
+  // private board, so it must not create an index/recipes in the public checkout (nor try to
+  // bootstrap the bound board implicitly). Explicit --dir remains the operator's override.
+  if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
+    const owner = await validateBoundBoardOwner(await resolveLocalBundleTarget(undefined));
+    throw new CliError(
+      "CONFLICT",
+      "a project binding already selects a private board; bare init refuses before writing",
+      { help: `${cliInvocation()} sync --dir ${shellArg(owner?.ownerRoot ?? "<private-owner>")}` },
     );
   }
 

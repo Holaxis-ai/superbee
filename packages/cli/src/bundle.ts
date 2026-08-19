@@ -67,6 +67,7 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "./private-state-bundle-boundary.js";
+import { rememberBoundBoardOwner, validateBoundBoardOwner } from "./bound-board-owner.js";
 import {
   LEGACY_API_KEY_ENV,
   SUPERBEE_API_KEY_ENV,
@@ -1346,5 +1347,17 @@ export async function openBundle(dirFlag: string | undefined, remoteFlag?: strin
     return openRemoteBundle(remoteFlag);
   }
   const target = await resolveLocalBundleTarget(dirFlag);
-  return { root: target.root };
+  // A binding selects more than a directory when it names a board: prove and freeze that private
+  // owner before exposing the Bundle to any command that could persist, launch a host, or derive
+  // board state. Consumers receive the opaque capability attached to this exact handle.
+  // A general project binding is still a supported local bundle pointer. Only a binding that
+  // names one of the reserved board directory names enters the stricter board-owner capability
+  // path; ordinary external bundles retain their established local-only behavior.
+  const owner =
+    target.selectedBy === "project-binding" && BUNDLE_DIRS.includes(path.basename(target.canonicalRoot) as (typeof BUNDLE_DIRS)[number])
+      ? await validateBoundBoardOwner(target)
+      : undefined;
+  const bundle: Bundle = { root: target.root };
+  rememberBoundBoardOwner(bundle, owner);
+  return bundle;
 }

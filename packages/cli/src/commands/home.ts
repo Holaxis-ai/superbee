@@ -55,8 +55,10 @@ import {
   CONVENTIONAL_BUNDLE_DIR_NAME,
   findBundleRoot,
   openBundle,
+  resolveLocalBundleTarget,
   resolveProjectBinding,
 } from "../bundle.js";
+import { validateBoundBoardOwner } from "../bound-board-owner.js";
 import {
   deriveBundleDisplayName,
   BUNDLE_NAME_DOC_ID,
@@ -601,6 +603,25 @@ export function buildBoardBlock(
  */
 export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus | null> {
   try {
+    if (dir === undefined && await resolveProjectBinding(process.cwd())) {
+      const owner = await validateBoundBoardOwner(await resolveLocalBundleTarget(undefined));
+      if (owner) {
+        const state = await defaultSyncStore.readSyncState(owner.stateKey);
+        let uncommitted: number | null;
+        try {
+          uncommitted = countUncommitted(owner.bundleRoot);
+        } catch {
+          uncommitted = null;
+        }
+        return {
+          state: "provisioned",
+          cache: state.cache,
+          selfActors: state.selfActors ?? [],
+          unpushed: unpushedCount(owner.bundleRoot),
+          uncommitted,
+        };
+      }
+    }
     // Retarget when sitting INSIDE the board worktree (exactly where an agent lands after
     // `doc write --dir .superbee`) — otherwise the worktree reads as its OWN repo top,
     // `<board>/.superbee` doesn't exist, and the shared refs would misreport the live
@@ -863,6 +884,10 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // summarizes THAT directory's bundle instead of the CWD.
   let remote: string | undefined;
   let dir: string | undefined;
+  // Keep the binding-selected bundle path distinct from `dir`: the latter is also the board
+  // ingress selector. Replacing it with the concrete binding target would make later helpers
+  // treat a bare binding as explicit --dir and bypass the bound-owner proof.
+  let summaryDir: string | undefined;
   let explicitDir: string | undefined;
   let jsonMode = false;
   let helpMode = false;
@@ -871,6 +896,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     remote = parsed.values.remote;
     explicitDir = parsed.values.dir;
     dir = explicitDir;
+    summaryDir = explicitDir;
     jsonMode = Boolean(parsed.values.json);
     helpMode = Boolean(parsed.values.help);
   } catch {
@@ -894,7 +920,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
       const found = await resolveProjectBinding();
       if (found) {
         binding = { file: found.file, target: found.target };
-        dir = found.target;
+        summaryDir = found.target;
       }
     } catch (err) {
       bindingError = err instanceof Error ? err.message : String(err);
@@ -913,7 +939,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     }
   }
 
-  const summarize = deps.summarizeBundle ?? (() => defaultSummarizeBundle(dir));
+  const summarize = deps.summarizeBundle ?? (() => defaultSummarizeBundle(summaryDir));
 
   // A --remote scope does NOT summarize (offline guarantee — the remote block orients toward the
   // fetching commands instead). Local / `--dir` scopes read the bundle as before.

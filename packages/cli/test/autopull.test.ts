@@ -78,6 +78,16 @@ async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
+async function withCwd<T>(dir: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.cwd();
+  process.chdir(dir);
+  try {
+    return await run();
+  } finally {
+    process.chdir(previous);
+  }
+}
+
 async function tempHome(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "aslite-autopull-home-"));
 }
@@ -144,6 +154,21 @@ test("staleness gate: first read pulls (no cache), a fresh cache is served as-is
 
 test("threshold default: AUTO_PULL_STALE_MS is ~5 minutes (the adjudicated Homebrew-style window)", () => {
   assert.equal(AUTO_PULL_STALE_MS, 5 * 60_000);
+});
+
+test("binding-selected autopull uses the private board key, never the public checkout candidate", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await tempHome();
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: topo.b.board }));
+    const outcome = await withHome(homeDir, () => withCwd(topo.a.root, () => maybeAutoPull(undefined, { env: {}, now: at(0) })));
+    assert.equal(outcome, "pulled");
+    assert.ok(await withHome(homeDir, () => readCache(resolveBundleKey(topo.b.board))), "private board cache was written");
+    assert.equal(await withHome(homeDir, () => readCache(resolveBundleKey(topo.a.board))), null, "public board cache was untouched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
 });
 
 test("detection-gated: an UNPROVISIONED checkout never fires and is NEVER provisioned by a read", async () => {
