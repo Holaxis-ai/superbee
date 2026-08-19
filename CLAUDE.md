@@ -443,6 +443,29 @@ bundle-relative**.
   built artifact. That is slow and it is what finds defects that reasoning about the code
   does not.
 
+- **Tell a dispatched agent its position in the pipeline, or it will gate like it is shipping.**
+  A packet that says "build it, gate it, commit it" reads as "you are the last step", so the
+  agent runs the full gate - then the orchestrator runs it again, then CI runs it. Three runs,
+  one piece of evidence. Only CI's is authoritative: it runs on the exact SHA, branch protection
+  enforces it, and no dirty tree or stale build can fool it.
+
+  | Layer | Question it answers | Runs |
+  | --- | --- | --- |
+  | sub-agent | did I break what I touched? | the LANE for its change |
+  | orchestrator | is this commit what it claims to be? | nothing - see below |
+  | CI | is this SHA shippable? | the full gate, authoritative |
+
+  **Verifying the commit and re-running the gate are different jobs.** Checking the parent, that
+  nothing was amended, that no AI attribution crept in, and that the diff matches the stated
+  scope is cheap, is duplicated nowhere else, and is what the orchestrator is actually positioned
+  to do. Re-running tests the agent already ran is duplication wearing the word "verify".
+
+  Two cases where the orchestrator legitimately runs a gate: INTEGRATING several agents' work,
+  because the combination is untested even when each part passed; and when the agent's evidence
+  is void - it did not read the exit code directly, or the tree changed after the run. Where a
+  CI round-trip is expensive, running the lane locally first is a latency judgement, not a
+  correctness requirement.
+
 - **When independent review or QA is required, use these review-process conventions:**
   - Agents that touch git or run tests work in an ISOLATED worktree/checkout, never the
     shared working tree; reviewers detach onto the exact sha under review.
