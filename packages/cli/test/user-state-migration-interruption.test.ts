@@ -122,6 +122,22 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
     lossy: false,
   },
   {
+    label: "M-I2b — journal written, its own staging temporary survived the write",
+    stage: "beforeRecordPublish",
+    abort: true,
+    damage: (canonical) => {
+      writeFileSync(join(canonical, ownTemporaryFor(JOURNAL_FILE_NAME)), "partial\n", { mode: 0o600 });
+    },
+    expectedState: (_canonical, entries) => {
+      assert.ok(entries.includes(JOURNAL_FILE_NAME), "the journal landed");
+      assert.ok(entries.includes(ownTemporaryFor(JOURNAL_FILE_NAME)), "and its temporary outlived the write");
+    },
+    // The journal is a destination this module stages like any other; its temporary is owned by
+    // the same argument that owns the marker's. Omitting it from the sweep bricks this window.
+    expectedExitNode: "resumes",
+    lossy: false,
+  },
+  {
     label: "M-I3 — during record copying, leaving OUR OWN temporary in the root",
     stage: "beforeRecordPublish",
     abort: true,
@@ -341,6 +357,7 @@ test("migration interruption: one row per kill point, with the exit node a rerun
             "nor in the root",
           );
           assert.equal((await entriesOf(fixture.canonical)).includes(JOURNAL_FILE_NAME), false, "a completed root carries no journal");
+          assert.ok((await entriesOf(fixture.canonical)).includes(".gitignore"), "and is hardened like an ensured one");
         } else {
           const expected = row.expectedExitNode;
           await assert.rejects(

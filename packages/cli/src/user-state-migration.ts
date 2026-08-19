@@ -336,11 +336,14 @@ function migrationTemporaryPath(root: string, relative: string): string {
  * migration's own staging — a journal that parses and names exactly this record set, or a root this
  * process exclusively created — and only the temporaries that record set (plus the marker) can
  * reach are unlinked, each at its one derived path. A pattern-matching file at any other name is
- * not ours to touch: it stays, and the exactness assertion refuses the root. Best-effort by design:
+ * not ours to touch: it stays, and the exactness assertion refuses the root. The residual is stated
+ * plainly: a regular file someone else placed at one of OUR derived paths is indistinguishable from
+ * our own interrupted temporary and is unlinked — provenance is derived, not verified; the root is
+ * 0700 and same-uid, and a temporary's bytes are transient by definition. Best-effort by design:
  * a survivor trips that assertion rather than being quietly published over.
  */
 async function sweepOwnedStagingTemporaries(root: string, records: MigrationRecord[]): Promise<void> {
-  const owned = [...records.map((record) => record.relative), USER_STATE_MARKER_FILE_NAME];
+  const owned = [MIGRATION_JOURNAL_FILE_NAME, ...records.map((record) => record.relative), USER_STATE_MARKER_FILE_NAME];
   for (const relative of owned) {
     const temporary = migrationTemporaryPath(root, relative);
     const status = await lstat(temporary).catch(() => null);
@@ -390,8 +393,9 @@ function journalBytes(records: MigrationRecord[]): string {
 
 /**
  * A kill between marker publication and the journal unlink leaves a marker-proven, complete root
- * that still carries its journal. Readers ignore it (`preflightDurableRecords` reads known names
- * only), so the root is usable; this removes the residue on the next run. Only a file that parses
+ * that still carries its journal and has not yet published its `.gitignore`. Readers ignore the
+ * journal (`preflightDurableRecords` reads known names only), so the root is usable; the next run
+ * removes the journal here and the ready path re-ensures the `.gitignore`. Only a file that parses
  * as this module's own journal is touched — anything else at that name is left for inspection.
  */
 async function removeStaleJournal(root: string): Promise<void> {
@@ -497,6 +501,7 @@ export async function migrateUserState(
       throw new CliError("CONFLICT", "canonical Superbee user state contains an invalid durable record", { help: "superbee setup" });
     });
     await removeStaleJournal(root);
+    await ensureStateRootGitignore(root);
     return receipt("already_current", false, current);
   }
 
