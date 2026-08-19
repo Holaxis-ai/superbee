@@ -27,22 +27,15 @@ DEFAULT local backend; the storage seam is pluggable (gate 3). Hosted deployment
 this OSS repository; the former Cloudflare implementation is preserved only as a private frozen
 reference.
 
-Before changing anything, read the PROJECT BUNDLE — this repo's own knowledge bundle at
-`.superbee/`, shared on a dedicated `board` branch via `superbee sync` (gitignored on
-`main`, NOT committed with code). A fresh clone materializes it with one `sync` — the
-SessionStart hook does a best-effort pull for you — after which the conventional-folder walk
-discovers it with zero config, so a bare `doc read docs/core` just works: `docs/core` (the ONE-PAGE
-product statement + frozen-scope list; scope questions answer to it), the board for live
-state (`list --type Task`; per-unit records live in `tasks/<unit>` descriptions; the
-pre-2026-07-06 changelog lives in the PRIVATE out-of-repo board archive, with the other
-`visibility: private` docs), `docs/vision` (near-term design
-intent + OKF grounding) and `docs/north-star` (the future-state vision) as needed — then
-the packages' `src/`. The repo carries README + this file + code; the bundle rides the
-`board` branch (root `/docs/` stays gitignored; `.superbee.json` and supported legacy
-`.agentstate.json` bindings are also gitignored and must NOT be committed here — the conventional
-folder is the resolution path). Ground
-every change in the ACTUAL current code, not assumptions — including the claims in THIS
-file: when this guide and the code disagree, the code wins and this file gets fixed.
+Before changing anything, orient through the PROJECT BUNDLE: run `superbee sync`, then read
+`docs/core` (the one-page product statement + frozen-scope list), live board state (`list --type
+Task`; per-unit records live in `tasks/<unit>` descriptions), and, as needed, `docs/vision` and
+`docs/north-star` — then the packages' `src/`. Use Superbee CLI commands as configured during
+setup; this guide does not duplicate their workspace discovery, synchronization, or recovery
+logic. If a Superbee command fails or selects an unexpected workspace, treat Superbee as
+misconfigured: run `superbee setup` and follow its guidance. Ground every change in the ACTUAL
+current code, not assumptions — including the claims in THIS file: when this guide and the code
+disagree, the code wins and this file gets fixed.
 
 ## Standing gates (honor these before shipping)
 
@@ -437,8 +430,7 @@ bundle-relative**.
   fix privately, merge, then disclose — never a public PR comment or board doc.
   Pre-merge review findings stay public by default. The board is public: the
   write-time scrub discipline covers vulnerability details, not just secrets.
-- **Records live on the PROJECT BUNDLE (the in-repo board at `.superbee/`) — the
-  product tracks its own build.** Unit-close means: update `tasks/<unit>` (bare
+- **Records live on the PROJECT BUNDLE — the product tracks its own build.** Unit-close means: update `tasks/<unit>` (bare
   `doc update tasks/<unit> --progress_status …`, with the description carrying the record — what shipped, commit hash,
   honest caveats) and, when the shipped list or sequence changed, the bundle's `roadmap`
   doc. Plans are authored as bundle docs (`plans/<unit>`, `type: Plan`); research as
@@ -447,13 +439,10 @@ bundle-relative**.
   nearly rebuilt a shipped unit), so: BEFORE building any "queued" item, grep the tree —
   records may lag the code. Work is CLAIMED before it is built: flip `tasks/<unit>` to
   `in_progress` with `--actor` — the CAS write IS the claim (see the bundle's Task convention).
-  **Board writes are not code commits.** Board/bundle writes (records, claims, context
-  notes, task updates — anything under `.superbee/` with no code alongside) go through
-  `superbee sync`, which shares them on the repo's own `board` branch. The board was MIGRATED off
-  `main` (it is gitignored there now), so there is no longer a `board:`-prefixed direct-commit-to-main
-  path — `sync` is the one channel, and it touches nothing outside the board. Code ships via branch +
-  PR + review gates, always. A board doc rides a PR only when it is ITSELF the reviewed
-  deliverable (a plan under vetting, records that explain a code change they accompany).
+  **Board writes are not code commits.** Board/bundle writes (records, claims, context notes, and
+  task updates) go through `superbee sync`; code ships via branch + PR + review gates. A board doc
+  rides a PR only when it is itself the reviewed deliverable (a plan under vetting, records that
+  explain a code change they accompany).
 
 ## Scope
 
