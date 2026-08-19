@@ -54,16 +54,10 @@ test("resolveTargetFacts returns the allowlisted tuple and policy tag", async ()
 });
 
 test("the preview tuple may prerelease its planned stable but rejects an older release line", async () => {
+  // Loading the committed manifest runs the owning normalizer, so reaching the fixtures below
+  // already proves that the checked-in pair satisfies either accepted shape: a later preview or a
+  // prerelease of the exact planned stable. Do not restate only one of those shapes here.
   const manifest = await loadReleaseTargets();
-  assert.equal(
-    compareStrictSemver(
-      manifest.allowed_tuples["successor-preview"].version,
-      manifest.allowed_tuples["successor-stable"].version,
-    ),
-    1,
-    "the COMMITTED pair must already satisfy the invariant",
-  );
-
   const stableVersion = manifest.allowed_tuples["successor-stable"].version;
   const sameLinePreview = {
     ...manifest,
