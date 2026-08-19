@@ -192,6 +192,18 @@ test("list orders meaningful change time newest-first after filters and before l
     const local = await runJson(["--type", "Context Note", "--limit", "0", "--dir", dir]);
     assert.equal(local.count, expected.length);
     assert.deepEqual((local.docs as Array<{ id: string }>).map((row) => row.id), expected);
+    assert.deepEqual(
+      (local.docs as Array<{ id: string; timestamp: string }>).map(({ id, timestamp }) => [id, timestamp]),
+      [
+        ["notes/y-generated-wins", "2026-04-01T00:00:00.000Z"],
+        ["notes/a-tie", "2026-03-01T00:00:00.000Z"],
+        ["notes/z-tie", "2026-03-01T00:00:00.000Z"],
+        ["notes/a-newer", "2026-02-01T00:00:00.000Z"],
+        ["notes/z-oldest", "2026-01-01T00:00:00.000Z"],
+        ["notes/a-missing", ""],
+        ["notes/b-invalid-generated", "not-a-date"],
+      ],
+    );
 
     const limited = await runJson(["--type", "Context Note", "--limit", "3", "--dir", dir]);
     assert.equal(limited.count, expected.length);

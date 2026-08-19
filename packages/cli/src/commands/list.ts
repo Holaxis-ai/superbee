@@ -44,11 +44,9 @@ import {
   readKindField,
   progressStatusCoordinate,
   projectKindForAuthoring,
-  parseTimestamp,
   type KindRegistry,
   type QueryFilter,
 } from "@superbee/core";
-import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
 import { parseLeafOrUsage } from "../args.js";
@@ -56,6 +54,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
+import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
 
 export const LIST_USAGE = `superbee list — query concepts over their frontmatter (alias: query)
 
@@ -304,14 +303,10 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   // Core owns the storage-facing canonical-ID ordering. The CLI presents a different, orientation
   // facing order only after every CLI filter has settled: newest meaningful change first, then
   // canonical ID. Invalid or missing clocks remain visible at the end rather than being dropped.
-  docs.sort((a, b) => {
-    const aTime = parseTimestamp(meaningfulChangeTimeValue(a.frontmatter));
-    const bTime = parseTimestamp(meaningfulChangeTimeValue(b.frontmatter));
-    if (aTime !== null && bTime !== null && aTime !== bTime) return aTime > bTime ? -1 : 1;
-    if (aTime !== null && bTime === null) return -1;
-    if (aTime === null && bTime !== null) return 1;
-    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-  });
+  const recency = docs.map((doc) => ({ doc, key: meaningfulChangeOrderKey(doc.id, doc.frontmatter) }));
+  recency.sort((a, b) => compareByMeaningfulChange(a.key, b.key));
+  docs = recency.map(({ doc }) => doc);
+  const meaningfulTimestampById = new Map(recency.map(({ key }) => [key.id, key.timestamp]));
 
   // Cap a projected cell so one long field can't dominate a row (AXI §2/§3 — long-form content
   // belongs in `doc read`, not a list cell). SHARED by the `--fields` projection and the kind-aware
@@ -335,7 +330,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
         typeof d.frontmatter.title === "string"
           ? d.frontmatter.title
           : (d.id.split("/").pop() ?? d.id),
-      timestamp: typeof d.frontmatter.timestamp === "string" ? d.frontmatter.timestamp : "",
+      timestamp: meaningfulTimestampById.get(d.id) ?? "",
     };
     // The `--fields` hatch caps each cell the SAME way kind columns do — a long field (e.g.
     // `--fields description`) is truncated per row rather than dumped in full.

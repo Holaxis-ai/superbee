@@ -64,7 +64,6 @@ import {
   type BundleNameSource,
 } from "../bundle-name.js";
 import { queryHeads, type OkfDocument } from "@superbee/core";
-import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import {
@@ -93,6 +92,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
 import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from "../cursor.js";
 import { hookNeedsUpdate } from "./hook.js";
+import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
 import { loadCatalog } from "../catalog.js";
 import { staticBuildIdentity, type ArtifactChannel } from "../build-identity.js";
 import {
@@ -289,24 +289,20 @@ export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter"
     Object.entries(byType).sort(([ta, ca], [tb, cb]) => cb - ca || ta.localeCompare(tb)),
   );
 
-  const rows: HomeRow[] = docs.map((d) => {
-    const timestamp = meaningfulChangeTimeValue(d.frontmatter);
+  const orderedRows = docs.map((d) => {
+    const key = meaningfulChangeOrderKey(d.id, d.frontmatter);
     return {
-      id: d.id,
-      type: typeof d.frontmatter.type === "string" ? d.frontmatter.type : "",
-      title: rowTitle(d.id, d.frontmatter.title),
-      timestamp: typeof timestamp === "string" ? timestamp : "",
+      key,
+      row: {
+        id: d.id,
+        type: typeof d.frontmatter.type === "string" ? d.frontmatter.type : "",
+        title: rowTitle(d.id, d.frontmatter.title),
+        timestamp: key.timestamp,
+      } satisfies HomeRow,
     };
   });
-  // Timestamp desc; missing/empty timestamp sorts LAST; id asc as a deterministic tiebreak.
-  rows.sort((a, b) => {
-    if (a.timestamp && b.timestamp) {
-      if (a.timestamp !== b.timestamp) return a.timestamp < b.timestamp ? 1 : -1;
-    } else if (a.timestamp !== b.timestamp) {
-      return a.timestamp ? -1 : 1; // has-timestamp sorts before empty
-    }
-    return a.id.localeCompare(b.id);
-  });
+  orderedRows.sort((a, b) => compareByMeaningfulChange(a.key, b.key));
+  const rows = orderedRows.map(({ row }) => row);
 
   return {
     root,

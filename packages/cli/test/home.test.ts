@@ -490,10 +490,12 @@ test("A1.7 recent ordering + cap (REAL summarizeDocs): timestamp desc, missing l
   assert.equal(recent.total, 7);
 });
 
-test("A1.7a v0.1 meaningful-time agreement: malformed remains sortable, ties are id-ordered, blank and missing stay last", () => {
+test("A1.7a meaningful-time ordering: parsed clocks, malformed clocks, and ID ties agree with list", () => {
   const timestamp = "2026-07-01T00:00:00.000Z";
   const docs: OkfDocument[] = [
     docOf("notes/tie-b", timestamp),
+    docOf("notes/offset-newer", "2026-07-01T08:00:00Z"),
+    docOf("notes/offset-older", "2026-07-01T12:00:00+05:00"),
     { id: "notes/missing", frontmatter: { type: "Note", title: "missing" }, body: "" },
     docOf("notes/blank", ""),
     docOf("notes/malformed", "not-a-date"),
@@ -502,10 +504,12 @@ test("A1.7a v0.1 meaningful-time agreement: malformed remains sortable, ties are
   assert.deepEqual(
     summarizeDocs(docs, "~/bundle").recent.rows.map(({ id, timestamp: value }) => [id, value]),
     [
-      ["notes/malformed", "not-a-date"],
+      ["notes/offset-newer", "2026-07-01T08:00:00Z"],
       ["notes/tie-a", timestamp],
       ["notes/tie-b", timestamp],
+      ["notes/offset-older", "2026-07-01T12:00:00+05:00"],
       ["notes/blank", ""],
+      ["notes/malformed", "not-a-date"],
       ["notes/missing", ""],
     ],
   );
