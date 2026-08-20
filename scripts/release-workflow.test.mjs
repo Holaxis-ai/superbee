@@ -250,7 +250,7 @@ test("the finalizer persists authority before provisional PATCH and proves publi
   const publishPacketAt = publish.indexOf("release-verify-ordering.mjs prepared-artifact");
   const patchAt = publish.indexOf("release-run-operations.mjs --op immutable-release");
   assert.ok(publishPacketAt !== -1 && patchAt !== -1 && publishPacketAt < patchAt);
-  assert.match(publish, /continue-on-error: true/, "a PATCH client exit is provisional, never the verdict");
+  assert.match(publish, /^ {4}continue-on-error: true$/m, "the entire publish job is provisional, never the verdict");
   assert.doesNotMatch(publish, /published-live|releases\/latest/, "publish must not own the post-PATCH observation or proof");
   const proof = jobs.proof;
   const proofPacketAt = proof.indexOf("release-verify-ordering.mjs prepared-artifact");
@@ -607,9 +607,15 @@ test("publication topology makes PATCH provisional and proof independently resum
   const publishCommands = runBlocks(jobs.publish).flatMap(shellCommands);
   const mutation = publishCommands.find((command) => command.includes("release-run-operations.mjs --op immutable-release"));
   assert.ok(mutation?.includes("--execute"), "publish must issue the manifest-derived PATCH command");
-  assert.match(jobs.publish, /id: patch_release\n {8}continue-on-error: true/);
+  // Step tolerance handles an ordinary client exit. Job tolerance is independently load-bearing:
+  // without it a runner/job failure after an applied PATCH makes the workflow red even when the
+  // always-running exact-state proof passes, inviting a retry of the ambiguous mutation.
+  assert.match(jobs.publish, /id: patch_release\n {8}continue-on-error: true/, "the PATCH step exit is provisional");
+  assert.match(jobs.publish, /^ {4}continue-on-error: true$/m, "publish job failure is provisional too, not just its PATCH step");
   assert.doesNotMatch(jobs.publish, /published-live|published-publication-proof/);
   assert.match(jobs.proof, /release-verify-ordering\.mjs published-live/);
+  assert.doesNotMatch(jobs.proof, /^ {4}continue-on-error:/m, "proof failure must keep the workflow red");
+  assert.doesNotMatch(jobs.proof, /^ {8}continue-on-error:/m, "no proof step may be tolerated");
   for (const token of MUTATING_TOKENS) {
     assert.ok(!jobs.proof.includes(token), `proof must not contain mutating token ${JSON.stringify(token)}`);
   }

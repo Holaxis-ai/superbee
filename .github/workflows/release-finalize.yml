@@ -506,6 +506,7 @@ jobs:
     name: publish — provisional numeric-ID PATCH only
     needs: prepare
     if: inputs.mode == 'live'
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment: release
