@@ -21,6 +21,7 @@ import {
   prepareTrustedAction,
   invalidateKinds,
   sendViewBridge,
+  verifyViewDelivery,
   verifyViewLaunch,
   type ActionConfirmation,
   type MintedView,
@@ -28,6 +29,7 @@ import {
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
 import { actionError, actionReply, parseActionBridgeMessage } from "@superbee/view-runtime/action-bridge";
+import { VIEW_DELIVERY_RETRY_MS, VIEW_LOAD_DEADLINE_MS } from "./viewReadiness.js";
 
 const ACTION_CONFIRMATION_ARM_MS = 500;
 const VIEW_AUTHORIZATION_ARM_MS = 500;
@@ -47,12 +49,25 @@ interface PendingAction {
   inFlight: boolean;
 }
 
+interface FrameDeliveryProbe {
+  frame: HTMLIFrameElement;
+  launchId: string;
+  seq: number;
+}
+
 function scalarLabel(value: string | number | boolean | null): string {
   return value === null ? "(not set)" : JSON.stringify(value);
 }
 
+const VIEW_LOAD_FAILURE =
+  "The shell could not confirm that this View finished loading. Its local HTML request may have been blocked, or its launch may have changed or expired. Reopen the View, and check browser content-blocking or privacy settings if the problem continues.";
+
 export function PageFrame({ pageId }: { pageId: string }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const frameLoadTimerRef = useRef<number | null>(null);
+  const frameDeliveryRetryTimerRef = useRef<number | null>(null);
+  const frameDeliveryProbeRef = useRef<FrameDeliveryProbe | null>(null);
+  const frameReadySeqRef = useRef<number | null>(null);
   const subscribedRef = useRef(false);
   // A shell navigation consumes the currently framed document's right to navigate. Unlike the
   // async-load epoch below, this remains locked while that old iframe can still post messages.
@@ -86,6 +101,25 @@ export function PageFrame({ pageId }: { pageId: string }) {
     setActionArmed(false);
     if (pending?.approvalToken) void cancelTrustedAction(pending.approvalToken).catch(() => {});
   }, []);
+
+  const clearFrameLoadTimer = useCallback(() => {
+    if (frameLoadTimerRef.current === null) return;
+    window.clearTimeout(frameLoadTimerRef.current);
+    frameLoadTimerRef.current = null;
+  }, []);
+
+  const clearFrameDeliveryProbe = useCallback(() => {
+    if (frameDeliveryRetryTimerRef.current !== null) {
+      window.clearTimeout(frameDeliveryRetryTimerRef.current);
+      frameDeliveryRetryTimerRef.current = null;
+    }
+    frameDeliveryProbeRef.current = null;
+  }, []);
+
+  const clearFrameReadiness = useCallback(() => {
+    clearFrameLoadTimer();
+    clearFrameDeliveryProbe();
+  }, [clearFrameDeliveryProbe, clearFrameLoadTimer]);
 
   // A hostile View controls when this dialog appears. Keep both predictable button targets inert
   // long enough that the click which triggered the proposal (or its immediate follow-up) cannot
@@ -124,7 +158,9 @@ export function PageFrame({ pageId }: { pageId: string }) {
   // sandboxed iframe unmounts, so its bridge access ends WITH its registry doc, not after it.
   const revoke = useCallback((reason: string) => {
     discardPendingAction();
+    clearFrameReadiness();
     loadSeqRef.current++;
+    frameReadySeqRef.current = null;
     subscribedRef.current = false;
     launchIdRef.current = null;
     setPendingLaunch(null);
@@ -133,7 +169,79 @@ export function PageFrame({ pageId }: { pageId: string }) {
     setFrameSeq(null);
     setEntryKey(null);
     setError(reason);
-  }, [discardPendingAction]);
+  }, [clearFrameReadiness, discardPendingAction]);
+
+  const markFrameReady = useCallback((seq: number) => {
+    if (seq !== loadSeqRef.current) return;
+    frameReadySeqRef.current = seq;
+    clearFrameReadiness();
+  }, [clearFrameReadiness]);
+
+  const probeFrameDelivery = useCallback((frame: HTMLIFrameElement, seq: number, launchId: string) => {
+    const existing = frameDeliveryProbeRef.current;
+    if (
+      existing?.frame === frame &&
+      existing.seq === seq &&
+      existing.launchId === launchId
+    ) return;
+
+    clearFrameDeliveryProbe();
+    const probe: FrameDeliveryProbe = { frame, launchId, seq };
+    frameDeliveryProbeRef.current = probe;
+
+    function isCurrent(): boolean {
+      return (
+        frameDeliveryProbeRef.current === probe &&
+        probe.seq === loadSeqRef.current &&
+        activeFrameSeqRef.current === probe.seq &&
+        launchIdRef.current === probe.launchId &&
+        iframeRef.current === probe.frame &&
+        probe.frame.contentWindow !== null
+      );
+    }
+
+    function scheduleRetry(): void {
+      if (!isCurrent()) return;
+      frameDeliveryRetryTimerRef.current = window.setTimeout(() => {
+        frameDeliveryRetryTimerRef.current = null;
+        if (isCurrent()) attempt(true);
+      }, VIEW_DELIVERY_RETRY_MS);
+    }
+
+    function attempt(isRetry: boolean): void {
+      if (!isCurrent()) return;
+      void verifyViewDelivery(probe.launchId).then(
+        ({ delivered }) => {
+          if (!isCurrent()) return;
+          if (delivered) {
+            markFrameReady(probe.seq);
+          } else if (!isRetry) {
+            scheduleRetry();
+          }
+        },
+        () => {
+          if (!isRetry && isCurrent()) scheduleRetry();
+        },
+      );
+    }
+
+    attempt(false);
+  }, [clearFrameDeliveryProbe, markFrameReady]);
+
+  const failFrameLoad = useCallback((seq: number, explicitFailure = false) => {
+    if (seq !== loadSeqRef.current || (!explicitFailure && frameReadySeqRef.current === seq)) return;
+    revoke(VIEW_LOAD_FAILURE);
+  }, [revoke]);
+
+  useEffect(() => {
+    clearFrameLoadTimer();
+    if (src === null || frameSeq === null || frameReadySeqRef.current === frameSeq) return;
+    frameLoadTimerRef.current = window.setTimeout(
+      () => failFrameLoad(frameSeq),
+      VIEW_LOAD_DEADLINE_MS,
+    );
+    return clearFrameLoadTimer;
+  }, [clearFrameLoadTimer, failFrameLoad, frameSeq, src]);
 
   /**
    * Resolve registry doc -> entry key -> nonce URL and (re)load the frame. The ONE path for
@@ -142,7 +250,9 @@ export function PageFrame({ pageId }: { pageId: string }) {
    */
   const loadPage = useCallback(async () => {
     discardPendingAction();
+    clearFrameReadiness();
     const seq = ++loadSeqRef.current;
+    frameReadySeqRef.current = null;
     // Pre-revoke IMMEDIATELY, synchronously, before the async server mint below. This
     // is the ONE entry point every re-resolution path shares (mount, page switch, a live
     // registry-doc change, blob hot-reload, resync), so the OLD capability/subscription can never
@@ -187,7 +297,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
       // with the WRONG advice over what's really just a dismissable per-view error.
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [discardPendingAction, pageId]);
+  }, [clearFrameReadiness, discardPendingAction, pageId]);
 
   // Resolve registry doc -> entry key -> nonce URL on mount / page switch. Launch revocation
   // happens unconditionally at the TOP of loadPage itself (every re-resolution path
@@ -201,9 +311,10 @@ export function PageFrame({ pageId }: { pageId: string }) {
     void loadPage();
     return () => {
       discardPendingAction();
+      clearFrameReadiness();
       loadSeqRef.current++;
     };
-  }, [discardPendingAction, loadPage]);
+  }, [clearFrameReadiness, discardPendingAction, loadPage]);
 
   // Broker page->shell bridge requests. v0 remains read-only; v1 may only prepare a trusted,
   // human-confirmed action and never receives the launch id or approval token.
@@ -219,6 +330,9 @@ export function PageFrame({ pageId }: { pageId: string }) {
       // flight, so without this check a reply computed for the OLD page could cross the revoke
       // boundary (P1).
       const seq = loadSeqRef.current;
+      // Any message from the exact current opaque-origin frame proves its own script loaded.
+      // Scriptless access:none Views use the separate host delivery receipt below.
+      markFrameReady(seq);
 
       const actionMessage = parseActionBridgeMessage(ev.data);
       if (actionMessage !== null) {
@@ -300,6 +414,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
             // End this source generation before changing history. Concurrent outcomes captured
             // under it then fail the fence above and cannot navigate a second time.
             navigationConsumedRef.current = true;
+            clearFrameReadiness();
             loadSeqRef.current++;
             discardPendingAction();
             subscribedRef.current = false;
@@ -323,7 +438,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [discardPendingAction, pageId]);
+  }, [clearFrameReadiness, discardPendingAction, markFrameReady, pageId]);
 
   // Live: push doc changes to the subscribed page; REVOKE when this page's registry doc is
   // removed (P1 — an open frame must not keep reading through the bridge after its page is
@@ -465,6 +580,14 @@ export function PageFrame({ pageId }: { pageId: string }) {
           referrerPolicy="no-referrer"
           src={src}
           title={title}
+          onLoad={(event) => {
+            const launchId = launchIdRef.current;
+            if (frameSeq === null || !launchId) return;
+            probeFrameDelivery(event.currentTarget, frameSeq, launchId);
+          }}
+          onError={() => {
+            if (frameSeq !== null) failFrameLoad(frameSeq, true);
+          }}
         />
       ) : (
         <p className="view-status">Opening page…</p>
