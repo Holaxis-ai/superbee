@@ -7,13 +7,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseArgs } from "node:util";
 
-import { parseLeafOrUsage } from "../src/args.js";
+import { parseLeafOrUsage, type ParseRecoveryOptions } from "../src/args.js";
 import { CLI_LEAVES } from "../src/command-spec.js";
 import { CliError } from "../src/errors.js";
 
-function parseForTest<T extends { positionals: readonly string[]; values?: object }>(parse: () => T, command: string): T {
+function parseForTest<T extends { positionals: readonly string[]; values?: object }>(
+  parse: () => T,
+  command: string,
+  recovery: ParseRecoveryOptions = {},
+): T {
   void command;
-  return parseLeafOrUsage(parse, CLI_LEAVES.list);
+  return parseLeafOrUsage(parse, CLI_LEAVES.list, recovery);
 }
 
 function assertUsage(err: unknown, message: string, command = "list"): void {
@@ -50,6 +54,56 @@ test("A2.b unknown short option", () => {
   );
 });
 
+test("A2.b2 one unambiguous nearby long option gets a deterministic correction", () => {
+  assert.throws(
+    () =>
+      parseForTest(
+        () => parseArgs({ args: ["--limt"], options: { limit: { type: "string" } }, allowPositionals: true }),
+        "list",
+        { optionNames: ["limit", "field", "prefix"] },
+      ),
+    (err: unknown) => {
+      assertUsage(err, "unknown option '--limt' — did you mean '--limit'?");
+      return true;
+    },
+  );
+});
+
+test("A2.b3 distant and tied option matches stay fail-closed without a guessed correction", () => {
+  for (const [token, optionNames] of [
+    ["--unrelated", ["limit", "field"]],
+    ["--foa", ["foo", "fob"]],
+  ] as const) {
+    assert.throws(
+      () =>
+        parseForTest(
+          () => parseArgs({ args: [token], options: {}, allowPositionals: true }),
+          "list",
+          { optionNames },
+        ),
+      (err: unknown) => {
+        assertUsage(err, `unknown option '${token}'`);
+        return true;
+      },
+    );
+  }
+});
+
+test("A2.b4 inconsistent recovery metadata never suggests the rejected token itself", () => {
+  assert.throws(
+    () =>
+      parseForTest(
+        () => parseArgs({ args: ["--limit"], options: {}, allowPositionals: true }),
+        "list",
+        { optionNames: ["limit", "field"] },
+      ),
+    (err: unknown) => {
+      assertUsage(err, "unknown option '--limit'");
+      return true;
+    },
+  );
+});
+
 test("A2.c missing option value", () => {
   assert.throws(
     () =>
@@ -61,9 +115,11 @@ test("A2.c missing option value", () => {
             allowPositionals: true,
           }),
         "list",
+        { optionNames: ["type", "json"] },
       ),
     (err: unknown) => {
       assertUsage(err, "option '--type' requires a value");
+      assert.ok(!(err as CliError).message.includes("did you mean"));
       return true;
     },
   );
