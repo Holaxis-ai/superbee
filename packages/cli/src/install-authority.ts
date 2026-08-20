@@ -14,10 +14,13 @@ export type PersistentInstallAuthorityState =
   | "local_dev"
   | "unknown";
 
+export type PersistentInstallAuthorityFailure = "npm_prefix_runtime_unavailable";
+
 export interface PersistentInstallAuthority {
   allowed: boolean;
   state: PersistentInstallAuthorityState;
   reason: string;
+  failure?: PersistentInstallAuthorityFailure;
   evidence: {
     npm_prefix: string | null;
     bin_path: string | null;
@@ -36,11 +39,16 @@ export interface PersistentInstallAuthorityInput {
   realpath: (path: string) => string | undefined;
 }
 
-function unknown(input: PersistentInstallAuthorityInput, reason: string): PersistentInstallAuthority {
+function unknown(
+  input: PersistentInstallAuthorityInput,
+  reason: string,
+  failure?: PersistentInstallAuthorityFailure,
+): PersistentInstallAuthority {
   return {
     allowed: false,
     state: "unknown",
     reason,
+    ...(failure ? { failure } : {}),
     evidence: {
       npm_prefix: null,
       bin_path: null,
@@ -171,7 +179,11 @@ export function classifyPersistentInstallAuthority(
   const stableRuntimePath = normalize(join(prefixBin, "node"));
   const stableRuntime = input.realpath(stableRuntimePath);
   if (!runtime || !stableRuntime || runtime !== stableRuntime) {
-    return unknown(input, "npm-prefix bin/node does not resolve to the running Node executable");
+    return unknown(
+      input,
+      "npm global prefix does not provide the running Node launcher required for durable host integration",
+      "npm_prefix_runtime_unavailable",
+    );
   }
 
   return {
