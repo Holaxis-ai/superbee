@@ -263,6 +263,35 @@ test("freshness clock creation stays edition-aware and does not add v0.2 provena
   assert.equal(result.doc.frontmatter.generated, undefined);
 });
 
+test("v0.2 freshness Kinds requiring timestamp use that one clock without invented provenance", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const kind: KindConvention = {
+    ...FRESH_KIND,
+    fields: {
+      ...FRESH_KIND.fields,
+      required: ["title", "timestamp"],
+      optional: [],
+    },
+  };
+  const registry: KindRegistry = { kinds: new Map([[kind.governs, kind]]), warnings: [] };
+  const result = await mutateDocument({
+    bundle,
+    id: "context-notes/required-clock",
+    mode: "create-only",
+    registry,
+    strict: true,
+    now: () => "2026-08-20T13:15:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: kind.governs, title: "Required clock" },
+      body: "# Summary\n",
+    }),
+  });
+
+  assert.equal(result.doc.frontmatter.timestamp, "2026-08-20T13:15:00.000Z");
+  assert.equal(result.doc.frontmatter.generated, undefined);
+});
+
 test("v0.2 freshness creation preserves an explicit usable legacy clock without inventing provenance", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);

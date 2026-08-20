@@ -219,6 +219,7 @@ function withV02Metadata(
     requireGenerationClock: existing === undefined
       && kind !== undefined
       && freshnessHorizonMs(kind) !== undefined
+      && !kind.fields.required.includes("timestamp")
       && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter)) === null,
   });
 }
