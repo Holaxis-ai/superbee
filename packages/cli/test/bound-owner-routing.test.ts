@@ -1,21 +1,28 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { initBundle } from "@superbee/core";
+import { CONVENTION_TYPE, initBundle, writeDoc } from "@superbee/core";
 import { maybeAutoPull } from "../src/autopull.js";
-import { boardAttributionForRoute, resolveLocalBundleRoute } from "../src/bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, resolveLocalBundleRoute } from "../src/bundle.js";
 import { boardPostPersistHook } from "../src/board-attribution.js";
 import { readCache, readMarker, readSyncState } from "../src/cursor.js";
+import { docRead } from "../src/commands/doc/read.js";
+import { docWrite } from "../src/commands/doc/write.js";
 import { init } from "../src/commands/init.js";
 import { home } from "../src/commands/home.js";
+import { list } from "../src/commands/list.js";
 import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
 import { sync } from "../src/commands/sync.js";
 import { resolveBundleKey } from "@superbee/board-git";
 import { boardHead, git, isMidRebase, makeCommittedFolderTopology, makeTwoCloneTopology, wedgeMidRebase } from "../../board-git/test/git-harness.js";
+
+const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
 async function inDir<T>(dir: string, run: () => Promise<T>): Promise<T> {
   const before = process.cwd();
@@ -79,16 +86,20 @@ test("lexical binding symlinks reject before a public board can be routed", asyn
     const publicHead = boardHead(topo.a);
     const direct = path.join(temp, "direct-board");
     const ancestor = path.join(temp, "ancestor");
+    const nestedInner = path.join(temp, "nested-inner");
+    const nestedOuter = path.join(temp, "nested-outer");
     await symlink(topo.a.board, direct, "dir");
     await symlink(topo.a.root, ancestor, "dir");
+    await symlink(topo.a.board, nestedInner, "dir");
+    await symlink(nestedInner, nestedOuter, "dir");
 
-    for (const target of [direct, path.join(ancestor, ".superbee")]) {
+    for (const target of [direct, path.join(ancestor, ".superbee"), nestedOuter]) {
       await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: target }));
       await assert.rejects(
         () => inDir(topo.a.root, () => resolveLocalBundleRoute(undefined)),
-        /lexical path component .* must not be a symlink/,
+        /symlinked target has a conventional board-worktree signature/,
       );
-      await assert.rejects(() => inDir(topo.a.root, () => sync([], { stdout: () => {} })), /must not be a symlink/);
+      await assert.rejects(() => inDir(topo.a.root, () => sync([], { stdout: () => {} })), /board-worktree signature/);
       let homeAutoPull = false;
       let homeBoardStatus = false;
       await inDir(topo.a.root, () => home([], {
@@ -125,7 +136,7 @@ test("a descendant symlink that escapes to the public owner rejects before sessi
 
     await assert.rejects(
       () => inDir(topo.a.root, () => resolveLocalBundleRoute(undefined)),
-      /lexical path component .*escape.* must not be a symlink/,
+      /symlinked target has a conventional board-worktree signature/,
     );
 
     const publicKey = resolveBundleKey(topo.a.board);
@@ -172,6 +183,174 @@ test("a descendant symlink that escapes to the public owner rejects before sessi
   } finally {
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("symlinked generic and committed conventional plain targets remain bound-local without Git or private state", async () => {
+  const topo = await makeTwoCloneTopology();
+  const committed = await makeCommittedFolderTopology();
+  const temp = await mkdtemp(path.join(tmpdir(), "superbee-bound-symlink-local-"));
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-symlink-local-home-"));
+  try {
+    const genericParent = path.join(temp, "generic-parent");
+    const generic = path.join(genericParent, "ordinary-bundle");
+    await mkdir(generic, { recursive: true });
+    await initBundle(generic);
+    await writeDoc({ root: generic }, { id: "notes/generic", frontmatter: { type: "Note", title: "Generic" }, body: "plain" });
+    const genericAlias = path.join(temp, "generic-alias");
+    const committedAlias = path.join(temp, "committed-alias");
+    await symlink(genericParent, genericAlias, "dir");
+    await symlink(committed.b.root, committedAlias, "dir");
+
+    const rows = [
+      { name: "generic", target: path.join(genericAlias, "ordinary-bundle"), readId: "notes/generic" },
+      { name: "committed conventional", target: path.join(committedAlias, ".superbee"), readId: "notes/welcome" },
+    ];
+    const priorPath = process.env.PATH;
+    try {
+      process.env.PATH = path.join(temp, "no-git-on-path");
+      await withHome(homeDir, async () => {
+        for (const row of rows) {
+          await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: row.target }));
+          const route = await inDir(topo.a.root, () => resolveLocalBundleRoute(undefined));
+          assert.equal(route.kind, "bound-local", row.name);
+          assert.equal(route.bundle.root, await realpath(row.target), `${row.name}: engine receives the canonical plain root`);
+
+          let listOut = "";
+          await inDir(topo.a.root, () => list(["--json"], { stdout: (line) => (listOut += line) }));
+          assert.match(listOut, new RegExp(row.readId));
+          let readOut = "";
+          await inDir(topo.a.root, () => docRead([row.readId, "--json"], { stdout: (line) => (readOut += line) }));
+          assert.match(readOut, new RegExp(row.readId));
+          let homeOut = "";
+          await inDir(topo.a.root, () => home(["--json"], { stdout: (line) => (homeOut += line) }));
+          assert.equal((JSON.parse(homeOut) as { bundle?: { root?: string } }).bundle?.root, await realpath(row.target));
+          await inDir(topo.a.root, () => docWrite([
+            `notes/${row.name.replaceAll(" ", "-")}-write`,
+            "--type", "Note",
+            "--body", "safe local write",
+            "--json",
+          ], { stdout: () => {} }));
+        }
+      });
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+    }
+    assert.equal(existsSync(path.join(homeDir, ".superbee-state")), false, "safe local routes never create board private state");
+  } finally {
+    await topo.cleanup();
+    await committed.cleanup();
+    await rm(temp, { recursive: true, force: true });
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a bound-local route fails closed when its lexical symlink is swapped after classification", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "superbee-bound-symlink-swap-"));
+  try {
+    const project = path.join(temp, "project");
+    const first = path.join(temp, "first");
+    const second = path.join(temp, "second");
+    const alias = path.join(temp, "alias");
+    await mkdir(project);
+    await mkdir(first);
+    await mkdir(second);
+    await initBundle(first);
+    await initBundle(second);
+    await symlink(first, alias, "dir");
+    await writeFile(path.join(project, ".superbee.json"), JSON.stringify({ bundle: alias }));
+    const route = await inDir(project, () => resolveLocalBundleRoute(undefined));
+    assert.equal(route.kind, "bound-local");
+    await rm(alias, { force: true });
+    await symlink(second, alias, "dir");
+    await assert.rejects(() => assertResolvedLocalRouteIdentity(route), /selected target changed after classification/);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("a binding symlink to private state rejects from its canonical target", async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), "superbee-bound-private-symlink-"));
+  const homeDir = path.join(temp, "home");
+  try {
+    const project = path.join(temp, "project");
+    const privateTarget = path.join(homeDir, ".superbee-state", "opaque");
+    const alias = path.join(temp, "private-alias");
+    await mkdir(project);
+    await mkdir(privateTarget, { recursive: true });
+    await symlink(privateTarget, alias, "dir");
+    await writeFile(path.join(project, ".superbee.json"), JSON.stringify({ bundle: alias }));
+    await withHome(homeDir, () => assert.rejects(
+      () => inDir(project, () => resolveLocalBundleRoute(undefined)),
+      /private user-state directory/,
+    ));
+  } finally {
+    await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("Darwin accepts only the /var and /tmp lexical anchors strictly before a binding anchor", { skip: process.platform !== "darwin" }, async () => {
+  const physicalTop = await mkdtemp("/private/tmp/superbee-bound-darwin-anchor-");
+  try {
+    const project = path.join(physicalTop, "project");
+    const target = path.join(physicalTop, "plain-bundle");
+    const lexicalTarget = path.join("/tmp", path.basename(physicalTop), "plain-bundle");
+    await mkdir(project);
+    await initBundle(target);
+    await writeFile(path.join(project, ".superbee.json"), JSON.stringify({ bundle: lexicalTarget }));
+    const route = await inDir(project, () => resolveLocalBundleRoute(undefined));
+    assert.equal(route.kind, "bound-local");
+    if (route.kind !== "bound-local") assert.fail("fixture must remain a local route");
+    assert.equal(route.bundle.root, lexicalTarget, "a symlink strictly before the lexical anchor remains outside the binding route");
+    assert.equal(route.identity.canonicalRoot, await realpath(target));
+  } finally {
+    await rm(physicalTop, { recursive: true, force: true });
+  }
+});
+
+test("built CLI new and doc write remain successful without Git when unbound conventional attribution is unavailable", async () => {
+  assert.equal(existsSync(BUILT_CLI), true, "npm run build must produce the CLI before this integration proof");
+  const temp = await mkdtemp(path.join(tmpdir(), "superbee-bound-git-free-"));
+  const homeDir = path.join(temp, "home");
+  const project = path.join(temp, "project");
+  const bundle = path.join(project, ".superbee");
+  try {
+    await mkdir(homeDir);
+    await initBundle(bundle);
+    await writeDoc({ root: bundle }, {
+      id: "conventions/task",
+      frontmatter: {
+        type: CONVENTION_TYPE,
+        governs: "Task",
+        path: "tasks/",
+        fields: { required: ["title"], optional: [] },
+      },
+      body: "",
+    });
+    const env = {
+      ...process.env,
+      HOME: homeDir,
+      PATH: "",
+      ASLITE_NO_UPDATE_CHECK: "1",
+      SUPERBEE_NO_UPDATE_CHECK: "1",
+      AGENTSTATE_LITE_NO_AUTOPULL: "1",
+      SUPERBEE_NO_AUTOPULL: "1",
+    };
+    const created = spawnSync(process.execPath, [BUILT_CLI, "new", "Task", "git-free", "--title", "Git free", "--json"], {
+      cwd: project,
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(created.status, 0, `new stdout=${created.stdout} stderr=${created.stderr}`);
+    const wrote = spawnSync(process.execPath, [BUILT_CLI, "doc", "write", "notes/git-free", "--type", "Note", "--body", "safe", "--json"], {
+      cwd: project,
+      env,
+      encoding: "utf8",
+    });
+    assert.equal(wrote.status, 0, `write stdout=${wrote.stdout} stderr=${wrote.stderr}`);
+  } finally {
+    await rm(temp, { recursive: true, force: true });
   }
 });
 

@@ -2,7 +2,7 @@
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
 import { loadKinds, type Frontmatter, type OkfDocument } from "@superbee/core";
-import { boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -124,6 +124,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
   const bundle = route?.bundle ?? await openBundle(values.dir, remote);
+  if (route) await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const isConventionPath = id.startsWith("conventions/");
 
@@ -156,6 +157,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   // body, could slip past a guard that decided from stale bytes). `--replace-links` still means "I
   // accept dropping MY OWN read's links" — it disables ONLY `guardDroppedLinks`'s own check below,
   // never the CAS coupling itself.
+  if (route) await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
     id,

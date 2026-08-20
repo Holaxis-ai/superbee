@@ -9,7 +9,7 @@ import {
   resolveKindFieldCoordinate,
   type Frontmatter,
 } from "@superbee/core";
-import { boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { assertLeafArity } from "../../positional-arity.js";
@@ -298,6 +298,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const remote = await resolveRemoteFlag(p.remote, p.dir);
   const route = remote === undefined ? await resolveLocalBundleRoute(p.dir) : undefined;
   const bundle = route?.bundle ?? await openBundle(p.dir, remote);
+  if (route) await assertResolvedLocalRouteIdentity(route);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const mode = resolveMode({ json: p.json });
 
@@ -316,6 +317,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // validate -> CAS-write-with-bounded-retry itself (the exact shape `link add` proved for this
   // seam) and throws our NOT_FOUND/STALE_HEAD before/after `buildCandidate` ever runs on an absent
   // doc, so `existing` below is guaranteed defined.
+  if (route) await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
     id,

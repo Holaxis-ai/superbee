@@ -62,7 +62,7 @@ import {
   type ValidationWarning,
 } from "@superbee/core";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
-import { boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag, type ResolvedLocalRoute } from "../bundle.js";
 import { CliError, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage, parseNewSchemaPhaseOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -386,10 +386,11 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // `--help` must work anywhere: if the bundle can't be opened, fall back to the generic reference
   // rather than erroring on a bundle lookup the user didn't ask to perform.
   let bundle;
+  let route: ResolvedLocalRoute | undefined;
   let attribution: ReturnType<typeof boardAttributionForRoute> = { kind: "none" };
   try {
     const remote = await resolveRemoteFlag(preRemote, preDir);
-    const route = remote === undefined ? await resolveLocalBundleRoute(preDir) : undefined;
+    route = remote === undefined ? await resolveLocalBundleRoute(preDir) : undefined;
     bundle = route?.bundle ?? await openBundle(preDir, remote);
     attribution = route ? boardAttributionForRoute(route) : { kind: "none" };
   } catch (err) {
@@ -399,6 +400,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     }
     throw err;
   }
+  if (route) await assertResolvedLocalRouteIdentity(route);
   const [registry, okfVersion] = await Promise.all([
     loadKinds(bundle),
     readBundleOkfVersion(bundle),
@@ -583,6 +585,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // ALREADY_EXISTS (exit 5) instead of silently overwriting it. Validation is STRICT (unlike `doc
   // write`'s warn-by-default): a missing required field or a disallowed enum value rejects the
   // write (exit 2) before any write is attempted.
+  if (route) await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
     id: targetId,

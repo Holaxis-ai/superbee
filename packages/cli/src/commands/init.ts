@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
-import { assertPlainInitTarget, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
+import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -146,8 +146,9 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   // bundle exists. Plain init keeps its historical open-or-create path unchanged.
   let root: string;
   let bundle;
-  const initDir = boundRoute?.kind === "bound-local" ? boundRoute.target.root : values.dir;
+  const initDir = boundRoute?.kind === "bound-local" ? boundRoute.bundle.root : values.dir;
   if (createOnly) {
+    if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
     const result = await withCreateOnlyTarget(initDir, (physicalTarget) =>
       (deps.initBundleImpl ?? initBundle)(physicalTarget, {
         okfVersion,
@@ -157,6 +158,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     root = result.root;
     bundle = result.value;
   } else {
+    if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
     root = await assertPlainInitTarget(initDir);
     bundle = await (deps.initBundleImpl ?? initBundle)(root, {
       okfVersion,
@@ -166,6 +168,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   let selectedRecipeKinds: string[] = [];
   let warnings: unknown[] = [];
   if (loadedRecipe?.ok) {
+    if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
     const result = await applyRecipe(bundle, loadedRecipe.recipe);
     recipeApplied = result.id;
     selectedRecipeKinds = loadedRecipe.recipe.governs;

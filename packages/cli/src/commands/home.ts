@@ -53,6 +53,7 @@ import { DESCRIPTION, commandReference, compactCommandReference } from "../refer
 import { render } from "../output.js";
 import {
   CONVENTIONAL_BUNDLE_DIR_NAME,
+  assertResolvedLocalRouteIdentity,
   findBundleRoot,
   openBundle,
   resolveLocalBundleRoute,
@@ -338,6 +339,7 @@ export async function defaultSummarizeBundle(
   let bundle;
   try {
     bundle = route?.bundle ?? await openBundle(dir, undefined);
+    if (route) await assertResolvedLocalRouteIdentity(route);
   } catch (err) {
     if (err instanceof CliError && err.code === "NOT_FOUND") return null;
     const root = collapseHomeDirectory(path.resolve(dir ?? process.cwd()));
