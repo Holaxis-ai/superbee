@@ -10,8 +10,14 @@
 
 import { InvalidInputError } from "./errors.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
+import { parseTimestamp } from "./freshness.js";
+import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 import { persistMutationActor } from "./mutation-attribution.js";
-import { defaultTimestampAndValidateAgainstRegistry, validateAgainstKind } from "./kinds.js";
+import {
+  defaultTimestampAndValidateAgainstRegistry,
+  freshnessHorizonMs,
+  validateAgainstKind,
+} from "./kinds.js";
 import { versionedMutation } from "./mutation.js";
 import { VersionConflict } from "./versioning.js";
 import {
@@ -201,13 +207,20 @@ function withV02Metadata(
   candidate: DocumentMutationCandidate,
   existing: OkfDocument | undefined,
   okfVersion: string,
+  registry: KindRegistry,
   now: () => string,
 ): DocumentMutationCandidate {
   if (okfVersion !== "0.2") return candidate;
+  const kind = registry.kinds.get(String(candidate.frontmatter.type));
   return applyV02MutationMetadata({
     existing,
     candidate,
     meaningfulChangeAt: now(),
+    requireGenerationClock: existing === undefined
+      && kind !== undefined
+      && freshnessHorizonMs(kind) !== undefined
+      && !kind.fields.required.includes("timestamp")
+      && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter)) === null,
   });
 }
 
@@ -255,7 +268,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       okfVersion,
       opts.registry,
     );
-    const candidate = withV02Metadata(attributed, undefined, okfVersion, decisionNow);
+    const candidate = withV02Metadata(attributed, undefined, okfVersion, opts.registry, decisionNow);
     const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, decisionNow);
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
@@ -288,7 +301,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           okfVersion,
           opts.registry,
         );
-        const candidate = withV02Metadata(attributed, existing, okfVersion, decisionNow);
+        const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow);
         const validated = validateCandidate(
           opts.id,
           candidate,
@@ -344,7 +357,13 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       }
 
       const rawCandidate = await opts.buildCandidate(existing, context);
-      const candidateForComparison = withV02Metadata(rawCandidate, existing, okfVersion, decisionNow);
+      const candidateForComparison = withV02Metadata(
+        rawCandidate,
+        existing,
+        okfVersion,
+        opts.registry,
+        decisionNow,
+      );
       if (existing && isNoopPatch(existing, candidateForComparison, compareTimestamp, okfVersion)) {
         return { action: "done", result: { doc: existing, warnings: [] } };
       }
@@ -356,7 +375,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         okfVersion,
         opts.registry,
       );
-      const candidate = withV02Metadata(attributed, existing, okfVersion, decisionNow);
+      const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow);
       const { warnings } = validateCandidate(
         opts.id,
         candidate,
