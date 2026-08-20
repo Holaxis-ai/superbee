@@ -32,6 +32,7 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
 import { BODY_PREVIEW_LIMIT } from "../doc/common.js";
+import type { ResolvedLocalRoute } from "../../bundle.js";
 // `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches
 // implicitly — the refusal string lives in THE sync-outcome table; this re-export keeps the
 // module's historical import surface stable.
@@ -69,7 +70,7 @@ function attachBodyPreview(rec: Record<string, unknown>, body: string, byteHatch
  * (exit 0), never a fatal. Every render is labeled "as of last fetch" (no implicit fetch).
  */
 export async function showIncoming(
-  id: string, values: { out?: string; dir?: string; json?: boolean }, deps: Partial<SyncCliDeps>,
+  id: string, values: { out?: string; dir?: string; json?: boolean }, deps: Partial<SyncCliDeps>, route?: ResolvedLocalRoute,
 ): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
@@ -88,8 +89,17 @@ export async function showIncoming(
     // inside the repo can read the last-fetched origin/board state — no provisioning required.
     // The viewer's run directory answers to the relation at its own resolution point, exactly as
     // sync's does: a guarded root is a conflict to report, not a repo that turns out to be absent.
-    assertSearchDirOutsidePrivateState(path.resolve(values.dir ?? process.cwd()));
-    const dir = retargetBoardInterior(values.dir ?? process.cwd());
+    if (route?.kind === "bound-local") throw syncOutcomeError("show-incoming.no-upstream", { inv });
+    if (route?.kind === "bound-board" && route.readiness !== "ready") {
+      throw new CliError(
+        "CONFLICT",
+        "the selected private board has a board-origin rebase pending; --show-incoming cannot recover it",
+      );
+    }
+    if (!route) assertSearchDirOutsidePrivateState(path.resolve(values.dir ?? process.cwd()));
+    const dir = route?.kind === "bound-board"
+      ? route.owner.bundleRoot
+      : retargetBoardInterior(values.dir ?? process.cwd());
     const top = repoTopLevel(dir);
     if (!top) {
       throw new CliError(

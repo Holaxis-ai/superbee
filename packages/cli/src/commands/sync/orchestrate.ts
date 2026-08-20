@@ -71,6 +71,9 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
+import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../../bundle.js";
+import type { BoundBoardOwner } from "../../bound-board-owner.js";
+import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -242,13 +245,15 @@ export const SYNC_IN_TREE_CURRENT = "checkout is current with upstream";
 interface SyncRun {
   dir: string; inv: string; mode: OutputMode; limit: number; pullOnly: boolean;
   stdout: (s: string) => void; deps: Partial<SyncCliDeps>;
+  owner?: BoundBoardOwner;
+  route?: ResolvedLocalRoute;
 }
 
 /** The arg-parse phase's dispatch decision. */
 type SyncDispatch =
   | { kind: "help" }
-  | { kind: "show-incoming"; id: string; values: { out?: string; dir?: string; json?: boolean } }
-  | { kind: "run"; options: Pick<SyncRun, "dir" | "mode" | "limit" | "pullOnly">; establish: boolean; yes: boolean };
+  | { kind: "show-incoming"; id: string; values: { out?: string; dir?: string; json?: boolean }; route?: ResolvedLocalRoute }
+  | { kind: "run"; options: Pick<SyncRun, "dir" | "mode" | "limit" | "pullOnly" | "owner" | "route">; establish: boolean; yes: boolean };
 
 /** The provision phase's result: the board checkout this run operates on. */
 interface SyncBoard { boardPath: string; key: string; outcome: ProvisionOutcome }
@@ -319,7 +324,7 @@ export async function sync(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
 }
 
 /** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
-function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
+async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDispatch> {
   const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
@@ -373,7 +378,11 @@ function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
     if (values.establish) {
       throw new CliError("USAGE", "--show-incoming and --establish cannot be combined");
     }
-    return { kind: "show-incoming", id, values };
+    let route: ResolvedLocalRoute | undefined;
+    if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
+      route = await resolveLocalBundleRoute(undefined);
+    }
+    return { kind: "show-incoming", id, values, ...(route ? { route } : {}) };
   }
   if (values.out !== undefined) {
     throw new CliError("USAGE", "--out only applies to sync --show-incoming <id>", {
@@ -396,18 +405,32 @@ function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
     limit = Number(raw);
   }
 
-  // Sync never resolves a bundle through resolveLocalBundleTarget, so its run directory answers to
-  // the relation HERE — before retargeting, provisioning, or any git probe. Without it a guarded
-  // root exits 0 with `nothing to sync`, reporting absence where the honest answer is the conflict.
+  // The run directory answers to the relation HERE — before retargeting, provisioning, or any Git
+  // probe. The binding route below is the sole exception: it resolves once, proves an owner if any,
+  // and then carries only that frozen capability. Without this guard a private root exits 0 with
+  // `nothing to sync`, reporting absence where the honest answer is the conflict.
   // Ordered after argv validation so a USAGE error still wins.
   assertSearchDirOutsidePrivateState(path.resolve(values.dir ?? process.cwd()));
 
+  // A bare project binding is an exact board-owner selection, not a hint for the cwd routing
+  // below. Validate it before retarget/heal/channel/provision can spawn Git in the public
+  // checkout, then carry only the frozen capability through all remaining phases.
+  let route: ResolvedLocalRoute | undefined;
+  if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
+    route = await resolveLocalBundleRoute(undefined);
+  }
+  const boundOwner = route?.kind === "bound-board" ? route.owner : undefined;
+  const owner = route?.kind === "bound-board" && route.readiness === "ready" ? route.owner : undefined;
+
   // Standing inside the board worktree retargets to the enclosing project so provisioning's
   // idempotent path resolves the REAL board (see retargetBoardInterior).
-  const dir = retargetBoardInterior(values.dir ?? process.cwd());
+  const dir = boundOwner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
   return {
     kind: "run",
-    options: { dir, pullOnly: Boolean(values["pull-only"]), limit, mode: resolveMode(values) },
+    options: {
+      dir, pullOnly: Boolean(values["pull-only"]), limit, mode: resolveMode(values),
+      ...(owner ? { owner } : {}), ...(route ? { route } : {}),
+    },
     establish: Boolean(values.establish),
     yes: Boolean(values.yes),
   };
@@ -415,6 +438,11 @@ function parseSyncInvocation(argv: string[], inv: string): SyncDispatch {
 
 /** The provision phase: owns known-remote-absence vs failed-remote-check; empty states render here (null). */
 function provisionPhase(run: SyncRun): SyncBoard | null {
+  if (run.owner) {
+    // The binding proof already established the exact private board worktree. Provisioning is a
+    // public-cwd discovery/healing mechanism and is categorically unavailable to a bound run.
+    return { boardPath: run.owner.bundleRoot, key: run.owner.stateKey, outcome: { kind: "already", boardPath: run.owner.bundleRoot } };
+  }
   const emptyState = (rec: Record<string, unknown>): null => {
     run.stdout(render(rec, run.mode));
     return null;
@@ -602,16 +630,29 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const inv = cliInvocation();
 
-  const dispatch = parseSyncInvocation(argv, inv);
+  const dispatch = await parseSyncInvocation(argv, inv);
   if (dispatch.kind === "help") {
     stdout(SYNC_USAGE);
     return;
   }
   if (dispatch.kind === "show-incoming") {
-    await showIncoming(dispatch.id, dispatch.values, deps);
+    await showIncoming(dispatch.id, dispatch.values, deps, dispatch.route);
     return;
   }
   const run: SyncRun = { ...dispatch.options, inv, stdout, deps };
+
+  // A plain binding is a normal selected bundle, never a board owner.  Keep sync's supported
+  // local-only/no-op result without probing an enclosing private or invoking checkout.
+  if (run.route?.kind === "bound-local") {
+    stdout(render({ sync: "nothing to sync" }, run.mode));
+    return;
+  }
+
+  if (run.route?.kind === "bound-board" && run.route.readiness === "recovery-pending") {
+    const recoveredOwner = await recoverBoundBoardOwner(run.route.target, run.route.owner);
+    run.owner = recoveredOwner;
+    run.route = { ...run.route, readiness: "ready", owner: recoveredOwner };
+  }
 
   // Refuse the private-state identity before provisioning, fetching, committing, or publishing.
   // Later phase-local checks retain the invariant across any path re-resolution.
@@ -625,7 +666,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // to the ordinary sync flow with an idempotence note.
   let establishAlreadyNote: string | undefined;
   if (dispatch.establish) {
-    const establishOutcome = await establishBoard(run.dir, inv, run.mode, stdout, deps, { yes: dispatch.yes });
+    const establishOutcome = await establishBoard(run.owner?.ownerRoot ?? run.dir, inv, run.mode, stdout, deps, { yes: dispatch.yes });
     if (!establishOutcome.already) return;
     establishAlreadyNote = ESTABLISH_ALREADY;
   }
@@ -633,7 +674,7 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // The entry self-heal: a stale mid-rebase state found at ENTRY (a crashed/killed prior run) is
   // aborted BEFORE provisioning is even checked, let alone the commit phase (see
   // {@link healStaleRebaseBeforeProvisioning} for why this must run BEFORE provisioning).
-  healStaleRebaseBeforeProvisioning(run.dir);
+  if (!run.owner) healStaleRebaseBeforeProvisioning(run.dir);
 
   // CHANNEL DETECTION — the act-time probe at sync's own resolution point, computed fresh on
   // every run (never cached across a network boundary). Routing is deliberately narrow: ONLY a
@@ -641,10 +682,12 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // AND the fail-closed `indeterminate` outcome all fall through to the provisioning state
   // machine unchanged — detection composes with that machine, never re-routes its guidance. The
   // tracked-folder refusal arms throw typed here and map at this command's boundary.
-  const detection = detectBoardChannel(run.dir);
-  if (detection.kind === "channel" && detection.channel.mode === "in-tree") {
-    await syncInTree(run);
-    return;
+  if (!run.owner) {
+    const detection = detectBoardChannel(run.dir);
+    if (detection.kind === "channel" && detection.channel.mode === "in-tree") {
+      await syncInTree(run);
+      return;
+    }
   }
 
   const board = provisionPhase(run);

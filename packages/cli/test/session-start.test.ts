@@ -72,7 +72,7 @@ import {
   localDevExecutable,
   stableNodePair,
 } from "./hook-shell-fixtures.js";
-import { readCursor, readMarker, readSelfActors, type AwarenessCache } from "../src/cursor.js";
+import { readCache, readCursor, readMarker, readSelfActors, type AwarenessCache } from "../src/cursor.js";
 import { initBundle, writeDoc } from "@superbee/core";
 import { addCatalogEntry } from "../src/catalog.js";
 import {
@@ -150,6 +150,16 @@ async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
+async function withCwd<T>(dir: string, run: () => Promise<T>): Promise<T> {
+  const previous = process.cwd();
+  process.chdir(dir);
+  try {
+    return await run();
+  } finally {
+    process.chdir(previous);
+  }
+}
+
 async function tempHome(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "aslite-session-start-home-"));
 }
@@ -178,6 +188,50 @@ async function runHome(homeDir: string, argv: string[]): Promise<string> {
   await withHome(homeDir, () => home(argv, { stdout: cap.stdout, hookNeedsUpdate: () => false }));
   return cap.out();
 }
+
+test("bare binding session-start and home retain the private owner state, not the public checkout", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await tempHome();
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: topo.b.board }));
+    const result = await withHome(homeDir, () => withCwd(topo.a.root, () => sessionStartPull(undefined)));
+    assert.equal(result?.boardPath, topo.b.board);
+    assert.ok(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.b.board))), "private board marker was refreshed");
+    assert.equal(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.a.board))), null, "public board marker was untouched");
+    const rendered = await withHome(homeDir, () => withCwd(topo.a.root, () => runHome(homeDir, [])));
+    assert.ok(rendered.includes(`root: ${topo.b.board}`), "bare home rendered the private bundle");
+    assert.ok(await withHome(homeDir, () => readCache(resolveBundleKey(topo.b.board))), "bare home refreshed the private board cache");
+    assert.equal(await withHome(homeDir, () => readCache(resolveBundleKey(topo.a.board))), null, "bare home never wrote public board state");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("bare home with an invalid board-shaped binding fails soft without public board effects", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await tempHome();
+  try {
+    const invalidParent = path.join(topo.a.root, "broken");
+    const invalid = path.join(invalidParent, ".superbee");
+    await mkdir(invalidParent, { recursive: true });
+    // This is the adversarial shape: resolving the binding lands on the PUBLIC board. The
+    // owner validator must reject its lexical symlink before bare home can turn it into an
+    // explicit-dir board probe/state key.
+    await symlink(topo.a.board, invalid, "dir");
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: invalid }));
+    const publicHead = git(topo.a.board, ["rev-parse", "HEAD"]);
+
+    const rendered = await withHome(homeDir, () => withCwd(topo.a.root, () => runHome(homeDir, [])));
+    assert.match(rendered, /bundle/);
+    assert.equal(git(topo.a.board, ["rev-parse", "HEAD"]), publicHead, "invalid binding did not select public Git");
+    assert.equal(await withHome(homeDir, () => readCache(resolveBundleKey(topo.a.board))), null, "invalid binding wrote no public state");
+    assert.equal(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.a.board))), null, "invalid binding refreshed no public marker");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
 
 async function runSync(home: string, argv: string[]): Promise<string> {
   const cap = capture();
