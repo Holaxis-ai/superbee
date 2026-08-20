@@ -1,7 +1,7 @@
 // `doc write <id>` — see `../doc.ts`'s header comment for the full F1 (P1, data loss) rationale and
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
-import { loadKinds, type Frontmatter, type OkfDocument } from "@superbee/core";
+import { loadKinds, SUPERBEE_UPDATED_BY_FIELD, type Frontmatter, type OkfDocument } from "@superbee/core";
 import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
@@ -168,10 +168,11 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,
     persistActor: true,
+    compareTimestamp: values.timestamp !== undefined,
     // Board self-attribution (PR C): fires only after a substantive persisted write — never a
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
-    buildCandidate: (fresh: OkfDocument | undefined) => {
+    buildCandidate: (fresh: OkfDocument | undefined, context) => {
       // SCHEMA-LOSS guard (cold-start study #3): `doc write` replaces the WHOLE document and carries
       // only a fixed flag set (type/title/description/resource/tags/timestamp) — it has NO
       // governs/fields flags. Overwriting an existing kind CONVENTION with it silently drops the
@@ -223,7 +224,11 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
       // reaches ordinary docs / kind instances.)
       droppedFields = fresh
         ? Object.keys(fresh.frontmatter).filter(
-            (k) => k !== "timestamp" && !(k in frontmatter) && !(k === "actor" && actor !== undefined),
+            (k) =>
+              k !== "timestamp"
+              && !(k in frontmatter)
+              && !(k === "actor" && actor !== undefined)
+              && !(k === SUPERBEE_UPDATED_BY_FIELD && actor !== undefined && context.okfVersion === "0.2"),
           )
         : [];
 
@@ -243,6 +248,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   const saved = result.doc;
   const receipt: Record<string, unknown> = {
     doc: "written",
+    changed: result.changed,
     id: saved.id,
     type: saved.frontmatter.type,
     timestamp: saved.frontmatter.timestamp ?? null,
@@ -250,7 +256,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     // later optimistic doc update/delete (see also `doc history`).
     version: result.version,
   };
-  if (droppedFields.length > 0) {
+  if (result.changed && droppedFields.length > 0) {
     receipt.dropped_fields = droppedFields;
     receipt.note =
       `'doc write' is a FULL replace and dropped ${droppedFields.length} frontmatter field(s) not re-supplied: ` +

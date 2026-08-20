@@ -613,7 +613,7 @@ test("overwrite re-reads after a CAS race and returns its final persisted receip
   assert.equal((await backend.versions("notes/a"))[0]?.actor, "mike/codex");
 });
 
-test("overwrite reports its write posture even when the candidate is byte-identical", async () => {
+test("overwrite returns changed:false and preserves the head when the normalized candidate is identical", async () => {
   const backend = new MemoryBackend();
   const bundle = bundleFor(backend);
   const initial = await writeDocVersioned(bundle, { id: "notes/a", ...candidate("A", "same") });
@@ -630,9 +630,169 @@ test("overwrite reports its write posture even when the candidate is byte-identi
     }),
   });
 
-  assert.equal(result.changed, true);
+  assert.equal(result.changed, false);
   assert.equal(result.version, initial.version);
+  assert.equal((await backend.versions("notes/a")).length, 1);
   assert.deepEqual(result.warnings, []);
+});
+
+test("overwrite does not create a revision solely to change advisory actor attribution", async () => {
+  const backend = new MemoryBackend();
+  const bundle = bundleFor(backend);
+  const initial = await writeDocVersioned(bundle, {
+    id: "notes/a",
+    frontmatter: { ...candidate("A", "same").frontmatter, actor: "alice" },
+    body: "same",
+  }, { actor: "alice" });
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "bob",
+    persistActor: true,
+    buildCandidate: () => candidate("A", "same"),
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.version, initial.version);
+  assert.equal(result.doc.frontmatter.actor, "alice");
+  assert.equal((await backend.versions("notes/a")).length, 1);
+});
+
+test("v0.2 overwrite ignores automatic attribution and clock changes only when all authored content is unchanged", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const created = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "alice",
+    persistActor: true,
+    now: () => "2026-08-19T00:00:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Note", title: "A", generated: { by: "process:superbee" } },
+      body: "same",
+    }),
+  });
+
+  const noop = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "bob",
+    persistActor: true,
+    now: () => "2026-08-20T00:00:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Note", title: "A", generated: { by: "process:superbee" } },
+      body: "same",
+    }),
+  });
+  assert.equal(noop.changed, false);
+  assert.equal(noop.version, created.version);
+  assert.equal(noop.doc.frontmatter.superbee_updated_by, "alice");
+  assert.deepEqual(noop.doc.frontmatter.generated, {
+    by: "process:superbee",
+    at: "2026-08-19T00:00:00.000Z",
+  });
+
+  const changed = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "bob",
+    persistActor: true,
+    now: () => "2026-08-20T00:00:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Note", title: "B", generated: { by: "process:superbee" } },
+      body: "same",
+    }),
+  });
+  assert.equal(changed.changed, true);
+  assert.equal(changed.doc.frontmatter.superbee_updated_by, "bob");
+  assert.deepEqual(changed.doc.frontmatter.generated, {
+    by: "process:superbee",
+    at: "2026-08-20T00:00:00.000Z",
+  });
+});
+
+test("overwrite compares an explicitly supplied timestamp but ignores an automatic default", async () => {
+  const backend = new MemoryBackend();
+  const bundle = bundleFor(backend);
+  const initial = await writeDocVersioned(bundle, { id: "notes/a", ...candidate("A", "same") });
+
+  const automatic = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-20T00:00:00.000Z",
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "same" }),
+  });
+  assert.equal(automatic.changed, false);
+  assert.equal(automatic.version, initial.version);
+
+  const equivalentExplicit = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    compareTimestamp: true,
+    buildCandidate: () => candidate("A", "same", "2026-07-16T00:00:00Z"),
+  });
+  assert.equal(equivalentExplicit.changed, false);
+  assert.equal(equivalentExplicit.version, initial.version);
+
+  const explicit = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    compareTimestamp: true,
+    buildCandidate: () => candidate("A", "same", "2026-08-20T00:00:00.000Z"),
+  });
+  assert.equal(explicit.changed, true);
+  assert.notEqual(explicit.version, initial.version);
+});
+
+test("v0.2 overwrite compares equivalent explicit timestamp spellings by instant", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const initial = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-20T00:00:00.000Z",
+    buildCandidate: () => candidate("A", "same", "2026-07-16T00:00:00.000Z"),
+  });
+
+  const equivalent = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    compareTimestamp: true,
+    now: () => "2026-08-21T00:00:00.000Z",
+    buildCandidate: () => candidate("A", "same", "2026-07-16T00:00:00Z"),
+  });
+
+  assert.equal(equivalent.changed, false);
+  assert.equal(equivalent.version, initial.version);
+  assert.equal((await backend.versions("notes/a")).length, 1);
 });
 
 test("onAbsent:create retries an expect-absent patch against a concurrent creator", async () => {
