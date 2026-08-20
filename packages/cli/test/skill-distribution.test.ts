@@ -212,6 +212,20 @@ test("the shipped View authoring reference teaches Superbee commands while prese
 
 const renderedNpm = renderNpm();
 
+test("the npm skill opens sessions offer-first from home's offers rows", () => {
+  assert.match(renderedNpm, /## Opening a session — offer, don't explain/);
+  assert.match(renderedNpm, /never a capability essay/);
+  assert.match(renderedNpm, /`offers` rows are ready-made candidates/);
+  assert.match(renderedNpm, /ONE offer: run\s+`superbee sync` — never `init`/);
+  assert.match(renderedNpm, /"just continue" in an established workspace/);
+  assert.match(renderedNpm, /Drop declined offers for the rest of the session/);
+  // The section sits between host setup and the command groups (offer before manual).
+  assert.ok(
+    renderedNpm.indexOf("## Opening a session") > renderedNpm.indexOf("## Complete host setup"),
+  );
+  assert.ok(renderedNpm.indexOf("## Opening a session") < renderedNpm.indexOf("## Commands"));
+});
+
 test("npm Skill makes authoritative document presentation a first-class human-review step", () => {
   assert.match(renderedNpm, /## Human review/);
   assert.match(renderedNpm, /call `list_workspaces` when needed/);

@@ -35,7 +35,14 @@ function buildContextNotesFiles(): RecipeFile[] {
     {
       path: "recipe.md",
       bytes: stringifyDoc(
-        { type: "Recipe", id: "context-notes", title: "Context Notes", version: "1", summary: CONTEXT_NOTES_SUMMARY },
+        {
+          type: "Recipe",
+          id: "context-notes",
+          title: "Context Notes",
+          version: "1",
+          summary: CONTEXT_NOTES_SUMMARY,
+          offer: "give agents persistent memory between sessions",
+        },
         RECIPE_DESC_BODY,
       ),
     },
@@ -49,7 +56,14 @@ function buildWorkTrackingFiles(): RecipeFile[] {
     {
       path: "recipe.md",
       bytes: stringifyDoc(
-        { type: "Recipe", id: "work-tracking", title: "Work Tracking", version: "1", summary: WORK_TRACKING_SUMMARY },
+        {
+          type: "Recipe",
+          id: "work-tracking",
+          title: "Work Tracking",
+          version: "1",
+          summary: WORK_TRACKING_SUMMARY,
+          offer: "set up a shared task list for this project",
+        },
         WORK_TRACKING_DESC_BODY,
       ),
     },
@@ -64,7 +78,14 @@ function buildRoadmapFiles(): RecipeFile[] {
     {
       path: "recipe.md",
       bytes: stringifyDoc(
-        { type: "Recipe", id: "roadmap", title: "Roadmap", version: "1", summary: ROADMAP_SUMMARY },
+        {
+          type: "Recipe",
+          id: "roadmap",
+          title: "Roadmap",
+          version: "1",
+          summary: ROADMAP_SUMMARY,
+          offer: "map out where the project is going",
+        },
         ROADMAP_DESC_BODY,
       ),
     },
@@ -95,7 +116,8 @@ export function builtinRecipeSource(): RecipeSource {
   };
 }
 
-function resolveBuiltinSync(name: string): LoadedRecipe {
+/** Synchronous builtin resolution for render-path consumers (offers) that must stay pure. */
+export function resolveBuiltinSync(name: string): LoadedRecipe {
   const files = BUILTIN_FILES[name];
   if (!files) throw new Error(`resolveBuiltinSync: no built-in recipe named '${name}'`);
   const result = parseRecipeFiles(files, `builtin:${name}`);

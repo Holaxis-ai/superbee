@@ -63,6 +63,30 @@ current host: `codex`, `claude-code`, `claude-desktop`, or `opencode`. The comma
 registers the durable npm runtime once at user scope, never an npx cache or one bundle directory.
 Use `superbee mcp status --host <id>` to verify it and restart the host after a change.
 
+## Opening a session — offer, don't explain
+
+The home view (the SessionStart payload) supplies the opening's facts. When the user is
+orienting rather than mid-request, open with 2-3 numbered one-line offers plus one question
+("which first?") — never a capability essay. Keep the whole opener to 5 lines or fewer.
+
+- If the user's first message is a concrete work request, do the work. Surface offers only
+  at a natural stopping point, or when the user asks what Superbee can do.
+- Phrase offers as user outcomes ("set up a shared task list"), not commands or schema
+  terms.
+- The home view's `offers` rows are ready-made candidates: each carries the outcome
+  phrasing and the exact command to run once the user picks it.
+- Board first contact (a board exists for this repo but is not provisioned) means exactly
+  ONE offer: run `superbee sync` — never `init`.
+- In an established workspace (no `offers` rows), orient from the board changes and recent
+  docs and offer to resume, review, or start something new. A live view of the bundle
+  (task board, link map) is a valid third offer once there are docs to show.
+- Always end with an opt-out option: "just continue" in an established workspace, "skip
+  for now" in a fresh one.
+- Keep this one-line-options register for offers and status updates alike; expand only
+  when the user asks for depth. `status` findings are raw material for follow-up offers
+  on demand.
+- Drop declined offers for the rest of the session.
+
 ## Commands
 
 ### Bundle

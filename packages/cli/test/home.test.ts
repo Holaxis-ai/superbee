@@ -42,6 +42,33 @@ import { canonicalUserStateDir, USER_STATE_MARKER_BYTES } from "../src/user-stat
 const INVOKE = "npx -y superbee";
 const DEFAULT_INVOKE = "npx -y superbee";
 const BASE_DEPS = { binPath: () => "/bin/superbee", invocation: () => INVOKE };
+
+/** The full builtin offer set — what derives when a summary carries no conventions or instances. */
+const ALL_OFFERS = [
+  {
+    recipe: "context-notes",
+    offer: "give agents persistent memory between sessions",
+    command: `${INVOKE} recipe add context-notes`,
+  },
+  {
+    recipe: "work-tracking",
+    offer: "set up a shared task list for this project",
+    command: `${INVOKE} recipe add work-tracking`,
+  },
+  {
+    recipe: "roadmap",
+    offer: "map out where the project is going",
+    command: `${INVOKE} recipe add roadmap`,
+  },
+];
+
+/** A summary shaped like a mature bundle: every builtin recipe applied, so no offers derive. */
+const ALL_APPLIED_CONVENTION_IDS = [
+  "conventions/context-note",
+  "conventions/task",
+  "conventions/roadmap",
+  "conventions/roadmap-item",
+];
 const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
 function row(id: string, timestamp: string): HomeRow {
@@ -87,8 +114,75 @@ test("A1.1 dashboard: bundle present, docs>0 — bundle block content", () => {
   assert.equal(recent.shown, 1);
   assert.equal(recent.total, 1);
   assert.deepEqual(recent.rows[0], { id: "notes/a", type: "Note", title: "a", timestamp: "2026-07-02T00:00:00.000Z" });
-  assert.deepEqual(bundle.next, [`${INVOKE} list`, `${INVOKE} status`]);
+  // A summary with no conventions and no governed instances derives the full offer set, which
+  // displaces the generic next[2] hints (offers carry exact commands; list/status stay in the
+  // commands block).
+  assert.deepEqual(bundle.offers, ALL_OFFERS);
+  assert.equal(bundle.offers_help, `capabilities this bundle is not using — when the user is orienting rather than mid-request, offer 2-3 as one-line options and ask which first; apply only after they choose`);
+  assert.equal(bundle.next, undefined);
   assert.equal(view.getting_started, undefined);
+});
+
+test("A1.1b mature bundle (all recipes applied): no offers, next[2] byte-identical to before", () => {
+  const summary: BundleSummary = {
+    ...summaryWithDocs([row("notes/a", "2026-07-02T00:00:00.000Z")]),
+    conventionIds: ALL_APPLIED_CONVENTION_IDS,
+  };
+  const bundle = buildHomeView(BASE_DEPS, summary).bundle as Record<string, unknown>;
+  assert.equal(bundle.offers, undefined);
+  assert.equal(bundle.offers_help, undefined);
+  assert.deepEqual(bundle.next, [`${INVOKE} list`, `${INVOKE} status`]);
+});
+
+test("A1.1c governed instances suppress a recipe's offer even when it is not applied", () => {
+  const rows = [
+    { id: "tasks/one", type: "Task", title: "one", timestamp: "2026-07-02T00:00:00.000Z" },
+  ];
+  const summary = summaryWithDocs(rows);
+  const bundle = buildHomeView(BASE_DEPS, summary).bundle as Record<string, unknown>;
+  const offers = bundle.offers as Array<{ recipe: string }>;
+  assert.deepEqual(
+    offers.map(({ recipe }) => recipe),
+    ["context-notes", "roadmap"],
+  );
+  assert.equal(bundle.next, undefined);
+});
+
+test("board-state gate: any firstContact line (unprovisioned/window/conflict) suppresses offers entirely", () => {
+  const summary = summaryWithDocs([row("notes/a", "2026-07-02T00:00:00.000Z")]);
+  for (const firstContact of [
+    `board found for this repo — run \`${INVOKE} sync\` to join it (never init)`,
+    "board window: origin/board exists while the bundle is still committed at HEAD — pull first",
+  ]) {
+    const view = buildHomeView(BASE_DEPS, summary, undefined, undefined, undefined, { firstContact });
+    const bundle = view.bundle as Record<string, unknown>;
+    assert.equal(bundle.offers, undefined);
+    assert.equal(bundle.offers_help, undefined);
+    // With offers suppressed, the block renders today's exact shape.
+    assert.deepEqual(bundle.next, [`${INVOKE} list`, `${INVOKE} status`]);
+  }
+});
+
+test("offers preserve an explicit --dir selector, shell-quoted", () => {
+  const summary = summaryWithDocs([row("notes/a", "2026-07-02T00:00:00.000Z")]);
+  const deps = { ...BASE_DEPS, targetDir: "/tmp/my bundle" };
+  const bundle = buildHomeView(deps, summary).bundle as Record<string, unknown>;
+  const offers = bundle.offers as Array<{ recipe: string; command: string }>;
+  assert.equal(offers.length, 3);
+  for (const offer of offers) {
+    assert.equal(offer.command, `${INVOKE} recipe add ${offer.recipe} --dir '/tmp/my bundle'`);
+  }
+});
+
+test("a throwing offers derivation degrades to no offers — the render still succeeds", () => {
+  const summary: BundleSummary = {
+    ...summaryWithDocs([row("notes/a", "2026-07-02T00:00:00.000Z")]),
+    // A non-iterable conventionIds makes deriveOffers throw; the render must degrade, not fail.
+    conventionIds: 42 as unknown as string[],
+  };
+  const bundle = buildHomeView(BASE_DEPS, summary).bundle as Record<string, unknown>;
+  assert.equal(bundle.offers, undefined);
+  assert.deepEqual(bundle.next, [`${INVOKE} list`, `${INVOKE} status`]);
 });
 
 test("A1.2 ordering: identity -> bundle -> commands (live content before the manual)", () => {
@@ -358,6 +452,10 @@ test("A1.4 empty bundle (present, 0 docs): distinct from no-bundle", () => {
   assert.equal(bundle.recent, undefined);
   assert.equal(typeof bundle.help, "string");
   assert.match(bundle.help as string, /create the first doc/);
+  // AC3: an empty `--recipe none` bundle offers all three builtin capabilities alongside the
+  // create-first-doc help line.
+  assert.deepEqual(bundle.offers, ALL_OFFERS);
+  assert.equal(typeof bundle.offers_help, "string");
   assert.equal(view.getting_started, undefined);
 });
 
@@ -544,6 +642,7 @@ test("A1.10 unreadable bundle (present but a doc failed to read): status:unreada
   assert.equal(bundle.status, "unreadable");
   assert.match(bundle.help as string, /could not be read/);
   assert.equal(bundle.recent, undefined);
+  assert.equal(bundle.offers, undefined, "an unreadable bundle never renders offers");
   // The whole point: a present-but-unreadable bundle must NOT be misreported as "no bundle — run init".
   assert.equal(view.getting_started, undefined);
 });
