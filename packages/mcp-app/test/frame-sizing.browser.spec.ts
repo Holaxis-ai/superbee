@@ -501,6 +501,28 @@ test("authorization dialog reports registered and transient View provenance hone
   );
 });
 
+test("a bundleless access:none transient View renders without entering the approval lifecycle", async ({
+  page,
+}) => {
+  const outer = await lifecycleHost(page);
+
+  await page.evaluate(() => window.__showBundlelessTransientResult());
+
+  await expect(outer.locator("#authorization-backdrop")).toBeHidden();
+  await expect
+    .poll(() => page.frames().filter((frame) => frame.parentFrame() === outer).length)
+    .toBe(1);
+  const active = page.frames().find((frame) => frame.parentFrame() === outer);
+  if (!active) throw new Error("Expected the bundleless transient View frame.");
+  await expect(active.locator("#bundleless-control")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => window.__authorizationRequests))
+    .toEqual([]);
+  await expect(outer.locator("#status")).not.toContainText(
+    "invalid approved launch",
+  );
+});
+
 test("open-page replaces the source with a fresh independently authorized registered View", async ({
   page,
 }) => {
@@ -791,6 +813,7 @@ declare global {
     __appliedHeightReports?: AppliedHeightReport[];
     __closedLaunches: string[];
     __bridgeRequests: unknown[];
+    __authorizationRequests: string[];
     __preparedActions: unknown[];
     __finishedActions: unknown[];
     __displayRequestError: string | null;
@@ -814,6 +837,7 @@ declare global {
     __releaseResumeRequest: () => void;
     __startTeardown: () => void;
     __showTransientResult: () => Promise<void>;
+    __showBundlelessTransientResult: () => Promise<void>;
     __showActionResult: () => Promise<void>;
   }
 }

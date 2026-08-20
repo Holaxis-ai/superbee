@@ -758,7 +758,9 @@ test("bundle-unbound access:none transient Views stay bundleless for their full 
     };
   };
   assert.equal(view.launch.access, "none");
-  assert.deepEqual(view.launch.authorization, { required: false, authorized: false });
+  assert.deepEqual(view.launch.authorization, { required: false, authorized: true });
+  assert.match(JSON.stringify(shown.content), /Prepared transient Superbee View/);
+  assert.doesNotMatch(JSON.stringify(shown.content), /ready for local approval/);
   assert.equal(openCalls, 0);
 
   const bridge = await client.callTool({

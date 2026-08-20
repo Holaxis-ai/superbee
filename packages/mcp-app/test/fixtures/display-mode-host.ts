@@ -36,7 +36,7 @@ interface TransientPayload {
   };
   launch: {
     launchId: string;
-    access: "bundle-read" | "bundle-propose";
+    access: "none" | "bundle-read" | "bundle-propose";
     authorization: {
       required: boolean;
       authorized: boolean;
@@ -113,6 +113,24 @@ function transientPayload(launchId: string): TransientPayload {
   };
 }
 
+function bundlelessTransientPayload(): TransientPayload {
+  return {
+    schemaVersion: "agentstate.transient-view-launch.v1",
+    title: "Bundleless summary",
+    source: {
+      kind: "transient",
+      html: "<!doctype html><button id=\"bundleless-control\">Bundleless control</button>",
+      contentType: source.contentType,
+      contentVersion: `sha256:${"5".repeat(64)}`,
+    },
+    launch: {
+      launchId: "launch-bundleless",
+      access: "none",
+      authorization: { required: false, authorized: true },
+    },
+  };
+}
+
 function navigationPayload(): DurablePayload {
   return {
     schemaVersion: "agentstate.durable-view-launch.v1",
@@ -175,6 +193,7 @@ window.__closedLaunches = [];
 window.__preparedActions = [];
 window.__finishedActions = [];
 window.__bridgeRequests = [];
+window.__authorizationRequests = [];
 window.__holdDisplayRequest = false;
 window.__holdResumeRequest = false;
 window.__holdCloseRequest = false;
@@ -233,6 +252,12 @@ window.__showTransientResult = async () => {
     structuredContent: transientPayload("launch-transient"),
   });
 };
+window.__showBundlelessTransientResult = async () => {
+  await bridge.sendToolResult({
+    content: [{ type: "text", text: "Bundleless transient View ready" }],
+    structuredContent: bundlelessTransientPayload(),
+  });
+};
 window.__showActionResult = async () => {
   await bridge.sendToolResult({
     content: [{ type: "text", text: "Action View ready" }],
@@ -250,6 +275,7 @@ bridge.oncalltool = async ({ name, arguments: args }) => {
   const launchId =
     typeof args?.launchId === "string" ? args.launchId : "invalid-launch";
   if (name === "authorize_durable_view") {
+    window.__authorizationRequests.push(launchId);
     if (launchId === "launch-navigation-target") {
       const view = navigationPayload();
       view.launch.authorization.authorized = true;
@@ -431,6 +457,7 @@ declare global {
   interface Window {
     __closedLaunches: string[];
     __bridgeRequests: unknown[];
+    __authorizationRequests: string[];
     __preparedActions: unknown[];
     __finishedActions: unknown[];
     __displayRequestError: string | null;
@@ -455,6 +482,7 @@ declare global {
     __releaseResumeRequest: () => void;
     __startTeardown: () => void;
     __showTransientResult: () => Promise<void>;
+    __showBundlelessTransientResult: () => Promise<void>;
     __showActionResult: () => Promise<void>;
   }
 }
