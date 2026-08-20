@@ -31,7 +31,7 @@ const PREAUTHORIZED_VIEWS = {
 
 interface ProbeResponse {
   status: number;
-  body: { error?: { message?: unknown }; status?: unknown; launchId?: unknown; approvalToken?: unknown; url?: unknown };
+  body: { error?: { message?: unknown }; status?: unknown; launchId?: unknown; approvalToken?: unknown; url?: unknown; delivered?: unknown };
 }
 
 async function post(server: UiServerHandle, pathname: string, body: unknown): Promise<ProbeResponse> {
@@ -179,9 +179,14 @@ test("REJECTION PIN (dir mode): a legacy bridge-only registry doc resolves acces
     const launch = await mintLaunch(server, "views-registry/legacy-propose");
     const served = await fetchPage(server, launch.url);
     assert.equal(served.status, 200, "the doc still registers — only its capability is downgraded");
-    assert.ok(served.text.startsWith(HTML), "the response preserves the exact bundle HTML prefix");
-    assert.match(served.text, /superbee\.view-ready\.v1/);
+    assert.equal(served.text, HTML, "transport readiness does not rewrite the authored HTML");
     assert.doesNotMatch(served.text, new RegExp(launch.launchId));
+    const firstDelivery = await post(server, "/__ui/views/delivered", { launchId: launch.launchId });
+    assert.equal(firstDelivery.status, 200);
+    assert.equal(firstDelivery.body.delivered, true);
+    const consumedDelivery = await post(server, "/__ui/views/delivered", { launchId: launch.launchId });
+    assert.equal(consumedDelivery.status, 200);
+    assert.equal(consumedDelivery.body.delivered, false, "the host receipt is one-shot");
 
     const target = await readDocVersioned(bundle, "tasks/alpha");
     const action = { kind: "document.set-field", docId: "tasks/alpha", field: "status", value: "done", expectedVersion: target.version };

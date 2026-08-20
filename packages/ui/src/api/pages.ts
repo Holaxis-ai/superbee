@@ -183,6 +183,10 @@ export interface ViewAuthorizationStatus {
   authorized: boolean;
 }
 
+export interface ViewDeliveryStatus {
+  delivered: boolean;
+}
+
 export interface ViewBridgeOutcome {
   reply: Record<string, unknown> | null;
   subscribed?: boolean;
@@ -230,6 +234,10 @@ export function authorizeViewLaunch(launchId: string): Promise<ViewAuthorization
 
 export function verifyViewLaunch(launchId: string): Promise<ViewAuthorizationStatus> {
   return postTrustedShell("/__ui/views/verify", { launchId });
+}
+
+export function verifyViewDelivery(launchId: string): Promise<ViewDeliveryStatus> {
+  return postTrustedShell("/__ui/views/delivered", { launchId });
 }
 
 export function sendViewBridge(launchId: string, request: unknown): Promise<ViewBridgeOutcome> {

@@ -11,7 +11,7 @@
 import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
-import { writeDoc } from "@superbee/core";
+import { writeBlob, writeDoc } from "@superbee/core";
 import { approveViewIfPrompted, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, CLI_DIST } from "./harness.js";
 
 const TASKS = [
@@ -112,6 +112,24 @@ test("a browser-blocked access:none View request also becomes an actionable shel
     });
     await expect(failure).toContainText("content blocker or privacy extension");
     await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test("a static access:none View with script-src none remains rendered after the readiness deadline", async ({ page }) => {
+  const ui = await bootUiOverPagesBundle([]);
+  try {
+    const html = `<!doctype html><meta http-equiv="Content-Security-Policy" content="script-src 'none'"><h1>CSP-static View</h1>`;
+    await writeBlob({ root: ui.dir }, "pages/about.html", new TextEncoder().encode(html), "text/html; charset=utf-8");
+    await page.goto(ui.url);
+    await openRegisteredView(page, "pages-registry/about");
+
+    const frame = page.frameLocator("iframe.page-frame-iframe");
+    await expect(frame.getByRole("heading", { name: "CSP-static View" })).toBeVisible();
+    await page.waitForTimeout(8_500); // Cross PageFrame's 8-second readiness deadline.
+    await expect(frame.getByRole("heading", { name: "CSP-static View" })).toBeVisible();
+    await expect(page.locator(".view-status-error")).toHaveCount(0);
   } finally {
     await ui.cleanup();
   }

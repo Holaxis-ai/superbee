@@ -8,7 +8,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { PageFrame, VIEW_LOAD_DEADLINE_MS } from "./PageFrame.js";
 import { getDoc, listAllHeads } from "../api/client.js";
-import { authorizeViewLaunch, cancelTrustedAction, commitTrustedAction, mintPageNonce, prepareTrustedAction, resolvePageTarget } from "../api/pages.js";
+import { authorizeViewLaunch, cancelTrustedAction, commitTrustedAction, mintPageNonce, prepareTrustedAction, resolvePageTarget, verifyViewDelivery } from "../api/pages.js";
 import { subscribeToChanges } from "../pages/pageEvents.js";
 import { __resetInterceptorForTests } from "../query/interceptor.js";
 
@@ -41,6 +41,7 @@ vi.mock("../api/pages.js", () => ({
   }),
   authorizeViewLaunch: vi.fn(async () => ({ required: true, authorized: true })),
   verifyViewLaunch: vi.fn(async () => ({ required: true, authorized: true })),
+  verifyViewDelivery: vi.fn(async () => ({ delivered: true })),
   sendViewBridge: vi.fn(async (_launchId: string, request: Record<string, unknown>) => {
     if (request.type === "open-page") {
       return (await resolvePageTarget(request.pageId as string))
@@ -161,6 +162,7 @@ describe("PageFrame: bridge revocation race (P1)", () => {
 
   it("does not treat iframe load as readiness for an access:none View", async () => {
     vi.useFakeTimers();
+    vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: false });
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "none" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
@@ -171,15 +173,19 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
 
-    act(() => iframe.dispatchEvent(new Event("load")));
+    await act(async () => {
+      iframe.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+    });
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
     expect(container.querySelector("iframe")).toBeNull();
     expect(container.textContent).toContain("This View's content did not finish loading");
   });
 
-  it("keeps an access:none View open after the exact served frame posts the host readiness signal", async () => {
+  it("keeps an access:none View open after the shell verifies the host delivery receipt", async () => {
     vi.useFakeTimers();
+    vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: true });
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "none" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
@@ -190,10 +196,10 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
 
-    act(() => window.dispatchEvent(new MessageEvent("message", {
-      source: iframe.contentWindow,
-      data: { type: "superbee.view-ready.v1" },
-    })));
+    await act(async () => {
+      iframe.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+    });
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
