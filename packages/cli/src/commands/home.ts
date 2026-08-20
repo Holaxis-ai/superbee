@@ -605,20 +605,21 @@ export function buildBoardBlock(
 export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocalRoute): Promise<BoardStatus | null> {
   try {
     if (route?.kind === "bound-board") {
-        const state = await defaultSyncStore.readSyncState(route.owner.stateKey);
-        let uncommitted: number | null;
-        try {
-          uncommitted = countUncommitted(route.owner.bundleRoot);
-        } catch {
-          uncommitted = null;
-        }
-        return {
-          state: "provisioned",
-          cache: state.cache,
-          selfActors: state.selfActors ?? [],
-          unpushed: unpushedCount(route.owner.bundleRoot),
-          uncommitted,
-        };
+      if (route.readiness !== "ready") return null;
+      const state = await defaultSyncStore.readSyncState(route.owner.stateKey);
+      let uncommitted: number | null;
+      try {
+        uncommitted = countUncommitted(route.owner.bundleRoot);
+      } catch {
+        uncommitted = null;
+      }
+      return {
+        state: "provisioned",
+        cache: state.cache,
+        selfActors: state.selfActors ?? [],
+        unpushed: unpushedCount(route.owner.bundleRoot),
+        uncommitted,
+      };
     }
     if (route?.kind === "bound-local") return null;
     // Retarget when sitting INSIDE the board worktree (exactly where an agent lands after
@@ -914,6 +915,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // SessionStart hook, so it is caught here and surfaced as a visible `bindingError` note instead.
   let binding: HomeBindingNote | undefined;
   let bindingError: string | undefined;
+  let localRoutingFailure = false;
   let localRoute = deps.localRoute;
   if (!remote && !dir) {
     try {
@@ -928,6 +930,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
           if (!(err instanceof CliError) || err.code !== "NOT_FOUND") throw err;
           // A missing ordinary target remains a recoverable binding: preserve its exact path so
           // home can offer the scoped init command rather than an unsafe cwd fallback.
+          localRoutingFailure = true;
           summaryDir = found.target;
         }
       }
@@ -935,12 +938,13 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
       bindingError = err instanceof Error ? err.message : String(err);
     }
   }
+  const pendingBoundBoard = localRoute?.kind === "bound-board" && localRoute.readiness !== "ready";
 
   // Opportunistic board freshness (module header, OPPORTUNISTIC FRESHNESS): plain LOCAL home only —
   // never for a --remote scope, and never when session-start already pulled in-process
   // (deps.boardPull present). Double-guarded like everything else here: the default trigger never
   // throws, and an injected/misbehaving one is caught so it can never fail the session.
-  if (!remote && !bindingError && deps.boardPull === undefined) {
+  if (!remote && !bindingError && !localRoutingFailure && !pendingBoundBoard && deps.boardPull === undefined) {
     try {
       await (deps.autoPull ?? ((d?: string) => maybeAutoPull(d, {
         requireBoardBundle: false,
@@ -956,7 +960,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // A --remote scope does NOT summarize (offline guarantee — the remote block orients toward the
   // fetching commands instead). Local / `--dir` scopes read the bundle as before.
   let summary: BundleSummary | UnreadableBundle | ConflictedBundle | null = null;
-  if (!remote && !bindingError) {
+  if (!remote && !bindingError && !localRoutingFailure) {
     try {
       summary = await summarize();
     } catch {
@@ -1020,7 +1024,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // The board block — skipped for a --remote scope (the board is a git-tier LOCAL
   // concept). Double-guarded like everything else here: a throwing probe yields no board block.
   let board: { block?: string | Record<string, unknown>; firstContact?: string } | undefined;
-  if (!remote && !bindingError) {
+  if (!remote && !bindingError && !localRoutingFailure && !pendingBoundBoard) {
     try {
       const status = deps.loadBoardStatus
         ? await deps.loadBoardStatus(dir)

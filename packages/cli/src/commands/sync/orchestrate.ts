@@ -73,6 +73,7 @@ import {
 } from "../../private-state-bundle-boundary.js";
 import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../../bundle.js";
 import type { BoundBoardOwner } from "../../bound-board-owner.js";
+import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -418,11 +419,12 @@ async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDis
   if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
     route = await resolveLocalBundleRoute(undefined);
   }
-  const owner = route?.kind === "bound-board" ? route.owner : undefined;
+  const boundOwner = route?.kind === "bound-board" ? route.owner : undefined;
+  const owner = route?.kind === "bound-board" && route.readiness === "ready" ? route.owner : undefined;
 
   // Standing inside the board worktree retargets to the enclosing project so provisioning's
   // idempotent path resolves the REAL board (see retargetBoardInterior).
-  const dir = owner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
+  const dir = boundOwner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
   return {
     kind: "run",
     options: {
@@ -644,6 +646,12 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   if (run.route?.kind === "bound-local") {
     stdout(render({ sync: "nothing to sync" }, run.mode));
     return;
+  }
+
+  if (run.route?.kind === "bound-board" && run.route.readiness === "recovery-pending") {
+    const recoveredOwner = await recoverBoundBoardOwner(run.route.target, run.route.owner);
+    run.owner = recoveredOwner;
+    run.route = { ...run.route, readiness: "ready", owner: recoveredOwner };
   }
 
   // Refuse the private-state identity before provisioning, fetching, committing, or publishing.

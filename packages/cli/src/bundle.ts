@@ -244,7 +244,20 @@ export type ResolvedLocalRoute =
       readonly bundle: Bundle;
       readonly identity: DirectoryIdentity;
     }
-  | { readonly kind: "bound-board"; readonly target: LocalBundleTarget; readonly bundle: Bundle; readonly owner: BoundBoardOwner };
+  | {
+      readonly kind: "bound-board";
+      readonly readiness: "ready";
+      readonly target: LocalBundleTarget;
+      readonly bundle: Bundle;
+      readonly owner: BoundBoardOwner;
+    }
+  | {
+      readonly kind: "bound-board";
+      readonly readiness: "recovery-pending";
+      readonly target: LocalBundleTarget;
+      readonly bundle: Bundle;
+      readonly owner: BoundBoardOwner;
+    };
 
 /** The post-persist board decision is total and computed before a mutation persists. */
 export type BoardAttribution =
@@ -1504,8 +1517,8 @@ export async function resolveLocalBundleRoute(
     await assertResolvedLocalRouteIdentity(route);
     return route;
   }
-  const owner = await validateBoundBoardOwner(target);
-  if (owner) return { kind: "bound-board", target, bundle, owner };
+  const board = await validateBoundBoardOwner(target);
+  if (board) return { kind: "bound-board", readiness: board.readiness, target, bundle, owner: board.owner };
   const route: ResolvedLocalRoute = { kind: "bound-local", target, bundle, identity };
   await assertResolvedLocalRouteIdentity(route);
   return route;
@@ -1513,7 +1526,9 @@ export async function resolveLocalBundleRoute(
 
 /** Compute mutation attribution before persistence; post-persist code receives only this value. */
 export function boardAttributionForRoute(route: ResolvedLocalRoute): BoardAttribution {
-  if (route.kind === "bound-board") return { kind: "board", stateKey: route.owner.stateKey };
+  if (route.kind === "bound-board") {
+    return route.readiness === "ready" ? { kind: "board", stateKey: route.owner.stateKey } : { kind: "none" };
+  }
   if (route.kind === "bound-local") return { kind: "none" };
   if (!BUNDLE_DIRS.includes(path.basename(route.bundle.root) as (typeof BUNDLE_DIRS)[number])) return { kind: "none" };
   try {

@@ -90,6 +90,12 @@ export async function showIncoming(
     // The viewer's run directory answers to the relation at its own resolution point, exactly as
     // sync's does: a guarded root is a conflict to report, not a repo that turns out to be absent.
     if (route?.kind === "bound-local") throw syncOutcomeError("show-incoming.no-upstream", { inv });
+    if (route?.kind === "bound-board" && route.readiness !== "ready") {
+      throw new CliError(
+        "CONFLICT",
+        "the selected private board has a board-origin rebase pending; --show-incoming cannot recover it",
+      );
+    }
     if (!route) assertSearchDirOutsidePrivateState(path.resolve(values.dir ?? process.cwd()));
     const dir = route?.kind === "bound-board"
       ? route.owner.bundleRoot

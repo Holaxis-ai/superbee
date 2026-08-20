@@ -153,6 +153,7 @@ export async function sessionStartPull(
     const route: ResolvedLocalRoute | undefined = dir === undefined && await resolveProjectBinding(process.cwd())
       ? await resolveLocalBundleRoute(undefined)
       : undefined;
+    if (route?.kind === "bound-board" && route.readiness !== "ready") return undefined;
     const owner = route?.kind === "bound-board" ? route.owner : undefined;
     const startDir = owner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(dir ?? process.cwd()));
 

@@ -20,7 +20,7 @@ import { list } from "../src/commands/list.js";
 import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
 import { sync } from "../src/commands/sync.js";
 import { resolveBundleKey } from "@superbee/board-git";
-import { boardHead, git, isMidRebase, makeCommittedFolderTopology, makeTwoCloneTopology, wedgeMidRebase } from "../../board-git/test/git-harness.js";
+import { boardHead, git, gitTry, isMidRebase, makeCommittedFolderTopology, makeTwoCloneTopology, wedgeMidRebase } from "../../board-git/test/git-harness.js";
 
 const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
@@ -354,17 +354,129 @@ test("built CLI new and doc write remain successful without Git when unbound con
   }
 });
 
-test("a proven owner heals a board-origin stale rebase before freezing its capability", async () => {
+test("owner proof records a board-origin rebase as recovery-pending without changing it", async () => {
   const topo = await makeTwoCloneTopology();
   try {
     await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: topo.b.board }));
     await wedgeMidRebase(topo);
     assert.equal(isMidRebase(topo.b), true, "fixture is a real interrupted board rebase");
+    const before = {
+      head: git(topo.b.board, ["rev-parse", "HEAD"]),
+      status: git(topo.b.board, ["status", "--porcelain"]),
+      rebaseHead: await readFile(path.join(topo.b.board, ".git"), "utf8"),
+    };
 
     const route = await inDir(topo.a.root, () => resolveLocalBundleRoute(undefined));
     assert.equal(route.kind, "bound-board");
-    assert.equal(isMidRebase(topo.b), false, "recovery ran before the final branch proof");
-    assert.equal(git(topo.b.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+    if (route.kind !== "bound-board") assert.fail("fixture must classify as bound board");
+    assert.equal(route.readiness, "recovery-pending");
+    assert.deepEqual(boardAttributionForRoute(route), { kind: "none" });
+    assert.equal(isMidRebase(topo.b), true, "route proof never aborts the rebase");
+    assert.deepEqual(
+      {
+        head: git(topo.b.board, ["rev-parse", "HEAD"]),
+        status: git(topo.b.board, ["status", "--porcelain"]),
+        rebaseHead: await readFile(path.join(topo.b.board, ".git"), "utf8"),
+      },
+      before,
+      "read-only proof leaves the worktree state untouched",
+    );
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("a recovery-pending board route skips autopull, SessionStart, and Home board state", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-pending-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: topo.b.board }));
+    await wedgeMidRebase(topo);
+    const route = await inDir(topo.a.root, () => resolveLocalBundleRoute(undefined));
+    assert.equal(route.kind, "bound-board");
+    if (route.kind !== "bound-board") assert.fail("fixture must classify as bound board");
+    assert.equal(route.readiness, "recovery-pending");
+    const key = route.owner.stateKey;
+    const before = await withHome(homeDir, async () => ({
+      head: git(topo.b.board, ["rev-parse", "HEAD"]),
+      refs: git(topo.b.root, ["show-ref"]),
+      status: git(topo.b.board, ["status", "--porcelain"]),
+      marker: await readMarker(key),
+      cache: await readCache(key),
+      state: await readSyncState(key),
+    }));
+
+    await withHome(homeDir, async () => {
+      assert.equal(await maybeAutoPull(undefined, { route, env: {} }), "no-board");
+      assert.equal(await inDir(topo.a.root, () => sessionStartPull(undefined)), undefined);
+      let homeAutoPull = false;
+      let homeBoardStatus = false;
+      await inDir(topo.a.root, () => home([], {
+        stdout: () => {},
+        autoPull: async () => {
+          homeAutoPull = true;
+          return "no-board";
+        },
+        loadBoardStatus: async () => {
+          homeBoardStatus = true;
+          return null;
+        },
+        loadWorkspaces: async () => [],
+      }));
+      assert.equal(homeAutoPull, false, "Home skips autopull for a pending route");
+      assert.equal(homeBoardStatus, false, "Home skips board status for a pending route");
+    });
+
+    const after = await withHome(homeDir, async () => ({
+      head: git(topo.b.board, ["rev-parse", "HEAD"]),
+      refs: git(topo.b.root, ["show-ref"]),
+      status: git(topo.b.board, ["status", "--porcelain"]),
+      marker: await readMarker(key),
+      cache: await readCache(key),
+      state: await readSyncState(key),
+    }));
+    assert.deepEqual(after, before, "read paths leave the pending board and private state untouched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a non-board-origin rebase remains rejected and unchanged by owner proof", async () => {
+  const topo = await makeTwoCloneTopology();
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: topo.b.board }));
+    const doc = path.join(topo.b.board, "tasks", "seed-one.md");
+    const original = await readFile(doc, "utf8");
+    git(topo.b.board, ["checkout", "-b", "not-board-rebase"]);
+    await writeFile(doc, `${original}\nlocal branch change\n`);
+    git(topo.b.board, ["add", "--", "tasks/seed-one.md"]);
+    git(topo.b.board, ["commit", "-m", "local non-board change"]);
+    git(topo.b.board, ["checkout", "board"]);
+    await writeFile(doc, `${original}\nboard branch change\n`);
+    git(topo.b.board, ["add", "--", "tasks/seed-one.md"]);
+    git(topo.b.board, ["commit", "-m", "board branch change"]);
+    git(topo.b.board, ["checkout", "not-board-rebase"]);
+    assert.notEqual(gitTry(topo.b.board, ["rebase", "board"]).status, 0, "fixture rebase must stop on a conflict");
+    assert.equal(isMidRebase(topo.b), true);
+    const before = {
+      head: git(topo.b.board, ["rev-parse", "HEAD"]),
+      status: git(topo.b.board, ["status", "--porcelain"]),
+      rebaseHead: await readFile(path.join(topo.b.board, ".git"), "utf8"),
+    };
+    await assert.rejects(
+      () => inDir(topo.a.root, () => resolveLocalBundleRoute(undefined)),
+      /rebase not started from the board branch/,
+    );
+    assert.deepEqual(
+      {
+        head: git(topo.b.board, ["rev-parse", "HEAD"]),
+        status: git(topo.b.board, ["status", "--porcelain"]),
+        rebaseHead: await readFile(path.join(topo.b.board, ".git"), "utf8"),
+      },
+      before,
+      "non-board rebase refusal never mutates the selected worktree",
+    );
   } finally {
     await topo.cleanup();
   }
@@ -419,7 +531,7 @@ test("plain bindings keep sync, pull/view, autopull, home, session-start, and in
   }
 });
 
-test("bound-board establish remains idempotent and stale recovery reaches sync's ordinary convergence", async () => {
+test("bound-board establish remains idempotent and explicit sync recovers a pending board", async () => {
   const topo = await makeTwoCloneTopology();
   const home = await mkdtemp(path.join(tmpdir(), "superbee-bound-establish-home-"));
   try {
@@ -437,7 +549,8 @@ test("bound-board establish remains idempotent and stale recovery reaches sync's
         () => inDir(topo.a.root, () => sync([], { stdout: () => {} })),
         (err: unknown) => (err as { code?: string }).code === "CONFLICT",
       );
-      assert.equal(isMidRebase(topo.b), false, "bound sync recovers then reaches the convergence outcome");
+      assert.equal(isMidRebase(topo.b), false, "explicit bound sync cancels the unfinished board rebase before continuing");
+      assert.equal(git(topo.b.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
       assert.equal(boardHead(topo.a), publicHeadAfterFixture, "bound recovery never uses the invoking public board");
     });
   } finally {
@@ -461,11 +574,69 @@ test("post-persist attribution accepts only an explicit precomputed state key", 
   }
 });
 
-test("architecture keeps validator and post-persist authority transport single-owner", async () => {
+test("Home closes summary, autopull, and board-status gates for a missing binding target", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-missing-home-"));
+  try {
+    const missing = path.join(topo.a.root, "missing-bound-bundle");
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: missing }));
+    const publicKey = resolveBundleKey(topo.a.board);
+    const before = await withHome(homeDir, async () => ({
+      head: boardHead(topo.a),
+      refs: git(topo.a.root, ["show-ref"]),
+      docs: await readFile(path.join(topo.a.board, "tasks", "seed-one.md"), "utf8"),
+      marker: await readMarker(publicKey),
+      cache: await readCache(publicKey),
+      state: await readSyncState(publicKey),
+    }));
+    let summaryCalled = false;
+    let autopullCalled = false;
+    let boardStatusCalled = false;
+    let output = "";
+    await withHome(homeDir, () => inDir(topo.a.root, () => home(["--json"], {
+      stdout: (line) => (output += line),
+      summarizeBundle: async () => {
+        summaryCalled = true;
+        return null;
+      },
+      autoPull: async () => {
+        autopullCalled = true;
+        return "no-board";
+      },
+      loadBoardStatus: async () => {
+        boardStatusCalled = true;
+        return null;
+      },
+      loadWorkspaces: async () => [],
+    })));
+    assert.equal(summaryCalled, false, "missing binding target closes summary before cwd discovery");
+    assert.equal(autopullCalled, false, "missing binding target closes Home autopull");
+    assert.equal(boardStatusCalled, false, "missing binding target closes Home board status");
+    const rendered = JSON.parse(output) as { getting_started?: string };
+    assert.match(rendered.getting_started ?? "", /project binding/);
+    assert.match(rendered.getting_started ?? "", /missing-bound-bundle/);
+    assert.match(rendered.getting_started ?? "", /init --recipe none/);
+    const after = await withHome(homeDir, async () => ({
+      head: boardHead(topo.a),
+      refs: git(topo.a.root, ["show-ref"]),
+      docs: await readFile(path.join(topo.a.board, "tasks", "seed-one.md"), "utf8"),
+      marker: await readMarker(publicKey),
+      cache: await readCache(publicKey),
+      state: await readSyncState(publicKey),
+    }));
+    assert.deepEqual(after, before, "missing binding Home leaves the public board and state untouched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("architecture keeps validation read-only and recovery explicit-sync-only", async () => {
   const root = path.resolve(import.meta.dirname, "..");
-  const [bundle, owner, attribution, autopull, sessionStart, home, syncSource] = await Promise.all([
+  const [bundle, owner, recovery, attribution, autopull, sessionStart, home, syncSource] = await Promise.all([
     readFile(path.join(root, "src", "bundle.ts"), "utf8"),
     readFile(path.join(root, "src", "bound-board-owner.ts"), "utf8"),
+    readFile(path.join(root, "src", "bound-board-recovery.ts"), "utf8"),
     readFile(path.join(root, "src", "board-attribution.ts"), "utf8"),
     readFile(path.join(root, "src", "autopull.ts"), "utf8"),
     readFile(path.join(root, "src", "commands", "session-start.ts"), "utf8"),
@@ -475,6 +646,12 @@ test("architecture keeps validator and post-persist authority transport single-o
   assert.match(bundle, /validateBoundBoardOwner/);
   for (const source of [autopull, sessionStart, home, syncSource]) assert.doesNotMatch(source, /validateBoundBoardOwner/);
   assert.doesNotMatch(owner, /WeakMap/);
+  assert.doesNotMatch(owner, /abortStaleRebase/);
+  assert.match(recovery, /abortStaleRebase/);
+  for (const source of [bundle, attribution, autopull, sessionStart, home]) {
+    assert.doesNotMatch(source, /bound-board-recovery|recoverBoundBoardOwner/);
+  }
+  assert.match(syncSource, /recoverBoundBoardOwner/);
   assert.doesNotMatch(attribution, /import .*resolveBundleKey|process\.cwd\(/);
   assert.match(attribution, /stateKey/);
   assert.equal(existsSync(path.join(root, "src", "bound-board-owner.ts")), true);

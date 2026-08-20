@@ -36,6 +36,7 @@ export async function maybeAutoPull(
 ) {
   const route = opts.route;
   if (route?.kind === "bound-board") {
+    if (route.readiness !== "ready") return "no-board";
     return maybeAutoPullWith(
       { store: defaultSyncStore, resolveBundleRoot: async () => route.owner.bundleRoot },
       route.owner.bundleRoot,
@@ -52,6 +53,7 @@ export async function maybeAutoPull(
     try {
       const resolved = await resolveLocalBundleRoute(undefined);
       if (resolved.kind === "bound-board") {
+        if (resolved.readiness !== "ready") return "no-board";
         return maybeAutoPullWith(
           { store: defaultSyncStore, resolveBundleRoot: async () => resolved.owner.bundleRoot },
           resolved.owner.bundleRoot,
