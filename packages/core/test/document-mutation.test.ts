@@ -741,6 +741,18 @@ test("overwrite compares an explicitly supplied timestamp but ignores an automat
   assert.equal(automatic.changed, false);
   assert.equal(automatic.version, initial.version);
 
+  const equivalentExplicit = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    compareTimestamp: true,
+    buildCandidate: () => candidate("A", "same", "2026-07-16T00:00:00Z"),
+  });
+  assert.equal(equivalentExplicit.changed, false);
+  assert.equal(equivalentExplicit.version, initial.version);
+
   const explicit = await mutateDocument({
     bundle,
     id: "notes/a",
@@ -752,6 +764,35 @@ test("overwrite compares an explicitly supplied timestamp but ignores an automat
   });
   assert.equal(explicit.changed, true);
   assert.notEqual(explicit.version, initial.version);
+});
+
+test("v0.2 overwrite compares equivalent explicit timestamp spellings by instant", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const initial = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-20T00:00:00.000Z",
+    buildCandidate: () => candidate("A", "same", "2026-07-16T00:00:00.000Z"),
+  });
+
+  const equivalent = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    compareTimestamp: true,
+    now: () => "2026-08-21T00:00:00.000Z",
+    buildCandidate: () => candidate("A", "same", "2026-07-16T00:00:00Z"),
+  });
+
+  assert.equal(equivalent.changed, false);
+  assert.equal(equivalent.version, initial.version);
+  assert.equal((await backend.versions("notes/a")).length, 1);
 });
 
 test("onAbsent:create retries an expect-absent patch against a concurrent creator", async () => {

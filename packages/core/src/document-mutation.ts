@@ -151,6 +151,15 @@ function withoutAutomaticMutationActor(
   return withoutActor;
 }
 
+function withCanonicalComparableTimestamp(frontmatter: Frontmatter): Frontmatter {
+  const timestamp = frontmatter.timestamp;
+  if (typeof timestamp !== "string") return frontmatter;
+  const instant = Date.parse(timestamp);
+  if (Number.isNaN(instant)) return frontmatter;
+  const canonical = new Date(instant).toISOString();
+  return canonical === timestamp ? frontmatter : { ...frontmatter, timestamp: canonical };
+}
+
 function isNoopMutation(
   existing: OkfDocument,
   candidate: DocumentMutationCandidate,
@@ -163,12 +172,18 @@ function isNoopMutation(
   const comparedBody = (body: string): string =>
     normalizeStorageBody && !body.endsWith("\n") ? `${body}\n` : body;
   if (comparedBody(candidate.body) !== comparedBody(existing.body)) return false;
-  const existingFrontmatter = ignoreAutomaticActor
+  const existingFrontmatterWithActorPolicy = ignoreAutomaticActor
     ? withoutAutomaticMutationActor(existing.frontmatter, okfVersion, kindRequiresActor)
     : existing.frontmatter;
-  const candidateFrontmatter = ignoreAutomaticActor
+  const candidateFrontmatterWithActorPolicy = ignoreAutomaticActor
     ? withoutAutomaticMutationActor(candidate.frontmatter, okfVersion, kindRequiresActor)
     : candidate.frontmatter;
+  const existingFrontmatter = compareTimestamp
+    ? withCanonicalComparableTimestamp(existingFrontmatterWithActorPolicy)
+    : existingFrontmatterWithActorPolicy;
+  const candidateFrontmatter = compareTimestamp
+    ? withCanonicalComparableTimestamp(candidateFrontmatterWithActorPolicy)
+    : candidateFrontmatterWithActorPolicy;
   if (okfVersion === "0.2") {
     const withoutGeneratedAt = (frontmatter: Frontmatter): Frontmatter => {
       const generated = frontmatter.generated;

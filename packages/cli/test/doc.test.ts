@@ -323,7 +323,7 @@ test("doc write: an identical repeat is changed:false, preserves version and mti
     await utimes(file, pinnedMtime, pinnedMtime);
     const before = await stat(file);
 
-    const repeated = await runDoc(args);
+    const repeated = await runDoc(args.map((arg) => arg === T ? "2026-07-01T00:00:00Z" : arg));
     assert.equal(repeated.changed, false);
     assert.equal(repeated.version, firstVersion);
     assert.equal((await stat(file)).mtimeMs, before.mtimeMs);
@@ -355,13 +355,41 @@ test("doc write --remote: an identical repeat is changed:false and does not appe
       server.url,
     ];
     const first = await runDoc(args);
-    const repeated = await runDoc(args);
+    const repeated = await runDoc(args.map((arg) => arg === T ? "2026-07-01T00:00:00Z" : arg));
     assert.equal(first.changed, true);
     assert.equal(repeated.changed, false);
     assert.equal(repeated.version, first.version);
     assert.equal((await docVersions(bundle, "concepts/a")).length, 1);
   } finally {
     await server.close();
+  }
+});
+
+test("doc write v0.2 actor-only no-op reports no dropped fields", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir, { okfVersion: "0.2" });
+    const args = [
+      "write",
+      "concepts/a",
+      "--type",
+      "Concept",
+      "--body",
+      "Same body.",
+      "--actor",
+      "alice",
+      "--dir",
+      dir,
+    ];
+    const first = await runDoc(args);
+    const actorOnly = await runDoc(args.map((arg) => arg === "alice" ? "bob" : arg));
+
+    assert.equal(first.changed, true);
+    assert.equal(actorOnly.changed, false);
+    assert.equal(actorOnly.dropped_fields, undefined);
+    assert.equal((await readDoc({ root: dir }, "concepts/a")).frontmatter.superbee_updated_by, "alice");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
