@@ -51,8 +51,17 @@ function scalarLabel(value: string | number | boolean | null): string {
   return value === null ? "(not set)" : JSON.stringify(value);
 }
 
+/** A framed View must prove that its document loaded instead of leaving an indefinite blank panel. */
+export const VIEW_LOAD_DEADLINE_MS = 8_000;
+
+const VIEW_LOAD_FAILURE =
+  "This View's content did not finish loading. A browser content blocker or privacy extension may have blocked its local HTML request. Allowlist this local address, or reopen it with extensions disabled.";
+
 export function PageFrame({ pageId }: { pageId: string }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const frameLoadTimerRef = useRef<number | null>(null);
+  const frameReadySeqRef = useRef<number | null>(null);
+  const frameNeedsBridgeReadyRef = useRef(false);
   const subscribedRef = useRef(false);
   // A shell navigation consumes the currently framed document's right to navigate. Unlike the
   // async-load epoch below, this remains locked while that old iframe can still post messages.
@@ -85,6 +94,12 @@ export function PageFrame({ pageId }: { pageId: string }) {
     setActionBusy(false);
     setActionArmed(false);
     if (pending?.approvalToken) void cancelTrustedAction(pending.approvalToken).catch(() => {});
+  }, []);
+
+  const clearFrameLoadTimer = useCallback(() => {
+    if (frameLoadTimerRef.current === null) return;
+    window.clearTimeout(frameLoadTimerRef.current);
+    frameLoadTimerRef.current = null;
   }, []);
 
   // A hostile View controls when this dialog appears. Keep both predictable button targets inert
@@ -124,7 +139,10 @@ export function PageFrame({ pageId }: { pageId: string }) {
   // sandboxed iframe unmounts, so its bridge access ends WITH its registry doc, not after it.
   const revoke = useCallback((reason: string) => {
     discardPendingAction();
+    clearFrameLoadTimer();
     loadSeqRef.current++;
+    frameReadySeqRef.current = null;
+    frameNeedsBridgeReadyRef.current = false;
     subscribedRef.current = false;
     launchIdRef.current = null;
     setPendingLaunch(null);
@@ -133,7 +151,28 @@ export function PageFrame({ pageId }: { pageId: string }) {
     setFrameSeq(null);
     setEntryKey(null);
     setError(reason);
-  }, [discardPendingAction]);
+  }, [clearFrameLoadTimer, discardPendingAction]);
+
+  const markFrameReady = useCallback((seq: number) => {
+    if (seq !== loadSeqRef.current) return;
+    frameReadySeqRef.current = seq;
+    clearFrameLoadTimer();
+  }, [clearFrameLoadTimer]);
+
+  const failFrameLoad = useCallback((seq: number, explicitFailure = false) => {
+    if (seq !== loadSeqRef.current || (!explicitFailure && frameReadySeqRef.current === seq)) return;
+    revoke(VIEW_LOAD_FAILURE);
+  }, [revoke]);
+
+  useEffect(() => {
+    clearFrameLoadTimer();
+    if (src === null || frameSeq === null || frameReadySeqRef.current === frameSeq) return;
+    frameLoadTimerRef.current = window.setTimeout(
+      () => failFrameLoad(frameSeq),
+      VIEW_LOAD_DEADLINE_MS,
+    );
+    return clearFrameLoadTimer;
+  }, [clearFrameLoadTimer, failFrameLoad, frameSeq, src]);
 
   /**
    * Resolve registry doc -> entry key -> nonce URL and (re)load the frame. The ONE path for
@@ -142,7 +181,10 @@ export function PageFrame({ pageId }: { pageId: string }) {
    */
   const loadPage = useCallback(async () => {
     discardPendingAction();
+    clearFrameLoadTimer();
     const seq = ++loadSeqRef.current;
+    frameReadySeqRef.current = null;
+    frameNeedsBridgeReadyRef.current = false;
     // Pre-revoke IMMEDIATELY, synchronously, before the async server mint below. This
     // is the ONE entry point every re-resolution path shares (mount, page switch, a live
     // registry-doc change, blob hot-reload, resync), so the OLD capability/subscription can never
@@ -160,6 +202,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
       if (seq !== loadSeqRef.current) return;
       subscribedRef.current = false;
       launchIdRef.current = minted.launchId;
+      frameNeedsBridgeReadyRef.current = minted.capability !== "none";
       setEntryKey(minted.entry);
       setTitle(minted.title);
       setError(null);
@@ -187,7 +230,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
       // with the WRONG advice over what's really just a dismissable per-view error.
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [discardPendingAction, pageId]);
+  }, [clearFrameLoadTimer, discardPendingAction, pageId]);
 
   // Resolve registry doc -> entry key -> nonce URL on mount / page switch. Launch revocation
   // happens unconditionally at the TOP of loadPage itself (every re-resolution path
@@ -201,9 +244,10 @@ export function PageFrame({ pageId }: { pageId: string }) {
     void loadPage();
     return () => {
       discardPendingAction();
+      clearFrameLoadTimer();
       loadSeqRef.current++;
     };
-  }, [discardPendingAction, loadPage]);
+  }, [clearFrameLoadTimer, discardPendingAction, loadPage]);
 
   // Broker page->shell bridge requests. v0 remains read-only; v1 may only prepare a trusted,
   // human-confirmed action and never receives the launch id or approval token.
@@ -219,6 +263,10 @@ export function PageFrame({ pageId }: { pageId: string }) {
       // flight, so without this check a reply computed for the OLD page could cross the revoke
       // boundary (P1).
       const seq = loadSeqRef.current;
+      // Any message from the exact current opaque-origin frame proves its script loaded. Views
+      // declaring data access are held to this stronger signal because browser error documents
+      // may themselves fire iframe `load`; access:none Views use the ordinary load event below.
+      markFrameReady(seq);
 
       const actionMessage = parseActionBridgeMessage(ev.data);
       if (actionMessage !== null) {
@@ -323,7 +371,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [discardPendingAction, pageId]);
+  }, [discardPendingAction, markFrameReady, pageId]);
 
   // Live: push doc changes to the subscribed page; REVOKE when this page's registry doc is
   // removed (P1 — an open frame must not keep reading through the bridge after its page is
@@ -465,6 +513,12 @@ export function PageFrame({ pageId }: { pageId: string }) {
           referrerPolicy="no-referrer"
           src={src}
           title={title}
+          onLoad={() => {
+            if (frameSeq !== null && !frameNeedsBridgeReadyRef.current) markFrameReady(frameSeq);
+          }}
+          onError={() => {
+            if (frameSeq !== null) failFrameLoad(frameSeq, true);
+          }}
         />
       ) : (
         <p className="view-status">Opening page…</p>

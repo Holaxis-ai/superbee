@@ -6,7 +6,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { PageFrame } from "./PageFrame.js";
+import { PageFrame, VIEW_LOAD_DEADLINE_MS } from "./PageFrame.js";
 import { getDoc, listAllHeads } from "../api/client.js";
 import { authorizeViewLaunch, cancelTrustedAction, commitTrustedAction, mintPageNonce, prepareTrustedAction, resolvePageTarget } from "../api/pages.js";
 import { subscribeToChanges } from "../pages/pageEvents.js";
@@ -113,10 +113,50 @@ describe("PageFrame: bridge revocation race (P1)", () => {
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     await act(async () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it("keeps a data-bearing View open once its exact frame posts a readiness message", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    expect(iframe).toBeTruthy();
+    act(() => window.dispatchEvent(new MessageEvent("message", {
+      source: iframe.contentWindow,
+      data: { bridge: "v0", id: "hello-1", type: "hello" },
+    })));
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+    expect(container.textContent).not.toContain("This View's content did not finish loading");
+  });
+
+  it("times out a data-bearing View that never proves its frame script loaded", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.textContent).toContain("This View's content did not finish loading");
   });
 
   it("registry-doc bundle-read -> none: a bridge request received during the async reload gap is DENIED, never answered under the stale grant", async () => {
