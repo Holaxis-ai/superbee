@@ -13,16 +13,18 @@
  * legacy `bridge` spelling is no longer read), so the card can never claim a page is one thing while the bridge treats it as
  * another; it is just no longer the organizing principle.
  *
- * Orientation: a 4-panel walkthrough (What is it? + problems / How do I use it? / Views +
+ * Orientation: a 4-panel walkthrough (What is it? / How do I use it? / Views +
  * recipes / Collaborating via sync) navigated with Back/Next; "Got it" appears only on the last panel and is the
  * one dismissal path. Shown until dismissed, tracked in localStorage keyed by the bundle root
  * (accepted caveat: a stable-port fallback to an ephemeral port changes the origin, which may
  * resurface it once), and REOPENABLE afterwards via the "what is this?" affordance — the
  * overview and the example view prompts must stay reachable, not vanish after one reading.
- * Copy rules (designs/home-surface + the 2026-07-24 landing rethink): agent-first framing —
- * Superbee is a cognitive ecosystem used THROUGH agents, and this window exists for the human to
- * see what agents are doing; the privacy promise is worded to cover the in-tree mode; the
- * try-it hook carries a no-agent-yet fallback.
+ * Copy rules (designs/home-surface + the 2026-07-24 landing rethink + plans/proactive-onboarding-prompts):
+ * one-line-first — each panel is a heading, ONE lead sentence answering it, and 2-3 short bullets,
+ * with the remaining prose behind a per-panel "learn more" expander that collapses on step change.
+ * Agent-first framing — Superbee is used THROUGH agents, and this window exists for the human to
+ * see what agents are doing; the sharing panel's public-repo visibility warning stays VISIBLE
+ * un-expanded (safety over brevity); the try-it hook carries a no-agent-yet fallback.
  *
  * Live: a doc change over SSE may add/remove/retitle a View doc, so the grid refetches on any
  * doc change — a freshly-promoted view shows up without a manual reload.
@@ -212,6 +214,11 @@ export function Launcher() {
     orientationCardRef.current?.querySelector("h2")?.focus();
   }, [orientationStep]);
 
+  // Every panel's "learn more" expander starts collapsed — disclosure is per step.
+  useEffect(() => {
+    setOrientationHelpOpen(false);
+  }, [orientationStep]);
+
   const dismissOrientation = () => {
     if (config?.mode === "dir" && config.root != null) {
       try {
@@ -294,10 +301,8 @@ export function Launcher() {
                 <>
                   <h2 tabIndex={-1}>What is Superbee?</h2>
                   <p>
-                    Superbee is a cognitive ecosystem for AI agents: a shared, versioned memory that lives in this
-                    project as a folder of plain markdown — notes, decisions, tasks, and the links between them.
-                    Agents read and write it as they work; conflict-safe writes keep concurrent agents from stepping
-                    on each other; and everything they know stays in files you own and can read.{" "}
+                    Superbee is a shared, versioned memory for your AI agents — plain markdown living in this
+                    project, in files you own.{" "}
                     <button
                       type="button"
                       className="where-btn"
@@ -307,116 +312,141 @@ export function Launcher() {
                       {orientationHelpOpen ? "hide details" : "learn more"}
                     </button>
                   </p>
+                  <ul className="orientation-examples">
+                    <li>Agents read, write, and link it as they work — notes, decisions, tasks.</li>
+                    <li>Conflict-safe writes keep concurrent agents from stepping on each other.</li>
+                    <li>What one session settles, the next builds on — instead of resetting to zero.</li>
+                  </ul>
                   {orientationHelpOpen && (
                     <div className="orientation-details">
                       <p>
-                        The documents follow an open standard called OKF — the Open Knowledge Format. In practice it
-                        means each file is ordinary markdown with a short header naming what the document is and what
-                        it is called, and ordinary markdown links between files.
+                        On their own, agents forget important information between sessions, occasionally step on each
+                        other’s writes, and often keep what they know invisible to you. A shared memory fixes all
+                        three — progress ratchets forward instead of slipping back, and work can span days, sessions,
+                        and many agents.
                       </p>
                       <p>
-                        Nothing about it is proprietary or locked to this tool: any editor that opens markdown can
-                        read your bundle, and Superbee can read a bundle some other program wrote.
+                        The documents follow an open standard called OKF — the Open Knowledge Format: ordinary
+                        markdown with a short header naming what each document is, and ordinary markdown links
+                        between files. Nothing is proprietary — any editor that opens markdown can read your bundle,
+                        and Superbee can read a bundle some other program wrote.
                       </p>
                     </div>
                   )}
-                  <h3>What problems does it solve?</h3>
-                  <p>
-                    On their own, agents forget important information between sessions, occasionally step on each
-                    other’s writes, and often keep what they know invisible to you. A shared memory fixes all three —
-                    and it is what makes long-horizon work possible: progress ratchets forward instead of slipping
-                    back, because what one session settles becomes the floor the next one builds on. Decisions stay
-                    decided, and work can span days, sessions, and many agents without resetting to zero.
-                  </p>
                 </>
               )}
               {orientationStep === 1 && (
                 <>
                   <h2 tabIndex={-1}>How do I use Superbee?</h2>
                   <p>
-                    Actually, agents are the main users of Superbee. In fact it was built <em>by</em> agents,{" "}
-                    <em>for</em> agents, with features that make it easy for them to work together on long-horizon
-                    problems. The Superbee skill provides agents with some basic instructions on how it all works, and
-                    Superbee hooks start each new session with the bundle’s current state already in view. If they
-                    aren’t set up yet, just ask your agent to install the Superbee skill and hooks — for this project
-                    only, or globally for every project at once.
+                    Mostly, you don’t — your agents do.{" "}
+                    <button
+                      type="button"
+                      className="where-btn"
+                      aria-expanded={orientationHelpOpen}
+                      onClick={() => setOrientationHelpOpen((v) => !v)}
+                    >
+                      {orientationHelpOpen ? "hide details" : "learn more"}
+                    </button>
                   </p>
-                  <p>
-                    You may also want to add files into the bundle — for example, if you have context that will help
-                    agents understand what you are building. Again, you’ll want to add these files through agents,
-                    who will know how to add them so that they can find them when they need them. For example, you
-                    can just say <em>“Add this Vision doc to the bundle”</em> and the agents will take care of it.
-                    Beyond that, just work as you normally would. With the skill installed, your agents will write
-                    their own notes and files into the bundle, and retrieve them as they are needed.
-                  </p>
+                  <ul className="orientation-examples">
+                    <li>Ask your agent to install the Superbee skill and hooks — for this project only, or globally.</li>
+                    <li>
+                      Have context agents should know? Just say <em>“Add this doc to the bundle”</em> — they file it
+                      where they can find it.
+                    </li>
+                    <li>Then work as you normally would.</li>
+                  </ul>
+                  {orientationHelpOpen && (
+                    <div className="orientation-details">
+                      <p>
+                        Agents are the main users of Superbee — it was built <em>by</em> agents, <em>for</em> agents,
+                        with features that make it easy for them to work together on long-horizon problems. The skill
+                        gives agents basic instructions on how it all works, and the hooks start each new session
+                        with the bundle’s current state already in view. Once they are set up, agents write their own
+                        notes and files into the bundle, and retrieve them as they are needed.
+                      </p>
+                    </div>
+                  )}
                 </>
               )}
               {orientationStep === 2 && (
                 <>
-                  <h2 tabIndex={-1}>Views</h2>
+                  <h2 tabIndex={-1}>Views &amp; recipes</h2>
                   <p>
-                    Superbee also makes it extremely easy to create views so that you can see and interact with the
-                    project and its bundle. Just tell the agents what you want to see, and they will create it. And
-                    they are very good at anticipating what display formats are most useful. Here are a few examples
-                    of views that might be helpful:
+                    Ask for any view of your project — a task board, a decision log, a link map — and your agent
+                    builds it; its card appears right here.{" "}
+                    <button
+                      type="button"
+                      className="where-btn"
+                      aria-expanded={orientationHelpOpen}
+                      onClick={() => setOrientationHelpOpen((v) => !v)}
+                    >
+                      {orientationHelpOpen ? "hide details" : "learn more"}
+                    </button>
                   </p>
                   <ul className="orientation-examples">
-                    <li>“Create me a view that shows all tasks that have not been completed, grouped by priority.”</li>
-                    <li>“Show the decisions made this month, each linking to its full write-up.”</li>
-                    <li>“Make a live map of how the documents in this bundle link together.”</li>
+                    <li>“Create a view that shows all tasks that have not been completed, grouped by priority.”</li>
+                    <li>Recipes add ready-made setups: context notes (on by default), work tracking, roadmap.</li>
+                    <li>
+                      <em>“Set this project up for task tracking”</em> asks your agent to apply one.
+                    </li>
                   </ul>
-                  <h3>Recipes</h3>
-                  <p>
-                    Superbee is not limited to what it ships with — it is flexible by design. You (or your agents) can
-                    define your own document types, with their own fields and allowed values; your own typed
-                    relationships between documents; and your own views over all of it. The bundle adapts to how your
-                    project actually works, not the other way around.
-                  </p>
-                  <p>
-                    Recipes are how that flexibility becomes reusable. A recipe packages a custom set of functionality
-                    — document types, relationships, and the views that go with them — into a small, installable
-                    definition you can apply to any bundle and share with others. Superbee ships with a few built in:
-                    context notes (applied by default), work tracking (the Task type that powers a shared task board),
-                    and roadmap. To use one, just ask your agent — e.g.{" "}
-                    <em>“Set this project up for task tracking”</em> — and it will apply the right recipe.
-                  </p>
-                  <p>
-                    Agents can help with recipes themselves, too: ask one to define a recipe for the way you work, or
-                    to package what this bundle already does into a recipe you can share — and they may even suggest a
-                    recipe on their own when they notice a pattern worth capturing.
-                  </p>
+                  {orientationHelpOpen && (
+                    <div className="orientation-details">
+                      <p>
+                        Superbee is flexible by design: you (or your agents) can define your own document types, with
+                        their own fields and allowed values; your own typed relationships between documents; and your
+                        own views over all of it. A recipe packages that flexibility into a small, installable
+                        definition you can apply to any bundle and share with others. Ask an agent to define a recipe
+                        for the way you work — they may even suggest a recipe on their own when they notice a pattern
+                        worth capturing.
+                      </p>
+                    </div>
+                  )}
                 </>
               )}
               {orientationStep === 3 && (
                 <>
                   <h2 tabIndex={-1}>Collaborating with others</h2>
                   <p>
-                    The bundle stays local until you choose to share it. Sharing works through git, through the
-                    repository you likely already have. As with other functionality, you can simply ask your agent to
-                    share your bundle, and it will walk you through any necessary steps (for example, if you need to
-                    initialize a git repo). Under the hood, a one-time establish step
-                    publishes the bundle onto its own <code>board</code> branch beside your code, and teammates join
-                    just by syncing from their clone.
+                    The bundle stays local until you share it — then git keeps every clone in sync.{" "}
+                    <button
+                      type="button"
+                      className="where-btn"
+                      aria-expanded={orientationHelpOpen}
+                      onClick={() => setOrientationHelpOpen((v) => !v)}
+                    >
+                      {orientationHelpOpen ? "hide details" : "learn more"}
+                    </button>
                   </p>
-                  <p>
-                    From then on, syncing is the whole workflow: it commits your bundle changes, pulls your
-                    teammates’, and pushes yours — touching nothing outside the bundle. Agents sync as they close out
-                    work; new sessions pull the latest state as they start, and stale reads refresh
-                    themselves — so humans and agents on every clone work from the same shared memory.
-                  </p>
-                  <p>
-                    If both sides change the same document, sync converges instead of breaking: the incoming version
-                    is kept, yours is saved to a file, and reconciling is an ordinary edit. (You can also skip the
-                    separate branch entirely by committing the folder with your code — sharing then rides your normal
-                    commits and pushes.)
-                  </p>
+                  <ul className="orientation-examples">
+                    <li>
+                      Ask your agent to share the bundle — a one-time step publishes it onto its own{" "}
+                      <code>board</code> branch beside your code.
+                    </li>
+                    <li>
+                      From then on, syncing is the whole workflow: agents sync as they close out work, and new
+                      sessions pull the latest state.
+                    </li>
+                    <li>Teammates join just by syncing from their clone.</li>
+                  </ul>
+                  {orientationHelpOpen && (
+                    <div className="orientation-details">
+                      <p>
+                        Sharing works through the git repository you likely already have; your agent walks you
+                        through any necessary steps, like initializing a repo. If both sides change the same
+                        document, sync converges instead of breaking: the incoming version is kept, yours is saved to
+                        a file, and reconciling is an ordinary edit. (You can also skip the separate branch entirely
+                        by committing the folder with your code — sharing then rides your normal commits and pushes.)
+                      </p>
+                    </div>
+                  )}
                   <p>
                     <strong>Worth knowing:</strong> a shared bundle is exactly as visible as the repository that
-                    carries it. If the repo is public, the bundle is public too — the tasks agents record, the notes
-                    they keep, and the documents they generate all become part of the project’s public record. Apply
-                    the same judgment to what lands in the bundle as you would to any commit, keeping in mind that
-                    agents sync the bundle automatically as they work — sharing does not wait for any action from
-                    you.
+                    carries it. If the repo is public, the bundle is public too — and agents sync the bundle as they
+                    work, without waiting for any action from you. Apply the same judgment to what lands in the
+                    bundle as you would to any commit.
                   </p>
                   <p className="orientation-close">
                     <strong>That’s the tour.</strong> To see Superbee in action, ask your agent to write something down
