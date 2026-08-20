@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -9,11 +9,12 @@ import { initBundle } from "@superbee/core";
 import { maybeAutoPull } from "../src/autopull.js";
 import { boardAttributionForRoute, resolveLocalBundleRoute } from "../src/bundle.js";
 import { boardPostPersistHook } from "../src/board-attribution.js";
-import { readSyncState } from "../src/cursor.js";
+import { readCache, readMarker, readSyncState } from "../src/cursor.js";
 import { init } from "../src/commands/init.js";
 import { home } from "../src/commands/home.js";
-import { sessionStart } from "../src/commands/session-start.js";
+import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
 import { sync } from "../src/commands/sync.js";
+import { resolveBundleKey } from "@superbee/board-git";
 import { boardHead, git, isMidRebase, makeCommittedFolderTopology, makeTwoCloneTopology, wedgeMidRebase } from "../../board-git/test/git-harness.js";
 
 async function inDir<T>(dir: string, run: () => Promise<T>): Promise<T> {
@@ -109,6 +110,68 @@ test("lexical binding symlinks reject before a public board can be routed", asyn
   } finally {
     await topo.cleanup();
     await rm(temp, { recursive: true, force: true });
+  }
+});
+
+test("a descendant symlink that escapes to the public owner rejects before session-start Git or state", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-descendant-home-"));
+  try {
+    const escape = path.join(topo.a.root, "escape");
+    const target = path.join(escape, path.basename(topo.a.root), ".superbee");
+    await symlink(path.dirname(topo.a.root), escape, "dir");
+    assert.equal(await realpath(target), topo.a.board, "the lexical descendant reaches the public board without the guard");
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: target }));
+
+    await assert.rejects(
+      () => inDir(topo.a.root, () => resolveLocalBundleRoute(undefined)),
+      /lexical path component .*escape.* must not be a symlink/,
+    );
+
+    const publicKey = resolveBundleKey(topo.a.board);
+    const before = await withHome(homeDir, async () => ({
+      head: boardHead(topo.a),
+      marker: await readMarker(publicKey),
+      cache: await readCache(publicKey),
+      state: await readSyncState(publicKey),
+    }));
+    const recorderDir = path.join(homeDir, "git-recorder");
+    const recorder = path.join(homeDir, "public-git-calls.log");
+    await mkdir(recorderDir);
+    await writeFile(
+      path.join(recorderDir, "git"),
+      "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PR65_GIT_RECORDER\"\nPATH=\"$PR65_GIT_ORIGINAL_PATH\"\nexport PATH\nexec git \"$@\"\n",
+    );
+    await chmod(path.join(recorderDir, "git"), 0o755);
+    const priorPath = process.env.PATH;
+    const priorRecorder = process.env.PR65_GIT_RECORDER;
+    const priorGitPath = process.env.PR65_GIT_ORIGINAL_PATH;
+    let pull;
+    try {
+      process.env.PATH = `${recorderDir}${path.delimiter}${priorPath ?? ""}`;
+      process.env.PR65_GIT_RECORDER = recorder;
+      process.env.PR65_GIT_ORIGINAL_PATH = priorPath ?? "";
+      pull = await withHome(homeDir, () => inDir(topo.a.root, () => sessionStartPull(undefined)));
+    } finally {
+      if (priorPath === undefined) delete process.env.PATH;
+      else process.env.PATH = priorPath;
+      if (priorRecorder === undefined) delete process.env.PR65_GIT_RECORDER;
+      else process.env.PR65_GIT_RECORDER = priorRecorder;
+      if (priorGitPath === undefined) delete process.env.PR65_GIT_ORIGINAL_PATH;
+      else process.env.PR65_GIT_ORIGINAL_PATH = priorGitPath;
+    }
+    assert.deepEqual(pull, { offline: true }, "the rejected binding is fail-soft rather than a public-board pull");
+    assert.equal(existsSync(recorder), false, "session-start never invokes Git for the rejected binding");
+    const after = await withHome(homeDir, async () => ({
+      head: boardHead(topo.a),
+      marker: await readMarker(publicKey),
+      cache: await readCache(publicKey),
+      state: await readSyncState(publicKey),
+    }));
+    assert.deepEqual(after, before, "session-start leaves the public board and its state recorder untouched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
   }
 });
 

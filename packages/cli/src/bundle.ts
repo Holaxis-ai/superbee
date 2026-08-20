@@ -1341,6 +1341,26 @@ function bindingPathConflict(target: LocalBundleTarget, message: string): CliErr
   });
 }
 
+function strictlyLexicalAncestor(ancestor: string, descendant: string): boolean {
+  const relative = path.relative(ancestor, descendant);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/** macOS exposes these physical paths through stable lexical aliases. Never derive aliases from a binding target. */
+function lexicalBindingAnchors(anchor: string): string[] {
+  const anchors = [anchor];
+  if (process.platform !== "darwin") return anchors;
+  for (const [physical, lexical] of [
+    [path.join(path.sep, "private", "var"), path.join(path.sep, "var")],
+    [path.join(path.sep, "private", "tmp"), path.join(path.sep, "tmp")],
+  ] as const) {
+    if (anchor === physical || anchor.startsWith(`${physical}${path.sep}`)) {
+      anchors.push(`${lexical}${anchor.slice(physical.length)}`);
+    }
+  }
+  return anchors;
+}
+
 /**
  * Bindings cross a project boundary, so a lexical route through a symlink is never an ordinary
  * selection.  Inspect the route from the binding anchor's shared ancestor to its target before
@@ -1350,12 +1370,8 @@ async function assertLexicallySafeBindingTarget(target: LocalBundleTarget): Prom
   if (target.selectedBy !== "project-binding") return;
   if (!target.bindingFile) throw bindingPathConflict(target, "the selected binding has no source path");
 
-  let canonicalAnchor: string;
-  try {
-    canonicalAnchor = await fs.realpath(path.dirname(target.bindingFile));
-  } catch {
-    throw bindingPathConflict(target, "the binding-file anchor is unavailable");
-  }
+  const lexicalAnchor = path.resolve(path.dirname(target.bindingFile));
+  const lexicalAnchors = lexicalBindingAnchors(lexicalAnchor);
   const targetRoot = path.resolve(target.root);
   const targetParts = targetRoot.split(path.sep).filter(Boolean);
 
@@ -1369,12 +1385,11 @@ async function assertLexicallySafeBindingTarget(target: LocalBundleTarget): Prom
       throw bindingPathConflict(target, `the lexical path component ${current} is unavailable`);
     }
     if (info.isSymbolicLink()) {
-      const physical = await fs.realpath(current);
-      // macOS's /var -> /private/var alias can occur strictly before the binding anchor. It is not
-      // a component of the project-to-target route; every symlink at or below that anchor remains
-      // a hard refusal, including a symlinked target and a symlinked ancestor.
-      const beforeAnchor = canonicalAnchor.startsWith(`${physical}${path.sep}`);
-      if (!beforeAnchor) throw bindingPathConflict(target, `the lexical path component ${current} must not be a symlink`);
+      // A platform alias such as macOS's /var -> /private/var can occur strictly before the
+      // binding anchor. Exception eligibility is lexical, never based on where the link resolves:
+      // a descendant link that resolves back to an ancestor is still part of the binding route.
+      const strictlyBeforeAnchor = lexicalAnchors.some((anchor) => strictlyLexicalAncestor(current, anchor));
+      if (!strictlyBeforeAnchor) throw bindingPathConflict(target, `the lexical path component ${current} must not be a symlink`);
     }
   }
 
