@@ -17,6 +17,14 @@ function arg(argv, flag) {
   return value;
 }
 
+function optionalArg(argv, flag) {
+  const at = argv.indexOf(flag);
+  if (at === -1) return undefined;
+  const value = argv[at + 1];
+  if (!value || value.startsWith("--")) throw new Error(`missing ${flag}`);
+  return value;
+}
+
 async function jsonFile(file) {
   return JSON.parse(await readFile(file, "utf8"));
 }
@@ -90,6 +98,8 @@ async function verifyChain(argv) {
     actualManifestSha256: await fileSha256(candidatePath),
   });
   await writeFile(arg(argv, "--out"), `${JSON.stringify(proof, null, 2)}\n`);
+  const githubOutput = optionalArg(argv, "--github-output");
+  if (githubOutput) await appendFile(githubOutput, `source_commit=${proof.source_commit}\n`);
   console.log(JSON.stringify(proof));
 }
 

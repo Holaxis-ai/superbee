@@ -3,7 +3,7 @@
 //   verify  — verify signatures/uploaders/timestamps, then evaluate ordering via the pure module
 //   plan    — materialize status/body bytes and a draft-bound, ID-only cleanup manifest
 //   apply   — dry-run no-op or the one live cleanup/upload/PATCH executor
-//   final   — prove the re-queried exact asset inventory and owned body before publication
+//   final/published — prove exact inventory/body before publication and full identity after it
 // Values arrive as argv/file data only (workflows bind expressions to env first); every signature
 // is checked with `ssh-keygen -Y verify` against the committed allowed-signers file before the
 // payload is trusted. Missing evidence is decided by the pure tier policy; this adapter fails
@@ -13,7 +13,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
 import { isMainModule } from "./is-main-module.mjs";
 import {
   PUBLICATION_PLAN_SCHEMA,
@@ -28,8 +27,9 @@ import {
   SIGN_NAMESPACE,
   stampAnnotation,
   stampAssetName,
-  verifyFinalPublication,
+  verifyFinalPublication, verifyPublishedPublication,
 } from "./release-ordering.mjs";
+import { defaultReleaseManifest, resolveAllowedTuple } from "./release-targets.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
 
 function arg(argv, flag, required = true) {
@@ -269,6 +269,25 @@ async function finalCommand(argv) {
   console.log(JSON.stringify(proof));
 }
 
+async function publishedCommand(argv) {
+  const chain = await jsonFile(arg(argv, "--chain"));
+  const manifest = defaultReleaseManifest();
+  const tuple = resolveAllowedTuple(manifest, {
+    target: chain.target,
+    version: chain.version,
+    tag: chain.tag,
+  });
+  const proof = verifyPublishedPublication({
+    release: await jsonFile(arg(argv, "--release")),
+    latestRelease: await jsonFile(arg(argv, "--latest-release")),
+    plan: await jsonFile(arg(argv, "--plan")),
+    chain,
+    tuple,
+  });
+  await writeFile(arg(argv, "--out"), `${JSON.stringify(proof, null, 2)}\n`);
+  console.log(JSON.stringify(proof));
+}
+
 export async function main(argv) {
   const [command, ...rest] = argv;
   if (command === "assets") return assetsCommand(rest);
@@ -276,7 +295,8 @@ export async function main(argv) {
   if (command === "plan") return planCommand(rest);
   if (command === "apply") return applyCommand(rest);
   if (command === "final") return finalCommand(rest);
-  throw new Error("usage: release-verify-ordering.mjs assets|verify|plan|apply|final ...");
+  if (command === "published") return publishedCommand(rest);
+  throw new Error("usage: release-verify-ordering.mjs assets|verify|plan|apply|final|published ...");
 }
 
 if (isMainModule(import.meta.url)) {

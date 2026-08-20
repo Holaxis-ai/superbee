@@ -33,8 +33,8 @@ function arg(argv, flag, required = false) {
  * `--target` is REQUIRED for every op that names a package. It used to fall back to the bridge, so
  * `--op rollback --failed-version <superbee version>` without a target emitted dist-tag and
  * deprecate commands against @holaxis/aslite - a live registry mutation on the wrong package.
- * Ops that name no package (reject/approve act on a stage id, immutable-release on a GitHub
- * release id) take no target.
+ * Reject/approve name no package and take no target. Immutable-release requires a target because
+ * its tag and publication policy are resolved from that target's manifest tuple.
  */
 export function operationsFor(op, argv) {
   switch (op) {
@@ -65,10 +65,14 @@ export function operationsFor(op, argv) {
     case "promote":
       return [ops.promoteOperation({ version: arg(argv, "--version", true), tag: arg(argv, "--tag", true), target: arg(argv, "--target", true) })];
     case "immutable-release": {
+      for (const forbidden of ["--tag", "--github-latest", "--github-prerelease", "--prerelease", "--make-latest"]) {
+        if (argv.includes(forbidden)) throw new Error(`immutable-release does not accept ${forbidden}`);
+      }
       const r = ops.immutableReleaseOperations({
         releaseId: arg(argv, "--release-id", true),
-        tag: `v${ops.assertVersion(arg(argv, "--version", true))}`,
-        githubLatest: arg(argv, "--github-latest", true),
+        sourceCommit: arg(argv, "--source-commit", true),
+        target: arg(argv, "--target", true),
+        version: arg(argv, "--version", true),
       });
       return r.argvs.map((a, i) => ({ argv: a, command: r.commands[i] }));
     }

@@ -104,15 +104,14 @@ const NPM_NON_WRITING_SUBCOMMANDS = new Set([
 /** Every flag `release-run-operations.mjs` reads, with a value each emitter accepts. */
 const OPERATION_SAMPLE_ARGV = [
   "--stage-id", "stage1",
-  "--version", "0.1.0",
-  "--tag", "latest",
-  "--target", "bridge",
+  "--version", "0.1.2",
+  "--target", "successor-stable",
   "--track", "next",
   "--failed-version", "0.1.0",
   "--prior-version", "0.0.1",
   "--recovery-target", "bridge",
   "--release-id", "1",
-  "--github-latest", "true",
+  "--source-commit", "1".repeat(40),
 ];
 
 /** Logical shell commands in a `run:` block: comments dropped, backslash continuations joined. */
@@ -222,18 +221,28 @@ test("the ordering gate runs BEFORE registry mutation and again before publicati
     assert.match(jobs[name], /release-verify-ordering\.mjs verify/, `${name} verifies signed receipt ordering`);
     assert.match(jobs[name], /--allowed-signers \.github\/release-allowed-signers/, `${name} pins the committed signer file`);
   }
-  // The write-capable job plans, normalizes, re-queries, proves the exact set, then publishes.
+  // The write-capable job plans, normalizes, proves the draft, publishes by numeric ID, then
+  // re-queries that same ID and the observable latest endpoint for a post-publication proof.
   const body = jobs.finalize;
   const verifyAt = body.indexOf("release-verify-ordering.mjs verify");
   const planAt = body.indexOf("release-verify-ordering.mjs plan");
   const applyAt = body.indexOf("release-verify-ordering.mjs apply");
-  const requeryAt = body.indexOf('> final-draft-release.json');
+  const prePublicationQueryAt = body.indexOf('> final-draft-release.json');
   const finalAt = body.indexOf("release-verify-ordering.mjs final");
   const publishAt = body.indexOf("release-run-operations.mjs --op immutable-release");
-  assert.ok([verifyAt, planAt, applyAt, requeryAt, finalAt, publishAt].every((at) => at !== -1));
+  const publishedQueryAt = body.indexOf('> published-release.json');
+  const latestQueryAt = body.indexOf('releases/latest" > latest-release.json');
+  const publishedProofAt = body.indexOf("release-verify-ordering.mjs published");
+  assert.ok([
+    verifyAt, planAt, applyAt, prePublicationQueryAt, finalAt, publishAt,
+    publishedQueryAt, latestQueryAt, publishedProofAt,
+  ].every((at) => at !== -1));
   assert.ok(
-    verifyAt < planAt && planAt < applyAt && applyAt < requeryAt && requeryAt < finalAt && finalAt < publishAt,
-    "verify -> plan -> ID-only normalization -> re-query -> exact final proof -> publish",
+    verifyAt < planAt && planAt < applyAt && applyAt < prePublicationQueryAt
+      && prePublicationQueryAt < finalAt && finalAt < publishAt
+      && publishAt < publishedQueryAt && publishedQueryAt < latestQueryAt
+      && latestQueryAt < publishedProofAt,
+    "verify -> plan -> normalize -> pre-publication proof -> PATCH -> same-ID/latest re-query -> published proof",
   );
   assert.match(body, /retry-safe status --clobber/);
   assert.match(verifyOrdering, /releases\/assets\/\$\{item\.id\}/, "cleanup targets exact release-asset IDs");
@@ -379,14 +388,33 @@ test("F12: publication policy is resolved and proved in a non-mutating job, upst
     assert.ok(ancestors(name).has("target-authorized"), `mutating job ${name} must depend on the precondition job`);
   }
 
-  // And no job re-derives publication policy after a mutation: the facts travel as job outputs,
-  // which only a `needs:` dependency can deliver.
+  // No later job re-runs the target resolver to manufacture policy facts. The finalizer chain may
+  // write its already-proven source commit to a step output; that is evidence, not policy.
   for (const [name, body] of Object.entries(jobs)) {
     if (name === "target-authorized") continue;
-    assert.ok(!body.includes("--github-output"), `job ${name} must consume resolved facts, never re-resolve them`);
+    assert.doesNotMatch(body, /release-resolve-target\.mjs[^\n]*--github-output/, `job ${name} must not re-resolve policy outputs`);
   }
-  assert.match(jobs.finalize, /needs\.target-authorized\.outputs\.github_latest/, "finalize publishes with the pre-resolved GitHub latest policy");
-  assert.match(jobs.finalize, /--github-latest "\$GITHUB_LATEST"/);
+  assert.match(jobs.finalize, /id: verified_chain/);
+  assert.match(jobs.finalize, /--out verified-chain\.json --github-output "\$GITHUB_OUTPUT"/);
+  assert.match(jobs.finalize, /SOURCE_COMMIT: \$\{\{ steps\.verified_chain\.outputs\.source_commit \}\}/);
+  assert.match(jobs.finalize, /--source-commit "\$SOURCE_COMMIT"/);
+  assert.doesNotMatch(jobs.finalize, /needs\.target-authorized\.outputs\.github_latest/);
+  assert.doesNotMatch(jobs.finalize, /--github-latest|--github-prerelease/);
+});
+
+test("immutable publication accepts no caller-owned GitHub identity policy or tag flags", () => {
+  const body = extractJobs(finalize).finalize;
+  const commands = runBlocks(body)
+    .flatMap(shellCommands)
+    .filter((command) => command.includes("release-run-operations.mjs --op immutable-release"));
+  assert.ok(commands.length >= 1);
+  for (const command of commands) {
+    assert.match(command, /--target "\$TARGET"/);
+    assert.match(command, /--version "\$VERSION"/);
+    assert.match(command, /--release-id "\$DRAFT_RELEASE_ID"/);
+    assert.match(command, /--source-commit "\$SOURCE_COMMIT"/);
+    assert.doesNotMatch(command, /--tag|--github-latest|--github-prerelease|--prerelease|--make-latest/);
+  }
 });
 
 // F1 — the promote step ran `npm dist-tag add` in a job with no npm credentials, AFTER the ordering

@@ -17,6 +17,7 @@ import {
   rollbackOperation,
   registryVerifyOperations,
   promoteOperation,
+  githubPrereleaseForVersion,
   immutableReleaseOperations,
 } from "./release-operations.mjs";
 import * as allOperations from "./release-operations.mjs";
@@ -28,6 +29,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const runOps = path.join(repoRoot, "scripts", "release-run-operations.mjs");
 const SHA = "sha256:" + "a".repeat(64);
 const BARE = "a".repeat(64);
+const COMMIT = "1".repeat(40);
 
 test("inspection instructions emit the exact stage download + SHA-256 compare", () => {
   const i = inspectionInstructions({ target: "bridge", stageId: "stage-1", tarballSha256: SHA, version: "0.1.0-pre.4" });
@@ -101,17 +103,42 @@ test("registry instructions are read-only and delegate strict proof to the verif
   assert.match(registryVerifyOperations({ target: "successor-preview", version: "0.1.1-pre.1" }).workflow_proof, /--target successor-preview/);
 });
 
-test("promote and immutable release name the exact version/tag/release id", () => {
+test("promote names the exact version and tag", () => {
   assert.equal(
     promoteOperation({ target: "successor-stable", version: "0.1.0", tag: "latest" }).command,
     "npm dist-tag add superbee@0.1.0 latest",
   );
-  const rel = immutableReleaseOperations({ releaseId: "rel-42", tag: "v0.1.0", githubLatest: false });
-  assert.ok(rel.commands[0].includes("releases/rel-42"));
-  assert.ok(rel.commands[1].includes("-f draft=false"));
-  assert.ok(rel.commands[1].includes("make_latest=false"));
-  const latest = immutableReleaseOperations({ releaseId: "rel-43", tag: "v0.1.0", githubLatest: true });
-  assert.ok(latest.commands[1].includes("make_latest=true"));
+});
+
+test("immutable release PATCH argv is exactly manifest-derived for stable and prerelease tuples", () => {
+  for (const row of [
+    { target: "successor-stable", version: "0.1.2", releaseId: "42", tag: "v0.1.2", prerelease: false, latest: true },
+    { target: "successor-preview", version: "0.1.2-pre.1", releaseId: "43", tag: "v0.1.2-pre.1", prerelease: true, latest: false },
+  ]) {
+    const rel = immutableReleaseOperations({
+      target: row.target,
+      version: row.version,
+      releaseId: row.releaseId,
+      sourceCommit: COMMIT,
+    });
+    assert.deepEqual(rel.argvs, [[
+      "gh", "api", "-X", "PATCH", `repos/{owner}/{repo}/releases/${row.releaseId}`,
+      "-f", `tag_name=${row.tag}`,
+      "-f", `target_commitish=${COMMIT}`,
+      "-F", "draft=false",
+      "-F", `prerelease=${row.prerelease}`,
+      "-f", `make_latest=${row.latest}`,
+    ]]);
+    assert.equal(rel.tag, row.tag);
+  }
+});
+
+test("GitHub prerelease derives only from strict SemVer prerelease identity", () => {
+  assert.equal(githubPrereleaseForVersion("1.2.3+build.7"), false);
+  assert.equal(githubPrereleaseForVersion("1.2.3-rc.1+build.7"), true);
+  for (const malformed of ["1.2.3-01", "v1.2.3", "1.2", "1.2.3+"]) {
+    assert.throws(() => githubPrereleaseForVersion(malformed), /invalid version/);
+  }
 });
 
 // ── SECURITY: injection-shaped inputs are REJECTED at construction (no argv is ever built) ──
@@ -124,10 +151,11 @@ test("injection-shaped version / id / stage-id / tag are refused, not interpolat
     () => promoteOperation({ target: "bridge", version: "0.1.0 | cat", tag: "latest" }),
     () => rollbackOperation({ target: "bridge", failedVersion: "0.1.0`id`", priorVersion: "0.1.0" }),
     () => registryVerifyOperations({ target: "bridge", version: "0.1.0\nid" }),
-    () => immutableReleaseOperations({ releaseId: "rel; curl evil", tag: "v0.1.0", githubLatest: true }),
+    () => immutableReleaseOperations({ target: "successor-stable", version: "0.1.2", releaseId: "42;curl", sourceCommit: COMMIT }),
+    () => immutableReleaseOperations({ target: "successor-stable", version: "0.1.2", releaseId: "42", sourceCommit: "A".repeat(40) }),
   ];
   for (const attempt of injections) {
-    assert.throws(attempt, /invalid (version|stageId|tag|releaseId)/);
+    assert.throws(attempt, /invalid (version|stageId|tag|releaseId|sourceCommit)/);
   }
 });
 
@@ -160,8 +188,7 @@ test("flag-shaped values are refused at every operation entry point", () => {
     () => rollbackOperation({ target: "bridge", failedVersion: "0.1.0", priorVersion: "0.0.9", track: "-next" }),
     () => promoteOperation({ target: "bridge", version: "0.1.0", tag: "-latest" }),
     () => inspectionInstructions({ target: "bridge", stageId: "-s", tarballSha256: SHA, version: "0.1.0" }),
-    () => immutableReleaseOperations({ releaseId: "--jq", tag: "v0.1.0", githubLatest: true }),
-    () => immutableReleaseOperations({ releaseId: "rel-1", tag: "-v0.1.0", githubLatest: true }),
+    () => immutableReleaseOperations({ target: "successor-stable", version: "0.1.2", releaseId: "--jq", sourceCommit: COMMIT }),
   ];
   for (const attempt of attempts) {
     assert.throws(attempt, /invalid (stageId|tag|track|releaseId)/);
@@ -173,8 +200,11 @@ test("missing required arguments fail closed", () => {
   assert.throws(() => secondaryTagOperation({ target: "bridge", version: "1.0.0" }), /invalid tag/);
   assert.throws(() => rollbackOperation({ target: "bridge", failedVersion: "1.0.0" }), /invalid version/);
   assert.throws(() => promoteOperation({ target: "bridge", version: "1.0.0" }), /invalid tag/);
-  assert.throws(() => immutableReleaseOperations({ releaseId: "r", githubLatest: true }), /invalid tag/);
-  assert.throws(() => immutableReleaseOperations({ releaseId: "r", tag: "v1.0.0" }), /invalid githubLatest/);
+  assert.throws(() => immutableReleaseOperations({ releaseId: "1", target: "successor-stable", version: "0.1.2" }), /accepts exactly/);
+  assert.throws(
+    () => immutableReleaseOperations({ releaseId: "1", sourceCommit: COMMIT, target: "successor-stable", version: "0.1.2", githubLatest: true }),
+    /accepts exactly/,
+  );
 });
 
 test("operationsFor resolves each op to the same argv + display strings", () => {
@@ -185,10 +215,21 @@ test("operationsFor resolves each op to the same argv + display strings", () => 
     operationsFor("registry-verify", ["--version", "0.1.0", "--target", "bridge"]).map((o) => o.command),
     registryVerifyOperations({ target: "bridge", version: "0.1.0" }).commands,
   );
-  assert.deepEqual(operationsFor("immutable-release", ["--version", "0.1.0", "--release-id", "rel-9", "--github-latest", "false"]).map((o) => o.argv), [
-    ["gh", "api", "repos/{owner}/{repo}/releases/rel-9", "--jq", ".draft, .tag_name, .id"],
-    ["gh", "api", "-X", "PATCH", "repos/{owner}/{repo}/releases/rel-9", "-f", "draft=false", "-f", "make_latest=false"],
-  ]);
+  assert.deepEqual(
+    operationsFor("immutable-release", [
+      "--target", "successor-preview", "--version", "0.1.2-pre.1", "--release-id", "9", "--source-commit", COMMIT,
+    ]).map((o) => o.argv),
+    [immutableReleaseOperations({ target: "successor-preview", version: "0.1.2-pre.1", releaseId: "9", sourceCommit: COMMIT }).argvs[0]],
+  );
+  for (const forbidden of ["--tag", "--github-latest", "--github-prerelease"]) {
+    assert.throws(
+      () => operationsFor("immutable-release", [
+        "--target", "successor-preview", "--version", "0.1.2-pre.1", "--release-id", "9", "--source-commit", COMMIT,
+        forbidden, "false",
+      ]),
+      /does not accept/,
+    );
+  }
   assert.throws(() => operationsFor("promote", ["--version", "0.1.0"]), /missing --tag/);
   assert.throws(() => operationsFor("bogus", []), /unknown op/);
 });
@@ -222,7 +263,7 @@ test("every operation that names a package refuses to resolve one without an exp
 test("no exported operation yields a package-bound result when no target is supplied", () => {
   const targetless = {
     stageId: "stage-1", tarballSha256: SHA, version: "0.1.0", tag: "next", track: "next",
-    failedVersion: "0.1.0", priorVersion: "0.0.9", releaseId: "rel-1", githubLatest: false,
+    failedVersion: "0.1.0", priorVersion: "0.0.9", releaseId: "1", sourceCommit: COMMIT,
   };
   // Derived from the manifest: adding a target adds a name that must not appear by default.
   const packageNames = [...new Set(Object.values(defaultReleaseTargets()).map((target) => target.package.name))];
@@ -252,6 +293,7 @@ test("operationsFor requires --target for every op that mutates or names a packa
     rollback: ["--failed-version", "0.1.0", "--prior-version", "0.0.9"],
     "registry-verify": ["--version", "0.1.0"],
     promote: ["--version", "0.1.0", "--tag", "latest"],
+    "immutable-release": ["--version", "0.1.2", "--release-id", "1", "--source-commit", COMMIT],
   };
   for (const [op, argv] of Object.entries(targetless)) {
     assert.throws(() => operationsFor(op, argv), /missing --target/, `${op} must require --target`);

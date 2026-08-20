@@ -23,6 +23,7 @@ import {
   stampAnnotation,
   stampAssetName,
   verifyFinalPublication,
+  verifyPublishedPublication,
   verifyReceiptStatusBody,
 } from "./release-ordering.mjs";
 import {
@@ -34,6 +35,7 @@ import {
 } from "./release-verify-ordering.mjs";
 import { buildStageReceipt } from "./release-receipts.mjs";
 import { ReleaseStateError } from "./release-state.mjs";
+import { defaultReleaseManifest } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -175,8 +177,9 @@ test("payload shape: canonical, ordered, validated", () => {
 test("tier + naming authorities", () => {
   assert.equal(releaseTier(PRE), "prerelease");
   assert.equal(releaseTier(STABLE), "stable");
-  assert.equal(releaseTier("1.0.0+build-1"), "stable", "a hyphen in build metadata does not make a prerelease");
-  assert.equal(releaseTier("1.0.0-pre.1+build-1"), "prerelease", "prerelease identity survives build metadata");
+  assert.equal(releaseTier("1.2.3+build.7"), "stable", "build metadata does not make a prerelease");
+  assert.equal(releaseTier("1.2.3-rc.1+build.7"), "prerelease", "prerelease identity survives build metadata");
+  assert.throws(() => releaseTier("1.2.3-01+build.7"), /invalid version/);
   assert.equal(receiptAssetName("inspected", STAGE_ID), `receipt-inspected-${STAGE_ID}.json`);
   assert.equal(stampAssetName(STAGE_ID), `receipt-status-${STAGE_ID}.json`);
   assert.ok(parseAuxiliaryReleaseAssetName(`receipt-approved-${STAGE_ID}.json`, { mode: "pre-stage" }));
@@ -492,6 +495,136 @@ test("HIGHEST-RISK M1 — final publication binds receipt id/digest, generated s
   assert.throws(() => verifyFinalPublication({ release: sibling, plan }), /unexpected final asset/);
 });
 
+test("published verifier binds live-shaped same-ID identity, inventory/body, and latest selection", async () => {
+  const version = "0.1.2-pre.1";
+  const chain = {
+    ...chainFor(version),
+    target: "successor-preview",
+    package: "superbee",
+    core_assets: [
+      { id: 202, name: "candidate.json", digest: MANIFEST_SHA },
+      { id: 201, name: `superbee-${version}.tgz`, digest: TARBALL_SHA },
+    ],
+  };
+  const ordering = evaluate(version);
+  const draft = {
+    id: 300,
+    draft: true,
+    tag_name: chain.tag,
+    body: "Prepared draft.",
+    assets: [...chain.core_assets, ...ordering.receipt_assets],
+  };
+  const plan = buildPublicationPlan({ release: draft, chain, ordering, status: null, bodyAnnotation: null });
+  const tuple = defaultReleaseManifest().allowed_tuples[chain.target];
+  const published = {
+    ...draft,
+    draft: false,
+    target_commitish: COMMIT,
+    prerelease: true,
+  };
+  const latest = { id: 299, draft: false, tag_name: "v0.1.1" };
+  const prove = (release = published, latestRelease = latest) => verifyPublishedPublication({
+    release,
+    latestRelease,
+    plan,
+    chain,
+    tuple,
+  });
+
+  const exact = prove();
+  assert.equal(exact.release_id, 300);
+  assert.equal(exact.source_commit, COMMIT);
+  assert.equal(exact.prerelease, true);
+  assert.equal(exact.github_latest, false);
+  assert.equal(exact.latest_release_id, 299);
+  assert.doesNotThrow(() => prove(published, null), "a missing latest release is valid for a non-latest publication");
+
+  const stableVersion = "0.1.2";
+  const stableChain = {
+    ...chainFor(stableVersion),
+    target: "successor-stable",
+    package: "superbee",
+    core_assets: [
+      { id: 202, name: "candidate.json", digest: MANIFEST_SHA },
+      { id: 201, name: `superbee-${stableVersion}.tgz`, digest: TARBALL_SHA },
+    ],
+  };
+  const stableOrdering = evaluate(stableVersion);
+  const stableDraft = {
+    id: 300,
+    draft: true,
+    tag_name: stableChain.tag,
+    body: "Prepared draft.",
+    assets: [...stableChain.core_assets, ...stableOrdering.receipt_assets],
+  };
+  const stablePlan = buildPublicationPlan({
+    release: stableDraft,
+    chain: stableChain,
+    ordering: stableOrdering,
+    status: null,
+    bodyAnnotation: null,
+  });
+  const stablePublished = {
+    ...stableDraft,
+    draft: false,
+    target_commitish: COMMIT,
+    prerelease: false,
+  };
+  const stableTuple = defaultReleaseManifest().allowed_tuples[stableChain.target];
+  const stableProof = verifyPublishedPublication({
+    release: stablePublished,
+    latestRelease: { id: 300 },
+    plan: stablePlan,
+    chain: stableChain,
+    tuple: stableTuple,
+  });
+  assert.equal(stableProof.github_latest, true);
+  assert.equal(stableProof.latest_release_id, 300);
+  assert.throws(
+    () => verifyPublishedPublication({
+      release: stablePublished,
+      latestRelease: { id: 299 },
+      plan: stablePlan,
+      chain: stableChain,
+      tuple: stableTuple,
+    }),
+    /not the GitHub latest release/,
+  );
+
+  const mutations = [
+    ["historical untagged release", { ...published, tag_name: null }, latest],
+    ["target commit", { ...published, target_commitish: "2".repeat(40) }, latest],
+    ["false-green prerelease", { ...published, prerelease: false }, latest],
+    ["draft", { ...published, draft: true }, latest],
+    ["numeric id", { ...published, id: 301 }, latest],
+    ["asset", { ...published, assets: published.assets.map((asset, index) => index === 0 ? { ...asset, digest: OTHER_SHA } : asset) }, latest],
+    ["body", { ...published, body: normalizeReceiptStatusBody(published.body, "forged status") }, latest],
+    ["latest selection", published, { id: 300 }],
+  ];
+  for (const [label, release, latestRelease] of mutations) {
+    assert.throws(() => prove(release, latestRelease), /operator receipt verification failed/, label);
+  }
+
+  const scratch = mkdtempSync(path.join(tmpdir(), "aslite-published-proof-"));
+  try {
+    const paths = Object.fromEntries(
+      Object.entries({ chain, release: published, latest, plan }).map(([name, value]) => {
+        const file = path.join(scratch, `${name}.json`);
+        writeFileSync(file, JSON.stringify(value));
+        return [name, file];
+      }),
+    );
+    const proofPath = path.join(scratch, "published-proof.json");
+    await verifyOrderingMain([
+      "published", "--chain", paths.chain, "--release", paths.release,
+      "--latest-release", paths.latest, "--plan", paths.plan, "--out", proofPath,
+    ]);
+    assert.deepEqual(JSON.parse(readFileSync(proofPath, "utf8")), exact);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
 test("publication executor is empirically mutation-free in dry-run and live uses exact IDs plus --clobber", async () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "aslite-publication-apply-"));
   try {
@@ -532,7 +665,8 @@ test("publication executor is empirically mutation-free in dry-run and live uses
     chmodSync(ghStub, 0o755);
     const dryPublish = spawnSync(process.execPath, [
       path.join(repoRoot, "scripts", "release-run-operations.mjs"),
-      "--op", "immutable-release", "--version", PRE, "--release-id", "300", "--github-latest", "false",
+      "--op", "immutable-release", "--target", "successor-preview", "--version", "0.1.2-pre.1",
+      "--release-id", "300", "--source-commit", COMMIT,
     ], {
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASLITE_TEST_PUBLISH_LOG: publishLog },
