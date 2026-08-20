@@ -33,10 +33,10 @@ docs plus self-contained View registry/HTML pairs; instance data and undeclared 
 rejected before any write.
 
 Idempotent: a doc the recipe would install that already exists is left untouched (changed:false
-for that doc) rather than erroring or overwriting — re-running 'recipe add' on an already-applied
-recipe is a changed:false no-op overall, and never clobbers a bundle author's own hand-edit. See
-'superbee recipes' to list built-ins and which are already applied, and 'superbee
-kinds' for the resulting live per-bundle registry.
+for that doc) rather than overwritten. If its definition differs from the recipe source, the
+receipt names that drift and the explicit 'promote' path; the command never claims the recipe is
+fully applied or clobbers a bundle author's own hand-edit. See 'superbee recipes' to list built-ins
+and which are already applied, and 'superbee kinds' for the resulting live per-bundle registry.
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
@@ -107,10 +107,14 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   const dupWarnings = registry.warnings.filter((w) => w.code === "KIND_DUPLICATE_GOVERNS");
   const warnings = [...result.warnings, ...dupWarnings];
 
+  const sourceDiffers = result.counts.source_differs ?? 0;
+  const recipeStatus = sourceDiffers > 0
+    ? (result.changed ? "partially applied" : "source differs")
+    : (result.changed ? "added" : "already applied");
   const receipt: Record<string, unknown> = {
     // Reflect the aggregate no-op: an already-applied recipe re-add reports "already applied" rather
     // than a misleading "added" over its own `changed:false` (idempotency signalling, AXI P6).
-    recipe: result.changed ? "added" : "already applied",
+    recipe: recipeStatus,
     id: result.id,
     version: result.version,
     source: result.source,
