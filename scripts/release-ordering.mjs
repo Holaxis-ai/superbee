@@ -602,3 +602,50 @@ export function receiptEmissionCommands({ stageId, version, draftReleaseId }) {
     approved: `${base} --decision approved`,
   };
 }
+
+/**
+ * Validate the three files persisted before publication as one internally bound authority packet.
+ * This performs no draft lookup and no publication verdict; the post-PATCH verifier remains the
+ * sole authority for final GitHub identity, inventory/body, and latest selection.
+ */
+export function verifyPersistedPublicationProofs({ chain, plan, finalProof }) {
+  if (chain?.schema !== RELEASE_FINALIZER_PROOF_SCHEMA) fail("unknown finalizer chain proof schema");
+  if (plan?.schema !== PUBLICATION_PLAN_SCHEMA) fail("unknown publication plan schema");
+  if (finalProof?.schema !== FINAL_PUBLICATION_PROOF_SCHEMA) fail("unknown final publication proof schema");
+  const releaseId = numericAssetId("persisted release id", chain.draft_release_id);
+  if (plan.draft_release_id !== releaseId || finalProof.draft_release_id !== releaseId) {
+    fail("persisted proof release ids differ");
+  }
+  if (plan.stage_id !== chain.stage_id || finalProof.stage_id !== chain.stage_id) {
+    fail("persisted proof stage ids differ");
+  }
+  if (plan.tag !== chain.tag) fail("persisted publication plan tag differs from the verified chain");
+  field("persisted source commit", chain.source_commit, /^[a-f0-9]{40}$/);
+
+  const expectedFixed = proofMap([...plan.keep.core_assets, ...plan.keep.receipt_assets], "persisted keep asset");
+  const observed = proofMap(finalProof.assets, "persisted final proof asset");
+  for (const [name, asset] of expectedFixed.map) {
+    const found = observed.map.get(name);
+    if (!found || !sameTriple(found, asset)) fail(`persisted final proof asset ${name} differs from the publication plan`);
+  }
+  let expectedCount = expectedFixed.triples.length;
+  if (plan.keep.status === null) {
+    if (finalProof.status_asset !== null) fail("persisted final proof retains an unexpected status asset");
+  } else {
+    const status = exactAssetTriple(finalProof.status_asset, "persisted final status asset");
+    if (status.name !== plan.keep.status.name || status.digest !== plan.keep.status.digest) {
+      fail("persisted final status asset differs from the publication plan");
+    }
+    const found = observed.map.get(status.name);
+    if (!found || !sameTriple(found, status)) fail("persisted final proof does not contain its exact status asset");
+    expectedCount += 1;
+  }
+  if (observed.triples.length !== expectedCount) fail("persisted final proof asset set differs from the publication plan");
+  return {
+    release_id: releaseId,
+    source_commit: chain.source_commit,
+    target: chain.target,
+    version: chain.version,
+    tag: chain.tag,
+  };
+}

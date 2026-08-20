@@ -9,6 +9,7 @@ import {
   buildStageReceipt,
   parseStagePublishJson,
   stageDownloadFilenameFor,
+  verifyArtifactMetadata,
   verifyFinalizerChain,
 } from "./release-receipts.mjs";
 import * as allReceipts from "./release-receipts.mjs";
@@ -161,6 +162,36 @@ test("finalizer accepts only a fully matching candidate/artifact/stage/draft cha
     { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
     { id: "201", name: TARBALL, digest: TARBALL_SHA },
   ]);
+});
+
+test("artifact metadata primitive binds exact id, digest, run, head, name, and expiry", () => {
+  const metadata = {
+    id: 700,
+    name: "release-finalization-proof",
+    digest: `sha256:${"7".repeat(64)}`,
+    expired: false,
+    workflow_run: { id: 800, head_sha: COMMIT },
+  };
+  const expected = {
+    id: "700",
+    name: "release-finalization-proof",
+    digest: "7".repeat(64),
+    runId: "800",
+    commit: COMMIT,
+  };
+  assert.doesNotThrow(() => verifyArtifactMetadata("proof", metadata, expected));
+  for (const mutate of [
+    (value) => { value.id = 701; },
+    (value) => { value.name = "other"; },
+    (value) => { value.digest = `sha256:${"8".repeat(64)}`; },
+    (value) => { value.workflow_run.id = 801; },
+    (value) => { value.workflow_run.head_sha = "2".repeat(40); },
+    (value) => { value.expired = true; },
+  ]) {
+    const changed = structuredClone(metadata);
+    mutate(changed);
+    assert.throws(() => verifyArtifactMetadata("proof", changed, expected), /release receipt verification failed/);
+  }
 });
 
 test("stage summary and retained JSON are emitted from the same v2 receipt", () => {

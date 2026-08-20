@@ -189,10 +189,10 @@ export function buildStageReceipt(fields) {
   };
 }
 
-function verifyArtifactMetadata(label, metadata, expected) {
+export function verifyArtifactMetadata(label, metadata, expected) {
   equal(`${label} id`, metadata?.id, expected.id);
   equal(`${label} name`, metadata?.name, expected.name);
-  equal(`${label} digest`, metadata?.digest, expected.digest);
+  equal(`${label} digest`, digest(`${label} observed digest`, metadata?.digest), digest(`${label} expected digest`, expected.digest));
   equal(`${label} workflow run`, metadata?.workflow_run?.id, expected.runId);
   equal(`${label} source commit`, metadata?.workflow_run?.head_sha, expected.commit);
   if (metadata?.expired !== false) fail(`${label} is expired or lacks expired:false`);
