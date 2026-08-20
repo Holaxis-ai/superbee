@@ -184,9 +184,9 @@ test("REJECTION PIN (dir mode): a legacy bridge-only registry doc resolves acces
     const firstDelivery = await post(server, "/__ui/views/delivered", { launchId: launch.launchId });
     assert.equal(firstDelivery.status, 200);
     assert.equal(firstDelivery.body.delivered, true);
-    const consumedDelivery = await post(server, "/__ui/views/delivered", { launchId: launch.launchId });
-    assert.equal(consumedDelivery.status, 200);
-    assert.equal(consumedDelivery.body.delivered, false, "the host receipt is one-shot");
+    const repeatedDelivery = await post(server, "/__ui/views/delivered", { launchId: launch.launchId });
+    assert.equal(repeatedDelivery.status, 200);
+    assert.equal(repeatedDelivery.body.delivered, true, "the host receipt is idempotent");
 
     const target = await readDocVersioned(bundle, "tasks/alpha");
     const action = { kind: "document.set-field", docId: "tasks/alpha", field: "status", value: "done", expectedVersion: target.version };

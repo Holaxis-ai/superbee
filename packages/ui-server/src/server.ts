@@ -155,8 +155,8 @@ export interface UiServerHandle {
 /** Per-run mutable state the request handler closes over: the page-nonce registry, the SSE fan-out, the change watcher, and the shutdown signal (aborts remote-mode upstream requests at close()). */
 interface UiRuntime {
   launches: PageLaunchRegistry;
-  /** access:none launches whose nonce response reached Node's completed-response boundary. */
-  deliveredLaunches: Set<string>;
+  /** Launches whose nonce response reached Node's completed-response boundary. */
+  deliveredLaunches: WeakSet<PageLaunch>;
   authorizations: ViewAuthorizationStore;
   bridge?: BridgeService;
   actions?: TrustedActionService;
@@ -191,7 +191,7 @@ async function servePageBytes(
   options: UiServerOptions,
   runtime: UiRuntime,
   nonce: string,
-): Promise<{ response: Response; deliveredLaunchId?: string }> {
+): Promise<{ response: Response; deliveredLaunch?: PageLaunch }> {
   const launch = runtime.launches.resolveNonce(nonce);
   if (!launch) return { response: pageError(403, "This view link is unknown or has expired. Reopen the view from the launcher.") };
   if (!(await launchIsCurrent(options.bundle, launch))) {
@@ -209,7 +209,7 @@ async function servePageBytes(
         "referrer-policy": "no-referrer",
       },
     }),
-    ...(launch.capability === "none" ? { deliveredLaunchId: launch.launchId } : {}),
+    deliveredLaunch: launch,
   };
 }
 
@@ -636,13 +636,14 @@ async function verifyViewDelivery(req: Request, options: UiServerOptions, runtim
   const launchId = launchIdFrom(payload);
   if (!launchId) return jsonError(400, "USAGE", "launchId must be a non-empty string of at most 256 characters");
   const launch = runtime.launches.resolveLaunch(launchId);
-  if (!launch || launch.capability !== "none" || !(await launchIsCurrent(options.bundle, launch))) {
-    if (launch) runtime.launches.revoke(launch.launchId);
-    runtime.deliveredLaunches.delete(launchId);
-    return jsonError(403, "FORBIDDEN", "the View launch is unknown, changed, expired, or data-bearing");
+  if (!launch) {
+    return jsonError(403, "FORBIDDEN", "the View launch is unknown, changed, or expired");
   }
-  const delivered = runtime.deliveredLaunches.delete(launchId);
-  return actionJson({ delivered });
+  if (!(await launchIsCurrent(options.bundle, launch))) {
+    runtime.launches.revoke(launch.launchId);
+    return jsonError(403, "FORBIDDEN", "the View launch is unknown, changed, or expired");
+  }
+  return actionJson({ delivered: runtime.deliveredLaunches.has(launch) });
 }
 
 async function handleViewBridge(req: Request, runtime: UiRuntime): Promise<Response> {
@@ -690,14 +691,8 @@ async function handleRequest(
       res.once("close", close);
     });
     await writeResponseToServerResponse(res, served.response);
-    if (served.deliveredLaunchId && await completed) {
-      // Keep the transport receipt bounded even if a shell disappears before consuming it.
-      while (runtime.deliveredLaunches.size >= 256) {
-        const oldest = runtime.deliveredLaunches.values().next().value as string | undefined;
-        if (!oldest) break;
-        runtime.deliveredLaunches.delete(oldest);
-      }
-      runtime.deliveredLaunches.add(served.deliveredLaunchId);
+    if (served.deliveredLaunch && await completed) {
+      runtime.deliveredLaunches.add(served.deliveredLaunch);
     }
     return;
   }
@@ -831,7 +826,7 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
   const bridgeAuthority = new PageBridgeLaunchAuthority(options.bundle, launches, authorizations);
   const runtime: UiRuntime = {
     launches,
-    deliveredLaunches: new Set(),
+    deliveredLaunches: new WeakSet(),
     authorizations,
     bridge: new BridgeService({
       bundle: options.bundle,

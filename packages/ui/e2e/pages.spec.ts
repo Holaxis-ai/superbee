@@ -13,6 +13,10 @@ import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
 import { writeBlob, writeDoc } from "@superbee/core";
 import { approveViewIfPrompted, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, CLI_DIST } from "./harness.js";
+import { VIEW_LOAD_DEADLINE_MS } from "../src/views/viewReadiness.js";
+
+const VIEW_LOAD_FAILURE_ASSERTION_TIMEOUT_MS = VIEW_LOAD_DEADLINE_MS + 4_000;
+const VIEW_LOAD_SURVIVAL_WAIT_MS = VIEW_LOAD_DEADLINE_MS + 500;
 
 const TASKS = [
   { id: "tasks/alpha", frontmatter: { type: "Task", title: "Alpha task", status: "todo" }, body: "" },
@@ -84,11 +88,12 @@ test("a browser-blocked View request becomes an actionable shell error instead o
     await openRegisteredView(page, "views-registry/roadmap");
 
     const failure = page.locator(".view-status-error");
-    await expect(failure).toContainText("This View's content did not finish loading", {
-      timeout: 12_000,
+    await expect(failure).toContainText("could not confirm that this View finished loading", {
+      timeout: VIEW_LOAD_FAILURE_ASSERTION_TIMEOUT_MS,
     });
-    await expect(failure).toContainText("content blocker or privacy extension");
-    await expect(failure).toContainText("extensions disabled");
+    await expect(failure).toContainText("local HTML request may have been blocked");
+    await expect(failure).toContainText("launch may have changed or expired");
+    await expect(failure).toContainText("content-blocking or privacy settings");
     await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0);
   } finally {
     await ui.cleanup();
@@ -107,10 +112,11 @@ test("a browser-blocked access:none View request also becomes an actionable shel
     await openRegisteredView(page, "pages-registry/about");
 
     const failure = page.locator(".view-status-error");
-    await expect(failure).toContainText("This View's content did not finish loading", {
-      timeout: 12_000,
+    await expect(failure).toContainText("could not confirm that this View finished loading", {
+      timeout: VIEW_LOAD_FAILURE_ASSERTION_TIMEOUT_MS,
     });
-    await expect(failure).toContainText("content blocker or privacy extension");
+    await expect(failure).toContainText("local HTML request may have been blocked");
+    await expect(failure).toContainText("launch may have changed or expired");
     await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0);
   } finally {
     await ui.cleanup();
@@ -127,8 +133,44 @@ test("a static access:none View with script-src none remains rendered after the 
 
     const frame = page.frameLocator("iframe.page-frame-iframe");
     await expect(frame.getByRole("heading", { name: "CSP-static View" })).toBeVisible();
-    await page.waitForTimeout(8_500); // Cross PageFrame's 8-second readiness deadline.
+    await page.waitForTimeout(VIEW_LOAD_SURVIVAL_WAIT_MS);
     await expect(frame.getByRole("heading", { name: "CSP-static View" })).toBeVisible();
+    await expect(page.locator(".view-status-error")).toHaveCount(0);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
+test("a quiet data-bearing View remains rendered after the readiness deadline", async ({ page }) => {
+  const ui = await bootUiOverPagesBundle([]);
+  try {
+    const html = "<!doctype html><h1>Quiet data View</h1>";
+    await writeDoc(
+      { root: ui.dir },
+      {
+        id: "views-registry/quiet-data",
+        frontmatter: {
+          type: "View",
+          title: "Quiet data View",
+          entry: "views/quiet-data.html",
+          access: "bundle-read",
+        },
+        body: "",
+      },
+    );
+    await writeBlob(
+      { root: ui.dir },
+      "views/quiet-data.html",
+      new TextEncoder().encode(html),
+      "text/html; charset=utf-8",
+    );
+    await page.goto(ui.url);
+    await openRegisteredView(page, "views-registry/quiet-data");
+
+    const frame = page.frameLocator("iframe.page-frame-iframe");
+    await expect(frame.getByRole("heading", { name: "Quiet data View" })).toBeVisible();
+    await page.waitForTimeout(VIEW_LOAD_SURVIVAL_WAIT_MS);
+    await expect(frame.getByRole("heading", { name: "Quiet data View" })).toBeVisible();
     await expect(page.locator(".view-status-error")).toHaveCount(0);
   } finally {
     await ui.cleanup();

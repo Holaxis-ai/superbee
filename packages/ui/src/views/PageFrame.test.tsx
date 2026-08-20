@@ -6,7 +6,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { PageFrame, VIEW_LOAD_DEADLINE_MS } from "./PageFrame.js";
+import { PageFrame } from "./PageFrame.js";
+import { VIEW_DELIVERY_RETRY_MS, VIEW_LOAD_DEADLINE_MS } from "./viewReadiness.js";
 import { getDoc, listAllHeads } from "../api/client.js";
 import { authorizeViewLaunch, cancelTrustedAction, commitTrustedAction, mintPageNonce, prepareTrustedAction, resolvePageTarget, verifyViewDelivery } from "../api/pages.js";
 import { subscribeToChanges } from "../pages/pageEvents.js";
@@ -103,6 +104,7 @@ async function flush() {
 describe("PageFrame: bridge revocation race (P1)", () => {
   let container: HTMLDivElement;
   let root: Root;
+  let rootMounted: boolean;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -111,14 +113,22 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
+    rootMounted = true;
   });
 
   afterEach(async () => {
     vi.useRealTimers();
-    await act(async () => {
-      root.unmount();
-    });
+    if (rootMounted) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
     container.remove();
+  });
+
+  it("keeps the single delivery retry inside the load deadline", () => {
+    expect(VIEW_DELIVERY_RETRY_MS).toBeGreaterThan(0);
+    expect(VIEW_DELIVERY_RETRY_MS).toBeLessThan(VIEW_LOAD_DEADLINE_MS);
   });
 
   it("keeps a data-bearing View open once its exact frame posts a readiness message", async () => {
@@ -140,10 +150,10 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
-    expect(container.textContent).not.toContain("This View's content did not finish loading");
+    expect(container.textContent).not.toContain("could not confirm that this View finished loading");
   });
 
-  it("times out a data-bearing View that never proves its frame script loaded", async () => {
+  it("ignores wrong-source readiness messages and times out without a current-frame proof", async () => {
     vi.useFakeTimers();
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
@@ -154,15 +164,22 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     });
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
 
+    act(() => window.dispatchEvent(new MessageEvent("message", {
+      source: window,
+      data: { bridge: "v0", id: "wrong-source", type: "hello" },
+    })));
+
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
     expect(container.querySelector("iframe")).toBeNull();
-    expect(container.textContent).toContain("This View's content did not finish loading");
+    expect(container.textContent).toContain("could not confirm that this View finished loading");
   });
 
-  it("does not treat iframe load as readiness for an access:none View", async () => {
+  it("times out after two negative delivery checks", async () => {
     vi.useFakeTimers();
-    vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: false });
+    vi.mocked(verifyViewDelivery)
+      .mockResolvedValueOnce({ delivered: false })
+      .mockResolvedValueOnce({ delivered: false });
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "none" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
@@ -177,10 +194,15 @@ describe("PageFrame: bridge revocation race (P1)", () => {
       iframe.dispatchEvent(new Event("load"));
       await Promise.resolve();
     });
-    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+    await act(async () => {
+      vi.advanceTimersByTime(VIEW_DELIVERY_RETRY_MS);
+      await Promise.resolve();
+    });
+    expect(verifyViewDelivery).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS - VIEW_DELIVERY_RETRY_MS));
 
     expect(container.querySelector("iframe")).toBeNull();
-    expect(container.textContent).toContain("This View's content did not finish loading");
+    expect(container.textContent).toContain("could not confirm that this View finished loading");
   });
 
   it("keeps an access:none View open after the shell verifies the host delivery receipt", async () => {
@@ -203,7 +225,139 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
 
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
-    expect(container.textContent).not.toContain("This View's content did not finish loading");
+    expect(container.textContent).not.toContain("could not confirm that this View finished loading");
+  });
+
+  it("keeps a quiet data-bearing View open after transport delivery is verified", async () => {
+    vi.useFakeTimers();
+    vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: true });
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+
+    await act(async () => {
+      iframe.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(verifyViewDelivery).toHaveBeenCalledWith("launch-pages-registry/p");
+    expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+    expect(container.textContent).not.toContain("could not confirm that this View finished loading");
+  });
+
+  it.each(["false", "rejection"] as const)("recovers when the first delivery check ends in %s", async (firstOutcome) => {
+    vi.useFakeTimers();
+    if (firstOutcome === "false") {
+      vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: false });
+    } else {
+      vi.mocked(verifyViewDelivery).mockRejectedValueOnce(new Error("receipt race"));
+    }
+    vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: true });
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+
+    await act(async () => {
+      iframe.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+      vi.advanceTimersByTime(VIEW_DELIVERY_RETRY_MS);
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(verifyViewDelivery).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+  });
+
+  it("cancels an old generation's scheduled delivery retry on replacement", async () => {
+    vi.useFakeTimers();
+    vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: false });
+    vi.mocked(getDoc).mockResolvedValue(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const oldFrame = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    await act(async () => {
+      oldFrame.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/replacement" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(VIEW_DELIVERY_RETRY_MS));
+
+    expect(verifyViewDelivery).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("iframe")?.getAttribute("src")).toBe(
+      "/__page/nonce-pages-registry/replacement",
+    );
+  });
+
+  it("does not let a stale delivery result settle a replacement generation", async () => {
+    vi.useFakeTimers();
+    const oldDelivery = deferred<{ delivered: boolean }>();
+    vi.mocked(verifyViewDelivery).mockImplementationOnce(() => oldDelivery.promise);
+    vi.mocked(getDoc).mockResolvedValue(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const oldFrame = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    act(() => oldFrame.dispatchEvent(new Event("load")));
+
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/replacement" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      oldDelivery.resolve({ delivered: true });
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.textContent).toContain("could not confirm that this View finished loading");
+  });
+
+  it("cancels a scheduled delivery retry on unmount", async () => {
+    vi.useFakeTimers();
+    vi.mocked(verifyViewDelivery).mockResolvedValueOnce({ delivered: false });
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    await act(async () => {
+      iframe.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+      root.unmount();
+    });
+    rootMounted = false;
+    act(() => vi.advanceTimersByTime(VIEW_DELIVERY_RETRY_MS));
+
+    expect(verifyViewDelivery).toHaveBeenCalledTimes(1);
   });
 
   it("registry-doc bundle-read -> none: a bridge request received during the async reload gap is DENIED, never answered under the stale grant", async () => {

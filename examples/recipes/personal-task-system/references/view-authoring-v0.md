@@ -322,3 +322,21 @@ Bridge.watch(async function (events) {
   render(result.rows, events);
 }).catch(showStartupError);
 ```
+
+## Quiet startup and transport readiness
+
+Startup messages are optional. A View may render static content or remain quiet until human input;
+it does not have to send `hello`, subscribe, or make any other bridge request merely to prove that
+it loaded.
+
+The local web shell may use a shell-authenticated transport receipt after the iframe load event to
+confirm that the nonce response reached the host's completed-response boundary. That receipt stays
+outside the iframe and is **not authorization**: it grants no bridge or trusted-action access, and
+each data or action request still undergoes its own launch-currentness, capability, and exact-byte
+approval checks.
+
+The receipt proves transport completion, not pixels or script execution. With exact authored bytes
+and an opaque-origin iframe, browser cancellation after the response reaches the host's completion
+boundary may remain indistinguishable from successful delivery. The shell's bounded load diagnostic
+therefore cannot identify every response-stage failure without authored cooperation or a different
+isolation contract.
