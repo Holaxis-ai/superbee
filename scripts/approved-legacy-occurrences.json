@@ -1506,7 +1506,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "the pre-rename X-Requested-With marker stays accepted so a cached UI bundle is not CSRF-rejected after the rename",
-      "line": 509
+      "line": 518
     }
   ]
 }
