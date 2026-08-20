@@ -45,7 +45,7 @@ import { artifact } from "./commands/artifact.js";
 import { versionCommand } from "./commands/version.js";
 import { view } from "./commands/view.js";
 import { setup } from "./commands/setup.js";
-import { cliVersion } from "./build-identity.js";
+import { cliVersion, isBareVersionFlag } from "./build-identity.js";
 import { CliError, toEnvelope, toExit } from "./errors.js";
 import { renderErrorEnvelope } from "./output.js";
 import { DESCRIPTION, helpIndexText } from "./reference.js";
@@ -236,16 +236,16 @@ export async function main(argv: string[]): Promise<void> {
     return;
   }
 
-  // `--version` / `-v`: the CLI's own version string, offline, exit 0. Handled BEFORE the
+  // `--version` / `-v` / `-V`: the CLI's own version string, offline, exit 0. Handled BEFORE the
   // leading-flag USAGE path below, which would otherwise reject `--version` as a misplaced option.
-  if (command === "--version" || command === "-v") {
+  if (isBareVersionFlag(command)) {
     process.stdout.write(`${cliVersion()}\n`);
     return;
   }
 
   // A leading flag (e.g. `axi --dir <path> list`) is a common mistake: options are per-command and
   // must FOLLOW the subcommand. Give an actionable hint rather than the opaque "unknown command:
-  // --dir". (`--version`/`-v` and `--help`/`-h` are handled above; this is for the rest.) Exit 2.
+  // --dir". (Version and help aliases are handled above; this is for the rest.) Exit 2.
   if (command.startsWith("-")) {
   // `superbee --remote <url>` (or `--dir <path>`) with NO subcommand is the canonical
     // "orient me against this bundle" invocation, not a flags-before-command mistake — route it to

@@ -5,16 +5,25 @@
 // `process.exit`), so the full 0/1/2/4/5/6 taxonomy survives and the process drains naturally. argv
 // is passed explicitly so tests can inject it.
 import { fileURLToPath } from "node:url";
-import { main } from "./cli.js";
-import { registerExecutableEntry } from "./invocation.js";
-import { runUpdateRefreshWorker } from "./update-orientation.js";
+import { cliVersion, isBareVersionFlag } from "./build-identity.js";
 
-registerExecutableEntry(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
-if (argv[0] === "__update-refresh-v1") {
+const bareVersion = isBareVersionFlag(argv[0]);
+if (bareVersion) {
+  process.stdout.write(`${cliVersion()}\n`);
+} else {
+  const { registerExecutableEntry } = await import("./invocation.js");
+  registerExecutableEntry(fileURLToPath(import.meta.url));
+}
+
+if (!bareVersion && argv[0] === "__update-refresh-v1") {
   // Private process route: malformed argv is intentionally silent zero-work. It is absent from
   // public command registries/help and is reachable only through the exact registered entry.
-  if (argv.length === 2) await runUpdateRefreshWorker(argv[1]!);
-} else {
+  if (argv.length === 2) {
+    const { runUpdateRefreshWorker } = await import("./update-orientation.js");
+    await runUpdateRefreshWorker(argv[1]!);
+  }
+} else if (!bareVersion) {
+  const { main } = await import("./cli.js");
   await main(argv);
 }
