@@ -11,6 +11,27 @@ import { compareStrictSemver } from "./strict-semver.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+test("checked-in CLI, lock workspace, and successor-stable versions agree", async () => {
+  const [manifest, cli, lock] = await Promise.all([
+    loadReleaseTargets(),
+    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "package-lock.json"), "utf8").then(JSON.parse),
+  ]);
+  const stable = manifest.allowed_tuples["successor-stable"];
+  assert.deepEqual(
+    {
+      cli: `${cli.name}@${cli.version}`,
+      lock: `${lock.packages["packages/cli"].name}@${lock.packages["packages/cli"].version}`,
+      stable: `${stable.package}@${stable.version}`,
+    },
+    {
+      cli: `${stable.package}@${stable.version}`,
+      lock: `${stable.package}@${stable.version}`,
+      stable: `${stable.package}@${stable.version}`,
+    },
+  );
+});
+
 test("parseResolveTargetArgs accepts a tag or target and defaults to the release manifest", () => {
   assert.deepEqual(parseResolveTargetArgs(["--target", "successor-stable", "--tag", "v0.1.0"]), {
     target: "successor-stable",
