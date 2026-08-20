@@ -835,7 +835,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 83
+      "line": 91
     },
     {
       "file": "packages/cli/src/install-authority.ts",
@@ -846,7 +846,7 @@
       "treatment": "bridge-or-successor-target-policy",
       "owner": "release-policy",
       "reason": "AC-49 through AC-60 require explicit bridge/successor target ownership",
-      "line": 162
+      "line": 170
     },
     {
       "file": "packages/cli/src/invocation.ts",

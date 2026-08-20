@@ -132,6 +132,26 @@ test("setup plan emits exactly one deterministic next command in dependency orde
   assert.equal(desktop.next?.command, "superbee mcp install --host claude-desktop");
 });
 
+test("a package-only npm prefix exits onto runtime inspection instead of the same ineffective reinstall", () => {
+  const plan = buildSetupPlan(input({
+    distribution: {
+      allowed: false,
+      state: "unknown",
+      reason: "npm global prefix does not provide the running Node launcher required for durable host integration",
+      persistent: false,
+      failure: "npm_prefix_runtime_unavailable",
+    },
+  }));
+
+  assert.deepEqual(plan.next, {
+    action: "inspect",
+    command: "npm prefix --global && command -v node && command -v superbee",
+    reason: "npm global prefix does not provide the running Node launcher required for durable host integration; use the npm-global prefix owned by the running Node installation, reinstall Superbee there, then rerun setup",
+  });
+  assert.equal(plan.capabilities.find((row) => row.id === "distribution")?.state, "blocked");
+  assert.notEqual(plan.next.command, "npm install -g superbee");
+});
+
 test("foreign integration state fails closed onto a read-only inspector", () => {
   const skill = buildSetupPlan(input({
     skill: { canonical: { state: "unmanaged" }, legacy: { state: "absent" } },
