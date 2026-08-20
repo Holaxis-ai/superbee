@@ -67,7 +67,7 @@ import { CliError, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage, parseNewSchemaPhaseOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { cliInvocation } from "../invocation.js";
+import { cliInvocation, shellArg } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
 import { isKnownShippedLegacyPageConvention, isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { boardPostPersistHook } from "../board-attribution.js";
@@ -593,7 +593,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     registry,
     remoteUrl: remote,
     strict: true,
-    helpOnKindReject: `${cliInvocation()} kinds`,
+    helpOnKindReject: `${cliInvocation()} new ${shellArg(kind.governs)} --help`,
     actor,
     persistActor: true,
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.

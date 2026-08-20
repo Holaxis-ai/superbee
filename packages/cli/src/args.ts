@@ -34,6 +34,11 @@ export type ValidatedSelectorResult<V, P> = {
   readonly selection: SelectorResolution<P> | { readonly kind: "help" };
 };
 
+export interface ParseRecoveryOptions {
+  /** Parser-owned long option names, without leading dashes, eligible for a bounded typo hint. */
+  readonly optionNames?: readonly string[];
+}
+
 /** Resolve selectors once, validate their leaf data, and never expose raw positionals downstream. */
 export function parseSelectorOrUsage<
   T extends { positionals: readonly string[]; values: object },
@@ -63,6 +68,51 @@ function stripAdvisory(msg: string): string {
   const noPositionalHint = msg.split(". To specify a positional argument")[0] ?? msg;
   const noAmbiguousHint = noPositionalHint.split("\nDid you forget")[0] ?? noPositionalHint;
   return noAmbiguousHint.trim();
+}
+
+/** Restricted Damerau-Levenshtein distance for short CLI option names. */
+function optionDistance(left: string, right: string): number {
+  const rows = Array.from({ length: left.length + 1 }, () => Array<number>(right.length + 1).fill(0));
+  for (let i = 0; i <= left.length; i += 1) rows[i]![0] = i;
+  for (let j = 0; j <= right.length; j += 1) rows[0]![j] = j;
+  for (let i = 1; i <= left.length; i += 1) {
+    for (let j = 1; j <= right.length; j += 1) {
+      const substitution = rows[i - 1]![j - 1]! + (left[i - 1] === right[j - 1] ? 0 : 1);
+      rows[i]![j] = Math.min(rows[i - 1]![j]! + 1, rows[i]![j - 1]! + 1, substitution);
+      if (
+        i > 1 &&
+        j > 1 &&
+        left[i - 1] === right[j - 2] &&
+        left[i - 2] === right[j - 1]
+      ) {
+        rows[i]![j] = Math.min(rows[i]![j]!, rows[i - 2]![j - 2]! + 1);
+      }
+    }
+  }
+  return rows[left.length]![right.length]!;
+}
+
+/** Return one unambiguous nearby long option; distant matches and ties deliberately return none. */
+function nearestLongOption(token: string | undefined, candidates: readonly string[] | undefined): string | undefined {
+  if (!token?.startsWith("--") || !candidates || candidates.length === 0) return undefined;
+  const name = token.slice(2).toLowerCase();
+  if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) return undefined;
+  const maxDistance = name.length <= 4 ? 1 : 2;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let best: string | undefined;
+  let tied = false;
+  for (const candidate of [...new Set(candidates)].sort()) {
+    if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(candidate)) continue;
+    const distance = optionDistance(name, candidate.toLowerCase());
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+      tied = false;
+    } else if (distance === bestDistance) {
+      tied = true;
+    }
+  }
+  return best !== undefined && !tied && bestDistance <= maxDistance ? `--${best}` : undefined;
 }
 
 /**
@@ -97,6 +147,7 @@ export function translateParseArgsError(err: unknown): string | null {
 function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: object }>(
   parse: () => T,
   command: string,
+  recovery: ParseRecoveryOptions = {},
 ): T {
   try {
     return parse();
@@ -104,7 +155,11 @@ function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: 
     if (err instanceof CliError) throw err; // passthrough — never remapped
     const translated = translateParseArgsError(err);
     const raw = err instanceof Error ? err.message : String(err);
-    const message = translated ?? stripAdvisory(raw); // unrecognized -> trimmed original, never worse
+    const suggestion = (err as { code?: unknown } | null)?.code === "ERR_PARSE_ARGS_UNKNOWN_OPTION"
+      ? nearestLongOption(QUOTED.exec(raw)?.[1], recovery.optionNames)
+      : undefined;
+    const baseMessage = translated ?? stripAdvisory(raw); // unrecognized -> trimmed original, never worse
+    const message = suggestion ? `${baseMessage} — did you mean '${suggestion}'?` : baseMessage;
     throw new CliError("USAGE", message, { help: `${cliInvocation()} ${command} --help` });
   }
 }
@@ -113,10 +168,11 @@ function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: 
 export function parseLeafOrUsage<T extends { positionals: readonly string[]; values?: object }>(
   parse: () => T,
   leaf: CliLeafSpec,
+  recovery: ParseRecoveryOptions = {},
 ): T {
   // Validate ownership before invoking the caller's parser thunk or any effects it may contain.
   assertCliLeaf(leaf);
-  const parsed = parseOwnedOrUsage(parse, leaf.canonical.path);
+  const parsed = parseOwnedOrUsage(parse, leaf.canonical.path, recovery);
   if (Boolean((parsed.values as { help?: unknown } | undefined)?.help)) return parsed;
   assertLeafArity(leaf, parsed.positionals);
   return parsed;

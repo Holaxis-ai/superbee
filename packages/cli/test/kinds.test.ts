@@ -701,6 +701,7 @@ test("new: missing required field is rejected by VALIDATION, not by machinery (U
         assert.equal(err.code, "USAGE");
         assert.match(err.message, /does not satisfy the 'Context Note' kind/);
         assert.match(err.message, /title/);
+        assert.ok(err.help?.endsWith("superbee new 'Context Note' --help"));
         return true;
       },
     );
