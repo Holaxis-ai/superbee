@@ -476,7 +476,7 @@ function transientPayload(
       access: launch.capability,
       authorization: {
         required: launch.capability !== "none",
-        authorized,
+        authorized: launch.capability === "none" || authorized,
       },
     },
   };
