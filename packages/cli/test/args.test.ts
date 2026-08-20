@@ -89,6 +89,21 @@ test("A2.b3 distant and tied option matches stay fail-closed without a guessed c
   }
 });
 
+test("A2.b4 inconsistent recovery metadata never suggests the rejected token itself", () => {
+  assert.throws(
+    () =>
+      parseForTest(
+        () => parseArgs({ args: ["--limit"], options: {}, allowPositionals: true }),
+        "list",
+        { optionNames: ["limit", "field"] },
+      ),
+    (err: unknown) => {
+      assertUsage(err, "unknown option '--limit'");
+      return true;
+    },
+  );
+});
+
 test("A2.c missing option value", () => {
   assert.throws(
     () =>

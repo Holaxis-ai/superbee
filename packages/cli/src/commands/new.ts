@@ -593,7 +593,13 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     registry,
     remoteUrl: remote,
     strict: true,
-    helpOnKindReject: `${cliInvocation()} new ${shellArg(kind.governs)} --help`,
+    helpOnKindReject:
+      `${cliInvocation()} new ${shellArg(kind.governs)} --help` +
+      (preDir !== undefined
+        ? ` --dir ${shellArg(preDir)}`
+        : preRemote !== undefined
+          ? ` --remote ${shellArg(preRemote)}`
+          : ""),
     actor,
     persistActor: true,
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.

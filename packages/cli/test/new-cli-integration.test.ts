@@ -140,7 +140,7 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
     assert.match(missingProgress.stdout, /progress_status/);
     assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
-    assert.match(missingProgress.stdout, /new 'Task' --help/);
+    assert.match(missingProgress.stdout, /new 'Task' --help --dir '/);
 
     for (const duplicateFields of [
       ["--progress_status", "todo", "--superbee_progress_status", "done"],

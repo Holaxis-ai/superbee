@@ -95,7 +95,8 @@ function optionDistance(left: string, right: string): number {
 /** Return one unambiguous nearby long option; distant matches and ties deliberately return none. */
 function nearestLongOption(token: string | undefined, candidates: readonly string[] | undefined): string | undefined {
   if (!token?.startsWith("--") || !candidates || candidates.length === 0) return undefined;
-  const name = token.slice(2).toLowerCase();
+  const rawName = token.slice(2);
+  const name = rawName.toLowerCase();
   if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(name)) return undefined;
   const maxDistance = name.length <= 4 ? 1 : 2;
   let bestDistance = Number.POSITIVE_INFINITY;
@@ -103,6 +104,7 @@ function nearestLongOption(token: string | undefined, candidates: readonly strin
   let tied = false;
   for (const candidate of [...new Set(candidates)].sort()) {
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(candidate)) continue;
+    if (candidate === rawName) return undefined;
     const distance = optionDistance(name, candidate.toLowerCase());
     if (distance < bestDistance) {
       bestDistance = distance;
