@@ -66,7 +66,8 @@ import {
   BUNDLE_NAME_DOC_TYPE,
   type BundleNameSource,
 } from "../bundle-name.js";
-import { queryHeads, type OkfDocument } from "@superbee/core";
+import { CONVENTIONS_PREFIX, queryHeads, type OkfDocument } from "@superbee/core";
+import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
 import {
@@ -165,6 +166,12 @@ export interface BundleSummary {
   docs: number;
   /** Count by frontmatter `type`, sorted by count desc then type asc (deterministic). */
   byType: Record<string, number>;
+  /**
+   * Ids under `conventions/`, collected in the SAME fold — the offers derivation's applied-recipe
+   * fact. Internal: {@link buildHomeView} copies bundle-block fields explicitly, so this never
+   * renders. Optional so injected test fakes may omit it (treated as none applied).
+   */
+  conventionIds?: string[];
   /** The most-recent docs (timestamp desc, capped) in the minimal schema. Empty rows when docs===0. */
   recent: { shown: number; total: number; rows: HomeRow[] };
 }
@@ -286,9 +293,11 @@ function rowTitle(id: string, title: unknown): string {
  */
 export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter">>, root: string): BundleSummary {
   const byType: Record<string, number> = {};
+  const conventionIds: string[] = [];
   for (const d of docs) {
     const t = typeof d.frontmatter.type === "string" ? d.frontmatter.type : "";
     byType[t] = (byType[t] ?? 0) + 1;
+    if (d.id.startsWith(CONVENTIONS_PREFIX)) conventionIds.push(d.id);
   }
   const sortedByType = Object.fromEntries(
     Object.entries(byType).sort(([ta, ca], [tb, cb]) => cb - ca || ta.localeCompare(tb)),
@@ -313,6 +322,7 @@ export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter"
     root,
     docs: docs.length,
     byType: sortedByType,
+    conventionIds,
     recent: {
       shown: Math.min(rows.length, HOME_RECENT_LIMIT),
       total: rows.length,
@@ -704,6 +714,27 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
 }
 
 /**
+ * The healthy bundle block's offer rows (offers.ts — unused-capability offers derived from the
+ * one scan). BOARD-STATE GATED: window/first-contact/conflict states all ride the firstContact
+ * slot, and offering `recipe add` into such a bundle is a footgun, so any firstContact suppresses
+ * offers entirely. DOUBLE-GUARDED: a throwing derivation degrades to no offers (today's exact
+ * bytes), never a failed session.
+ */
+function bundleOffers(
+  summary: BundleSummary,
+  deps: { invocation: () => string; targetDir?: string },
+  board?: { block?: string | Record<string, unknown>; firstContact?: string },
+): OfferRow[] {
+  if (board?.firstContact) return [];
+  try {
+    const dirSuffix = deps.targetDir ? ` --dir ${shellArg(deps.targetDir)}` : "";
+    return deriveOffers(summary.byType, summary.conventionIds ?? [], deps.invocation(), dirSuffix);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Build the home view object (PURE — no I/O). Insertion order is the rendered TOON field order:
  * identity header FIRST (AXI §10 — identify the tool before live data; a one-line identity header
  * is not "the manual"), then the LIVE `bundle` dashboard (when present — AXI
@@ -798,16 +829,28 @@ export function buildHomeView(
     bundleBlock.root = summary.root;
     bundleBlock.docs = summary.docs;
     bundleBlock.by_type = summary.byType;
+    const offers = bundleOffers(summary, deps, board);
     if (summary.docs > 0) {
       bundleBlock.recent = summary.recent;
-      bundleBlock.next = [
-        `${deps.invocation()} list`,
-        `${deps.invocation()} status`,
-      ];
+      // Offers displace the generic next[2] hints (adjudicated: list/status stay in the commands
+      // block); with no offers, the block is byte-identical to the pre-offers shape.
+      if (offers.length > 0) {
+        bundleBlock.offers = offers;
+        bundleBlock.offers_help = OFFERS_HELP;
+      } else {
+        bundleBlock.next = [
+          `${deps.invocation()} list`,
+          `${deps.invocation()} status`,
+        ];
+      }
     } else {
       // Definitive empty state (AXI §5), distinct from "no bundle at all": the bundle exists but
       // has no docs yet.
       bundleBlock.help = `${deps.invocation()} new "Context Note" <id> … | ${deps.invocation()} doc write … — create the first doc`;
+      if (offers.length > 0) {
+        bundleBlock.offers = offers;
+        bundleBlock.offers_help = OFFERS_HELP;
+      }
     }
     if (binding) bundleBlock.via = binding.file;
     view.bundle = bundleBlock;
