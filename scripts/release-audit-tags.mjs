@@ -36,8 +36,8 @@ import {
   EXIT_VIOLATION,
   NetworkUnavailableError,
   classifyRegistryStatus,
-  defaultDistTagDestiny,
   describeDestiny,
+  distTagDestiny,
   eligibleFor,
   fetchRegistryState,
   mayHoldDistTag,
@@ -45,7 +45,7 @@ import {
   registryUrlFor,
 } from "./release-publication-policy.mjs";
 import { resolveTags } from "./release-state.mjs";
-import { defaultReleaseManifest } from "./release-targets.mjs";
+import { defaultReleaseManifest, loadReleaseTargets } from "./release-targets.mjs";
 import { isStrictSemver } from "./strict-semver.mjs";
 
 // Re-exported, not re-implemented: these are this CLI's documented contract surface (exit 20 vs 1),
@@ -82,6 +82,11 @@ export function auditedPackage(manifest = defaultReleaseManifest()) {
 export const PACKAGE = auditedPackage();
 export const REGISTRY_URL = registryUrlFor(PACKAGE);
 export const PHASES = ["at_rest", "staged", "approved", "promoted", "failed"];
+
+const TUPLE_BY_KIND = {
+  stable: "successor-stable",
+  prerelease: "successor-preview",
+};
 
 const PRERELEASE_SCHEME = /^(\d+)\.(\d+)\.(\d+)-pre\.([1-9]\d*)$/;
 const SEMVER =
@@ -157,13 +162,11 @@ export function parsePhaseDeclaration(raw) {
 }
 
 /**
- * A transaction declaration must name the SOURCE candidate: the contract's release-preparation
- * PR puts the candidate version into packages/cli, so during staged/approved/promoted the two
- * must agree, and `kind` must agree with the candidate's form. `failed` is exempt from the
- * source-equality rule only — source may legitimately advance to the replacement while the
- * declaration still identifies the failed candidate.
+ * A transaction declaration names the artifact selected by its kind. Stable source may differ
+ * from a prerelease artifact on the same destination line. `failed` keeps only the kind/form rule
+ * because it may legitimately identify a historical candidate after the allowlist advances.
  */
-export function checkDeclarationConsistency(declaration, sourceVersion) {
+export function checkDeclarationConsistency(declaration, selectedTuple) {
   const violations = [];
   if (declaration.phase === "at_rest") return violations;
   const formKind = declaration.version.includes("-") ? "prerelease" : "stable";
@@ -175,15 +178,47 @@ export function checkDeclarationConsistency(declaration, sourceVersion) {
       ),
     );
   }
-  if (declaration.phase !== "failed" && declaration.version !== sourceVersion) {
+  // A failed declaration intentionally keeps identifying the historical artifact even after the
+  // allowlist and source advance to its replacement. Its kind/form remains checked above.
+  if (declaration.phase === "failed") return violations;
+  if (!selectedTuple) {
     violations.push(
       violation(
-        "declaration_source_mismatch",
-        `declared candidate ${declaration.version} != packages/cli version ${sourceVersion}; during a ${declaration.phase} transaction the release-preparation source must carry the candidate version`,
+        "declaration_tuple_missing",
+        `declared kind ${declaration.kind} has no ${TUPLE_BY_KIND[declaration.kind]} tuple in the release manifest`,
+      ),
+    );
+  } else if (declaration.version !== selectedTuple.version) {
+    violations.push(
+      violation(
+        "declaration_tuple_mismatch",
+        `declared ${declaration.kind} candidate ${declaration.version} != ${selectedTuple.id} tuple ${selectedTuple.version}`,
       ),
     );
   }
   return violations;
+}
+
+/** Derive every manifest-owned input to one audit from the same normalized snapshot. */
+export function releaseAuditPolicy(manifest, declaration) {
+  const packageName = auditedPackage(manifest);
+  const tupleId = declaration.phase === "at_rest" ? null : TUPLE_BY_KIND[declaration.kind];
+  const selectedTuple = tupleId ? manifest.allowed_tuples[tupleId] ?? null : null;
+  const violations = [];
+  if (declaration.phase !== "failed" && selectedTuple && selectedTuple.package !== packageName) {
+    violations.push(
+      violation(
+        "selected_tuple_package_mismatch",
+        `${selectedTuple.id} tuple package ${selectedTuple.package} != audited successor-stable package ${packageName}`,
+      ),
+    );
+  }
+  return {
+    packageName,
+    selectedTuple,
+    destiny: distTagDestiny(manifest, packageName),
+    violations,
+  };
 }
 
 /**
@@ -289,7 +324,7 @@ export function isNameReservingPlaceholder({ versions, observedTags, destiny }) 
   return destiny?.has?.(only) !== true; // a declared tuple version is a release, not a placeholder
 }
 
-export function expectedTagState({ declaration, versions, observedTags, destiny = defaultDistTagDestiny(PACKAGE) }) {
+export function expectedTagState({ declaration, versions, observedTags, destiny = distTagDestiny(defaultReleaseManifest(), PACKAGE), packageName = PACKAGE }) {
   const notes = [];
   const violations = [];
   const stable = versions.filter((v) => parseSemver(v)?.prerelease.length === 0);
@@ -297,7 +332,7 @@ export function expectedTagState({ declaration, versions, observedTags, destiny 
 
   if (declaration.phase === "at_rest") {
     if (versions.length === 0) {
-      violations.push(violation("package_unpublished", `${PACKAGE} has no published versions`));
+      violations.push(violation("package_unpublished", `${packageName} has no published versions`));
       return { expected: null, notes, violations };
     }
     // A coordinate that has never been released through this machinery cannot satisfy a policy
@@ -308,7 +343,7 @@ export function expectedTagState({ declaration, versions, observedTags, destiny 
     // version, so the check re-arms by itself at the first real release.
     if (isNameReservingPlaceholder({ versions, observedTags, destiny })) {
       notes.push(
-        `${PACKAGE} holds only the name-reserving placeholder ${versions[0]} with no next tag; no release transaction has occurred on this coordinate`,
+        `${packageName} holds only the name-reserving placeholder ${versions[0]} with no next tag; no release transaction has occurred on this coordinate`,
       );
       return { expected: null, notes, violations };
     }
@@ -319,7 +354,7 @@ export function expectedTagState({ declaration, versions, observedTags, destiny 
       const restLatest = newestOf(eligibleFor(destiny, versions, "latest"));
       const restNext = newestOf(eligibleFor(destiny, versions, "next"));
       if (!restLatest) {
-        violations.push(violation("no_latest_eligible_version", `no published version of ${PACKAGE} is eligible to hold dist-tag latest under the publication manifest`));
+        violations.push(violation("no_latest_eligible_version", `no published version of ${packageName} is eligible to hold dist-tag latest under the publication manifest`));
         return { expected: null, notes, violations };
       }
       if (restLatest !== restNext) {
@@ -331,7 +366,7 @@ export function expectedTagState({ declaration, versions, observedTags, destiny 
     // newer preview the manifest actually publishes to next.
     const newestStable = newestOf(eligibleFor(destiny, stable, "latest"));
     if (!newestStable) {
-      violations.push(violation("no_latest_eligible_version", `no published stable version of ${PACKAGE} is eligible to hold dist-tag latest under the publication manifest`));
+      violations.push(violation("no_latest_eligible_version", `no published stable version of ${packageName} is eligible to hold dist-tag latest under the publication manifest`));
       return { expected: null, notes, violations };
     }
     const observedNext = observedTags?.next;
@@ -532,15 +567,19 @@ export function checkSourceDrift(sourceVersion, versions, burnedVersions = []) {
  * The pure audit over one registry snapshot. Returns { violations, notes, facts }; empty
  * violations means the registry, phase declaration, and source agree with policy.
  */
-export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [], destiny = defaultDistTagDestiny(PACKAGE) }) {
+export function auditRegistryState({ declaration, sourceVersion, registry, burnedVersions = [], policy }) {
+  if (!policy || typeof policy.packageName !== "string" || !(policy.destiny instanceof Map) || !Array.isArray(policy.violations)) {
+    throw new Error("release audit requires package, selected tuple, and dist-tag destiny from one manifest snapshot");
+  }
+  const { packageName, selectedTuple, destiny, violations: policyViolations } = policy;
   const { distTags, versions, time } = registry;
-  const violations = [];
+  const violations = [...policyViolations];
   const notes = [];
 
   violations.push(...checkVersionScheme(versions, time, burnedVersions));
-  violations.push(...checkDeclarationConsistency(declaration, sourceVersion));
+  violations.push(...checkDeclarationConsistency(declaration, selectedTuple));
 
-  const tagState = expectedTagState({ declaration, versions, observedTags: distTags, destiny });
+  const tagState = expectedTagState({ declaration, versions, observedTags: distTags, destiny, packageName });
   violations.push(...tagState.violations);
   notes.push(...tagState.notes);
   if (tagState.expected) {
@@ -582,9 +621,13 @@ export function auditRegistryState({ declaration, sourceVersion, registry, burne
     violations,
     notes,
     facts: {
+      package: packageName,
       phase: declaration.phase,
       kind: declaration.kind,
       candidate: declaration.version,
+      selected_tuple: selectedTuple
+        ? { id: selectedTuple.id, package: selectedTuple.package, version: selectedTuple.version }
+        : null,
       source_version: sourceVersion,
       newest_published: newestOf(versions),
       dist_tags: distTags,
@@ -619,19 +662,27 @@ function arg(argv, flag) {
   return value;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2), { manifest: suppliedManifest, io = console } = {}) {
   const phaseFile = arg(argv, "--phase-file") ?? path.join(repoRoot, "release", "phase.json");
   const burnedFile = arg(argv, "--burned-file") ?? path.join(repoRoot, "release", "burned-versions.json");
   const registryJson = arg(argv, "--registry-json"); // replay hatch: audit a captured payload
-  const registryUrl = arg(argv, "--registry-url") ?? REGISTRY_URL; // test hatch for the network path
 
   let declaration;
   try {
     declaration = await readPhaseDeclaration(phaseFile);
   } catch (error) {
-    console.error(`release-audit: VIOLATION[phase_declaration]: ${error.message}`);
+    io.error(`release-audit: VIOLATION[phase_declaration]: ${error.message}`);
     return EXIT_VIOLATION;
   }
+  const manifest = suppliedManifest ?? await loadReleaseTargets();
+  const policy = releaseAuditPolicy(manifest, declaration);
+  if (policy.violations.length > 0) {
+    for (const item of policy.violations) io.error(`release-audit: VIOLATION[${item.code}]: ${item.message}`);
+    io.error(`release-audit: FAIL (${policy.violations.length} violation${policy.violations.length === 1 ? "" : "s"})`);
+    return EXIT_VIOLATION;
+  }
+  const sourceVersion = manifest.allowed_tuples["successor-stable"].version;
+  const registryUrl = arg(argv, "--registry-url") ?? registryUrlFor(policy.packageName); // test hatch for the network path
   let burnedVersions;
   try {
     let burnedRaw = null;
@@ -642,10 +693,9 @@ export async function main(argv = process.argv.slice(2)) {
     }
     burnedVersions = readBurnedDeclaration(burnedRaw);
   } catch (error) {
-    console.error(`release-audit: VIOLATION[burned_declaration]: ${error.message}`);
+    io.error(`release-audit: VIOLATION[burned_declaration]: ${error.message}`);
     return EXIT_VIOLATION;
   }
-  const cliManifest = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
 
   let registry;
   if (registryJson) {
@@ -654,20 +704,20 @@ export async function main(argv = process.argv.slice(2)) {
     registry = await fetchRegistryState({ url: registryUrl });
   }
   if (registry.missing) {
-    console.error(`release-audit: VIOLATION[package_missing]: registry has no packument for ${PACKAGE}`);
+    io.error(`release-audit: VIOLATION[package_missing]: registry has no packument for ${policy.packageName}`);
     return EXIT_VIOLATION;
   }
 
-  const result = auditRegistryState({ declaration, sourceVersion: cliManifest.version, registry, burnedVersions });
-  console.log(`release-audit: package ${PACKAGE}`);
-  console.log(`release-audit: facts ${JSON.stringify(result.facts)}`);
-  for (const note of result.notes) console.log(`release-audit: note: ${note}`);
+  const result = auditRegistryState({ declaration, sourceVersion, registry, burnedVersions, policy });
+  io.log(`release-audit: package ${policy.packageName}`);
+  io.log(`release-audit: facts ${JSON.stringify(result.facts)}`);
+  for (const note of result.notes) io.log(`release-audit: note: ${note}`);
   if (result.violations.length > 0) {
-    for (const v of result.violations) console.error(`release-audit: VIOLATION[${v.code}]: ${v.message}`);
-    console.error(`release-audit: FAIL (${result.violations.length} violation${result.violations.length === 1 ? "" : "s"})`);
+    for (const v of result.violations) io.error(`release-audit: VIOLATION[${v.code}]: ${v.message}`);
+    io.error(`release-audit: FAIL (${result.violations.length} violation${result.violations.length === 1 ? "" : "s"})`);
     return EXIT_VIOLATION;
   }
-  console.log("release-audit: PASS — registry dist-tags, version scheme, and source version agree with policy");
+  io.log("release-audit: PASS — registry dist-tags, version scheme, and source version agree with policy");
   return EXIT_PASS;
 }
 

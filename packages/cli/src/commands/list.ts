@@ -107,6 +107,20 @@ export interface ListCliDeps {
   autoPull: (dir?: string) => Promise<unknown>;
 }
 
+const LIST_OPTIONS = {
+  type: { type: "string" },
+  tag: { type: "string", multiple: true },
+  field: { type: "string", multiple: true },
+  prefix: { type: "string" },
+  fields: { type: "string" },
+  open: { type: "boolean" },
+  limit: { type: "string" },
+  dir: { type: "string" },
+  remote: { type: "string" },
+  json: { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
@@ -114,22 +128,11 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     () =>
       parseArgs({
         args: argv,
-        options: {
-          type: { type: "string" },
-          tag: { type: "string", multiple: true },
-          field: { type: "string", multiple: true },
-          prefix: { type: "string" },
-          fields: { type: "string" },
-          open: { type: "boolean" },
-          limit: { type: "string" },
-          dir: { type: "string" },
-          remote: { type: "string" },
-          json: { type: "boolean" },
-          help: { type: "boolean", short: "h" },
-        },
+        options: LIST_OPTIONS,
         allowPositionals: true,
       }),
     CLI_LEAVES.list,
+    { optionNames: Object.keys(LIST_OPTIONS) },
   );
   if (values.help) {
     stdout(LIST_USAGE);

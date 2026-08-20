@@ -11,6 +11,27 @@ import { compareStrictSemver } from "./strict-semver.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+test("checked-in CLI, lock workspace, and successor-stable versions agree", async () => {
+  const [manifest, cli, lock] = await Promise.all([
+    loadReleaseTargets(),
+    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "package-lock.json"), "utf8").then(JSON.parse),
+  ]);
+  const stable = manifest.allowed_tuples["successor-stable"];
+  assert.deepEqual(
+    {
+      cli: `${cli.name}@${cli.version}`,
+      lock: `${lock.packages["packages/cli"].name}@${lock.packages["packages/cli"].version}`,
+      stable: `${stable.package}@${stable.version}`,
+    },
+    {
+      cli: `${stable.package}@${stable.version}`,
+      lock: `${stable.package}@${stable.version}`,
+      stable: `${stable.package}@${stable.version}`,
+    },
+  );
+});
+
 test("parseResolveTargetArgs accepts a tag or target and defaults to the release manifest", () => {
   assert.deepEqual(parseResolveTargetArgs(["--target", "successor-stable", "--tag", "v0.1.0"]), {
     target: "successor-stable",
@@ -330,20 +351,25 @@ test("an explicit --manifest path still gets the burn ledger and checked-in CLI 
   const raw = JSON.parse(await readFile(path.join(repoRoot, "release", "targets.json"), "utf8"));
 
   const burnedLedger = JSON.parse(await readFile(path.join(repoRoot, "release", "burned-versions.json"), "utf8"));
-  const stableVersion = raw.allowed_tuples["successor-stable"].version;
-  const burnedVersion = burnedLedger.burned
-    .map((entry) => entry.version)
-    .find((version) => version.startsWith(`${stableVersion}-`));
-  assert.ok(burnedVersion, `fixture requires a burned prerelease of ${stableVersion}`);
+  const burnedVersion = "0.1.1-pre.1";
+  assert.ok(
+    burnedLedger.burned.some((entry) => entry.version === burnedVersion),
+    `fixture requires genuine burn ${burnedVersion}`,
+  );
   // The burned version is a valid same-line preview of the planned stable, so only the burn ledger
-  // rejects it. This keeps the burnedFile:null opt-out below reachable and proves the two guards are
-  // independent.
+  // rejects it when the unrelated checked-in CLI pin is explicitly disabled. This keeps the
+  // burnedFile:null opt-out below reachable and proves the two guards are independent.
   const burning = structuredClone(raw);
+  burning.allowed_tuples["successor-stable"].version = "0.1.1";
+  burning.allowed_tuples["successor-stable"].tag = "v0.1.1";
   burning.allowed_tuples["successor-preview"].version = burnedVersion;
   burning.allowed_tuples["successor-preview"].tag = `v${burnedVersion}`;
   const burningPath = path.join(scratch, "burning-targets.json");
   await writeFile(burningPath, JSON.stringify(burning, null, 2));
-  await assert.rejects(loadReleaseTargets(burningPath), new RegExp(`uses burned version ${burnedVersion.replace(/\./g, "\\.")}`));
+  await assert.rejects(
+    loadReleaseTargets(burningPath, { cliPackageFile: null }),
+    new RegExp(`uses burned version ${burnedVersion.replace(/\./g, "\\.")}`),
+  );
 
   const driftedCli = structuredClone(raw);
   driftedCli.allowed_tuples["successor-stable"].version = "9.9.9";
@@ -363,7 +389,7 @@ test("an explicit --manifest path still gets the burn ledger and checked-in CLI 
 
   // Opting out stays possible, but only by saying so at the call site.
   assert.equal(
-    (await loadReleaseTargets(burningPath, { burnedFile: null })).allowed_tuples["successor-preview"].version,
+    (await loadReleaseTargets(burningPath, { burnedFile: null, cliPackageFile: null })).allowed_tuples["successor-preview"].version,
     burnedVersion,
   );
 });

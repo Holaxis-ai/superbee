@@ -51,6 +51,8 @@ export interface LoadedRecipe {
   title: string;
   version: string;
   summary: string;
+  /** One-line user-outcome phrasing for session offers; the manifest's `offer`, else the title. */
+  offer: string;
   /** `"builtin:<name>"` or the resolved absolute directory — for receipts (+ future provenance). */
   source: string;
   /** Convention docs, ids under `conventions/`. `timestamp` is stamped at APPLY, not here. */
@@ -564,6 +566,7 @@ export function parseRecipeFiles(files: RecipeFile[], source: string): LoadResul
     title,
     version,
     summary,
+    offer: nonEmptyString(manifest.offer) || title,
     source,
     docs,
     pages,

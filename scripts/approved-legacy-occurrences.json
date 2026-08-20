@@ -428,7 +428,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 102
+      "line": 103
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -439,7 +439,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command recognition remains supported while Superbee is canonical",
-      "line": 114
+      "line": 115
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -450,7 +450,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the exact published @holaxis/aslite pre.3 OpenCode generator is reconstructed solely for migration ownership",
-      "line": 671
+      "line": 672
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -461,7 +461,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the published pre.3 migration recognizer accepts only the two bare command names that the old hook writer could emit",
-      "line": 678
+      "line": 679
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -472,7 +472,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the published pre.3 migration recognizer accepts only the two bare command names that the old hook writer could emit",
-      "line": 678
+      "line": 679
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -483,7 +483,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the published pre.3 migration recognizer accepts only the canonical absolute old-package entry path",
-      "line": 681
+      "line": 682
     },
     {
       "file": "packages/cli/src/commands/hook.ts",
@@ -494,7 +494,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the published pre.3 migration recognizer accepts only the canonical absolute old-package entry path",
-      "line": 681
+      "line": 682
     },
     {
       "file": "packages/cli/src/mcp-install-targets.ts",
@@ -549,7 +549,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 88
+      "line": 89
     },
     {
       "file": "packages/cli/src/commands/skill.ts",
@@ -560,7 +560,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command and installer recognition remain supported while Superbee is canonical",
-      "line": 89
+      "line": 90
     },
     {
       "file": "packages/cli/src/commands/skill.ts",
@@ -571,7 +571,7 @@
       "treatment": "preserve-as-explicit-compatibility",
       "owner": "cli-policy",
       "reason": "legacy command and installer recognition remain supported while Superbee is canonical",
-      "line": 113
+      "line": 114
     },
     {
       "file": "packages/cli/src/commands/skill.ts",
@@ -582,7 +582,7 @@
       "treatment": "preserve-for-cross-version-compatibility",
       "owner": "compatibility-policy",
       "reason": "existing bundles and mixed-version clients depend on this stable machine-readable identifier",
-      "line": 115
+      "line": 116
     },
     {
       "file": "packages/cli/src/commands/sync.ts",
