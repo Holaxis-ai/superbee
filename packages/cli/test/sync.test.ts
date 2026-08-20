@@ -88,6 +88,16 @@ async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
   }
 }
 
+async function inDir<T>(dir: string, run: () => Promise<T>): Promise<T> {
+  const original = process.cwd();
+  process.chdir(dir);
+  try {
+    return await run();
+  } finally {
+    process.chdir(original);
+  }
+}
+
 /** Capture everything `sync()` writes to its injected stdout, joined as one string. */
 function captureStdout(): { stdout: (s: string) => void; text: () => string } {
   const chunks: string[] = [];
@@ -133,6 +143,75 @@ async function cliDocWrite(boardDir: string, id: string, args: string[]): Promis
     readStdin: async () => undefined,
   });
 }
+
+test("bare binding-selected sync commits only the proven private board owner", async () => {
+  const topology = await makeTwoCloneTopology();
+  const homes = await tempHomes(1);
+  try {
+    await writeFile(
+      path.join(topology.a.root, ".superbee.json"),
+      JSON.stringify({ bundle: topology.b.board }),
+    );
+    await writeBoardDoc(topology.b, "tasks/bound-owner", {
+      frontmatter: { type: "Task", title: "Bound owner", actor: "private-owner" },
+      body: "# Bound owner\n",
+    });
+    const publicHead = boardHead(topology.a);
+
+    const result = await inDir(topology.a.root, () => runSync(homes.homes[0]!, []));
+    assert.equal(result.err, undefined, result.err?.message);
+    assert.notEqual(boardHead(topology.b), publicHead, "the private board received the sync commit");
+    assert.equal(boardHead(topology.a), publicHead, "the public checkout's stale board was never selected");
+    assert.match(result.out, /committed: 1/);
+  } finally {
+    await topology.cleanup();
+    await homes.cleanup();
+  }
+});
+
+test("plain bare binding remains a selected local bundle and never probes either board", async () => {
+  const topology = await makeTwoCloneTopology();
+  const homes = await tempHomes(1);
+  try {
+    const invalid = path.join(topology.b.root, "not-a-board");
+    await mkdir(invalid);
+    await writeFile(path.join(invalid, "index.md"), "---\nokf_version: 0.2\n---\n");
+    await writeFile(path.join(topology.a.root, ".superbee.json"), JSON.stringify({ bundle: invalid }));
+    const publicHead = boardHead(topology.a);
+
+    const result = await inDir(topology.a.root, () => runSync(homes.homes[0]!, []));
+    assert.equal(result.err, undefined, result.err?.message);
+    assert.match(result.out, /nothing to sync/);
+    assert.equal(boardHead(topology.a), publicHead, "plain binding never falls back to public sync");
+  } finally {
+    await topology.cleanup();
+    await homes.cleanup();
+  }
+});
+
+test("bare binding-selected show-incoming reads the private board ref", async () => {
+  const topology = await makeTwoCloneTopology();
+  const homes = await tempHomes(1);
+  try {
+    await writeFile(path.join(topology.a.root, ".superbee.json"), JSON.stringify({ bundle: topology.b.board }));
+    await writeBoardDoc(topology.b, "tasks/private-incoming", {
+      frontmatter: { type: "Task", title: "Private incoming", actor: "private-owner" },
+      body: "# Private incoming\n",
+    });
+    commitBoard(topology.b, "board: private incoming");
+    pushBoard(topology.b);
+    git(topology.b.board, ["fetch", "origin"]);
+    const publicHead = boardHead(topology.a);
+
+    const result = await inDir(topology.a.root, () => runSync(homes.homes[0]!, ["--show-incoming", "tasks/private-incoming"]));
+    assert.equal(result.err, undefined, result.err?.message);
+    assert.match(result.out, /id: tasks\/private-incoming/);
+    assert.equal(boardHead(topology.a), publicHead, "show-incoming never retargeted to the public board");
+  } finally {
+    await topology.cleanup();
+    await homes.cleanup();
+  }
+});
 
 // ── pure-function unit tests ───────────────────────────────────────────────────
 

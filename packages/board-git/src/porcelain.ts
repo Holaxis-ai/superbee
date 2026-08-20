@@ -461,7 +461,7 @@ export function worktreeRootResolvesForOwner(boardPath: string, ownerTop: string
  * to accept a wedged-mid-rebase worktree (detached HEAD, never literally "on branch board") WITHOUT
  * also accepting an unrelated worktree that merely happens to be mid-rebase on some OTHER branch.
  */
-function rebaseWasFromBoardBranch(boardPath: string): boolean {
+export function rebaseWasFromBoardBranch(boardPath: string): boolean {
   for (const state of ["rebase-merge", "rebase-apply"]) {
     const headNamePath = path.join(worktreeGitPath(boardPath, state), "head-name");
     if (!existsSync(headNamePath)) continue;

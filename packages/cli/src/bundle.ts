@@ -46,7 +46,7 @@
 // `getApiKeyForOrigin`). Neither is required: the reference `serve()` ignores the
 // `Authorization` header entirely (no auth enforced there), so an ungated local bundle works
 // exactly as before with no key configured.
-import { BUNDLE_DIR, BUNDLE_DIRS, LEGACY_BUNDLE_DIR } from "@superbee/board-git";
+import { BUNDLE_DIR, BUNDLE_DIRS, LEGACY_BUNDLE_DIR, resolveBundleKey } from "@superbee/board-git";
 import { constants, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import {
@@ -67,6 +67,7 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "./private-state-bundle-boundary.js";
+import { type BoundBoardOwner, validateBoundBoardOwner } from "./bound-board-owner.js";
 import {
   LEGACY_API_KEY_ENV,
   SUPERBEE_API_KEY_ENV,
@@ -220,6 +221,48 @@ export interface LocalBundleTarget {
   selectedBy: LocalBundleSelection;
   bindingFile?: string;
 }
+
+/** A physical directory receipt frozen while classifying a symlinked plain binding. */
+export interface DirectoryIdentity {
+  /** The canonical directory path the selected lexical route resolved to. */
+  canonicalRoot: string;
+  /** The filesystem device owning the directory at classification time. */
+  dev: number;
+  /** The filesystem inode identifying the directory at classification time. */
+  ino: number;
+}
+
+/**
+ * A local selection carries no authority by default.  Only a proven linked board worktree gets
+ * the immutable owner capability needed for Git and private-state effects.
+ */
+export type ResolvedLocalRoute =
+  | { readonly kind: "unbound"; readonly target: LocalBundleTarget; readonly bundle: Bundle }
+  | {
+      readonly kind: "bound-local";
+      readonly target: LocalBundleTarget;
+      readonly bundle: Bundle;
+      readonly identity: DirectoryIdentity;
+    }
+  | {
+      readonly kind: "bound-board";
+      readonly readiness: "ready";
+      readonly target: LocalBundleTarget;
+      readonly bundle: Bundle;
+      readonly owner: BoundBoardOwner;
+    }
+  | {
+      readonly kind: "bound-board";
+      readonly readiness: "recovery-pending";
+      readonly target: LocalBundleTarget;
+      readonly bundle: Bundle;
+      readonly owner: BoundBoardOwner;
+    };
+
+/** The post-persist board decision is total and computed before a mutation persists. */
+export type BoardAttribution =
+  | { readonly kind: "none" }
+  | { readonly kind: "board"; readonly stateKey: string };
 
 interface BindingUriIntent {
   detail: string;
@@ -1320,6 +1363,183 @@ export async function resolveLocalBundleTarget(
   return { root: discovered, canonicalRoot, selectedBy: "discovery" };
 }
 
+function bindingPathConflict(target: LocalBundleTarget, message: string): CliError {
+  return new CliError("CONFLICT", `project binding cannot be used: ${message}`, {
+    details: { binding_file: target.bindingFile, binding_target: target.root, validation_stage: "lexical-path" },
+  });
+}
+
+function strictlyLexicalAncestor(ancestor: string, descendant: string): boolean {
+  const relative = path.relative(ancestor, descendant);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/** macOS exposes these physical paths through stable lexical aliases. Never derive aliases from a binding target. */
+function lexicalBindingAnchors(anchor: string): string[] {
+  const anchors = [anchor];
+  if (process.platform !== "darwin") return anchors;
+  for (const [physical, lexical] of [
+    [path.join(path.sep, "private", "var"), path.join(path.sep, "var")],
+    [path.join(path.sep, "private", "tmp"), path.join(path.sep, "tmp")],
+  ] as const) {
+    if (anchor === physical || anchor.startsWith(`${physical}${path.sep}`)) {
+      anchors.push(`${lexical}${anchor.slice(physical.length)}`);
+    }
+  }
+  return anchors;
+}
+
+/**
+ * Inspect a binding's lexical route before any bundle open, summary, Git, or private-state
+ * operation can follow it. Links strictly before the binding-file anchor are outside the route;
+ * all remaining links are part of the declared route, even when they resolve to an ancestor.
+ */
+async function bindingRouteTraversesSymlink(target: LocalBundleTarget): Promise<boolean> {
+  if (target.selectedBy !== "project-binding") return false;
+  if (!target.bindingFile) throw bindingPathConflict(target, "the selected binding has no source path");
+
+  const lexicalAnchor = path.resolve(path.dirname(target.bindingFile));
+  const lexicalAnchors = lexicalBindingAnchors(lexicalAnchor);
+  const targetRoot = path.resolve(target.root);
+  const targetParts = targetRoot.split(path.sep).filter(Boolean);
+
+  let traversesBindingSymlink = false;
+  let current = path.parse(targetRoot).root;
+  for (const segment of targetParts) {
+    current = path.join(current, segment);
+    let info;
+    try {
+      info = await fs.lstat(current);
+    } catch {
+      throw bindingPathConflict(target, `the lexical path component ${current} is unavailable`);
+    }
+    if (info.isSymbolicLink()) {
+      // A platform alias such as macOS's /var -> /private/var can occur strictly before the
+      // binding anchor. Exception eligibility is lexical, never based on where the link resolves:
+      // a descendant link that resolves back to an ancestor is still part of the binding route.
+      const strictlyBeforeAnchor = lexicalAnchors.some((anchor) => strictlyLexicalAncestor(current, anchor));
+      if (!strictlyBeforeAnchor) traversesBindingSymlink = true;
+    }
+  }
+
+  return traversesBindingSymlink;
+}
+
+async function captureDirectoryIdentity(target: LocalBundleTarget): Promise<DirectoryIdentity> {
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await fs.realpath(target.root);
+  } catch {
+    throw bindingPathConflict(target, "the selected target is unavailable");
+  }
+  assertBundleOutsidePrivateState(path.resolve(target.root));
+  assertBundleOutsidePrivateState(canonicalRoot);
+  if (canonicalRoot !== target.canonicalRoot) {
+    throw bindingPathConflict(target, "the selected target changed while its lexical path was validated");
+  }
+  let stat: Stats;
+  try {
+    stat = await fs.stat(canonicalRoot);
+  } catch {
+    throw bindingPathConflict(target, "the selected target is unavailable");
+  }
+  if (!stat.isDirectory()) throw bindingPathConflict(target, "the selected target is not a directory");
+  return { canonicalRoot, dev: stat.dev, ino: stat.ino };
+}
+
+async function hasOwnGitWorktreeSignature(root: string): Promise<boolean> {
+  try {
+    await fs.lstat(path.join(root, ".git"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A symlinked conventional target is never allowed to become a board route. This is an FS-only
+ * refusal, intentionally before the owner validator can open Git or private state.
+ */
+async function assertSymlinkedTargetIsNotBoardShaped(
+  target: LocalBundleTarget,
+  identity: DirectoryIdentity,
+): Promise<void> {
+  if (!BUNDLE_DIRS.includes(path.basename(identity.canonicalRoot) as (typeof BUNDLE_DIRS)[number])) return;
+  if (await hasOwnGitWorktreeSignature(identity.canonicalRoot)) {
+    throw bindingPathConflict(target, "the symlinked target has a conventional board-worktree signature");
+  }
+}
+
+/** Revalidate the frozen physical target immediately before a bound-local engine operation. */
+export async function assertResolvedLocalRouteIdentity(route: ResolvedLocalRoute): Promise<void> {
+  if (route.kind !== "bound-local") return;
+  let canonicalRoot: string;
+  try {
+    canonicalRoot = await fs.realpath(route.target.root);
+  } catch {
+    throw bindingPathConflict(route.target, "the selected target is unavailable");
+  }
+  assertBundleOutsidePrivateState(path.resolve(route.target.root));
+  assertBundleOutsidePrivateState(canonicalRoot);
+  if (canonicalRoot !== route.identity.canonicalRoot) {
+    throw bindingPathConflict(route.target, "the selected target changed after classification");
+  }
+  let stat: Stats;
+  try {
+    stat = await fs.stat(canonicalRoot);
+  } catch {
+    throw bindingPathConflict(route.target, "the selected target is unavailable");
+  }
+  if (stat.dev !== route.identity.dev || stat.ino !== route.identity.ino) {
+    throw bindingPathConflict(route.target, "the selected target identity changed after classification");
+  }
+}
+
+/** Resolve one selected local bundle and, for bindings only, its possible frozen board capability. */
+export async function resolveLocalBundleRoute(
+  dirFlag: string | undefined,
+  startDir: string = process.cwd(),
+): Promise<ResolvedLocalRoute> {
+  const target = await resolveLocalBundleTarget(dirFlag, startDir);
+  const bundle: Bundle = { root: target.root };
+  if (target.selectedBy !== "project-binding") return { kind: "unbound", target, bundle };
+
+  const traversesBindingSymlink = await bindingRouteTraversesSymlink(target);
+  const identity = await captureDirectoryIdentity(target);
+  if (traversesBindingSymlink) {
+    await assertSymlinkedTargetIsNotBoardShaped(target, identity);
+    const route: ResolvedLocalRoute = {
+      kind: "bound-local",
+      target,
+      bundle: { root: identity.canonicalRoot },
+      identity,
+    };
+    await assertResolvedLocalRouteIdentity(route);
+    return route;
+  }
+  const board = await validateBoundBoardOwner(target);
+  if (board) return { kind: "bound-board", readiness: board.readiness, target, bundle, owner: board.owner };
+  const route: ResolvedLocalRoute = { kind: "bound-local", target, bundle, identity };
+  await assertResolvedLocalRouteIdentity(route);
+  return route;
+}
+
+/** Compute mutation attribution before persistence; post-persist code receives only this value. */
+export function boardAttributionForRoute(route: ResolvedLocalRoute): BoardAttribution {
+  if (route.kind === "bound-board") {
+    return route.readiness === "ready" ? { kind: "board", stateKey: route.owner.stateKey } : { kind: "none" };
+  }
+  if (route.kind === "bound-local") return { kind: "none" };
+  if (!BUNDLE_DIRS.includes(path.basename(route.bundle.root) as (typeof BUNDLE_DIRS)[number])) return { kind: "none" };
+  try {
+    return { kind: "board", stateKey: resolveBundleKey(route.bundle.root) };
+  } catch {
+    // Unbound conventional bundles retain historic self-attribution only when Git is available.
+    // Attribution is optional post-persist bookkeeping, never an authority to make a local write fail.
+    return { kind: "none" };
+  }
+}
+
 /**
  * Resolve the {@link Bundle} an OKF command should operate on: `--remote <url>` wins (mutually
  * exclusive with `--dir`, checked here — a USAGE error, exit 2, if both are given); otherwise the
@@ -1345,6 +1565,7 @@ export async function openBundle(dirFlag: string | undefined, remoteFlag?: strin
     }
     return openRemoteBundle(remoteFlag);
   }
-  const target = await resolveLocalBundleTarget(dirFlag);
-  return { root: target.root };
+  const route = await resolveLocalBundleRoute(dirFlag);
+  await assertResolvedLocalRouteIdentity(route);
+  return route.bundle;
 }

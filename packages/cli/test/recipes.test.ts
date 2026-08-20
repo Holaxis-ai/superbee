@@ -1000,6 +1000,61 @@ test("recipe add <path>: idempotent — second add of the SAME external recipe i
   }
 });
 
+test("recipe add <path>: a version bump with changed convention content reports actionable source drift", async () => {
+  const root = await tempDir();
+  const bundleDir = path.join(root, "bundle");
+  const recipeDir = path.join(root, "recipe");
+  const conventionPath = path.join(recipeDir, "conventions", "widget.md");
+  const manifest = (version: string) =>
+    `---\ntype: Recipe\nid: rtest\ntitle: RTest\nversion: ${version}\nsummary: test recipe\n---\n# RTest\n`;
+  const convention = (optional = false) =>
+    `---\ntype: Convention\ntitle: Widget\ngoverns: Widget\npath: widgets/\nfields:\n  required:\n    - title\n${optional ? "  optional:\n    - colour\n" : ""}---\n# Widget\n`;
+
+  try {
+    await initBundle(bundleDir);
+    await mkdir(path.dirname(conventionPath), { recursive: true });
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("1.0.0"), "utf8");
+    await writeFile(conventionPath, convention(), "utf8");
+
+    const first = await runJson(recipe, ["add", recipeDir, "--dir", bundleDir]);
+    assert.equal(first.changed, true);
+    const installedPath = path.join(bundleDir, "conventions", "widget.md");
+    const installedBefore = await readFile(installedPath, "utf8");
+
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("2.0.0"), "utf8");
+    await writeFile(conventionPath, convention(true), "utf8");
+
+    const second = await runJson(recipe, ["add", recipeDir, "--dir", bundleDir]);
+    assert.equal(second.recipe, "source differs");
+    assert.equal(second.version, "2.0.0");
+    assert.equal(second.changed, false);
+    assert.deepEqual(second.counts, {
+      created: 0,
+      existing: 0,
+      legacy_present: 0,
+      migration_required: 0,
+      source_differs: 1,
+    });
+    assert.deepEqual(second.docs, [{
+      id: "conventions/widget",
+      changed: false,
+      source_differs: true,
+    }]);
+    const warnings = second.warnings as Array<Record<string, unknown>>;
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0]!.code, "RECIPE_SOURCE_DIFFERS");
+    assert.match(String(warnings[0]!.message), /conventions\/widget\.md/);
+    assert.match(String(warnings[0]!.message), /superbee promote/);
+
+    assert.equal(await readFile(installedPath, "utf8"), installedBefore);
+    const widget = (await loadKinds({ root: bundleDir })).kinds.get("Widget");
+    assert.ok(widget);
+    assert.deepEqual(widget.fields.optional, []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("portable Review Workflow: clean-room install carries Kinds, a View, and its authoring Reference but zero Review Request instances", async () => {
   const dir = await tempDir();
   try {
@@ -1918,7 +1973,13 @@ test("legacy-alias awareness: an INCOMPLETE legacy pair (registry doc without it
     // Tally: page pair + reference created; review-request convention existing; view convention
     // still blocked by the unmigrated conventions/page (the convention probe is independent of
     // the pair, and an unmigrated occupant reports migration_required, never legacy_present).
-    assert.deepEqual(reapply.counts, { created: 2, existing: 1, legacy_present: 0, migration_required: 1 });
+    assert.deepEqual(reapply.counts, {
+      created: 2,
+      existing: 0,
+      legacy_present: 0,
+      migration_required: 1,
+      source_differs: 1,
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1940,7 +2001,13 @@ test("legacy-alias awareness: the mirror partial pair (blob without its registry
     const viewIds = (await query(bundle, { prefix: VIEW_REGISTRY_PREFIX })).map((d) => d.id);
     assert.deepEqual(viewIds, ["views-registry/review-workflow-reviews"]);
     assert.ok(await readBlob(bundle, "views/review-workflow/reviews.html"));
-    assert.deepEqual(reapply.counts, { created: 2, existing: 1, legacy_present: 0, migration_required: 1 });
+    assert.deepEqual(reapply.counts, {
+      created: 2,
+      existing: 0,
+      legacy_present: 0,
+      migration_required: 1,
+      source_differs: 1,
+    });
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
