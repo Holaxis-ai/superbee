@@ -94,8 +94,8 @@
     "successor-stable": {
       "target": "successor-stable",
       "package": "superbee",
-      "version": "0.1.1",
-      "tag": "v0.1.1",
+      "version": "0.1.2",
+      "tag": "v0.1.2",
       "outcome": "publish",
       "production": true,
       "publication": { "npm_tag": "next", "npm_promote_tag": "latest", "github_latest": true }
@@ -103,8 +103,8 @@
     "successor-preview": {
       "target": "successor-preview",
       "package": "superbee",
-      "version": "0.1.1-pre.3",
-      "tag": "v0.1.1-pre.3",
+      "version": "0.1.2-pre.1",
+      "tag": "v0.1.2-pre.1",
       "outcome": "publish",
       "production": true,
       "publication": { "npm_tag": "next", "npm_promote_tag": null, "github_latest": false }

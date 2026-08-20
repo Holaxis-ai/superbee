@@ -785,11 +785,12 @@ test("the COMMITTED burned-versions declaration parses and admits the current so
   // Fixture mirrors the live registry of the AUDITED package, per its own standing instruction to
   // update alongside real publishes. It modelled the pre-rename @holaxis/aslite line
   // (0.1.0-pre.1..pre.8); the audited package is now superbee, whose published set is the 0.0.1
-  // name-reserving placeholder plus 0.1.1-pre.2 (published 2026-08-16 through OIDC staging), with
+  // name-reserving placeholder, previews 0.1.1-pre.2 and 0.1.1-pre.3, and stable 0.1.1, with
   // 0.1.1-pre.1 burned.
-  const published = ["0.0.1", "0.1.1-pre.2"];
+  const published = ["0.0.1", "0.1.1-pre.2", "0.1.1-pre.3", "0.1.1"];
   const drift = checkSourceDrift(manifest.version, published, burned);
   assert.deepEqual(drift.violations, []);
+  assert.equal(drift.state, "staged-prep");
 });
 
 test("a declared burn fills the published pre.N contiguity hole; an undeclared hole still reds", () => {
