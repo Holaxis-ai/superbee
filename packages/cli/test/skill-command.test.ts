@@ -112,6 +112,8 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   const receipt = await runSkill(["install"], { cwd, executable });
   assert.equal(receipt.skill.action, "install");
   assert.equal(receipt.skill.changed, true);
+  assert.equal(receipt.skill.restart_required, true);
+  assert.deepEqual(receipt.skill.affected_hosts, ["claude_code", "codex"]);
   assert.equal(receipt.skill.version, RUNNING_VERSION);
 
   for (const host of [".claude", ".codex"]) {
@@ -151,6 +153,8 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   const before = treeSnapshot(path.join(cwd, ".claude"));
   const again = await runSkill(["install"], { cwd, executable });
   assert.equal(again.skill.changed, false);
+  assert.equal(again.skill.restart_required, false);
+  assert.deepEqual(again.skill.affected_hosts, []);
   assert.equal(again.skill.hosts.claude_code.changed, false);
   assert.equal(again.skill.hosts.codex.changed, false);
   assertSameTree(before, treeSnapshot(path.join(cwd, ".claude")));
@@ -310,6 +314,8 @@ test("hand-edited managed files: status reports stale, reinstall converges back 
   const receipt = await runSkill(["install"], { cwd, executable });
   assert.equal(receipt.skill.hosts.claude_code.changed, true);
   assert.equal(receipt.skill.hosts.codex.changed, false);
+  assert.equal(receipt.skill.restart_required, true);
+  assert.deepEqual(receipt.skill.affected_hosts, ["claude_code"]);
   assert.equal(readFileSync(edited, "utf8"), ASSET_FILES["SKILL.md"]);
   const after = await runSkill(["status"], { cwd, executable });
   assert.equal(after.skill.hosts.claude_code.state, "installed");

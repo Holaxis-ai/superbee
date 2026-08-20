@@ -70,6 +70,7 @@ import {
   type PersistentInstallAuthority,
 } from "../install-authority.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
+import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
 
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
 
@@ -1189,9 +1190,13 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       });
     }
     const command = launch.command;
+    const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     // Claude Code settings.json + Codex hooks.json: OUR SDK-modeled pure updater, recognizing
     // both managed command forms (see the module header for why the SDK's marker cannot).
-    for (const target of [targets.claudeSettings, targets.codexHooks]) {
+    for (const [host, target] of [
+      ["claude_code", targets.claudeSettings],
+      ["codex", targets.codexHooks],
+    ] as const) {
       try {
         const read = readSettingsForInstall(target);
         if (!read.ok) {
@@ -1203,6 +1208,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
           timeoutSeconds: HOOK_TIMEOUT_SECONDS,
         });
         if (changed) writeSettings(target, updated);
+        changedByHost[host] = changed;
       } catch (err) {
         failTarget(target, err);
       }
@@ -1213,6 +1219,7 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       const current = existsSync(codexConfigPath) ? readFileSync(codexConfigPath, "utf8") : "";
       const [updated, changed] = computeCodexConfigUpdate(current);
       if (changed) atomicWriteFileSync(codexConfigPath, updated);
+      changedByHost.codex = changedByHost.codex === true || changed;
     } catch (err) {
       failTarget(codexConfigPath, err);
     }
@@ -1223,8 +1230,9 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
       if (currentStatus.compatibility.state === "unmanaged") {
         refusals.push(`${collapseHomeDirectory(targets.opencodePlugin)}: refusing to overwrite unmanaged OpenCode plugin`);
       } else {
-        installOpenCodePlugin(targets.opencodePlugin, next);
-        removeOwnedOpenCodePlugin(targets.legacyOpencodePlugin);
+        const installed = installOpenCodePlugin(targets.opencodePlugin, next);
+        const removedLegacy = removeOwnedOpenCodePlugin(targets.legacyOpencodePlugin);
+        changedByHost.opencode = installed || removedLegacy;
       }
     } catch (err) {
       failTarget(targets.opencodePlugin, err);
@@ -1239,11 +1247,13 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         },
       );
     }
+    const lifecycle = integrationChangeReceipt(changedByHost);
     const out: Record<string, unknown> = {
       action: "install",
       scope,
       installed: true,
       command,
+      ...lifecycle,
       targets: {
         claude_code: collapseHomeDirectory(targets.claudeSettings),
         codex: collapseHomeDirectory(targets.codexHooks),
