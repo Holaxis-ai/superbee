@@ -563,8 +563,10 @@ function renderNpmPathSection(): string[] {
   lines.push(`Every example below assumes the \`${NPM_BIN}\` bin is on PATH. If it is not:`);
   lines.push("");
   lines.push(`- \`npm install -g ${NPM_COORDINATE}\` puts the canonical \`${NPM_BIN}\` command on PATH.`);
-  lines.push(`- \`${NPX} …\` runs any command below with no install at all — swap the leading \`${NPM_BIN}\``);
-  lines.push("  for that prefix and the rest of the line runs unchanged.");
+  lines.push(`- \`${NPX} …\` runs bundle commands below with no install at all — swap the leading \`${NPM_BIN}\``);
+  lines.push("  for that prefix and the rest of the line runs unchanged. Persistent host");
+  lines.push("  integrations (`hook install`, `skill install`, `mcp install`) still require the");
+  lines.push("  global install.");
   lines.push("");
   return lines;
 }

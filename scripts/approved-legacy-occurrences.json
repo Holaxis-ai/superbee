@@ -266,28 +266,6 @@
       "line": 1330
     },
     {
-      "file": "packages/cli/README.md",
-      "line_sha256": "04a376e61e0d357a5a718920d7df78ace5e2b02d1dec58ce0603d530a18571fd",
-      "literal": "aslite",
-      "ordinal": 0,
-      "category": "legacy-command-compatibility",
-      "treatment": "preserve-as-read-only-migration-candidate",
-      "owner": "cli-policy",
-      "reason": "legacy invocation recognition remains migration-only while Superbee is canonical",
-      "line": 6
-    },
-    {
-      "file": "packages/cli/README.md",
-      "line_sha256": "55dc60ae4f52a3b04210f8f0b8b4f90f855ef40d348dcf5d66964d7f6c2b132f",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "legacy-command-compatibility",
-      "treatment": "preserve-as-read-only-migration-candidate",
-      "owner": "cli-policy",
-      "reason": "legacy invocation recognition remains migration-only while Superbee is canonical",
-      "line": 7
-    },
-    {
       "file": "packages/cli/references/recipes/review-workflow/references/view-authoring-v0.md",
       "line_sha256": "273f77534b922f7f563c853fe37bc1a9bd7d9890bb765f30e94fd63b64f4ee39",
       "literal": "aslite",
@@ -934,7 +912,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 647
+      "line": 649
     },
     {
       "file": "packages/cli/src/skill-render.ts",
@@ -945,7 +923,7 @@
       "treatment": "preserve-as-read-only-migration-candidate",
       "owner": "cli-policy",
       "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 647
+      "line": 649
     },
     {
       "file": "packages/cli/src/update-orientation.ts",
