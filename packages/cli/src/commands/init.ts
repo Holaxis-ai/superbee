@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
-import { assertPlainInitTarget, withCreateOnlyTarget } from "../bundle.js";
+import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -104,6 +104,20 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     );
   }
 
+  // `init` is write-first. A plain binding names its selected bundle, while only a proven private
+  // board refuses bare init before a write can reach the invoking public checkout.
+  let boundRoute: Awaited<ReturnType<typeof resolveLocalBundleRoute>> | undefined;
+  if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
+    boundRoute = await resolveLocalBundleRoute(undefined);
+    if (boundRoute.kind === "bound-board") {
+      throw new CliError(
+        "CONFLICT",
+        "a project binding already selects a private board; bare init refuses before writing",
+        { help: `${cliInvocation()} sync --dir ${shellArg(boundRoute.owner.ownerRoot)}` },
+      );
+    }
+  }
+
   // Recipe RESOLUTION is hoisted before any write: a recipe typo must fail at exit 2
   // with NOTHING created — under --create-only the old ordering left a bundle behind and wedged
   // the retry at exit 5. Resolution needs no bundle; APPLICATION still runs after create.
@@ -132,8 +146,10 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   // bundle exists. Plain init keeps its historical open-or-create path unchanged.
   let root: string;
   let bundle;
+  const initDir = boundRoute?.kind === "bound-local" ? boundRoute.bundle.root : values.dir;
   if (createOnly) {
-    const result = await withCreateOnlyTarget(values.dir, (physicalTarget) =>
+    if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
+    const result = await withCreateOnlyTarget(initDir, (physicalTarget) =>
       (deps.initBundleImpl ?? initBundle)(physicalTarget, {
         okfVersion,
         expectNew: true,
@@ -142,7 +158,8 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     root = result.root;
     bundle = result.value;
   } else {
-    root = await assertPlainInitTarget(values.dir);
+    if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
+    root = await assertPlainInitTarget(initDir);
     bundle = await (deps.initBundleImpl ?? initBundle)(root, {
       okfVersion,
     });
@@ -151,6 +168,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   let selectedRecipeKinds: string[] = [];
   let warnings: unknown[] = [];
   if (loadedRecipe?.ok) {
+    if (boundRoute) await assertResolvedLocalRouteIdentity(boundRoute);
     const result = await applyRecipe(bundle, loadedRecipe.recipe);
     recipeApplied = result.id;
     selectedRecipeKinds = loadedRecipe.recipe.governs;

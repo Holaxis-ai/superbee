@@ -72,6 +72,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
 import { assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
+import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../bundle.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
 export const SESSION_START_PULL_BUDGET_MS = 7_000;
@@ -149,13 +150,39 @@ export async function sessionStartPull(
     // it can only report while `boardPath` stays undefined. The throw lands in this function's
     // fail-soft catch (its documented posture for every "could not verify the board" outcome).
     assertSearchDirOutsidePrivateState(path.resolve(dir ?? process.cwd()));
-    const startDir = retargetBoardInterior(dir ?? process.cwd());
+    const route: ResolvedLocalRoute | undefined = dir === undefined && await resolveProjectBinding(process.cwd())
+      ? await resolveLocalBundleRoute(undefined)
+      : undefined;
+    if (route?.kind === "bound-board" && route.readiness !== "ready") return undefined;
+    const owner = route?.kind === "bound-board" ? route.owner : undefined;
+    const startDir = owner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(dir ?? process.cwd()));
+
+    // A plain binding selects documents only. It cannot direct a session-start Git or state probe
+    // at either its enclosing project or the invoking checkout.
+    if (route?.kind === "bound-local") return undefined;
 
     // Budget guard at the first network boundary: retargetBoardInterior above
     // already spent local-git time, and a tiny/zero injected budget can be spent at entry — never
     // hand a decayed slice to the provision fetch. (The residual guard-to-spawn decay race is
     // closed at the runGitBytes floor — see the module header.)
     if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true };
+
+    if (owner) {
+      // A bound session never classifies/provisions from the public checkout. The sole board
+      // candidate, state key, and fetch cwd are the owner capability frozen above.
+      await defaultSyncStore.refreshMarker(owner.stateKey);
+      if (remaining() < MIN_USEFUL_BUDGET_MS) return { offline: true, boardPath: owner.bundleRoot };
+      const pulled = await pullBoardAndRecord(owner.bundleRoot, owner.stateKey, {
+        fetchTimeoutMs: remaining(),
+        connectTimeoutSeconds: SESSION_START_CONNECT_TIMEOUT_SECONDS,
+      });
+      if (pulled.swallowed !== undefined) {
+        return OFFLINE_REASONS.has(pulled.swallowed)
+          ? { offline: true, boardPath: owner.bundleRoot }
+          : { offline: false, boardPath: owner.bundleRoot, notes: [syncOutcomeLine("line.session-start.pull-skipped", { reason: pulled.swallowed, inv: cliInvocation() })] };
+      }
+      return { offline: false, refreshed: true, boardPath: owner.bundleRoot };
+    }
 
     // CHANNEL DETECTION (board-git PR C), computed fresh at THIS pull's own resolution point.
     // Routing mirrors sync's: only a positively detected `in-tree` channel leaves today's flow —

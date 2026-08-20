@@ -15,7 +15,7 @@ import {
 } from "@superbee/board-git";
 
 import { defaultSyncStore } from "./cursor.js";
-import { findBundleRoot } from "./bundle.js";
+import { findBundleRoot, resolveLocalBundleRoute, type ResolvedLocalRoute } from "./bundle.js";
 
 export {
   AUTO_PULL_BUDGET_MS,
@@ -30,7 +30,44 @@ export {
 } from "@superbee/board-git";
 
 /** See the package's `maybeAutoPull` — this binds the CLI's store + bundle discovery. */
-export async function maybeAutoPull(dir?: string, opts: AutoPullOptions = {}) {
+export async function maybeAutoPull(
+  dir?: string,
+  opts: AutoPullOptions & { route?: ResolvedLocalRoute } = {},
+) {
+  const route = opts.route;
+  if (route?.kind === "bound-board") {
+    if (route.readiness !== "ready") return "no-board";
+    return maybeAutoPullWith(
+      { store: defaultSyncStore, resolveBundleRoot: async () => route.owner.bundleRoot },
+      route.owner.bundleRoot,
+      opts,
+    );
+  }
+  if (route?.kind === "bound-local") {
+    return "no-board";
+  }
+  // A bare binding is resolved once before board-git's candidate walk can inspect a cwd-derived
+  // checkout.  A plain binding remains an ordinary selected bundle; only a proven owner receives
+  // private-board routing. Resolution failure preserves autopull's fail-soft contract.
+  if (dir === undefined) {
+    try {
+      const resolved = await resolveLocalBundleRoute(undefined);
+      if (resolved.kind === "bound-board") {
+        if (resolved.readiness !== "ready") return "no-board";
+        return maybeAutoPullWith(
+          { store: defaultSyncStore, resolveBundleRoot: async () => resolved.owner.bundleRoot },
+          resolved.owner.bundleRoot,
+          opts,
+        );
+      }
+      if (resolved.kind === "bound-local") {
+        return "no-board";
+      }
+    } catch {
+      // Preserve autopull's fail-soft contract; the command boundary renders any binding error.
+      return "error";
+    }
+  }
   return maybeAutoPullWith({ store: defaultSyncStore, resolveBundleRoot: findBundleRoot }, dir, opts);
 }
 

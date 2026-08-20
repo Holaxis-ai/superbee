@@ -28,7 +28,7 @@ import {
   type Bundle,
   type Frontmatter,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag, type BoardAttribution } from "../bundle.js";
 import { mutateDoc } from "../mutate.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
@@ -150,7 +150,11 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   const actor = resolveActor(values.actor as string | undefined, {
     help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
   });
-  const bundle: Bundle = await openBundle(dir, await resolveRemoteFlag(remoteUrl, dir));
+  const remote = await resolveRemoteFlag(remoteUrl, dir);
+  const route = remote === undefined ? await resolveLocalBundleRoute(dir) : undefined;
+  const bundle: Bundle = route?.bundle ?? await openBundle(dir, remote);
+  const attribution: BoardAttribution = route ? boardAttributionForRoute(route) : { kind: "none" };
+  if (route) await assertResolvedLocalRouteIdentity(route);
   const registry = await loadKinds(bundle);
 
   // Validate --supersedes UPFRONT, before any write: it must be an existing artifacts/ Artifact. This
@@ -204,6 +208,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   // 1. Promote the bytes (expect-absent create — the blob key is fresh by construction of the id).
   let entryVersion: string;
   try {
+    if (route) await assertResolvedLocalRouteIdentity(route);
     entryVersion = await writeBlob(bundle, entryKey, bytes, "text/html", { expectedVersion: null });
   } catch (err) {
     throw new CliError("RUNTIME", `could not write the artifact blob '${entryKey}': ${err instanceof Error ? err.message : String(err)}`);
@@ -215,6 +220,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   if (description) frontmatter.description = description;
   let createdId: string;
   try {
+    if (route) await assertResolvedLocalRouteIdentity(route);
     const result = await mutateDoc({
       bundle,
       id,
@@ -225,7 +231,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
       helpOnKindReject: `${cliInvocation()} kinds`,
       actor,
       persistActor: true,
-      onPersisted: boardPostPersistHook(bundle, actor),
+      onPersisted: boardPostPersistHook(attribution, actor),
       buildCandidate: (_existing, context) => ({
         frontmatter: {
           ...frontmatter,
@@ -259,6 +265,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   let supersedeNote: string | undefined;
   if (supersedes) {
     try {
+      if (route) await assertResolvedLocalRouteIdentity(route);
       await mutateDoc({
         bundle,
         id: supersedes,
@@ -269,7 +276,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
         helpOnKindReject: `${cliInvocation()} kinds`,
         actor,
         persistActor: true,
-        onPersisted: boardPostPersistHook(bundle, actor),
+        onPersisted: boardPostPersistHook(attribution, actor),
         buildCandidate: (existingDoc, context) => {
           // patch mode guarantees the target exists; narrow it so the required Frontmatter.type carries over.
           if (!existingDoc) throw new CliError("NOT_FOUND", `'${supersedes}' does not exist`);
