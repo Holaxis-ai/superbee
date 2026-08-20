@@ -15,6 +15,23 @@ import type { MutateDocumentOptions } from "../src/document-mutation.js";
 import type { Bundle, ConceptId, OkfDocument, Version, WriteOptions } from "../src/types.js";
 
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
+const FRESH_KIND: KindConvention = {
+  id: "conventions/fresh",
+  title: "Fresh",
+  governs: "Fresh",
+  freshnessHorizon: "30d",
+  fields: {
+    required: ["title"],
+    optional: ["timestamp"],
+    values: {},
+    terminal: {},
+    descriptions: {},
+  },
+};
+const FRESH_REGISTRY: KindRegistry = {
+  kinds: new Map([[FRESH_KIND.governs, FRESH_KIND]]),
+  warnings: [],
+};
 
 function bundleFor(backend: MemoryBackend): Bundle {
   return { root: "/unused", backend };
@@ -197,6 +214,77 @@ test("v0.2 mutation persists portable mutation attribution without inventing gen
     superbee_updated_by: "openai/codex",
   });
   assert.equal((await backend.versions("notes/a"))[0]!.actor, "openai/codex");
+});
+
+test("v0.2 creation gives every freshness-governed kind one standard meaningful-change clock", async () => {
+  const modes = ["create-only", "overwrite", "patch"] as const;
+
+  for (const mode of modes) {
+    const backend = new MemoryBackend();
+    const bundle = await v02BundleFor(backend);
+    const result = await mutateDocument({
+      bundle,
+      id: `tasks/${mode}`,
+      mode,
+      registry: FRESH_REGISTRY,
+      strict: true,
+      ...(mode === "patch" ? { onAbsent: "create" as const } : {}),
+      now: () => "2026-08-20T13:15:00.000Z",
+      buildCandidate: () => ({
+        frontmatter: { type: "Fresh", title: mode },
+        body: "",
+      }),
+    });
+
+    assert.deepEqual(result.doc.frontmatter.generated, {
+      by: "process:superbee",
+      at: "2026-08-20T13:15:00.000Z",
+    });
+    assert.equal(result.doc.frontmatter.timestamp, undefined);
+  }
+});
+
+test("freshness clock creation stays edition-aware and does not add v0.2 provenance to v0.1", async () => {
+  const backend = new MemoryBackend();
+  const result = await mutateDocument({
+    bundle: bundleFor(backend),
+    id: "tasks/v01",
+    mode: "create-only",
+    registry: FRESH_REGISTRY,
+    strict: true,
+    now: () => "2026-08-20T13:15:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Fresh", title: "V01" },
+      body: "",
+    }),
+  });
+
+  assert.equal(result.doc.frontmatter.timestamp, "2026-08-20T13:15:00.000Z");
+  assert.equal(result.doc.frontmatter.generated, undefined);
+});
+
+test("v0.2 freshness creation preserves an explicit usable legacy clock without inventing provenance", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "context-notes/parity",
+    mode: "create-only",
+    registry: FRESH_REGISTRY,
+    strict: true,
+    now: () => "2026-08-20T13:15:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: {
+        type: "Fresh",
+        title: "Parity",
+        timestamp: "2026-07-01T00:00:00.000Z",
+      },
+      body: "# Summary\n",
+    }),
+  });
+
+  assert.equal(result.doc.frontmatter.timestamp, "2026-07-01T00:00:00.000Z");
+  assert.equal(result.doc.frontmatter.generated, undefined);
 });
 
 test("mutation edition is authoritative from the bundle root and cannot be overridden by a caller hint", async () => {

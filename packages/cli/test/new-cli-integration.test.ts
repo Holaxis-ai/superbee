@@ -181,3 +181,54 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("built CLI creates a work-tracking Task fresh without exposing its storage clock in the receipt", async () => {
+  assert.ok(existsSync(cliBin), "root npm run build must create the built CLI before this proof runs");
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-fresh-task-"));
+  try {
+    const initialized = spawnSync(
+      "node",
+      [cliBin, "init", "--dir", dir, "--recipe", "work-tracking", "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(initialized.status, 0, `stdout=${initialized.stdout} stderr=${initialized.stderr}`);
+
+    const created = spawnSync(
+      "node",
+      [
+        cliBin,
+        "new",
+        "Task",
+        "fresh",
+        "--title",
+        "Fresh",
+        "--progress_status",
+        "todo",
+        "--dir",
+        dir,
+        "--json",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(created.status, 0, `stdout=${created.stdout} stderr=${created.stderr}`);
+    const receipt = JSON.parse(created.stdout) as Record<string, unknown>;
+    assert.equal(receipt.timestamp, null);
+    assert.equal(receipt.generated, undefined);
+
+    const saved = await readDoc({ root: dir }, "tasks/fresh");
+    assert.deepEqual(saved.frontmatter.generated, {
+      by: "process:superbee",
+      at: (saved.frontmatter.generated as Record<string, unknown>).at,
+    });
+    assert.equal(typeof (saved.frontmatter.generated as Record<string, unknown>).at, "string");
+    assert.equal(Object.hasOwn(saved.frontmatter, "timestamp"), false);
+
+    const status = spawnSync("node", [cliBin, "status", "--dir", dir, "--json"], { encoding: "utf8" });
+    assert.equal(status.status, 0, `stdout=${status.stdout} stderr=${status.stderr}`);
+    const health = JSON.parse(status.stdout) as Record<string, unknown>;
+    assert.equal(health.no_timestamp, 0);
+    assert.equal(health.stale, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

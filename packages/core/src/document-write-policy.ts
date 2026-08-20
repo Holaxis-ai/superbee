@@ -102,6 +102,8 @@ export interface V02MutationMetadataOptions {
   existing?: Pick<OkfDocument, "frontmatter" | "body">;
   candidate: { frontmatter: Frontmatter; body: string };
   meaningfulChangeAt: string;
+  /** Seed standard generation metadata when a newly created governed document needs a clock. */
+  requireGenerationClock?: boolean;
 }
 
 /**
@@ -113,8 +115,13 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   body: string;
 } {
   const existingGenerated = generatedRecord(opts.existing?.frontmatter.generated, "existing generated");
-  const candidateGenerated = generatedRecord(opts.candidate.frontmatter.generated, "generated");
-  const frontmatter: Frontmatter = { ...opts.candidate.frontmatter };
+  const declaredCandidateGenerated = generatedRecord(opts.candidate.frontmatter.generated, "generated");
+  const candidateGenerated = !opts.existing && opts.requireGenerationClock && !declaredCandidateGenerated
+    ? { by: "process:superbee" }
+    : declaredCandidateGenerated;
+  const frontmatter: Frontmatter = candidateGenerated === declaredCandidateGenerated
+    ? { ...opts.candidate.frontmatter }
+    : { ...opts.candidate.frontmatter, generated: candidateGenerated };
   if (
     opts.existing
     && !hasOwn(frontmatter, "verified")
