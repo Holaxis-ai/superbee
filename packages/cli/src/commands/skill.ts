@@ -71,6 +71,7 @@ import {
   type PersistentInstallAuthority,
 } from "../install-authority.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
+import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
 
 export { isSafeManifestEntry };
 
@@ -883,7 +884,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     }
     const refusals: string[] = [];
     const hosts: Record<string, unknown> = {};
-    let changed = false;
+    const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
     for (const [key, canonicalDir, legacyDir] of hostDirs) {
       // Any unexpected fs throw on one host becomes a structured refusal so the sibling host
       // still processes (same aggregation shape as hook install).
@@ -902,7 +903,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         refusals.push(`${collapseHomeDirectory(canonicalDir)}: ${result.reason}`);
         continue;
       }
-      changed = changed || result.changed;
+      changedByHost[key] = result.changed;
       hosts[key] = {
         path: collapseHomeDirectory(canonicalDir),
         legacy_path: collapseHomeDirectory(legacyDir),
@@ -921,6 +922,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         },
       );
     }
+    const lifecycle = integrationChangeReceipt(changedByHost);
     stdout(
       render(
         {
@@ -929,7 +931,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
             scope,
             version: assets.version,
             source: collapseHomeDirectory(assets.root),
-            changed,
+            ...lifecycle,
             hosts,
           },
         },
