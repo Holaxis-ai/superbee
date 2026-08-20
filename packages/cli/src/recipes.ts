@@ -368,6 +368,8 @@ export const ROADMAP_DESC_BODY =
 export interface RecipeDocResult {
   id: ConceptId;
   changed: boolean;
+  /** The existing doc was preserved, but its definition differs from this recipe's source. */
+  source_differs?: true;
   /** Set when creation was skipped because this existing legacy-located doc satisfies the artifact. */
   legacy_present?: ConceptId;
   /** NON-SUCCESS skip: the counterpart still carries the RETIRED legacy names, so it
@@ -402,6 +404,8 @@ export interface ApplyRecipeCounts {
   created: number;
   existing: number;
   legacy_present: number;
+  /** Existing convention docs whose definitions do not match the recipe source. */
+  source_differs?: number;
   /** Artifacts whose slot is held by RETIRED-name content (see `migration_required` fields). */
   migration_required: number;
 }
@@ -628,16 +632,28 @@ export async function applyRecipe(
     }
     let doc = recipeDocumentForApply(d, okfVersion, now);
     let changed = true;
+    let sourceDiffers = false;
     try {
       doc = await createRecipeDocument(bundle, doc, okfVersion, now);
     } catch (err) {
       if (err instanceof VersionConflict) {
-        changed = false; // already present — idempotent no-op, not an error
+        const existing = await readDoc(bundle, doc.id);
+        if (!sameInstalledDoc(existing, doc, okfVersion)) {
+          sourceDiffers = true;
+          migrationWarnings.push({
+            code: "RECIPE_SOURCE_DIFFERS",
+            message:
+              `recipe '${recipe.id}' source for '${doc.id}.md' differs from the existing convention; ` +
+              "the existing bundle content was left untouched — inspect it and use 'superbee promote' with an expected version to update explicitly",
+            severity: "warning",
+          });
+        }
+        changed = false;
       } else {
         throw err;
       }
     }
-    docs.push({ id: doc.id, changed });
+    docs.push({ id: doc.id, changed, ...(sourceDiffers ? { source_differs: true as const } : {}) });
   }
 
   const pages: RecipePageResult[] = [];
@@ -739,12 +755,17 @@ export async function applyRecipe(
     ...pages,
     ...references,
   ];
+  const sourceDiffers = docs.filter((doc) => doc.source_differs).length;
   const counts: ApplyRecipeCounts = {
     created: artifacts.filter((a) => a.changed).length,
-    existing: artifacts.filter((a) => !a.changed && a.legacy_present === undefined && a.migration_required === undefined)
+    existing: artifacts.filter((a) =>
+      !a.changed && a.legacy_present === undefined && a.migration_required === undefined &&
+      !("source_differs" in a && a.source_differs === true)
+    )
       .length,
     legacy_present: artifacts.filter((a) => a.legacy_present !== undefined).length,
     migration_required: artifacts.filter((a) => a.migration_required !== undefined).length,
+    ...(sourceDiffers > 0 ? { source_differs: sourceDiffers } : {}),
   };
 
   return {

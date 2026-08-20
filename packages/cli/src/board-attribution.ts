@@ -10,40 +10,28 @@
 // INVARIANTS (plan v3, binding — enforced across mutate.ts + this module):
 //   • fires only after a SUBSTANTIVE persisted mutation — mutate.ts invokes `onPersisted` only on
 //     a successful write, never a `changed: false` no-op and never a failed/refused write;
-//   • keyed to the exact resolved bundle/clone — `resolveBundleKey` over the resolved bundle
-//     root, THE one state-key derivation sync/session-start/home already share;
+//   • keyed to the exact pre-persist route decision — the caller computes a state key before the
+//     mutation, so this post-persist path can never rediscover from a bundle or cwd;
 //   • best-effort — the returned hook swallows everything (and mutate.ts's `firePostPersist`
 //     swallows again): it can NEVER turn a successful doc write into a failure;
-//   • no network — `resolveBundleKey`'s `remote get-url` reads local config only;
-//   • no git discovery on GENERIC mutations — the pre-gate below is a pure string check, so a
-//     non-conventional bundle (arbitrary `--dir`, and every remote mutation) never spawns git;
-//     callers without the git channel simply get `undefined` and pass no hook at all.
-import path from "node:path";
-
-import { BUNDLE_DIRS, resolveBundleKey } from "@superbee/board-git";
-import type { Bundle } from "@superbee/core";
-
+//   • no network or Git discovery — state-key selection completed before persistence;
+//   • generic mutations with no eligible precomputed decision get `undefined` and never spawn.
 import { defaultSyncStore } from "./cursor.js";
+import type { BoardAttribution } from "./bundle.js";
 
 /**
  * Build the post-persist hook for one mutation, or `undefined` when there is nothing to record:
  * no resolved actor (or core's `"unknown"` placeholder — recording it would make the render hide
- * a teammate's unattributed rows too), a remote bundle (a different backend entirely — not this
- * clone's git channel), or a bundle not at a recognized conventional name (the
- * zero-spawn pre-gate: the git channel only ever lives at the conventional folder, both as the
- * board worktree and as an in-tree committed bundle). A conventional bundle outside any git repo
- * degrades to a harmless path-keyed record — one local spawn, post-persist only.
+ * a teammate's unattributed rows too), or a route whose pre-persist decision is `none`.
  */
 export function boardPostPersistHook(
-  bundle: Bundle,
+  attribution: BoardAttribution,
   actor: string | undefined,
 ): (() => Promise<void>) | undefined {
-  if (!actor || actor === "unknown") return undefined;
-  if (bundle.backend !== undefined) return undefined;
-  if (!BUNDLE_DIRS.includes(path.basename(bundle.root) as (typeof BUNDLE_DIRS)[number])) return undefined;
+  if (!actor || actor === "unknown" || attribution.kind !== "board") return undefined;
   return async () => {
     try {
-      await defaultSyncStore.recordSelfActors(resolveBundleKey(bundle.root), [actor]);
+      await defaultSyncStore.recordSelfActors(attribution.stateKey, [actor]);
     } catch {
       /* best-effort by contract — attribution must never fail a successful write */
     }

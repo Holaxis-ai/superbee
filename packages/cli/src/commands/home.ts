@@ -53,9 +53,12 @@ import { DESCRIPTION, commandReference, compactCommandReference } from "../refer
 import { render } from "../output.js";
 import {
   CONVENTIONAL_BUNDLE_DIR_NAME,
+  assertResolvedLocalRouteIdentity,
   findBundleRoot,
   openBundle,
+  resolveLocalBundleRoute,
   resolveProjectBinding,
+  type ResolvedLocalRoute,
 } from "../bundle.js";
 import {
   deriveBundleDisplayName,
@@ -243,6 +246,8 @@ export interface HomeDeps {
    * `home` leaves it undefined — home itself NEVER pulls.
    */
   boardPull?: BoardPullOutcome;
+  /** An already resolved bare binding route from a caller such as session-start. */
+  localRoute?: ResolvedLocalRoute;
   /**
    * True when an installed managed SessionStart hook predates `session-start`. Defaults to
    * hook.ts's {@link hookNeedsUpdate} (fs-only reads).
@@ -329,10 +334,12 @@ export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter"
  */
 export async function defaultSummarizeBundle(
   dir?: string,
+  route?: ResolvedLocalRoute,
 ): Promise<BundleSummary | UnreadableBundle | ConflictedBundle | null> {
   let bundle;
   try {
-    bundle = await openBundle(dir, undefined);
+    bundle = route?.bundle ?? await openBundle(dir, undefined);
+    if (route) await assertResolvedLocalRouteIdentity(route);
   } catch (err) {
     if (err instanceof CliError && err.code === "NOT_FOUND") return null;
     const root = collapseHomeDirectory(path.resolve(dir ?? process.cwd()));
@@ -595,8 +602,26 @@ export function buildBoardBlock(
  * failure mode (no git binary, not a repo, unreadable state file) degrades to `null` — no board
  * block, never a failed session.
  */
-export async function defaultLoadBoardStatus(dir?: string): Promise<BoardStatus | null> {
+export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocalRoute): Promise<BoardStatus | null> {
   try {
+    if (route?.kind === "bound-board") {
+      if (route.readiness !== "ready") return null;
+      const state = await defaultSyncStore.readSyncState(route.owner.stateKey);
+      let uncommitted: number | null;
+      try {
+        uncommitted = countUncommitted(route.owner.bundleRoot);
+      } catch {
+        uncommitted = null;
+      }
+      return {
+        state: "provisioned",
+        cache: state.cache,
+        selfActors: state.selfActors ?? [],
+        unpushed: unpushedCount(route.owner.bundleRoot),
+        uncommitted,
+      };
+    }
+    if (route?.kind === "bound-local") return null;
     // Retarget when sitting INSIDE the board worktree (exactly where an agent lands after
     // `doc write --dir .superbee`) — otherwise the worktree reads as its OWN repo top,
     // `<board>/.superbee` doesn't exist, and the shared refs would misreport the live
@@ -859,6 +884,10 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // summarizes THAT directory's bundle instead of the CWD.
   let remote: string | undefined;
   let dir: string | undefined;
+  // Keep the binding-selected bundle path distinct from `dir`: the latter is also the board
+  // ingress selector. Replacing it with the concrete binding target would make later helpers
+  // treat a bare binding as explicit --dir and bypass the bound-owner proof.
+  let summaryDir: string | undefined;
   let explicitDir: string | undefined;
   let jsonMode = false;
   let helpMode = false;
@@ -867,6 +896,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     remote = parsed.values.remote;
     explicitDir = parsed.values.dir;
     dir = explicitDir;
+    summaryDir = explicitDir;
     jsonMode = Boolean(parsed.values.json);
     helpMode = Boolean(parsed.values.help);
   } catch {
@@ -885,36 +915,52 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // SessionStart hook, so it is caught here and surfaced as a visible `bindingError` note instead.
   let binding: HomeBindingNote | undefined;
   let bindingError: string | undefined;
+  let localRoutingFailure = false;
+  let localRoute = deps.localRoute;
   if (!remote && !dir) {
     try {
       const found = await resolveProjectBinding();
       if (found) {
         binding = { file: found.file, target: found.target };
-        dir = found.target;
+        try {
+          localRoute ??= await resolveLocalBundleRoute(undefined);
+          binding = { file: found.file, target: localRoute.target.root };
+          summaryDir = localRoute.target.root;
+        } catch (err) {
+          if (!(err instanceof CliError) || err.code !== "NOT_FOUND") throw err;
+          // A missing ordinary target remains a recoverable binding: preserve its exact path so
+          // home can offer the scoped init command rather than an unsafe cwd fallback.
+          localRoutingFailure = true;
+          summaryDir = found.target;
+        }
       }
     } catch (err) {
       bindingError = err instanceof Error ? err.message : String(err);
     }
   }
+  const pendingBoundBoard = localRoute?.kind === "bound-board" && localRoute.readiness !== "ready";
 
   // Opportunistic board freshness (module header, OPPORTUNISTIC FRESHNESS): plain LOCAL home only —
   // never for a --remote scope, and never when session-start already pulled in-process
   // (deps.boardPull present). Double-guarded like everything else here: the default trigger never
   // throws, and an injected/misbehaving one is caught so it can never fail the session.
-  if (!remote && deps.boardPull === undefined) {
+  if (!remote && !bindingError && !localRoutingFailure && !pendingBoundBoard && deps.boardPull === undefined) {
     try {
-      await (deps.autoPull ?? ((d?: string) => maybeAutoPull(d, { requireBoardBundle: false })))(dir);
+      await (deps.autoPull ?? ((d?: string) => maybeAutoPull(d, {
+        requireBoardBundle: false,
+        ...(localRoute ? { route: localRoute } : {}),
+      })))(dir);
     } catch {
       /* best-effort freshness only — the render must always appear */
     }
   }
 
-  const summarize = deps.summarizeBundle ?? (() => defaultSummarizeBundle(dir));
+  const summarize = deps.summarizeBundle ?? (() => defaultSummarizeBundle(summaryDir, localRoute));
 
   // A --remote scope does NOT summarize (offline guarantee — the remote block orients toward the
   // fetching commands instead). Local / `--dir` scopes read the bundle as before.
   let summary: BundleSummary | UnreadableBundle | ConflictedBundle | null = null;
-  if (!remote && !bindingError) {
+  if (!remote && !bindingError && !localRoutingFailure) {
     try {
       summary = await summarize();
     } catch {
@@ -978,9 +1024,11 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // The board block — skipped for a --remote scope (the board is a git-tier LOCAL
   // concept). Double-guarded like everything else here: a throwing probe yields no board block.
   let board: { block?: string | Record<string, unknown>; firstContact?: string } | undefined;
-  if (!remote) {
+  if (!remote && !bindingError && !localRoutingFailure && !pendingBoundBoard) {
     try {
-      const status = await (deps.loadBoardStatus ?? defaultLoadBoardStatus)(dir);
+      const status = deps.loadBoardStatus
+        ? await deps.loadBoardStatus(dir)
+        : await defaultLoadBoardStatus(dir, localRoute);
       board = buildBoardBlock(status, deps.boardPull, invocation());
     } catch {
       board = undefined;
