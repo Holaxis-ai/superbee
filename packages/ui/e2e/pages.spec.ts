@@ -95,6 +95,28 @@ test("a browser-blocked View request becomes an actionable shell error instead o
   }
 });
 
+test("a browser-blocked access:none View request also becomes an actionable shell error", async ({ page }) => {
+  const ui = await bootUiOverPagesBundle([]);
+  try {
+    await page.route("**/__page/**", async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/__page/mint") await route.continue();
+      else await route.abort("blockedbyclient");
+    });
+    await page.goto(ui.url);
+    await openRegisteredView(page, "pages-registry/about");
+
+    const failure = page.locator(".view-status-error");
+    await expect(failure).toContainText("This View's content did not finish loading", {
+      timeout: 12_000,
+    });
+    await expect(failure).toContainText("content blocker or privacy extension");
+    await expect(page.locator("iframe.page-frame-iframe")).toHaveCount(0);
+  } finally {
+    await ui.cleanup();
+  }
+});
+
 test("an access:none View is denied every data-bearing v0 bridge request through the real frame broker", async ({ page }) => {
   const ui = await bootUiOverPagesBundle(TASKS);
   try {

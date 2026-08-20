@@ -184,6 +184,20 @@ export function pageError(status: number, message: string): Response {
   });
 }
 
+const VIEW_READY_MESSAGE_TYPE = "superbee.view-ready.v1";
+
+/** Append one trusted-shell readiness signal without changing the bundle bytes or their launch identity. */
+function appendViewReadySignal(bytes: Uint8Array): Uint8Array {
+  const identity = JSON.stringify({ type: VIEW_READY_MESSAGE_TYPE });
+  const signal = new TextEncoder().encode(
+    `<script>window.parent.postMessage(${identity},"*")<\/script>`,
+  );
+  const body = new Uint8Array(bytes.byteLength + signal.byteLength);
+  body.set(bytes);
+  body.set(signal, bytes.byteLength);
+  return body;
+}
+
 /** Serve a page's bytes for a resolved nonce — the ONLY thing a nonce authorizes, and only ITS one key. */
 async function servePageBytes(options: UiServerOptions, runtime: UiRuntime, nonce: string): Promise<Response> {
   const launch = runtime.launches.resolveNonce(nonce);
@@ -192,7 +206,13 @@ async function servePageBytes(options: UiServerOptions, runtime: UiRuntime, nonc
     runtime.launches.revoke(launch.launchId);
     return pageError(403, "This view changed after it was opened. Reopen it from the launcher.");
   }
-  return new Response(launch.bytes, {
+  // `iframe.load` also fires for browser-generated error documents. A successful access:none
+  // response therefore carries a host-owned proof that its HTML actually reached the frame.
+  // Data-bearing Views retain the stronger existing requirement: their own script must message.
+  const responseBytes = launch.capability === "none"
+    ? appendViewReadySignal(launch.bytes)
+    : launch.bytes;
+  return new Response(responseBytes, {
     status: 200,
     headers: {
       "content-type": launch.contentType,

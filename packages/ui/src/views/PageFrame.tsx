@@ -57,11 +57,12 @@ export const VIEW_LOAD_DEADLINE_MS = 8_000;
 const VIEW_LOAD_FAILURE =
   "This View's content did not finish loading. A browser content blocker or privacy extension may have blocked its local HTML request. Allowlist this local address, or reopen it with extensions disabled.";
 
+const VIEW_READY_MESSAGE_TYPE = "superbee.view-ready.v1";
+
 export function PageFrame({ pageId }: { pageId: string }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const frameLoadTimerRef = useRef<number | null>(null);
   const frameReadySeqRef = useRef<number | null>(null);
-  const frameNeedsBridgeReadyRef = useRef(false);
   const subscribedRef = useRef(false);
   // A shell navigation consumes the currently framed document's right to navigate. Unlike the
   // async-load epoch below, this remains locked while that old iframe can still post messages.
@@ -142,7 +143,6 @@ export function PageFrame({ pageId }: { pageId: string }) {
     clearFrameLoadTimer();
     loadSeqRef.current++;
     frameReadySeqRef.current = null;
-    frameNeedsBridgeReadyRef.current = false;
     subscribedRef.current = false;
     launchIdRef.current = null;
     setPendingLaunch(null);
@@ -184,7 +184,6 @@ export function PageFrame({ pageId }: { pageId: string }) {
     clearFrameLoadTimer();
     const seq = ++loadSeqRef.current;
     frameReadySeqRef.current = null;
-    frameNeedsBridgeReadyRef.current = false;
     // Pre-revoke IMMEDIATELY, synchronously, before the async server mint below. This
     // is the ONE entry point every re-resolution path shares (mount, page switch, a live
     // registry-doc change, blob hot-reload, resync), so the OLD capability/subscription can never
@@ -202,7 +201,6 @@ export function PageFrame({ pageId }: { pageId: string }) {
       if (seq !== loadSeqRef.current) return;
       subscribedRef.current = false;
       launchIdRef.current = minted.launchId;
-      frameNeedsBridgeReadyRef.current = minted.capability !== "none";
       setEntryKey(minted.entry);
       setTitle(minted.title);
       setError(null);
@@ -264,9 +262,16 @@ export function PageFrame({ pageId }: { pageId: string }) {
       // boundary (P1).
       const seq = loadSeqRef.current;
       // Any message from the exact current opaque-origin frame proves its script loaded. Views
-      // declaring data access are held to this stronger signal because browser error documents
-      // may themselves fire iframe `load`; access:none Views use the ordinary load event below.
+      // declaring data access prove their own script ran; access:none responses receive one
+      // host-owned readiness signal only after their exact bytes were served successfully.
       markFrameReady(seq);
+      if (
+        typeof ev.data === "object" &&
+        ev.data !== null &&
+        (ev.data as { type?: unknown }).type === VIEW_READY_MESSAGE_TYPE
+      ) {
+        return;
+      }
 
       const actionMessage = parseActionBridgeMessage(ev.data);
       if (actionMessage !== null) {
@@ -513,9 +518,6 @@ export function PageFrame({ pageId }: { pageId: string }) {
           referrerPolicy="no-referrer"
           src={src}
           title={title}
-          onLoad={() => {
-            if (frameSeq !== null && !frameNeedsBridgeReadyRef.current) markFrameReady(frameSeq);
-          }}
           onError={() => {
             if (frameSeq !== null) failFrameLoad(frameSeq, true);
           }}

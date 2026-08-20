@@ -179,7 +179,9 @@ test("REJECTION PIN (dir mode): a legacy bridge-only registry doc resolves acces
     const launch = await mintLaunch(server, "views-registry/legacy-propose");
     const served = await fetchPage(server, launch.url);
     assert.equal(served.status, 200, "the doc still registers — only its capability is downgraded");
-    assert.equal(served.text, HTML);
+    assert.ok(served.text.startsWith(HTML), "the response preserves the exact bundle HTML prefix");
+    assert.match(served.text, /superbee\.view-ready\.v1/);
+    assert.doesNotMatch(served.text, new RegExp(launch.launchId));
 
     const target = await readDocVersioned(bundle, "tasks/alpha");
     const action = { kind: "document.set-field", docId: "tasks/alpha", field: "status", value: "done", expectedVersion: target.version };

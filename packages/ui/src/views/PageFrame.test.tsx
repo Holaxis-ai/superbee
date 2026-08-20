@@ -159,6 +159,47 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     expect(container.textContent).toContain("This View's content did not finish loading");
   });
 
+  it("does not treat iframe load as readiness for an access:none View", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "none" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    expect(iframe).toBeTruthy();
+
+    act(() => iframe.dispatchEvent(new Event("load")));
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(container.querySelector("iframe")).toBeNull();
+    expect(container.textContent).toContain("This View's content did not finish loading");
+  });
+
+  it("keeps an access:none View open after the exact served frame posts the host readiness signal", async () => {
+    vi.useFakeTimers();
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "none" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    expect(iframe).toBeTruthy();
+
+    act(() => window.dispatchEvent(new MessageEvent("message", {
+      source: iframe.contentWindow,
+      data: { type: "superbee.view-ready.v1" },
+    })));
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+    expect(container.textContent).not.toContain("This View's content did not finish loading");
+  });
+
   it("registry-doc bundle-read -> none: a bridge request received during the async reload gap is DENIED, never answered under the stale grant", async () => {
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     vi.mocked(listAllHeads).mockResolvedValue([]);
