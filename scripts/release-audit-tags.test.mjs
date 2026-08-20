@@ -11,7 +11,7 @@ import {
   NetworkUnavailableError,
   PACKAGE,
   REGISTRY_URL,
-  auditRegistryState,
+  auditRegistryState as auditRegistryStateWithPolicy,
   checkSourceDrift,
   checkVersionScheme,
   classifyRegistryStatus,
@@ -20,12 +20,13 @@ import {
   fetchRegistryState,
   parsePhaseDeclaration,
   isNameReservingPlaceholder,
+  main as auditMain,
   readBurnedDeclaration,
   registryUrlFor,
+  releaseAuditPolicy,
   saneSuccessors,
 } from "./release-audit-tags.mjs";
-import { defaultDistTagDestiny } from "./release-publication-policy.mjs";
-import { defaultReleaseManifest } from "./release-targets.mjs";
+import { cutoverPolicyDigest, defaultReleaseManifest, normalizeReleaseTargets } from "./release-targets.mjs";
 
 // Fixture mirroring the live registry at build time. No test hits the network.
 function registryFixture(overrides = {}) {
@@ -42,6 +43,66 @@ function registryFixture(overrides = {}) {
 }
 
 const AT_REST = { phase: "at_rest", kind: null, version: null };
+const committedManifest = defaultReleaseManifest();
+
+function normalizeFixtureManifest(raw) {
+  const contract = {
+    schema: "superbee.cutover-contract.v1",
+    targets: Object.fromEntries(
+      Object.keys(raw.targets).map((id) => [id, { policy_sha256: cutoverPolicyDigest(raw, id) }]),
+    ),
+  };
+  return normalizeReleaseTargets(raw, { contract });
+}
+
+function successorManifest({ stableVersion, previewVersion, packageName = PACKAGE, previewPromoteTag }) {
+  const raw = structuredClone(committedManifest);
+  for (const id of ["successor-stable", "successor-preview"]) {
+    raw.targets[id].package.name = packageName;
+    raw.allowed_tuples[id].package = packageName;
+  }
+  raw.allowed_tuples["successor-stable"].version = stableVersion;
+  raw.allowed_tuples["successor-stable"].tag = `v${stableVersion}`;
+  raw.allowed_tuples["successor-preview"].version = previewVersion;
+  raw.allowed_tuples["successor-preview"].tag = `v${previewVersion}`;
+  if (previewPromoteTag !== undefined) {
+    raw.allowed_tuples["successor-preview"].publication.npm_promote_tag = previewPromoteTag;
+  }
+  return normalizeFixtureManifest(raw);
+}
+
+function divergentSuccessorPackageManifest(previewPackage) {
+  const raw = structuredClone(committedManifest);
+  raw.targets["successor-preview"].package.name = previewPackage;
+  raw.allowed_tuples["successor-preview"].package = previewPackage;
+  return normalizeFixtureManifest(raw);
+}
+
+function auditRegistryState(args, manifest = committedManifest) {
+  return auditRegistryStateWithPolicy({
+    ...args,
+    policy: releaseAuditPolicy(manifest, args.declaration),
+  });
+}
+
+const PREVIEW_TRANSACTION_MANIFEST = successorManifest({
+  stableVersion: "0.1.0",
+  previewVersion: "0.1.0-pre.4",
+  previewPromoteTag: "latest",
+});
+const LATER_PREVIEW_MANIFEST = successorManifest({
+  stableVersion: "0.1.2",
+  previewVersion: "0.1.2-pre.1",
+});
+
+function laterPreviewRegistry({ published = false, latest = "0.1.1", next = published ? "0.1.2-pre.1" : "0.1.1" } = {}) {
+  const versions = published ? ["0.1.1", "0.1.2-pre.1"] : ["0.1.1"];
+  return {
+    distTags: { latest, next },
+    versions,
+    time: Object.fromEntries(versions.map((version, index) => [version, `2026-08-${18 + index}T00:00:00.000Z`])),
+  };
+}
 
 function codes(result) {
   return result.violations.map((v) => v.code).sort();
@@ -93,7 +154,7 @@ test("staged phase, candidate published: latest stays prior, next floats to cand
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(result.violations, []);
 });
 
@@ -107,7 +168,7 @@ test("window A: tags already promoted while phase still approved is tolerated", 
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(result.violations, []);
   assert.match(result.notes.join("\n"), /transaction phase promoted .*transition window.*declared phase is approved/);
 });
@@ -119,7 +180,7 @@ test("window B: phase promoted while tags not yet moved is tolerated", () => {
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(result.violations, []);
   assert.match(result.notes.join("\n"), /transition window.*declared phase is promoted/);
 });
@@ -131,7 +192,7 @@ test("window C: registry restored during rollback while phase still approved is 
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(result.violations, []);
   assert.match(result.notes.join("\n"), /transition window.*declared phase is approved/);
 });
@@ -143,7 +204,7 @@ test("counter: tags matching NO phase of the declared transaction still red", ()
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(codes(result), ["latest_off_policy", "next_off_policy"]);
 });
 
@@ -154,13 +215,16 @@ test("counter: tags pointing outside the transaction entirely (stale pre.1) stil
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(codes(result), ["latest_off_policy"]);
 });
 
 test("staged phase, candidate not yet published: tags must still hold the prior known-good", () => {
   const declaration = { phase: "staged", kind: "prerelease", version: "0.1.0-pre.4" };
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry: registryFixture() });
+  const result = auditRegistryState(
+    { declaration, sourceVersion: "0.1.0", registry: registryFixture() },
+    PREVIEW_TRANSACTION_MANIFEST,
+  );
   assert.deepEqual(result.violations, []);
   assert.match(result.notes.join("\n"), /not yet published/);
 });
@@ -172,12 +236,18 @@ test("approved phase behaves like staged for tags (candidate published)", () => 
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  assert.deepEqual(auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry }).violations, []);
+  assert.deepEqual(
+    auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST).violations,
+    [],
+  );
 });
 
 test("promoted phase with an unpublished candidate is a violation", () => {
   const declaration = { phase: "promoted", kind: "prerelease", version: "0.1.0-pre.4" };
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry: registryFixture() });
+  const result = auditRegistryState(
+    { declaration, sourceVersion: "0.1.0", registry: registryFixture() },
+    PREVIEW_TRANSACTION_MANIFEST,
+  );
   assert.deepEqual(codes(result), ["candidate_unpublished"]);
 });
 
@@ -187,7 +257,7 @@ test("failed phase: tags restored to prior known-good pass, and the deprecate ex
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(result.violations, []);
   assert.match(result.notes.join("\n"), /deprecated/);
 });
@@ -199,7 +269,7 @@ test("failed phase: tags matching no transaction state (latest on the failed can
     versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
     time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
   });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
+  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0", registry }, PREVIEW_TRANSACTION_MANIFEST);
   assert.deepEqual(codes(result), ["latest_off_policy"]);
 });
 
@@ -414,45 +484,86 @@ test("at_rest with an unpublished package is a violation", () => {
   assert.deepEqual(state.violations.map((v) => v.code), ["package_unpublished"]);
 });
 
-// --- declaration cross-validation (external review: green-but-nonsense declarations) ---
+// --- declaration cross-validation: source target and transaction artifact are distinct ---
 
-test("staged declaration naming a candidate that is not the source version is red", () => {
-  const declaration = { phase: "staged", kind: "prerelease", version: "0.1.0-pre.99" };
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.3", registry: registryFixture() });
-  assert.deepEqual(codes(result), ["declaration_source_mismatch"]);
-});
-
-test("staged declaration with kind stable for a prerelease-form candidate is red", () => {
-  const declaration = { phase: "staged", kind: "stable", version: "0.1.0-pre.4" };
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.3", registry: registryFixture() });
-  assert.deepEqual(codes(result), ["declaration_kind_mismatch", "declaration_source_mismatch"]);
-});
-
-test("staged declaration with kind prerelease for a stable-form candidate is red", () => {
-  const declaration = { phase: "staged", kind: "prerelease", version: "0.1.0" };
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.3", registry: registryFixture() });
-  assert.deepEqual(codes(result), ["declaration_kind_mismatch", "declaration_source_mismatch"]);
-});
-
-test("failed phase: source advanced to the replacement while declaring the failed candidate passes", () => {
-  const declaration = { phase: "failed", kind: "prerelease", version: "0.1.0-pre.4" };
-  const registry = registryFixture({
-    versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
-    time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
-  });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.5", registry });
+test("later-line preview is green while source is the planned stable target", () => {
+  const declaration = { phase: "staged", kind: "prerelease", version: "0.1.2-pre.1" };
+  const result = auditRegistryState(
+    { declaration, sourceVersion: "0.1.2", registry: laterPreviewRegistry() },
+    LATER_PREVIEW_MANIFEST,
+  );
   assert.deepEqual(result.violations, []);
+  assert.deepEqual(result.facts.selected_tuple, {
+    id: "successor-preview",
+    package: PACKAGE,
+    version: "0.1.2-pre.1",
+  });
   assert.equal(result.facts.source_state, "staged-prep");
 });
 
-test("failed phase still enforces kind/form agreement on the declared candidate", () => {
-  const declaration = { phase: "failed", kind: "stable", version: "0.1.0-pre.4" };
-  const registry = registryFixture({
-    versions: ["0.1.0-pre.1", "0.1.0-pre.2", "0.1.0-pre.3", "0.1.0-pre.4"],
-    time: { ...registryFixture().time, "0.1.0-pre.4": "2026-08-08T00:00:00.000Z" },
-  });
-  const result = auditRegistryState({ declaration, sourceVersion: "0.1.0-pre.4", registry });
-  assert.ok(codes(result).includes("declaration_kind_mismatch"), codes(result).join(","));
+test("undeclared preview artifact is red even though stable source remains strict", () => {
+  const declaration = { phase: "staged", kind: "prerelease", version: "0.1.2-pre.2" };
+  const result = auditRegistryState(
+    { declaration, sourceVersion: "0.1.2", registry: laterPreviewRegistry() },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(codes(result), ["declaration_tuple_mismatch"]);
+});
+
+test("stable and prerelease kinds cannot cross their selected tuples", () => {
+  const stableAsPreview = auditRegistryState(
+    {
+      declaration: { phase: "staged", kind: "stable", version: "0.1.2-pre.1" },
+      sourceVersion: "0.1.2",
+      registry: laterPreviewRegistry(),
+    },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(codes(stableAsPreview), ["declaration_kind_mismatch", "declaration_tuple_mismatch"]);
+
+  const previewAsStable = auditRegistryState(
+    {
+      declaration: { phase: "staged", kind: "prerelease", version: "0.1.2" },
+      sourceVersion: "0.1.2",
+      registry: laterPreviewRegistry(),
+    },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(codes(previewAsStable), ["declaration_kind_mismatch", "declaration_tuple_mismatch"]);
+});
+
+test("failed phase preserves a historical candidate but still enforces kind/form", () => {
+  const historical = { phase: "failed", kind: "prerelease", version: "0.1.1-pre.9" };
+  const recovered = auditRegistryState(
+    { declaration: historical, sourceVersion: "0.1.2", registry: laterPreviewRegistry() },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(recovered.violations, []);
+  assert.equal(recovered.facts.source_state, "staged-prep");
+
+  const malformed = auditRegistryState(
+    { declaration: { ...historical, kind: "stable" }, sourceVersion: "0.1.2", registry: laterPreviewRegistry() },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(codes(malformed), ["declaration_kind_mismatch"]);
+});
+
+test("phase-only settlement keeps stable source ahead and latest on the published stable", () => {
+  const result = auditRegistryState(
+    { declaration: AT_REST, sourceVersion: "0.1.2", registry: laterPreviewRegistry({ published: true }) },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(result.violations, []);
+  assert.deepEqual(result.facts.expected_tags, { latest: "0.1.1", next: "0.1.2-pre.1" });
+  assert.equal(result.facts.source_state, "staged-prep");
+});
+
+test("source drift remains strict across the later-line preview lifecycle", () => {
+  const result = auditRegistryState(
+    { declaration: AT_REST, sourceVersion: "0.1.3", registry: laterPreviewRegistry({ published: true }) },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(codes(result), ["source_version_jump"]);
 });
 
 // --- network-vs-violation classification (structural) ---
@@ -674,11 +785,12 @@ test("the COMMITTED burned-versions declaration parses and admits the current so
   // Fixture mirrors the live registry of the AUDITED package, per its own standing instruction to
   // update alongside real publishes. It modelled the pre-rename @holaxis/aslite line
   // (0.1.0-pre.1..pre.8); the audited package is now superbee, whose published set is the 0.0.1
-  // name-reserving placeholder plus 0.1.1-pre.2 (published 2026-08-16 through OIDC staging), with
+  // name-reserving placeholder, previews 0.1.1-pre.2 and 0.1.1-pre.3, and stable 0.1.1, with
   // 0.1.1-pre.1 burned.
-  const published = ["0.0.1", "0.1.1-pre.2"];
+  const published = ["0.0.1", "0.1.1-pre.2", "0.1.1-pre.3", "0.1.1"];
   const drift = checkSourceDrift(manifest.version, published, burned);
   assert.deepEqual(drift.violations, []);
+  assert.equal(drift.state, "staged-prep");
 });
 
 test("a declared burn fills the published pre.N contiguity hole; an undeclared hole still reds", () => {
@@ -722,7 +834,6 @@ test("the FUTURE live registry shape — pre.5 published over the pre.4 burn —
 // ---------------------------------------------------------------------------------------------
 
 const repoDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const committedManifest = defaultReleaseManifest();
 const bridgeTuple = committedManifest.allowed_tuples.bridge;
 
 /**
@@ -791,25 +902,16 @@ test("F2: the expectation tracks the manifest in BOTH directions, not a value th
     "flipping npm_promote_tag to latest in the manifest moves the audit's expectation with it");
 });
 
-test("F2: a candidate sitting on a dist-tag the manifest never gives it is RED", async () => {
-  const candidate = bridgeTuple.version;
-  // The committed bridge tuple now declares BOTH dist-tags, so it forbids none and can no longer
-  // express this scenario. The rule under test belongs to the derivation, not to the bridge's
-  // current policy, so state the forbidden destiny explicitly: a next-only candidate on `latest`.
-  const destiny = destinyOf(candidate, ["next"]);
-  const forbidden = ["latest", "next"].filter((tag) => !destiny.get(candidate).has(tag));
-  assert.ok(forbidden.length > 0, "the chosen destiny must forbid at least one dist-tag for this scenario to exist");
-  const registry = postBridgeRegistry();
-  for (const tag of forbidden) {
-    const result = auditRegistryState({
+test("F2: a candidate sitting on a dist-tag the manifest never gives it is RED", () => {
+  const result = auditRegistryState(
+    {
       declaration: AT_REST,
-      sourceVersion: candidate,
-      registry: { ...registry, distTags: { ...registry.distTags, [tag]: candidate } },
-      burnedVersions: await committedBurns(),
-      destiny,
-    });
-    assert.ok(codes(result).includes(`${tag}_off_policy`), `promoting ${candidate} to ${tag} against the manifest must be red, got ${codes(result).join(",")}`);
-  }
+      sourceVersion: "0.1.2",
+      registry: laterPreviewRegistry({ published: true, latest: "0.1.2-pre.1" }),
+    },
+    LATER_PREVIEW_MANIFEST,
+  );
+  assert.ok(codes(result).includes("latest_off_policy"), codes(result).join(","));
 });
 
 test("F2: declaring a phase that would put a next-only candidate on latest is RED", () => {
@@ -842,6 +944,87 @@ test("F2: transition tolerance covers timing, never a state the manifest forbids
   );
 });
 
+test("one supplied normalized manifest controls package, selected tuple, and destiny in pure and live audits", async () => {
+  const manifest = successorManifest({
+    stableVersion: "7.4.0",
+    previewVersion: "7.4.0-pre.1",
+    packageName: "synthetic-release-audit",
+  });
+  const declaration = { phase: "staged", kind: "prerelease", version: "7.4.0-pre.1" };
+  const registry = {
+    distTags: { latest: "7.3.0", next: "7.4.0-pre.1" },
+    versions: ["7.3.0", "7.4.0-pre.1"],
+    time: {
+      "7.3.0": "2026-08-18T00:00:00.000Z",
+      "7.4.0-pre.1": "2026-08-19T00:00:00.000Z",
+    },
+  };
+  const green = auditRegistryState({ declaration, sourceVersion: "7.4.0", registry }, manifest);
+  assert.deepEqual(green.violations, []);
+  assert.equal(green.facts.package, "synthetic-release-audit");
+  assert.deepEqual(green.facts.selected_tuple, {
+    id: "successor-preview",
+    package: "synthetic-release-audit",
+    version: "7.4.0-pre.1",
+  });
+
+  const forbidden = auditRegistryState(
+    {
+      declaration: AT_REST,
+      sourceVersion: "7.4.0",
+      registry: { ...registry, distTags: { latest: "7.4.0-pre.1", next: "7.4.0-pre.1" } },
+    },
+    manifest,
+  );
+  assert.ok(codes(forbidden).includes("latest_off_policy"), codes(forbidden).join(","));
+
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-release-audit-snapshot-"));
+  const phaseFile = path.join(scratch, "phase.json");
+  const registryFile = path.join(scratch, "registry.json");
+  const burnedFile = path.join(scratch, "burned.json");
+  await writeFile(phaseFile, JSON.stringify(declaration));
+  await writeFile(registryFile, JSON.stringify({ "dist-tags": registry.distTags, versions: registry.versions, time: registry.time }));
+  await writeFile(burnedFile, JSON.stringify({ burned: [] }));
+  const stdout = [];
+  const stderr = [];
+  const code = await auditMain(
+    ["--phase-file", phaseFile, "--registry-json", registryFile, "--burned-file", burnedFile],
+    { manifest, io: { log: (line) => stdout.push(line), error: (line) => stderr.push(line) } },
+  );
+  assert.equal(code, 0, stderr.join("\n"));
+  assert.match(stdout.join("\n"), /release-audit: package synthetic-release-audit/);
+});
+
+test("normalized cross-package successor is violation-class before the live audit reads a registry", async () => {
+  const manifest = divergentSuccessorPackageManifest("synthetic-preview-only");
+  const preview = manifest.allowed_tuples["successor-preview"];
+  const stable = manifest.allowed_tuples["successor-stable"];
+  const declaration = { phase: "staged", kind: "prerelease", version: preview.version };
+  const registry = {
+    distTags: { latest: stable.version, next: stable.version },
+    versions: [stable.version],
+    time: { [stable.version]: "2026-08-20T00:00:00.000Z" },
+  };
+  const result = auditRegistryState({ declaration, sourceVersion: stable.version, registry }, manifest);
+  assert.deepEqual(codes(result), ["selected_tuple_package_mismatch"]);
+  assert.equal(result.facts.package, stable.package);
+  assert.equal(result.facts.selected_tuple.package, "synthetic-preview-only");
+
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-release-audit-package-mismatch-"));
+  const phaseFile = path.join(scratch, "phase.json");
+  await writeFile(phaseFile, JSON.stringify(declaration));
+  const stdout = [];
+  const stderr = [];
+  const code = await auditMain(
+    ["--phase-file", phaseFile, "--registry-json", path.join(scratch, "must-not-be-read.json")],
+    { manifest, io: { log: (line) => stdout.push(line), error: (line) => stderr.push(line) } },
+  );
+  assert.equal(code, 1, stderr.join("\n"));
+  assert.deepEqual(stdout, [], "a rejected policy must not emit a registry success receipt");
+  assert.match(stderr.join("\n"), /VIOLATION\[selected_tuple_package_mismatch\]/);
+  assert.doesNotMatch(stderr.join("\n"), /ENOENT|must-not-be-read/);
+});
+
 
 // ── the standing audit must follow the rename, not be pinned to the retiring name ──────────────
 // This audit runs on every pull request and every push to the default branch. It was hardcoded to
@@ -868,7 +1051,7 @@ test("the audited package is derived from the manifest, not pinned to a name", (
 // the name, with `latest` on it and no `next`. That is the state the cutover plan expects to find,
 // so it is legal — but only in that exact shape.
 test("a name-reserving placeholder is a legal at-rest state, and only in that exact shape", () => {
-  const destiny = defaultDistTagDestiny(PACKAGE);
+  const destiny = releaseAuditPolicy(committedManifest, AT_REST).destiny;
   const placeholder = { versions: ["0.0.1"], observedTags: { latest: "0.0.1" }, destiny };
   assert.equal(isNameReservingPlaceholder(placeholder), true);
 

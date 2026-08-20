@@ -701,6 +701,7 @@ test("new: missing required field is rejected by VALIDATION, not by machinery (U
         assert.equal(err.code, "USAGE");
         assert.match(err.message, /does not satisfy the 'Context Note' kind/);
         assert.match(err.message, /title/);
+        assert.ok(err.help?.endsWith(`superbee new 'Context Note' --help --dir '${dir}'`));
         return true;
       },
     );
@@ -1317,6 +1318,14 @@ test("--remote: new + kinds against a served bundle, parity with the same operat
       const remoteNew = await runJson(newCommand, ["Context Note", "n1", "--title", "N1", "--remote", url]);
       assert.equal(remoteNew.id, localNew.id);
       assert.equal(remoteNew.kind, localNew.kind);
+      await assert.rejects(
+        () => newCommand(["Context Note", "missing", "--remote", url]),
+        (err: unknown) => {
+          assert.ok(err instanceof CliError);
+          assert.ok(err.help?.endsWith(`superbee new 'Context Note' --help --remote '${url}'`));
+          return true;
+        },
+      );
     } finally {
       await handle.close();
     }

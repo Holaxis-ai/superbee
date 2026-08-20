@@ -40,6 +40,19 @@ async function runJson(argv: string[]): Promise<Record<string, unknown>> {
   return JSON.parse(out) as Record<string, unknown>;
 }
 
+test("list turns a nearby option typo into a one-turn correction", async () => {
+  await assert.rejects(
+    () => list(["--limt", "5"]),
+    (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.equal(err.code, "USAGE");
+      assert.equal(err.message, "unknown option '--limt' — did you mean '--limit'?");
+      assert.match(err.help ?? "", /list --help$/);
+      return true;
+    },
+  );
+});
+
 /**
  * A bundle with TWO distinct governed kinds (proving genericity — no hardcoded kind name in the
  * implementation) plus a handful of Task instances for filter/column assertions:

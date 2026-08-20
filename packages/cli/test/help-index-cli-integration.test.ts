@@ -118,3 +118,11 @@ test("built CLI: a subcommand's own `--help` (e.g. `new --help`) is UNCHANGED by
   assert.match(out, /\nUsage:\n {2}superbee new /);
   assert.doesNotMatch(out, /\nBundle:\n/, "must not have picked up the top-level index's group headings");
 });
+
+test("built CLI: a nearby list option typo names the exact correction", () => {
+  const result = spawnSync("node", [cliBin, "list", "--limt", "5"], { encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stdout, /unknown option '--limt' — did you mean '--limit'\?/);
+  assert.match(result.stdout, /help: npx -y superbee list --help/);
+  assert.equal(result.stderr, "");
+});
