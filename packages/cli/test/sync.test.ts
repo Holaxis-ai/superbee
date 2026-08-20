@@ -169,7 +169,7 @@ test("bare binding-selected sync commits only the proven private board owner", a
   }
 });
 
-test("invalid bare binding fails before the public board can be selected", async () => {
+test("plain bare binding remains a selected local bundle and never probes either board", async () => {
   const topology = await makeTwoCloneTopology();
   const homes = await tempHomes(1);
   try {
@@ -180,10 +180,9 @@ test("invalid bare binding fails before the public board can be selected", async
     const publicHead = boardHead(topology.a);
 
     const result = await inDir(topology.a.root, () => runSync(homes.homes[0]!, []));
-    assert.ok(result.err instanceof CliError);
-    assert.equal(result.err.code, "CONFLICT");
-    assert.match(result.err.message, /project binding cannot be used as a board owner/);
-    assert.equal(boardHead(topology.a), publicHead, "invalid private selection never falls back to public sync");
+    assert.equal(result.err, undefined, result.err?.message);
+    assert.match(result.out, /nothing to sync/);
+    assert.equal(boardHead(topology.a), publicHead, "plain binding never falls back to public sync");
   } finally {
     await topology.cleanup();
     await homes.cleanup();

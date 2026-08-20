@@ -71,8 +71,8 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
-import { resolveLocalBundleTarget, resolveProjectBinding } from "../../bundle.js";
-import { validateBoundBoardOwner, type BoundBoardOwner } from "../../bound-board-owner.js";
+import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../../bundle.js";
+import type { BoundBoardOwner } from "../../bound-board-owner.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -245,13 +245,14 @@ interface SyncRun {
   dir: string; inv: string; mode: OutputMode; limit: number; pullOnly: boolean;
   stdout: (s: string) => void; deps: Partial<SyncCliDeps>;
   owner?: BoundBoardOwner;
+  route?: ResolvedLocalRoute;
 }
 
 /** The arg-parse phase's dispatch decision. */
 type SyncDispatch =
   | { kind: "help" }
-  | { kind: "show-incoming"; id: string; values: { out?: string; dir?: string; json?: boolean }; owner?: BoundBoardOwner }
-  | { kind: "run"; options: Pick<SyncRun, "dir" | "mode" | "limit" | "pullOnly" | "owner">; establish: boolean; yes: boolean };
+  | { kind: "show-incoming"; id: string; values: { out?: string; dir?: string; json?: boolean }; route?: ResolvedLocalRoute }
+  | { kind: "run"; options: Pick<SyncRun, "dir" | "mode" | "limit" | "pullOnly" | "owner" | "route">; establish: boolean; yes: boolean };
 
 /** The provision phase's result: the board checkout this run operates on. */
 interface SyncBoard { boardPath: string; key: string; outcome: ProvisionOutcome }
@@ -376,11 +377,11 @@ async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDis
     if (values.establish) {
       throw new CliError("USAGE", "--show-incoming and --establish cannot be combined");
     }
-    let owner: BoundBoardOwner | undefined;
+    let route: ResolvedLocalRoute | undefined;
     if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
-      owner = await validateBoundBoardOwner(await resolveLocalBundleTarget(undefined));
+      route = await resolveLocalBundleRoute(undefined);
     }
-    return { kind: "show-incoming", id, values, ...(owner ? { owner } : {}) };
+    return { kind: "show-incoming", id, values, ...(route ? { route } : {}) };
   }
   if (values.out !== undefined) {
     throw new CliError("USAGE", "--out only applies to sync --show-incoming <id>", {
@@ -403,26 +404,31 @@ async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDis
     limit = Number(raw);
   }
 
-  // Sync never resolves a bundle through resolveLocalBundleTarget, so its run directory answers to
-  // the relation HERE — before retargeting, provisioning, or any git probe. Without it a guarded
-  // root exits 0 with `nothing to sync`, reporting absence where the honest answer is the conflict.
+  // The run directory answers to the relation HERE — before retargeting, provisioning, or any Git
+  // probe. The binding route below is the sole exception: it resolves once, proves an owner if any,
+  // and then carries only that frozen capability. Without this guard a private root exits 0 with
+  // `nothing to sync`, reporting absence where the honest answer is the conflict.
   // Ordered after argv validation so a USAGE error still wins.
   assertSearchDirOutsidePrivateState(path.resolve(values.dir ?? process.cwd()));
 
   // A bare project binding is an exact board-owner selection, not a hint for the cwd routing
   // below. Validate it before retarget/heal/channel/provision can spawn Git in the public
   // checkout, then carry only the frozen capability through all remaining phases.
-  let owner: BoundBoardOwner | undefined;
+  let route: ResolvedLocalRoute | undefined;
   if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
-    owner = await validateBoundBoardOwner(await resolveLocalBundleTarget(undefined));
+    route = await resolveLocalBundleRoute(undefined);
   }
+  const owner = route?.kind === "bound-board" ? route.owner : undefined;
 
   // Standing inside the board worktree retargets to the enclosing project so provisioning's
   // idempotent path resolves the REAL board (see retargetBoardInterior).
-  const dir = owner?.ownerRoot ?? retargetBoardInterior(values.dir ?? process.cwd());
+  const dir = owner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
   return {
     kind: "run",
-    options: { dir, pullOnly: Boolean(values["pull-only"]), limit, mode: resolveMode(values), ...(owner ? { owner } : {}) },
+    options: {
+      dir, pullOnly: Boolean(values["pull-only"]), limit, mode: resolveMode(values),
+      ...(owner ? { owner } : {}), ...(route ? { route } : {}),
+    },
     establish: Boolean(values.establish),
     yes: Boolean(values.yes),
   };
@@ -628,10 +634,17 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
     return;
   }
   if (dispatch.kind === "show-incoming") {
-    await showIncoming(dispatch.id, dispatch.values, deps, dispatch.owner);
+    await showIncoming(dispatch.id, dispatch.values, deps, dispatch.route);
     return;
   }
   const run: SyncRun = { ...dispatch.options, inv, stdout, deps };
+
+  // A plain binding is a normal selected bundle, never a board owner.  Keep sync's supported
+  // local-only/no-op result without probing an enclosing private or invoking checkout.
+  if (run.route?.kind === "bound-local") {
+    stdout(render({ sync: "nothing to sync" }, run.mode));
+    return;
+  }
 
   // Refuse the private-state identity before provisioning, fetching, committing, or publishing.
   // Later phase-local checks retain the invariant across any path re-resolution.
@@ -644,8 +657,8 @@ async function syncCommand(argv: string[], deps: Partial<SyncCliDeps> = {}): Pro
   // `--establish` dispatches before ordinary provisioning; an already-shared board falls through
   // to the ordinary sync flow with an idempotence note.
   let establishAlreadyNote: string | undefined;
-  if (dispatch.establish && !run.owner) {
-    const establishOutcome = await establishBoard(run.dir, inv, run.mode, stdout, deps, { yes: dispatch.yes });
+  if (dispatch.establish) {
+    const establishOutcome = await establishBoard(run.owner?.ownerRoot ?? run.dir, inv, run.mode, stdout, deps, { yes: dispatch.yes });
     if (!establishOutcome.already) return;
     establishAlreadyNote = ESTABLISH_ALREADY;
   }

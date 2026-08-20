@@ -28,7 +28,7 @@ import {
   type Bundle,
   type Frontmatter,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag, type BoardAttribution } from "../bundle.js";
 import { mutateDoc } from "../mutate.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
@@ -150,7 +150,10 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   const actor = resolveActor(values.actor as string | undefined, {
     help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
   });
-  const bundle: Bundle = await openBundle(dir, await resolveRemoteFlag(remoteUrl, dir));
+  const remote = await resolveRemoteFlag(remoteUrl, dir);
+  const route = remote === undefined ? await resolveLocalBundleRoute(dir) : undefined;
+  const bundle: Bundle = route?.bundle ?? await openBundle(dir, remote);
+  const attribution: BoardAttribution = route ? boardAttributionForRoute(route) : { kind: "none" };
   const registry = await loadKinds(bundle);
 
   // Validate --supersedes UPFRONT, before any write: it must be an existing artifacts/ Artifact. This
@@ -225,7 +228,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
       helpOnKindReject: `${cliInvocation()} kinds`,
       actor,
       persistActor: true,
-      onPersisted: boardPostPersistHook(bundle, actor),
+      onPersisted: boardPostPersistHook(attribution, actor),
       buildCandidate: (_existing, context) => ({
         frontmatter: {
           ...frontmatter,
@@ -269,7 +272,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
         helpOnKindReject: `${cliInvocation()} kinds`,
         actor,
         persistActor: true,
-        onPersisted: boardPostPersistHook(bundle, actor),
+        onPersisted: boardPostPersistHook(attribution, actor),
         buildCandidate: (existingDoc, context) => {
           // patch mode guarantees the target exists; narrow it so the required Frontmatter.type carries over.
           if (!existingDoc) throw new CliError("NOT_FOUND", `'${supersedes}' does not exist`);

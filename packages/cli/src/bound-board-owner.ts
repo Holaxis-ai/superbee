@@ -6,12 +6,21 @@
  * before a command may use Git or private sync state.  Keep that proof CLI-owned: board-git is
  * deliberately unaware of project bindings.
  */
-import { lstat, realpath } from "node:fs/promises";
+import { realpath } from "node:fs/promises";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
-import { BOARD_BRANCH, BOARD_REMOTE, BUNDLE_DIRS, repoTopLevel, resolveBundleKey, runGit } from "@superbee/board-git";
-import type { Bundle } from "@superbee/core";
+import {
+  BOARD_BRANCH,
+  BOARD_REMOTE,
+  BUNDLE_DIRS,
+  abortStaleRebase,
+  detectStaleRebase,
+  rebaseWasFromBoardBranch,
+  repoTopLevel,
+  resolveBundleKey,
+  runGit,
+} from "@superbee/board-git";
 
 import type { LocalBundleTarget } from "./bundle.js";
 import { CliError } from "./errors.js";
@@ -27,16 +36,6 @@ export interface BoundBoardOwner {
   readonly remote: { readonly name: "origin"; readonly url?: string; readonly label: string };
   /** Calculated after ownership proof, never re-derived from the public invocation directory. */
   readonly stateKey: string;
-}
-
-const owners = new WeakMap<Bundle, BoundBoardOwner>();
-
-export function boundBoardOwnerForBundle(bundle: Bundle): BoundBoardOwner | undefined {
-  return owners.get(bundle);
-}
-
-export function rememberBoundBoardOwner(bundle: Bundle, owner: BoundBoardOwner | undefined): void {
-  if (owner) owners.set(bundle, owner);
 }
 
 function failure(target: LocalBundleTarget, stage: string, message: string): CliError {
@@ -69,29 +68,20 @@ export async function validateBoundBoardOwner(target: LocalBundleTarget): Promis
   const bindingFile = target.bindingFile;
   if (!bindingFile) throw failure(target, "binding", "the selected binding has no source path");
 
-  let stat;
-  try {
-    stat = await lstat(target.root);
-  } catch {
-    throw failure(target, "target", "the selected target is unavailable");
-  }
-  if (stat.isSymbolicLink()) throw failure(target, "target", "the selected target must not be a symlink");
-
   const bundleRoot = await realpath(target.canonicalRoot);
   const bundleDir = path.basename(bundleRoot) as BoundBoardOwner["bundleDir"];
-  if (!BUNDLE_DIRS.includes(bundleDir)) throw failure(target, "bundle-name", "the selected target is not a recognized bundle directory");
+  if (!BUNDLE_DIRS.includes(bundleDir)) return undefined;
   const ownerRoot = path.dirname(bundleRoot);
 
-  if (repoTopLevel(bundleRoot) !== bundleRoot) throw failure(target, "worktree-root", "the selected bundle is not its own Git worktree root");
-  if (repoTopLevel(ownerRoot) !== ownerRoot) throw failure(target, "owner-root", "the selected bundle's direct parent is not its owner checkout");
+  // A conventional name alone is ordinary bundle selection, not board authority.  It becomes a
+  // candidate only when both exact roots are already worktrees sharing one common Git directory.
+  if (repoTopLevel(bundleRoot) !== bundleRoot || repoTopLevel(ownerRoot) !== ownerRoot) return undefined;
 
   const candidateGit = runGit(bundleRoot, ["rev-parse", "--git-common-dir"]);
   const ownerGit = runGit(ownerRoot, ["rev-parse", "--git-common-dir"]);
   const commonGitDir = candidateGit.status === 0 ? canonicalGitPath(bundleRoot, candidateGit.stdout.trim()) : null;
   const ownerCommonGitDir = ownerGit.status === 0 ? canonicalGitPath(ownerRoot, ownerGit.stdout.trim()) : null;
-  if (!commonGitDir || !ownerCommonGitDir || commonGitDir !== ownerCommonGitDir) {
-    throw failure(target, "common-git-dir", "the selected worktree does not share its owner's Git common directory");
-  }
+  if (!commonGitDir || !ownerCommonGitDir || commonGitDir !== ownerCommonGitDir) return undefined;
 
   const registered = runGit(ownerRoot, ["worktree", "list", "--porcelain"]);
   const listed = registered.status === 0 && registered.stdout
@@ -99,6 +89,34 @@ export async function validateBoundBoardOwner(target: LocalBundleTarget): Promis
     .filter((line) => line.startsWith("worktree "))
     .some((line) => canonicalGitPath(ownerRoot, line.slice("worktree ".length).trim()) === bundleRoot);
   if (!listed) throw failure(target, "worktree-registration", "the selected worktree is not registered by its owner");
+
+  // A rebase detaches HEAD, so recover only after exact root/common-dir/registration proof and
+  // only when Git's own rebase record says it began from the board branch.  Then re-prove the
+  // branch below before freezing any capability.
+  if (detectStaleRebase(bundleRoot)) {
+    if (!rebaseWasFromBoardBranch(bundleRoot)) {
+      throw failure(target, "rebase-origin", "the selected worktree has a rebase not started from the board branch");
+    }
+    try {
+      abortStaleRebase(bundleRoot);
+    } catch {
+      throw failure(target, "rebase-recovery", "the selected board worktree could not recover its stale rebase");
+    }
+  }
+
+  if (repoTopLevel(bundleRoot) !== bundleRoot || repoTopLevel(ownerRoot) !== ownerRoot) {
+    throw failure(target, "recovery-topology", "the selected worktree changed while recovering its stale rebase");
+  }
+  const recoveredCandidateGit = runGit(bundleRoot, ["rev-parse", "--git-common-dir"]);
+  const recoveredOwnerGit = runGit(ownerRoot, ["rev-parse", "--git-common-dir"]);
+  if (
+    recoveredCandidateGit.status !== 0 ||
+    recoveredOwnerGit.status !== 0 ||
+    canonicalGitPath(bundleRoot, recoveredCandidateGit.stdout.trim()) !== commonGitDir ||
+    canonicalGitPath(ownerRoot, recoveredOwnerGit.stdout.trim()) !== commonGitDir
+  ) {
+    throw failure(target, "recovery-common-git-dir", "the selected worktree changed Git ownership while recovering its stale rebase");
+  }
 
   const branch = runGit(bundleRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
   if (branch.status !== 0 || branch.stdout.trim() !== BOARD_BRANCH) {

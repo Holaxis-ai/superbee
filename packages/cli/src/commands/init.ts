@@ -9,8 +9,7 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
-import { assertPlainInitTarget, resolveLocalBundleTarget, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
-import { validateBoundBoardOwner } from "../bound-board-owner.js";
+import { assertPlainInitTarget, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -105,16 +104,18 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     );
   }
 
-  // `init` is a write-first command. A bare project binding deliberately selects an existing
-  // private board, so it must not create an index/recipes in the public checkout (nor try to
-  // bootstrap the bound board implicitly). Explicit --dir remains the operator's override.
+  // `init` is write-first. A plain binding names its selected bundle, while only a proven private
+  // board refuses bare init before a write can reach the invoking public checkout.
+  let boundRoute: Awaited<ReturnType<typeof resolveLocalBundleRoute>> | undefined;
   if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
-    const owner = await validateBoundBoardOwner(await resolveLocalBundleTarget(undefined));
-    throw new CliError(
-      "CONFLICT",
-      "a project binding already selects a private board; bare init refuses before writing",
-      { help: `${cliInvocation()} sync --dir ${shellArg(owner?.ownerRoot ?? "<private-owner>")}` },
-    );
+    boundRoute = await resolveLocalBundleRoute(undefined);
+    if (boundRoute.kind === "bound-board") {
+      throw new CliError(
+        "CONFLICT",
+        "a project binding already selects a private board; bare init refuses before writing",
+        { help: `${cliInvocation()} sync --dir ${shellArg(boundRoute.owner.ownerRoot)}` },
+      );
+    }
   }
 
   // Recipe RESOLUTION is hoisted before any write: a recipe typo must fail at exit 2
@@ -145,8 +146,9 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   // bundle exists. Plain init keeps its historical open-or-create path unchanged.
   let root: string;
   let bundle;
+  const initDir = boundRoute?.kind === "bound-local" ? boundRoute.target.root : values.dir;
   if (createOnly) {
-    const result = await withCreateOnlyTarget(values.dir, (physicalTarget) =>
+    const result = await withCreateOnlyTarget(initDir, (physicalTarget) =>
       (deps.initBundleImpl ?? initBundle)(physicalTarget, {
         okfVersion,
         expectNew: true,
@@ -155,7 +157,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     root = result.root;
     bundle = result.value;
   } else {
-    root = await assertPlainInitTarget(values.dir);
+    root = await assertPlainInitTarget(initDir);
     bundle = await (deps.initBundleImpl ?? initBundle)(root, {
       okfVersion,
     });

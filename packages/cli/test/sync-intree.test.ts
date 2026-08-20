@@ -582,9 +582,9 @@ test("hook: a THROWING post-persist hook can never fail a successful write; a no
     assert.equal(fired, 0, "no-op writes never fire the post-persist hook");
 
     // Generic (non-conventional, remote) bundles get no hook at all — zero git discovery.
-    assert.equal(boardPostPersistHook({ root: bundleRoot }, "mike"), undefined, "non-conventional name → no hook");
-    assert.equal(boardPostPersistHook({ root: bundleRoot }, undefined), undefined);
-    assert.equal(boardPostPersistHook({ root: bundleRoot }, "unknown"), undefined);
+    assert.equal(boardPostPersistHook({ kind: "none" }, "mike"), undefined, "no precomputed board route → no hook");
+    assert.equal(boardPostPersistHook({ kind: "none" }, undefined), undefined);
+    assert.equal(boardPostPersistHook({ kind: "none" }, "unknown"), undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

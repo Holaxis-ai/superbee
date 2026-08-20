@@ -9,7 +9,7 @@ import {
   resolveKindFieldCoordinate,
   type Frontmatter,
 } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../../bundle.js";
+import { boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
 import { assertLeafArity } from "../../positional-arity.js";
@@ -295,7 +295,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const bundle = await openBundle(p.dir, await resolveRemoteFlag(p.remote, p.dir));
+  const remote = await resolveRemoteFlag(p.remote, p.dir);
+  const route = remote === undefined ? await resolveLocalBundleRoute(p.dir) : undefined;
+  const bundle = route?.bundle ?? await openBundle(p.dir, remote);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const mode = resolveMode({ json: p.json });
 
@@ -328,7 +330,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     expectedVersion: p.expectedVersion?.trim(),
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
-    onPersisted: boardPostPersistHook(bundle, actor),
+    onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
     buildCandidate: async (existingDoc, context) => {
       const existing = existingDoc!;
       const nextFrontmatter: Frontmatter = { ...existing.frontmatter };

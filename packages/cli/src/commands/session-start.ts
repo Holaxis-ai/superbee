@@ -72,8 +72,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { syncOutcomeLine } from "../sync-outcomes.js";
 import { assertSearchDirOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { resolveLocalBundleTarget, resolveProjectBinding } from "../bundle.js";
-import { validateBoundBoardOwner } from "../bound-board-owner.js";
+import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../bundle.js";
 
 /** Pull budget: ≤ 7s total, under hook.ts's 10s HOOK_TIMEOUT_SECONDS. */
 export const SESSION_START_PULL_BUDGET_MS = 7_000;
@@ -151,10 +150,15 @@ export async function sessionStartPull(
     // it can only report while `boardPath` stays undefined. The throw lands in this function's
     // fail-soft catch (its documented posture for every "could not verify the board" outcome).
     assertSearchDirOutsidePrivateState(path.resolve(dir ?? process.cwd()));
-    const owner = dir === undefined && await resolveProjectBinding(process.cwd())
-      ? await validateBoundBoardOwner(await resolveLocalBundleTarget(undefined))
+    const route: ResolvedLocalRoute | undefined = dir === undefined && await resolveProjectBinding(process.cwd())
+      ? await resolveLocalBundleRoute(undefined)
       : undefined;
-    const startDir = owner?.ownerRoot ?? retargetBoardInterior(dir ?? process.cwd());
+    const owner = route?.kind === "bound-board" ? route.owner : undefined;
+    const startDir = owner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(dir ?? process.cwd()));
+
+    // A plain binding selects documents only. It cannot direct a session-start Git or state probe
+    // at either its enclosing project or the invoking checkout.
+    if (route?.kind === "bound-local") return undefined;
 
     // Budget guard at the first network boundary: retargetBoardInterior above
     // already spent local-git time, and a tiny/zero injected budget can be spent at entry — never

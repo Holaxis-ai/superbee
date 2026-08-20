@@ -2,7 +2,7 @@
 // the stdin-detection rule this verb's body-source guard depends on.
 import { parseArgs } from "node:util";
 import { loadKinds, type Frontmatter, type OkfDocument } from "@superbee/core";
-import { openBundle, resolveRemoteFlag } from "../../bundle.js";
+import { boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
 import { CliError } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -121,7 +121,9 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     frontmatter.timestamp = ts;
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
+  const bundle = route?.bundle ?? await openBundle(values.dir, remote);
   id = await resolveConceptIdCliArgument(bundle, rawId);
   const isConventionPath = id.startsWith("conventions/");
 
@@ -166,7 +168,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     persistActor: true,
     // Board self-attribution (PR C): fires only after a substantive persisted write — never a
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).
-    onPersisted: boardPostPersistHook(bundle, actor),
+    onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
     buildCandidate: (fresh: OkfDocument | undefined) => {
       // SCHEMA-LOSS guard (cold-start study #3): `doc write` replaces the WHOLE document and carries
       // only a fixed flag set (type/title/description/resource/tags/timestamp) — it has NO

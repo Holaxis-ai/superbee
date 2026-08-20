@@ -62,7 +62,7 @@ import {
   type ValidationWarning,
 } from "@superbee/core";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
-import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../bundle.js";
 import { CliError, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage, parseNewSchemaPhaseOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -386,8 +386,12 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // `--help` must work anywhere: if the bundle can't be opened, fall back to the generic reference
   // rather than erroring on a bundle lookup the user didn't ask to perform.
   let bundle;
+  let attribution: ReturnType<typeof boardAttributionForRoute> = { kind: "none" };
   try {
-    bundle = await openBundle(preDir, await resolveRemoteFlag(preRemote, preDir));
+    const remote = await resolveRemoteFlag(preRemote, preDir);
+    const route = remote === undefined ? await resolveLocalBundleRoute(preDir) : undefined;
+    bundle = route?.bundle ?? await openBundle(preDir, remote);
+    attribution = route ? boardAttributionForRoute(route) : { kind: "none" };
   } catch (err) {
     if (pre.values.help) {
       stdout(NEW_USAGE);
@@ -590,7 +594,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     actor,
     persistActor: true,
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.
-    onPersisted: boardPostPersistHook(bundle, actor),
+    onPersisted: boardPostPersistHook(attribution, actor),
     buildCandidate: (_existing, context) => {
       const preparedEdition = okfVersion ?? "0.1";
       if (context.okfVersion !== preparedEdition) {
