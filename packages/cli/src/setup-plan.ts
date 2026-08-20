@@ -2,7 +2,10 @@
 // only the bounded capability matrix, deterministic ordering, and one-next-command projection.
 
 import type { McpInstallTargetId, McpRegistrationState } from "./mcp-install-targets.js";
-import type { PersistentInstallAuthorityState } from "./install-authority.js";
+import type {
+  PersistentInstallAuthorityFailure,
+  PersistentInstallAuthorityState,
+} from "./install-authority.js";
 import type { InstallScope } from "./install-scope.js";
 import type { HookCompatibility } from "./hook-compatibility.js";
 import type { SkillCompatibilityState, SkillState } from "./skill-compatibility.js";
@@ -50,6 +53,7 @@ export interface SetupPlanInput {
     readonly state: PersistentInstallAuthorityState;
     readonly reason: string;
     readonly persistent: boolean;
+    readonly failure?: PersistentInstallAuthorityFailure;
   };
   readonly state: UserStateMigrationInspection;
   readonly skill?: SetupSkillHostState;
@@ -130,6 +134,15 @@ function distributionCapability(input: SetupPlanInput): SetupCapability {
       reason: input.distribution.state === "durable_global"
         ? "the running CLI is a durable npm-global installation"
         : "the running CLI is an installed developer artifact with stable launch paths",
+    };
+  }
+  if (input.distribution.failure === "npm_prefix_runtime_unavailable") {
+    return {
+      id: "distribution",
+      requirement: "required",
+      state: "blocked",
+      reason: `${input.distribution.reason}; use the npm-global prefix owned by the running Node installation, reinstall Superbee there, then rerun setup`,
+      command: "npm prefix --global && command -v node && command -v superbee",
     };
   }
   return {

@@ -160,6 +160,23 @@ test("durable npm-package proof fails closed for every missing or transient fact
   }
 });
 
+test("a package-only npm prefix is a typed runtime-layout failure, not a generic reinstall case", () => {
+  const fixture = durableFixture();
+  const result = classifyPersistentInstallAuthority({
+    ...fixture,
+    realpath: (candidate: string) => {
+      const normalized = path.normalize(candidate);
+      if (normalized === "/opt/superbee-npm/bin/node") return undefined;
+      return fixture.realpath(normalized);
+    },
+  });
+
+  assert.equal(result.allowed, false);
+  assert.equal(result.state, "unknown");
+  assert.equal(result.failure, "npm_prefix_runtime_unavailable");
+  assert.match(result.reason, /npm global prefix.*running Node launcher/);
+});
+
 test("local-dev policy remains explicit while unknown fails closed", () => {
   const installedLocalDev = classifyPersistentInstallAuthority({
     ...durableFixture(),

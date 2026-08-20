@@ -117,6 +117,34 @@ test("host-scoped setup returns a complete plan and remains path-free", async ()
   assert.doesNotMatch(output, /\/Users\/private/);
 });
 
+test("host-scoped setup turns a package-only npm prefix into path-free runtime inspection", async () => {
+  let output = "";
+  const injected = deps((text) => { output += text; });
+  injected.inspectDistribution = () => ({
+    allowed: false,
+    state: "unknown",
+    reason: "npm global prefix does not provide the running Node launcher required for durable host integration",
+    failure: "npm_prefix_runtime_unavailable",
+    evidence: {
+      npm_prefix: "/Users/private/npm",
+      bin_path: "/Users/private/npm/bin/superbee",
+      executable_path: "/Users/private/npm/lib/node_modules/superbee/dist/superbee.mjs",
+      runtime_path: "/opt/private/node",
+    },
+  });
+
+  await setup(["--host", "codex", "--json"], injected);
+  const parsed = JSON.parse(output) as {
+    setup: { next: { action: string; command: string; reason: string } };
+  };
+  assert.deepEqual(parsed.setup.next, {
+    action: "inspect",
+    command: "npm prefix --global && command -v node && command -v superbee",
+    reason: "npm global prefix does not provide the running Node launcher required for durable host integration; use the npm-global prefix owned by the running Node installation, reinstall Superbee there, then rerun setup",
+  });
+  assert.doesNotMatch(output, /\/Users\/private|\/opt\/private/);
+});
+
 test("user setup surfaces a project overlay without recommending an all-host uninstall", async () => {
   let output = "";
   const injected = deps((text) => { output += text; });
