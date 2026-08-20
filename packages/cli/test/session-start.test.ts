@@ -810,8 +810,12 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-base-"));
   try {
     // The CLI itself is found through PATH, but the WRITTEN command is fully absolute.
-    const install = await runCliHook(["hook", "install"], { cwd: base });
+    const install = await runCliHook(["hook", "install", "--json"], { cwd: base });
     assert.equal(install.status, 0, install.stdout + install.stderr);
+    const installReceipt = JSON.parse(install.stdout).hook;
+    assert.equal(installReceipt.changed, true);
+    assert.equal(installReceipt.restart_required, true);
+    assert.deepEqual(installReceipt.affected_hosts, ["claude_code", "codex", "opencode"]);
     assert.match(install.stdout, /session-start/);
 
     const claude = JSON.parse(
@@ -1522,9 +1526,25 @@ test("hook install over a seeded legacy hook converges on disk: rewrite, idempot
     assert.deepEqual(afterInstall.hooks.SessionStart[0].hooks, [FOREIGN_HOOK], "foreign hook untouched");
 
     const bytesAfterInstall = await readFile(settingsPath, "utf8");
-    const reinstall = await runCliHook(["hook", "install"], { cwd: base });
+    const reinstall = await runCliHook(["hook", "install", "--json"], { cwd: base });
     assert.equal(reinstall.status, 0, reinstall.stdout + reinstall.stderr);
     assert.equal(await readFile(settingsPath, "utf8"), bytesAfterInstall, "reinstall is a no-op on disk");
+    const reinstallReceipt = JSON.parse(reinstall.stdout).hook;
+    assert.equal(reinstallReceipt.changed, false);
+    assert.equal(reinstallReceipt.restart_required, false);
+    assert.deepEqual(reinstallReceipt.affected_hosts, []);
+
+    const staleClaude = JSON.parse(bytesAfterInstall);
+    staleClaude.hooks.SessionStart = staleClaude.hooks.SessionStart
+      .map((group: { hooks?: { command?: string }[] }) => ({
+        ...group,
+        hooks: (group.hooks ?? []).filter((entry) => !isManagedHookCommand(entry.command ?? "")),
+      }))
+      .filter((group: { hooks: unknown[] }) => group.hooks.length > 0);
+    await writeFile(settingsPath, `${JSON.stringify(staleClaude, null, 2)}\n`);
+    const claudeOnly = await runCliHook(["hook", "install", "--json"], { cwd: base });
+    assert.equal(claudeOnly.status, 0, claudeOnly.stdout + claudeOnly.stderr);
+    assert.deepEqual(JSON.parse(claudeOnly.stdout).hook.affected_hosts, ["claude_code"]);
 
     const uninstall = await runCliHook(["hook", "uninstall"], { cwd: base });
     assert.equal(uninstall.status, 0, uninstall.stdout + uninstall.stderr);
