@@ -168,6 +168,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,
     persistActor: true,
+    compareTimestamp: values.timestamp !== undefined,
     // Board self-attribution (PR C): fires only after a substantive persisted write — never a
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
@@ -243,6 +244,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   const saved = result.doc;
   const receipt: Record<string, unknown> = {
     doc: "written",
+    changed: result.changed,
     id: saved.id,
     type: saved.frontmatter.type,
     timestamp: saved.frontmatter.timestamp ?? null,

@@ -65,8 +65,7 @@ export interface MutateDocOptions {
 
 export interface MutateResult {
   doc: OkfDocument;
-  /** Present for patch mode only; create-only and overwrite always write. */
-  changed?: boolean;
+  changed: boolean;
   version: Version;
   warnings: ValidationWarning[];
 }
@@ -137,9 +136,7 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
 
     if (result.changed) await firePostPersist(opts.onPersisted);
 
-    return opts.mode === "patch"
-      ? result
-      : { doc: result.doc, version: result.version, warnings: result.warnings };
+    return result;
   } catch (error) {
     return await translateMutationError(error, opts);
   }

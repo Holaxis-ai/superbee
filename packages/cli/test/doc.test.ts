@@ -45,7 +45,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -292,6 +292,76 @@ test("doc write F1: a real NON-EMPTY stdin pipe IS an explicit source and does n
     assert.equal(after.body, "Piped replacement.\n");
   } finally {
     await cleanup();
+  }
+});
+
+test("doc write: an identical repeat is changed:false, preserves version and mtime, and actor alone cannot create a revision", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const args = [
+      "write",
+      "concepts/a",
+      "--type",
+      "Concept",
+      "--title",
+      "A",
+      "--body",
+      "Same body.",
+      "--timestamp",
+      T,
+      "--actor",
+      "alice",
+      "--dir",
+      dir,
+    ];
+    const first = await runDoc(args);
+    assert.equal(first.changed, true);
+    const firstVersion = first.version;
+
+    const file = path.join(dir, "concepts", "a.md");
+    const pinnedMtime = new Date("2001-01-01T00:00:00.000Z");
+    await utimes(file, pinnedMtime, pinnedMtime);
+    const before = await stat(file);
+
+    const repeated = await runDoc(args);
+    assert.equal(repeated.changed, false);
+    assert.equal(repeated.version, firstVersion);
+    assert.equal((await stat(file)).mtimeMs, before.mtimeMs);
+
+    const actorOnly = await runDoc(args.map((arg) => arg === "alice" ? "bob" : arg));
+    assert.equal(actorOnly.changed, false);
+    assert.equal(actorOnly.version, firstVersion);
+    assert.equal((await readDoc({ root: dir }, "concepts/a")).frontmatter.actor, "alice");
+    assert.equal((await stat(file)).mtimeMs, before.mtimeMs);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc write --remote: an identical repeat is changed:false and does not append backend history", async () => {
+  const bundle: Bundle = { root: "mem://doc-write-noop-remote", backend: new MemoryBackend() };
+  const server = await bootServerOverBundle(bundle);
+  try {
+    const args = [
+      "write",
+      "concepts/a",
+      "--type",
+      "Concept",
+      "--body",
+      "Same body.",
+      "--timestamp",
+      T,
+      "--remote",
+      server.url,
+    ];
+    const first = await runDoc(args);
+    const repeated = await runDoc(args);
+    assert.equal(first.changed, true);
+    assert.equal(repeated.changed, false);
+    assert.equal(repeated.version, first.version);
+    assert.equal((await docVersions(bundle, "concepts/a")).length, 1);
+  } finally {
+    await server.close();
   }
 });
 
@@ -685,6 +755,7 @@ test("mutateDoc overwrite: a concurrent writer's link addition between the read 
         mode: "overwrite",
         registry,
         strict: false,
+        compareTimestamp: true,
         helpOnKindReject: "kinds",
         buildCandidate: (existing) => {
           seenExisting.push(existing);
@@ -843,7 +914,11 @@ test("mutateDoc overwrite: the historical '--replace-links' shape (a candidate t
 test("doc write F1 guard: re-evaluated on EVERY attempt — a competing writer fills an EMPTY body concurrently, and our own bodyless write refuses (USAGE) instead of silently blanking it", async () => {
   const backend = new MemoryBackend();
   const bundle: Bundle = { root: "mem://write-f1-race", backend };
-  await writeDoc(bundle, { id: "a", frontmatter: { type: "Concept", timestamp: OLD_TS }, body: "" });
+  await writeDoc(bundle, {
+    id: "a",
+    frontmatter: { type: "Concept", title: "Original", timestamp: OLD_TS },
+    body: "",
+  });
 
   // The FIRST time our own write attempts a real CAS write for 'a', a competing writer fills the
   // (currently empty) body with non-empty content first, using OUR OWN read's version (so it wins).

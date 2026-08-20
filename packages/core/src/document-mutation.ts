@@ -12,7 +12,7 @@ import { InvalidInputError } from "./errors.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
 import { parseTimestamp } from "./freshness.js";
 import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
-import { persistMutationActor } from "./mutation-attribution.js";
+import { persistMutationActor, SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import {
   defaultTimestampAndValidateAgainstRegistry,
   freshnessHorizonMs,
@@ -100,7 +100,7 @@ export interface MutateDocumentOptions {
   onAbsent?: "fail" | "create";
   /** Retry budget for overwrite and ordinary patch. */
   maxAttempts?: number;
-  /** Patch only: include timestamp in semantic no-op comparison. */
+  /** Include the legacy timestamp in semantic no-op comparison. */
   compareTimestamp?: boolean;
   /** Advisory backend-history attribution, applied only when a write occurs. */
   actor?: string;
@@ -136,13 +136,39 @@ function valuesEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function isNoopPatch(
+function withoutAutomaticMutationActor(
+  frontmatter: Frontmatter,
+  okfVersion: "0.1" | "0.2",
+  kindRequiresActor: boolean,
+): Frontmatter {
+  if (okfVersion === "0.1") {
+    const { actor: _actor, ...rest } = frontmatter;
+    return rest;
+  }
+  const { [SUPERBEE_UPDATED_BY_FIELD]: _updatedBy, ...rest } = frontmatter;
+  if (!kindRequiresActor) return rest;
+  const { actor: _actor, ...withoutActor } = rest;
+  return withoutActor;
+}
+
+function isNoopMutation(
   existing: OkfDocument,
   candidate: DocumentMutationCandidate,
   compareTimestamp: boolean,
-  okfVersion: string,
+  okfVersion: "0.1" | "0.2",
+  ignoreAutomaticActor = false,
+  kindRequiresActor = false,
+  normalizeStorageBody = false,
 ): boolean {
-  if (candidate.body !== existing.body) return false;
+  const comparedBody = (body: string): string =>
+    normalizeStorageBody && !body.endsWith("\n") ? `${body}\n` : body;
+  if (comparedBody(candidate.body) !== comparedBody(existing.body)) return false;
+  const existingFrontmatter = ignoreAutomaticActor
+    ? withoutAutomaticMutationActor(existing.frontmatter, okfVersion, kindRequiresActor)
+    : existing.frontmatter;
+  const candidateFrontmatter = ignoreAutomaticActor
+    ? withoutAutomaticMutationActor(candidate.frontmatter, okfVersion, kindRequiresActor)
+    : candidate.frontmatter;
   if (okfVersion === "0.2") {
     const withoutGeneratedAt = (frontmatter: Frontmatter): Frontmatter => {
       const generated = frontmatter.generated;
@@ -152,11 +178,11 @@ function isNoopPatch(
       const { at: _at, ...generatedRest } = generated as Record<string, unknown>;
       return { ...frontmatter, generated: generatedRest };
     };
-    return valuesEqual(withoutGeneratedAt(existing.frontmatter), withoutGeneratedAt(candidate.frontmatter));
+    return valuesEqual(withoutGeneratedAt(existingFrontmatter), withoutGeneratedAt(candidateFrontmatter));
   }
-  if (compareTimestamp) return valuesEqual(existing.frontmatter, candidate.frontmatter);
-  const { timestamp: _existingTimestamp, ...existingRest } = existing.frontmatter;
-  const { timestamp: _candidateTimestamp, ...candidateRest } = candidate.frontmatter;
+  if (compareTimestamp) return valuesEqual(existingFrontmatter, candidateFrontmatter);
+  const { timestamp: _existingTimestamp, ...existingRest } = existingFrontmatter;
+  const { timestamp: _candidateTimestamp, ...candidateRest } = candidateFrontmatter;
   return valuesEqual(existingRest, candidateRest);
 }
 
@@ -290,7 +316,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   if (opts.mode === "overwrite") {
     let savedDoc: OkfDocument | undefined;
     let warnings: ValidationWarning[] = [];
-    const outcome = await versionedMutation<OkfDocument, undefined>({
+    const outcome = await versionedMutation<OkfDocument, { doc?: OkfDocument }>({
       read: readExisting,
       decide: async (existing) => {
         const decisionNow = onceNow(now);
@@ -325,7 +351,22 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           throw new KindConformanceError(opts.id, validated.kind!.governs, warnings, okfVersion);
         }
 
-        return { action: "write", next: { id: opts.id, ...candidate }, result: undefined };
+        if (
+          existing
+          && isNoopMutation(
+            existing,
+            candidate,
+            compareTimestamp,
+            okfVersion,
+            persistActor && opts.actor !== undefined,
+            validated.kind?.fields.required.includes("actor") ?? false,
+            true,
+          )
+        ) {
+          return { action: "done", result: { doc: existing } };
+        }
+
+        return { action: "write", next: { id: opts.id, ...candidate }, result: {} };
       },
       write: async (next, expectedVersion) => {
         const written = await writeDocVersionedForEdition(opts.bundle, next, okfVersion, {
@@ -337,7 +378,9 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       },
       maxAttempts,
     });
-    return { doc: savedDoc!, changed: true, version: outcome.version!, warnings };
+    return outcome.wrote
+      ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings }
+      : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings };
   }
 
   let lastReadVersion: Version | null = null;
@@ -364,7 +407,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         opts.registry,
         decisionNow,
       );
-      if (existing && isNoopPatch(existing, candidateForComparison, compareTimestamp, okfVersion)) {
+      if (existing && isNoopMutation(existing, candidateForComparison, compareTimestamp, okfVersion)) {
         return { action: "done", result: { doc: existing, warnings: [] } };
       }
 
