@@ -654,6 +654,7 @@ export function renderNpm(): string {
   lines.push(...renderNpmPathSection());
   lines.push(...renderHostSetupSection());
   lines.push(...STABLE_MCP_LAUNCH_GUIDANCE.split("\n"), "");
+  lines.push(...renderOpeningSessionSection(NPM_BIN));
   lines.push(...renderCommandsSection(COMMAND_GROUPS, NPM_BIN));
   lines.push(...renderWorkspaceLocation(NPM_BIN));
   lines.push(...renderTypicalFlow(NPM_BIN));
@@ -664,6 +665,36 @@ export function renderNpm(): string {
   lines.push(...renderHumanReviewSection(NPM_BIN));
   lines.push(...renderNotesSection(referenceNotesAddendum(NPM_BIN, REFS_POINTER)));
   return lines.join("\n");
+}
+
+/** `## Opening a session` — the offer-first opening contract over home's `offers` rows. */
+function renderOpeningSessionSection(invocation: string): string[] {
+  const lines: string[] = [];
+  lines.push("## Opening a session — offer, don't explain");
+  lines.push("");
+  lines.push("The home view (the SessionStart payload) supplies the opening's facts. When the user is");
+  lines.push("orienting rather than mid-request, open with 2-3 numbered one-line offers plus one question");
+  lines.push('("which first?") — never a capability essay. Keep the whole opener to 5 lines or fewer.');
+  lines.push("");
+  lines.push("- If the user's first message is a concrete work request, do the work. Surface offers only");
+  lines.push("  at a natural stopping point, or when the user asks what Superbee can do.");
+  lines.push('- Phrase offers as user outcomes ("set up a shared task list"), not commands or schema');
+  lines.push("  terms.");
+  lines.push("- The home view's `offers` rows are ready-made candidates: each carries the outcome");
+  lines.push("  phrasing and the exact command to run once the user picks it.");
+  lines.push("- Board first contact (a board exists for this repo but is not provisioned) means exactly");
+  lines.push(`  ONE offer: run \`${invocation} sync\` — never \`init\`.`);
+  lines.push("- In an established workspace (no `offers` rows), orient from the board changes and recent");
+  lines.push("  docs and offer to resume, review, or start something new. A live view of the bundle");
+  lines.push("  (task board, link map) is a valid third offer once there are docs to show.");
+  lines.push('- Always end with an opt-out option: "just continue" in an established workspace, "skip');
+  lines.push('  for now" in a fresh one.');
+  lines.push("- Keep this one-line-options register for offers and status updates alike; expand only");
+  lines.push("  when the user asks for depth. `status` findings are raw material for follow-up offers");
+  lines.push("  on demand.");
+  lines.push("- Drop declined offers for the rest of the session.");
+  lines.push("");
+  return lines;
 }
 
 /** `## Bundle views` — the concept + v0 request-type names + the 4 authoring steps + a pointer. */
