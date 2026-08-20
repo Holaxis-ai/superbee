@@ -70,12 +70,22 @@ test("version help carries bounded stable-MCP verification guidance", () => {
   assert.match(VERSION_USAGE, /never installs a package/);
 });
 
-test("the BUILT CLI: `--version` and `-v` print the version and exit 0", () => {
-  for (const flag of ["--version", "-v"]) {
+test("the BUILT CLI: `--version`, `-v`, and `-V` print the version and exit 0", () => {
+  for (const flag of ["--version", "-v", "-V"]) {
     const r = spawnSync("node", [cliBin, flag], { encoding: "utf8" });
     assert.equal(r.status, 0, `${flag} exits 0 (was exit 2 USAGE before this fix)`);
     assert.equal(r.stdout.trim(), pkgVersion, `${flag} prints the version`);
   }
+});
+
+test("the executable entry decides bare version aliases before loading the CLI command graph", () => {
+  const source = readFileSync(path.resolve(cliPackageRoot, "src/index.ts"), "utf8");
+  assert.doesNotMatch(source, /^import .*from "\.\/cli\.js";/m);
+  assert.match(source, /await import\("\.\/cli\.js"\)/);
+  assert.ok(
+    source.indexOf("isBareVersionFlag(argv[0])") < source.indexOf('await import("./cli.js")'),
+    "the version decision must precede the dynamic command-graph import",
+  );
 });
 
 test("the BUILT CLI exposes the exact complete envelope in JSON and TOON", () => {

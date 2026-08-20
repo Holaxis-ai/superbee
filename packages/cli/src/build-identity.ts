@@ -19,6 +19,7 @@ import {
 declare const __SUPERBEE_BUILD_IDENTITY__: unknown;
 
 export const BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1" as const;
+export const BARE_VERSION_FLAGS = ["--version", "-v", "-V"] as const;
 export const ARTIFACT_CHANNELS = [
   "npm-package",
   "local-dev",
@@ -27,6 +28,10 @@ export const ARTIFACT_CHANNELS = [
 export type ArtifactChannel = (typeof ARTIFACT_CHANNELS)[number];
 export type LaunchMode = "path" | "direct" | "npx-inferred" | "source" | "unknown";
 export type LaunchConfidence = "certain" | "inferred" | "unknown";
+
+export function isBareVersionFlag(value: string | undefined): boolean {
+  return BARE_VERSION_FLAGS.some((flag) => flag === value);
+}
 
 export interface CompatibilityContracts {
   skill: number | null;
