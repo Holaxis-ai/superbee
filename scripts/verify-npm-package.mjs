@@ -879,15 +879,10 @@ async function runInstalledProof(spec) {
       `${manifest.license} \u00a9 2026 Holaxis`,
       "the installed README license notice must agree with the published package metadata",
     );
-    assert.match(installedReadme, /init --create-only --recipe work-tracking/);
-    assert.match(installedReadme, /bring source material or intent\s+to your agent/i);
-    assert.match(installedReadme, /agent organizes,\s+types, links, and updates the\s+bundle/i);
-    assert.match(installedReadme, /^npm install -g superbee$/m);
-    assert.match(installedReadme, /^superbee setup$/m);
-    assert.match(
-      installedReadme,
-      /`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity\./,
-    );
+    assert.match(installedReadme, /ask your AI agent to run `superbee setup`/);
+    assert.match(installedReadme, /ask your agent for what\s+you need/i);
+    assert.match(installedReadme, /translate your\s+instructions into CLI commands/i);
+    assert.match(installedReadme, /^\s*npm install -g superbee$/m);
 
     const setupBeforeIntegrations = parseJson(
       (
