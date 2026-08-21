@@ -543,7 +543,9 @@ test("home surface: flat badged grid, live activity feed, first-run orientation 
     await orientation.getByRole("button", { name: "Next" }).dblclick();
     await expect(orientation).toContainText(/collaborating with others/i);
     await expect(orientation, "a double-click on the last Next must not fall through to Got it").toBeVisible();
-    await expect(orientation).toContainText(/stays local until you choose to share it/i);
+    await expect(orientation).toContainText(/stays local until you share it/i);
+    // The public-repo visibility warning is visible WITHOUT expanding "learn more".
+    await expect(orientation).toContainText(/as visible as the repository that carries it/i);
     await orientation.getByRole("button", { name: "Got it" }).click();
     await expect(orientation).not.toBeVisible();
     await page.reload();
@@ -553,7 +555,7 @@ test("home surface: flat badged grid, live activity feed, first-run orientation 
     // …but the walkthrough stays reachable: "what is this?" reopens it at panel 1, and walking to
     // the end closes it again.
     await page.locator(".about-btn").click();
-    await expect(page.locator(".orientation")).toContainText(/cognitive ecosystem/i);
+    await expect(page.locator(".orientation")).toContainText(/shared, versioned memory/i);
     await page.locator(".orientation").getByRole("button", { name: "Next" }).click();
     await page.locator(".orientation").getByRole("button", { name: "Next" }).click();
     await page.locator(".orientation").getByRole("button", { name: "Next" }).click();
