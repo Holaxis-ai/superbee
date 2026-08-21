@@ -16,7 +16,7 @@ import {
   resolveDeclaredTarget,
   stageDownloadFilenameForTarget,
 } from "./release-targets.mjs";
-import { assertStrictSemver } from "./strict-semver.mjs";
+import { assertStrictSemver, parseStrictSemver } from "./strict-semver.mjs";
 
 /**
  * Which package an operation names is NEVER defaulted. A missing target used to resolve to the
@@ -54,12 +54,6 @@ function assertSha256(value) {
     throw new Error(`invalid tarball SHA-256: ${JSON.stringify(value)}`);
   }
   return value;
-}
-
-function assertBooleanish(name, value) {
-  if (value === true || value === "true") return true;
-  if (value === false || value === "false") return false;
-  throw new Error(`invalid ${name}: ${JSON.stringify(value)}`);
 }
 
 /** Shell-quote an argv element for DISPLAY only (never for execution). */
@@ -187,17 +181,56 @@ export function promoteOperationForTarget({ version, target }) {
 }
 
 /**
- * Immutable-release finalization (§5 final): publish the PREPARED GitHub draft (never create a new
- * one) after re-verifying its identity. Returns argvs + display commands.
+ * Strict SemVer is the only authority for GitHub's prerelease bit. Build metadata never changes
+ * the tier; only a syntactically valid prerelease component does.
  */
-export function immutableReleaseOperations({ releaseId, tag, githubLatest }) {
-  assertToken("releaseId", releaseId);
-  assertToken("tag", tag);
-  const makeLatest = assertBooleanish("githubLatest", githubLatest);
+export function githubPrereleaseForVersion(version) {
+  const parsed = parseStrictSemver(assertVersion(version));
+  return parsed.prerelease !== null;
+}
+
+/**
+ * Immutable-release finalization (§5 final): publish the PREPARED GitHub draft by its numeric ID.
+ * The caller supplies only chain-proven identity. Tag and publication booleans are resolved from
+ * one normalized manifest snapshot, so no dispatch value can restate or override policy.
+ */
+export function immutableReleaseOperations(input) {
+  const allowed = ["releaseId", "sourceCommit", "target", "version"];
+  const supplied = Object.keys(input ?? {}).sort();
+  if (JSON.stringify(supplied) !== JSON.stringify(allowed)) {
+    throw new Error(`immutable-release accepts exactly ${allowed.join(", ")}`);
+  }
+  const { releaseId, sourceCommit, target, version } = input;
+  if (typeof releaseId !== "string" || !/^[1-9][0-9]*$/.test(releaseId)) {
+    throw new Error(`invalid releaseId (must be a positive decimal integer): ${JSON.stringify(releaseId)}`);
+  }
+  if (typeof sourceCommit !== "string" || !/^[a-f0-9]{40}$/.test(sourceCommit)) {
+    throw new Error(`invalid sourceCommit (must be an exact lowercase 40-hex commit): ${JSON.stringify(sourceCommit)}`);
+  }
+  const manifest = defaultReleaseManifest();
+  const releaseTarget = resolveDeclaredTarget({
+    targetId: target,
+    targets: manifest.targets,
+    context: "immutable release operation",
+    workflowContract: "full",
+  });
+  const tuple = resolveAllowedTupleByTarget(manifest, { target: releaseTarget.id });
+  const suppliedVersion = assertVersion(version);
+  if (suppliedVersion !== tuple.version) {
+    throw new Error(`immutable release version ${suppliedVersion} != manifest tuple ${tuple.version} for ${releaseTarget.id}`);
+  }
+  const prerelease = githubPrereleaseForVersion(tuple.version);
+  const makeLatest = tuple.publication.github_latest;
   const releasePath = `repos/{owner}/{repo}/releases/${releaseId}`;
   const argvs = [
-    ["gh", "api", releasePath, "--jq", ".draft, .tag_name, .id"],
-    ["gh", "api", "-X", "PATCH", releasePath, "-f", "draft=false", "-f", `make_latest=${makeLatest}`],
+    [
+      "gh", "api", "-X", "PATCH", releasePath,
+      "-f", `tag_name=${tuple.tag}`,
+      "-f", `target_commitish=${sourceCommit}`,
+      "-F", "draft=false",
+      "-F", `prerelease=${prerelease}`,
+      "-f", `make_latest=${makeLatest}`,
+    ],
   ];
-  return { argvs, commands: argvs.map(displayCommand), tag };
+  return { argvs, commands: argvs.map(displayCommand), tag: tuple.tag };
 }

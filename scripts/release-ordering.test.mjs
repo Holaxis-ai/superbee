@@ -23,17 +23,21 @@ import {
   stampAnnotation,
   stampAssetName,
   verifyFinalPublication,
+  verifyPersistedPublicationProofs,
+  verifyPublishedPublication,
   verifyReceiptStatusBody,
 } from "./release-ordering.mjs";
 import {
   allowedSignerPrincipals,
   applyPublicationPlan,
+  convergePublishedPublication,
   main as verifyOrderingMain,
   selectReceiptAssets,
   verifySignedReceipt,
 } from "./release-verify-ordering.mjs";
 import { buildStageReceipt } from "./release-receipts.mjs";
 import { ReleaseStateError } from "./release-state.mjs";
+import { defaultReleaseManifest } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -175,8 +179,9 @@ test("payload shape: canonical, ordered, validated", () => {
 test("tier + naming authorities", () => {
   assert.equal(releaseTier(PRE), "prerelease");
   assert.equal(releaseTier(STABLE), "stable");
-  assert.equal(releaseTier("1.0.0+build-1"), "stable", "a hyphen in build metadata does not make a prerelease");
-  assert.equal(releaseTier("1.0.0-pre.1+build-1"), "prerelease", "prerelease identity survives build metadata");
+  assert.equal(releaseTier("1.2.3+build.7"), "stable", "build metadata does not make a prerelease");
+  assert.equal(releaseTier("1.2.3-rc.1+build.7"), "prerelease", "prerelease identity survives build metadata");
+  assert.throws(() => releaseTier("1.2.3-01+build.7"), /invalid version/);
   assert.equal(receiptAssetName("inspected", STAGE_ID), `receipt-inspected-${STAGE_ID}.json`);
   assert.equal(stampAssetName(STAGE_ID), `receipt-status-${STAGE_ID}.json`);
   assert.ok(parseAuxiliaryReleaseAssetName(`receipt-approved-${STAGE_ID}.json`, { mode: "pre-stage" }));
@@ -406,6 +411,53 @@ function releaseForPlan(version, ordering, extras = [], body = "Prepared draft."
   };
 }
 
+function publishedFixture(target) {
+  const tuple = defaultReleaseManifest().allowed_tuples[target];
+  const chain = {
+    ...chainFor(tuple.version),
+    target,
+    package: "superbee",
+    core_assets: [
+      { id: 202, name: "candidate.json", digest: MANIFEST_SHA },
+      { id: 201, name: `superbee-${tuple.version}.tgz`, digest: TARBALL_SHA },
+    ],
+  };
+  const ordering = evaluate(tuple.version);
+  const draft = {
+    id: 300,
+    draft: true,
+    tag_name: tuple.tag,
+    body: "Prepared draft.",
+    assets: [...chain.core_assets, ...ordering.receipt_assets],
+  };
+  const plan = buildPublicationPlan({ release: draft, chain, ordering, status: null, bodyAnnotation: null });
+  const release = {
+    ...draft,
+    draft: false,
+    target_commitish: COMMIT,
+    prerelease: target === "successor-preview",
+  };
+  const latest = target === "successor-stable" ? { id: 300 } : { id: 299 };
+  return { tuple, chain, plan, draft, release, latest };
+}
+
+function httpResponse(status, body) {
+  return { status, async json() { return structuredClone(body); } };
+}
+
+function fetchSequence(steps, calls = []) {
+  return {
+    calls,
+    async fetch(url, options) {
+      calls.push({ url, method: options?.method });
+      const next = steps.shift();
+      if (next instanceof Error) throw next;
+      if (!next) throw new Error("unexpected fetch");
+      return next;
+    },
+  };
+}
+
 test("publication planner emits a sorted draft-bound ID-only cleanup manifest", () => {
   const ordering = evaluate(PRE, { inspected: null });
   const status = { name: stampAssetName(STAGE_ID), digest: `sha256:${"5".repeat(64)}` };
@@ -492,6 +544,406 @@ test("HIGHEST-RISK M1 — final publication binds receipt id/digest, generated s
   assert.throws(() => verifyFinalPublication({ release: sibling, plan }), /unexpected final asset/);
 });
 
+test("published verifier binds live-shaped same-ID identity, inventory/body, and latest selection", async () => {
+  const version = "0.1.2-pre.1";
+  const chain = {
+    ...chainFor(version),
+    target: "successor-preview",
+    package: "superbee",
+    core_assets: [
+      { id: 202, name: "candidate.json", digest: MANIFEST_SHA },
+      { id: 201, name: `superbee-${version}.tgz`, digest: TARBALL_SHA },
+    ],
+  };
+  const ordering = evaluate(version);
+  const draft = {
+    id: 300,
+    draft: true,
+    tag_name: chain.tag,
+    body: "Prepared draft.",
+    assets: [...chain.core_assets, ...ordering.receipt_assets],
+  };
+  const plan = buildPublicationPlan({ release: draft, chain, ordering, status: null, bodyAnnotation: null });
+  const tuple = defaultReleaseManifest().allowed_tuples[chain.target];
+  const published = {
+    ...draft,
+    draft: false,
+    target_commitish: COMMIT,
+    prerelease: true,
+  };
+  const latest = { id: 299, draft: false, tag_name: "v0.1.1" };
+  const prove = (release = published, latestRelease = latest) => verifyPublishedPublication({
+    release,
+    latestRelease,
+    plan,
+    chain,
+    tuple,
+  });
+
+  const exact = prove();
+  assert.equal(exact.release_id, 300);
+  assert.equal(exact.source_commit, COMMIT);
+  assert.equal(exact.prerelease, true);
+  assert.equal(exact.github_latest, false);
+  assert.equal(exact.latest_release_id, 299);
+  assert.doesNotThrow(() => prove(published, null), "a missing latest release is valid for a non-latest publication");
+
+  const stableVersion = "0.1.2";
+  const stableChain = {
+    ...chainFor(stableVersion),
+    target: "successor-stable",
+    package: "superbee",
+    core_assets: [
+      { id: 202, name: "candidate.json", digest: MANIFEST_SHA },
+      { id: 201, name: `superbee-${stableVersion}.tgz`, digest: TARBALL_SHA },
+    ],
+  };
+  const stableOrdering = evaluate(stableVersion);
+  const stableDraft = {
+    id: 300,
+    draft: true,
+    tag_name: stableChain.tag,
+    body: "Prepared draft.",
+    assets: [...stableChain.core_assets, ...stableOrdering.receipt_assets],
+  };
+  const stablePlan = buildPublicationPlan({
+    release: stableDraft,
+    chain: stableChain,
+    ordering: stableOrdering,
+    status: null,
+    bodyAnnotation: null,
+  });
+  const stablePublished = {
+    ...stableDraft,
+    draft: false,
+    target_commitish: COMMIT,
+    prerelease: false,
+  };
+  const stableTuple = defaultReleaseManifest().allowed_tuples[stableChain.target];
+  const stableProof = verifyPublishedPublication({
+    release: stablePublished,
+    latestRelease: { id: 300 },
+    plan: stablePlan,
+    chain: stableChain,
+    tuple: stableTuple,
+  });
+  assert.equal(stableProof.github_latest, true);
+  assert.equal(stableProof.latest_release_id, 300);
+  assert.throws(
+    () => verifyPublishedPublication({
+      release: stablePublished,
+      latestRelease: { id: 299 },
+      plan: stablePlan,
+      chain: stableChain,
+      tuple: stableTuple,
+    }),
+    /not the GitHub latest release/,
+  );
+
+  const mutations = [
+    ["historical untagged release", { ...published, tag_name: null }, latest],
+    ["target commit", { ...published, target_commitish: "2".repeat(40) }, latest],
+    ["false-green prerelease", { ...published, prerelease: false }, latest],
+    ["draft", { ...published, draft: true }, latest],
+    ["numeric id", { ...published, id: 301 }, latest],
+    ["asset", { ...published, assets: published.assets.map((asset, index) => index === 0 ? { ...asset, digest: OTHER_SHA } : asset) }, latest],
+    ["body", { ...published, body: normalizeReceiptStatusBody(published.body, "forged status") }, latest],
+    ["latest selection", published, { id: 300 }],
+  ];
+  for (const [label, release, latestRelease] of mutations) {
+    assert.throws(() => prove(release, latestRelease), /operator receipt verification failed/, label);
+  }
+
+  const scratch = mkdtempSync(path.join(tmpdir(), "aslite-published-proof-"));
+  try {
+    const paths = Object.fromEntries(
+      Object.entries({ chain, release: published, latest, plan }).map(([name, value]) => {
+        const file = path.join(scratch, `${name}.json`);
+        writeFileSync(file, JSON.stringify(value));
+        return [name, file];
+      }),
+    );
+    const proofPath = path.join(scratch, "published-proof.json");
+    await verifyOrderingMain([
+      "published", "--chain", paths.chain, "--release", paths.release,
+      "--latest-release", paths.latest, "--plan", paths.plan, "--out", proofPath,
+    ]);
+    assert.deepEqual(JSON.parse(readFileSync(proofPath, "utf8")), exact);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("persisted pre-publication packet binds schemas, release/stage identity, exact assets, and artifact metadata", async () => {
+  const fixture = publishedFixture("successor-preview");
+  const finalProof = verifyFinalPublication({ release: fixture.draft, plan: fixture.plan });
+  const binding = verifyPersistedPublicationProofs({ chain: fixture.chain, plan: fixture.plan, finalProof });
+  assert.deepEqual(binding, {
+    release_id: 300,
+    source_commit: COMMIT,
+    target: "successor-preview",
+    version: "0.1.2-pre.1",
+    tag: "v0.1.2-pre.1",
+  });
+  for (const changed of [
+    { ...finalProof, schema: "other" },
+    { ...finalProof, draft_release_id: 301 },
+    { ...finalProof, stage_id: OTHER_STAGE_ID },
+    { ...finalProof, assets: finalProof.assets.slice(1) },
+  ]) {
+    assert.throws(
+      () => verifyPersistedPublicationProofs({ chain: fixture.chain, plan: fixture.plan, finalProof: changed }),
+      /operator receipt verification failed/,
+    );
+  }
+
+  const scratch = mkdtempSync(path.join(tmpdir(), "finalization-proof-artifact-"));
+  try {
+    const workflowHead = "3".repeat(40);
+    const files = {
+      chain: fixture.chain,
+      plan: fixture.plan,
+      final: finalProof,
+      artifact: {
+        id: 700,
+        name: "release-finalization-proof",
+        digest: `sha256:${"7".repeat(64)}`,
+        expired: false,
+        workflow_run: { id: 800, head_sha: workflowHead },
+      },
+    };
+    const paths = Object.fromEntries(Object.entries(files).map(([name, value]) => {
+      const file = path.join(scratch, `${name}.json`);
+      writeFileSync(file, JSON.stringify(value));
+      return [name, file];
+    }));
+    await verifyOrderingMain([
+      "prepared-artifact", "--artifact", paths.artifact, "--artifact-id", "700",
+      "--artifact-digest", "7".repeat(64), "--run-id", "800", "--head-sha", workflowHead,
+      "--source-commit", COMMIT,
+      "--chain", paths.chain, "--plan", paths.plan, "--final-proof", paths.final,
+    ]);
+    await assert.rejects(
+      verifyOrderingMain([
+        "prepared-artifact", "--artifact", paths.artifact, "--artifact-id", "700",
+        "--artifact-digest", "7".repeat(64), "--run-id", "800", "--head-sha", workflowHead,
+        "--source-commit", "2".repeat(40),
+        "--chain", paths.chain, "--plan", paths.plan, "--final-proof", paths.final,
+      ]),
+      /source commit differs/,
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("published convergence tolerates delayed identity and stable latest selection within the fixed bound", async () => {
+  const fixture = publishedFixture("successor-stable");
+  const sequence = fetchSequence([
+    httpResponse(200, { ...fixture.release, tag_name: null }), httpResponse(404, {}),
+    httpResponse(200, fixture.release), httpResponse(404, {}),
+    httpResponse(200, fixture.release), httpResponse(200, fixture.latest),
+  ]);
+  const sleeps = [];
+  const proof = await convergePublishedPublication({
+    repo: "Holaxis-ai/superbee",
+    token: "test-token",
+    chain: fixture.chain,
+    plan: fixture.plan,
+    tuple: fixture.tuple,
+    fetchImpl: sequence.fetch,
+    sleep: async (ms) => sleeps.push(ms),
+    retryDelayMs: 0,
+  });
+  assert.equal(proof.release_id, 300);
+  assert.equal(proof.github_latest, true);
+  assert.deepEqual(sleeps, [0, 0]);
+  assert.ok(sequence.calls.every((call) => call.method === "GET"));
+  assert.ok(sequence.calls.every((call) => !call.url.includes("test-token")), "GH_TOKEN never enters a URL or loggable status");
+});
+
+test("published convergence retries network and 5xx observations, then succeeds", async () => {
+  const fixture = publishedFixture("successor-preview");
+  const sequence = fetchSequence([
+    new TypeError("dns failure"),
+    httpResponse(503, {}),
+    httpResponse(200, fixture.release), httpResponse(200, fixture.latest),
+  ]);
+  const proof = await convergePublishedPublication({
+    repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+    fetchImpl: sequence.fetch, sleep: async () => {}, retryDelayMs: 0,
+  });
+  assert.equal(proof.github_latest, false);
+  assert.equal(sequence.calls.length, 4);
+});
+
+test("published convergence retries exact-release HTTP 403 and 429 until readable, then succeeds", async () => {
+  const fixture = publishedFixture("successor-preview");
+  for (const status of [403, 429]) {
+    const sequence = fetchSequence([
+      httpResponse(status, {}),
+      httpResponse(200, fixture.release), httpResponse(200, fixture.latest),
+    ]);
+    const proof = await convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+      fetchImpl: sequence.fetch, sleep: async () => {}, retryDelayMs: 0,
+    });
+    assert.equal(proof.release_id, 300);
+    assert.deepEqual(
+      sequence.calls.map((call) => new URL(call.url).pathname),
+      ["/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/latest"],
+      `HTTP ${status} must retry the exact release before latest is consulted`,
+    );
+    assert.ok(sequence.calls.every((call) => call.method === "GET"), `HTTP ${status} recovery must remain GET-only`);
+  }
+});
+
+test("published convergence exhausts exact-release HTTP 403 and 429 with endpoint/status context", async () => {
+  const fixture = publishedFixture("successor-preview");
+  for (const status of [403, 429]) {
+    const sequence = fetchSequence([httpResponse(status, {}), httpResponse(status, {})]);
+    await assert.rejects(
+      convergePublishedPublication({
+        repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+        fetchImpl: sequence.fetch, sleep: async () => {}, maxAttempts: 2, retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, new RegExp(`did not converge after 2 attempts: exact release returned HTTP ${status}`));
+        assert.doesNotMatch(error.message, /draft|permission|authorization|throttl/i, "an unreadable observation must not claim its cause");
+        return true;
+      },
+    );
+    assert.ok(sequence.calls.every((call) => call.url.endsWith("/releases/300")), "latest is never queried before exact readability");
+    assert.ok(sequence.calls.every((call) => call.method === "GET"), "exhaustion remains GET-only");
+  }
+});
+
+test("published convergence retries latest HTTP 429 to success or endpoint-specific exhaustion", async () => {
+  const fixture = publishedFixture("successor-preview");
+  const succeeds = fetchSequence([
+    httpResponse(200, fixture.release), httpResponse(429, {}),
+    httpResponse(200, fixture.release), httpResponse(200, fixture.latest),
+  ]);
+  const proof = await convergePublishedPublication({
+    repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+    fetchImpl: succeeds.fetch, sleep: async () => {}, retryDelayMs: 0,
+  });
+  assert.equal(proof.release_id, 300);
+  assert.deepEqual(
+    succeeds.calls.map((call) => new URL(call.url).pathname),
+    [
+      "/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/latest",
+      "/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/latest",
+    ],
+  );
+  assert.ok(succeeds.calls.every((call) => call.method === "GET"));
+
+  const exhausts = fetchSequence([
+    httpResponse(200, fixture.release), httpResponse(429, {}),
+    httpResponse(200, fixture.release), httpResponse(429, {}),
+  ]);
+  await assert.rejects(
+    convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+      fetchImpl: exhausts.fetch, sleep: async () => {}, maxAttempts: 2, retryDelayMs: 0,
+    }),
+    (error) => {
+      assert.match(error.message, /did not converge after 2 attempts: latest release returned HTTP 429/);
+      assert.doesNotMatch(error.message, /permission|authorization|throttl/i, "exhaustion must report observation, not inferred cause");
+      return true;
+    },
+  );
+  assert.ok(exhausts.calls.every((call) => call.method === "GET"));
+});
+
+test("published convergence keeps missing auth, latest 403, and non-exempt 4xx immediately fatal", async () => {
+  const fixture = publishedFixture("successor-preview");
+  let missingAuthFetches = 0;
+  await assert.rejects(
+    convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+      fetchImpl: async () => { missingAuthFetches += 1; }, sleep: async () => {}, retryDelayMs: 0,
+    }),
+    /missing GH_TOKEN/,
+  );
+  assert.equal(missingAuthFetches, 0, "missing auth fails before any network observation");
+
+  for (const status of [400, 401, 418, 422]) {
+    const exact = fetchSequence([httpResponse(status, {})]);
+    await assert.rejects(
+      convergePublishedPublication({
+        repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+        fetchImpl: exact.fetch, sleep: async () => {}, retryDelayMs: 0,
+      }),
+      new RegExp(`exact release returned non-retryable HTTP ${status}`),
+    );
+    assert.equal(exact.calls.length, 1);
+  }
+
+  for (const status of [400, 401, 403, 418, 422]) {
+    const latest = fetchSequence([httpResponse(200, fixture.release), httpResponse(status, {})]);
+    await assert.rejects(
+      convergePublishedPublication({
+        repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+        fetchImpl: latest.fetch, sleep: async () => {}, retryDelayMs: 0,
+      }),
+      new RegExp(`latest release returned non-retryable HTTP ${status}`),
+    );
+    assert.equal(latest.calls.length, 2);
+  }
+});
+
+test("only latest HTTP 404 becomes absence; stable absence and exact-release 404 exhaust", async () => {
+  const preview = publishedFixture("successor-preview");
+  const absentLatest = fetchSequence([httpResponse(200, preview.release), httpResponse(404, { message: "Not Found" })]);
+  const previewProof = await convergePublishedPublication({
+    repo: "Holaxis-ai/superbee", token: "test-token", chain: preview.chain, plan: preview.plan, tuple: preview.tuple,
+    fetchImpl: absentLatest.fetch, sleep: async () => {}, retryDelayMs: 0,
+  });
+  assert.equal(previewProof.latest_release_id, null);
+  assert.deepEqual(absentLatest.calls.map((call) => call.method), ["GET", "GET"]);
+
+  const stable = publishedFixture("successor-stable");
+  const stableAbsent = fetchSequence([
+    httpResponse(200, stable.release), httpResponse(404, {}),
+    httpResponse(200, stable.release), httpResponse(404, {}),
+  ]);
+  await assert.rejects(
+    convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "test-token", chain: stable.chain, plan: stable.plan, tuple: stable.tuple,
+      fetchImpl: stableAbsent.fetch, sleep: async () => {}, maxAttempts: 2, retryDelayMs: 0,
+    }),
+    /did not converge after 2 attempts: .*not the GitHub latest release/,
+  );
+
+  const exactAbsent = fetchSequence([httpResponse(404, {}), httpResponse(404, {})]);
+  await assert.rejects(
+    convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "test-token", chain: preview.chain, plan: preview.plan, tuple: preview.tuple,
+      fetchImpl: exactAbsent.fetch, sleep: async () => {}, maxAttempts: 2, retryDelayMs: 0,
+    }),
+    /did not converge after 2 attempts: exact release returned HTTP 404/,
+  );
+  assert.ok(exactAbsent.calls.every((call) => call.url.endsWith("/releases/300")), "latest is never trusted before exact-ID read succeeds");
+});
+
+test("published convergence exhausts a persistently drifted identity without any mutation", async () => {
+  const fixture = publishedFixture("successor-preview");
+  const drifted = { ...fixture.release, tag_name: null, prerelease: false };
+  const sequence = fetchSequence([
+    httpResponse(200, drifted), httpResponse(200, fixture.latest),
+    httpResponse(200, drifted), httpResponse(200, fixture.latest),
+  ]);
+  await assert.rejects(
+    convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+      fetchImpl: sequence.fetch, sleep: async () => {}, maxAttempts: 2, retryDelayMs: 0,
+    }),
+    /did not converge after 2 attempts: .*published tag/,
+  );
+  assert.ok(sequence.calls.every((call) => call.method === "GET"), "proof-only convergence never invokes PATCH or another mutation");
+});
+
 test("publication executor is empirically mutation-free in dry-run and live uses exact IDs plus --clobber", async () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "aslite-publication-apply-"));
   try {
@@ -532,7 +984,8 @@ test("publication executor is empirically mutation-free in dry-run and live uses
     chmodSync(ghStub, 0o755);
     const dryPublish = spawnSync(process.execPath, [
       path.join(repoRoot, "scripts", "release-run-operations.mjs"),
-      "--op", "immutable-release", "--version", PRE, "--release-id", "300", "--github-latest", "false",
+      "--op", "immutable-release", "--target", "successor-preview", "--version", "0.1.2-pre.1",
+      "--release-id", "300", "--source-commit", COMMIT,
     ], {
       encoding: "utf8",
       env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ASLITE_TEST_PUBLISH_LOG: publishLog },

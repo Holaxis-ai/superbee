@@ -3,7 +3,7 @@
 //   verify  — verify signatures/uploaders/timestamps, then evaluate ordering via the pure module
 //   plan    — materialize status/body bytes and a draft-bound, ID-only cleanup manifest
 //   apply   — dry-run no-op or the one live cleanup/upload/PATCH executor
-//   final   — prove the re-queried exact asset inventory and owned body before publication
+//   final/published — prove exact inventory/body before publication and full identity after it
 // Values arrive as argv/file data only (workflows bind expressions to env first); every signature
 // is checked with `ssh-keygen -Y verify` against the committed allowed-signers file before the
 // payload is trusted. Missing evidence is decided by the pure tier policy; this adapter fails
@@ -13,7 +13,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
 import { isMainModule } from "./is-main-module.mjs";
 import {
   PUBLICATION_PLAN_SCHEMA,
@@ -26,10 +25,11 @@ import {
   parseReceiptFile,
   RECEIPT_DECISIONS,
   SIGN_NAMESPACE,
-  stampAnnotation,
-  stampAssetName,
-  verifyFinalPublication,
+  stampAnnotation, stampAssetName,
+  verifyFinalPublication, verifyPersistedPublicationProofs, verifyPublishedPublication,
 } from "./release-ordering.mjs";
+import { verifyArtifactMetadata } from "./release-receipts.mjs";
+import { defaultReleaseManifest, resolveAllowedTuple } from "./release-targets.mjs";
 import { fileSha256 } from "./verify-npm-package.mjs";
 
 function arg(argv, flag, required = true) {
@@ -269,6 +269,163 @@ async function finalCommand(argv) {
   console.log(JSON.stringify(proof));
 }
 
+async function publishedCommand(argv) {
+  const chain = await jsonFile(arg(argv, "--chain"));
+  const manifest = defaultReleaseManifest();
+  const tuple = resolveAllowedTuple(manifest, {
+    target: chain.target,
+    version: chain.version,
+    tag: chain.tag,
+  });
+  const proof = verifyPublishedPublication({
+    release: await jsonFile(arg(argv, "--release")),
+    latestRelease: await jsonFile(arg(argv, "--latest-release")),
+    plan: await jsonFile(arg(argv, "--plan")),
+    chain,
+    tuple,
+  });
+  await writeFile(arg(argv, "--out"), `${JSON.stringify(proof, null, 2)}\n`);
+  console.log(JSON.stringify(proof));
+}
+
+const FINALIZATION_PROOF_ARTIFACT_NAME = "release-finalization-proof";
+export const PUBLISHED_CONVERGENCE_ATTEMPTS = 6;
+const PUBLISHED_CONVERGENCE_DELAY_MS = 2_000;
+const GITHUB_REQUEST_TIMEOUT_MS = 10_000;
+
+async function preparedArtifactCommand(argv) {
+  const chain = await jsonFile(arg(argv, "--chain"));
+  const binding = verifyPersistedPublicationProofs({
+    chain,
+    plan: await jsonFile(arg(argv, "--plan")),
+    finalProof: await jsonFile(arg(argv, "--final-proof")),
+  });
+  const expectedHead = arg(argv, "--head-sha");
+  const expectedSourceCommit = arg(argv, "--source-commit");
+  verifyArtifactMetadata("finalization proof artifact", await jsonFile(arg(argv, "--artifact")), {
+    id: arg(argv, "--artifact-id"),
+    name: FINALIZATION_PROOF_ARTIFACT_NAME,
+    digest: arg(argv, "--artifact-digest"),
+    runId: arg(argv, "--run-id"),
+    commit: expectedHead,
+  });
+  if (binding.source_commit !== expectedSourceCommit) {
+    throw new Error("persisted finalization proof source commit differs from the prepare output");
+  }
+  console.log(JSON.stringify({ verified: true, artifact: FINALIZATION_PROOF_ARTIFACT_NAME, ...binding }));
+}
+
+function githubHeaders(token) {
+  if (typeof token !== "string" || token.length === 0) throw new Error("missing GH_TOKEN");
+  return {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+}
+
+async function observeGithubJson({ url, endpoint, token, allowNotFound, fetchImpl, requestTimeoutMs }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+  let response;
+  try {
+    response = await fetchImpl(url, { method: "GET", headers: githubHeaders(token), signal: controller.signal });
+  } catch (error) {
+    return { retry: `network failure (${error instanceof Error ? error.name : "unknown"})` };
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!Number.isSafeInteger(response?.status)) throw new Error("GitHub response lacks a numeric HTTP status");
+  if (response.status === 404) {
+    return allowNotFound ? { value: null } : { retry: `${endpoint} returned HTTP 404` };
+  }
+  if (response.status === 429 || (response.status === 403 && endpoint === "exact release")) {
+    return { retry: `${endpoint} returned HTTP ${response.status}` };
+  }
+  if (response.status >= 500 && response.status <= 599) return { retry: `${endpoint} returned HTTP ${response.status}` };
+  if (response.status >= 400 && response.status <= 499) throw new Error(`${endpoint} returned non-retryable HTTP ${response.status}`);
+  if (response.status < 200 || response.status >= 300) throw new Error(`${endpoint} returned unexpected HTTP ${response.status}`);
+  try {
+    return { value: await response.json() };
+  } catch {
+    return { retry: `GitHub returned invalid JSON at HTTP ${response.status}` };
+  }
+}
+
+/** Read-only bounded convergence. It never invokes gh, PATCH, draft validation, or any mutation. */
+export async function convergePublishedPublication({
+  repo,
+  token,
+  chain,
+  plan,
+  tuple,
+  fetchImpl = globalThis.fetch,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  maxAttempts = PUBLISHED_CONVERGENCE_ATTEMPTS,
+  retryDelayMs = PUBLISHED_CONVERGENCE_DELAY_MS,
+  requestTimeoutMs = GITHUB_REQUEST_TIMEOUT_MS,
+}) {
+  if (typeof repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) throw new Error("invalid GitHub repository name");
+  if (typeof fetchImpl !== "function") throw new Error("GitHub fetch implementation is unavailable");
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1) throw new Error("invalid convergence attempt bound");
+  if (!Number.isSafeInteger(retryDelayMs) || retryDelayMs < 0) throw new Error("invalid convergence retry delay");
+  if (!Number.isSafeInteger(requestTimeoutMs) || requestTimeoutMs < 1) throw new Error("invalid GitHub request timeout");
+  githubHeaders(token);
+  const releaseId = Number(chain?.draft_release_id);
+  if (!Number.isSafeInteger(releaseId) || releaseId <= 0) throw new Error("invalid persisted numeric release id");
+  const base = `https://api.github.com/repos/${repo}/releases`;
+  let lastReason = "no observation";
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const exact = await observeGithubJson({
+      url: `${base}/${releaseId}`,
+      endpoint: "exact release",
+      token,
+      allowNotFound: false,
+      fetchImpl,
+      requestTimeoutMs,
+    });
+    if (exact.retry) {
+      lastReason = exact.retry;
+    } else {
+      const latest = await observeGithubJson({
+        url: `${base}/latest`,
+        endpoint: "latest release",
+        token,
+        allowNotFound: true,
+        fetchImpl,
+        requestTimeoutMs,
+      });
+      if (latest.retry) {
+        lastReason = latest.retry;
+      } else {
+        try {
+          return verifyPublishedPublication({ release: exact.value, latestRelease: latest.value, plan, chain, tuple });
+        } catch (error) {
+          lastReason = error instanceof Error ? error.message : String(error);
+        }
+      }
+    }
+    if (attempt < maxAttempts) await sleep(retryDelayMs);
+  }
+  throw new Error(`published release did not converge after ${maxAttempts} attempts: ${lastReason}`);
+}
+
+async function publishedLiveCommand(argv) {
+  const chain = await jsonFile(arg(argv, "--chain"));
+  const plan = await jsonFile(arg(argv, "--plan"));
+  const manifest = defaultReleaseManifest();
+  const tuple = resolveAllowedTuple(manifest, { target: chain.target, version: chain.version, tag: chain.tag });
+  const proof = await convergePublishedPublication({
+    repo: arg(argv, "--repo"),
+    token: process.env.GH_TOKEN,
+    chain,
+    plan,
+    tuple,
+  });
+  await writeFile(arg(argv, "--out"), `${JSON.stringify(proof, null, 2)}\n`);
+  console.log(JSON.stringify(proof));
+}
+
 export async function main(argv) {
   const [command, ...rest] = argv;
   if (command === "assets") return assetsCommand(rest);
@@ -276,7 +433,10 @@ export async function main(argv) {
   if (command === "plan") return planCommand(rest);
   if (command === "apply") return applyCommand(rest);
   if (command === "final") return finalCommand(rest);
-  throw new Error("usage: release-verify-ordering.mjs assets|verify|plan|apply|final ...");
+  if (command === "published") return publishedCommand(rest);
+  if (command === "prepared-artifact") return preparedArtifactCommand(rest);
+  if (command === "published-live") return publishedLiveCommand(rest);
+  throw new Error("usage: release-verify-ordering.mjs assets|verify|plan|apply|final|published|prepared-artifact|published-live ...");
 }
 
 if (isMainModule(import.meta.url)) {

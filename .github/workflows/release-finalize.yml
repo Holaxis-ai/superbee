@@ -8,8 +8,10 @@ name: Finalize release (separately dispatched)
 # (draft-release assets, ssh-signed against .github/release-allowed-signers) by replaying the
 # release-state machine: stable candidates require both receipts; a prerelease missing receipts
 # publishes with a permanent public receipt-status stamp; invalid evidence is always fatal. The
-# write-capable job then deletes only planned asset IDs, replaces status/body evidence, re-queries
-# the draft, and proves the exact retained id/name/digest inventory before publication.
+# prepare job then deletes only planned asset IDs, replaces status/body evidence, re-queries the
+# draft, proves the exact retained id/name/digest inventory, and persists that authority before
+# PATCH. A protected publish job performs only the provisional numeric-ID PATCH; a separate
+# read-only proof job converges on and proves published state without repeating draft validation.
 #
 # P5S must protect the `release` environment and set SUPERBEE_RELEASE_LIVE_ENABLED=true there. GitHub
 # auto-creates missing environments without protection, so absence of that explicit variable always
@@ -81,6 +83,7 @@ env:
   MODE: ${{ inputs.mode }}
   ARTIFACT_DIR: release-candidate
   RECEIPT_DIR: release-stage-receipt
+  FINALIZATION_PROOF_DIR: release-finalization-proof
 
 jobs:
   # Every cheap precondition lives HERE, in the first job, which holds contents:read and runs no
@@ -340,8 +343,8 @@ jobs:
             echo "[dry-run] verified immutable chain; would run the exact registry proof for $TARGET@$VERSION"
           fi
 
-  finalize:
-    name: final — publish the prepared draft only after re-verification
+  prepare:
+    name: prepare — persist exact pre-publication authority before PATCH
     needs: [target-authorized, registry-verify]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -349,6 +352,10 @@ jobs:
     permissions:
       actions: read
       contents: write
+    outputs:
+      proof_artifact_id: ${{ steps.upload_proof.outputs.artifact-id }}
+      proof_artifact_digest: ${{ steps.upload_proof.outputs.artifact-digest }}
+      source_commit: ${{ steps.verified_chain.outputs.source_commit }}
     steps:
       - uses: actions/checkout@v4
 
@@ -386,6 +393,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft-release.json
 
       - name: Re-verify the complete chain immediately before publication
+        id: verified_chain
         env:
           RUN_ID: ${{ inputs.run_id }}
           ARTIFACT_ID: ${{ inputs.artifact_id }}
@@ -405,7 +413,7 @@ jobs:
             --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
             --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --out verified-chain.json
+            --out verified-chain.json --github-output "$GITHUB_OUTPUT"
 
       - name: Re-download this candidate's signed operator receipts
         env:
@@ -467,20 +475,135 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-          VERSION: ${{ inputs.version }}
-          TARGET: ${{ inputs.target }}
-          GITHUB_LATEST: ${{ needs.target-authorized.outputs.github_latest }}
         run: |
           set -euo pipefail
           if [ "$MODE" = "live" ]; then
             gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > final-draft-release.json
             node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
               --plan publication-plan.json --out final-publication-proof.json
-            node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
-              --github-latest "$GITHUB_LATEST" --execute
           else
-            node scripts/release-run-operations.mjs --op immutable-release \
-              --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
-              --github-latest "$GITHUB_LATEST"
+            echo "[dry-run] would re-query and prove exact pre-publication inventory and body"
           fi
+
+      - name: Assemble the fixed pre-publication proof packet
+        if: inputs.mode == 'live'
+        run: |
+          set -euo pipefail
+          mkdir -p "$FINALIZATION_PROOF_DIR"
+          cp verified-chain.json publication-plan.json final-publication-proof.json "$FINALIZATION_PROOF_DIR/"
+
+      - name: Persist exact pre-publication authority before PATCH
+        if: inputs.mode == 'live'
+        id: upload_proof
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-finalization-proof
+          path: ${{ env.FINALIZATION_PROOF_DIR }}
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: publish — provisional numeric-ID PATCH only
+    needs: prepare
+    if: inputs.mode == 'live'
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download pre-publication authority by exact artifact id
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.proof_artifact_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.FINALIZATION_PROOF_DIR }}
+          merge-multiple: true
+
+      - name: Independently verify proof artifact metadata and bindings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROOF_ARTIFACT_ID: ${{ needs.prepare.outputs.proof_artifact_id }}
+          PROOF_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.proof_artifact_digest }}
+          PROOF_ARTIFACT_HEAD_SHA: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          case "$PROOF_ARTIFACT_ID" in *[!0-9]*) echo "::error::proof artifact id must be numeric"; exit 1 ;; esac
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PROOF_ARTIFACT_ID" > proof-artifact.json
+          node scripts/release-verify-ordering.mjs prepared-artifact \
+            --artifact proof-artifact.json --artifact-id "$PROOF_ARTIFACT_ID" \
+            --artifact-digest "$PROOF_ARTIFACT_DIGEST" --run-id "$GITHUB_RUN_ID" \
+            --head-sha "$PROOF_ARTIFACT_HEAD_SHA" --source-commit "$SOURCE_COMMIT" \
+            --chain "$FINALIZATION_PROOF_DIR/verified-chain.json" \
+            --plan "$FINALIZATION_PROOF_DIR/publication-plan.json" \
+            --final-proof "$FINALIZATION_PROOF_DIR/final-publication-proof.json"
+
+      - name: Publish the exact numeric release with manifest-derived identity (provisional)
+        id: patch_release
+        continue-on-error: true
+        env:
+          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
+          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+          TARGET: ${{ inputs.target }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
+          node scripts/release-run-operations.mjs --op immutable-release \
+            --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
+            --source-commit "$SOURCE_COMMIT" --execute
+
+  proof:
+    name: proof — independently resumable published-state verdict
+    needs: [prepare, publish]
+    if: ${{ always() && needs.prepare.result == 'success' && inputs.mode == 'live' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download pre-publication authority by exact artifact id
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.proof_artifact_id }}
+          github-token: ${{ github.token }}
+          path: ${{ env.FINALIZATION_PROOF_DIR }}
+          merge-multiple: true
+
+      - name: Independently verify the same proof artifact metadata and bindings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROOF_ARTIFACT_ID: ${{ needs.prepare.outputs.proof_artifact_id }}
+          PROOF_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.proof_artifact_digest }}
+          PROOF_ARTIFACT_HEAD_SHA: ${{ github.sha }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
+        run: |
+          set -euo pipefail
+          case "$PROOF_ARTIFACT_ID" in *[!0-9]*) echo "::error::proof artifact id must be numeric"; exit 1 ;; esac
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PROOF_ARTIFACT_ID" > proof-artifact.json
+          node scripts/release-verify-ordering.mjs prepared-artifact \
+            --artifact proof-artifact.json --artifact-id "$PROOF_ARTIFACT_ID" \
+            --artifact-digest "$PROOF_ARTIFACT_DIGEST" --run-id "$GITHUB_RUN_ID" \
+            --head-sha "$PROOF_ARTIFACT_HEAD_SHA" --source-commit "$SOURCE_COMMIT" \
+            --chain "$FINALIZATION_PROOF_DIR/verified-chain.json" \
+            --plan "$FINALIZATION_PROOF_DIR/publication-plan.json" \
+            --final-proof "$FINALIZATION_PROOF_DIR/final-publication-proof.json"
+
+      - name: Converge and prove published identity inventory body and latest selection
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/release-verify-ordering.mjs published-live --repo "$GITHUB_REPOSITORY" \
+            --chain "$FINALIZATION_PROOF_DIR/verified-chain.json" \
+            --plan "$FINALIZATION_PROOF_DIR/publication-plan.json" \
+            --out published-publication-proof.json

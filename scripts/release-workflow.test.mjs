@@ -104,15 +104,14 @@ const NPM_NON_WRITING_SUBCOMMANDS = new Set([
 /** Every flag `release-run-operations.mjs` reads, with a value each emitter accepts. */
 const OPERATION_SAMPLE_ARGV = [
   "--stage-id", "stage1",
-  "--version", "0.1.0",
-  "--tag", "latest",
-  "--target", "bridge",
+  "--version", "0.1.2",
+  "--target", "successor-stable",
   "--track", "next",
   "--failed-version", "0.1.0",
   "--prior-version", "0.0.1",
   "--recovery-target", "bridge",
   "--release-id", "1",
-  "--github-latest", "true",
+  "--source-commit", "1".repeat(40),
 ];
 
 /** Logical shell commands in a `run:` block: comments dropped, backslash continuations joined. */
@@ -170,19 +169,21 @@ test("staged workflow: each job carries exactly its minimal permissions", () => 
   );
 });
 
-test("finalize workflow: gate jobs hold contents:write ONLY for draft visibility; finalize is the only mutator", () => {
+test("finalize workflow: prepare and publish are the only mutators; proof is read-only", () => {
   // HONEST framing (live run 31507532220): the original design pinned the gate jobs read-only,
   // but GitHub 403s a read token on GET releases/<id> for an UNPUBLISHED draft — write is the
   // platform's price for LOOKING at a draft. The property that survives is behavioral, not
   // token-shaped: the gate jobs' steps contain no mutating command, pinned below.
   const jobs = extractJobs(finalize);
-  assert.deepEqual(Object.keys(jobs).sort(), ["finalize", "ordering-verified", "registry-verify", "target-authorized"]);
+  assert.deepEqual(Object.keys(jobs).sort(), ["ordering-verified", "prepare", "proof", "publish", "registry-verify", "target-authorized"]);
   assert.deepEqual(permissionsOf(jobs["target-authorized"]), { contents: "read" });
   assert.deepEqual(permissionsOf(jobs["ordering-verified"]), { actions: "read", contents: "write" });
   assert.deepEqual(permissionsOf(jobs["registry-verify"]), { actions: "read", contents: "write" });
-  assert.deepEqual(permissionsOf(jobs.finalize), { actions: "read", contents: "write" });
+  assert.deepEqual(permissionsOf(jobs.prepare), { actions: "read", contents: "write" });
+  assert.deepEqual(permissionsOf(jobs.publish), { actions: "read", contents: "write" });
+  assert.deepEqual(permissionsOf(jobs.proof), { actions: "read", contents: "read" });
   // No gate job may carry a mutating gh/npm invocation — GETs and octet-stream downloads only.
-  for (const name of ["target-authorized", "ordering-verified", "registry-verify"]) {
+  for (const name of ["target-authorized", "ordering-verified", "registry-verify", "proof"]) {
     const body = jobs[name];
     for (const token of MUTATING_TOKENS) {
       assert.ok(!body.includes(token), `gate job ${name} must not contain mutating token ${JSON.stringify(token)}`);
@@ -211,35 +212,55 @@ test("workflow target choices enumerate the normalized manifest roster and keep 
   }
 });
 
-test("the ordering gate runs BEFORE registry mutation and again before publication", () => {
+test("the finalizer persists authority before provisional PATCH and proves publication afterward", () => {
   const jobs = extractJobs(finalize);
-  // Job chain: target-authorized -> ordering-verified -> registry-verify -> finalize.
+  // Job chain: target-authorized -> ordering-verified -> registry-verify -> prepare -> publish -> proof.
   assert.match(jobs["registry-verify"], /needs: ordering-verified/);
-  assert.deepEqual(needsOf(jobs.finalize).sort(), ["registry-verify", "target-authorized"]);
+  assert.deepEqual(needsOf(jobs.prepare).sort(), ["registry-verify", "target-authorized"]);
+  assert.deepEqual(needsOf(jobs.publish), ["prepare"]);
+  assert.deepEqual(needsOf(jobs.proof).sort(), ["prepare", "publish"]);
   // The gate replays the state machine over signed receipts in the gate job AND pre-publish.
-  for (const name of ["ordering-verified", "finalize"]) {
+  for (const name of ["ordering-verified", "prepare"]) {
     assert.match(jobs[name], /release-verify-ordering\.mjs assets/, `${name} lists receipt assets via the one naming authority`);
     assert.match(jobs[name], /release-verify-ordering\.mjs verify/, `${name} verifies signed receipt ordering`);
     assert.match(jobs[name], /--allowed-signers \.github\/release-allowed-signers/, `${name} pins the committed signer file`);
   }
-  // The write-capable job plans, normalizes, re-queries, proves the exact set, then publishes.
-  const body = jobs.finalize;
-  const verifyAt = body.indexOf("release-verify-ordering.mjs verify");
-  const planAt = body.indexOf("release-verify-ordering.mjs plan");
-  const applyAt = body.indexOf("release-verify-ordering.mjs apply");
-  const requeryAt = body.indexOf('> final-draft-release.json');
-  const finalAt = body.indexOf("release-verify-ordering.mjs final");
-  const publishAt = body.indexOf("release-run-operations.mjs --op immutable-release");
-  assert.ok([verifyAt, planAt, applyAt, requeryAt, finalAt, publishAt].every((at) => at !== -1));
+  // Prepare plans and normalizes the draft, proves the exact pre-publication bytes, then uploads
+  // all three authority files before any publication PATCH can start.
+  const prepare = jobs.prepare;
+  const verifyAt = prepare.indexOf("release-verify-ordering.mjs verify");
+  const planAt = prepare.indexOf("release-verify-ordering.mjs plan");
+  const applyAt = prepare.indexOf("release-verify-ordering.mjs apply");
+  const prePublicationQueryAt = prepare.indexOf('> final-draft-release.json');
+  const finalAt = prepare.indexOf("release-verify-ordering.mjs final");
+  const assembleAt = prepare.indexOf("Assemble the fixed pre-publication proof packet");
+  const uploadAt = prepare.indexOf("Persist exact pre-publication authority before PATCH");
+  assert.ok([verifyAt, planAt, applyAt, prePublicationQueryAt, finalAt, assembleAt, uploadAt].every((at) => at !== -1));
   assert.ok(
-    verifyAt < planAt && planAt < applyAt && applyAt < requeryAt && requeryAt < finalAt && finalAt < publishAt,
-    "verify -> plan -> ID-only normalization -> re-query -> exact final proof -> publish",
+    verifyAt < planAt && planAt < applyAt && applyAt < prePublicationQueryAt
+      && prePublicationQueryAt < finalAt && finalAt < assembleAt && assembleAt < uploadAt,
+    "verify -> plan -> normalize -> pre-publication proof -> fixed packet -> immutable upload",
   );
-  assert.match(body, /retry-safe status --clobber/);
+  assert.doesNotMatch(prepare, /immutable-release|published-live/, "prepare must end after persisting pre-PATCH authority");
+  assert.match(prepare, /retry-safe status --clobber/);
+
+  // Publish independently proves the persisted packet, then performs only the provisional numeric-ID
+  // PATCH. Proof independently re-proves the same packet and owns all remote observation/verdict work.
+  const publish = jobs.publish;
+  const publishPacketAt = publish.indexOf("release-verify-ordering.mjs prepared-artifact");
+  const patchAt = publish.indexOf("release-run-operations.mjs --op immutable-release");
+  assert.ok(publishPacketAt !== -1 && patchAt !== -1 && publishPacketAt < patchAt);
+  assert.match(publish, /^ {4}continue-on-error: true$/m, "the entire publish job is provisional, never the verdict");
+  assert.doesNotMatch(publish, /published-live|releases\/latest/, "publish must not own the post-PATCH observation or proof");
+  const proof = jobs.proof;
+  const proofPacketAt = proof.indexOf("release-verify-ordering.mjs prepared-artifact");
+  const publishedProofAt = proof.indexOf("release-verify-ordering.mjs published-live");
+  assert.ok(proofPacketAt !== -1 && publishedProofAt !== -1 && proofPacketAt < publishedProofAt);
+  assert.doesNotMatch(proof, /immutable-release|--execute|-X PATCH/, "proof must be independently rerunnable and read-only");
   assert.match(verifyOrdering, /releases\/assets\/\$\{item\.id\}/, "cleanup targets exact release-asset IDs");
   assert.match(verifyOrdering, /"--clobber"/, "status upload is retry-safe");
   assert.match(verifyOrdering, /normalizeReceiptStatusBody/, "one owned-body normalizer prepares PATCH bytes");
-  assert.match(body, /--mode "\$MODE"/, "dry-run traverses the same apply adapter with a zero-mutation mode");
+  assert.match(prepare, /--mode "\$MODE"/, "dry-run traverses the same apply adapter with a zero-mutation mode");
   // The environment gate also binds the ordering job.
   assert.match(jobs["ordering-verified"], /environment: release/);
 });
@@ -326,9 +347,12 @@ test("EVERY live-mutating/live-executing job binds the protected release environ
   assert.match(stagedJobs.draft, /environment: release/, "draft job must bind the release environment");
   assert.match(stagedJobs.stage, /environment: release/, "stage job must bind the release environment");
   assert.doesNotMatch(stagedJobs.candidate, /environment: release/, "candidate builds only — no environment gate needed");
-  // finalize: registry-verify runs live --execute; finalize publishes the draft. Both gated.
+  // finalize: registry verification, draft normalization, and publication are protected; the
+  // independently rerunnable read-only proof deliberately holds no environment mutation gate.
   assert.match(finalizeJobs["registry-verify"], /environment: release/, "registry-verify runs live exec — must be gated");
-  assert.match(finalizeJobs.finalize, /environment: release/, "finalize job must bind the release environment");
+  assert.match(finalizeJobs.prepare, /environment: release/, "prepare mutates draft evidence — must be gated");
+  assert.match(finalizeJobs.publish, /environment: release/, "publish PATCH must bind the release environment");
+  assert.doesNotMatch(finalizeJobs.proof, /environment: release/, "read-only proof must remain independently rerunnable");
 });
 
 test("the finalizer is separately dispatched and consumes every immutable ID", () => {
@@ -379,14 +403,34 @@ test("F12: publication policy is resolved and proved in a non-mutating job, upst
     assert.ok(ancestors(name).has("target-authorized"), `mutating job ${name} must depend on the precondition job`);
   }
 
-  // And no job re-derives publication policy after a mutation: the facts travel as job outputs,
-  // which only a `needs:` dependency can deliver.
+  // No later job re-runs the target resolver to manufacture policy facts. The finalizer chain may
+  // write its already-proven source commit to a step output; that is evidence, not policy.
   for (const [name, body] of Object.entries(jobs)) {
     if (name === "target-authorized") continue;
-    assert.ok(!body.includes("--github-output"), `job ${name} must consume resolved facts, never re-resolve them`);
+    assert.doesNotMatch(body, /release-resolve-target\.mjs[^\n]*--github-output/, `job ${name} must not re-resolve policy outputs`);
   }
-  assert.match(jobs.finalize, /needs\.target-authorized\.outputs\.github_latest/, "finalize publishes with the pre-resolved GitHub latest policy");
-  assert.match(jobs.finalize, /--github-latest "\$GITHUB_LATEST"/);
+  assert.match(jobs.prepare, /id: verified_chain/);
+  assert.match(jobs.prepare, /--out verified-chain\.json --github-output "\$GITHUB_OUTPUT"/);
+  assert.match(jobs.prepare, /source_commit: \$\{\{ steps\.verified_chain\.outputs\.source_commit \}\}/);
+  assert.match(jobs.publish, /SOURCE_COMMIT: \$\{\{ needs\.prepare\.outputs\.source_commit \}\}/);
+  assert.match(jobs.publish, /--source-commit "\$SOURCE_COMMIT"/);
+  assert.doesNotMatch(jobs.publish, /needs\.target-authorized\.outputs\.github_latest/);
+  assert.doesNotMatch(jobs.publish, /--github-latest|--github-prerelease/);
+});
+
+test("immutable publication accepts no caller-owned GitHub identity policy or tag flags", () => {
+  const body = extractJobs(finalize).publish;
+  const commands = runBlocks(body)
+    .flatMap(shellCommands)
+    .filter((command) => command.includes("release-run-operations.mjs --op immutable-release"));
+  assert.ok(commands.length >= 1);
+  for (const command of commands) {
+    assert.match(command, /--target "\$TARGET"/);
+    assert.match(command, /--version "\$VERSION"/);
+    assert.match(command, /--release-id "\$DRAFT_RELEASE_ID"/);
+    assert.match(command, /--source-commit "\$SOURCE_COMMIT"/);
+    assert.doesNotMatch(command, /--tag|--github-latest|--github-prerelease|--prerelease|--make-latest/);
+  }
 });
 
 // F1 — the promote step ran `npm dist-tag add` in a job with no npm credentials, AFTER the ordering
@@ -459,15 +503,16 @@ test("F1: the dist-tag promotion is operator-owned, and the finalizer proves it 
       );
     }
   }
-  // What replaces it is a proof, run before any mutation and again immediately before publication.
+  // What replaces it is a proof, run before any mutation and again immediately before the
+  // persisted packet that authorizes publication.
   assert.match(jobs["target-authorized"], /release-publication-policy\.mjs verify/);
-  const body = jobs.finalize;
+  const body = jobs.prepare;
   const proofAt = body.indexOf("release-publication-policy.mjs verify");
-  const publishAt = body.indexOf("release-run-operations.mjs --op immutable-release");
-  assert.notEqual(proofAt, -1, "finalize must re-prove the declared publication policy before publishing");
-  assert.ok(proofAt < publishAt, "the re-proof must precede the GitHub release publication");
+  const uploadAt = body.indexOf("Persist exact pre-publication authority before PATCH");
+  assert.notEqual(proofAt, -1, "prepare must re-prove the declared publication policy before persisting authority");
+  assert.ok(proofAt < uploadAt, "the re-proof must precede the persisted authority consumed by publication");
   // Both placements traverse the same adapter in dry-run rather than being skipped there.
-  for (const [name, job] of [["target-authorized", jobs["target-authorized"]], ["finalize", body]]) {
+  for (const [name, job] of [["target-authorized", jobs["target-authorized"]], ["prepare", body]]) {
     const proof = runBlocks(job)
       .flatMap(shellCommands)
       .find((command) => command.includes("release-publication-policy.mjs verify"));
@@ -509,7 +554,7 @@ test("untrusted GitHub expressions are never interpolated directly into shell sc
 });
 
 test("live mode fails closed without an explicit P5S environment enablement variable", () => {
-  for (const [name, jobs] of [["draft", extractJobs(staged).draft], ["stage", extractJobs(staged).stage], ["registry", extractJobs(finalize)["registry-verify"]], ["finalize", extractJobs(finalize).finalize]]) {
+  for (const [name, jobs] of [["draft", extractJobs(staged).draft], ["stage", extractJobs(staged).stage], ["registry", extractJobs(finalize)["registry-verify"]], ["prepare", extractJobs(finalize).prepare], ["publish", extractJobs(finalize).publish]]) {
     assert.match(jobs, /vars\.SUPERBEE_RELEASE_LIVE_ENABLED/, `${name} must bind the environment enablement variable`);
     assert.match(jobs, /test "\$LIVE_RELEASE_ENABLED" = "true"/, `${name} must fail unless explicitly enabled`);
   }
@@ -527,11 +572,52 @@ test("npm staged publishing pins the supported runtime and parses npm's JSON con
 
 test("cross-run downloads have actions:read and select artifacts by ID, not name", () => {
   const jobs = extractJobs(finalize);
-  for (const name of ["ordering-verified", "registry-verify", "finalize"]) {
+  for (const name of ["ordering-verified", "registry-verify", "prepare"]) {
     const body = jobs[name];
     assert.match(body, /artifact-ids: \$\{\{ inputs\.artifact_id \}\}/);
     assert.match(body, /artifact-ids: \$\{\{ inputs\.stage_receipt_artifact_id \}\}/);
     assert.match(body, /run-id: \$\{\{ inputs\.run_id \}\}/);
+  }
+});
+
+test("prepare, publish, and proof bind one fixed proof artifact by exact identity", () => {
+  const jobs = extractJobs(finalize);
+  assert.match(jobs.prepare, /name: release-finalization-proof/);
+  assert.match(jobs.prepare, /proof_artifact_id: \$\{\{ steps\.upload_proof\.outputs\.artifact-id \}\}/);
+  assert.match(jobs.prepare, /proof_artifact_digest: \$\{\{ steps\.upload_proof\.outputs\.artifact-digest \}\}/);
+  assert.match(jobs.prepare, /cp verified-chain\.json publication-plan\.json final-publication-proof\.json/);
+  for (const name of ["publish", "proof"]) {
+    const body = jobs[name];
+    assert.match(body, /artifact-ids: \$\{\{ needs\.prepare\.outputs\.proof_artifact_id \}\}/);
+    assert.match(body, /PROOF_ARTIFACT_DIGEST: \$\{\{ needs\.prepare\.outputs\.proof_artifact_digest \}\}/);
+    assert.match(body, /PROOF_ARTIFACT_HEAD_SHA: \$\{\{ github\.sha \}\}/);
+    assert.match(body, /SOURCE_COMMIT: \$\{\{ needs\.prepare\.outputs\.source_commit \}\}/);
+    assert.match(body, /--artifact-digest "\$PROOF_ARTIFACT_DIGEST" --run-id "\$GITHUB_RUN_ID"/);
+    assert.match(body, /--head-sha "\$PROOF_ARTIFACT_HEAD_SHA" --source-commit "\$SOURCE_COMMIT"/);
+    assert.match(body, /release-verify-ordering\.mjs prepared-artifact/);
+  }
+  assert.doesNotMatch(jobs.proof, /needs\.publish\.outputs/, "proof identity must come only from prepare");
+});
+
+test("publication topology makes PATCH provisional and proof independently resumable", () => {
+  const jobs = extractJobs(finalize);
+  assert.deepEqual(needsOf(jobs.publish), ["prepare"]);
+  assert.deepEqual(needsOf(jobs.proof).sort(), ["prepare", "publish"]);
+  assert.match(jobs.proof, /if: \$\{\{ always\(\) && needs\.prepare\.result == 'success' && inputs\.mode == 'live' \}\}/);
+  const publishCommands = runBlocks(jobs.publish).flatMap(shellCommands);
+  const mutation = publishCommands.find((command) => command.includes("release-run-operations.mjs --op immutable-release"));
+  assert.ok(mutation?.includes("--execute"), "publish must issue the manifest-derived PATCH command");
+  // Step tolerance handles an ordinary client exit. Job tolerance is independently load-bearing:
+  // without it a runner/job failure after an applied PATCH makes the workflow red even when the
+  // always-running exact-state proof passes, inviting a retry of the ambiguous mutation.
+  assert.match(jobs.publish, /id: patch_release\n {8}continue-on-error: true/, "the PATCH step exit is provisional");
+  assert.match(jobs.publish, /^ {4}continue-on-error: true$/m, "publish job failure is provisional too, not just its PATCH step");
+  assert.doesNotMatch(jobs.publish, /published-live|published-publication-proof/);
+  assert.match(jobs.proof, /release-verify-ordering\.mjs published-live/);
+  assert.doesNotMatch(jobs.proof, /^ {4}continue-on-error:/m, "proof failure must keep the workflow red");
+  assert.doesNotMatch(jobs.proof, /^ {8}continue-on-error:/m, "no proof step may be tolerated");
+  for (const token of MUTATING_TOKENS) {
+    assert.ok(!jobs.proof.includes(token), `proof must not contain mutating token ${JSON.stringify(token)}`);
   }
 });
 
