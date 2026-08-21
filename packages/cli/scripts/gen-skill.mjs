@@ -1,12 +1,11 @@
-// Generate a SKILL.md from the CLI's single source of truth (src/reference.ts COMMAND_GROUPS,
-// rendered by src/skill-render.ts), and sync the package's `references/` folder from the inventory
-// in src/distribution-resources.ts: a byte-for-byte copy of each source file, with any
+// Generate the eager SKILL.md from src/skill-render.ts and sync the package's focused
+// `references/` folder from the inventory in src/distribution-resources.ts: a byte-for-byte copy of
+// each source file, with any
 // stray file under references/ NOT named in the manifest deleted. Idempotent/convergent, same
 // discipline as the SKILL.md write itself.
 //
-// AXI §7 "single source of truth": the npm package's command reference is DERIVED from the same
-// COMMAND_GROUPS the home view + `--help` render, so it cannot drift. The npm package is the only
-// executable distribution authority.
+// AXI §7 "single source of truth": exact command syntax stays in the live CLI's help rather than a
+// copied Skill manual. The npm package is the only executable distribution authority.
 //
 //   node scripts/gen-skill.mjs           → (re)write packages/cli/SKILL.md + references/
 //   node scripts/gen-skill.mjs --check   → exit 1 if SKILL.md or references/ is stale

@@ -1,6 +1,5 @@
 /**
- * Distribution-completeness gate: every capability the npm-carried SKILL.md advertises must ship
- * a backing contract/example under `references/`.
+ * Distribution-completeness gate for the lean npm-carried SKILL.md and its focused references.
  *
  * Runs in `npm test -w superbee`, hence `npm run check` — PR-side is the right layer here
  * because a gap is a SOURCE defect: a new command that never declares its shipped-contract
@@ -16,8 +15,8 @@
  *
  * Honest limit (see distribution-resources.ts's pattern doc comment): this cannot
  * recognize a semantically NOVEL capability described in prose that no pattern below anticipates —
- * check (1) covers the command-shaped majority; adding a pattern row is the same one-table
- * discipline extended to free prose.
+ * check (1) preserves command-to-resource ownership even though exact command syntax is now routed
+ * to live `--help`; adding a pattern row is the same one-table discipline extended to free prose.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -212,94 +211,78 @@ test("the shipped View authoring reference teaches Superbee commands while prese
 
 const renderedNpm = renderNpm();
 
-test("the npm skill opens sessions offer-first from home's offers rows", () => {
-  assert.match(renderedNpm, /## Opening a session — offer, don't explain/);
-  assert.match(renderedNpm, /never a capability essay/);
-  assert.match(renderedNpm, /`offers` rows are ready-made candidates/);
-  assert.match(renderedNpm, /ONE offer: run\s+`superbee sync` — never `init`/);
-  assert.match(renderedNpm, /"just continue" in an established workspace/);
-  assert.match(renderedNpm, /Drop declined offers for the rest of the session/);
-  // The section sits between host setup and the command groups (offer before manual).
-  assert.ok(
-    renderedNpm.indexOf("## Opening a session") > renderedNpm.indexOf("## Complete host setup"),
+test("the eager npm Skill stays lean and routes exact syntax to the live CLI", () => {
+  assert.ok(renderedNpm.split("\n").length <= 100, "the eager Skill must remain a bounded front door");
+  assert.match(renderedNpm, /## Keep the front door short/);
+  assert.match(renderedNpm, /Each outcome is one short sentence/);
+  assert.match(renderedNpm, /complete opener to five lines and at most 80 words/);
+  assert.match(renderedNpm, /`superbee home` offers as grounded candidates, not mandatory/);
+  assert.match(renderedNpm, /drop declined offers/);
+  assert.match(renderedNpm, /`superbee <command> --help` for exact current syntax/);
+  assert.doesNotMatch(renderedNpm, /## Commands/);
+  assert.doesNotMatch(renderedNpm, /## Remote bundle access/);
+});
+
+test("the eager npm Skill teaches the cognitive modeling spectrum without task anchoring", () => {
+  assert.match(renderedNpm, /recurring domain concepts/);
+  assert.match(renderedNpm, /A document preserves one important thing/);
+  assert.match(renderedNpm, /A Kind makes a recurring domain concept consistent/);
+  assert.match(renderedNpm, /recipe packages stable reusable definitions/);
+  assert.match(renderedNpm, /bundle View reduces repeated human interpretation/);
+  assert.match(renderedNpm, /Task, Roadmap, Milestone, and\s+Dependency when coordinated execution actually warrants them/);
+  assert.match(renderedNpm, /These are examples, not a catalog/);
+});
+
+test("the eager npm Skill preserves bundle and publication authority", () => {
+  assert.match(renderedNpm, /catalog entry is available for selection; it is not ambient project context/);
+  assert.match(renderedNpm, /clarify the\s+intended purpose, privacy, participants, and sharing boundary/);
+  assert.match(renderedNpm, /`superbee sync` joins an existing shared board/);
+  assert.match(renderedNpm, /only for a confirmed greenfield local bundle/);
+  assert.match(renderedNpm, /Ask before creating durable structure or publishing a local bundle/);
+  assert.match(renderedNpm, /Never silently rewrite an established Kind, recipe, or its instances/);
+  assert.match(renderedNpm, /Never mutate while merely explaining options/);
+});
+
+test("the npm Skill progressively discloses one focused modeling reference", () => {
+  assert.match(renderedNpm, /accepts a domain-modeling offer, read `\$REFS\/modeling-and-delivery\.md`/);
+  assert.match(renderedNpm, /normally with one representative example/);
+  assert.match(renderedNpm, /remove temporary authoring\s+files/);
+  assert.match(renderedNpm, /Use `--body-file` for multiline Markdown/);
+  assert.match(renderedNpm, /Read only what the accepted work requires/);
+});
+
+test("the focused modeling reference calibrates structure and pins a verified delivery loop", () => {
+  const reference = readFileSync(
+    path.join(REPO_ROOT, "examples/references/modeling-and-delivery.md"),
+    "utf8",
   );
-  assert.ok(renderedNpm.indexOf("## Opening a session") < renderedNpm.indexOf("## Commands"));
+  assert.match(reference, /Generic document:.*representative example/s);
+  assert.match(reference, /Create a Kind only when the repeated shape is already supported by evidence/);
+  assert.match(reference, /For a newly recognized domain, create one clearly labeled representative generic document first/);
+  assert.match(reference, /Do not introduce a new Kind until the user has used that record or at least two existing records/);
+  assert.match(reference, /Recipes contain\s+definitions and guidance, never the user's instance data/);
+  assert.match(reference, /underlying documents and relationships remain authoritative/);
+  assert.match(reference, /Remove temporary authoring or staging directories/);
+  assert.match(reference, /Run `superbee status`, read the new record, and inspect its links/);
 });
 
-test("npm Skill makes authoritative document presentation a first-class human-review step", () => {
-  assert.match(renderedNpm, /## Human review/);
-  assert.match(renderedNpm, /call `list_workspaces` when needed/);
-  assert.match(renderedNpm, /`show_document` with the exact workspace label or ID and document ID/);
-  assert.match(renderedNpm, /do not return only\s+a filesystem path/);
-  assert.match(renderedNpm, /`superbee doc open <id>`.*exact document/s);
+test("npm Skill makes authoritative presentation a first-class delivery step", () => {
+  assert.match(renderedNpm, /## Make the value visible/);
+  assert.match(renderedNpm, /what the\s+user or a later agent no longer needs to reconstruct/);
+  assert.match(renderedNpm, /Never return only a Markdown link or local filesystem path/);
+  assert.match(renderedNpm, /When the user\s+asks to see it, invoke/);
+  assert.match(renderedNpm, /`show_document` or `show_view`/);
+  assert.match(renderedNpm, /`superbee doc open <id>`/);
 });
 
-test("the npm skill teaches the explicit durable MCP installation contract", () => {
-  assert.match(renderedNpm, /## Stable MCP launch/);
+test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", () => {
   assert.match(renderedNpm, /npm install -g superbee/);
-  assert.match(renderedNpm, /`superbee mcp install --host <id>`/);
-  assert.match(renderedNpm, /`codex`.*`claude-code`.*`claude-desktop`.*`opencode`/s);
-  assert.match(renderedNpm, /never an npx cache or one bundle directory/);
-  assert.match(renderedNpm, /`superbee mcp status --host <id>`/);
-});
-
-test("the npm skill makes the AXI setup conductor the complete-install front door", () => {
-  assert.match(renderedNpm, /## Complete host setup/);
-  assert.match(renderedNpm, /```sh\nsuperbee setup\n```/);
-  assert.match(renderedNpm, /one `next\.command`/);
-  assert.match(renderedNpm, /Ask the human before running a returned mutating\s+command/);
-  assert.match(renderedNpm, /Foreign or unreadable state\s+returns a read-only inspection command/);
-  assert.match(renderedNpm, /catalog entry preserves a workspace for explicit MCP selection/);
-  assert.match(renderedNpm, /never selects that\s+workspace as the current project's context/);
-  assert.match(renderedNpm, /Do not read, write, orient from, or sync a\s+cataloged workspace/);
-  assert.match(renderedNpm, /If\s+the current checkout has no bundle, report that fact and stop bundle-oriented work/);
-});
-
-test("the typical flow creates a complete Context Note in one command", () => {
-  assert.match(
-    renderedNpm,
-    /new "Context Note" cycle-1 --title "cycle-1" --body '# Summary\n\nWhat this session did and what comes next' --actor <your-name>/,
-  );
-  assert.doesNotMatch(renderedNpm, /doc update context-notes\/cycle-1/);
-});
-
-test("collaboration guidance directs agents to the built-in shared-board mechanism", () => {
-  assert.match(renderedNpm, /Do not raise a sharing decision during ordinary local work/);
-  assert.match(renderedNpm, /teammates,\s+a shared board, a handoff, synchronization, or cross-clone coordination/s);
-  assert.match(renderedNpm, /run `sync` to join an existing `origin\/board`; if none exists, explain\s+that `sync --establish` creates it and offer to run that explicit one-time operation/s);
-  assert.match(renderedNpm, /If the\s+user prefers an in-tree bundle, custom Git branch\/path, or another sharing mechanism, surface\s+the tradeoff and record that explicit choice/);
-  assert.match(renderedNpm, /never silently substitute one for Superbee sync/);
-  assert.match(renderedNpm, /If collaboration is requested, offer the explicit one-time shared-board operation/);
-  assert.match(renderedNpm, /local-only work stays complete locally/);
-  assert.match(renderedNpm, /On a shared board, run it whenever you close a unit of work/);
-  assert.doesNotMatch(renderedNpm, /recording work isn't done until it's shared/);
-});
-
-test("the npm skill carries the authenticated-remote access contract", () => {
-  assert.match(renderedNpm, /## Remote bundle access \(--remote, serve\)/);
-  assert.match(renderedNpm, /provide `SUPERBEE_API_KEY`/);
-  assert.match(renderedNpm, /Legacy `AGENTSTATE_LITE_API_KEY`\s+remains supported as a compatibility input/);
-  assert.match(renderedNpm, /already-provisioned\s+stored per-origin credential/);
-  assert.match(renderedNpm, /provisioning is outside the default CLI surface/);
-  assert.doesNotMatch(renderedNpm, /\b(?:login|join|whoami)\s+--remote\b/);
-  assert.doesNotMatch(renderedNpm, /\b(?:invite|member|key)\s+(?:create|list|revoke|set-role|remove|mint)\b/);
-});
-
-test("the npm skill teaches canonical Superbee environment variables and labels old names as compatibility", () => {
-  assert.match(renderedNpm, /set `SUPERBEE_ACTOR=<your-name>`/);
-  assert.match(renderedNpm, /set `SUPERBEE_NO_AUTOPULL`/);
-  assert.match(renderedNpm, /Existing `AGENTSTATE_LITE_ACTOR` settings remain supported as a compatibility input/);
-  assert.match(renderedNpm, /Legacy `AGENTSTATE_LITE_NO_AUTOPULL` remains supported/);
-  assert.doesNotMatch(renderedNpm, /set `AGENTSTATE_LITE_(?:ACTOR|NO_AUTOPULL)/);
-});
-
-test("actor guidance distinguishes advisory labels from backend-owned attribution", () => {
-  assert.match(
-    renderedNpm,
-    /no advisory actor label is stored in frontmatter or sent as an agent label/,
-  );
-  assert.match(renderedNpm, /backend history still reports its own principal/);
-  assert.match(renderedNpm, /local OS owner or an\s+authenticated remote user/);
+  assert.match(renderedNpm, /followed by `superbee setup`/);
+  assert.match(renderedNpm, /Setup is a read-only conductor/);
+  assert.match(renderedNpm, /ask before running its returned mutating\s+command/);
+  assert.match(renderedNpm, /restart after Skill, Hook, or MCP changes/);
+  assert.match(renderedNpm, /never makes that workspace the current project/);
+  assert.match(renderedNpm, /npx -y superbee.*not durable host integration/);
 });
 
 test("no SKILL_CAPABILITY_PATTERNS entry is dead — each fires and is backed in the npm channel", () => {
@@ -366,8 +349,6 @@ test("npm: Superbee is the canonical skill and npm channel identity", () => {
   assert.match(renderedNpm, /^---\nname: superbee\n/);
   assert.match(renderedNpm, /npm install -g superbee/);
   assert.match(renderedNpm, /npx -y superbee/);
-  assert.match(renderedNpm, /installing only the canonical `superbee` bin/);
-  assert.match(renderedNpm, /Legacy `aslite` and `agentstate-lite` invocations are recognized only for migration/);
   assert.ok(!renderedNpm.includes("npx -y agentstate-lite"), "retired npm coordinate must not appear");
   assert.ok(!renderedNpm.includes("npx -y aslite"), "retired unscoped npx coordinate must not appear");
   assert.ok(!renderedNpm.includes("@holaxis/aslite"), "legacy package coordinate must not be taught as current");
@@ -417,35 +398,11 @@ test("npm: no phantom pointers — every $REFS/… path in the renderedNpm npm S
 // red-on-old — each failed against the pre-rename render.
 // ---------------------------------------------------------------------------------------------
 
-test("the renderedNpm skill teaches View authoring canonically (views paths, type: View, View convention)", () => {
-  assert.match(renderedNpm, /## Bundle views — ship a live UI as bundle content/);
-  assert.match(renderedNpm, /`type: View` registry doc/);
-  assert.ok(renderedNpm.includes("--doc-key views/my-view.html"), "authoring step 2 must promote under views/");
-  assert.ok(renderedNpm.includes("--doc-key views-registry/my-view.md"), "authoring step 3 must target views-registry/");
-  assert.ok(renderedNpm.includes('promote "$REFS/views/conventions/view.md" --doc-key conventions/view.md'), "authoring step 4 must install the View convention");
-  assert.ok(renderedNpm.includes('cat "$REFS/views/references/view-authoring-v0.md"'), "the shipped contract pointer must be the View authoring reference");
-});
-
-test("the renderedNpm skill mentions legacy Page exactly once — the legacy note, never authoring guidance", () => {
-  // The single accepted-legacy sentence. Any other `type: Page` occurrence is stale teaching.
-  const legacyMentions = renderedNpm.match(/type: Page/g) ?? [];
-  assert.equal(legacyMentions.length, 1, "exactly one `type: Page` mention (the legacy note) may remain");
-  assert.match(renderedNpm, /`Page` is the legacy name/);
-  // No authoring guidance may target the legacy prefixes.
-  assert.doesNotMatch(renderedNpm, /--doc-key pages\//);
-  assert.doesNotMatch(renderedNpm, /--doc-key pages-registry\//);
-  assert.doesNotMatch(renderedNpm, /conventions\/page\.md/);
-  assert.doesNotMatch(renderedNpm, /page-authoring-v0/);
-});
-
-test("the npm-target SKILL teaches Views canonically — legacy Page appears exactly once, as the legacy note", () => {
-  assert.match(renderedNpm, /live\s+bundle Views/);
-  assert.match(renderedNpm, /## Bundle views — ship a live UI as bundle content/);
-  // The npm channel now carries the same authoring section as the skill channel, so it inherits
-  // the same rule: one accepted-legacy sentence, no legacy authoring guidance.
-  const legacyMentions = renderedNpm.match(/type: Page/g) ?? [];
-  assert.equal(legacyMentions.length, 1, "exactly one `type: Page` mention (the legacy note) may remain");
-  assert.match(renderedNpm, /`Page` is the legacy name/);
+test("the lean npm Skill routes View mechanics to the canonical shipped View reference", () => {
+  assert.match(renderedNpm, /bundle View reduces repeated human interpretation/);
+  assert.match(renderedNpm, /`\$REFS\/views\/` for View authoring and examples/);
+  assert.doesNotMatch(renderedNpm, /## Bundle views — ship a live UI as bundle content/);
+  assert.doesNotMatch(renderedNpm, /type: Page/);
   assert.doesNotMatch(renderedNpm, /bundle Pages/);
   assert.doesNotMatch(renderedNpm, /--doc-key pages\//);
   assert.doesNotMatch(renderedNpm, /--doc-key pages-registry\//);
