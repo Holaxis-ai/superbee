@@ -96,6 +96,8 @@ import { parseLeafOrUsage } from "../args.js";
 import { HOME_LEAF } from "../command-spec.js";
 import { defaultSyncStore, type AwarenessCache, type AwarenessDeltaRow } from "../cursor.js";
 import { hookNeedsUpdate } from "./hook.js";
+import { skillRefreshScopes } from "./skill.js";
+import type { InstallScope } from "../install-scope.js";
 import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
 import { loadCatalog } from "../catalog.js";
 import { staticBuildIdentity, type ArtifactChannel } from "../build-identity.js";
@@ -114,6 +116,10 @@ Default TOON output may display a previously validated latest-track release noti
 detached refresh at most once per 24-hour attempt window. Rendering never waits for npm. The fixed
 public npm request names only superbee; it sends no installed version, cwd, bundle, actor, or
 usage data beyond ordinary network metadata.
+
+Home also checks managed Agent Skill bytes locally. A stale install is reported with its exact
+scope-specific refresh command and restart requirement; current, absent, unmanaged, or unreadable
+installs stay quiet.
 
 Options:
   --dir <path>       Orient from this local directory
@@ -260,6 +266,8 @@ export interface HomeDeps {
    * hook.ts's {@link hookNeedsUpdate} (fs-only reads).
    */
   hookNeedsUpdate: () => boolean;
+  /** Managed canonical Agent Skill scopes whose bytes differ from this CLI. Fs-only and fail-soft. */
+  skillRefreshScopes: () => InstallScope[];
   /**
    * The opportunistic board-freshness trigger (see the module header's OPPORTUNISTIC FRESHNESS
    * note). Default: autopull.ts's `maybeAutoPull` with `requireBoardBundle: false` (home has no
@@ -509,6 +517,23 @@ export const IN_TREE_SINCE_FIELD = "since_this_machine_last_checked";
 /** The hook-reinstall prompt: the installed hook predates `session-start`. */
 export function hookUpdateNote(inv: string): string {
   return `the installed SessionStart hook predates \`session-start\` — re-run \`${inv} hook install\` to pick up the board-aware hook`;
+}
+
+export interface SkillUpdateNotice {
+  state: "stale";
+  scopes: InstallScope[];
+  commands: string[];
+  restart_required: true;
+}
+
+/** The managed-Skill refresh prompt: exact commands plus the host restart the new bytes require. */
+export function skillUpdateNotice(inv: string, scopes: InstallScope[]): SkillUpdateNotice {
+  return {
+    state: "stale",
+    scopes,
+    commands: scopes.map((scope) => `${inv} skill install --scope ${scope}`),
+    restart_required: true,
+  };
 }
 
 /**
@@ -763,6 +788,7 @@ export function buildHomeView(
   hookUpdate?: string,
   workspaces?: HomeWorkspacesBlock,
   updateNotice?: UpdateNotice,
+  skillUpdate?: SkillUpdateNotice,
 ): Record<string, unknown> {
   const inv = deps.invocation();
   const ref = commandReference(inv);
@@ -889,6 +915,7 @@ export function buildHomeView(
     // Re-install prompt: self-clearing (disappears once `hook install` is re-run).
     view.hook_update = hookUpdate;
   }
+  if (skillUpdate) view.skill_update = skillUpdate;
   if (bindingError) {
     // A malformed .agentstate.json — never a thrown exception (home must never crash the
     // SessionStart hook), surfaced instead as a visible, non-fatal note.
@@ -1086,6 +1113,15 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     hookUpdate = undefined;
   }
 
+  // Managed Agent Skill refresh prompt (fs-only reads; guarded and self-clearing).
+  let skillUpdate: SkillUpdateNotice | undefined;
+  try {
+    const scopes = (deps.skillRefreshScopes ?? skillRefreshScopes)();
+    if (scopes.length > 0) skillUpdate = skillUpdateNotice(invocation(), scopes);
+  } catch {
+    skillUpdate = undefined;
+  }
+
   let updateNotice: UpdateNotice | undefined;
   if (!jsonMode && !passiveSuppressed) {
     try {
@@ -1115,6 +1151,7 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
         hookUpdate,
         workspaces,
         updateNotice,
+        skillUpdate,
       ),
       // Honor --json (JSON is equally offline/never-throw); default remains TOON, the format the
       // SessionStart hook ingests as ambient context.

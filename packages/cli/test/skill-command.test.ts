@@ -27,6 +27,7 @@ import {
   isSafeManifestEntry,
   resolveSkillAssets,
   skill,
+  skillRefreshScopes,
   skillStatusForDir,
   skillTargets,
 } from "../src/commands/skill.js";
@@ -158,6 +159,29 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   assert.equal(again.skill.hosts.claude_code.changed, false);
   assert.equal(again.skill.hosts.codex.changed, false);
   assertSameTree(before, treeSnapshot(path.join(cwd, ".claude")));
+});
+
+test("skill refresh scopes reuse managed-byte classification and self-clear after reinstall", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  const home = path.join(base, "home");
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(home, { recursive: true });
+
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+  await runSkill(["install"], { cwd, home, executable });
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+
+  writeFileSync(path.join(cwd, ".codex", "skills", "superbee", "SKILL.md"), "stale\n");
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), ["project"]);
+
+  await runSkill(["install"], { cwd, home, executable });
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+
+  const unmanaged = path.join(home, ".codex", "skills", "superbee");
+  mkdirSync(unmanaged, { recursive: true });
+  writeFileSync(path.join(unmanaged, "foreign.md"), "foreign\n");
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
 });
 
 test("old-only owned installs migrate atomically to canonical and status reports both paths", async () => {

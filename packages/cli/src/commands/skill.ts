@@ -782,6 +782,37 @@ export interface SkillDeps {
 }
 
 /**
+ * Fs-only refresh signal for the session orientation surface. Absent and unmanaged folders stay
+ * quiet: setup owns onboarding and conflict diagnosis. A managed canonical install whose bytes no
+ * longer match the running package is the one state an npm upgrade can safely prescribe away.
+ */
+export function skillRefreshScopes(
+  deps: Pick<SkillDeps, "cwd" | "home" | "env" | "executable"> = {},
+): InstallScope[] {
+  let assets: SkillAssets;
+  try {
+    assets = resolveSkillAssets(deps.executable);
+  } catch {
+    return [];
+  }
+  const scopes: InstallScope[] = [];
+  for (const scope of ["user", "project"] as const) {
+    try {
+      const targets = skillTargets(scope, deps);
+      const remedy = `${cliInvocation()} skill install --scope ${scope}`;
+      if ([targets.claude, targets.codex].some((target) =>
+        skillStatusForDir(target, assets, remedy).state === "stale"
+      )) {
+        scopes.push(scope);
+      }
+    } catch {
+      // Session orientation is fail-soft. Explicit `skill status` owns detailed diagnostics.
+    }
+  }
+  return scopes;
+}
+
+/**
  * CLI entry: dispatch the positional subcommand (install|status|uninstall). Output is TOON. An
  * unknown/missing subcommand, or an unsupported --scope, is a USAGE error; a refused folder is a
  * structured RUNTIME failure with nothing written or deleted at the refusing target.

@@ -76,7 +76,7 @@
       "treatment": "retire-after-explicit-package-removal",
       "owner": "cli-policy",
       "reason": "upgrade guidance explains that the retired aliases disappear when the old package is removed",
-      "line": 46
+      "line": 49
     },
     {
       "file": "README.md",
@@ -87,7 +87,7 @@
       "treatment": "retire-after-explicit-package-removal",
       "owner": "cli-policy",
       "reason": "upgrade guidance explains that the retired aliases disappear when the old package is removed",
-      "line": 46
+      "line": 49
     },
     {
       "file": "examples/recipes/personal-task-system/references/view-authoring-v0.md",
