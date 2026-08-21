@@ -22,7 +22,7 @@ import {
 } from "./release-operations.mjs";
 import * as allOperations from "./release-operations.mjs";
 import { operationsFor } from "./release-run-operations.mjs";
-import { defaultReleaseTargets } from "./release-targets.mjs";
+import { defaultReleaseManifest, defaultReleaseTargets } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,7 +30,7 @@ const runOps = path.join(repoRoot, "scripts", "release-run-operations.mjs");
 const SHA = "sha256:" + "a".repeat(64);
 const BARE = "a".repeat(64);
 const COMMIT = "1".repeat(40);
-const SUCCESSOR_PREVIEW = defaultReleaseTargets().allowed_tuples["successor-preview"];
+const SUCCESSOR_PREVIEW = defaultReleaseManifest().allowed_tuples["successor-preview"];
 
 test("inspection instructions emit the exact stage download + SHA-256 compare", () => {
   const i = inspectionInstructions({ target: "bridge", stageId: "stage-1", tarballSha256: SHA, version: "0.1.0-pre.4" });
