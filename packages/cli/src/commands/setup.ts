@@ -11,7 +11,15 @@ import { inspectMcpHosts, MCP_INSTALL_TARGETS, type McpHostStatus, type McpInsta
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { resolvePersistentInstallAuthority, type PersistentInstallAuthority } from "../install-authority.js";
 import { render, resolveMode } from "../output.js";
-import { buildSetupPlan, type SetupHookHostState, type SetupPlan, type SetupSkillHostState, type SetupWorkspaceState } from "../setup-plan.js";
+import {
+  buildSetupPlan,
+  setupNextForCapability,
+  setupStateCapability,
+  type SetupHookHostState,
+  type SetupPlan,
+  type SetupSkillHostState,
+  type SetupWorkspaceState,
+} from "../setup-plan.js";
 import { inspectHookStatus, type HookStatusInspection } from "./hook.js";
 import { inspectSkillStatus, type SkillStatusInspection } from "./skill.js";
 import {
@@ -28,8 +36,9 @@ Usage:
                  [--scope project|user] [--json]
   superbee setup migrate-state [--json]
 
-Without --host, the command reports the four bounded supported host surfaces and asks the agent to
-select the exact host. With --host, it composes the existing distribution, Agent Skill,
+Without --host, the command reports private-state health plus the four bounded supported host
+surfaces. A required state remedy comes first; otherwise it asks the agent to select the exact
+host. With --host, it composes the existing distribution, Agent Skill,
 SessionStart hook, MCP registration, local bundle, and private catalog inspectors into one
 deterministic plan. It never writes configuration or treats detected software as mutation
 authority. Run the returned next.command, restart the named host after integration changes, and
@@ -282,6 +291,8 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     return;
   }
   const inspection = await inspectAll(scope, MCP_INSTALL_TARGETS, deps);
+  const state = setupStateCapability(inspection.state);
+  const stateNext = setupNextForCapability(state);
   const hosts = MCP_INSTALL_TARGETS.map((target) => {
     const plan = planForHost(inspection, target.id, scope);
     return {
@@ -299,7 +310,8 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
       mode: "select_host",
       scope,
       hosts,
-      next: {
+      capabilities: [state],
+      next: stateNext ?? {
         action: "select_host",
         instruction: "choose the exact host running this agent, then run that row's command",
       },

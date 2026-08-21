@@ -203,7 +203,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     },
   },
   {
-    label: "R5 — the hostless `setup` a refusal points at reports no private-state row",
+    label: "R5 — the hostless `setup` a refusal points at reports the private-state row",
     arrange: (f) => {
       rmSync(path.join(f.stateRoot, "state.json"), { force: true });
     },
@@ -211,12 +211,12 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     expectStatus: 5,
     help: /help: superbee setup/,
     remedy: () => ({ command: "superbee setup" }),
-    effect: "changes-state",
-    verify: () => {},
-    skip: "VIOLATED (specification R5, unfixed here): the emitted `superbee setup` runs and exits 0, but a "
-      + "HOSTLESS run emits only the four host choices — no private-state row at all — so the refusal "
-      + "points at a screen that never mentions the thing that is broken. Delete this skip when the "
-      + "hostless conductor carries the state row (then `effect` becomes measurable).",
+    effect: "guidance-only",
+    verify: (_f, executed) => {
+      assert.match(executed.stdout, /capabilities\[1\]\{id,requirement,state,reason,command\}/);
+      assert.match(executed.stdout, /state,required,blocked,/);
+      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command:/);
+    },
   },
   {
     // The 0755 DIRECTORY mode with a valid 0600 marker: a root this product recognizes and repairs

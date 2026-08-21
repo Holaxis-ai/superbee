@@ -25,8 +25,10 @@ import path from "node:path";
 import {
   SKILL_MANIFEST_FILENAME,
   isSafeManifestEntry,
+  legacySkillTargets,
   resolveSkillAssets,
   skill,
+  skillRefreshScopes,
   skillStatusForDir,
   skillTargets,
 } from "../src/commands/skill.js";
@@ -158,6 +160,78 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   assert.equal(again.skill.hosts.claude_code.changed, false);
   assert.equal(again.skill.hosts.codex.changed, false);
   assertSameTree(before, treeSnapshot(path.join(cwd, ".claude")));
+});
+
+test("skill refresh scopes reuse managed-byte classification and self-clear after reinstall", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  const home = path.join(base, "home");
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(home, { recursive: true });
+
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+  await runSkill(["install"], { cwd, home, executable });
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+
+  for (const host of [".claude", ".codex"] as const) moveCanonicalToLegacy(cwd, host);
+  const legacy = legacySkillTargets("project", { cwd, home, env: {} });
+  writeFileSync(path.join(legacy.codex, "SKILL.md"), "stale legacy\n");
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), ["project"]);
+
+  await runSkill(["install"], { cwd, home, executable });
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+
+  writeFileSync(path.join(cwd, ".codex", "skills", "superbee", "SKILL.md"), "stale\n");
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), ["project"]);
+
+  await runSkill(["install"], { cwd, home, executable });
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+
+  const unmanaged = path.join(home, ".codex", "skills", "superbee");
+  mkdirSync(unmanaged, { recursive: true });
+  writeFileSync(path.join(unmanaged, "foreign.md"), "foreign\n");
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+});
+
+test("skill refresh scopes prescribe only a preflight-proven install", async () => {
+  const arrange = async () => {
+    const { base, executable } = scratch();
+    const cwd = path.join(base, "project");
+    const home = path.join(base, "home");
+    mkdirSync(cwd, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    await runSkill(["install"], { cwd, home, executable });
+    return { cwd, home, executable };
+  };
+
+  {
+    const fixture = await arrange();
+    const dir = path.join(fixture.cwd, ".codex", "skills", "superbee");
+    writeFileSync(path.join(dir, "SKILL.md"), "newer bytes\n");
+    const manifestPath = path.join(dir, SKILL_MANIFEST_FILENAME);
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.compatibility_contract = 2;
+    writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    assert.deepEqual(skillRefreshScopes({ ...fixture, env: {} }), []);
+  }
+
+  {
+    const fixture = await arrange();
+    const dir = path.join(fixture.cwd, ".codex", "skills", "superbee");
+    writeFileSync(path.join(dir, "SKILL.md"), "stale\n");
+    writeFileSync(path.join(dir, "foreign.md"), "not managed\n");
+    assert.deepEqual(skillRefreshScopes({ ...fixture, env: {} }), []);
+  }
+
+  {
+    const fixture = await arrange();
+    const canonical = skillTargets("project", fixture);
+    const legacy = legacySkillTargets("project", fixture);
+    writeFileSync(path.join(canonical.codex, "SKILL.md"), "stale\n");
+    mkdirSync(path.dirname(legacy.codex), { recursive: true });
+    cpSync(canonical.codex, legacy.codex, { recursive: true });
+    assert.deepEqual(skillRefreshScopes({ ...fixture, env: {} }), []);
+  }
 });
 
 test("old-only owned installs migrate atomically to canonical and status reports both paths", async () => {

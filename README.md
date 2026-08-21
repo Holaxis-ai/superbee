@@ -24,12 +24,16 @@ npm install -g superbee
 superbee setup
 ```
 
-Bare and host-scoped `setup` are read-only and agent-friendly: without flags it lists the four supported hosts; after
-the agent selects its exact host, it inspects npm, Agent Skill, SessionStart hook, MCP registration,
+Bare and host-scoped `setup` are read-only and agent-friendly: without flags it reports private-state
+health and lists the four supported hosts; after the agent selects its exact host, it inspects npm,
+Agent Skill, SessionStart hook, MCP registration,
 current bundle, and private workspace catalog, then returns one safe `next.command`. Fill any
 explicit placeholder it identifies, run the command, restart the named host after integration
 changes, and rerun the same setup command until the plan is complete. It never guesses a host as
 permission to edit configuration.
+After a CLI upgrade, `home` and SessionStart also report managed Agent Skills whose stale bytes can
+pass the installer's complete read-only preflight, with the exact refresh command and restart
+requirement; conflicts stay with explicit setup/status diagnostics and no host files change automatically.
 If setup returns `superbee setup migrate-state`, that explicit command copies validated legacy
 operational records into Superbee's private state root while preserving every legacy byte; it does
 not move project bundles.

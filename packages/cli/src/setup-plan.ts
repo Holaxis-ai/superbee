@@ -64,33 +64,33 @@ export interface SetupPlanInput {
   readonly workspace: SetupWorkspaceState;
 }
 
-function stateCapability(input: SetupPlanInput): SetupCapability {
-  if (input.state.state === "ready" || input.state.state === "fresh") {
+export function setupStateCapability(state: UserStateMigrationInspection): SetupCapability {
+  if (state.state === "ready" || state.state === "fresh") {
     return {
       id: "state",
       requirement: "required",
       state: "ready",
-      reason: input.state.reason,
+      reason: state.reason,
     };
   }
-  if (input.state.state === "migratable") {
+  if (state.state === "migratable") {
     return {
       id: "state",
       requirement: "required",
       state: "needs_action",
-      reason: input.state.reason,
+      reason: state.reason,
       command: "superbee setup migrate-state",
     };
   }
   // A root this product RECOGNIZES is repaired, never quarantined: it may hold the only copy of
   // the catalog, credentials, and View approvals, and nothing re-imports a quarantined root.
-  if (input.state.state === "repairable") {
+  if (state.state === "repairable") {
     return {
       id: "state",
       requirement: "required",
       state: "needs_action",
-      reason: input.state.reason,
-      command: input.state.command,
+      reason: state.reason,
+      command: state.command,
     };
   }
   // A blocked state root cannot be un-blocked by rerunning the command that reported it, and the
@@ -99,8 +99,21 @@ function stateCapability(input: SetupPlanInput): SetupCapability {
     id: "state",
     requirement: "required",
     state: "blocked",
-    reason: input.state.reason,
-    command: input.state.command,
+    reason: state.reason,
+    command: state.command,
+  };
+}
+
+export function setupNextForCapability(capability: SetupCapability): SetupPlan["next"] {
+  if (!capability.command) return undefined;
+  return {
+    action: capability.state === "blocked"
+      ? "inspect"
+      : capability.command.includes("<")
+        ? "choose_value"
+        : "run",
+    command: capability.command,
+    reason: capability.reason,
   };
 }
 
@@ -420,7 +433,7 @@ function catalogCapability(input: SetupPlanInput): SetupCapability {
 export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const capabilities = [
     distributionCapability(input),
-    stateCapability(input),
+    setupStateCapability(input.state),
     skillCapability(input),
     mcpCapability(input),
     bundleCapability(input),
@@ -431,6 +444,7 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const actionable = capabilities.find((capability) =>
     capability.state === "needs_action" || capability.state === "blocked",
   );
+  const next = actionable ? setupNextForCapability(actionable) : undefined;
   const restartAfter = capabilities
     .filter((capability): capability is SetupCapability & { id: "skill" | "mcp" | "hook" } =>
       (capability.id === "skill" || capability.id === "mcp" || capability.id === "hook")
@@ -449,19 +463,7 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
       catalog_selects_current_project: false,
     },
     capabilities,
-    ...(actionable?.command
-      ? {
-          next: {
-            action: actionable.state === "blocked"
-              ? "inspect" as const
-              : actionable.command.includes("<")
-                ? "choose_value" as const
-                : "run" as const,
-            command: actionable.command,
-            reason: actionable.reason,
-          },
-        }
-      : {}),
+    ...(next ? { next } : {}),
     verify: { command: `superbee setup --host ${input.host} --scope ${input.scope}` },
     restart: { after: restartAfter },
   };

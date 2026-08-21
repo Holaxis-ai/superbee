@@ -30,6 +30,7 @@ import {
   buildHomeView,
   defaultLoadWorkspaces,
   home,
+  skillUpdateNotice,
   summarizeDocs,
   type BundleSummary,
   type HomeRow,
@@ -341,6 +342,50 @@ test("workspace catalog orientation: caps and sorts labels with full-list guidan
     [...labels].sort().slice(0, 15),
   );
   assert.equal(workspaces.help, `${INVOKE} catalog list`);
+});
+
+test("managed stale Agent Skills surface exact scope commands and a restart requirement", async () => {
+  let out = "";
+  await home(["--json"], {
+    binPath: () => "/bin/superbee",
+    invocation: () => INVOKE,
+    stdout: (s) => (out += s),
+    summarizeBundle: async () => null,
+    loadBoardStatus: async () => null,
+    autoPull: async () => {},
+    hookNeedsUpdate: () => false,
+    skillRefreshScopes: () => ["user", "project"],
+    loadWorkspaces: async () => [],
+  });
+  assert.deepEqual((JSON.parse(out) as Record<string, unknown>).skill_update, {
+    state: "stale",
+    scopes: ["user", "project"],
+    commands: [
+      `${INVOKE} skill install --scope user`,
+      `${INVOKE} skill install --scope project`,
+    ],
+    restart_required: true,
+  });
+  assert.deepEqual(skillUpdateNotice(INVOKE, ["user"]), {
+    state: "stale",
+    scopes: ["user"],
+    commands: [`${INVOKE} skill install --scope user`],
+    restart_required: true,
+  });
+
+  out = "";
+  await home(["--json"], {
+    binPath: () => "/bin/superbee",
+    invocation: () => INVOKE,
+    stdout: (s) => (out += s),
+    summarizeBundle: async () => null,
+    loadBoardStatus: async () => null,
+    autoPull: async () => {},
+    hookNeedsUpdate: () => false,
+    skillRefreshScopes: () => [],
+    loadWorkspaces: async () => [],
+  });
+  assert.equal((JSON.parse(out) as Record<string, unknown>).skill_update, undefined);
 });
 
 test("workspace catalog orientation: loader failure is visible but never fails home", async () => {

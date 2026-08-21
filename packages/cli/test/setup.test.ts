@@ -88,11 +88,64 @@ function deps(write: (text: string) => void): SetupDeps {
 test("setup without a host returns a bounded path-free four-host selector", async () => {
   let output = "";
   await setup(["--json"], deps((text) => { output += text; }));
-  const parsed = JSON.parse(output) as { setup: { mode: string; hosts: Array<{ id: string; command: string }> } };
+  const parsed = JSON.parse(output) as {
+    setup: {
+      mode: string;
+      hosts: Array<{ id: string; command: string }>;
+      capabilities: Array<{ id: string; state: string }>;
+      next: { action: string };
+    };
+  };
   assert.equal(parsed.setup.mode, "select_host");
   assert.deepEqual(parsed.setup.hosts.map((row) => row.id), ["codex", "claude-code", "claude-desktop", "opencode"]);
   assert.equal(parsed.setup.hosts[0]?.command, "superbee setup --host codex --scope user");
+  assert.deepEqual(parsed.setup.capabilities, [{
+    id: "state",
+    requirement: "required",
+    state: "ready",
+    reason: "current",
+  }]);
+  assert.equal(parsed.setup.next.action, "select_host");
   assert.doesNotMatch(output, /\/Users\/private/);
+});
+
+test("hostless setup makes private-state recovery the next action before host selection", async () => {
+  for (const state of [
+    {
+      state: "migratable" as const,
+      reason: "validated legacy private state is ready to migrate",
+      records: 2,
+      action: "run",
+      command: "superbee setup migrate-state",
+    },
+    {
+      state: "blocked" as const,
+      reason: "canonical private state is unrecognized",
+      records: 0,
+      action: "inspect",
+      command: "mv ~/.superbee-state ~/.superbee-state.quarantine",
+    },
+  ]) {
+    let output = "";
+    const injected = deps((text) => { output += text; });
+    injected.inspectState = async () => state;
+    await setup(["--json"], injected);
+    const parsed = JSON.parse(output) as {
+      setup: {
+        capabilities: Array<{ id: string; state: string; command?: string }>;
+        next: { action: string; command: string; reason: string };
+      };
+    };
+    assert.equal(parsed.setup.capabilities[0]?.id, "state");
+    assert.equal(parsed.setup.capabilities[0]?.state, state.state === "blocked" ? "blocked" : "needs_action");
+    assert.equal(parsed.setup.capabilities[0]?.command, state.command);
+    assert.deepEqual(parsed.setup.next, {
+      action: state.action,
+      command: state.command,
+      reason: state.reason,
+    });
+    assert.doesNotMatch(output, /\/Users\/private/);
+  }
 });
 
 test("host-scoped setup returns a complete plan and remains path-free", async () => {

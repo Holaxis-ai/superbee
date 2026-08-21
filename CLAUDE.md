@@ -266,7 +266,8 @@ same-name entry. Bare `status` is the bounded read-only multi-host inspector.
 Bare and host-scoped `superbee setup` are the read-only AXI conductor over that registration status plus the existing
 distribution, Agent Skill, SessionStart hook, bundle-selection, and private-catalog inspectors. A
 host-scoped run emits one deterministic safe next command while leaving every existing installer
-as the sole mutation authority; a hostless run only presents the four bounded supported choices.
+as the sole mutation authority; a hostless run projects private-state health before the four
+bounded supported choices, so a cause-specific state remedy cannot disappear behind host selection.
 The private catalog is explicit MCP inventory, never ambient current-project selection: setup
 reports catalog access separately from the bundle resolved by the current checkout, and a legacy
 registration's referenced bundle cannot authorize project orientation, writes, or sync.
