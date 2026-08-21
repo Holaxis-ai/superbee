@@ -49,6 +49,7 @@ const MANIFEST_SHA = "sha256:" + "b".repeat(64);
 const INTEGRITY = "sha512-YWJjZA==";
 const RUN_CREATED_AT = "2026-08-08T12:00:00Z";
 const ALLOWED = ["briand-ai", "mikec-ai"];
+const SUCCESSOR_PREVIEW = defaultReleaseManifest().allowed_tuples["successor-preview"];
 
 function sha256Bytes(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -545,7 +546,7 @@ test("HIGHEST-RISK M1 — final publication binds receipt id/digest, generated s
 });
 
 test("published verifier binds live-shaped same-ID identity, inventory/body, and latest selection", async () => {
-  const version = "0.1.2-pre.1";
+  const version = SUCCESSOR_PREVIEW.version;
   const chain = {
     ...chainFor(version),
     target: "successor-preview",
@@ -682,8 +683,8 @@ test("persisted pre-publication packet binds schemas, release/stage identity, ex
     release_id: 300,
     source_commit: COMMIT,
     target: "successor-preview",
-    version: "0.1.2-pre.1",
-    tag: "v0.1.2-pre.1",
+    version: SUCCESSOR_PREVIEW.version,
+    tag: SUCCESSOR_PREVIEW.tag,
   });
   for (const changed of [
     { ...finalProof, schema: "other" },
@@ -984,7 +985,7 @@ test("publication executor is empirically mutation-free in dry-run and live uses
     chmodSync(ghStub, 0o755);
     const dryPublish = spawnSync(process.execPath, [
       path.join(repoRoot, "scripts", "release-run-operations.mjs"),
-      "--op", "immutable-release", "--target", "successor-preview", "--version", "0.1.2-pre.1",
+      "--op", "immutable-release", "--target", "successor-preview", "--version", SUCCESSOR_PREVIEW.version,
       "--release-id", "300", "--source-commit", COMMIT,
     ], {
       encoding: "utf8",
