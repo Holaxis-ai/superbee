@@ -376,28 +376,6 @@
       "line": 314
     },
     {
-      "file": "packages/cli/SKILL.md",
-      "line_sha256": "554c9bbb268de7e67b43432c396cf6919c7313c606f483ab90d0f5904895cb1c",
-      "literal": "aslite",
-      "ordinal": 0,
-      "category": "legacy-command-compatibility",
-      "treatment": "preserve-as-read-only-migration-candidate",
-      "owner": "cli-policy",
-      "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 16
-    },
-    {
-      "file": "packages/cli/SKILL.md",
-      "line_sha256": "554c9bbb268de7e67b43432c396cf6919c7313c606f483ab90d0f5904895cb1c",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "legacy-command-compatibility",
-      "treatment": "preserve-as-read-only-migration-candidate",
-      "owner": "cli-policy",
-      "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 16
-    },
-    {
       "file": "packages/cli/src/commands/hook.ts",
       "line_sha256": "e9367af851ba87746d1a38812ee3c342d399a33ee63b873109cc864581b0e63e",
       "literal": "agentstate-lite",
@@ -902,28 +880,6 @@
       "owner": "cli-policy",
       "reason": "legacy command and installer recognition remain supported while Superbee is canonical",
       "line": 13
-    },
-    {
-      "file": "packages/cli/src/skill-render.ts",
-      "line_sha256": "917217917d8dacdaa1c48858567fe994be5f4dbafcfee4f3be6076e6db81ae1d",
-      "literal": "aslite",
-      "ordinal": 0,
-      "category": "legacy-command-compatibility",
-      "treatment": "preserve-as-read-only-migration-candidate",
-      "owner": "cli-policy",
-      "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 649
-    },
-    {
-      "file": "packages/cli/src/skill-render.ts",
-      "line_sha256": "917217917d8dacdaa1c48858567fe994be5f4dbafcfee4f3be6076e6db81ae1d",
-      "literal": "agentstate-lite",
-      "ordinal": 0,
-      "category": "legacy-command-compatibility",
-      "treatment": "preserve-as-read-only-migration-candidate",
-      "owner": "cli-policy",
-      "reason": "the generated Skill teaches that legacy invocation recognition is migration-only",
-      "line": 649
     },
     {
       "file": "packages/cli/src/update-orientation.ts",
