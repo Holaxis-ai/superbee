@@ -94,6 +94,10 @@ const LATER_PREVIEW_MANIFEST = successorManifest({
   stableVersion: "0.1.2",
   previewVersion: "0.1.2-pre.1",
 });
+const FOLLOWUP_PREVIEW_MANIFEST = successorManifest({
+  stableVersion: "0.1.2",
+  previewVersion: "0.1.2-pre.2",
+});
 
 function laterPreviewRegistry({ published = false, latest = "0.1.1", next = published ? "0.1.2-pre.1" : "0.1.1" } = {}) {
   const versions = published ? ["0.1.1", "0.1.2-pre.1"] : ["0.1.1"];
@@ -498,6 +502,17 @@ test("later-line preview is green while source is the planned stable target", ()
     package: PACKAGE,
     version: "0.1.2-pre.1",
   });
+  assert.equal(result.facts.source_state, "staged-prep");
+});
+
+test("a follow-up preview retains latest on the published stable while next holds the prior preview", () => {
+  const declaration = { phase: "staged", kind: "prerelease", version: "0.1.2-pre.2" };
+  const result = auditRegistryState(
+    { declaration, sourceVersion: "0.1.2", registry: laterPreviewRegistry({ published: true }) },
+    FOLLOWUP_PREVIEW_MANIFEST,
+  );
+  assert.deepEqual(result.violations, []);
+  assert.deepEqual(result.facts.expected_tags, { latest: "0.1.1", next: "0.1.2-pre.1" });
   assert.equal(result.facts.source_state, "staged-prep");
 });
 
