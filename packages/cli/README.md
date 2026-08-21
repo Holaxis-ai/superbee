@@ -47,10 +47,6 @@ Agent Skill that teaches agents how to use it.
    your configuration and returns one safe next command at a time, so the agent (with your
    approval) performs any actual changes.
 
-Want to try Superbee before installing anything? Agents can run bundle commands straight from
-`npx -y superbee` — no setup at all. When you're ready for the full experience (session hooks,
-the Agent Skill, MCP), do the global install.
-
 Upgrading from the legacy `@holaxis/aslite` package or the retired marketplace plugin? Install
 `superbee` alongside it, have your agent run `superbee setup` to migrate the exact legacy
 integrations, then remove the old package with `npm uninstall -g @holaxis/aslite`. Existing
