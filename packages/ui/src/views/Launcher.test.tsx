@@ -13,10 +13,11 @@
  *     a stored dismissal suppresses it. It stays REACHABLE afterwards: "what is this?" reopens
  *     it (the 2026-07-24 landing rethink — the overview and the example view prompts must not
  *     vanish after one reading).
- *  4. Landing copy is agent-first (the 2026-07-24 rethink): it says what Superbee IS (a cognitive
- *     ecosystem for agents), WHY it is valuable (the problems it solves; long-horizon work),
- *     that it is used THROUGH agents with this window as the human's insight surface, and it
- *     hands the reader example view-building prompts.
+ *  4. Landing copy is agent-first (the 2026-07-24 rethink) and one-line-first
+ *     (plans/proactive-onboarding-prompts): each panel is a heading, one lead sentence answering
+ *     it, and a few short bullets; the remaining prose sits behind a per-panel "learn more"
+ *     expander that collapses on step change. The sharing panel's public-repo visibility warning
+ *     stays visible un-expanded.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act } from "react";
@@ -242,17 +243,14 @@ describe("home surface", () => {
     };
     expect(orientation(), "first run must render the orientation").not.toBeNull();
 
-    // Panel 1 — what Superbee IS, and WHY it is valuable (the ratchet in plain words: settled work
-    // is a floor, not something re-derived — Derfer & Collier 2026). No Back, no Got it yet.
+    // Panel 1 — what Superbee IS in one lead sentence, then short bullets (one-line-first). The
+    // ratchet and the problems it solves live behind "learn more". No Back, no Got it yet.
     const panel1 = panelText();
     expect(panel1).toContain("What is Superbee?");
-    expect(panel1).toContain("cognitive ecosystem");
-    expect(panel1).toContain("folder of plain markdown");
-    expect(panel1).toContain("What problems does it solve?");
-    expect(panel1).toContain("forget important information between sessions");
-    expect(panel1).toMatch(/ratchets forward instead of slipping back/);
-    expect(panel1).toMatch(/becomes the floor the next one builds on/);
-    expect(panel1).toMatch(/span days, sessions, and many agents/);
+    expect(panel1).toContain("shared, versioned memory");
+    expect(panel1).toContain("plain markdown");
+    expect(panel1).toContain("Conflict-safe writes");
+    expect(orientation()!.querySelectorAll(".orientation-examples li").length).toBeGreaterThanOrEqual(2);
     expect(panel1).toContain("1 of 4");
     expect(orientation()!.querySelector(".orientation-dismiss"), "Got it only on the last panel").toBeNull();
     expect(panel1).not.toContain("Back");
@@ -268,15 +266,26 @@ describe("home surface", () => {
     const okfPanel = orientation()!.querySelector(".orientation-details");
     expect(okfPanel, "clicking 'learn more' must reveal the standard").not.toBeNull();
     expect(okfPanel!.textContent ?? "").toContain("OKF");
+    expect(okfPanel!.textContent ?? "").toContain("forget important information between sessions");
+    expect(okfPanel!.textContent ?? "").toMatch(/ratchets forward instead of slipping back/);
 
-    // Panel 2 — HOW it is used: agents are the primary users; install commands connect one.
+    // Panel 2 — HOW it is used, one line: your agents do. The expander opened on panel 1 must not
+    // carry over — disclosure is per step.
     await clickNext();
     const panel2 = panelText();
     expect(panel2).toContain("How do I use Superbee?");
-    expect(panel2).toContain("agents are the main users");
-    expect(panel2).toContain("built by agents, for agents");
-    expect(panel2).toContain("ask your agent to install the Superbee skill and hooks");
+    expect(panel2).toContain("Mostly, you don’t — your agents do.");
+    expect(panel2).toContain("Ask your agent to install the Superbee skill and hooks");
+    expect(panel2).toContain("Add this doc to the bundle");
     expect(panel2).toContain("2 of 4");
+    expect(orientation()!.querySelector(".orientation-details"), "the expander must collapse on step change").toBeNull();
+    await act(async () => {
+      orientation()!.querySelector<HTMLButtonElement>("button.where-btn")!.click();
+      await flush();
+    });
+    const panel2Details = orientation()!.querySelector(".orientation-details");
+    expect(panel2Details, "panel 2 must have its own 'learn more'").not.toBeNull();
+    expect(panel2Details!.textContent ?? "").toContain("built by agents, for agents");
     expect(orientation()!.querySelector(".orientation-dismiss")).toBeNull();
 
     // Back returns to panel 1, Next comes back.
@@ -288,21 +297,29 @@ describe("home surface", () => {
     await clickNext();
     await clickNext();
 
-    // Panel 3 — Views examples + the Recipes subsection (how the bundle learns new document types).
+    // Panel 3 — Views & recipes: example prompts as the visible bullets; flexibility and
+    // recipe-authoring prose behind "learn more".
     const panel3 = panelText();
-    expect(panel3).toContain("Views");
+    expect(panel3).toContain("Views & recipes");
     const examples = orientation()!.querySelector(".orientation-examples");
-    expect(examples, "panel 3 must list example view prompts").not.toBeNull();
+    expect(examples, "panel 3 must list example prompts").not.toBeNull();
     expect(examples!.querySelectorAll("li").length).toBeGreaterThanOrEqual(3);
     expect(examples!.textContent).toMatch(/all tasks that have not been completed/i);
-    expect(panel3).toContain("Recipes");
-    // Flexibility first (own document types / relationships / views), then recipes as the
-    // reusable, sharable packaging of that flexibility.
-    expect(panel3).toContain("your own document types");
-    expect(panel3).toContain("relationships");
-    expect(panel3).toContain("share with others");
+    expect(panel3).toContain("Recipes add ready-made setups");
     expect(panel3).toMatch(/set this project up for task tracking/i);
-    expect(panel3).toMatch(/suggest a recipe/i);
+    expect(orientation()!.querySelector(".orientation-details"), "the expander must collapse on step change").toBeNull();
+    await act(async () => {
+      orientation()!.querySelector<HTMLButtonElement>("button.where-btn")!.click();
+      await flush();
+    });
+    const panel3Details = orientation()!.querySelector(".orientation-details");
+    expect(panel3Details, "panel 3 must have its own 'learn more'").not.toBeNull();
+    // Flexibility (own document types / relationships / views), then recipes as the reusable,
+    // sharable packaging of that flexibility.
+    expect(panel3Details!.textContent ?? "").toContain("your own document types");
+    expect(panel3Details!.textContent ?? "").toContain("relationships");
+    expect(panel3Details!.textContent ?? "").toContain("share with others");
+    expect(panel3Details!.textContent ?? "").toMatch(/suggest a recipe/i);
     expect(panel3).toContain("3 of 4");
     expect(orientation()!.querySelector(".orientation-dismiss")).toBeNull();
 
@@ -311,14 +328,14 @@ describe("home surface", () => {
     await clickNext();
     const panel4 = panelText();
     expect(panel4).toContain("Collaborating with others");
-    expect(panel4).toMatch(/stays local until you choose to share it/i);
-    expect(panel4).toContain("ask your agent to");
-    expect(panel4).toContain("publishes the bundle onto its own");
+    expect(panel4).toMatch(/stays local until you share it/i);
+    expect(panel4).toContain("Ask your agent to share the bundle");
+    expect(panel4).toContain("publishes it onto its own");
     // Public-repo awareness: sharing inherits the repo's visibility — stated as a consideration
-    // (open-by-design can be a feature), never buried, never alarmist.
+    // (open-by-design can be a feature), VISIBLE un-expanded (safety over brevity), never alarmist.
+    expect(orientation()!.querySelector(".orientation-details"), "the expander must collapse on step change").toBeNull();
     expect(panel4).toContain("as visible as the repository that carries it");
-    expect(panel4).toContain("part of the project’s public record");
-    expect(panel4).toContain("committing the folder with your code");
+    expect(panel4).toContain("agents sync the bundle as they work");
     // The closing CTA wraps the TOUR, not the sharing section (visually separated, "That's the
     // tour" framing) — so it cannot read as "try syncing".
     expect(panel4).toContain("That’s the tour.");
@@ -326,6 +343,13 @@ describe("home surface", () => {
     expect(orientation()!.querySelector(".orientation-close"), "closing CTA must be its own separated block").not.toBeNull();
     expect(panel4).toContain("4 of 4");
     expect(orientation()!.querySelector(".orientation-next"), "no Next past the last panel").toBeNull();
+    await act(async () => {
+      orientation()!.querySelector<HTMLButtonElement>("button.where-btn")!.click();
+      await flush();
+    });
+    expect(orientation()!.querySelector(".orientation-details")!.textContent ?? "").toContain(
+      "committing the folder with your code",
+    );
 
     // Global copy rules hold across the WHOLE walkthrough, not just one panel.
     const all = panel1 + panel2 + panel3 + panel4;
