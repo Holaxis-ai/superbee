@@ -658,6 +658,22 @@ type InstallPathInspection =
   | { ok: true; status: SkillStatusResult; preflight: InstallPreflight }
   | { ok: false; reason: string };
 
+type ReadyInstallPathInspection = {
+  ok: true;
+  status: SkillStatusResult;
+  preflight: Extract<InstallPreflight, { ok: true }>;
+};
+
+type HostInstallInspection =
+  | {
+      ok: true;
+      canonical: ReadyInstallPathInspection;
+      legacy: Extract<InstallPathInspection, { ok: true }>;
+      canonicalOwned: boolean;
+      legacyOwned: boolean;
+    }
+  | { ok: false; reason: string };
+
 function inspectInstallPath(dir: string, assets: SkillAssets, installCommand: string): InstallPathInspection {
   try {
     return {
@@ -670,17 +686,13 @@ function inspectInstallPath(dir: string, assets: SkillAssets, installCommand: st
   }
 }
 
-type HostInstallResult =
-  | { ok: true; changed: boolean; migrated: boolean; legacyState: SkillState }
-  | { ok: false; reason: string };
-
-/** Inspect both host paths before mutation, then install or migrate only proven-owned bytes. */
-function installForHost(
+/** Exact read-only authority/preflight used by both the installer and passive refresh guidance. */
+function inspectHostInstall(
   canonicalDir: string,
   legacyDir: string,
   assets: SkillAssets,
   installCommand: string,
-): HostInstallResult {
+): HostInstallInspection {
   const canonical = inspectInstallPath(canonicalDir, assets, installCommand);
   const legacy = inspectInstallPath(legacyDir, assets, installCommand);
   if (!canonical.ok) return canonical;
@@ -696,6 +708,29 @@ function installForHost(
       reason: `both canonical and legacy folders are owned (${canonicalDir}, ${legacyDir}) - refusing ambiguous convergence`,
     };
   }
+  return {
+    ok: true,
+    canonical: { ...canonical, preflight: canonical.preflight },
+    legacy,
+    canonicalOwned,
+    legacyOwned,
+  };
+}
+
+type HostInstallResult =
+  | { ok: true; changed: boolean; migrated: boolean; legacyState: SkillState }
+  | { ok: false; reason: string };
+
+/** Inspect both host paths before mutation, then install or migrate only proven-owned bytes. */
+function installForHost(
+  canonicalDir: string,
+  legacyDir: string,
+  assets: SkillAssets,
+  installCommand: string,
+): HostInstallResult {
+  const inspected = inspectHostInstall(canonicalDir, legacyDir, assets, installCommand);
+  if (!inspected.ok) return inspected;
+  const { canonical, legacy, canonicalOwned, legacyOwned } = inspected;
 
   if (!canonicalOwned && legacyOwned) {
     // The paths share one host skills directory, so rename is atomic. Any interruption before it
@@ -782,9 +817,9 @@ export interface SkillDeps {
 }
 
 /**
- * Fs-only refresh signal for the session orientation surface. Absent and unmanaged folders stay
- * quiet: setup owns onboarding and conflict diagnosis. A managed canonical install whose bytes no
- * longer match the running package is the one state an npm upgrade can safely prescribe away.
+ * Fs-only refresh signal for the session orientation surface. Absent, unmanaged, and conflicted
+ * folders stay quiet: setup owns onboarding and conflict diagnosis. Canonical or old-only legacy
+ * stale installs surface only when the exact scope command passes every host's install preflight.
  */
 export function skillRefreshScopes(
   deps: Pick<SkillDeps, "cwd" | "home" | "env" | "executable"> = {},
@@ -799,10 +834,24 @@ export function skillRefreshScopes(
   for (const scope of ["user", "project"] as const) {
     try {
       const targets = skillTargets(scope, deps);
+      const legacyTargets = legacySkillTargets(scope, deps);
       const remedy = `${cliInvocation()} skill install --scope ${scope}`;
-      if ([targets.claude, targets.codex].some((target) =>
-        skillStatusForDir(target, assets, remedy).state === "stale"
-      )) {
+      const hosts = [
+        [targets.claude, legacyTargets.claude],
+        [targets.codex, legacyTargets.codex],
+      ] as const;
+      let actionableStale = false;
+      let installable = true;
+      for (const [canonicalDir, legacyDir] of hosts) {
+        const inspected = inspectHostInstall(canonicalDir, legacyDir, assets, remedy);
+        if (!inspected.ok) {
+          installable = false;
+          break;
+        }
+        actionableStale ||= inspected.canonical.status.state === "stale"
+          || inspected.legacy.status.state === "stale";
+      }
+      if (installable && actionableStale) {
         scopes.push(scope);
       }
     } catch {

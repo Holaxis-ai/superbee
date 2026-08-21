@@ -117,14 +117,14 @@ detached refresh at most once per 24-hour attempt window. Rendering never waits 
 public npm request names only superbee; it sends no installed version, cwd, bundle, actor, or
 usage data beyond ordinary network metadata.
 
-Home also checks managed Agent Skill bytes locally. A stale install is reported with its exact
-scope-specific refresh command and restart requirement; current, absent, unmanaged, or unreadable
-installs stay quiet.
+Home also checks managed Agent Skill bytes locally. A stale install that passes the installer's
+complete read-only preflight is reported with its exact scope-specific refresh command and restart
+requirement; current, absent, unmanaged, conflicting, or unreadable installs stay quiet.
 
 Options:
   --dir <path>       Orient from this local directory
   --remote <url>     Show offline guidance for this explicit remote
-  --json             Emit stable compact JSON; no notice or refresh work is performed
+  --json             Emit stable compact JSON; suppress npm release notices and refresh only
   --no-update-check  Disable both cached notice display and detached refresh for this run
   -h, --help         Show this help
 

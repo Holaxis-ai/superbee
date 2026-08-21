@@ -107,12 +107,13 @@ superbee and sends no installed version, cwd, bundle, actor, or usage data beyon
 network metadata. Presence of SUPERBEE_NO_UPDATE_CHECK, legacy ASLITE_NO_UPDATE_CHECK,
 NO_UPDATE_NOTIFIER, or CI disables both display and refresh.
 
-The render also performs a local managed-Skill byte check. If the installed Agent Skill is stale,
-it reports the exact refresh command and that the host must restart; it never updates files itself.
+The render also performs a local managed-Skill byte check. If a stale install passes the installer's
+complete read-only preflight, it reports the exact refresh command and that the host must restart;
+it never updates files itself.
 
 Options:
   --dir <path>       Directory to run from (default: the cwd)
-  --json             Emit stable compact JSON; no update display or refresh work
+  --json             Emit stable compact JSON; suppress npm release display and refresh only
   --no-update-check  Disable cached update display and refresh for this run
   -h, --help         Show this help
 `;
