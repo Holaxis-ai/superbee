@@ -52,3 +52,44 @@ test("the shipped sample bundle teaches Superbee while retaining its interoperab
     /Superbee is an OKF-native store/,
   );
 });
+
+test("maintained first-party surfaces teach the canonical Superbee identity", async () => {
+  const cases = [
+    ["examples/views/conventions/view.md", /`superbee ui`/, /`(?:agentstate-lite ui|aslite status)`/],
+    ["packages/ui/index.html", /<title>Superbee<\/title>/, /<title>agentstate-lite<\/title>/],
+    ["packages/ui-server/README.md", /@superbee\/ui-server/, /@agentstate-lite\/ui-server/],
+    ["packages/board-git/README.md", /@superbee\/board-git/, /@agentstate-lite\/board-git/],
+  ];
+  for (const [relative, required, forbidden] of cases) {
+    const content = await readFile(path.join(repoRoot, relative), "utf8");
+    assert.match(content, required, relative);
+    assert.doesNotMatch(content, forbidden, relative);
+  }
+});
+
+test("development shims and the View demo resolve to the Superbee artifact", async () => {
+  for (const shim of ["superbee", "aslite"]) {
+    assert.match(
+      await readFile(path.join(repoRoot, shim), "utf8"),
+      /dist\/superbee\.mjs/,
+      `${shim} must route to the current development artifact`,
+    );
+  }
+
+  const demo = await readFile(path.join(repoRoot, "examples/views/demo.sh"), "utf8");
+  assert.match(demo, /packages\/cli\/dist\/superbee\.mjs/);
+  assert.match(demo, /superbee-views-demo/);
+  assert.doesNotMatch(demo, /REPO\/\.agentstate-lite/);
+});
+
+test("project bindings stay machine-local across the compatibility window", async () => {
+  const entries = new Set(
+    (await readFile(path.join(repoRoot, ".gitignore"), "utf8"))
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter((line) => line !== "" && !line.startsWith("#")),
+  );
+
+  assert.ok(entries.has(".superbee.json"), "preferred binding must be ignored");
+  assert.ok(entries.has(".agentstate.json"), "legacy binding must remain ignored during compatibility");
+});

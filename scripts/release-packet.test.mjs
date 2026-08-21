@@ -536,10 +536,10 @@ test("the manifest closure follows every workflow file, package script hop, and 
         "name: extra\non:\n  workflow_dispatch:\njobs:\n  extra:\n    runs-on: ubuntu-latest\n    steps:\n      - run: node scripts/release-inspect-recovery.mjs\n");
       execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
     }],
-    ["a node invocation added to a package script a workflow runs", "scripts/rename-literal-inventory.mjs", async (root) => {
+    ["a node invocation added to a package script a workflow runs", "scripts/release-inspect-recovery.mjs", async (root) => {
       const file = path.join(root, "package.json");
       const manifest = JSON.parse(await readFile(file, "utf8"));
-      manifest.scripts["mutation:survivors"] = "node scripts/rename-literal-inventory.mjs";
+      manifest.scripts["mutation:survivors"] = "node scripts/release-inspect-recovery.mjs";
       await writeFile(file, `${JSON.stringify(manifest, null, 2)}\n`);
       execFileSync("git", ["add", "-A"], { cwd: root, stdio: "pipe" });
     }],

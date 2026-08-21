@@ -13,7 +13,7 @@ import { createIsMainModule, isMainModule } from "./is-main-module.mjs";
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const representativeCli = path.join(repoRoot, "scripts", "release-resolve-target.mjs");
-const secondEntrypoint = path.join(repoRoot, "scripts", "rename-literal-inventory.mjs");
+const secondEntrypoint = path.join(repoRoot, "scripts", "migrate-legacy-view-names.mjs");
 const OWNED_SOURCE_SURFACE_DIRECTORIES = [
   "scripts",
   "packages/cli/scripts",
@@ -29,7 +29,6 @@ const PACKAGE_SCRIPT_AUTHORITY_FILES = [
 ];
 const EXPLICIT_OPERATOR_EXECUTABLE_PATHS = [
   "scripts/migrate-legacy-view-names.mjs",
-  "scripts/rename-literal-inventory.mjs",
   "scripts/release-inspect.mjs",
   "scripts/release-packet.mjs",
   "scripts/release-reconcile.mjs",
@@ -115,11 +114,6 @@ const OWNED_ENTRYPOINT_PROBES = [
     relativePath: "scripts/prepublish-guard.mjs",
     args: () => [],
     expected: { code: 1, stderr: /prepublishOnly refused:/ },
-  },
-  {
-    relativePath: "scripts/rename-literal-inventory.mjs",
-    args: () => ["--check"],
-    expected: { code: 0, stdout: /rename literal inventory:/ },
   },
   {
     relativePath: "scripts/release-audit-tags.mjs",
