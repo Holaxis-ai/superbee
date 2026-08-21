@@ -305,9 +305,10 @@ function newestOf(versions) {
  * Expected dist-tag state for the declared phase. Two authorities compose here, each owning exactly
  * one thing: the PUBLICATION MANIFEST owns which dist-tags a version may ever carry (`destiny`), and
  * `resolveTags` owns the transient window a transaction passes through. The priors handed to the
- * phase machine are therefore the newest published version ELIGIBLE for each tag, not simply the
- * newest published version — that is what lets a candidate published to `next` only leave `latest`
- * where it is without the audit reading it as drift.
+ * phase machine are therefore the at-rest state of the published history excluding the active
+ * candidate. This preserves the prior preview's `next`-only policy after the manifest advances to
+ * a new candidate: the manifest deliberately declares the active tuple, not a historical tuple
+ * for every already-published preview.
  */
 /**
  * True only for a coordinate whose entire published history is one version that reserves the name:
@@ -385,18 +386,33 @@ export function expectedTagState({ declaration, versions, observedTags, destiny 
     };
   }
 
-  // Transaction phases: priors = newest published EXCLUDING the candidate, per tag.
+  // Transaction phases: derive priors from the at-rest state of the published history EXCLUDING
+  // the candidate. `release/targets.json` carries one active preview tuple, so an earlier published
+  // preview becomes historically undeclared when that tuple advances. Reusing at-rest derivation
+  // keeps latest on the newest stable while retaining a genuine prior preview on next.
   // Assumes npm staged-but-unapproved versions do NOT appear in the public packument; if npm
   // stage semantics differ, the candidate reads as published earlier and the tolerated staged
   // window simply lengthens — no other logic depends on the assumption.
   const { phase, kind, version } = declaration;
   const priorVersions = versions.filter((v) => v !== version);
-  const priorLatest = newestOf(eligibleFor(destiny, priorVersions, "latest"));
-  const priorNext = newestOf(eligibleFor(destiny, priorVersions, "next"));
-  if (!priorLatest || !priorNext) {
+  if (priorVersions.length === 0) {
     violations.push(violation("no_prior_release", `phase ${phase} declared but no published prior release exists to hold latest`));
     return { expected: null, notes, violations };
   }
+  const priorState = expectedTagState({
+    declaration: { phase: "at_rest", kind: null, version: null },
+    versions: priorVersions,
+    observedTags,
+    destiny,
+    packageName,
+  });
+  notes.push(...priorState.notes);
+  violations.push(...priorState.violations);
+  if (!priorState.expected) {
+    violations.push(violation("no_prior_release", `phase ${phase} declared but no published prior release exists to hold latest`));
+    return { expected: null, notes, violations };
+  }
+  const { latest: priorLatest, next: priorNext } = priorState.expected;
   const candidatePublished = versions.includes(version);
   if (phase === "promoted" && !candidatePublished) {
     violations.push(violation("candidate_unpublished", `phase promoted declares ${version} but it is not published`));

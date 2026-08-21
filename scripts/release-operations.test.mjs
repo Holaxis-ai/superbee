@@ -22,7 +22,7 @@ import {
 } from "./release-operations.mjs";
 import * as allOperations from "./release-operations.mjs";
 import { operationsFor } from "./release-run-operations.mjs";
-import { defaultReleaseTargets } from "./release-targets.mjs";
+import { defaultReleaseManifest, defaultReleaseTargets } from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -30,6 +30,7 @@ const runOps = path.join(repoRoot, "scripts", "release-run-operations.mjs");
 const SHA = "sha256:" + "a".repeat(64);
 const BARE = "a".repeat(64);
 const COMMIT = "1".repeat(40);
+const SUCCESSOR_PREVIEW = defaultReleaseManifest().allowed_tuples["successor-preview"];
 
 test("inspection instructions emit the exact stage download + SHA-256 compare", () => {
   const i = inspectionInstructions({ target: "bridge", stageId: "stage-1", tarballSha256: SHA, version: "0.1.0-pre.4" });
@@ -113,7 +114,7 @@ test("promote names the exact version and tag", () => {
 test("immutable release PATCH argv is exactly manifest-derived for stable and prerelease tuples", () => {
   for (const row of [
     { target: "successor-stable", version: "0.1.2", releaseId: "42", tag: "v0.1.2", prerelease: false, latest: true },
-    { target: "successor-preview", version: "0.1.2-pre.1", releaseId: "43", tag: "v0.1.2-pre.1", prerelease: true, latest: false },
+    { target: "successor-preview", version: SUCCESSOR_PREVIEW.version, releaseId: "43", tag: SUCCESSOR_PREVIEW.tag, prerelease: true, latest: false },
   ]) {
     const rel = immutableReleaseOperations({
       target: row.target,
@@ -217,14 +218,14 @@ test("operationsFor resolves each op to the same argv + display strings", () => 
   );
   assert.deepEqual(
     operationsFor("immutable-release", [
-      "--target", "successor-preview", "--version", "0.1.2-pre.1", "--release-id", "9", "--source-commit", COMMIT,
+      "--target", "successor-preview", "--version", SUCCESSOR_PREVIEW.version, "--release-id", "9", "--source-commit", COMMIT,
     ]).map((o) => o.argv),
-    [immutableReleaseOperations({ target: "successor-preview", version: "0.1.2-pre.1", releaseId: "9", sourceCommit: COMMIT }).argvs[0]],
+    [immutableReleaseOperations({ target: "successor-preview", version: SUCCESSOR_PREVIEW.version, releaseId: "9", sourceCommit: COMMIT }).argvs[0]],
   );
   for (const forbidden of ["--tag", "--github-latest", "--github-prerelease"]) {
     assert.throws(
       () => operationsFor("immutable-release", [
-        "--target", "successor-preview", "--version", "0.1.2-pre.1", "--release-id", "9", "--source-commit", COMMIT,
+        "--target", "successor-preview", "--version", SUCCESSOR_PREVIEW.version, "--release-id", "9", "--source-commit", COMMIT,
         forbidden, "false",
       ]),
       /does not accept/,
