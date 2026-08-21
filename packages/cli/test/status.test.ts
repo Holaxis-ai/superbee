@@ -18,6 +18,7 @@ import { serve, type ServerHandle } from "@superbee/server";
 
 import { status } from "../src/commands/status.js";
 import { newCommand } from "../src/commands/new.js";
+import { init } from "../src/commands/init.js";
 import { CliError } from "../src/errors.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -60,8 +61,9 @@ async function runToon(argv: string[]): Promise<string> {
  *   - `widgets/self-linker`  — links ONLY to itself. A self-link must not rescue a doc from orphan
  *                              status (status.ts explicitly excludes `l.to === doc.id` from the
  *                              inbound set), so this doc IS an orphan despite having an outbound link.
- * 10 docs total; every doc except `missing-title` has zero inbound links from an OTHER concept doc
- * (9 orphans).
+ * 10 docs total. The resolved anchor -> missing-title edge establishes a graph; five content docs
+ * remain genuinely isolated. Definitions, graph roots, and the unresolved-link source are not
+ * duplicated as orphan findings.
  */
 async function makeFixtureBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await tempDir();
@@ -176,6 +178,85 @@ test("status: a conventions-free freshly-initialized bundle is equally clean", a
     assert.equal(result.missing_expected_links, 0);
     assert.equal("link_type_violations_rows" in result, false);
     assert.equal("missing_expected_links_rows" in result, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status: a fresh work-tracking bundle and its first Task do not invent an orphan finding before a graph exists", async () => {
+  const dir = await tempDir();
+  try {
+    await init(["--dir", dir, "--recipe", "work-tracking", "--json"], { stdout: () => {} });
+    await newCommand(
+      ["Task", "first", "--title", "First", "--progress_status", "todo", "--dir", dir, "--json"],
+      { stdout: () => {} },
+    );
+    const result = await runJson(["--dir", dir]);
+    assert.equal(result.docs, 2);
+    assert.equal(result.kinds, 1);
+    assert.equal(result.orphans, 0);
+    assert.equal("orphan_docs" in result, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status: established graphs exclude definitions and roots while reporting only actionable isolated content", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir);
+    const now = new Date().toISOString();
+    await writeDoc(bundle, {
+      id: "conventions/note",
+      frontmatter: { type: "Convention", governs: "Note", fields: { required: ["title"] }, timestamp: now },
+      body: "",
+    });
+    await writeDoc(bundle, {
+      id: "references/guide",
+      frontmatter: { type: "Reference", title: "Guide", timestamp: now },
+      body: "",
+    });
+    await writeDoc(bundle, {
+      id: "docs/bundle",
+      frontmatter: { type: "Bundle Name", title: "Test Bundle", timestamp: now },
+      body: "",
+    });
+    await writeDoc(bundle, {
+      id: "views-registry/dashboard",
+      frontmatter: { type: "View", title: "Dashboard", entry: "views/dashboard.html", access: "none", timestamp: now },
+      body: "",
+    });
+    await writeBlob(bundle, "views/dashboard.html", new TextEncoder().encode("<!doctype html>"), "text/html");
+    await writeDoc(bundle, {
+      id: "docs/root",
+      frontmatter: { type: "Note", title: "Root", timestamp: now },
+      body: "[contains](leaf.md)",
+    });
+    await writeDoc(bundle, {
+      id: "docs/leaf",
+      frontmatter: { type: "Note", title: "Leaf", timestamp: now },
+      body: "",
+    });
+    await writeDoc(bundle, {
+      id: "docs/isolated",
+      frontmatter: { type: "Note", title: "Isolated", timestamp: now },
+      body: "",
+    });
+    await writeDoc(bundle, {
+      id: "notes/source",
+      frontmatter: { type: "Reference", title: "User-authored source", timestamp: now },
+      body: "",
+    });
+
+    const result = await runJson(["--dir", dir]);
+    assert.equal(result.orphans, 2);
+    const orphans = result.orphan_docs as { rows: Record<string, unknown>[]; help: string };
+    assert.deepEqual(orphans.rows, [
+      { id: "docs/isolated", type: "Note" },
+      { id: "notes/source", type: "Reference" },
+    ]);
+    assert.match(orphans.help, /link add <from> <id>/);
+    assert.match(orphans.help, /doc delete <id>/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -330,28 +411,31 @@ test("status: fixture bundle exercises every finding class with the correct coun
     const unresolved = result.unresolved as { shown: number; total: number; rows: Record<string, unknown>[] };
     assert.deepEqual(unresolved.rows, [{ from: "widgets/linker", href: "../ghosts/nope.md" }]);
 
-    // Orphans: everything except missing-title (which anchor links to). Self-links never rescue.
-    assert.equal(result.orphans, 9);
-    const orphans = result.orphan_docs as { shown: number; total: number; rows: Record<string, unknown>[] };
+    // Orphans: only isolated content docs once the anchor -> missing-title edge establishes a
+    // graph. Definitions, graph roots, and the unresolved-link source are not duplicated.
+    assert.equal(result.orphans, 5);
+    const orphans = result.orphan_docs as {
+      shown: number;
+      total: number;
+      rows: Record<string, unknown>[];
+      help: string;
+    };
     const orphanIds = orphans.rows.map((r) => r.id);
     assert.ok(orphanIds.includes("widgets/orphan"));
-    assert.ok(orphanIds.includes("widgets/anchor")); // links OUT, but nothing links IN
+    assert.ok(!orphanIds.includes("widgets/anchor")); // intentional graph root
     assert.ok(!orphanIds.includes("widgets/missing-title")); // rescued by anchor's inbound link
     assert.ok(orphanIds.includes("widgets/self-linker")); // links only to ITSELF — does not self-rescue
-    // Every orphan row carries {id, type} — the type column is what lets a reader self-identify a
-    // Convention doc (schema, not content) among the orphans (F4) without a second lookup.
+    assert.ok(!orphanIds.includes("widgets/linker")); // unresolved_links is its precise finding
+    // Every remaining orphan row carries {id, type}; definitions never enter this block.
     for (const row of orphans.rows) {
       assert.equal(typeof row.id, "string");
       assert.equal(typeof row.type, "string");
     }
-    assert.ok(
-      orphans.rows.some((r) => r.id === "conventions/widget" && r.type === "Convention"),
-      "an expected, permanent Convention orphan self-identifies via its type column",
-    );
-    assert.ok(
-      orphans.rows.some((r) => r.id === "conventions/broken" && r.type === "Convention"),
-    );
+    assert.ok(!orphanIds.includes("conventions/widget"));
+    assert.ok(!orphanIds.includes("conventions/broken"));
     assert.ok(orphans.rows.some((r) => r.id === "widgets/orphan" && r.type === "Widget"));
+    assert.match(orphans.help, /link add <from> <id>/);
+    assert.match(orphans.help, /doc delete <id>/);
 
     // Freshness sweep: stale-one exceeds the 1h horizon; no-ts has no timestamp at all.
     assert.equal(result.stale, 1);
