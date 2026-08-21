@@ -324,7 +324,7 @@ function githubHeaders(token) {
   };
 }
 
-async function observeGithubJson({ url, token, allowNotFound, fetchImpl, requestTimeoutMs }) {
+async function observeGithubJson({ url, endpoint, token, allowNotFound, fetchImpl, requestTimeoutMs }) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
   let response;
@@ -337,11 +337,14 @@ async function observeGithubJson({ url, token, allowNotFound, fetchImpl, request
   }
   if (!Number.isSafeInteger(response?.status)) throw new Error("GitHub response lacks a numeric HTTP status");
   if (response.status === 404) {
-    return allowNotFound ? { value: null } : { retry: "exact release returned HTTP 404" };
+    return allowNotFound ? { value: null } : { retry: `${endpoint} returned HTTP 404` };
   }
-  if (response.status >= 500 && response.status <= 599) return { retry: `GitHub returned HTTP ${response.status}` };
-  if (response.status >= 400 && response.status <= 499) throw new Error(`GitHub returned non-retryable HTTP ${response.status}`);
-  if (response.status < 200 || response.status >= 300) throw new Error(`GitHub returned unexpected HTTP ${response.status}`);
+  if (response.status === 429 || (response.status === 403 && endpoint === "exact release")) {
+    return { retry: `${endpoint} returned HTTP ${response.status}` };
+  }
+  if (response.status >= 500 && response.status <= 599) return { retry: `${endpoint} returned HTTP ${response.status}` };
+  if (response.status >= 400 && response.status <= 499) throw new Error(`${endpoint} returned non-retryable HTTP ${response.status}`);
+  if (response.status < 200 || response.status >= 300) throw new Error(`${endpoint} returned unexpected HTTP ${response.status}`);
   try {
     return { value: await response.json() };
   } catch {
@@ -375,6 +378,7 @@ export async function convergePublishedPublication({
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const exact = await observeGithubJson({
       url: `${base}/${releaseId}`,
+      endpoint: "exact release",
       token,
       allowNotFound: false,
       fetchImpl,
@@ -385,6 +389,7 @@ export async function convergePublishedPublication({
     } else {
       const latest = await observeGithubJson({
         url: `${base}/latest`,
+        endpoint: "latest release",
         token,
         allowNotFound: true,
         fetchImpl,

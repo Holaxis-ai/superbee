@@ -777,7 +777,86 @@ test("published convergence retries network and 5xx observations, then succeeds"
   assert.equal(sequence.calls.length, 4);
 });
 
-test("published convergence fails immediate on missing auth, 401/403, and other non-404 4xx", async () => {
+test("published convergence retries exact-release HTTP 403 and 429 until readable, then succeeds", async () => {
+  const fixture = publishedFixture("successor-preview");
+  for (const status of [403, 429]) {
+    const sequence = fetchSequence([
+      httpResponse(status, {}),
+      httpResponse(200, fixture.release), httpResponse(200, fixture.latest),
+    ]);
+    const proof = await convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+      fetchImpl: sequence.fetch, sleep: async () => {}, retryDelayMs: 0,
+    });
+    assert.equal(proof.release_id, 300);
+    assert.deepEqual(
+      sequence.calls.map((call) => new URL(call.url).pathname),
+      ["/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/latest"],
+      `HTTP ${status} must retry the exact release before latest is consulted`,
+    );
+    assert.ok(sequence.calls.every((call) => call.method === "GET"), `HTTP ${status} recovery must remain GET-only`);
+  }
+});
+
+test("published convergence exhausts exact-release HTTP 403 and 429 with endpoint/status context", async () => {
+  const fixture = publishedFixture("successor-preview");
+  for (const status of [403, 429]) {
+    const sequence = fetchSequence([httpResponse(status, {}), httpResponse(status, {})]);
+    await assert.rejects(
+      convergePublishedPublication({
+        repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+        fetchImpl: sequence.fetch, sleep: async () => {}, maxAttempts: 2, retryDelayMs: 0,
+      }),
+      (error) => {
+        assert.match(error.message, new RegExp(`did not converge after 2 attempts: exact release returned HTTP ${status}`));
+        assert.doesNotMatch(error.message, /draft|permission|authorization|throttl/i, "an unreadable observation must not claim its cause");
+        return true;
+      },
+    );
+    assert.ok(sequence.calls.every((call) => call.url.endsWith("/releases/300")), "latest is never queried before exact readability");
+    assert.ok(sequence.calls.every((call) => call.method === "GET"), "exhaustion remains GET-only");
+  }
+});
+
+test("published convergence retries latest HTTP 429 to success or endpoint-specific exhaustion", async () => {
+  const fixture = publishedFixture("successor-preview");
+  const succeeds = fetchSequence([
+    httpResponse(200, fixture.release), httpResponse(429, {}),
+    httpResponse(200, fixture.release), httpResponse(200, fixture.latest),
+  ]);
+  const proof = await convergePublishedPublication({
+    repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+    fetchImpl: succeeds.fetch, sleep: async () => {}, retryDelayMs: 0,
+  });
+  assert.equal(proof.release_id, 300);
+  assert.deepEqual(
+    succeeds.calls.map((call) => new URL(call.url).pathname),
+    [
+      "/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/latest",
+      "/repos/Holaxis-ai/superbee/releases/300", "/repos/Holaxis-ai/superbee/releases/latest",
+    ],
+  );
+  assert.ok(succeeds.calls.every((call) => call.method === "GET"));
+
+  const exhausts = fetchSequence([
+    httpResponse(200, fixture.release), httpResponse(429, {}),
+    httpResponse(200, fixture.release), httpResponse(429, {}),
+  ]);
+  await assert.rejects(
+    convergePublishedPublication({
+      repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
+      fetchImpl: exhausts.fetch, sleep: async () => {}, maxAttempts: 2, retryDelayMs: 0,
+    }),
+    (error) => {
+      assert.match(error.message, /did not converge after 2 attempts: latest release returned HTTP 429/);
+      assert.doesNotMatch(error.message, /permission|authorization|throttl/i, "exhaustion must report observation, not inferred cause");
+      return true;
+    },
+  );
+  assert.ok(exhausts.calls.every((call) => call.method === "GET"));
+});
+
+test("published convergence keeps missing auth, latest 403, and non-exempt 4xx immediately fatal", async () => {
   const fixture = publishedFixture("successor-preview");
   let missingAuthFetches = 0;
   await assert.rejects(
@@ -789,24 +868,26 @@ test("published convergence fails immediate on missing auth, 401/403, and other 
   );
   assert.equal(missingAuthFetches, 0, "missing auth fails before any network observation");
 
-  for (const status of [400, 401, 403, 418, 422, 429]) {
+  for (const status of [400, 401, 418, 422]) {
     const exact = fetchSequence([httpResponse(status, {})]);
     await assert.rejects(
       convergePublishedPublication({
         repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
         fetchImpl: exact.fetch, sleep: async () => {}, retryDelayMs: 0,
       }),
-      new RegExp(`non-retryable HTTP ${status}`),
+      new RegExp(`exact release returned non-retryable HTTP ${status}`),
     );
     assert.equal(exact.calls.length, 1);
+  }
 
+  for (const status of [400, 401, 403, 418, 422]) {
     const latest = fetchSequence([httpResponse(200, fixture.release), httpResponse(status, {})]);
     await assert.rejects(
       convergePublishedPublication({
         repo: "Holaxis-ai/superbee", token: "test-token", chain: fixture.chain, plan: fixture.plan, tuple: fixture.tuple,
         fetchImpl: latest.fetch, sleep: async () => {}, retryDelayMs: 0,
       }),
-      new RegExp(`non-retryable HTTP ${status}`),
+      new RegExp(`latest release returned non-retryable HTTP ${status}`),
     );
     assert.equal(latest.calls.length, 2);
   }
