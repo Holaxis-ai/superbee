@@ -114,7 +114,7 @@ test("the npm verifier rejects every retired marketplace surface", async () => {
   }
 });
 
-test("root and npm READMEs teach one literal create-only, agent-driven quickstart", async () => {
+test("root README teaches the literal create-only quickstart; npm README teaches the agent-first journey", async () => {
   for (const [label, file] of [
     ["root", path.join(repoRoot, "README.md")],
     ["npm", path.join(repoRoot, "packages", "cli", "README.md")],
@@ -122,27 +122,12 @@ test("root and npm READMEs teach one literal create-only, agent-driven quickstar
     const readme = await readFile(file, "utf8");
     assert.match(
       readme,
-      /init --create-only --recipe work-tracking/,
-      `${label} README must use the safe literal work-tracking creation command`,
-    );
-    assert.match(
-      readme,
-      /bring source material or intent\s+to your agent/i,
-      `${label} README must explain what the user contributes`,
-    );
-    assert.match(
-      readme,
-      /agent organizes,\s+types, links, and updates the\s+bundle/i,
-      `${label} README must explain the agent's authoring role`,
-    );
-    assert.match(
-      readme,
-      /^npm install -g superbee$/m,
+      /^\s*npm install -g superbee$/m,
       `${label} README must install the supported default package without a preview tag`,
     );
     assert.doesNotMatch(
       readme,
-      /^(?:npm install -g|npx -y) superbee@next\b/m,
+      /^\s*(?:npm install -g|npx -y) superbee@next\b/m,
       `${label} README must not teach the preview tag as the default journey`,
     );
     assert.match(
@@ -155,12 +140,46 @@ test("root and npm READMEs teach one literal create-only, agent-driven quickstar
       /^aslite (?:skill|hook) install --scope global\b/m,
       `${label} README must teach the canonical user scope`,
     );
-    assert.match(
-      readme,
-      /`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity\./,
-      `${label} README must explain the tutorial actor label`,
-    );
   }
+
+  const rootReadme = await readFile(path.join(repoRoot, "README.md"), "utf8");
+  assert.match(
+    rootReadme,
+    /init --create-only --recipe work-tracking/,
+    "root README must use the safe literal work-tracking creation command",
+  );
+  assert.match(
+    rootReadme,
+    /bring source material or intent\s+to your agent/i,
+    "root README must explain what the user contributes",
+  );
+  assert.match(
+    rootReadme,
+    /agent organizes,\s+types, links, and updates the\s+bundle/i,
+    "root README must explain the agent's authoring role",
+  );
+  assert.match(
+    rootReadme,
+    /`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity\./,
+    "root README must explain the tutorial actor label",
+  );
+
+  const npmReadme = await readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8");
+  assert.match(
+    npmReadme,
+    /ask your AI agent to run `superbee setup`/,
+    "npm README must route setup through the agent",
+  );
+  assert.match(
+    npmReadme,
+    /ask your agent for what\s+you need/i,
+    "npm README must frame usage as asking the agent",
+  );
+  assert.match(
+    npmReadme,
+    /translate your\s+instructions into CLI commands/i,
+    "npm README must explain the Agent Skill's translation role",
+  );
 });
 
 test("root and npm package license declarations agree", async () => {
