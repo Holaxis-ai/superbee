@@ -25,8 +25,10 @@ capped exit-code taxonomy (0 ok/no-op, 2 usage, 4 auth, 5 conflict, 6 not-found,
 Every example below assumes the `superbee` bin is on PATH. If it is not:
 
 - `npm install -g superbee` puts the canonical `superbee` command on PATH.
-- `npx -y superbee …` runs any command below with no install at all — swap the leading `superbee`
-  for that prefix and the rest of the line runs unchanged.
+- `npx -y superbee …` runs bundle commands below with no install at all — swap the leading `superbee`
+  for that prefix and the rest of the line runs unchanged. Persistent host
+  integrations (`hook install`, `skill install`, `mcp install`) still require the
+  global install.
 
 ## Complete host setup
 
