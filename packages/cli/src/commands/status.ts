@@ -2,10 +2,10 @@
 //
 // COMPOSITION only: this command adds NO new core validation/link/freshness logic. It composes
 // existing core machinery — `loadKinds`/`validateAgainstKind` (kind conformance), `parseLinksFromDoc`
-// (cross-links, reversed in-memory for orphan derivation), and `freshness()` fed a kind's declared
+// (cross-links, indexed in-memory for graph-isolation derivation), and `freshness()` fed a kind's declared
 // horizon (staleness) — into one report. ONE registry load (`loadKinds`) + ONE `query(bundle)` + TWO
 // prefix-scoped `listBlobs` (the legacy_naming audit + the dangling-view-entry lint) per invocation;
-// everything else derives in memory. Orphans come from reversing the SAME edge set built
+// everything else derives in memory. Orphans come from the SAME edge set built
 // while scanning for unresolved links — never a per-doc `backlinks()` call (that would be N
 // whole-bundle traversals over data this command already has in hand).
 //
@@ -57,6 +57,7 @@ import {
   LEGACY_PAGE_BLOB_PREFIX,
 } from "../legacy-page.js";
 import { cliInvocation } from "../invocation.js";
+import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../bundle-name.js";
 
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
@@ -66,8 +67,8 @@ Usage:
 Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared conventions/,
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
 isn't in the bundle — informational, since OKF permits links to not-yet-written knowledge; external
-links are excluded entirely), an orphan scan (concept docs with zero inbound links from OTHER
-concept docs), a freshness sweep over standard 'stale_after' dates and kinds that declare a horizon
+links are excluded entirely), an orphan scan (isolated content docs once a concept graph exists),
+a freshness sweep over standard 'stale_after' dates and kinds that declare a horizon
 (an elapsed absolute date or exceeded horizon is 'stale'; a horizon-governed doc with no usable
 meaningful-change time is counted 'no_timestamp'), and two graph lints over any declared
 'links'/'expects_inbound' vocabulary (see
@@ -93,14 +94,13 @@ Category semantics (one line each):
                       conventions-free bundle. See 'doc update' to fix a listed doc.
   unresolved_links   A link whose target isn't in the queried doc set — informational (OKF permits
                       links to not-yet-written knowledge), not broken.
-  orphans            A concept doc with ZERO INBOUND links from OTHER concept docs. Outbound links
-                      do NOT rescue a doc; a self-link does NOT rescue a doc; links from a reserved
-                      file (index.md/log.md) can never count as a source (reserved files are
-                      excluded from the queried doc set by design). Convention docs (type:
-                      Convention) are EXPECTED, PERMANENT orphans — they are schema declarations,
-                      not content, and nothing is expected to cite them — so they are NOT
-                      special-cased out of the count or the rows; the 'type' column on each row is
-                      how you tell schema from content at a glance.
+  orphans            Content docs isolated from an established concept graph: no inbound or
+                      outbound link to another bundle doc. This finding stays quiet until the
+                      bundle has at least one resolved cross-document link. Graph roots (outbound
+                      but no inbound), definition/metadata docs (Convention, registered View,
+                      references/* Reference, docs/bundle Bundle Name), and docs already named by
+                      another graph finding are excluded. Each remaining row is actionable: link
+                      it into the graph or delete it if it is unintended. Self-links do not count.
   stale              A doc on/after its standard 'stale_after' date, or a governed doc whose
                       meaningful-change time is older than its kind's freshness horizon.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
@@ -202,6 +202,20 @@ const OKF_V02_LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
 /** A doc's `type` field, or "" when absent/non-string — the ONE place this coercion happens. */
 function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
+}
+
+/**
+ * Documents that define the bundle's operating model or identity rather than participating as
+ * concept instances. Their lack of inbound concept links is intentional and already explained by
+ * their dedicated product surface, so repeating them as orphan findings is pure noise.
+ */
+function isGraphDefinition(doc: OkfDocument): boolean {
+  const type = docType(doc);
+  return type === "Convention" ||
+    isPageTypeName(type) ||
+    isLegacyPageDoc(doc.frontmatter) ||
+    (type === "Reference" && doc.id.startsWith("references/")) ||
+    (type === BUNDLE_NAME_DOC_TYPE && doc.id === BUNDLE_NAME_DOC_ID);
 }
 
 function okfV02WorkflowStatusCollisions(
@@ -337,11 +351,12 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   // never a second implementation.
   const linkTypeDeclarations = collectLinkDeclarations(registry);
 
-  // Unresolved links + the inbound edge set (reused below for orphans AND the two graph lints —
+  // Unresolved links + the graph edge sets (reused below for orphans AND the two graph lints —
   // never a per-doc backlinks() call, which would be N whole-bundle traversals over data already
   // in hand).
   const unresolvedRows: Record<string, unknown>[] = [];
   const inbound = new Set<string>();
+  const outbound = new Set<string>();
   // `id -> {text, sourceType}[]` for every RESOLVED inbound edge from an OTHER concept doc (the
   // same "from OTHER concept docs" rule orphans uses — a self-link doesn't rescue a doc from a
   // missing-expected-link finding either). Feeds `missing_expected_links` below.
@@ -349,6 +364,9 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const linkTypeViolationRows: Record<string, unknown>[] = [];
   for (const doc of docs) {
     for (const l of parseLinksFromDoc(doc)) {
+      // Any non-self link is an intentional outgoing graph edge. An unresolved one already has
+      // its own actionable finding below, so it must not also duplicate the doc as an orphan.
+      if (l.to !== doc.id) outbound.add(doc.id);
       if (!byId.has(l.to)) {
         unresolvedRows.push({ from: doc.id, href: l.href });
         continue;
@@ -384,16 +402,18 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     }
   }
 
-  // Orphans: concept docs with zero inbound edges from other concept docs. Reserved files never
-  // appear in `docs` (query() already excludes index.md/log.md), so they can never be a "source"
-  // here structurally, not by special-casing. A convention doc that nothing links to is reported
-  // honestly like anything else — not special-cased away. Rows carry `type` alongside `id` so a
-  // reader can tell an EXPECTED, PERMANENT orphan (`type: Convention` — schema, not content) apart
-  // from an orphaned concept doc at a glance, without splitting the list or the count (the finding
-  // that a Convention doc is an orphan is true by definition; honesty over false comfort).
+  // Orphans are ISOLATED content docs inside an ESTABLISHED graph. A bundle with no resolved
+  // cross-doc edge has not adopted graph structure yet, so zero-inbound is not evidence of a
+  // defect (and a first doc is necessarily a root). Once a graph exists, roots with outbound
+  // edges remain intentional; definition/metadata docs are classified centrally above; and a doc
+  // with an unresolved outbound edge already has the more precise unresolved_links finding.
   const orphanRows: Record<string, unknown>[] = [];
-  for (const doc of docs) {
-    if (!inbound.has(doc.id)) orphanRows.push({ id: doc.id, type: docType(doc) });
+  if (inbound.size > 0) {
+    for (const doc of docs) {
+      if (!inbound.has(doc.id) && !outbound.has(doc.id) && !isGraphDefinition(doc)) {
+        orphanRows.push({ id: doc.id, type: docType(doc) });
+      }
+    }
   }
 
   // One freshness authority handles both standard v0.2 `stale_after` and optional Kind horizons.
@@ -631,7 +651,14 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     };
   }
   if (unresolved.total > 0) out.unresolved = unresolved;
-  if (orphans.total > 0) out.orphan_docs = orphans;
+  if (orphans.total > 0) {
+    out.orphan_docs = {
+      ...orphans,
+      help:
+        `${cliInvocation()} link add <from> <id>  — link each listed doc into the graph, ` +
+        `or '${cliInvocation()} doc delete <id>' if it is unintended`,
+    };
+  }
   if (stale.total > 0) out.stale_docs = stale;
   if (noTimestamp.total > 0) out.no_timestamp_docs = noTimestamp;
   if (linkTypeViolations.total > 0) out.link_type_violations_rows = linkTypeViolations;
