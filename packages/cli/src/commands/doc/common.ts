@@ -203,6 +203,13 @@ Options:
                        chrome or executable scripts. Internal concept links carry only normalized
                        data-aslite-doc-id targets for the consuming shell to navigate. Use
                        --rendered-out - to stream HTML bytes to stdout (receipt/errors go to stderr).
+                       The renderer is BOUNDED: a body past its character/node limits renders
+                       TRUNCATED, and the receipt then reports bounded:true plus a warning naming
+                       the enforced limits — a truncated page is lossy egress, so treat bounded:true
+                       as "incomplete" and use --out for the complete raw markdown. Like --body-out,
+                       a local in-bundle .md target is refused: rendered HTML has no OKF frontmatter
+                       and would corrupt or clobber bundle content (an in-bundle non-.md target is
+                       inert and remains allowed).
   --field <name>       Print ONE frontmatter field's raw value to stdout, newline-terminated, no
                        TOON envelope and no other output — for scripting, e.g. capturing
                        head_version for a follow-up --expected-version write. A scalar prints
@@ -210,7 +217,7 @@ Options:
                        head_version work too (head_version is the store's CAS token, not
                        frontmatter). An absent field, or a missing doc, reports the error to
                        STDERR instead (stdout stays reserved for the raw value); an absent field's
-                       error lists the fields that DO exist. Mutually exclusive with --out and
+                       error lists the fields that DO exist. Mutually exclusive with --out,
                        --body-out, and --rendered-out.
 ${COMMON_OPTIONS}
 

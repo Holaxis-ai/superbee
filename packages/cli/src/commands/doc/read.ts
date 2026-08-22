@@ -25,6 +25,7 @@ import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 import { DOC_READ_USAGE, type DocCliDeps, BODY_PREVIEW_LIMIT, readErrorToCliError } from "./common.js";
+import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
@@ -88,12 +89,21 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
   const outPresent = values.out !== undefined;
   const fieldPresent = values.field !== undefined;
 
-  const selectedChannels = [bodyOutPresent, renderedOutPresent, outPresent, fieldPresent].filter(Boolean).length;
-  if (selectedChannels > 1) {
+  // Each channel reserves stdout for a single payload, so combining any two is ambiguous (which one
+  // wins?), not a silent pick-one. PRESENCE selects a channel whatever its value: `--out "$VAR"`
+  // with an unset $VAR is a scripting slip that must fail loudly, matching the blank guards below.
+  // The error names only the flags actually passed, so the help never points at an unasked channel.
+  const selected: { flag: string; usage: string }[] = [];
+  if (outPresent) selected.push({ flag: "--out", usage: "--out (<path> | -)" });
+  if (bodyOutPresent) selected.push({ flag: "--body-out", usage: "--body-out (<path> | -)" });
+  if (renderedOutPresent) selected.push({ flag: "--rendered-out", usage: "--rendered-out (<path> | -)" });
+  if (fieldPresent) selected.push({ flag: "--field", usage: "--field <name>" });
+  if (selected.length > 1) {
     throw new CliError(
       "USAGE",
-      "--out, --body-out, --rendered-out, and --field are mutually exclusive read channels.",
-      { help: `${cliInvocation()} doc read ${id} --rendered-out (<path> | -)` },
+      `${selected.map((c) => c.flag).join(", ")} cannot be combined — each selects a different read ` +
+        "channel, and each reserves stdout for a single payload.",
+      { help: `${cliInvocation()} doc read ${id} ${selected[0]!.usage}` },
     );
   }
   if (bodyOutPresent && bodyOutValue.trim() === "") {
@@ -111,15 +121,6 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     );
   }
 
-  // --field and --out both reserve stdout for a single raw payload — combining them is ambiguous
-  // (which one wins?), not a silent pick-one.
-  if (values.field !== undefined && values.out !== undefined && values.out.trim() !== "") {
-    throw new CliError(
-      "USAGE",
-      "--field and --out cannot be combined — both reserve stdout for a single raw value.",
-      { help: `${cliInvocation()} doc read ${id} --field <name>` },
-    );
-  }
   // A present-but-blank --field is a USAGE error, not "no field given" (mirrors --expected-version/
   // --actor's own blank-value guard elsewhere in this command family) — a scripting slip
   // (`--field "$VAR"` with an unset $VAR) should fail loudly, not silently fall through to the
@@ -151,7 +152,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     if (!streamMode) {
       // A destination inside private state would land 0644 over an operational record.
       assertPathOutsidePrivateState(path.resolve(bodyOut));
-      await assertSafeBodyOutTarget(bundle, bodyOut, id);
+      await assertSafeNonDocumentOutTarget(bundle, "--body-out", bodyOut, id, "body-only markdown");
     }
     const runToTarget = async (): Promise<void> => {
       let parsed: OkfDocument;
@@ -183,10 +184,21 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     return;
   }
 
+  // Rendered-HTML byte channel for static publishers: the SAME canonical bounded renderer every
+  // other human surface uses, never a second Markdown stack. An in-bundle `.md` target is refused
+  // exactly as `--body-out` refuses one, and for a strictly stronger reason: body-only markdown at
+  // least stays markdown, while rendered HTML at a `.md` path is neither a concept doc nor a
+  // reserved file. That refusal subsumes `--out`'s in-bundle WARNING for this channel — every
+  // shape the warning would describe (re-ingestion, reserved clobber) ends in `.md` and is now
+  // refused outright, and an in-bundle non-`.md` target stays inert, so no warning remains to give.
   if (renderedOutPresent) {
     const renderedOut = renderedOutValue.trim();
     const streamMode = renderedOut === "-";
-    if (!streamMode) assertPathOutsidePrivateState(path.resolve(renderedOut));
+    if (!streamMode) {
+      // A destination inside private state would land 0644 over an operational record.
+      assertPathOutsidePrivateState(path.resolve(renderedOut));
+      await assertSafeNonDocumentOutTarget(bundle, "--rendered-out", renderedOut, id, "rendered HTML");
+    }
     let parsed: OkfDocument;
     let version: Version;
     try {
@@ -205,6 +217,19 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       version,
       bounded: rendered.bounded,
     };
+    // `bounded` alone is a boolean a publisher has no reason to read as "your page is INCOMPLETE".
+    // The bounds are quoted from the renderer's exported constants because the document adapter
+    // deliberately returns ONLY {html, bounded} (its own contract test pins that key set), and this
+    // call passes no `limits` override — so the constants ARE what the walk enforced.
+    // Truncation is lossy egress, so disclose it the way the default render does: a warning plus a
+    // pointer at the complete raw channel.
+    if (rendered.bounded) {
+      result.warning =
+        `The rendered HTML is TRUNCATED: this document exceeds the shared renderer's bounds ` +
+        `(${MAX_BODY_CHARS} body characters / ${MAX_NODES} nodes), so ` +
+        `the tail of the body is NOT present in the output. Use --out for the complete raw markdown.`;
+      result.help = [`${cliInvocation()} doc read ${id} --out <file>`];
+    }
     if (streamMode) {
       writeStdoutBytes(bytes);
       stderr(render(result, resolveMode(values)));
@@ -365,13 +390,21 @@ function requestsStdoutByteChannel(argv: string[]): boolean {
 }
 
 /**
- * A body-only markdown file is not an OKF concept document. Refuse a local in-bundle `.md` target
- * before writing, including the source doc itself and reserved index/log files: allowing it would
- * either clobber valid content or make the next bundle walk fail on missing frontmatter.
+ * Neither a body-only markdown export nor a rendered-HTML export is an OKF concept document. Refuse
+ * a local in-bundle `.md` target before writing, including the source doc itself and reserved
+ * index/log files: allowing it would either clobber valid content or make the next bundle walk fail
+ * on missing frontmatter. ONE authority for every non-document egress channel on this leaf — a
+ * third channel with its own copy of this reasoning is how the classes diverge.
  */
-async function assertSafeBodyOutTarget(bundle: Bundle, bodyOut: string, id: string): Promise<void> {
+async function assertSafeNonDocumentOutTarget(
+  bundle: Bundle,
+  flag: "--body-out" | "--rendered-out",
+  outValue: string,
+  id: string,
+  payload: string,
+): Promise<void> {
   if (bundle.backend) return;
-  const lexicalTarget = path.resolve(bodyOut);
+  const lexicalTarget = path.resolve(outValue);
   const rootReal = await fs.realpath(path.resolve(bundle.root)).catch(() => path.resolve(bundle.root));
   // Resolve the final path when it exists (including a symlink whose own name has no extension).
   // For a not-yet-created target, anchor its full missing suffix under the nearest existing real
@@ -384,9 +417,9 @@ async function assertSafeBodyOutTarget(bundle: Bundle, bodyOut: string, id: stri
   if (!unsafeLexical && !unsafeEffective) return;
   throw new CliError(
     "USAGE",
-    `--body-out ${bodyOut} targets ${effectiveTarget}, a .md path INSIDE this bundle (${rootReal}); ` +
-      "body-only markdown has no OKF frontmatter and cannot be written into the bundle.",
-    { help: `${cliInvocation()} doc read ${id} --body-out <path-outside-bundle>` },
+    `${flag} ${outValue} targets ${effectiveTarget}, a .md path INSIDE this bundle (${rootReal}); ` +
+      `${payload} has no OKF frontmatter and cannot be written into the bundle.`,
+    { help: `${cliInvocation()} doc read ${id} ${flag} <path-outside-bundle>` },
   );
 }
 

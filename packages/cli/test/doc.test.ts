@@ -66,6 +66,7 @@ import {
 } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
 import { encode } from "@toon-format/toon";
+import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 import { doc, type DocCliDeps } from "../src/commands/doc.js";
@@ -3142,6 +3143,82 @@ test("doc read --rendered-out writes the canonical bounded renderer output", asy
   } finally {
     await cleanup();
     await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("doc read --rendered-out discloses a TRUNCATED render as a warning, not a bare boolean", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const outDir = await tempDir();
+  try {
+    // Past the shared renderer's body bound, so the walk truncates and the tail cannot be present.
+    const tail = "TAIL-MARKER";
+    await writeDoc(
+      { root: dir },
+      {
+        id: "concepts/big",
+        frontmatter: { type: "Concept", title: "Big", timestamp: T },
+        body: `${"x".repeat(MAX_BODY_CHARS + 1)}\n\n${tail}\n`,
+      },
+    );
+    const target = path.join(outDir, "big.html");
+    const receipt = await runDoc(["read", "concepts/big", "--rendered-out", target, "--dir", dir]);
+    const html = await readFile(target, "utf8");
+
+    assert.equal(receipt.bounded, true);
+    // Lossy egress is only safe if it is LOUD: `bounded: true` alone reads as a config detail.
+    assert.match(String(receipt.warning), /TRUNCATED/);
+    assert.match(String(receipt.warning), new RegExp(String(MAX_BODY_CHARS)));
+    assert.match(String(receipt.warning), new RegExp(String(MAX_NODES)));
+    assert.deepEqual(receipt.help, [`${cliInvocation()} doc read concepts/big --out <file>`]);
+    assert.doesNotMatch(html, new RegExp(tail));
+    // The complete-bytes channel it points at really does carry what was dropped.
+    const raw = path.join(outDir, "big.md");
+    await runDoc(["read", "concepts/big", "--out", raw, "--dir", dir]);
+    assert.match(await readFile(raw, "utf8"), new RegExp(tail));
+  } finally {
+    await cleanup();
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("doc read: a complete render carries NO truncation warning", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const outDir = await tempDir();
+  try {
+    await writeDoc(
+      { root: dir },
+      { id: "concepts/a", frontmatter: { type: "Concept", title: "A", timestamp: T }, body: "Small.\n" },
+    );
+    const receipt = await runDoc(["read", "concepts/a", "--rendered-out", path.join(outDir, "a.html"), "--dir", dir]);
+    assert.equal(receipt.bounded, false);
+    assert.equal(receipt.warning, undefined);
+    assert.equal(receipt.help, undefined);
+  } finally {
+    await cleanup();
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("doc read channel conflicts name ONLY the flags passed and point back at one of them", async () => {
+  // The help must never advertise a channel the caller never asked for — an agent self-corrects
+  // from the receipt, so a hint naming an unrelated flag sends it somewhere it was not going.
+  const cases: { args: string[]; flags: string; help: string }[] = [
+    { args: ["--out", "o.md", "--field", "title"], flags: "--out, --field", help: "--out (<path> | -)" },
+    { args: ["--body-out", "b.md", "--rendered-out", "r.html"], flags: "--body-out, --rendered-out", help: "--body-out (<path> | -)" },
+    { args: ["--rendered-out", "r.html", "--field", "title"], flags: "--rendered-out, --field", help: "--rendered-out (<path> | -)" },
+  ];
+  for (const { args, flags, help } of cases) {
+    await assert.rejects(
+      () => doc(["read", "concepts/a", ...args, "--dir", "/does/not/matter", "--json"], {}),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.match(err.message, new RegExp(`^${flags.replace(/[-]/g, "[-]")} cannot be combined`));
+        assert.equal(err.help, `${cliInvocation()} doc read concepts/a ${help}`);
+        return true;
+      },
+    );
   }
 });
 
