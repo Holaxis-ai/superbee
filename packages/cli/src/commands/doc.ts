@@ -14,8 +14,9 @@
 // available as the sole patch source when no field flags were supplied.
 //
 // `doc read --out` preserves raw bytes; `--body-out` pairs the body with the same read's version for
-// a guarded follow-up update. Raw stdout keeps receipts on stderr. A local output path inside the
-// open bundle is allowed but warned because the next bundle walk may ingest it as a document.
+// a guarded follow-up update; `--rendered-out` emits inert HTML through the canonical bounded
+// renderer. Raw stdout keeps receipts on stderr. A local output path inside the open bundle is
+// allowed but warned because the next bundle walk may ingest it as a document.
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { DOC_USAGE, type DocCliDeps } from "./doc/common.js";

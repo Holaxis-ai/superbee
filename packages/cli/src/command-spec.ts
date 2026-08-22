@@ -16,7 +16,7 @@ export interface ExactPositionalArity {
  *
  * - `bundle-root`  the token names a bundle root or board path (`--dir`).
  * - `ingress`      the token's BYTES are read (`--body-file`, `promote`/`artifact create <file>`).
- * - `egress`       the token is a destination the CLI writes to (`--out`, `--body-out`).
+ * - `egress`       the token is a destination the CLI writes to (`--out`, `--body-out`, `--rendered-out`).
  * - `recipe-source` a recipe ROOT, deliberately NOT routed through the ingress guard (its adapter
  *   carries its own containment authority) — recorded so the exclusion is a decision, not a gap.
  * - `rejected`     a shared selector parse config accepts the flag on this leaf, which then rejects
@@ -128,11 +128,12 @@ const DIR_BODY_FILE_DYNAMIC_SURFACE: LeafPathSurface = Object.freeze({
 const DIR_OUT_SURFACE: LeafPathSurface = Object.freeze({
   flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "out", role: "egress" }),
 });
-const DIR_OUT_BODY_OUT_SURFACE: LeafPathSurface = Object.freeze({
+const DIR_DOC_READ_SURFACE: LeafPathSurface = Object.freeze({
   flags: pathFlags(
     { flag: "dir", role: "bundle-root" },
     { flag: "out", role: "egress" },
     { flag: "body-out", role: "egress" },
+    { flag: "rendered-out", role: "egress" },
   ),
 });
 const DIR_RECIPE_SURFACE: LeafPathSurface = Object.freeze({
@@ -300,11 +301,11 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "docRead",
-        leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_OUT_BODY_OUT_SURFACE)],
+        leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_DOC_READ_SURFACE)],
         usage:
-          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url>]",
+          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url>]",
         summary:
-          "Read a doc, export its raw markdown, export its body with a same-read CAS version, or print one raw field for scripting",
+          "Read a doc, export its raw markdown/body/canonical rendered HTML, or print one raw field for scripting",
       },
       {
         id: "docOpen",
