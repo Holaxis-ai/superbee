@@ -547,6 +547,7 @@ jobs:
         id: patch_release
         continue-on-error: true
         env:
+          GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
           SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
