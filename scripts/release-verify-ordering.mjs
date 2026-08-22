@@ -217,6 +217,16 @@ function validatePlanForMutation(plan) {
   }
 }
 
+/** Construct the one exact GitHub uploads endpoint for the already-verified draft release. */
+function exactDraftStatusUpload({ repo, draftReleaseId, stageId }) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? "")) throw new Error("invalid GitHub repository name");
+  if (!Number.isSafeInteger(draftReleaseId) || draftReleaseId <= 0) throw new Error("invalid draft release id for status upload");
+  const name = stampAssetName(stageId);
+  const url = new URL(`https://uploads.github.com/repos/${repo}/releases/${draftReleaseId}/assets`);
+  url.searchParams.set("name", name);
+  return { name, url: url.toString() };
+}
+
 /** The only live mutation executor; dry-run returns before invoking its injected command runner. */
 export async function applyPublicationPlan({ mode, plan, repo, outDir, run = execFileSync }) {
   if (mode !== "dry-run" && mode !== "live") throw new Error(`unknown publication mode ${JSON.stringify(mode)}`);
@@ -234,11 +244,16 @@ export async function applyPublicationPlan({ mode, plan, repo, outDir, run = exe
     }
   }
   if (plan.keep.status) {
-    const statusPath = path.join(outDir, plan.keep.status.name);
+    const upload = exactDraftStatusUpload({ repo, draftReleaseId: plan.draft_release_id, stageId: plan.stage_id });
+    const statusPath = path.join(outDir, upload.name);
     const localDigest = await fileSha256(statusPath);
     if (localDigest !== plan.keep.status.digest) throw new Error(`generated status digest ${localDigest} != plan ${plan.keep.status.digest}`);
     calls += 1;
-    run("gh", ["release", "upload", plan.tag, statusPath, "--repo", repo, "--clobber"], { encoding: "utf8", stdio: "pipe" });
+    run(
+      "gh",
+      ["api", "-X", "POST", upload.url, "--input", statusPath, "-H", "Content-Type: application/octet-stream"],
+      { encoding: "utf8", stdio: "pipe" },
+    );
   }
   calls += 1;
   run(

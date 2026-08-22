@@ -447,7 +447,7 @@ jobs:
             --chain verified-chain.json --release draft-release.json --out-dir publication-out \
             --finalize-run-id "$FINALIZE_RUN_ID" --out publication-plan.json
 
-      - name: Apply ID-only cleanup, retry-safe status --clobber, and owned body normalization
+      - name: Apply ID-only cleanup, retry-safe numeric-ID status upload, and owned body normalization
         env:
           GH_TOKEN: ${{ github.token }}
           LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
