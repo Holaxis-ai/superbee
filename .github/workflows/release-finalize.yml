@@ -222,7 +222,7 @@ jobs:
             --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
             --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --out verified-chain.json
+            --draft-tag-phase pre-patch --out verified-chain.json
 
       - name: Download this candidate's signed operator receipts
         env:
@@ -315,7 +315,7 @@ jobs:
             --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
             --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --out verified-chain.json
+            --draft-tag-phase pre-patch --out verified-chain.json
 
       - uses: actions/setup-node@v4
         with:
@@ -413,7 +413,7 @@ jobs:
             --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
             --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --out verified-chain.json --github-output "$GITHUB_OUTPUT"
+            --draft-tag-phase pre-patch --out verified-chain.json --github-output "$GITHUB_OUTPUT"
 
       - name: Re-download this candidate's signed operator receipts
         env:

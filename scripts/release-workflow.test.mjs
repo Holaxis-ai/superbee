@@ -385,6 +385,9 @@ test("the finalizer is separately dispatched and consumes every immutable ID", (
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.artifact_id \}\}/);
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.stage_receipt_artifact_id \}\}/);
   assert.ok((finalize.match(/release-verify-chain\.mjs verify-finalizer/g) ?? []).length === 3);
+  for (const name of ["ordering-verified", "registry-verify", "prepare"]) {
+    assert.match(extractJobs(finalize)[name], /--draft-tag-phase pre-patch/, `${name} binds only GitHub's temporary draft identity before PATCH`);
+  }
 });
 
 // F12 — the publication-policy resolve was a cheap precondition placed AFTER

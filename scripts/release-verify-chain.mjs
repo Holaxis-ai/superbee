@@ -96,6 +96,7 @@ async function verifyChain(argv) {
     },
     actualTarballSha256: await fileSha256(tarball),
     actualManifestSha256: await fileSha256(candidatePath),
+    draftTagPhase: optionalArg(argv, "--draft-tag-phase") ?? "declared",
   });
   await writeFile(arg(argv, "--out"), `${JSON.stringify(proof, null, 2)}\n`);
   const githubOutput = optionalArg(argv, "--github-output");
@@ -111,7 +112,7 @@ export async function main(argv) {
   }
   if (command === "capture-draft") return captureDraft(rest);
   if (command === "verify-finalizer") return verifyChain(rest);
-  throw new Error("usage: release-verify-chain.mjs stage-id|capture-draft|verify-finalizer ...");
+  throw new Error("usage: release-verify-chain.mjs stage-id|capture-draft|verify-finalizer [--draft-tag-phase pre-patch|declared] ...");
 }
 
 if (isMainModule(import.meta.url)) {

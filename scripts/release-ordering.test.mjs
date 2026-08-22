@@ -642,7 +642,8 @@ test("published verifier binds live-shaped same-ID identity, inventory/body, and
   );
 
   const mutations = [
-    ["historical untagged release", { ...published, tag_name: null }, latest],
+    ["temporary untagged draft tag", { ...published, tag_name: "untagged-a825eda34d7bf2a2598c" }, latest],
+    ["mismatched declared tag", { ...published, tag_name: "v9.9.9" }, latest],
     ["target commit", { ...published, target_commitish: "2".repeat(40) }, latest],
     ["false-green prerelease", { ...published, prerelease: false }, latest],
     ["draft", { ...published, draft: true }, latest],
