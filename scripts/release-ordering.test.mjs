@@ -50,6 +50,7 @@ const INTEGRITY = "sha512-YWJjZA==";
 const RUN_CREATED_AT = "2026-08-08T12:00:00Z";
 const ALLOWED = ["briand-ai", "mikec-ai"];
 const SUCCESSOR_PREVIEW = defaultReleaseManifest().allowed_tuples["successor-preview"];
+const SUCCESSOR_STABLE = defaultReleaseManifest().allowed_tuples["successor-stable"];
 
 function sha256Bytes(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -589,7 +590,7 @@ test("published verifier binds live-shaped same-ID identity, inventory/body, and
   assert.equal(exact.latest_release_id, 299);
   assert.doesNotThrow(() => prove(published, null), "a missing latest release is valid for a non-latest publication");
 
-  const stableVersion = "0.1.2";
+  const stableVersion = SUCCESSOR_STABLE.version;
   const stableChain = {
     ...chainFor(stableVersion),
     target: "successor-stable",
