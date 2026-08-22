@@ -282,7 +282,6 @@ test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", 
   assert.match(renderedNpm, /ask before running its returned mutating\s+command/);
   assert.match(renderedNpm, /restart after Skill, Hook, or MCP changes/);
   assert.match(renderedNpm, /never makes that workspace the current project/);
-  assert.match(renderedNpm, /npx -y superbee.*not durable host integration/);
 });
 
 test("no SKILL_CAPABILITY_PATTERNS entry is dead — each fires and is backed in the npm channel", () => {
@@ -348,9 +347,7 @@ test("no phantom pointers — every $REFS/… path in the renderedNpm SKILL.md r
 test("npm: Superbee is the canonical skill and npm channel identity", () => {
   assert.match(renderedNpm, /^---\nname: superbee\n/);
   assert.match(renderedNpm, /npm install -g superbee/);
-  assert.match(renderedNpm, /npx -y superbee/);
-  assert.ok(!renderedNpm.includes("npx -y agentstate-lite"), "retired npm coordinate must not appear");
-  assert.ok(!renderedNpm.includes("npx -y aslite"), "retired unscoped npx coordinate must not appear");
+  assert.ok(!renderedNpm.includes("npx"), "npm Skill must teach one installed CLI invocation path");
   assert.ok(!renderedNpm.includes("@holaxis/aslite"), "legacy package coordinate must not be taught as current");
   assert.ok(!renderedNpm.includes("plugins/cache"), "npm channel must not teach marketplace-cache discovery");
   assert.ok(!renderedNpm.includes('ASLITE="$('), "npm channel must not carry the skill-channel resolver");
