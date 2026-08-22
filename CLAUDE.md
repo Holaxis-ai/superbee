@@ -216,8 +216,9 @@ explicit legacy-compatibility path. Existing bundles always retain their declare
 The human-visibility surface is the **local `superbee ui` command**: one loopback
 server serving the embedded SPA over a bundle (`--dir` mounts the reference router
 in-process; `--remote` reverse-proxies with the stored key; per-run token + Host allowlist
-+ CSP). `superbee doc open <id>` is its thin exact-document entrypoint: it verifies the document,
-opens the existing DocPage route, and adds no renderer or static export path. The shell is a
++ CSP). `superbee doc open <id>` is its thin exact-document entrypoint: it verifies the document and
+opens the existing DocPage route. `superbee doc read <id> --rendered-out <path|->` is the one static
+HTML byte channel, backed by the same canonical bounded renderer rather than a second renderer. The shell is a
 launcher for registered `type: View` docs rendered in sandboxed
 iframes (`Page` is the legacy kind name and `bridge` the legacy access-field spelling — both are
 RETIRED: a legacy Page-typed doc no longer registers and a legacy bridge-only doc resolves to

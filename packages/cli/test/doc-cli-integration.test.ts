@@ -64,6 +64,10 @@ test("built CLI: raw doc-read channels route early missing-id and unknown-option
     ["doc", "read", "concepts/a", "--out=-", "--unknown"],
     ["doc", "read", "concepts/a", "--out", " - ", "--unknown"],
     ["doc", "read", "concepts/a", "--out= - ", "--unknown"],
+    ["doc", "read", "--rendered-out", "-"],
+    ["doc", "read", "concepts/a", "--rendered-out=-", "--unknown"],
+    ["doc", "read", "concepts/a", "--rendered-out", " - ", "--unknown"],
+    ["doc", "read", "concepts/a", "--rendered-out= - ", "--unknown"],
   ];
   for (const args of cases) {
     const result = spawnSync("node", [cliBin, ...args], {

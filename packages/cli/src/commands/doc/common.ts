@@ -24,7 +24,7 @@ export const DOC_USAGE = `superbee doc — write, patch, read, present, or delet
 Usage:
   superbee doc write   <id> --type <t> [options]        Create/overwrite a concept doc
   superbee doc update  <id> [options]                   Patch given fields of an existing doc
-  superbee doc read    <id> [--out <p> | --body-out <p>] Read a doc (raw/body byte channels)
+  superbee doc read    <id> [--out <p> | --body-out <p> | --rendered-out <p>] Read/export a doc
   superbee doc open    <id>                             Open the rendered doc in a browser
   superbee doc history <id>                             Show a doc's attributed version chain
   superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
@@ -167,9 +167,9 @@ Examples:
 export const DOC_READ_USAGE = `superbee doc read — read a concept document (or pull its raw markdown bytes)
 
 Usage:
-  superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -)] [options]
+  superbee doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -)] [options]
 
-The default (no --out/--body-out) render shows EVERY frontmatter field — the standard keys plus any
+The default (no byte-channel flag) render shows EVERY frontmatter field — the standard keys plus any
 kind-declared fields like progress_status/priority — and truncates a large body (pointing at --out).
 
 Options:
@@ -196,6 +196,20 @@ Options:
                        is refused: body-only markdown has no OKF frontmatter and would corrupt or
                        clobber bundle content. Choose a path outside the bundle (an in-bundle non-.md
                        target is inert and remains allowed).
+  --rendered-out <path>
+                       Write the parsed body as bounded, inert HTML produced by Superbee's shared
+                       Markdown renderer. This is the canonical presentation byte channel for
+                       static publishers and other trusted shells; it does not include frontmatter
+                       chrome or executable scripts. Internal concept links carry only normalized
+                       data-aslite-doc-id targets for the consuming shell to navigate. Use
+                       --rendered-out - to stream HTML bytes to stdout (receipt/errors go to stderr).
+                       The renderer is BOUNDED: a body past its character/node limits renders
+                       TRUNCATED, and the receipt then reports bounded:true plus a warning naming
+                       the enforced limits — a truncated page is lossy egress, so treat bounded:true
+                       as "incomplete" and use --out for the complete raw markdown. Like --body-out,
+                       a local in-bundle .md target is refused: rendered HTML has no OKF frontmatter
+                       and would corrupt or clobber bundle content (an in-bundle non-.md target is
+                       inert and remains allowed).
   --field <name>       Print ONE frontmatter field's raw value to stdout, newline-terminated, no
                        TOON envelope and no other output — for scripting, e.g. capturing
                        head_version for a follow-up --expected-version write. A scalar prints
@@ -203,14 +217,15 @@ Options:
                        head_version work too (head_version is the store's CAS token, not
                        frontmatter). An absent field, or a missing doc, reports the error to
                        STDERR instead (stdout stays reserved for the raw value); an absent field's
-                       error lists the fields that DO exist. Mutually exclusive with --out and
-                       --body-out.
+                       error lists the fields that DO exist. Mutually exclusive with --out,
+                       --body-out, and --rendered-out.
 ${COMMON_OPTIONS}
 
 Examples:
   superbee doc read concepts/auth
   superbee doc read concepts/auth --out ./auth.md
   superbee doc read concepts/auth --body-out <path-outside-bundle>
+  superbee doc read concepts/auth --rendered-out ./auth.html
   superbee doc read concepts/auth --field head_version
 `;
 
