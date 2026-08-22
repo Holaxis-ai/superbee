@@ -40,7 +40,10 @@ function equal(name, actual, expected) {
 }
 
 function verifyDraftTag(phase, actual, expected) {
-  if (phase === "pre-patch") return string("temporary draft tag", actual, GITHUB_UNTAGGED_DRAFT_TAG);
+  if (phase === "pre-patch") {
+    if (actual === expected) return actual;
+    return string("draft tag", actual, GITHUB_UNTAGGED_DRAFT_TAG);
+  }
   if (phase === "declared") return equal("draft tag", actual, expected);
   fail(`invalid draft tag phase: ${JSON.stringify(phase)}`);
 }
