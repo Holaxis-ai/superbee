@@ -17,6 +17,7 @@ const TOKEN = /^[A-Za-z0-9._-]+$/;
 const SHA256 = /^sha256:[a-f0-9]{64}$/;
 const BARE_SHA256 = /^[a-f0-9]{64}$/;
 const COMMIT = /^[a-f0-9]{40}$/;
+const GITHUB_UNTAGGED_DRAFT_TAG = /^untagged-[a-f0-9]{20}$/;
 
 function fail(message) {
   throw new Error(`release receipt verification failed: ${message}`);
@@ -36,6 +37,15 @@ function strictVersion(name, value) {
 
 function equal(name, actual, expected) {
   if (String(actual) !== String(expected)) fail(`${name} ${JSON.stringify(actual)} != ${JSON.stringify(expected)}`);
+}
+
+function verifyDraftTag(phase, actual, expected) {
+  if (phase === "pre-patch") {
+    if (actual === expected) return actual;
+    return string("draft tag", actual, GITHUB_UNTAGGED_DRAFT_TAG);
+  }
+  if (phase === "declared") return equal("draft tag", actual, expected);
+  fail(`invalid draft tag phase: ${JSON.stringify(phase)}`);
 }
 
 // actions/upload-artifact emits a bare hex digest; the Actions REST API reports the same value as
@@ -212,6 +222,7 @@ export function verifyFinalizerChain({
   dispatch,
   actualTarballSha256,
   actualManifestSha256,
+  draftTagPhase = "declared",
 }) {
   if (candidate?.schema !== RELEASE_CANDIDATE_SCHEMA) fail("candidate schema is not v1");
   if (receipt?.schema !== RELEASE_STAGE_RECEIPT_SCHEMA || receipt?.state !== "staged") {
@@ -258,7 +269,7 @@ export function verifyFinalizerChain({
 
   equal("draft release id", release?.id, receipt.draft?.release_id);
   if (release?.draft !== true) fail("GitHub release is not an unpublished draft");
-  equal("draft tag", release?.tag_name, prepared.tag);
+  verifyDraftTag(draftTagPhase, release?.tag_name, prepared.tag);
   // Operator receipt/status assets (the ordering gate's evidence) are the ONLY extras tolerated
   // beyond the two recorded core assets; any other extra still fails the exactly-two check.
   const coreAssets = (Array.isArray(release?.assets) ? release.assets : []).filter((asset) => (

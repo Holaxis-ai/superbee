@@ -222,7 +222,7 @@ jobs:
             --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
             --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --out verified-chain.json
+            --draft-tag-phase pre-patch --out verified-chain.json
 
       - name: Download this candidate's signed operator receipts
         env:
@@ -315,7 +315,7 @@ jobs:
             --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
             --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --out verified-chain.json
+            --draft-tag-phase pre-patch --out verified-chain.json
 
       - uses: actions/setup-node@v4
         with:
@@ -413,7 +413,7 @@ jobs:
             --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
             --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
             --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --out verified-chain.json --github-output "$GITHUB_OUTPUT"
+            --draft-tag-phase pre-patch --out verified-chain.json --github-output "$GITHUB_OUTPUT"
 
       - name: Re-download this candidate's signed operator receipts
         env:
@@ -447,7 +447,7 @@ jobs:
             --chain verified-chain.json --release draft-release.json --out-dir publication-out \
             --finalize-run-id "$FINALIZE_RUN_ID" --out publication-plan.json
 
-      - name: Apply ID-only cleanup, retry-safe status --clobber, and owned body normalization
+      - name: Apply ID-only cleanup, retry-safe numeric-ID status upload, and owned body normalization
         env:
           GH_TOKEN: ${{ github.token }}
           LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
@@ -547,6 +547,7 @@ jobs:
         id: patch_release
         continue-on-error: true
         env:
+          GH_TOKEN: ${{ github.token }}
           DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
           LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
           SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}

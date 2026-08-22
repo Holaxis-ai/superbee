@@ -152,6 +152,19 @@ function needsOf(jobText) {
   return list ? list[1].split(",").map((entry) => entry.trim()).filter(Boolean) : [];
 }
 
+/** Extract one workflow step by its explicit `id`, retaining its step-level `env` block. */
+function stepWithId(jobText, id) {
+  const lines = jobText.split("\n");
+  const idAt = lines.findIndex((line) => line === `        id: ${id}`);
+  assert.notEqual(idAt, -1, `workflow step ${id} must exist`);
+  let start = idAt;
+  while (start >= 0 && !/^ {6}- /.test(lines[start])) start -= 1;
+  assert.notEqual(start, -1, `workflow step ${id} must start at step indentation`);
+  let end = idAt + 1;
+  while (end < lines.length && !/^ {6}- /.test(lines[end])) end += 1;
+  return lines.slice(start, end).join("\n");
+}
+
 test("neither workflow grants ambient permissions — every job opts in", () => {
   assert.match(staged, /\npermissions: \{\}\n/, "release-staged.yml must set top-level permissions: {}");
   assert.match(finalize, /\npermissions: \{\}\n/, "release-finalize.yml must set top-level permissions: {}");
@@ -242,7 +255,7 @@ test("the finalizer persists authority before provisional PATCH and proves publi
     "verify -> plan -> normalize -> pre-publication proof -> fixed packet -> immutable upload",
   );
   assert.doesNotMatch(prepare, /immutable-release|published-live/, "prepare must end after persisting pre-PATCH authority");
-  assert.match(prepare, /retry-safe status --clobber/);
+  assert.match(prepare, /ID-only cleanup, retry-safe numeric-ID status upload, and owned body normalization/);
 
   // Publish independently proves the persisted packet, then performs only the provisional numeric-ID
   // PATCH. Proof independently re-proves the same packet and owns all remote observation/verdict work.
@@ -258,7 +271,13 @@ test("the finalizer persists authority before provisional PATCH and proves publi
   assert.ok(proofPacketAt !== -1 && publishedProofAt !== -1 && proofPacketAt < publishedProofAt);
   assert.doesNotMatch(proof, /immutable-release|--execute|-X PATCH/, "proof must be independently rerunnable and read-only");
   assert.match(verifyOrdering, /releases\/assets\/\$\{item\.id\}/, "cleanup targets exact release-asset IDs");
-  assert.match(verifyOrdering, /"--clobber"/, "status upload is retry-safe");
+  assert.match(
+    verifyOrdering,
+    /https:\/\/uploads\.github\.com\/repos\/\$\{repo\}\/releases\/\$\{draftReleaseId\}\/assets/,
+    "status upload derives its endpoint from the verified numeric draft release ID",
+  );
+  assert.match(verifyOrdering, /"Content-Type: application\/octet-stream"/, "status upload is retry-safe binary API input");
+  assert.doesNotMatch(verifyOrdering, /\["release", "upload", plan\.tag/, "pre-PATCH normalization never locates a future tag");
   assert.match(verifyOrdering, /normalizeReceiptStatusBody/, "one owned-body normalizer prepares PATCH bytes");
   assert.match(prepare, /--mode "\$MODE"/, "dry-run traverses the same apply adapter with a zero-mutation mode");
   // The environment gate also binds the ordering job.
@@ -372,6 +391,9 @@ test("the finalizer is separately dispatched and consumes every immutable ID", (
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.artifact_id \}\}/);
   assert.match(finalize, /artifact-ids: \$\{\{ inputs\.stage_receipt_artifact_id \}\}/);
   assert.ok((finalize.match(/release-verify-chain\.mjs verify-finalizer/g) ?? []).length === 3);
+  for (const name of ["ordering-verified", "registry-verify", "prepare"]) {
+    assert.match(extractJobs(finalize)[name], /--draft-tag-phase pre-patch/, `${name} binds only GitHub's temporary draft identity before PATCH`);
+  }
 });
 
 // F12 — the publication-policy resolve was a cheap precondition placed AFTER
@@ -604,9 +626,26 @@ test("publication topology makes PATCH provisional and proof independently resum
   assert.deepEqual(needsOf(jobs.publish), ["prepare"]);
   assert.deepEqual(needsOf(jobs.proof).sort(), ["prepare", "publish"]);
   assert.match(jobs.proof, /if: \$\{\{ always\(\) && needs\.prepare\.result == 'success' && inputs\.mode == 'live' \}\}/);
-  const publishCommands = runBlocks(jobs.publish).flatMap(shellCommands);
-  const mutation = publishCommands.find((command) => command.includes("release-run-operations.mjs --op immutable-release"));
-  assert.ok(mutation?.includes("--execute"), "publish must issue the manifest-derived PATCH command");
+  const immutableReleaseExecutions = Object.entries(jobs).flatMap(([job, body]) => runBlocks(body)
+    .flatMap(shellCommands)
+    .filter((command) => command.includes("release-run-operations.mjs --op immutable-release") && command.includes("--execute"))
+    .map((command) => ({ job, command })));
+  assert.deepEqual(
+    immutableReleaseExecutions.map(({ job }) => job),
+    ["publish"],
+    "only publish may execute the immutable-release PATCH",
+  );
+  const patchStep = stepWithId(jobs.publish, "patch_release");
+  assert.ok(
+    patchStep.includes("release-run-operations.mjs --op immutable-release") && patchStep.includes("--execute"),
+    "the credentialed step must issue the manifest-derived PATCH command",
+  );
+  assert.match(patchStep, /^ {10}GH_TOKEN: \$\{\{ github\.token \}\}$/m, "the sole PATCH step receives its GitHub credential");
+  assert.doesNotMatch(
+    jobs.publish,
+    /^ {4}env:\n(?: {6}.*\n)* {6}GH_TOKEN:/m,
+    "the mutation credential must remain step-scoped rather than reaching every publish step",
+  );
   // Step tolerance handles an ordinary client exit. Job tolerance is independently load-bearing:
   // without it a runner/job failure after an applied PATCH makes the workflow red even when the
   // always-running exact-state proof passes, inviting a retry of the ambiguous mutation.

@@ -90,9 +90,10 @@ test("stage receipts reject ambiguous package-only lookup instead of redirecting
   );
 });
 
-function fixture() {
+function fixture({ version = VERSION } = {}) {
+  const tarball = `holaxis-aslite-${version}.tgz`;
   const draftAssets = [
-    { id: "201", name: TARBALL, digest: TARBALL_SHA },
+    { id: "201", name: tarball, digest: TARBALL_SHA },
     { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
   ];
   const receipt = buildStageReceipt({
@@ -101,12 +102,12 @@ function fixture() {
     artifactId: "101",
     artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
     stageId: STAGE_ID,
-    version: VERSION,
-    tag: `v${VERSION}`,
+    version,
+    tag: `v${version}`,
     sourceCommit: COMMIT,
     policyTag: "next",
     tarballSha256: TARBALL_SHA,
-    tarballFilename: TARBALL,
+    tarballFilename: tarball,
     integrity: INTEGRITY,
     manifestSha256: MANIFEST_SHA,
     draftReleaseId: "300",
@@ -116,10 +117,10 @@ function fixture() {
     schema: "superbee.release-candidate.v1",
     target: "bridge",
     package: { name: "@holaxis/aslite" },
-    tag: `v${VERSION}`,
-    version: VERSION,
+    tag: `v${version}`,
+    version,
     source: { commit: COMMIT, dirty: false },
-    tarball: { filename: TARBALL, sha256: TARBALL_SHA, integrity: INTEGRITY },
+    tarball: { filename: tarball, sha256: TARBALL_SHA, integrity: INTEGRITY },
   };
   const dispatch = {
     runId: "100",
@@ -128,7 +129,7 @@ function fixture() {
     stageReceiptArtifactDigest: RECEIPT_ARTIFACT_DIGEST,
     stageId: STAGE_ID,
     draftReleaseId: "300",
-    version: VERSION,
+    version,
   };
   return {
     candidate,
@@ -147,7 +148,7 @@ function fixture() {
       expired: false,
       workflow_run: { id: 100, head_sha: COMMIT },
     },
-    release: { id: 300, draft: true, tag_name: `v${VERSION}`, assets: draftAssets },
+    release: { id: 300, draft: true, tag_name: `v${version}`, assets: draftAssets },
     dispatch,
     actualTarballSha256: TARBALL_SHA,
     actualManifestSha256: MANIFEST_SHA,
@@ -162,6 +163,43 @@ test("finalizer accepts only a fully matching candidate/artifact/stage/draft cha
     { id: "202", name: "candidate.json", digest: MANIFEST_SHA },
     { id: "201", name: TARBALL, digest: TARBALL_SHA },
   ]);
+});
+
+test("pre-PATCH finalizer binding accepts the expected durable tag or GitHub's temporary draft form", () => {
+  const stable = fixture({ version: "0.1.0" });
+  assert.doesNotThrow(() => verifyFinalizerChain({ ...stable, draftTagPhase: "pre-patch" }));
+
+  const temporary = fixture();
+  temporary.release.tag_name = "untagged-a825eda34d7bf2a2598c";
+  assert.doesNotThrow(() => verifyFinalizerChain({ ...temporary, draftTagPhase: "pre-patch" }));
+
+  for (const tag of [
+    "v0.1.0",
+    "durable-release",
+    "untagged-A825EDA34D7BF2A2598C",
+    "untagged-a825eda34d7bf2a2598",
+    "other-a825eda34d7bf2a2598c",
+    undefined,
+  ]) {
+    const mismatched = fixture();
+    mismatched.release.tag_name = tag;
+    assert.throws(
+      () => verifyFinalizerChain({ ...mismatched, draftTagPhase: "pre-patch" }),
+      /release receipt verification failed/,
+      tag,
+    );
+  }
+
+  const postPatch = fixture({ version: "0.1.0" });
+  postPatch.release.tag_name = "untagged-a825eda34d7bf2a2598c";
+  assert.throws(
+    () => verifyFinalizerChain({ ...postPatch, draftTagPhase: "declared" }),
+    /release receipt verification failed/,
+  );
+  assert.throws(
+    () => verifyFinalizerChain({ ...fixture(), draftTagPhase: "unknown" }),
+    /invalid draft tag phase/,
+  );
 });
 
 test("artifact metadata primitive binds exact id, digest, run, head, name, and expiry", () => {
