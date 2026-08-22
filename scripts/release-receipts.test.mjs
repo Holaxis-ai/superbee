@@ -164,6 +164,31 @@ test("finalizer accepts only a fully matching candidate/artifact/stage/draft cha
   ]);
 });
 
+test("pre-PATCH finalizer binding accepts only GitHub's temporary untagged draft form", () => {
+  const temporary = fixture();
+  temporary.release.tag_name = "untagged-a825eda34d7bf2a2598c";
+  assert.doesNotThrow(() => verifyFinalizerChain({ ...temporary, draftTagPhase: "pre-patch" }));
+
+  for (const tag of [
+    `v${VERSION}`,
+    "untagged-A825EDA34D7BF2A2598C",
+    "untagged-a825eda34d7bf2a2598",
+    "other-a825eda34d7bf2a2598c",
+  ]) {
+    const mismatched = fixture();
+    mismatched.release.tag_name = tag;
+    assert.throws(
+      () => verifyFinalizerChain({ ...mismatched, draftTagPhase: "pre-patch" }),
+      /release receipt verification failed/,
+      tag,
+    );
+  }
+  assert.throws(
+    () => verifyFinalizerChain({ ...fixture(), draftTagPhase: "unknown" }),
+    /invalid draft tag phase/,
+  );
+});
+
 test("artifact metadata primitive binds exact id, digest, run, head, name, and expiry", () => {
   const metadata = {
     id: 700,
