@@ -946,7 +946,7 @@ test("published convergence exhausts a persistently drifted identity without any
   assert.ok(sequence.calls.every((call) => call.method === "GET"), "proof-only convergence never invokes PATCH or another mutation");
 });
 
-test("publication executor is empirically mutation-free in dry-run and live uses exact IDs plus --clobber", async () => {
+test("publication executor is mutation-free in dry-run and binds the untagged draft status upload to its numeric ID", async () => {
   const scratch = mkdtempSync(path.join(tmpdir(), "aslite-publication-apply-"));
   try {
     const statusBytes = Buffer.from("generated status bytes\n");
@@ -1002,9 +1002,52 @@ test("publication executor is empirically mutation-free in dry-run and live uses
       "repos/Holaxis-ai/agentstate-lite/releases/assets/910",
     ]);
     assert.equal(injectedAbsent, true, "an already-absent planned ID is retry-tolerated");
-    const upload = calls.find((call) => call[1] === "release" && call[2] === "upload");
-    assert.ok(upload.includes("--clobber"));
+    const upload = calls.find((call) => call.includes("POST"));
+    assert.deepEqual(upload.slice(0, 4), [
+      "gh", "api", "-X", "POST",
+    ]);
+    assert.equal(
+      upload[4],
+      `https://uploads.github.com/repos/Holaxis-ai/agentstate-lite/releases/300/assets?name=${stampAssetName(STAGE_ID)}`,
+      "the upload targets the verified numeric draft release even while its durable tag does not exist",
+    );
+    assert.ok(upload.includes("--input"));
+    assert.ok(upload.includes("Content-Type: application/octet-stream"));
+    assert.ok(!upload.includes(plan.tag), "the pre-PATCH upload never looks up the future durable tag");
     assert.ok(calls.some((call) => call.includes("PATCH") && call.some((token) => token === "repos/Holaxis-ai/agentstate-lite/releases/300")));
+
+    const digestPreflightCalls = [];
+    await assert.rejects(
+      applyPublicationPlan({
+        mode: "live",
+        plan: { ...plan, keep: { ...plan.keep, status: { ...plan.keep.status, digest: `sha256:${"d".repeat(64)}` } } },
+        repo: "Holaxis-ai/agentstate-lite",
+        outDir: scratch,
+        run: (command, args) => digestPreflightCalls.push([command, ...args]),
+      }),
+      /generated status digest .* != plan/,
+      "a mismatched generated status digest is rejected before cleanup starts",
+    );
+    assert.deepEqual(digestPreflightCalls, [], "a status digest mismatch with planned deletes cannot invoke any mutation");
+
+    for (const [label, overrides, error] of [
+      ["malformed numeric draft id", { draft_release_id: 0 }, /invalid draft release id/],
+      ["mismatched status destination", { keep: { ...plan.keep, status: { ...plan.keep.status, name: "receipt-status-forged.json" } } }, /invalid generated status proof/],
+    ]) {
+      const before = calls.length;
+      await assert.rejects(
+        applyPublicationPlan({ mode: "live", plan: { ...plan, ...overrides }, repo: "Holaxis-ai/agentstate-lite", outDir: scratch, run: runner }),
+        error,
+        label,
+      );
+      assert.equal(calls.length, before, `${label} cannot invoke a mutation`);
+    }
+    const beforeBadRepo = calls.length;
+    await assert.rejects(
+      applyPublicationPlan({ mode: "live", plan, repo: "Holaxis-ai/agentstate-lite/evil", outDir: scratch, run: runner }),
+      /invalid GitHub repository name/,
+    );
+    assert.equal(calls.length, beforeBadRepo, "malformed repository cannot select an upload destination");
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

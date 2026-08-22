@@ -255,7 +255,7 @@ test("the finalizer persists authority before provisional PATCH and proves publi
     "verify -> plan -> normalize -> pre-publication proof -> fixed packet -> immutable upload",
   );
   assert.doesNotMatch(prepare, /immutable-release|published-live/, "prepare must end after persisting pre-PATCH authority");
-  assert.match(prepare, /retry-safe status --clobber/);
+  assert.match(prepare, /ID-only cleanup, retry-safe numeric-ID status upload, and owned body normalization/);
 
   // Publish independently proves the persisted packet, then performs only the provisional numeric-ID
   // PATCH. Proof independently re-proves the same packet and owns all remote observation/verdict work.
@@ -271,7 +271,13 @@ test("the finalizer persists authority before provisional PATCH and proves publi
   assert.ok(proofPacketAt !== -1 && publishedProofAt !== -1 && proofPacketAt < publishedProofAt);
   assert.doesNotMatch(proof, /immutable-release|--execute|-X PATCH/, "proof must be independently rerunnable and read-only");
   assert.match(verifyOrdering, /releases\/assets\/\$\{item\.id\}/, "cleanup targets exact release-asset IDs");
-  assert.match(verifyOrdering, /"--clobber"/, "status upload is retry-safe");
+  assert.match(
+    verifyOrdering,
+    /https:\/\/uploads\.github\.com\/repos\/\$\{repo\}\/releases\/\$\{draftReleaseId\}\/assets/,
+    "status upload derives its endpoint from the verified numeric draft release ID",
+  );
+  assert.match(verifyOrdering, /"Content-Type: application\/octet-stream"/, "status upload is retry-safe binary API input");
+  assert.doesNotMatch(verifyOrdering, /\["release", "upload", plan\.tag/, "pre-PATCH normalization never locates a future tag");
   assert.match(verifyOrdering, /normalizeReceiptStatusBody/, "one owned-body normalizer prepares PATCH bytes");
   assert.match(prepare, /--mode "\$MODE"/, "dry-run traverses the same apply adapter with a zero-mutation mode");
   // The environment gate also binds the ordering job.
