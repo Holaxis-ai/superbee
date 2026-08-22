@@ -1016,6 +1016,20 @@ test("publication executor is mutation-free in dry-run and binds the untagged dr
     assert.ok(!upload.includes(plan.tag), "the pre-PATCH upload never looks up the future durable tag");
     assert.ok(calls.some((call) => call.includes("PATCH") && call.some((token) => token === "repos/Holaxis-ai/agentstate-lite/releases/300")));
 
+    const digestPreflightCalls = [];
+    await assert.rejects(
+      applyPublicationPlan({
+        mode: "live",
+        plan: { ...plan, keep: { ...plan.keep, status: { ...plan.keep.status, digest: `sha256:${"d".repeat(64)}` } } },
+        repo: "Holaxis-ai/agentstate-lite",
+        outDir: scratch,
+        run: (command, args) => digestPreflightCalls.push([command, ...args]),
+      }),
+      /generated status digest .* != plan/,
+      "a mismatched generated status digest is rejected before cleanup starts",
+    );
+    assert.deepEqual(digestPreflightCalls, [], "a status digest mismatch with planned deletes cannot invoke any mutation");
+
     for (const [label, overrides, error] of [
       ["malformed numeric draft id", { draft_release_id: 0 }, /invalid draft release id/],
       ["mismatched status destination", { keep: { ...plan.keep, status: { ...plan.keep.status, name: "receipt-status-forged.json" } } }, /invalid generated status proof/],

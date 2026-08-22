@@ -234,6 +234,17 @@ export async function applyPublicationPlan({ mode, plan, repo, outDir, run = exe
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo ?? "")) throw new Error("invalid GitHub repository name");
   if (mode === "dry-run") return { mutated: false, calls: 0 };
 
+  // Complete every local status precondition before deleting any retry-cleanup asset. A stale or
+  // corrupted generated status file must leave the draft's inventory untouched for the next run.
+  const statusUpload = plan.keep.status
+    ? exactDraftStatusUpload({ repo, draftReleaseId: plan.draft_release_id, stageId: plan.stage_id })
+    : null;
+  const statusPath = statusUpload ? path.join(outDir, statusUpload.name) : null;
+  if (statusPath) {
+    const localDigest = await fileSha256(statusPath);
+    if (localDigest !== plan.keep.status.digest) throw new Error(`generated status digest ${localDigest} != plan ${plan.keep.status.digest}`);
+  }
+
   let calls = 0;
   for (const item of plan.delete) {
     try {
@@ -244,14 +255,10 @@ export async function applyPublicationPlan({ mode, plan, repo, outDir, run = exe
     }
   }
   if (plan.keep.status) {
-    const upload = exactDraftStatusUpload({ repo, draftReleaseId: plan.draft_release_id, stageId: plan.stage_id });
-    const statusPath = path.join(outDir, upload.name);
-    const localDigest = await fileSha256(statusPath);
-    if (localDigest !== plan.keep.status.digest) throw new Error(`generated status digest ${localDigest} != plan ${plan.keep.status.digest}`);
     calls += 1;
     run(
       "gh",
-      ["api", "-X", "POST", upload.url, "--input", statusPath, "-H", "Content-Type: application/octet-stream"],
+      ["api", "-X", "POST", statusUpload.url, "--input", statusPath, "-H", "Content-Type: application/octet-stream"],
       { encoding: "utf8", stdio: "pipe" },
     );
   }
