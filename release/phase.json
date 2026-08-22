@@ -1,8 +1,8 @@
 {
   "schema": "aslite.release-phase.v1",
-  "phase": "promoted",
-  "kind": "stable",
-  "version": "0.1.2",
+  "phase": "at_rest",
+  "kind": null,
+  "version": null,
   "semantics": {
     "what": "Declared release-transaction phase for the package named by release/targets.json successor-stable. The registry's current published stable, the checked-in planned stable source target, and an active transaction artifact are separate facts. scripts/release-audit-tags.mjs composes the phase machine with the selected tuple's publication policy and fails CI when the live registry disagrees.",
     "phase": "One of at_rest | staged | approved | promoted | failed. An absent file means at_rest. At rest before 0.1.0, each dist-tag rests on the newest published prerelease ELIGIBLE for it under release/targets.json — latest == next == newest published for versions the manifest does not constrain, but a candidate the manifest publishes to next only leaves latest where it is.",
