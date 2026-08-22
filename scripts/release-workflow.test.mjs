@@ -5,9 +5,10 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { operationsFor } from "./release-run-operations.mjs";
-import { loadReleaseTargets } from "./release-targets.mjs";
+import { defaultReleaseManifest, loadReleaseTargets } from "./release-targets.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SUCCESSOR_STABLE = defaultReleaseManifest().allowed_tuples["successor-stable"];
 const staged = readFileSync(path.join(repoRoot, ".github", "workflows", "release-staged.yml"), "utf8");
 const finalize = readFileSync(path.join(repoRoot, ".github", "workflows", "release-finalize.yml"), "utf8");
 const verifyOrdering = readFileSync(path.join(repoRoot, "scripts", "release-verify-ordering.mjs"), "utf8");
@@ -104,7 +105,7 @@ const NPM_NON_WRITING_SUBCOMMANDS = new Set([
 /** Every flag `release-run-operations.mjs` reads, with a value each emitter accepts. */
 const OPERATION_SAMPLE_ARGV = [
   "--stage-id", "stage1",
-  "--version", "0.1.2",
+  "--version", SUCCESSOR_STABLE.version,
   "--target", "successor-stable",
   "--track", "next",
   "--failed-version", "0.1.0",
