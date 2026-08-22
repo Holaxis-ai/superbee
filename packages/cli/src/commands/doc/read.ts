@@ -25,6 +25,7 @@ import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 import { DOC_READ_USAGE, type DocCliDeps, BODY_PREVIEW_LIMIT, readErrorToCliError } from "./common.js";
+import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
@@ -56,6 +57,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
         options: {
           out: { type: "string" },
           "body-out": { type: "string" },
+          "rendered-out": { type: "string" },
           field: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
@@ -81,14 +83,17 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
 
   const bodyOutValue = values["body-out"];
   const bodyOutPresent = bodyOutValue !== undefined;
+  const renderedOutValue = values["rendered-out"];
+  const renderedOutPresent = renderedOutValue !== undefined;
   const outPresent = values.out !== undefined;
   const fieldPresent = values.field !== undefined;
 
-  if (bodyOutPresent && (outPresent || fieldPresent)) {
+  const selectedChannels = [bodyOutPresent, renderedOutPresent, outPresent, fieldPresent].filter(Boolean).length;
+  if (selectedChannels > 1) {
     throw new CliError(
       "USAGE",
-      "--body-out cannot be combined with --out or --field — each selects a different read channel.",
-      { help: `${cliInvocation()} doc read ${id} --body-out (<path> | -)` },
+      "--out, --body-out, --rendered-out, and --field are mutually exclusive read channels.",
+      { help: `${cliInvocation()} doc read ${id} --rendered-out (<path> | -)` },
     );
   }
   if (bodyOutPresent && bodyOutValue.trim() === "") {
@@ -96,6 +101,13 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
       "USAGE",
       "--body-out was given an empty value — pass a file path or '-' for stdout.",
       { help: `${cliInvocation()} doc read ${id} --body-out (<path> | -)` },
+    );
+  }
+  if (renderedOutPresent && renderedOutValue.trim() === "") {
+    throw new CliError(
+      "USAGE",
+      "--rendered-out was given an empty value — pass a file path or '-' for stdout.",
+      { help: `${cliInvocation()} doc read ${id} --rendered-out (<path> | -)` },
     );
   }
 
@@ -168,6 +180,38 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     };
 
     await runToTarget();
+    return;
+  }
+
+  if (renderedOutPresent) {
+    const renderedOut = renderedOutValue.trim();
+    const streamMode = renderedOut === "-";
+    if (!streamMode) assertPathOutsidePrivateState(path.resolve(renderedOut));
+    let parsed: OkfDocument;
+    let version: Version;
+    try {
+      ({ doc: parsed, version } = await readDocVersioned(bundle, id));
+    } catch (err) {
+      throw readErrorToCliError(err, id, values.remote);
+    }
+    const rendered = renderDocumentToStaticHtml({ id: parsed.id, body: parsed.body });
+    const bytes = Buffer.from(rendered.html, "utf8");
+    const result: Record<string, unknown> = {
+      doc: "read",
+      id,
+      rendered_out: renderedOut,
+      size_bytes: bytes.byteLength,
+      content_type: "text/html; charset=utf-8",
+      version,
+      bounded: rendered.bounded,
+    };
+    if (streamMode) {
+      writeStdoutBytes(bytes);
+      stderr(render(result, resolveMode(values)));
+      return;
+    }
+    await fs.writeFile(renderedOut, bytes);
+    stdout(render(result, resolveMode(values)));
     return;
   }
 
@@ -312,9 +356,10 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
 function requestsStdoutByteChannel(argv: string[]): boolean {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if ((arg === "--out" || arg === "--body-out") && argv[i + 1]?.trim() === "-") return true;
+    if ((arg === "--out" || arg === "--body-out" || arg === "--rendered-out") && argv[i + 1]?.trim() === "-") return true;
     if (arg?.startsWith("--out=") && arg.slice("--out=".length).trim() === "-") return true;
     if (arg?.startsWith("--body-out=") && arg.slice("--body-out=".length).trim() === "-") return true;
+    if (arg?.startsWith("--rendered-out=") && arg.slice("--rendered-out=".length).trim() === "-") return true;
   }
   return false;
 }

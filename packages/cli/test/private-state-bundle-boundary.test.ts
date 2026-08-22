@@ -590,6 +590,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   // ── Egress: the target is WRITTEN to. ───────────────────────────────────────
   { leaf: "docRead", surface: "--out", argv: (t) => ["doc", "read", "notes/a", "--out", t, "--dir", ".superbee", "--json"] },
   { leaf: "docRead", surface: "--body-out", argv: (t) => ["doc", "read", "notes/a", "--body-out", t, "--dir", ".superbee", "--json"] },
+  { leaf: "docRead", surface: "--rendered-out", argv: (t) => ["doc", "read", "notes/a", "--rendered-out", t, "--dir", ".superbee", "--json"] },
   { leaf: "pull", surface: "--out", argv: (t) => ["pull", "--doc-key", "notes/a.md", "--out", t, "--dir", ".superbee", "--json"] },
   {
     leaf: "sync",

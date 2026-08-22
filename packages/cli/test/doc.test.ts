@@ -66,6 +66,7 @@ import {
 } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
 import { encode } from "@toon-format/toon";
+import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 import { doc, type DocCliDeps } from "../src/commands/doc.js";
 import { guardDroppedLinks } from "../src/commands/doc/common.js";
@@ -3113,6 +3114,72 @@ test("doc read --body-out - keeps stdout body-only and has local/remote parity",
   }
 });
 
+test("doc read --rendered-out writes the canonical bounded renderer output", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const outDir = await tempDir();
+  try {
+    await writeDoc(
+      { root: dir },
+      {
+        id: "concepts/a",
+        frontmatter: { type: "Concept", title: "A", timestamp: T },
+        body: "# Human heading\n\nSee [B](b.md).\n\n<script>alert(1)</script>\n",
+      },
+    );
+    const expected = await readDocVersioned({ root: dir }, "concepts/a");
+    const target = path.join(outDir, "a.html");
+    const receipt = await runDoc(["read", "concepts/a", "--rendered-out", target, "--dir", dir]);
+    const html = await readFile(target, "utf8");
+
+    assert.equal(html, renderDocumentToStaticHtml({ id: expected.doc.id, body: expected.doc.body }).html);
+    assert.match(html, /<h1>Human heading<\/h1>/);
+    assert.match(html, /data-aslite-doc-id="concepts\/b"/);
+    assert.doesNotMatch(html, /<script>/);
+    assert.equal(receipt.rendered_out, target);
+    assert.equal(receipt.content_type, "text/html; charset=utf-8");
+    assert.equal(receipt.version, expected.version);
+    assert.equal(receipt.bounded, false);
+  } finally {
+    await cleanup();
+    await rm(outDir, { recursive: true, force: true });
+  }
+});
+
+test("doc read --rendered-out - keeps stdout HTML-only with local/remote parity", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    await writeDoc(
+      { root: dir },
+      { id: "concepts/a", frontmatter: { type: "Concept", title: "never stdout", timestamp: T }, body: "**Rendered.**\n" },
+    );
+    const server = await bootServerOverBundle({ root: dir });
+    try {
+      const capture = async (location: string[]): Promise<{ html: string; receipt: Record<string, unknown> }> => {
+        const chunks: Uint8Array[] = [];
+        let stderrOut = "";
+        let textStdout = "";
+        await doc(["read", "concepts/a", "--rendered-out", "-", ...location, "--json"], {
+          stdout: (s) => (textStdout += s),
+          stderr: (s) => (stderrOut += s),
+          writeStdoutBytes: (bytes) => chunks.push(bytes),
+        });
+        assert.equal(textStdout, "");
+        return { html: Buffer.concat(chunks).toString("utf8"), receipt: JSON.parse(stderrOut) as Record<string, unknown> };
+      };
+      const local = await capture(["--dir", dir]);
+      const remote = await capture(["--remote", server.url]);
+      assert.equal(local.html, "<div data-aslite-rendered-document=\"\"><p><strong>Rendered.</strong></p></div>");
+      assert.equal(remote.html, local.html);
+      assert.equal(remote.receipt.version, local.receipt.version);
+      assert.equal(remote.receipt.content_type, "text/html; charset=utf-8");
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("doc read --body-out - emits missing and malformed errors ONLY on stderr", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
@@ -3156,6 +3223,9 @@ test("doc read raw stdout boundary catches early parse/usage/open failures befor
       { argv: ["read", "concepts/a", "--body-out", "-", "--body-out", "", "--dir", dir], code: "USAGE" },
       { argv: ["read", "concepts/a", "--body-out", "-", "--field", "title", "--dir", dir], code: "USAGE" },
       { argv: ["read", "concepts/a", "--body-out=-", "--dir", path.join(dir, "absent")], code: "NOT_FOUND" },
+      { argv: ["read", "concepts/a", "--rendered-out=-", "--unknown", "--dir", dir], code: "USAGE" },
+      { argv: ["read", "concepts/a", "--rendered-out", " - ", "--field", "title", "--dir", dir], code: "USAGE" },
+      { argv: ["read", "concepts/a", "--rendered-out=-", "--dir", path.join(dir, "absent")], code: "NOT_FOUND" },
       { argv: ["read", "concepts/a", "--out=-", "--unknown", "--dir", dir], code: "USAGE" },
       { argv: ["read", "concepts/a", "--out", " - ", "--unknown", "--dir", dir], code: "USAGE" },
       { argv: ["read", "concepts/a", "--out= - ", "--unknown", "--dir", dir], code: "USAGE" },
@@ -3215,6 +3285,10 @@ test("doc read --body-out validates blank and mutually-exclusive channels as USA
     ["--body-out", ""],
     ["--body-out", "body.md", "--out", "whole.md"],
     ["--body-out", "body.md", "--field", "title"],
+    ["--rendered-out", ""],
+    ["--rendered-out", "doc.html", "--out", "whole.md"],
+    ["--rendered-out", "doc.html", "--body-out", "body.md"],
+    ["--rendered-out", "doc.html", "--field", "title"],
   ]) {
     await assert.rejects(
       () => doc(["read", "concepts/a", ...args, "--dir", "/does/not/matter", "--json"], {}),

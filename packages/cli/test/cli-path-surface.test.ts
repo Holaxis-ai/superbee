@@ -39,6 +39,7 @@ const PATH_FLAG_CANDIDATES = [
   "body-file",
   "out",
   "body-out",
+  "rendered-out",
   "recipe",
   "file",
   "input",
