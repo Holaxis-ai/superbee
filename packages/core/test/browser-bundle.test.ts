@@ -40,17 +40,36 @@ function hasRuntimeBinding(declaration: ts.ImportDeclaration): boolean {
   return clause.namedBindings.elements.some((element) => !element.isTypeOnly);
 }
 
+function hasRuntimeExport(declaration: ts.ExportDeclaration): boolean {
+  if (declaration.isTypeOnly) return false;
+  if (declaration.exportClause === undefined || ts.isNamespaceExport(declaration.exportClause)) return true;
+  return declaration.exportClause.elements.some((element) => !element.isTypeOnly);
+}
+
+function isCoreSpecifier(specifier: ts.Expression): specifier is ts.StringLiteralLike {
+  return (
+    ts.isStringLiteralLike(specifier) &&
+    (specifier.text === CORE_PACKAGE || specifier.text.startsWith(`${CORE_PACKAGE}/`))
+  );
+}
+
 function runtimeCoreSpecifiersIn(file: string, source: string): string[] {
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
   const specifiers = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (
       ts.isImportDeclaration(node) &&
-      ts.isStringLiteralLike(node.moduleSpecifier) &&
-      (node.moduleSpecifier.text === CORE_PACKAGE || node.moduleSpecifier.text.startsWith(`${CORE_PACKAGE}/`)) &&
+      isCoreSpecifier(node.moduleSpecifier) &&
       hasRuntimeBinding(node)
     ) {
       specifiers.add(node.moduleSpecifier.text);
+    }
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier !== undefined && isCoreSpecifier(node.moduleSpecifier) && hasRuntimeExport(node)) {
+      specifiers.add(node.moduleSpecifier.text);
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const specifier = node.arguments[0];
+      if (specifier !== undefined && isCoreSpecifier(specifier)) specifiers.add(specifier.text);
     }
     ts.forEachChild(node, visit);
   };
@@ -58,12 +77,16 @@ function runtimeCoreSpecifiersIn(file: string, source: string): string[] {
   return [...specifiers];
 }
 
+function isBrowserConsumerSourceFile(name: string): boolean {
+  return /\.(?:[cm]?[jt]sx?)$/.test(name) && !name.includes(".test.");
+}
+
 async function walkSources(dir: string): Promise<string[]> {
   const files: string[] = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
     const fullPath = path.join(dir, entry.name);
     if (entry.isDirectory()) files.push(...(await walkSources(fullPath)));
-    else if (entry.isFile() && /\.(?:[cm]?[jt]sx?)$/.test(entry.name)) files.push(fullPath);
+    else if (entry.isFile() && isBrowserConsumerSourceFile(entry.name)) files.push(fullPath);
   }
   return files;
 }
@@ -91,11 +114,22 @@ test("browser core-import discovery ignores type-only imports and includes runti
     'import { type KindConvention } from "@superbee/core/kinds";',
     'import { resolveConceptId } from "@superbee/core/links";',
     'import * as page from "@superbee/core/page";',
+    'export { matchesFilter } from "@superbee/core/query-filter";',
+    'export type { QuerySelectionParams } from "@superbee/core/query-selection";',
+    'void import("@superbee/core/mutation-attribution");',
   ].join("\n");
   assert.deepEqual(runtimeCoreSpecifiersIn("fixture.tsx", fixture).sort(), [
     "@superbee/core/links",
+    "@superbee/core/mutation-attribution",
     "@superbee/core/page",
+    "@superbee/core/query-filter",
   ]);
+});
+
+test("browser core-import discovery excludes test sources", () => {
+  assert.equal(isBrowserConsumerSourceFile("Widget.tsx"), true);
+  assert.equal(isBrowserConsumerSourceFile("Widget.test.tsx"), false);
+  assert.equal(isBrowserConsumerSourceFile("Widget.md"), false);
 });
 
 const manifest = JSON.parse(await readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8")) as CoreManifest;

@@ -85,6 +85,34 @@ function isCoreSourceInternal(file: string, specifier: string): boolean {
   return resolved === SOURCE_ROOT || resolved.startsWith(`${SOURCE_ROOT}${path.sep}`);
 }
 
+function coreSourceSpecifierInExpression(
+  file: string,
+  expression: ts.Expression,
+  urls: ReadonlyMap<string, string>,
+): string | null {
+  if (ts.isStringLiteralLike(expression)) return isCoreSourceInternal(file, expression.text) ? expression.text : null;
+  if (ts.isIdentifier(expression)) return urls.get(expression.text) ?? null;
+  if (ts.isPropertyAccessExpression(expression) && expression.name.text === "href") {
+    return coreSourceSpecifierInExpression(file, expression.expression, urls);
+  }
+  if (
+    ts.isCallExpression(expression) &&
+    ts.isPropertyAccessExpression(expression.expression) &&
+    expression.expression.name.text === "toString"
+  ) {
+    return coreSourceSpecifierInExpression(file, expression.expression.expression, urls);
+  }
+  if (
+    ts.isNewExpression(expression) &&
+    ts.isIdentifier(expression.expression) &&
+    expression.expression.text === "URL" &&
+    expression.arguments?.[0] !== undefined
+  ) {
+    return coreSourceSpecifierInExpression(file, expression.arguments[0], urls);
+  }
+  return null;
+}
+
 function sourceBypassViolationsIn(file: string, source: string): string[] {
   const sourceFile = ts.createSourceFile(
     file,
@@ -94,11 +122,18 @@ function sourceBypassViolationsIn(file: string, source: string): string[] {
     ts.ScriptKind.TSX,
   );
   const violations: string[] = [];
+  const urls = new Map<string, string>();
+  const requireFactories = new Set<string>();
+  const requireAliases = new Set<string>();
   const flag = (node: ts.Node, specifier: ts.Expression): void => {
-    if (!ts.isStringLiteralLike(specifier) || !isCoreSourceInternal(file, specifier.text)) return;
+    const coreSpecifier = coreSourceSpecifierInExpression(file, specifier, urls);
+    if (coreSpecifier === null) return;
     const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-    violations.push(`${path.relative(REPOSITORY_ROOT, file)}:${line + 1} — core source-internal import "${specifier.text}"`);
+    violations.push(`${path.relative(REPOSITORY_ROOT, file)}:${line + 1} — core source-internal import "${coreSpecifier}"`);
   };
+
+  const isCreateRequireCall = (expression: ts.Expression): boolean =>
+    ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && requireFactories.has(expression.expression.text);
 
   const visit = (node: ts.Node): void => {
     if (
@@ -108,9 +143,27 @@ function sourceBypassViolationsIn(file: string, source: string): string[] {
       flag(node, node.moduleSpecifier);
     }
 
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteralLike(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === "node:module" &&
+      node.importClause?.namedBindings !== undefined &&
+      ts.isNamedImports(node.importClause.namedBindings)
+    ) {
+      for (const element of node.importClause.namedBindings.elements) {
+        if ((element.propertyName?.text ?? element.name.text) === "createRequire") requireFactories.add(element.name.text);
+      }
+    }
+
     if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
       const expression = node.moduleReference.expression;
       if (expression !== undefined) flag(node, expression);
+    }
+
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
+      const coreSpecifier = coreSourceSpecifierInExpression(file, node.initializer, urls);
+      if (coreSpecifier !== null) urls.set(node.name.text, coreSpecifier);
+      if (isCreateRequireCall(node.initializer)) requireAliases.add(node.name.text);
     }
 
     if (ts.isCallExpression(node)) {
@@ -118,7 +171,11 @@ function sourceBypassViolationsIn(file: string, source: string): string[] {
         const specifier = node.arguments[0];
         if (specifier !== undefined) flag(node, specifier);
       }
-      if (ts.isIdentifier(node.expression) && node.expression.text === "require") {
+      if (ts.isIdentifier(node.expression) && (node.expression.text === "require" || requireAliases.has(node.expression.text))) {
+        const specifier = node.arguments[0];
+        if (specifier !== undefined) flag(node, specifier);
+      }
+      if (ts.isCallExpression(node.expression) && isCreateRequireCall(node.expression)) {
         const specifier = node.arguments[0];
         if (specifier !== undefined) flag(node, specifier);
       }
@@ -209,6 +266,12 @@ test("first-party source-bypass scanner rejects static core-internal channels", 
     'void import("../../core/src/backend.js");',
     'import lock = require("../../core/src/filesystem-lock.js");',
     'require("../../core/src/memory-backend.js");',
+    'import { createRequire as createLoader } from "node:module";',
+    'const load = createLoader(import.meta.url);',
+    'load("../../core/src/filesystem-lock.js");',
+    'const coreUrl = new URL("../../core/src/remote-backend.js", import.meta.url);',
+    'void import(coreUrl.href);',
+    'void import(new URL("../../core/src/memory-backend.js", import.meta.url));',
   ].join("\n");
 
   assert.deepEqual(sourceBypassViolationsIn(syntheticFile, source), [
@@ -217,5 +280,8 @@ test("first-party source-bypass scanner rejects static core-internal channels", 
     'packages/cli/test/source-bypass.ts:3 — core source-internal import "../../core/src/backend.js"',
     'packages/cli/test/source-bypass.ts:4 — core source-internal import "../../core/src/filesystem-lock.js"',
     'packages/cli/test/source-bypass.ts:5 — core source-internal import "../../core/src/memory-backend.js"',
+    'packages/cli/test/source-bypass.ts:8 — core source-internal import "../../core/src/filesystem-lock.js"',
+    'packages/cli/test/source-bypass.ts:10 — core source-internal import "../../core/src/remote-backend.js"',
+    'packages/cli/test/source-bypass.ts:11 — core source-internal import "../../core/src/memory-backend.js"',
   ]);
 });
