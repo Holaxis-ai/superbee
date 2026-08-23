@@ -63,41 +63,16 @@ function firstString(...vals: unknown[]): string | undefined {
 
 // ── low-level fs helpers (the single home of the bundle's disk I/O) ───────────
 
-/** True when a path exists on disk. */
-async function pathExists(p: string): Promise<boolean> {
-  try {
-    await fs.stat(p);
-    return true;
-  } catch {
-    return false;
-  }
+/** Only a genuine missing entry is ordinary absence. */
+function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === "ENOENT";
 }
 
-/**
- * True when a path exists on disk AND is a regular file — NOT `pathExists`, which reports
- * `true` for a directory too. A blob key that collides with an existing directory (e.g. a
- * sibling blob key `artifacts/x/y.bin` leaves `artifacts/x` a directory; probing
- * `existsBlob("artifacts/x")` afterward) must report `false`, matching `MemoryBackend`/
- * `RemoteBackend`, which have no such filesystem-only concept of "a path that is a directory."
- */
-async function pathIsFile(p: string): Promise<boolean> {
-  try {
-    return (await fs.stat(p)).isFile();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * True when a thrown fs error means "there is no FILE at this path" — absence (`ENOENT`) or a
- * directory sitting where a file was expected (`EISDIR`, the blob-key/directory collision
- * `pathIsFile` also guards). Anything else (`EACCES`, `EPERM`, a disk error, …) is a REAL
- * failure, not a "this blob doesn't exist" signal, and must propagate — a blanket catch that
- * mapped every error to `null` would silently misreport a permissions problem as "absent."
- */
-function isAbsentFileError(err: unknown): boolean {
-  const code = (err as NodeJS.ErrnoException)?.code;
-  return code === "ENOENT" || code === "EISDIR";
+/** An ENOENT-shaped rejection so filesystem and non-filesystem adapters agree on a missing doc. */
+function notFound(id: string): NodeJS.ErrnoException {
+  const err = new Error(`no concept document '${id}'`) as NodeJS.ErrnoException;
+  err.code = "ENOENT";
+  return err;
 }
 
 /**
@@ -126,24 +101,28 @@ async function atomicWrite(filePath: string, content: string | Uint8Array): Prom
   await fs.rename(tmp, filePath);
 }
 
-/** `fs.readdir(..., withFileTypes)` that yields `[]` instead of throwing on a missing dir. */
-async function safeReaddir(abs: string) {
+/** A missing scan directory is empty; every other filesystem failure remains observable. */
+async function readDirectory(abs: string) {
   try {
     return await fs.readdir(abs, { withFileTypes: true });
-  } catch {
-    return [];
+  } catch (err) {
+    if (isEnoent(err)) return [];
+    throw err;
   }
 }
 
 /** Recursively collect bundle-relative posix paths of every `.md` file (skips dot-dirs). */
 async function walkMarkdown(root: string, sub = ""): Promise<string[]> {
   const abs = path.join(root, sub);
-  const entries = await safeReaddir(abs);
+  const entries = await readDirectory(abs);
   const out: string[] = [];
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue; // skip .git, temp files, etc.
     const rel = sub === "" ? entry.name : `${sub}/${entry.name}`;
     if (entry.isDirectory()) {
+      if (entry.name.endsWith(".md")) {
+        throw new InvalidInputError(`Filesystem entry '${rel}' is a directory where a document or reserved file is required.`);
+      }
       out.push(...(await walkMarkdown(root, rel)));
     } else if (entry.isFile() && entry.name.endsWith(".md")) {
       // `rel` is already assembled with `/`. Preserve any literal backslash in an entry name so
@@ -163,12 +142,15 @@ async function walkMarkdown(root: string, sub = ""): Promise<string[]> {
  */
 async function walkBlobs(root: string, sub = ""): Promise<string[]> {
   const abs = path.join(root, sub);
-  const entries = await safeReaddir(abs);
+  const entries = await readDirectory(abs);
   const out: string[] = [];
   for (const entry of entries) {
     if (entry.name.startsWith(".")) continue; // dot-dirs/dot-files invisible to the walk
     const rel = sub === "" ? entry.name : `${sub}/${entry.name}`;
     if (entry.isDirectory()) {
+      if (entry.name.toLowerCase().endsWith(".md")) {
+        throw new InvalidInputError(`Filesystem entry '${rel}' is a directory in the document namespace.`);
+      }
       out.push(...(await walkBlobs(root, rel)));
     } else if (entry.isFile() && !entry.name.toLowerCase().endsWith(".md")) {
       out.push(toPosix(rel));
@@ -191,9 +173,13 @@ function reservedPath(dir: string, name: ReservedFilename): string {
 export class FilesystemBackend implements StorageBackend {
   private readonly root: string;
 
+  /** How one operation intentionally projects a directory at a file-shaped target. */
+  private static readonly directoryAsAbsent = "absent" as const;
+  private static readonly directoryAsInvalid = "invalid" as const;
+
   /**
-   * Per-resolved-path promise chain serializing writes within this process before the
-   * same-user cross-process filesystem lock is acquired.
+   * Per-bundle promise chain serializing writes within this process before the same-user
+   * cross-process filesystem lock is acquired.
    *
    * `write()`/`writeReserved()`'s compare-and-swap is check-then-write across two
    * `await`s (read the current version, then `atomicWrite`): without serialization, N
@@ -216,9 +202,10 @@ export class FilesystemBackend implements StorageBackend {
    * them. Different bundle roots never collide because their resolved paths differ, so
    * sharing the map across instances cannot cross-serialize unrelated bundles.
    *
-   * Keyed by the RESOLVED absolute path so both `write()` (concept documents) and
-   * `writeReserved()` (`index.md`/`log.md`) share one queue per physical file — the
-   * only thing that actually needs serializing is contention on the same bytes.
+   * Keyed by the resolved bundle root. A target-only lock cannot protect two names that are
+   * distinct logically but alias while a case-/normalization-folding filesystem creates them;
+   * serializing the realization + write decision at the bundle boundary closes that creation
+   * race. The target lock remains nested below it for its existing cross-process receipts.
    *
    * The external runtime lock is used for conditional and unconditional mutations alike: an
    * unconditional writer must not move the target between another process's version
@@ -231,28 +218,34 @@ export class FilesystemBackend implements StorageBackend {
   }
 
   /**
-   * Run `fn` after any prior write queued under `key` has settled (success or
-   * failure), guaranteeing at most one in-flight critical section per key at a time —
+   * Run `fn` after any prior mutation for this bundle has settled (success or
+   * failure), guaranteeing one in-flight realization/write decision per bundle —
    * across ALL `FilesystemBackend` instances in this process (see `locks`'s doc
    * comment on why the map is static). Must be called with NO prior `await` in the
    * caller since acquiring the tail from the map and re-registering it happen
    * synchronously here — that is what makes concurrent callers queue in call order
    * rather than racing each other for the map entry. The chain entry is deleted once
    * it drains and no newer waiter has replaced it, so a long-lived `serve` process
-   * does not accumulate one `Map` entry per ever-written file.
+   * does not accumulate one `Map` entry per ever-opened bundle.
    */
   private withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const locks = FilesystemBackend.locks;
-    const tail = locks.get(key) ?? Promise.resolve();
-    const locked = () => withFilesystemMutationLock(key, fn, { portableRoot: this.root });
+    const bundleKey = path.resolve(this.root);
+    const tail = locks.get(bundleKey) ?? Promise.resolve();
+    const locked = () =>
+      withFilesystemMutationLock(
+        bundleKey,
+        () => withFilesystemMutationLock(key, fn, { portableRoot: this.root }),
+        { portableRoot: this.root },
+      );
     const run = tail.then(locked, locked);
     const settled = run.then(
       () => undefined,
       () => undefined,
     );
-    locks.set(key, settled);
+    locks.set(bundleKey, settled);
     void settled.then(() => {
-      if (locks.get(key) === settled) locks.delete(key);
+      if (locks.get(bundleKey) === settled) locks.delete(bundleKey);
     });
     return run;
   }
@@ -273,10 +266,85 @@ export class FilesystemBackend implements StorageBackend {
     return resolved;
   }
 
+  /**
+   * Verify every existing component is exactly the requested component, not merely a
+   * case-/normalization-folded lookup accepted by the host filesystem. `realpath` supplies the
+   * spelling actually selected by that filesystem; a missing suffix is ordinary and will be
+   * classified by {@link realizeFileTarget} below.
+   */
+  private async assertExactRealization(rel: string): Promise<void> {
+    const root = path.resolve(this.root);
+    let physicalRoot: string;
+    try {
+      physicalRoot = await fs.realpath(root);
+    } catch (err) {
+      if (isEnoent(err)) return;
+      throw err;
+    }
+
+    const components = rel.split("/");
+    for (let i = 0; i < components.length; i += 1) {
+      const requested = path.join(root, ...components.slice(0, i + 1));
+      let realized: string;
+      try {
+        realized = await fs.realpath(requested);
+      } catch (err) {
+        if (isEnoent(err)) return;
+        throw err;
+      }
+      const expected = path.join(physicalRoot, ...components.slice(0, i + 1));
+      if (realized !== expected) {
+        throw new InvalidInputError(
+          `Filesystem target '${rel}' does not realize with its exact spelling and normalization.`,
+        );
+      }
+    }
+  }
+
+  /**
+   * The one authority for file-shaped targets. It never converts a real I/O fault into absence.
+   * Document and reserved-file operations reject directories; blob read/exists/delete retain
+   * their legacy directory-as-absence projection by opting into it explicitly at each call site.
+   */
+  private async realizeFileTarget(
+    rel: string,
+    directoryProjection: "absent" | "invalid",
+  ): Promise<{ path: string; state: "missing" | "file" }> {
+    const target = this.abs(rel);
+    await this.assertExactRealization(rel);
+    let stat: Awaited<ReturnType<typeof fs.lstat>>;
+    try {
+      stat = await fs.lstat(target);
+    } catch (err) {
+      if (isEnoent(err)) return { path: target, state: "missing" };
+      throw err;
+    }
+    if (stat.isFile()) return { path: target, state: "file" };
+    if (stat.isDirectory() && directoryProjection === FilesystemBackend.directoryAsAbsent) {
+      return { path: target, state: "missing" };
+    }
+    const shape = stat.isDirectory() ? "a directory" : "not a regular file";
+    throw new InvalidInputError(`Filesystem target '${rel}' is ${shape}, where a regular file is required.`);
+  }
+
+  private async currentVersionAt(rel: string): Promise<Version | null> {
+    const entry = await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
+    if (entry.state === "missing") return null;
+    return versionOfBytes(await fs.readFile(entry.path, "utf8"));
+  }
+
+  private async currentBlobVersionAt(rel: string): Promise<Version | null> {
+    const entry = await this.realizeFileTarget(rel, FilesystemBackend.directoryAsAbsent);
+    if (entry.state === "missing") return null;
+    return blobVersion(await fs.readFile(entry.path));
+  }
+
   async read(id: ConceptId): Promise<ReadResult> {
     assertSafeConceptId(id);
     const rel = pathFromConceptId(id);
-    const raw = await fs.readFile(this.abs(rel), "utf8");
+    const entry = await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
+    if (entry.state === "missing") throw notFound(id);
+    const raw = await fs.readFile(entry.path, "utf8");
     const { frontmatter, body } = parseMarkdown(raw, rel);
     return { doc: { id, frontmatter, body }, version: versionOfBytes(raw) };
   }
@@ -292,26 +360,18 @@ export class FilesystemBackend implements StorageBackend {
     return out;
   }
 
-  /** Current version of the file at the already-resolved `absPath`, or `null` if absent. */
-  private async currentVersionAt(absPath: string): Promise<Version | null> {
-    try {
-      return versionOfBytes(await fs.readFile(absPath, "utf8"));
-    } catch (err) {
-      if (isAbsentFileError(err)) return null;
-      throw err;
-    }
-  }
-
   async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
     assertSafeConceptId(id);
+    const rel = pathFromConceptId(id);
     const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
-    const target = this.abs(pathFromConceptId(id));
+    const target = this.abs(rel);
     // The whole check-then-write section runs inside one local + same-user cross-process critical section.
     return this.withLock(target, async () => {
+      await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
       if (options.expectedVersion !== undefined) {
         // Compare-and-swap: hash the current bytes and compare while every filesystem
         // mutation of this physical target is excluded by the same lock.
-        const current = await this.currentVersionAt(target);
+        const current = await this.currentVersionAt(rel);
         if (current !== options.expectedVersion) {
           throw new VersionConflict(id, options.expectedVersion, current);
         }
@@ -323,18 +383,21 @@ export class FilesystemBackend implements StorageBackend {
       // local default — an honest degenerate answer. `options.agent` is likewise
       // accepted-but-not-persisted (this degenerate adapter records no agent at all).
       await atomicWrite(target, raw);
+      const realized = await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
+      if (realized.state !== "file") throw new InvalidInputError(`Filesystem target '${rel}' was not created as a regular file.`);
       return versionOfBytes(raw);
     });
   }
 
   async delete(id: ConceptId, options: DeleteOptions = {}): Promise<boolean> {
     assertSafeConceptId(id);
-    const target = this.abs(pathFromConceptId(id));
+    const rel = pathFromConceptId(id);
+    const target = this.abs(rel);
     // Same per-key mutex as write() — the whole check-then-unlink section runs as one
     // critical section per resolved path, so a concurrent delete/write racer observes a
     // consistent pre-op version rather than a torn check.
     return this.withLock(target, async () => {
-      const current = await this.currentVersionAt(target);
+      const current = await this.currentVersionAt(rel);
       if (current === null) return false; // absent ⇒ idempotent no-op, EVEN under CAS
       if (options.expectedVersion !== undefined && current !== options.expectedVersion) {
         throw new VersionConflict(id, options.expectedVersion, current);
@@ -349,14 +412,17 @@ export class FilesystemBackend implements StorageBackend {
 
   async versions(id: ConceptId): Promise<VersionInfo[]> {
     assertSafeConceptId(id);
-    const p = this.abs(pathFromConceptId(id));
+    const rel = pathFromConceptId(id);
+    const entry = await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
+    if (entry.state === "missing") return [];
     let raw: string;
     let mtime: Date;
     try {
-      raw = await fs.readFile(p, "utf8");
-      mtime = (await fs.stat(p)).mtime;
-    } catch {
-      return []; // no document ⇒ no history
+      raw = await fs.readFile(entry.path, "utf8");
+      mtime = (await fs.stat(entry.path)).mtime;
+    } catch (err) {
+      if (isEnoent(err)) return []; // deleted after realization ⇒ no history
+      throw err;
     }
     const { frontmatter } = parseMarkdown(raw, pathFromConceptId(id));
     const actor = mutationActorFromFrontmatter(frontmatter) ?? defaultActor();
@@ -367,7 +433,7 @@ export class FilesystemBackend implements StorageBackend {
 
   async exists(id: ConceptId): Promise<boolean> {
     assertSafeConceptId(id);
-    return pathExists(this.abs(pathFromConceptId(id)));
+    return (await this.realizeFileTarget(pathFromConceptId(id), FilesystemBackend.directoryAsInvalid)).state === "file";
   }
 
   async list(prefix?: string): Promise<ConceptId[]> {
@@ -375,6 +441,7 @@ export class FilesystemBackend implements StorageBackend {
     const ids: ConceptId[] = [];
     for (const rel of files) {
       if (isReservedFile(rel)) continue;
+      await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
       const id = conceptIdFromPath(rel);
       assertSafeConceptId(id);
       if (pathFromConceptId(id) !== rel) {
@@ -391,9 +458,10 @@ export class FilesystemBackend implements StorageBackend {
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     assertSafeReservedDir(dir);
-    const p = this.abs(reservedPath(dir, name));
-    if (!(await pathExists(p))) return null;
-    const content = await fs.readFile(p, "utf8");
+    const rel = reservedPath(dir, name);
+    const entry = await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
+    if (entry.state === "missing") return null;
+    const content = await fs.readFile(entry.path, "utf8");
     // Reserved files are unparsed markdown, so the version is the content-address of the
     // raw bytes — the same digest a concept document's on-disk bytes carry.
     return { content, version: versionOfBytes(content) };
@@ -411,41 +479,27 @@ export class FilesystemBackend implements StorageBackend {
     // Same per-key serialization as `write()` — see `locks`'s doc comment. A reserved-file
     // read-modify-write depends on a genuine `VersionConflict` under contention.
     return this.withLock(target, async () => {
+      await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
       if (options.expectedVersion !== undefined) {
-        const current = await this.currentVersionAt(target);
+        const current = await this.currentVersionAt(rel);
         if (current !== options.expectedVersion) {
           throw new VersionConflict(rel, options.expectedVersion, current);
         }
       }
       await atomicWrite(target, content);
+      const realized = await this.realizeFileTarget(rel, FilesystemBackend.directoryAsInvalid);
+      if (realized.state !== "file") throw new InvalidInputError(`Filesystem target '${rel}' was not created as a regular file.`);
       return versionOfBytes(content);
     });
   }
 
   // ── blobs: opaque bytes + a content-type ──────────────────────────────────
 
-  /** Current RAW-BYTES version of the blob at the already-resolved `absPath`, or `null` if absent. Reads with NO encoding — reusing the doc-shaped `currentVersionAt` would corrupt binary content via UTF-8 decoding (B1). */
-  private async currentBlobVersionAt(absPath: string): Promise<Version | null> {
-    try {
-      return blobVersion(await fs.readFile(absPath));
-    } catch (err) {
-      if (isAbsentFileError(err)) return null;
-      throw err;
-    }
-  }
-
   async readBlob(key: BlobKey): Promise<ReadBlobResult | null> {
     assertSafeBlobKey(key);
-    let bytes: Buffer;
-    try {
-      bytes = await fs.readFile(this.abs(key)); // NO encoding — raw bytes (B1)
-    } catch (err) {
-      // Absence (ENOENT) or a directory sitting at this path (EISDIR) is a normal "no blob
-      // here" result. Anything else (EACCES, EPERM, …) is a REAL failure and must propagate
-      // — a blanket catch would silently misreport a permissions problem as "absent."
-      if (isAbsentFileError(err)) return null;
-      throw err;
-    }
+    const entry = await this.realizeFileTarget(key, FilesystemBackend.directoryAsAbsent);
+    if (entry.state === "missing") return null;
+    const bytes = await fs.readFile(entry.path); // NO encoding — raw bytes (B1)
     // Content-type is ALWAYS inferred-on-read here: the filesystem adapter accepts but
     // does not persist an explicit override at write time (see writeBlob's doc comment,
     // B5) — there is no sidecar to read it back from.
@@ -461,11 +515,11 @@ export class FilesystemBackend implements StorageBackend {
     assertSafeBlobKey(key);
     const target = this.abs(key);
     // The WHOLE check-then-write section runs inside `withLock`, exactly like write() —
-    // the same static per-resolved-path mutex docs/reserved files use, so N concurrent
-    // CAS writers to the SAME blob key queue instead of racing the version check (B3).
+    // the same bundle mutation lock docs/reserved files use, so creation aliases cannot race.
     return this.withLock(target, async () => {
+      await this.realizeFileTarget(key, FilesystemBackend.directoryAsInvalid);
       if (options.expectedVersion !== undefined) {
-        const current = await this.currentBlobVersionAt(target);
+        const current = await this.currentBlobVersionAt(key);
         if (current !== options.expectedVersion) {
           throw new VersionConflict(key, options.expectedVersion, current);
         }
@@ -476,6 +530,8 @@ export class FilesystemBackend implements StorageBackend {
       // every read instead (see readBlob) — mirrors write()'s actor-parity posture
       // exactly (B5). `MemoryBackend` persists it because it keeps state.
       await atomicWrite(target, bytes);
+      const realized = await this.realizeFileTarget(key, FilesystemBackend.directoryAsInvalid);
+      if (realized.state !== "file") throw new InvalidInputError(`Filesystem target '${key}' was not created as a regular file.`);
       return blobVersion(bytes);
     });
   }
@@ -486,7 +542,7 @@ export class FilesystemBackend implements StorageBackend {
     // Same per-key mutex as writeBlob() — see delete()'s comment above for why the whole
     // check-then-unlink section must run as one critical section.
     return this.withLock(target, async () => {
-      const current = await this.currentBlobVersionAt(target);
+      const current = await this.currentBlobVersionAt(key);
       if (current === null) return false; // absent (or a directory-shaped path) ⇒ idempotent no-op
       if (options.expectedVersion !== undefined && current !== options.expectedVersion) {
         throw new VersionConflict(key, options.expectedVersion, current);
@@ -503,11 +559,12 @@ export class FilesystemBackend implements StorageBackend {
     // report `false` here, matching MemoryBackend/RemoteBackend — neither has a filesystem
     // notion of "a path that is a directory," so `pathExists`'s directory-counts-as-exists
     // answer would break tri-adapter parity.
-    return pathIsFile(this.abs(key));
+    return (await this.realizeFileTarget(key, FilesystemBackend.directoryAsAbsent)).state === "file";
   }
 
   async listBlobs(prefix?: string): Promise<BlobKey[]> {
     const keys = await walkBlobs(this.root);
+    for (const key of keys) await this.realizeFileTarget(key, FilesystemBackend.directoryAsAbsent);
     const filtered = prefix ? keys.filter((k) => k.startsWith(prefix)) : keys;
     filtered.sort((a, b) => a.localeCompare(b));
     return filtered;

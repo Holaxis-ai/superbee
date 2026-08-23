@@ -479,8 +479,8 @@ test("filesystem listing rejects a markdown directory that cannot be a canonical
       () => new FilesystemBackend(root).list(),
       (error: unknown) =>
         error instanceof InvalidInputError &&
-        error.message.includes("non-final segment ending in '.md'") &&
-        error.message.includes("foo.md/bar"),
+        error.message.includes("foo.md") &&
+        error.message.includes("directory"),
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -17,6 +17,7 @@ import {
   registerStorageBackendQueryHeadsContract,
   type BackendFixture,
 } from "./storage-backend-contract.js";
+import { registerFilesystemSemanticsContract } from "./filesystem-semantics-contract.js";
 
 async function filesystemFixture(): Promise<BackendFixture> {
   const root = await mkdtemp(path.join(tmpdir(), "aslite-storage-contract-"));
@@ -106,6 +107,18 @@ registerStorageBackendAtomicCasContract({
       }),
     ];
     return { backend: peers[0]!, peers, cleanup: async () => undefined };
+  },
+});
+
+registerFilesystemSemanticsContract({
+  name: "FilesystemBackend",
+  async create() {
+    const root = await mkdtemp(path.join(tmpdir(), "aslite-filesystem-semantics-contract-"));
+    return {
+      root,
+      backend: new FilesystemBackend(root),
+      cleanup: () => rm(root, { recursive: true, force: true }),
+    };
   },
 });
 
