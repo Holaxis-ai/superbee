@@ -7,8 +7,8 @@
 // (an invalid value is copied and warned about, never "fixed").
 //
 // Repo script, not a CLI verb (that pattern decision is deliberately open on the board). All
-// bundle access goes through the core engine API (packages/core/dist — build from the repo root
-// first); every write is CAS-guarded through core's `versionedMutation`, so the script is safe
+// bundle access goes through the declared core engine API (build from the repo root first); every
+// write is CAS-guarded through core's `versionedMutation`, so the script is safe
 // to re-run: a second run reports zero changes. Every scan tolerates malformed docs (reported,
 // deduped, and BLOCKING for the Page-convention deletion), so a run always ends in a receipt —
 // never a mid-migration crash that leaves a bundle partially renamed with no report.
@@ -32,7 +32,7 @@ import {
   stringifyDoc,
   versionedMutation,
   writeDocVersioned,
-} from "../packages/core/dist/index.js";
+} from "@superbee/core";
 
 export const DEFAULT_ACTOR = "migrate-legacy-view-names";
 

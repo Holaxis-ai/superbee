@@ -6,13 +6,22 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
+import { publicExportSpecifiers } from "../../../scripts/package-exports.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(here, "..");
 const SOURCE_ROOT = path.resolve(PACKAGE_ROOT, "src");
+const DIST_ROOT = path.resolve(PACKAGE_ROOT, "dist");
 const REPOSITORY_ROOT = path.resolve(PACKAGE_ROOT, "../..");
 const FIRST_PARTY_SOURCE_ROOTS = [path.join(REPOSITORY_ROOT, "packages"), path.join(REPOSITORY_ROOT, "scripts")];
 const RUNTIME_DEPENDENCIES = ["gray-matter", "js-yaml"] as const;
+const CORE_PACKAGE = "@superbee/core";
+const DECLARED_CORE_SPECIFIERS = new Set(
+  publicExportSpecifiers(
+    JSON.parse(await readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8")),
+    CORE_PACKAGE,
+  ),
+);
 
 function specifierViolation(file: string, specifier: string): string | null {
   if (isBuiltin(specifier) || RUNTIME_DEPENDENCIES.some((name) => name === specifier)) return null;
@@ -78,11 +87,21 @@ function violationsIn(file: string, source: string): string[] {
   return violations;
 }
 
-function isCoreSourceInternal(file: string, specifier: string): boolean {
-  if (specifier === "@superbee/core/src" || specifier.startsWith("@superbee/core/src/")) return true;
-  if (!specifier.startsWith(".") && !path.isAbsolute(specifier)) return false;
+function coreBoundaryBypass(file: string, specifier: string): string | null {
+  if (specifier === CORE_PACKAGE || specifier.startsWith(`${CORE_PACKAGE}/`)) {
+    return DECLARED_CORE_SPECIFIERS.has(specifier) ? null : specifier;
+  }
+  if (!specifier.startsWith(".") && !path.isAbsolute(specifier)) return null;
   const resolved = path.resolve(path.dirname(file), specifier);
-  return resolved === SOURCE_ROOT || resolved.startsWith(`${SOURCE_ROOT}${path.sep}`);
+  if (
+    resolved === SOURCE_ROOT ||
+    resolved.startsWith(`${SOURCE_ROOT}${path.sep}`) ||
+    resolved === DIST_ROOT ||
+    resolved.startsWith(`${DIST_ROOT}${path.sep}`)
+  ) {
+    return specifier;
+  }
+  return null;
 }
 
 function coreSourceSpecifierInExpression(
@@ -90,7 +109,7 @@ function coreSourceSpecifierInExpression(
   expression: ts.Expression,
   urls: ReadonlyMap<string, string>,
 ): string | null {
-  if (ts.isStringLiteralLike(expression)) return isCoreSourceInternal(file, expression.text) ? expression.text : null;
+  if (ts.isStringLiteralLike(expression)) return coreBoundaryBypass(file, expression.text);
   if (ts.isIdentifier(expression)) return urls.get(expression.text) ?? null;
   if (ts.isPropertyAccessExpression(expression) && expression.name.text === "href") {
     return coreSourceSpecifierInExpression(file, expression.expression, urls);
@@ -130,7 +149,7 @@ function sourceBypassViolationsIn(file: string, source: string): string[] {
     const coreSpecifier = coreSourceSpecifierInExpression(file, specifier, urls);
     if (coreSpecifier === null) return;
     const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-    violations.push(`${path.relative(REPOSITORY_ROOT, file)}:${line + 1} — core source-internal import "${coreSpecifier}"`);
+    violations.push(`${path.relative(REPOSITORY_ROOT, file)}:${line + 1} — core package-boundary bypass "${coreSpecifier}"`);
   };
 
   const isCreateRequireCall = (expression: ts.Expression): boolean =>
@@ -271,7 +290,7 @@ test("first-party source imports cannot bypass the declared core package boundar
   assert.deepEqual(violations, [], `first-party core source bypasses:\n${violations.join("\n")}`);
 });
 
-test("first-party source-bypass scanner rejects static core-internal channels", () => {
+test("first-party source-bypass scanner rejects static core package-boundary bypasses", () => {
   const syntheticFile = path.join(REPOSITORY_ROOT, "packages", "cli", "test", "source-bypass.ts");
   const source = [
     'import { acquireFilesystemMutationLock } from "../../core/src/filesystem-lock.js";',
@@ -288,17 +307,22 @@ test("first-party source-bypass scanner rejects static core-internal channels", 
     'import * as moduleApi from "node:module";',
     'const namespacedLoad = moduleApi.createRequire(import.meta.url);',
     'namespacedLoad("../../core/src/backend.js");',
+    'void import("../../core/dist/index.js");',
+    'import { privateCoreThing } from "@superbee/core/private";',
+    'import { isTerminal } from "@superbee/core/kinds";',
   ].join("\n");
 
   assert.deepEqual(sourceBypassViolationsIn(syntheticFile, source), [
-    'packages/cli/test/source-bypass.ts:1 — core source-internal import "../../core/src/filesystem-lock.js"',
-    'packages/cli/test/source-bypass.ts:2 — core source-internal import "@superbee/core/src/bundle.js"',
-    'packages/cli/test/source-bypass.ts:3 — core source-internal import "../../core/src/backend.js"',
-    'packages/cli/test/source-bypass.ts:4 — core source-internal import "../../core/src/filesystem-lock.js"',
-    'packages/cli/test/source-bypass.ts:5 — core source-internal import "../../core/src/memory-backend.js"',
-    'packages/cli/test/source-bypass.ts:8 — core source-internal import "../../core/src/filesystem-lock.js"',
-    'packages/cli/test/source-bypass.ts:10 — core source-internal import "../../core/src/remote-backend.js"',
-    'packages/cli/test/source-bypass.ts:11 — core source-internal import "../../core/src/memory-backend.js"',
-    'packages/cli/test/source-bypass.ts:14 — core source-internal import "../../core/src/backend.js"',
+    'packages/cli/test/source-bypass.ts:1 — core package-boundary bypass "../../core/src/filesystem-lock.js"',
+    'packages/cli/test/source-bypass.ts:2 — core package-boundary bypass "@superbee/core/src/bundle.js"',
+    'packages/cli/test/source-bypass.ts:3 — core package-boundary bypass "../../core/src/backend.js"',
+    'packages/cli/test/source-bypass.ts:4 — core package-boundary bypass "../../core/src/filesystem-lock.js"',
+    'packages/cli/test/source-bypass.ts:5 — core package-boundary bypass "../../core/src/memory-backend.js"',
+    'packages/cli/test/source-bypass.ts:8 — core package-boundary bypass "../../core/src/filesystem-lock.js"',
+    'packages/cli/test/source-bypass.ts:10 — core package-boundary bypass "../../core/src/remote-backend.js"',
+    'packages/cli/test/source-bypass.ts:11 — core package-boundary bypass "../../core/src/memory-backend.js"',
+    'packages/cli/test/source-bypass.ts:14 — core package-boundary bypass "../../core/src/backend.js"',
+    'packages/cli/test/source-bypass.ts:15 — core package-boundary bypass "../../core/dist/index.js"',
+    'packages/cli/test/source-bypass.ts:16 — core package-boundary bypass "@superbee/core/private"',
   ]);
 });
