@@ -77,8 +77,8 @@ test("save persists exact transient bytes and creates a separately authorized du
     entry: "views/saved-proof.html",
     entry_version: f.launch.contentVersion,
     access: "bundle-read",
-    actor: "openai/codex",
     timestamp: "2026-08-02T19:30:00.000Z",
+    actor: "openai/codex",
   });
   assert.equal((await docVersions(f.bundle, saved.viewId))[0]?.actor, "openai/codex");
 
@@ -113,7 +113,7 @@ test("save persists exact transient bytes and creates a separately authorized du
   assert.equal(repeated.registryVersion, saved.registryVersion);
 });
 
-test("save on OKF v0.2 preserves storage attribution without inventing legacy document metadata", async () => {
+test("save on OKF v0.2 preserves exact protocol identity with actor attribution but no generated clock", async () => {
   const f = fixture();
   await f.bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
   await approve(f);
@@ -127,10 +127,14 @@ test("save on OKF v0.2 preserves storage attribution without inventing legacy do
   );
 
   const registry = await readDocVersioned(f.bundle, saved.viewId);
-  assert.equal(Object.hasOwn(registry.doc.frontmatter, "timestamp"), false);
-  assert.equal(Object.hasOwn(registry.doc.frontmatter, "actor"), false);
-  assert.equal(registry.doc.frontmatter.superbee_updated_by, "openai/codex");
-  assert.equal(Object.hasOwn(registry.doc.frontmatter, "generated"), false);
+  assert.deepEqual(registry.doc.frontmatter, {
+    type: "View",
+    title: "Saved proof",
+    entry: "views/v02-proof.html",
+    entry_version: f.launch.contentVersion,
+    access: "bundle-read",
+    superbee_updated_by: "openai/codex",
+  });
   assert.equal((await docVersions(f.bundle, saved.viewId))[0]?.actor, "openai/codex");
 });
 

@@ -1225,6 +1225,41 @@ test("compatibility metadata mode preserves a v0.2 document without generated or
   assert.equal(result.doc.frontmatter.generated, undefined);
 });
 
+test("protocol-identity metadata preserves actor attribution without generating a v0.2 clock", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "views-registry/protocol",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: true,
+    actor: "openai/codex",
+    metadataMode: "protocol-identity",
+    now: () => "2026-08-14T12:00:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: {
+        type: "View",
+        title: "Protocol View",
+        entry: "views/protocol.html",
+        entry_version: "sha256:0123456789012345678901234567890123456789012345678901234567890123",
+        access: "none",
+      },
+      body: "",
+    }),
+  });
+
+  assert.deepEqual(result.doc.frontmatter, {
+    type: "View",
+    title: "Protocol View",
+    entry: "views/protocol.html",
+    entry_version: "sha256:0123456789012345678901234567890123456789012345678901234567890123",
+    access: "none",
+    superbee_updated_by: "openai/codex",
+  });
+  assert.equal((await backend.versions("views-registry/protocol"))[0]?.actor, "openai/codex");
+});
+
 test("unknown metadata mode is rejected before the mutation reads or writes", async () => {
   const backend = new MemoryBackend();
   await assert.rejects(

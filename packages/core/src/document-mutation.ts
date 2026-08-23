@@ -40,7 +40,7 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 export type DocumentMutationMode = "create-only" | "overwrite" | "patch";
 
 /** Explicit migration posture for callers that must retain pre-core-metadata behavior. */
-export type DocumentMutationMetadataMode = "core-defaults" | "compatibility";
+export type DocumentMutationMetadataMode = "core-defaults" | "compatibility" | "protocol-identity";
 
 /** The frontmatter and body a caller wants persisted; the service supplies the id. */
 export interface DocumentMutationCandidate {
@@ -113,7 +113,11 @@ export interface MutateDocumentOptions {
    * @deprecated
    */
   persistActor?: true;
-  /** Use `compatibility` only when intentionally preserving pre-core metadata behavior. */
+  /**
+   * `compatibility` preserves legacy document-mutation behavior. `protocol-identity` is for
+   * protocol documents whose caller-approved bytes are their durable identity: supplied actors
+   * remain portable/backend attribution, while core does not generate a mutation clock.
+   */
   metadataMode?: DocumentMutationMetadataMode;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
   expectedVersion?: Version;
@@ -273,13 +277,13 @@ function withV02Metadata(
     existing,
     candidate,
     meaningfulChangeAt: now(),
-    requireGenerationClock: metadataMode === "core-defaults" || (
+    requireGenerationClock: metadataMode === "core-defaults" || (metadataMode === "compatibility" && (
       existing === undefined
       && kind !== undefined
       && freshnessHorizonMs(kind) !== undefined
       && !kind.fields.required.includes("timestamp")
       && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter)) === null
-    ),
+    )),
   });
 }
 
@@ -300,7 +304,7 @@ function withV01MeaningfulChangeClock(
   registry: KindRegistry,
   now: () => string,
 ): DocumentMutationCandidate {
-  if (okfVersion !== "0.1" || metadataMode === "compatibility" || !existing) return candidate;
+  if (okfVersion !== "0.1" || metadataMode !== "core-defaults" || !existing) return candidate;
   const kind = registry.kinds.get(String(candidate.frontmatter.type));
   if (isNoopMutation(existing, candidate, false, okfVersion, actor !== undefined, kind?.fields.required.includes("actor") ?? false, true)) {
     return candidate;
@@ -334,10 +338,14 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const onAbsent = opts.onAbsent ?? "fail";
   const compareTimestamp = opts.compareTimestamp ?? false;
   const metadataMode = opts.metadataMode ?? "core-defaults";
-  if (metadataMode !== "core-defaults" && metadataMode !== "compatibility") {
+  if (
+    metadataMode !== "core-defaults"
+    && metadataMode !== "compatibility"
+    && metadataMode !== "protocol-identity"
+  ) {
     throw new InvalidInputError(`Unsupported document mutation metadata mode '${metadataMode}'.`);
   }
-  const persistActor = metadataMode === "core-defaults";
+  const persistActor = metadataMode === "core-defaults" || metadataMode === "protocol-identity";
   const okfVersion = await readBundleOkfVersion(opts.bundle) ?? "0.1";
   if (okfVersion !== "0.1" && okfVersion !== "0.2") {
     throw new InvalidInputError(

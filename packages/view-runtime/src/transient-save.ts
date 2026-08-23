@@ -1,13 +1,13 @@
 import {
-  VersionConflict,
   SUPERBEE_UPDATED_BY_FIELD,
+  VersionConflict,
   loadKinds,
   mutateDocument,
   readBlob,
   readDocVersioned,
+  readBundleOkfVersion,
   writeBlob,
   type Bundle,
-  type Frontmatter,
   type OkfDocument,
   type Version,
 } from "@superbee/core";
@@ -80,28 +80,26 @@ function transientViewEntry(viewId: string): string {
   return entry;
 }
 
-function withoutMutationMetadata(frontmatter: Frontmatter): Frontmatter {
-  const {
-    timestamp: _timestamp,
-    actor: _actor,
-    [SUPERBEE_UPDATED_BY_FIELD]: _updatedBy,
-    ...rest
-  } = frontmatter;
-  return rest as Frontmatter;
+function valuesEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b)
+      && a.length === b.length
+      && a.every((value, index) => valuesEqual(value, b[index]));
+  }
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const left = a as Record<string, unknown>;
+    const right = b as Record<string, unknown>;
+    const leftKeys = Object.keys(left);
+    const rightKeys = Object.keys(right);
+    return leftKeys.length === rightKeys.length
+      && leftKeys.every((key) => valuesEqual(left[key], right[key]));
+  }
+  return false;
 }
 
 function sameSavedRegistration(existing: OkfDocument, desired: OkfDocument): boolean {
-  const existingFields = withoutMutationMetadata(existing.frontmatter);
-  const desiredFields = withoutMutationMetadata(desired.frontmatter);
-  const existingKeys = Object.keys(existingFields).sort();
-  const desiredKeys = Object.keys(desiredFields).sort();
-  return (
-    existingKeys.length === desiredKeys.length &&
-    existingKeys.every(
-      (key, index) => key === desiredKeys[index] && existingFields[key] === desiredFields[key],
-    ) &&
-    existing.body === desired.body
-  );
+  return valuesEqual(existing.frontmatter, desired.frontmatter) && existing.body === desired.body;
 }
 
 function sameEntry(
@@ -148,7 +146,8 @@ export async function persistTransientView(
   }
 
   const mutationNow = options.now ?? new Date().toISOString();
-  const desiredRegistry: OkfDocument = {
+  const okfVersion = await readBundleOkfVersion(bundle) ?? "0.1";
+  let desiredRegistry: OkfDocument = {
     id: viewId,
     frontmatter: {
       type: "View",
@@ -157,6 +156,12 @@ export async function persistTransientView(
       entry,
       entry_version: source.contentVersion,
       access: source.capability,
+      ...(okfVersion === "0.2" ? {} : { timestamp: mutationNow }),
+      ...(options.actor
+        ? okfVersion === "0.2"
+          ? { [SUPERBEE_UPDATED_BY_FIELD]: options.actor }
+          : { actor: options.actor }
+        : {}),
     },
     body: "",
   };
@@ -165,6 +170,26 @@ export async function persistTransientView(
     readBlob(bundle, entry),
     readRegistrationIfPresent(bundle, viewId),
   ]);
+  // v0.1's mandatory timestamp predates protocol registrations and is not part of their approved
+  // identity. Reuse the first durable registration's value so a later idempotent save does not
+  // manufacture a different protocol candidate merely because its caller supplied a later `now`.
+  if (okfVersion !== "0.2" && existingRegistry !== null && typeof existingRegistry.doc.frontmatter.timestamp === "string") {
+    desiredRegistry = {
+      ...desiredRegistry,
+      frontmatter: { ...desiredRegistry.frontmatter, timestamp: existingRegistry.doc.frontmatter.timestamp },
+    };
+  }
+  // A retry may omit the actor used by the initial save. The actor is part of the protocol
+  // identity, so reconstruct it from that established registration before exact comparison.
+  // A caller that supplies a different actor still receives the ordinary identity conflict.
+  const actorField = okfVersion === "0.2" ? SUPERBEE_UPDATED_BY_FIELD : "actor";
+  const establishedActor = existingRegistry?.doc.frontmatter[actorField];
+  if (!options.actor && typeof establishedActor === "string") {
+    desiredRegistry = {
+      ...desiredRegistry,
+      frontmatter: { ...desiredRegistry.frontmatter, [actorField]: establishedActor },
+    };
+  }
   if (existingEntry !== null && !sameEntry(existingEntry, source)) {
     throw new TransientViewSaveError(
       `Cannot save '${viewId}' because a different View entry already exists at '${entry}'.`,
@@ -252,6 +277,9 @@ export async function persistTransientView(
           registry,
           strict: true,
           actor: options.actor,
+          // The registration is an exact protocol identity. Its builder supplies the portable
+          // actor field; this mode retains that attribution without generating a semantic clock.
+          metadataMode: "protocol-identity",
           now: () => mutationNow,
           buildCandidate: () => ({
             frontmatter: desiredRegistry.frontmatter,

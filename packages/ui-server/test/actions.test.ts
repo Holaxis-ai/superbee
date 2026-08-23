@@ -139,13 +139,18 @@ for (const row of [
     assert.equal(committed.status, "committed");
     assert.equal(committed.field, "progress_status");
     assert.equal(committed.storageField, expectedStorage);
+    if (row.label === "v0.2") assert.equal(committed.changed, true);
     const after = await readDocVersioned(bundle, "tasks/alpha");
     assert.equal(after.doc.frontmatter[expectedStorage], "done");
     assert.equal(Object.hasOwn(after.doc.frontmatter, "progress_status"), false);
     if (row.label === "v0.2") {
       assert.equal(Object.hasOwn(after.doc.frontmatter, "timestamp"), false);
       assert.equal(Object.hasOwn(after.doc.frontmatter, "actor"), false);
-      assert.equal(Object.hasOwn(after.doc.frontmatter, "generated"), false);
+      assert.equal(after.doc.frontmatter.superbee_updated_by, "mike/test");
+      assert.deepEqual(after.doc.frontmatter.generated, {
+        by: "process:superbee",
+        at: prepared.confirmation.timestamp,
+      });
       assert.equal((await bundle.backend!.versions("tasks/alpha"))[0]?.actor, "mike/test");
     }
   });
