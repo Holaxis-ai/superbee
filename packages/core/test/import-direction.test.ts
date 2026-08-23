@@ -91,8 +91,16 @@ function coreBoundaryBypass(file: string, specifier: string): string | null {
   if (specifier === CORE_PACKAGE || specifier.startsWith(`${CORE_PACKAGE}/`)) {
     return DECLARED_CORE_SPECIFIERS.has(specifier) ? null : specifier;
   }
-  if (!specifier.startsWith(".") && !path.isAbsolute(specifier)) return null;
-  const resolved = path.resolve(path.dirname(file), specifier);
+  let physicalSpecifier = specifier;
+  if (specifier.startsWith("file:")) {
+    try {
+      physicalSpecifier = fileURLToPath(specifier);
+    } catch {
+      return null;
+    }
+  }
+  if (!physicalSpecifier.startsWith(".") && !path.isAbsolute(physicalSpecifier)) return null;
+  const resolved = path.resolve(path.dirname(file), physicalSpecifier);
   if (
     resolved === SOURCE_ROOT ||
     resolved.startsWith(`${SOURCE_ROOT}${path.sep}`) ||
@@ -308,6 +316,7 @@ test("first-party source-bypass scanner rejects static core package-boundary byp
     'const namespacedLoad = moduleApi.createRequire(import.meta.url);',
     'namespacedLoad("../../core/src/backend.js");',
     'void import("../../core/dist/index.js");',
+    `void import(${JSON.stringify(`file://${path.join(DIST_ROOT, "private.js")}`)});`,
     'import { privateCoreThing } from "@superbee/core/private";',
     'import { isTerminal } from "@superbee/core/kinds";',
   ].join("\n");
@@ -323,6 +332,7 @@ test("first-party source-bypass scanner rejects static core package-boundary byp
     'packages/cli/test/source-bypass.ts:11 — core package-boundary bypass "../../core/src/memory-backend.js"',
     'packages/cli/test/source-bypass.ts:14 — core package-boundary bypass "../../core/src/backend.js"',
     'packages/cli/test/source-bypass.ts:15 — core package-boundary bypass "../../core/dist/index.js"',
-    'packages/cli/test/source-bypass.ts:16 — core package-boundary bypass "@superbee/core/private"',
+    `packages/cli/test/source-bypass.ts:16 — core package-boundary bypass "file://${path.join(DIST_ROOT, "private.js")}"`,
+    'packages/cli/test/source-bypass.ts:17 — core package-boundary bypass "@superbee/core/private"',
   ]);
 });
