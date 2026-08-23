@@ -785,6 +785,7 @@ test("mutateDoc overwrite: a concurrent writer's link addition between the read 
         mode: "overwrite",
         registry,
         strict: false,
+        metadataMode: "core-defaults",
         compareTimestamp: true,
         helpOnKindReject: "kinds",
         buildCandidate: (existing) => {
@@ -849,6 +850,7 @@ test("mutateDoc overwrite: the absent -> concurrently-created race is caught too
         mode: "overwrite",
         registry,
         strict: false,
+        metadataMode: "core-defaults",
         helpOnKindReject: "kinds",
         buildCandidate: (existing) => {
           seenExisting.push(existing);
@@ -911,6 +913,7 @@ test("mutateDoc overwrite: the historical '--replace-links' shape (a candidate t
     mode: "overwrite",
     registry,
     strict: false,
+    metadataMode: "core-defaults",
     helpOnKindReject: "kinds",
     // The historical --replace-links candidate: ignores `existing` entirely (no guard call), a
     // deliberate blind overwrite of frontmatter+body.
@@ -1120,6 +1123,7 @@ test("doc write --actor: recorded in version history on a PERSISTING backend (Me
     mode: "overwrite",
     registry,
     strict: false,
+    metadataMode: "core-defaults",
     helpOnKindReject: "kinds",
     actor: "alice",
     buildCandidate: () => ({ frontmatter: { type: "Concept", timestamp: T }, body: "b" }),
@@ -2310,6 +2314,7 @@ test("doc update --actor: recorded in version history on a PERSISTING backend (M
     onAbsent: "fail",
     registry,
     strict: false,
+    metadataMode: "core-defaults",
     helpOnKindReject: "kinds",
     actor: "alice",
     buildCandidate: (existing) => ({

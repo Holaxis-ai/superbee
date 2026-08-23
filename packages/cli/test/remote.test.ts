@@ -23,7 +23,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { initBundle, writeDoc, MemoryBackend, type Bundle } from "@superbee/core";
+import { initBundle, readDocVersioned, writeDoc, MemoryBackend, type Bundle } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
 
 import { newCommand } from "../src/commands/new.js";
@@ -82,9 +82,34 @@ test("new \"Context Note\" + doc read --remote: round-trip parity with the same 
       assert.equal(remoteCreate.id, localCreate.id);
       assert.equal(remoteCreate.timestamp, localCreate.timestamp);
 
+      const localHead = await readDocVersioned({ root: localDir }, localCreate.id as string);
+      const remoteHead = await readDocVersioned({ root: remoteDir }, remoteCreate.id as string);
+      const normalizedFrontmatter = (frontmatter: Record<string, unknown>) => {
+        const { generated, ...rest } = frontmatter;
+        const generatedRecord = generated as Record<string, unknown>;
+        return { ...rest, generated: { ...generatedRecord, at: "<core-generated>" } };
+      };
+      assert.deepEqual(
+        normalizedFrontmatter(remoteHead.doc.frontmatter),
+        normalizedFrontmatter(localHead.doc.frontmatter),
+        "local and remote author independently-generated clocks but otherwise persist the same semantic document",
+      );
+      for (const head of [localHead, remoteHead]) {
+        assert.equal((head.doc.frontmatter.generated as { by: string }).by, "process:superbee");
+        assert.ok(!Number.isNaN(Date.parse((head.doc.frontmatter.generated as { at: string }).at)));
+        assert.match(head.version, /^sha256:/);
+      }
+
       const localRead = await runJson(doc, ["read", localCreate.id as string, "--dir", localDir]);
       const remoteRead = await runJson(doc, ["read", remoteCreate.id as string, "--remote", server.url]);
-      assert.deepEqual(remoteRead, localRead);
+      const normalizeRead = (value: Record<string, unknown>) => {
+        const { generated, head_version: _headVersion, ...rest } = value;
+        return {
+          ...rest,
+          generated: { ...(generated as Record<string, unknown>), at: "<core-generated>" },
+        };
+      };
+      assert.deepEqual(normalizeRead(remoteRead), normalizeRead(localRead));
     } finally {
       await server.close();
     }

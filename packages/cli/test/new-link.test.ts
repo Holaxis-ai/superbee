@@ -143,6 +143,21 @@ test("new --link: a single declared-type link is added through the SAME machiner
   }
 });
 
+test("new Task on v0.2 uses core semantic metadata defaults", async () => {
+  const { dir, bundle, cleanup } = await makeTaskBundle();
+  try {
+    await runJson(newCommand, ["Task", "clocked", "--title", "Clocked", "--dir", dir]);
+    const saved = await readDoc(bundle, "tasks/clocked");
+    assert.deepEqual(saved.frontmatter.generated, {
+      by: "process:superbee",
+      at: (saved.frontmatter.generated as { at: string }).at,
+    });
+    assert.ok(!Number.isNaN(Date.parse((saved.frontmatter.generated as { at: string }).at)));
+  } finally {
+    await cleanup();
+  }
+});
+
 test("new --body-file + --link: local authoring enters through one command and returns the final stored head", async () => {
   const { dir, bundle, cleanup } = await makeTaskBundle();
   try {

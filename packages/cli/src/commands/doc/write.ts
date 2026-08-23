@@ -165,6 +165,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     registry,
     remoteUrl: values.remote,
     strict: Boolean(values.strict),
+    metadataMode: "core-defaults",
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,
     compareTimestamp: values.timestamp !== undefined,

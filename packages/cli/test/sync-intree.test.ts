@@ -552,6 +552,7 @@ test("hook: a THROWING post-persist hook can never fail a successful write; a no
       mode: "create-only",
       registry: EMPTY_REGISTRY,
       strict: false,
+      metadataMode: "core-defaults",
       helpOnKindReject: "x",
       buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "hello" }),
       onPersisted: () => {
@@ -571,6 +572,7 @@ test("hook: a THROWING post-persist hook can never fail a successful write; a no
       mode: "patch",
       registry: EMPTY_REGISTRY,
       strict: false,
+      metadataMode: "core-defaults",
       helpOnKindReject: "x",
       buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: existing!.body }),
       onPersisted: () => {

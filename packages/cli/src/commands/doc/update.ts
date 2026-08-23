@@ -326,6 +326,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     registry,
     remoteUrl: p.remote,
     strict,
+    metadataMode: p.keepTimestamp ? "preserve-v01-timestamp" : "core-defaults",
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,
     expectedVersion: p.expectedVersion?.trim(),

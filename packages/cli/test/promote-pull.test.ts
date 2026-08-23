@@ -246,7 +246,10 @@ test("promote .md: parses the file and writes a REAL concept doc through the eng
   const work = await tempDir();
   try {
     const file = path.join(work, "spec.md");
-    await writeFile(file, "---\ntype: Spec\ntitle: Auth\n---\n\n# Auth\n\nBody.\n");
+    await writeFile(
+      file,
+      "---\ntype: Spec\ntitle: Auth\ngenerated:\n  by: process:import\n  at: 2026-07-01T00:00:00.000Z\n---\n\n# Auth\n\nBody.\n",
+    );
     const p = await runPromote([file, "--doc-key", "specs/auth.md", "--dir", dir]);
     assert.equal(p.route, "doc");
     assert.equal(p.id, "specs/auth");
@@ -258,7 +261,7 @@ test("promote .md: parses the file and writes a REAL concept doc through the eng
     assert.equal(stored.frontmatter.title, "Auth");
     assert.match(stored.body, /Body\./);
     assert.equal(stored.frontmatter.timestamp, undefined);
-    assert.equal(stored.frontmatter.generated, undefined);
+    assert.deepEqual(stored.frontmatter.generated, { by: "process:import", at: "2026-07-01T00:00:00.000Z" });
   } finally {
     await cleanup();
     await rm(work, { recursive: true, force: true });
@@ -763,14 +766,18 @@ test("A8 acceptance (REMOTE, canonical demo per A12): the SAME edit-iterate loop
 
       // --- .md half: promote rides PUT /docs, never /blobs (I8) ---
       const mdFile = path.join(work, "spec.md");
-      await writeFile(mdFile, "---\ntype: Spec\ntitle: Remote spec\n---\n\nRemote body.\n");
+      await writeFile(
+        mdFile,
+        "---\ntype: Spec\ntitle: Remote spec\ngenerated:\n  by: process:import\n  at: 2026-07-01T00:00:00.000Z\n---\n\nRemote body.\n",
+      );
       const docPromoted = await runPromote([mdFile, "--doc-key", "specs/remote.md", "--remote", server.url]);
       assert.equal(docPromoted.route, "doc");
 
       const docRes = await fetch(`${server.url}/v0/bundles/default/docs/specs/remote`);
       assert.equal(docRes.status, 200);
-      const docBody = (await docRes.json()) as { frontmatter: { type: string } };
+      const docBody = (await docRes.json()) as { frontmatter: { type: string; generated?: unknown } };
       assert.equal(docBody.frontmatter.type, "Spec");
+      assert.deepEqual(docBody.frontmatter.generated, { by: "process:import", at: "2026-07-01T00:00:00.000Z" });
 
       // The SAME key was never written as a blob — the blob route rejects '.md' keys categorically.
       const blobRes = await fetch(`${server.url}/v0/bundles/default/blobs/specs/remote.md`);

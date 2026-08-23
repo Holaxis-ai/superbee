@@ -593,6 +593,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     registry,
     remoteUrl: remote,
     strict: true,
+    metadataMode: "core-defaults",
     helpOnKindReject:
       `${cliInvocation()} new ${shellArg(kind.governs)} --help` +
       (preDir !== undefined

@@ -213,6 +213,7 @@ async function promoteDoc(
       registry,
       remoteUrl,
       strict: opts.strict,
+      metadataMode: "protocol-identity",
       helpOnKindReject: `${cliInvocation()} kinds`,
       expectedVersion: opts.expectedVersion ?? undefined,
       buildCandidate: () => ({ frontmatter, body }),

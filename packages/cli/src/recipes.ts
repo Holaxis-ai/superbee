@@ -559,6 +559,7 @@ async function createRecipeDocument(
     mode: "create-only",
     registry: RECIPE_WRITE_REGISTRY,
     strict: false,
+    metadataMode: "protocol-identity",
     now: () => now,
     buildCandidate: (_existing, context) => {
       if (context.okfVersion !== okfVersion) {
@@ -832,17 +833,9 @@ async function assertPortableTargetsCompatible(
   }
 }
 
-function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
+function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, _okfVersion: string): boolean {
   const { timestamp: _existingTimestamp, ...existingFrontmatter } = existing.frontmatter;
   const { timestamp: _desiredTimestamp, ...desiredFrontmatter } = desired.frontmatter;
-  if (okfVersion === "0.2") {
-    for (const frontmatter of [existingFrontmatter, desiredFrontmatter]) {
-      const generated = plainRecord(frontmatter.generated);
-      if (!generated) continue;
-      const { at: _at, ...rest } = generated;
-      frontmatter.generated = rest;
-    }
-  }
   return isDeepStrictEqual(existingFrontmatter, desiredFrontmatter) && existing.body === desired.body;
 }
 

@@ -15,6 +15,7 @@ import {
   type ConceptId,
   type DocumentMutationCandidate,
   type DocumentMutationContext,
+  type DocumentMutationMetadataMode,
   type DocumentMutationMode,
   type Frontmatter,
   type KindRegistry,
@@ -45,6 +46,8 @@ export interface MutateDocOptions {
   mode: MutateMode;
   registry: KindRegistry;
   strict: boolean;
+  /** Every CLI mutation classifies its core metadata policy explicitly. */
+  metadataMode: DocumentMutationMetadataMode;
   /** Fallback `help` for a kind rejection whose violations name no completable field (see `kindConformanceCliError`). */
   helpOnKindReject: string;
   buildCandidate: (
@@ -124,6 +127,7 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       mode: opts.mode,
       registry: opts.registry,
       strict: opts.strict,
+      metadataMode: opts.metadataMode,
       buildCandidate: opts.buildCandidate,
       onAbsent: opts.onAbsent,
       maxAttempts: opts.maxAttempts,

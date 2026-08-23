@@ -395,6 +395,7 @@ export async function addLink(
     onAbsent: "fail",
     registry,
     strict: false,
+    metadataMode: opts.keepTimestamp ? "preserve-v01-timestamp" : "core-defaults",
     helpOnKindReject: `${cliInvocation()} kinds`,
     remoteUrl: opts.remoteUrl,
     actor: opts.actor,

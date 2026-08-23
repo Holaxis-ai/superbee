@@ -225,6 +225,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
     mode: "patch",
     registry,
     strict: false, // this command EDITS the schema itself — it never validates against one
+    metadataMode: "core-defaults",
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor: values.actor?.trim(),
     buildCandidate: (existingDoc, context) => {

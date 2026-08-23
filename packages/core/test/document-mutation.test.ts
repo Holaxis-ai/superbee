@@ -1225,6 +1225,55 @@ test("compatibility metadata mode preserves a v0.2 document without generated or
   assert.equal(result.doc.frontmatter.generated, undefined);
 });
 
+test("preserve-v01-timestamp retains v0.1 clocks but follows v0.2 core defaults", async () => {
+  const v01Backend = new MemoryBackend();
+  const v01Bundle = bundleFor(v01Backend);
+  await writeDocVersioned(v01Bundle, {
+    id: "notes/a",
+    frontmatter: { type: "Note", title: "A", timestamp: "2026-07-16T00:00:00.000Z" },
+    body: "before",
+  });
+  const v01 = await mutateDocument({
+    bundle: v01Bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "alice/codex",
+    metadataMode: "preserve-v01-timestamp",
+    now: () => "2026-08-14T12:00:00.000Z",
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
+  });
+  assert.equal(v01.doc.frontmatter.timestamp, "2026-07-16T00:00:00.000Z");
+  assert.equal(v01.doc.frontmatter.actor, "alice/codex");
+  assert.equal((await v01Backend.versions("notes/a"))[0]?.actor, "alice/codex");
+
+  const v02Backend = new MemoryBackend();
+  const v02Bundle = await v02BundleFor(v02Backend);
+  await writeDocVersioned(v02Bundle, {
+    id: "notes/a",
+    frontmatter: { type: "Note", title: "A" },
+    body: "before",
+  });
+  const v02 = await mutateDocument({
+    bundle: v02Bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "alice/codex",
+    metadataMode: "preserve-v01-timestamp",
+    now: () => "2026-08-14T12:00:00.000Z",
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
+  });
+  assert.equal(v02.doc.frontmatter.superbee_updated_by, "alice/codex");
+  assert.deepEqual(v02.doc.frontmatter.generated, {
+    by: "process:superbee",
+    at: "2026-08-14T12:00:00.000Z",
+  });
+  assert.equal((await v02Backend.versions("notes/a"))[0]?.actor, "alice/codex");
+});
+
 test("protocol-identity metadata preserves actor attribution without generating a v0.2 clock", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);

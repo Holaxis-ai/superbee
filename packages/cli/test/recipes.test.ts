@@ -914,7 +914,11 @@ test("a recipe carrying a type View pair under views-registry//views/ parses and
           "content_policy: definitions-only\npages:\n  - registry: views-registry/board.md\n    entry: views/board.html\n---\n",
       },
       { path: "conventions/term.md", bytes: "---\ntype: Convention\ngoverns: Term\n---\n# Term\n" },
-      { path: "views-registry/board.md", bytes: "---\ntype: View\ntitle: Board\nentry: views/board.html\naccess: bundle-read\n---\nA board view.\n" },
+      {
+        path: "views-registry/board.md",
+        bytes:
+          "---\ntype: View\ntitle: Board\nentry: views/board.html\naccess: bundle-read\ngenerated:\n  by: process:recipe\n  at: 2026-07-01T00:00:00.000Z\n---\nA board view.\n",
+      },
       { path: "views/board.html", bytes: "<!doctype html><title>Board</title>" },
     ];
     const loaded = parseRecipeFiles(files, "test:view-recipe");
@@ -931,6 +935,7 @@ test("a recipe carrying a type View pair under views-registry//views/ parses and
     const { frontmatter } = parseMarkdown(raw);
     assert.equal(frontmatter.type, "View");
     assert.equal(frontmatter.entry, "views/board.html");
+    assert.deepEqual(frontmatter.generated, { by: "process:recipe", at: "2026-07-01T00:00:00.000Z" });
     const blob = await readBlob({ root: dir }, "views/board.html");
     assert.equal(Buffer.from(blob!.bytes).toString("utf8"), "<!doctype html><title>Board</title>");
 

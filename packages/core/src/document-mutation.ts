@@ -40,7 +40,11 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 export type DocumentMutationMode = "create-only" | "overwrite" | "patch";
 
 /** Explicit migration posture for callers that must retain pre-core-metadata behavior. */
-export type DocumentMutationMetadataMode = "core-defaults" | "compatibility" | "protocol-identity";
+export type DocumentMutationMetadataMode =
+  | "core-defaults"
+  | "compatibility"
+  | "protocol-identity"
+  | "preserve-v01-timestamp";
 
 /** The frontmatter and body a caller wants persisted; the service supplies the id. */
 export interface DocumentMutationCandidate {
@@ -117,6 +121,8 @@ export interface MutateDocumentOptions {
    * `compatibility` preserves legacy document-mutation behavior. `protocol-identity` is for
    * protocol documents whose caller-approved bytes are their durable identity: supplied actors
    * remain portable/backend attribution, while core does not generate a mutation clock.
+   * `preserve-v01-timestamp` suppresses v0.1's automatic clock refresh but retains actor
+   * attribution; it otherwise follows v0.2 core defaults.
    */
   metadataMode?: DocumentMutationMetadataMode;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
@@ -241,8 +247,9 @@ function attributeCandidate(
 
 /**
  * Validate `candidate` against its own (possibly retyped) governing kind, defaulting its
- * timestamp first. Returns the kind alongside the warnings so overwrite's ratchet (below) can
- * reuse this ONE validation pass instead of re-deriving the candidate's kind separately.
+ * timestamp first except for named protocol-identity writes. Returns the kind alongside the
+ * warnings so overwrite's ratchet (below) can reuse this ONE validation pass instead of
+ * re-deriving the candidate's kind separately.
  */
 function validateCandidate(
   id: ConceptId,
@@ -251,12 +258,13 @@ function validateCandidate(
   strict: boolean,
   okfVersion: "0.1" | "0.2",
   now: () => string,
+  metadataMode: DocumentMutationMetadataMode,
 ): RegistryValidationResult {
-  const result = defaultTimestampAndValidateAgainstRegistry(
-    { id, ...candidate },
-    registry,
-    { okfVersion, now },
-  );
+  const doc = { id, ...candidate };
+  const kind = registry.kinds.get(String(candidate.frontmatter.type));
+  const result = metadataMode === "protocol-identity"
+    ? kind ? { kind, warnings: validateAgainstKind(doc, kind) } : { warnings: [] }
+    : defaultTimestampAndValidateAgainstRegistry(doc, registry, { okfVersion, now });
   if (strict && result.kind && result.warnings.length > 0) {
     throw new KindConformanceError(id, result.kind.governs, result.warnings, okfVersion);
   }
@@ -277,7 +285,9 @@ function withV02Metadata(
     existing,
     candidate,
     meaningfulChangeAt: now(),
-    requireGenerationClock: metadataMode === "core-defaults" || (metadataMode === "compatibility" && (
+    requireGenerationClock: (
+      metadataMode === "core-defaults" || metadataMode === "preserve-v01-timestamp"
+    ) || (metadataMode === "compatibility" && (
       existing === undefined
       && kind !== undefined
       && freshnessHorizonMs(kind) !== undefined
@@ -342,10 +352,13 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     metadataMode !== "core-defaults"
     && metadataMode !== "compatibility"
     && metadataMode !== "protocol-identity"
+    && metadataMode !== "preserve-v01-timestamp"
   ) {
     throw new InvalidInputError(`Unsupported document mutation metadata mode '${metadataMode}'.`);
   }
-  const persistActor = metadataMode === "core-defaults" || metadataMode === "protocol-identity";
+  const persistActor = metadataMode === "core-defaults"
+    || metadataMode === "protocol-identity"
+    || metadataMode === "preserve-v01-timestamp";
   const okfVersion = await readBundleOkfVersion(opts.bundle) ?? "0.1";
   if (okfVersion !== "0.1" && okfVersion !== "0.2") {
     throw new InvalidInputError(
@@ -372,7 +385,9 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       okfVersion,
       opts.registry,
     );
-    const { warnings } = validateCandidate(opts.id, attributed, opts.registry, opts.strict, okfVersion, decisionNow);
+    const { warnings } = validateCandidate(
+      opts.id, attributed, opts.registry, opts.strict, okfVersion, decisionNow, metadataMode,
+    );
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...attributed }, okfVersion, {
       expectedVersion: null,
       actor: opts.actor,
@@ -419,6 +434,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           opts.strict,
           okfVersion,
           decisionNow,
+          metadataMode,
         );
         warnings = validated.warnings;
         candidate = withV01MeaningfulChangeClock(
@@ -454,7 +470,8 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
             persistActor && opts.actor !== undefined,
             validated.kind?.fields.required.includes("actor") ?? false,
             true,
-            metadataMode === "core-defaults" && hasCoreDefaultGeneration(existing, candidate),
+            (metadataMode === "core-defaults" || metadataMode === "preserve-v01-timestamp")
+              && hasCoreDefaultGeneration(existing, candidate),
           )
         ) {
           return { action: "done", result: { doc: existing } };
@@ -515,6 +532,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         opts.strict,
         okfVersion,
         decisionNow,
+        metadataMode,
       );
       candidate = withV01MeaningfulChangeClock(
         candidate,
@@ -535,7 +553,8 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           persistActor && opts.actor !== undefined,
           validated.kind?.fields.required.includes("actor") ?? false,
           true,
-          metadataMode === "core-defaults" && hasCoreDefaultGeneration(existing, candidate),
+          (metadataMode === "core-defaults" || metadataMode === "preserve-v01-timestamp")
+            && hasCoreDefaultGeneration(existing, candidate),
         )
       ) {
         return { action: "done", result: { doc: existing, warnings: [] } };
