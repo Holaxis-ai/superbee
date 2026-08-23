@@ -133,15 +133,17 @@ export function defaultRecoveryDirectory(env = process.env) {
 export async function parseInspectArgs(argv, { read = readFile, accessKey = access, resolveRepo, env = process.env } = {}) {
   const flags = parseFlags(argv);
   const explicitKeyPath = flags.get("--key");
+  const hasExplicitKeyPath = flags.has("--key");
   const configuredKeyPath = env.SUPERBEE_RELEASE_INSPECTION_KEY;
   const keyPath = explicitKeyPath ?? (configuredKeyPath?.trim() ? configuredKeyPath : undefined);
   if (!keyPath) fail("missing --key; pass --key <ssh-private-key> or set SUPERBEE_RELEASE_INSPECTION_KEY to its local path");
-  if (!explicitKeyPath) {
-    try {
-      await accessKey(keyPath, constants.R_OK);
-    } catch {
-      fail("SUPERBEE_RELEASE_INSPECTION_KEY is not a readable local key path; pass --key <ssh-private-key> or correct the setting");
+  try {
+    await accessKey(keyPath, constants.R_OK);
+  } catch {
+    if (hasExplicitKeyPath) {
+      fail("--key is not a readable local key path; correct the path before release inspection");
     }
+    fail("SUPERBEE_RELEASE_INSPECTION_KEY is not a readable local key path; pass --key <ssh-private-key> or correct the setting");
   }
   const batchPath = flags.get("--batch");
   const replaceFlags = ["--replace-asset-id", "--replace-asset-name", "--replace-asset-digest"];

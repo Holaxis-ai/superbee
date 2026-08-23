@@ -658,8 +658,9 @@ test("dry-run reads an interrupted journal and converges its plan without owner,
 
 test("CLI replacement authority is all-or-none and batch replacement is row-local only", async () => {
   const base = ["--key", "/tmp/key", "--repo", "Holaxis-ai/agentstate-lite"];
+  const readableKey = async () => {};
   await assert.rejects(
-    parseInspectArgs([...base, "--stage-id", STAGE_ID, "--version", "0.1.0-pre.4", "--draft-release-id", "300", "--replace-asset-id", "401"], { resolveRepo: async () => "unused" }),
+    parseInspectArgs([...base, "--stage-id", STAGE_ID, "--version", "0.1.0-pre.4", "--draft-release-id", "300", "--replace-asset-id", "401"], { accessKey: readableKey, resolveRepo: async () => "unused" }),
     /requires id, name, and digest together/,
   );
   const h = scratch();
@@ -667,7 +668,7 @@ test("CLI replacement authority is all-or-none and batch replacement is row-loca
     const batchPath = path.join(h.root, "batch.json");
     writeFileSync(batchPath, JSON.stringify([{ stage_id: STAGE_ID, version: "0.1.0-pre.4", draft_release_id: "300" }]));
     await assert.rejects(
-      parseInspectArgs([...base, "--batch", batchPath, "--replace-asset-id", "401", "--replace-asset-name", NAME, "--replace-asset-digest", `sha256:${"1".repeat(64)}`], { resolveRepo: async () => "unused" }),
+      parseInspectArgs([...base, "--batch", batchPath, "--replace-asset-id", "401", "--replace-asset-name", NAME, "--replace-asset-digest", `sha256:${"1".repeat(64)}`], { accessKey: readableKey, resolveRepo: async () => "unused" }),
       /global replacement flags are forbidden/,
     );
     writeFileSync(batchPath, JSON.stringify([{
@@ -676,7 +677,7 @@ test("CLI replacement authority is all-or-none and batch replacement is row-loca
       draft_release_id: "300",
       replace_existing: { asset_id: 401, name: NAME, digest: `sha256:${"1".repeat(64)}`, extra: true },
     }]));
-    await assert.rejects(parseInspectArgs([...base, "--batch", batchPath], { resolveRepo: async () => "unused" }), /requires exactly/);
+    await assert.rejects(parseInspectArgs([...base, "--batch", batchPath], { accessKey: readableKey, resolveRepo: async () => "unused" }), /requires exactly/);
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
 
@@ -691,14 +692,14 @@ test("inspection key defaults from a local environment path while explicit --key
   });
   assert.equal(fromEnvironment.keyPath, environment.SUPERBEE_RELEASE_INSPECTION_KEY);
   assert.deepEqual(accessCalls, [[environment.SUPERBEE_RELEASE_INSPECTION_KEY, constants.R_OK]]);
-  let explicitAccessed = false;
+  const explicitAccessCalls = [];
   const explicit = await parseInspectArgs([...row, "--key", "/tmp/explicit-inspection-key"], {
     env: environment,
-    accessKey: async () => { explicitAccessed = true; throw new Error("explicit key must bypass environment preflight"); },
+    accessKey: async (...args) => { explicitAccessCalls.push(args); },
     resolveRepo: async () => "Holaxis-ai/agentstate-lite",
   });
   assert.equal(explicit.keyPath, "/tmp/explicit-inspection-key");
-  assert.equal(explicitAccessed, false);
+  assert.deepEqual(explicitAccessCalls, [["/tmp/explicit-inspection-key", constants.R_OK]]);
   await assert.rejects(
     parseInspectArgs(row, { env: { SUPERBEE_RELEASE_INSPECTION_KEY: "  " }, resolveRepo: async () => "Holaxis-ai/agentstate-lite" }),
     /missing --key; pass --key <ssh-private-key> or set SUPERBEE_RELEASE_INSPECTION_KEY/,
@@ -716,6 +717,19 @@ test("inspection key defaults from a local environment path while explicit --key
     /SUPERBEE_RELEASE_INSPECTION_KEY is not a readable local key path/,
   );
   assert.equal(resolvedAfterUnreadableKey, false);
+  let resolvedAfterUnreadableExplicitKey = false;
+  await assert.rejects(
+    parseInspectArgs([...row, "--key", "/tmp/missing-explicit-inspection-key"], {
+      env: environment,
+      accessKey: async () => { throw new Error("ENOENT"); },
+      resolveRepo: async () => {
+        resolvedAfterUnreadableExplicitKey = true;
+        return "Holaxis-ai/agentstate-lite";
+      },
+    }),
+    /--key is not a readable local key path/,
+  );
+  assert.equal(resolvedAfterUnreadableExplicitKey, false);
 });
 
 test("GitHub actor proof is exact, non-redirecting, and never accepts a redirect or other login", async () => {
