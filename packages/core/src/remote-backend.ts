@@ -99,9 +99,9 @@ export interface RemoteBackendOptions {
    * e.g. a Cloudflare D1 cold-start's 500 "storage caused object to be reset" when a hibernated
    * database is first hit) or a network/transport error. Each retry backs off exponentially with
    * jitter. A 4xx (incl. 412 VersionConflict), 401, or any 2xx is a REAL result, never retried.
-   * Default 3; set 0 to disable. Safe because every op is content-addressed + CAS: a retried write
-   * lands the same version or a conflict — possibly SPURIOUS, if a prior attempt actually committed
-   * before its response was lost — but never silent data loss; and a retried read is idempotent.
+   * Default 3; set 0 to disable. A retry is made only when the operation's descriptor says replay
+   * is safe: reads and version/expect-absent guarded mutations can safely expose a later
+   * `VersionConflict`, while an unguarded mutation must leave an ambiguous failure unreplayed.
    */
   maxRetries?: number;
 }
@@ -186,6 +186,39 @@ function assertValidExpectedVersion(expectedVersion: WriteOptions["expectedVersi
  */
 const RETRIABLE_STATUS = new Set([500, 502, 503, 504]);
 
+/** One semantic operation class understood by the retry authority. */
+interface RemoteOperation {
+  /** Human-readable contract class, kept next to the retry decision for audits and diagnostics. */
+  readonly name: "read" | "guarded-mutation" | "unguarded-mutation";
+  /** Whether replay after a possibly committed request is safe for this operation. */
+  readonly replaySafe: boolean;
+}
+
+const READ_OPERATION: RemoteOperation = { name: "read", replaySafe: true };
+const GUARDED_MUTATION_OPERATION: RemoteOperation = { name: "guarded-mutation", replaySafe: true };
+const UNGUARDED_MUTATION_OPERATION: RemoteOperation = { name: "unguarded-mutation", replaySafe: false };
+
+/** The phase in which a transient failure was observed after a request was attempted. */
+type RetryFailure =
+  | { readonly phase: "response"; readonly status: number }
+  | { readonly phase: "transport" };
+
+/**
+ * The ONE retry policy authority for RemoteBackend. A transport outcome alone cannot decide
+ * whether a request may be replayed: an unguarded write/delete may already have committed, and a
+ * second attempt could overwrite an interposed writer. A conditional write/delete instead carries
+ * the original CAS premise, so replay either preserves that premise or surfaces a conflict.
+ */
+function mayRetry(operation: RemoteOperation, failure: RetryFailure): boolean {
+  if (!operation.replaySafe) return false;
+  return failure.phase === "transport" || RETRIABLE_STATUS.has(failure.status);
+}
+
+/** A conditional write/delete can replay; an omitted guard is deliberately non-retryable. */
+function mutationOperation(expectedVersion: Version | null | undefined): RemoteOperation {
+  return expectedVersion === undefined ? UNGUARDED_MUTATION_OPERATION : GUARDED_MUTATION_OPERATION;
+}
+
 /** Retry-backoff timing: exponential base doubling, capped, with jitter to avoid a thundering herd. */
 const RETRY_BASE_MS = 150;
 const RETRY_CAP_MS = 2000;
@@ -243,7 +276,7 @@ export class RemoteBackend implements StorageBackend {
     return `${this.baseUrl}/v0/bundles/${encodeURIComponent(this.bundle)}${bundleRelativePath}`;
   }
 
-  private async send(bundleRelativePath: string, init: RequestInit = {}): Promise<Response> {
+  private async send(operation: RemoteOperation, bundleRelativePath: string, init: RequestInit = {}): Promise<Response> {
     // Attach Authorization on EVERY request when an authToken is configured — the reference
     // server ignores the header (no auth enforced), while a separate gated deployment may
     // require it. Merged onto any caller-supplied headers rather than overwriting `init`.
@@ -253,25 +286,21 @@ export class RemoteBackend implements StorageBackend {
       init = { ...init, headers };
     }
     const url = this.url(bundleRelativePath);
-    // Retry TRANSIENT failures — a transient 5xx (notably a Cloudflare D1 cold-start's 500 "storage
-    // object reset" when a hibernated database is first hit; also 502/503/504 from the edge) or a
-    // network/transport error — with exponential backoff + jitter, so a hibernated-backend hiccup is
-    // transparent instead of a hard failure. A REAL result (2xx, or 4xx incl. 412 VersionConflict,
-    // or 401) returns/throws immediately, never retried. Safe because every op is content-addressed
-    // + CAS: a retried write lands the same version or a conflict (possibly SPURIOUS — a prior
-    // attempt may have committed before its response was lost — but never silent data loss); a
-    // retried read is idempotent. `send` rebuilds the Request per attempt from `init` (bodies are
-    // strings/bytes, so reusable — no consumed-stream hazard).
+    // Retry policy is operation-aware. A transient response or transport failure can arrive after a
+    // server committed the request; `mayRetry` therefore refuses to replay unguarded mutations,
+    // while guarded mutations retain their original CAS premise and reads are idempotent. `send`
+    // rebuilds the Request per attempt from `init` (bodies are strings/bytes, so reusable — no
+    // consumed-stream hazard).
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchImpl(new Request(url, init));
-        if (RETRIABLE_STATUS.has(res.status) && attempt < this.maxRetries) {
+        if (attempt < this.maxRetries && mayRetry(operation, { phase: "response", status: res.status })) {
           await delay(retryDelayMs(attempt));
           continue;
         }
         return res;
       } catch (err) {
-        if (attempt < this.maxRetries) {
+        if (attempt < this.maxRetries && mayRetry(operation, { phase: "transport" })) {
           await delay(retryDelayMs(attempt));
           continue;
         }
@@ -303,7 +332,7 @@ export class RemoteBackend implements StorageBackend {
 
   async read(id: ConceptId): Promise<ReadResult> {
     assertSafeConceptId(id);
-    const res = await this.send(`/docs/${encodeId(id)}`, { method: "GET" });
+    const res = await this.send(READ_OPERATION, `/docs/${encodeId(id)}`, { method: "GET" });
     if (res.status === 404) throw notFound(id);
     if (!res.ok) throw await this.toError(res, id);
     const version = extractVersion(res, `GET /docs/${id}`);
@@ -316,7 +345,7 @@ export class RemoteBackend implements StorageBackend {
   async readMany(ids: ConceptId[]): Promise<ReadResult[]> {
     for (const id of ids) assertSafeConceptId(id);
     if (ids.length === 0) return [];
-    const res = await this.send("/docs:read-many", {
+    const res = await this.send(READ_OPERATION, "/docs:read-many", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ ids }),
@@ -358,7 +387,7 @@ export class RemoteBackend implements StorageBackend {
     else if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
     if (options.actor) headers["X-Actor"] = options.actor;
 
-    const res = await this.send(`/docs/${encodeId(id)}`, {
+    const res = await this.send(mutationOperation(options.expectedVersion), `/docs/${encodeId(id)}`, {
       method: "PUT",
       headers,
       body: JSON.stringify({ frontmatter: doc.frontmatter, body: doc.body ?? "" }),
@@ -370,7 +399,7 @@ export class RemoteBackend implements StorageBackend {
 
   async exists(id: ConceptId): Promise<boolean> {
     assertSafeConceptId(id);
-    const res = await this.send(`/docs/${encodeId(id)}`, { method: "HEAD" });
+    const res = await this.send(READ_OPERATION, `/docs/${encodeId(id)}`, { method: "HEAD" });
     if (res.status === 404) return false;
     if (!res.ok) throw await this.toError(res, id);
     return true;
@@ -393,7 +422,7 @@ export class RemoteBackend implements StorageBackend {
       const params = new URLSearchParams(baseParams);
       if (cursor) params.set("cursor", cursor);
       const qs = params.toString();
-      const res = await this.send(`/docs${qs ? `?${qs}` : ""}`, { method: "GET" });
+      const res = await this.send(READ_OPERATION, `/docs${qs ? `?${qs}` : ""}`, { method: "GET" });
       if (!res.ok) throw await this.toError(res, errorContext);
       const payload = (await res.json()) as {
         docs: Array<{ id: ConceptId; version: Version; frontmatter: Frontmatter }>;
@@ -438,7 +467,7 @@ export class RemoteBackend implements StorageBackend {
 
   async versions(id: ConceptId): Promise<VersionInfo[]> {
     assertSafeConceptId(id);
-    const res = await this.send(`/docs/${encodeId(id)}/versions`, { method: "GET" });
+    const res = await this.send(READ_OPERATION, `/docs/${encodeId(id)}/versions`, { method: "GET" });
     if (!res.ok) throw await this.toError(res, id);
     // Parse `agent` explicitly (defensive against foreign/extra fields) rather than trusting
     // the wire payload's shape to already BE `VersionInfo[]` — and omit it from the returned
@@ -455,7 +484,7 @@ export class RemoteBackend implements StorageBackend {
 
   async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
     const qs = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-    const res = await this.send(`/reserved/${name}${qs}`, { method: "GET" });
+    const res = await this.send(READ_OPERATION, `/reserved/${name}${qs}`, { method: "GET" });
     if (res.status === 404) return null;
     if (!res.ok) throw await this.toError(res, `${dir}/${name}`);
     const version = extractVersion(res, `GET /reserved/${name}`);
@@ -476,7 +505,7 @@ export class RemoteBackend implements StorageBackend {
     if (options.actor) headers["X-Actor"] = options.actor;
 
     const qs = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-    const res = await this.send(`/reserved/${name}${qs}`, {
+    const res = await this.send(mutationOperation(options.expectedVersion), `/reserved/${name}${qs}`, {
       method: "PUT",
       headers,
       body: JSON.stringify({ content }),
@@ -502,7 +531,7 @@ export class RemoteBackend implements StorageBackend {
     const headers: Record<string, string> = {};
     if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
 
-    const res = await this.send(`/docs/${encodeId(id)}`, { method: "DELETE", headers });
+    const res = await this.send(mutationOperation(options.expectedVersion), `/docs/${encodeId(id)}`, { method: "DELETE", headers });
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { deleted: boolean };
     return payload.deleted;
@@ -517,7 +546,7 @@ export class RemoteBackend implements StorageBackend {
   // exactly like docs.
 
   async readBlob(key: BlobKey): Promise<ReadBlobResult | null> {
-    const res = await this.send(`/blobs/${encodeBlobKey(key)}`, { method: "GET" });
+    const res = await this.send(READ_OPERATION, `/blobs/${encodeBlobKey(key)}`, { method: "GET" });
     if (res.status === 404) return null;
     if (!res.ok) throw await this.toError(res, key);
     const version = extractVersion(res, `GET /blobs/${key}`);
@@ -539,7 +568,7 @@ export class RemoteBackend implements StorageBackend {
     else if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
     if (options.actor) headers["X-Actor"] = options.actor;
 
-    const res = await this.send(`/blobs/${encodeBlobKey(key)}`, {
+    const res = await this.send(mutationOperation(options.expectedVersion), `/blobs/${encodeBlobKey(key)}`, {
       method: "PUT",
       headers,
       body: bytes,
@@ -555,14 +584,14 @@ export class RemoteBackend implements StorageBackend {
     const headers: Record<string, string> = {};
     if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
 
-    const res = await this.send(`/blobs/${encodeBlobKey(key)}`, { method: "DELETE", headers });
+    const res = await this.send(mutationOperation(options.expectedVersion), `/blobs/${encodeBlobKey(key)}`, { method: "DELETE", headers });
     if (!res.ok) throw await this.toError(res, key);
     const payload = (await res.json()) as { deleted: boolean };
     return payload.deleted;
   }
 
   async existsBlob(key: BlobKey): Promise<boolean> {
-    const res = await this.send(`/blobs/${encodeBlobKey(key)}`, { method: "HEAD" });
+    const res = await this.send(READ_OPERATION, `/blobs/${encodeBlobKey(key)}`, { method: "HEAD" });
     if (res.status === 404) return false;
     if (!res.ok) throw await this.toError(res, key);
     return true;
@@ -576,7 +605,7 @@ export class RemoteBackend implements StorageBackend {
       if (prefix) params.set("prefix", prefix);
       if (cursor) params.set("cursor", cursor);
       const qs = params.toString();
-      const res = await this.send(`/blobs${qs ? `?${qs}` : ""}`, { method: "GET" });
+      const res = await this.send(READ_OPERATION, `/blobs${qs ? `?${qs}` : ""}`, { method: "GET" });
       if (!res.ok) throw await this.toError(res, prefix ?? "");
       const payload = (await res.json()) as { keys: BlobKey[]; next_cursor: string | null };
       keys.push(...payload.keys);
