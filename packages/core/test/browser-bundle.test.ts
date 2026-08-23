@@ -18,6 +18,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import ts from "typescript";
+import { resolvePackageExportTargets } from "../../../scripts/package-exports.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(here, "..");
@@ -78,7 +79,7 @@ function runtimeCoreSpecifiersIn(file: string, source: string): string[] {
 }
 
 function isBrowserConsumerSourceFile(name: string): boolean {
-  return /\.(?:[cm]?[jt]sx?)$/.test(name) && !name.includes(".test.");
+  return /\.(?:[cm]?[jt]sx?)$/.test(name) && !name.endsWith(".d.ts") && !name.includes(".test.") && !name.includes(".spec.");
 }
 
 async function walkSources(dir: string): Promise<string[]> {
@@ -102,10 +103,10 @@ async function browserRuntimeCoreSpecifiers(): Promise<string[]> {
 }
 
 function distEntryFor(specifier: string, manifest: CoreManifest): string {
-  const exportKey = specifier === CORE_PACKAGE ? "." : `./${specifier.slice(`${CORE_PACKAGE}/`.length)}`;
-  const target = manifest.exports?.[exportKey]?.default;
-  assert.ok(target, `${specifier} is a browser runtime import but not a declared core export`);
-  return path.resolve(PACKAGE_ROOT, target);
+  const row = resolvePackageExportTargets(manifest, CORE_PACKAGE, ["browser", "import"])
+    .find((candidate) => candidate.specifier === specifier);
+  assert.ok(row, `${specifier} is a browser runtime import but not a declared core export`);
+  return path.resolve(PACKAGE_ROOT, row.target);
 }
 
 test("browser core-import discovery ignores type-only imports and includes runtime subpaths", () => {
@@ -129,7 +130,25 @@ test("browser core-import discovery ignores type-only imports and includes runti
 test("browser core-import discovery excludes test sources", () => {
   assert.equal(isBrowserConsumerSourceFile("Widget.tsx"), true);
   assert.equal(isBrowserConsumerSourceFile("Widget.test.tsx"), false);
+  assert.equal(isBrowserConsumerSourceFile("Widget.spec.tsx"), false);
+  assert.equal(isBrowserConsumerSourceFile("Widget.d.ts"), false);
   assert.equal(isBrowserConsumerSourceFile("Widget.md"), false);
+});
+
+test("browser bundle proof selects the browser conditional export target", () => {
+  const manifest = {
+    exports: {
+      "./conditional": {
+        browser: { import: "./dist/browser-import.js", default: "./dist/browser-default.js" },
+        import: "./dist/node-import.js",
+        default: "./dist/default.js",
+      },
+    },
+  };
+  assert.equal(
+    resolvePackageExportTargets(manifest, CORE_PACKAGE, ["browser", "import"])[0]?.target,
+    "./dist/browser-import.js",
+  );
 });
 
 const manifest = JSON.parse(await readFile(path.join(PACKAGE_ROOT, "package.json"), "utf8")) as CoreManifest;

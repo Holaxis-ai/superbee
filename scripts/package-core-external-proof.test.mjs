@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { publicExportSpecifiers, resolvePackageExportTargets } from "./package-exports.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,28 +39,11 @@ async function filesUnder(root, relative = "") {
   return files.sort();
 }
 
-function publicExportSpecifiers(manifest) {
-  const exports = manifest.exports;
-  assert.ok(exports && typeof exports === "object", "core package must declare exports");
-  return Object.keys(exports)
-    .sort()
-    .map((entry) => {
-      assert.ok(entry === "." || entry.startsWith("./"), `unsupported core export key ${entry}`);
-      return entry === "." ? "@superbee/core" : `@superbee/core/${entry.slice(2)}`;
-    });
-}
-
-function declaredExportFiles(manifest) {
-  const files = new Set();
-  for (const [entry, condition] of Object.entries(manifest.exports ?? {})) {
-    assert.ok(condition && typeof condition === "object", `unsupported core export shape for ${entry}`);
-    for (const target of Object.values(condition)) {
-      assert.equal(typeof target, "string", `unsupported core export target for ${entry}`);
-      files.add(target.replace(/^\.\//, ""));
-    }
-  }
-  return [...files].sort();
-}
+const CORE_PACKAGE = "@superbee/core";
+const INSTALLED_CONSUMER_BRANCHES = [
+  { name: "import", conditions: ["node", "import"] },
+  { name: "require", conditions: ["node", "require"] },
+];
 
 test("core export proof derives its consumer surface from the manifest", () => {
   const manifest = {
@@ -68,13 +52,39 @@ test("core export proof derives its consumer surface from the manifest", () => {
       "./future": { types: "./dist/future.d.ts", default: "./dist/future.js" },
     },
   };
-  assert.deepEqual(publicExportSpecifiers(manifest), ["@superbee/core", "@superbee/core/future"]);
-  assert.deepEqual(declaredExportFiles(manifest), [
-    "dist/future.d.ts",
-    "dist/future.js",
-    "dist/index.d.ts",
-    "dist/index.js",
-  ]);
+  assert.deepEqual(publicExportSpecifiers(manifest, CORE_PACKAGE), ["@superbee/core", "@superbee/core/future"]);
+  assert.deepEqual(
+    resolvePackageExportTargets(
+      {
+        exports: {
+          "./conditional": {
+            import: "./dist/import.js",
+            require: "./dist/require.cjs",
+            default: "./dist/default.js",
+          },
+        },
+      },
+      CORE_PACKAGE,
+      ["node", "import"],
+    )[0]?.target,
+    "./dist/import.js",
+  );
+  assert.deepEqual(
+    resolvePackageExportTargets(
+      {
+        exports: {
+          "./conditional": {
+            import: "./dist/import.js",
+            require: "./dist/require.cjs",
+            default: "./dist/default.js",
+          },
+        },
+      },
+      CORE_PACKAGE,
+      ["node", "require"],
+    )[0]?.target,
+    "./dist/require.cjs",
+  );
 });
 
 test("npm is launched shell-free through its CLI JavaScript path", () => {
@@ -124,8 +134,12 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
 
     const installed = path.join(scratch, "node_modules", "@superbee", "core");
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
-    const publicExports = publicExportSpecifiers(installedManifest);
+    const publicExports = publicExportSpecifiers(installedManifest, CORE_PACKAGE);
     assert.ok(publicExports.length > 1, "fixture must exercise root and subpath exports");
+    const resolvedBranches = INSTALLED_CONSUMER_BRANCHES.map((branch) => ({
+      ...branch,
+      exports: resolvePackageExportTargets(installedManifest, CORE_PACKAGE, branch.conditions),
+    }));
 
     await writeFile(
       path.join(scratch, "consumer.ts"),
@@ -158,9 +172,15 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
 
     await writeFile(
       path.join(scratch, "consumer.mjs"),
-      `const publicExports = ${JSON.stringify(publicExports)};
-for (const specifier of publicExports) {
+      `import { createRequire } from "node:module";
+const branches = ${JSON.stringify(resolvedBranches)};
+for (const specifier of branches.find((branch) => branch.name === "import").exports.map((entry) => entry.specifier)) {
   const loaded = await import(specifier);
+  if (Object.keys(loaded).length === 0) throw new Error(specifier + " resolved to an empty module");
+}
+const require = createRequire(import.meta.url);
+for (const specifier of branches.find((branch) => branch.name === "require").exports.map((entry) => entry.specifier)) {
+  const loaded = require(specifier);
   if (Object.keys(loaded).length === 0) throw new Error(specifier + " resolved to an empty module");
 }
 `,
@@ -171,8 +191,13 @@ for (const specifier of publicExports) {
     assert.deepEqual(installedManifest.files, ["dist"]);
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
-    for (const file of declaredExportFiles(installedManifest)) {
-      assert.ok(installedFiles.includes(file), `declared core export file is missing from package: ${file}`);
+    for (const branch of resolvedBranches) {
+      for (const entry of branch.exports) {
+        assert.ok(
+          installedFiles.includes(entry.target.replace(/^\.\//, "")),
+          `${branch.name} export target is missing from package: ${entry.target}`,
+        );
+      }
     }
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;

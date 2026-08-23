@@ -124,6 +124,7 @@ function sourceBypassViolationsIn(file: string, source: string): string[] {
   const violations: string[] = [];
   const urls = new Map<string, string>();
   const requireFactories = new Set<string>();
+  const requireFactoryNamespaces = new Set<string>();
   const requireAliases = new Set<string>();
   const flag = (node: ts.Node, specifier: ts.Expression): void => {
     const coreSpecifier = coreSourceSpecifierInExpression(file, specifier, urls);
@@ -133,7 +134,16 @@ function sourceBypassViolationsIn(file: string, source: string): string[] {
   };
 
   const isCreateRequireCall = (expression: ts.Expression): boolean =>
-    ts.isCallExpression(expression) && ts.isIdentifier(expression.expression) && requireFactories.has(expression.expression.text);
+    ts.isCallExpression(expression) &&
+    (
+      (ts.isIdentifier(expression.expression) && requireFactories.has(expression.expression.text)) ||
+      (
+        ts.isPropertyAccessExpression(expression.expression) &&
+        ts.isIdentifier(expression.expression.expression) &&
+        requireFactoryNamespaces.has(expression.expression.expression.text) &&
+        expression.expression.name.text === "createRequire"
+      )
+    );
 
   const visit = (node: ts.Node): void => {
     if (
@@ -147,11 +157,14 @@ function sourceBypassViolationsIn(file: string, source: string): string[] {
       ts.isImportDeclaration(node) &&
       ts.isStringLiteralLike(node.moduleSpecifier) &&
       node.moduleSpecifier.text === "node:module" &&
-      node.importClause?.namedBindings !== undefined &&
-      ts.isNamedImports(node.importClause.namedBindings)
+      node.importClause?.namedBindings !== undefined
     ) {
-      for (const element of node.importClause.namedBindings.elements) {
-        if ((element.propertyName?.text ?? element.name.text) === "createRequire") requireFactories.add(element.name.text);
+      if (ts.isNamedImports(node.importClause.namedBindings)) {
+        for (const element of node.importClause.namedBindings.elements) {
+          if ((element.propertyName?.text ?? element.name.text) === "createRequire") requireFactories.add(element.name.text);
+        }
+      } else if (ts.isNamespaceImport(node.importClause.namedBindings)) {
+        requireFactoryNamespaces.add(node.importClause.namedBindings.name.text);
       }
     }
 
@@ -272,6 +285,9 @@ test("first-party source-bypass scanner rejects static core-internal channels", 
     'const coreUrl = new URL("../../core/src/remote-backend.js", import.meta.url);',
     'void import(coreUrl.href);',
     'void import(new URL("../../core/src/memory-backend.js", import.meta.url));',
+    'import * as moduleApi from "node:module";',
+    'const namespacedLoad = moduleApi.createRequire(import.meta.url);',
+    'namespacedLoad("../../core/src/backend.js");',
   ].join("\n");
 
   assert.deepEqual(sourceBypassViolationsIn(syntheticFile, source), [
@@ -283,5 +299,6 @@ test("first-party source-bypass scanner rejects static core-internal channels", 
     'packages/cli/test/source-bypass.ts:8 — core source-internal import "../../core/src/filesystem-lock.js"',
     'packages/cli/test/source-bypass.ts:10 — core source-internal import "../../core/src/remote-backend.js"',
     'packages/cli/test/source-bypass.ts:11 — core source-internal import "../../core/src/memory-backend.js"',
+    'packages/cli/test/source-bypass.ts:14 — core source-internal import "../../core/src/backend.js"',
   ]);
 });
