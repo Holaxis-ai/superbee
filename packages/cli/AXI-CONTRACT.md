@@ -16,7 +16,9 @@ return unstructured prose.
    channels are the exceptions. Output keys and ordering are part of the observable interface.
 2. **Make the common scan small and uniform.** List-like commands project a bounded, uniform row
    schema that covers the common case in one call. They report total result counts and provide an
-   explicit projection escape hatch rather than dumping bodies or arbitrary fields.
+   explicit projection escape hatch rather than dumping bodies or arbitrary fields. `link show`
+   reports both `outbound_count` and the derived `backlink_count`; its backlink rows stay inline
+   with the concept detail rather than requiring a second client-side count.
 3. **Make detail complete without flooding context.** A detail read exposes all relevant metadata,
    but previews large bodies only up to a documented bound and points to a byte channel for the
    complete value. A byte channel must keep receipts and errors off its stdout payload.
@@ -26,9 +28,12 @@ return unstructured prose.
 5. **Represent empty, partial, and unavailable states honestly.** An empty result is successful and
    explicit. Skipped, truncated, stale, unreadable, offline, and unavailable data must be named;
    they must not masquerade as an empty result or as fresh complete truth.
-6. **Translate failures into a small stable taxonomy.** Public failures use structured tool-native
-   codes and the stable `0/1/2/4/5/6` exit taxonomy. Dependency wording, stacks, and noisy transport
-   text do not become the interface. Raw stdout channels route their error envelope elsewhere.
+6. **Translate failures into a small stable taxonomy.** Ordinary CLI failures render a structured
+   TOON error envelope on stdout, even when `--json` was requested, and use tool-native codes with
+   the stable `0/1/2/4/5/6` exit taxonomy. Dependency wording, stacks, and noisy transport text do
+   not become the interface. For `doc read --out -`, stdout remains raw bytes and every error
+   envelope goes to stderr. For `mcp`, stdout remains the JSON-RPC transport and every CLI startup
+   or runtime error envelope goes to stderr.
 7. **Minimize ambient instruction and emit runnable, correctly scoped next steps.** Keep one live
    command/help authority; prefer defaults that cover supported hosts; name the selected bundle or
    remote when it matters; and emit commands that can actually run from the installed artifact.
@@ -63,11 +68,11 @@ fails when an anchor or its identifying text disappears.
 | ID | Required behavior | Help/source evidence | Behavioral proof |
 | --- | --- | --- | --- |
 | AXI-01 | Ordinary output is structured TOON with an explicit JSON hatch; raw/help channels are declared exceptions. | `packages/cli/src/commands/setup.ts::Emit compact JSON instead of TOON` | `packages/cli/test/setup.test.ts::setup defaults to TOON rather than JSON` |
-| AXI-02 | Lists use a uniform minimal schema, count matches, and explicit field projection. | `packages/cli/src/commands/list.ts::default schema is` | `packages/cli/test/list.test.ts::list (unscoped): stays the minimal` |
+| AXI-02 | Lists use a uniform minimal schema, count matches, and explicit field projection; `link show` includes outbound and derived backlink totals inline. | `packages/cli/src/commands/list.ts::default schema is` `packages/cli/src/commands/link.ts::outbound_count/backlink_count always report the true` | `packages/cli/test/list.test.ts::list (unscoped): stays the minimal` `packages/cli/test/link.test.ts::link show --limit caps the outbound/backlink lists; counts stay the true totals (A5)` `packages/cli/test/link.test.ts::link show: backlink rows carry the citing link's text` |
 | AXI-03 | Detail shows all fields, bounds body preview, and points to a stdout-safe byte channel. | `packages/cli/src/commands/doc/common.ts::truncates a large body (pointing at --out)` | `packages/cli/test/doc.test.ts::body truncation + --out byte-channel pointer` |
 | AXI-04 | Home computes whole-bundle orientation rather than requiring client-side joins. | `packages/cli/src/commands/home.ts::render the local orientation view` | `packages/cli/test/home.test.ts::A1.1 dashboard: bundle present, docs>0` |
 | AXI-05 | Empty/unreadable/offline states are explicit and distinct. | `packages/cli/src/commands/list.ts::result reports` | `packages/cli/test/list.test.ts::definitive empty state` |
-| AXI-06 | Errors have tool-native codes and the stable capped exit taxonomy. | `packages/cli/src/errors.ts::The 0/1/2/4/5/6 exit taxonomy is PRESERVED` | `packages/cli/test/error-boundary.test.ts::error matrix: a CliError instance passes through` |
+| AXI-06 | Ordinary errors are structured TOON on stdout with the capped exit taxonomy; raw `doc read --out -` and MCP JSON-RPC reserve stdout and route errors to stderr. | `packages/cli/src/output.ts::Errors are ALWAYS TOON regardless of --json` `packages/cli/src/errors.ts::The 0/1/2/4/5/6 exit taxonomy is PRESERVED` `packages/cli/src/commands/doc/read.ts::makes the channel invariant unconditional` `packages/cli/src/commands/mcp.ts::must be routed once to stderr` | `packages/cli/test/arity-built.test.ts::must keep its reserved non-error channel byte-clean` `packages/cli/test/error-boundary.test.ts::error matrix: a CliError instance passes through` `packages/cli/test/doc-cli-integration.test.ts::built CLI: raw doc-read channels route early missing-id and unknown-option envelopes only to stderr` `packages/cli/test/mcp.test.ts::mcp routes every pre-initialize failure to stderr and marks it handled` `packages/cli/test/mcp-stdio.test.ts::built npm CLI keeps MCP stdout byte-empty for usage and bundle startup failures` |
 | AXI-07 | Next steps are small, scoped, runnable; hooks cover all hosts with exact ownership. | `packages/cli/src/commands/hook.ts::Claude Code, Codex, AND OpenCode` | `packages/cli/test/session-start.test.ts::into all three runtimes; status/uninstall agree` |
 | AXI-08 | Bare invocation renders live orientation before the manual. | `packages/cli/src/commands/home.ts::superbee home — render the local orientation view` | `packages/cli/test/home.test.ts::identity -> bundle -> commands` |
 | AXI-09 | Repeated rows expose caps, counts, and a complete-result escape. | `packages/cli/src/commands/list.ts::0 = unlimited` | `packages/cli/test/list.test.ts::count=total, shown=cap` |

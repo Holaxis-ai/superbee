@@ -42,6 +42,26 @@ function assertEvidenceRows(rows: readonly string[], expectedIds: readonly strin
   }
 }
 
+function evidenceKeys(cells: readonly string[]): string[] {
+  return evidenceRefs(cells).map(({ path, needle }) => `${path}::${needle}`);
+}
+
+function namedTestBlock(relativePath: string, name: string): string {
+  const source = readProjectFile(relativePath);
+  const marker = `test(${JSON.stringify(name)}`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `proof test '${name}' disappeared from ${relativePath}`);
+  const next = source.indexOf("\ntest(", start + marker.length);
+  return source.slice(start, next === -1 ? source.length : next);
+}
+
+function assertNamedTestContains(relativePath: string, name: string, needles: readonly string[]): void {
+  const block = namedTestBlock(relativePath, name);
+  for (const needle of needles) {
+    assert.ok(block.includes(needle), `proof '${needle}' disappeared from test '${name}' in ${relativePath}`);
+  }
+}
+
 test("AXI contract has ten ordered rows, live proof anchors, and a separate idempotency invariant", () => {
   const contract = readProjectFile("packages/cli/AXI-CONTRACT.md");
   const numberedRows = contract.split("\n").filter((line) => /^\| AXI-\d{2} \|/.test(line));
@@ -59,6 +79,100 @@ test("AXI contract has ten ordered rows, live proof anchors, and a separate idem
   assert.match(repositoryReadme, /\[SECURITY\.md\]\(SECURITY\.md\)/);
   assert.match(contract, /\[wire protocol\]\(\.\.\/\.\.\/docs\/WIRE-PROTOCOL\.md\)/);
   assert.match(contract, /\[security policy\]\(\.\.\/\.\.\/SECURITY\.md\)/);
+
+  const normalized = contract.replace(/\s+/g, " ");
+  assert.match(
+    normalized,
+    /`link show` reports both `outbound_count` and the derived `backlink_count`; its backlink rows stay inline with the concept detail/,
+  );
+  assert.match(
+    normalized,
+    /Ordinary CLI failures render a structured TOON error envelope on stdout, even when `--json` was requested, and use tool-native codes with the stable `0\/1\/2\/4\/5\/6` exit taxonomy/,
+  );
+  assert.match(
+    normalized,
+    /For `doc read --out -`, stdout remains raw bytes and every error envelope goes to stderr/,
+  );
+  assert.match(
+    normalized,
+    /For `mcp`, stdout remains the JSON-RPC transport and every CLI startup or runtime error envelope goes to stderr/,
+  );
+
+  const rowsById = new Map(numberedRows.map((line) => {
+    const cells = tableCells(line);
+    return [cells[0]!, cells] as const;
+  }));
+  assert.deepEqual(evidenceKeys(rowsById.get("AXI-02")!), [
+    "packages/cli/src/commands/list.ts::default schema is",
+    "packages/cli/src/commands/link.ts::outbound_count/backlink_count always report the true",
+    "packages/cli/test/list.test.ts::list (unscoped): stays the minimal",
+    "packages/cli/test/link.test.ts::link show --limit caps the outbound/backlink lists; counts stay the true totals (A5)",
+    "packages/cli/test/link.test.ts::link show: backlink rows carry the citing link's text",
+  ]);
+  assert.deepEqual(evidenceKeys(rowsById.get("AXI-06")!), [
+    "packages/cli/src/output.ts::Errors are ALWAYS TOON regardless of --json",
+    "packages/cli/src/errors.ts::The 0/1/2/4/5/6 exit taxonomy is PRESERVED",
+    "packages/cli/src/commands/doc/read.ts::makes the channel invariant unconditional",
+    "packages/cli/src/commands/mcp.ts::must be routed once to stderr",
+    "packages/cli/test/arity-built.test.ts::must keep its reserved non-error channel byte-clean",
+    "packages/cli/test/error-boundary.test.ts::error matrix: a CliError instance passes through",
+    "packages/cli/test/doc-cli-integration.test.ts::built CLI: raw doc-read channels route early missing-id and unknown-option envelopes only to stderr",
+    "packages/cli/test/mcp.test.ts::mcp routes every pre-initialize failure to stderr and marks it handled",
+    "packages/cli/test/mcp-stdio.test.ts::built npm CLI keeps MCP stdout byte-empty for usage and bundle startup failures",
+  ]);
+
+  assertNamedTestContains(
+    "packages/cli/test/link.test.ts",
+    "link show --limit caps the outbound/backlink lists; counts stay the true totals (A5)",
+    ["assert.equal(shown.outbound_count, 4", "count is the true total"],
+  );
+  assertNamedTestContains(
+    "packages/cli/test/link.test.ts",
+    "link show: backlink rows carry the citing link's text (typed-edge reading v0, rung a)",
+    ["assert.equal(shown.backlink_count, 1)", "assert.deepEqual(shown.backlinks"],
+  );
+
+  const arityProof = readProjectFile("packages/cli/test/arity-built.test.ts");
+  assert.match(arityProof, /const channel = row\.errorChannel \?\? "stdout"/);
+  assert.match(arityProof, /assert\.equal\(reserved, "", `\$\{path\} must keep its reserved non-error channel byte-clean`\)/);
+  assert.match(arityProof, /assert\.notEqual\(output, "", `\$\{path\} must emit a structured error`\)/);
+
+  const errorProof = readProjectFile("packages/cli/test/error-boundary.test.ts");
+  for (const exit of [1, 2, 4, 5, 6]) {
+    assert.match(errorProof, new RegExp(`exit: ${exit}([ },])`), `exit ${exit} disappeared from the behavioral matrix`);
+  }
+  assert.match(errorProof, /assert\.equal\(exit\.exitCode, row\.exit\)/);
+  assert.match(errorProof, /assert\.equal\(exit\.envelope\.error\.code, row\.code\)/);
+
+  assertNamedTestContains(
+    "packages/cli/test/doc-cli-integration.test.ts",
+    "built CLI: raw doc-read channels route early missing-id and unknown-option envelopes only to stderr",
+    [
+      '["doc", "read", "concepts/a", "--out=-", "--unknown"]',
+      'assert.equal(result.stdout, "", "stdout remains a pure, empty byte channel on early failure")',
+      "assert.match(result.stderr, /code: USAGE/)",
+      "assert.equal(result.status, 2",
+    ],
+  );
+  assertNamedTestContains(
+    "packages/cli/test/mcp.test.ts",
+    "mcp routes every pre-initialize failure to stderr and marks it handled",
+    [
+      'name: "server startup"',
+      'code: "RUNTIME"',
+      'assert.equal(stdout, "", `${row.name}: protocol stdout`)',
+      "assert.match(stderr, /^error:\\n/",
+    ],
+  );
+  assertNamedTestContains(
+    "packages/cli/test/mcp-stdio.test.ts",
+    "built npm CLI keeps MCP stdout byte-empty for usage and bundle startup failures",
+    [
+      'assert.equal(result.stdout, "", `${row.name}: JSON-RPC stdout must remain pristine`)',
+      "assert.match(result.stderr, /^error:\\n/",
+      "assert.equal(result.code, row.code",
+    ],
+  );
 });
 
 test("wire contract pins the complete implemented route/method table and every proof anchor", () => {
