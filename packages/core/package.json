@@ -59,6 +59,7 @@
     "@superbee/server": "*",
     "@types/js-yaml": "3.12.10",
     "@types/node": "^22.0.0",
+    "esbuild": "0.25.12",
     "typescript": "^5.4.0"
   }
 }

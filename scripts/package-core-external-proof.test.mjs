@@ -38,6 +38,29 @@ async function filesUnder(root, relative = "") {
   return files.sort();
 }
 
+function publicExportSpecifiers(manifest) {
+  const exports = manifest.exports;
+  assert.ok(exports && typeof exports === "object", "core package must declare exports");
+  return Object.keys(exports)
+    .sort()
+    .map((entry) => {
+      assert.ok(entry === "." || entry.startsWith("./"), `unsupported core export key ${entry}`);
+      return entry === "." ? "@superbee/core" : `@superbee/core/${entry.slice(2)}`;
+    });
+}
+
+function declaredExportFiles(manifest) {
+  const files = new Set();
+  for (const [entry, condition] of Object.entries(manifest.exports ?? {})) {
+    assert.ok(condition && typeof condition === "object", `unsupported core export shape for ${entry}`);
+    for (const target of Object.values(condition)) {
+      assert.equal(typeof target, "string", `unsupported core export target for ${entry}`);
+      files.add(target.replace(/^\.\//, ""));
+    }
+  }
+  return [...files].sort();
+}
+
 test("npm is launched shell-free through its CLI JavaScript path", () => {
   const npmCli = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
   assert.deepEqual(npmInvocation(["pack", "--json"], { npm_execpath: npmCli }), {
@@ -87,9 +110,16 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
       scratch,
     );
 
+    const installed = path.join(scratch, "node_modules", "@superbee", "core");
+    const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
+    const publicExports = publicExportSpecifiers(installedManifest);
+    assert.ok(publicExports.length > 1, "fixture must exercise root and subpath exports");
+
     await writeFile(
       path.join(scratch, "consumer.ts"),
-      `import {
+      `${publicExports.map((specifier) => `import ${JSON.stringify(specifier)};`).join("\n")}
+
+import {
   FilesystemBackend,
   MemoryBackend,
   RemoteBackend,
@@ -160,6 +190,12 @@ import {
 } from "@superbee/core";
 import { freshnessHorizonMs } from "@superbee/core/kinds";
 
+const publicExports = ${JSON.stringify(publicExports)};
+for (const specifier of publicExports) {
+  const loaded = await import(specifier);
+  if (Object.keys(loaded).length === 0) throw new Error(specifier + " resolved to an empty module");
+}
+
 const root = await mkdtemp(path.join(tmpdir(), "core-packed-runtime-"));
 try {
   const bundle = await initBundle(root);
@@ -193,14 +229,13 @@ try {
     );
     await run(process.execPath, ["consumer.mjs"], scratch);
 
-    const installed = path.join(scratch, "node_modules", "@superbee", "core");
-    const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
     assert.equal(installedManifest.private, true);
     assert.deepEqual(installedManifest.files, ["dist"]);
-    assert.ok(installedManifest.exports["."]);
-    assert.ok(installedManifest.exports["./kinds"]);
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
+    for (const file of declaredExportFiles(installedManifest)) {
+      assert.ok(installedFiles.includes(file), `declared core export file is missing from package: ${file}`);
+    }
 
     const importPattern = /(?:from\s+|import\s*\()\s*["']([^"']+)["']/g;
     for (const file of installedFiles.filter((name) => /\.(?:js|d\.ts)$/.test(name))) {

@@ -6,12 +6,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { initBundle, parseLinks, readDoc, writeDoc } from "@superbee/core";
-import { snapshotBundleCommit, stageAndCommit } from "@superbee/board-git";
 import {
-  acquireFilesystemMutationLock,
   filesystemMutationLockPath,
-} from "../../core/src/filesystem-lock.js";
+  initBundle,
+  parseLinks,
+  readDoc,
+  withFilesystemMutationLock,
+  writeDoc,
+} from "@superbee/core";
+import { snapshotBundleCommit, stageAndCommit } from "@superbee/board-git";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOADER = path.join(HERE, "ts-loader.mjs");
@@ -116,15 +119,19 @@ test("independent link-add processes converge losslessly through one filesystem 
 
     // Hold the source's physical lock before the independent processes begin. Their IPC
     // "attempting" signal proves they reached the mutation; no result may arrive until release.
-    const release = await acquireFilesystemMutationLock(path.join(root, "hub.md"), {
-      portableRoot: root,
-    });
+    let releaseLock!: () => void;
+    const lockHeld = withFilesystemMutationLock(
+      path.join(root, "hub.md"),
+      () => new Promise<void>((resolve) => (releaseLock = resolve)),
+      { portableRoot: root },
+    );
     for (const target of targets) children.push(spawnLinkChild(root, target));
     await eventually(Promise.all(children.map((child) => child.attempting)).then(() => undefined));
     await new Promise((resolve) => setTimeout(resolve, 75));
     assert.equal(children.some((child) => child.hasResult()), false, "every process must honor the held lock");
 
-    await release();
+    releaseLock();
+    await lockHeld;
     const results = await eventually(Promise.all(children.map((child) => child.result)));
     for (const result of results) {
       assert.equal(result.status, "fulfilled", String(result.message ?? ""));
@@ -161,17 +168,18 @@ test("sync staging cannot capture an active filesystem mutation lock", async () 
     );
 
     const target = path.join(root, "doc.md");
-    const release = await acquireFilesystemMutationLock(target, { portableRoot: root });
-    try {
-      const canonicalTarget = path.join(await fs.realpath(root), "doc.md");
-      const lockPath = filesystemMutationLockPath(canonicalTarget, root);
-      assert.ok(path.relative(root, lockPath).startsWith(".."), "lock must not live in the board worktree");
-      assert.equal(stageAndCommit(root).committed, true);
-      assert.deepEqual(git(root, ["ls-tree", "-r", "--name-only", "HEAD"]).split("\n"), ["doc.md", "index.md"]);
-      assert.doesNotMatch(git(root, ["show", "--format=", "--name-only", "HEAD"]), /agentstate|owner\.json/);
-    } finally {
-      await release();
-    }
+    await withFilesystemMutationLock(
+      target,
+      async () => {
+        const canonicalTarget = path.join(await fs.realpath(root), "doc.md");
+        const lockPath = filesystemMutationLockPath(canonicalTarget, root);
+        assert.ok(path.relative(root, lockPath).startsWith(".."), "lock must not live in the board worktree");
+        assert.equal(stageAndCommit(root).committed, true);
+        assert.deepEqual(git(root, ["ls-tree", "-r", "--name-only", "HEAD"]).split("\n"), ["doc.md", "index.md"]);
+        assert.doesNotMatch(git(root, ["show", "--format=", "--name-only", "HEAD"]), /agentstate|owner\.json/);
+      },
+      { portableRoot: root },
+    );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -190,20 +198,21 @@ test("greenfield establishment cannot capture an abandoned filesystem mutation l
     await fs.writeFile(path.join(bundle, "doc.md"), "---\ntype: Doc\ntitle: One\n---\n\nOne.\n");
 
     const canonicalTarget = path.join(await fs.realpath(bundle), "doc.md");
-    const release = await acquireFilesystemMutationLock(canonicalTarget, { portableRoot: bundle });
     const lockPath = filesystemMutationLockPath(canonicalTarget, bundle);
-    try {
-      const ownerPath = path.join(lockPath, "owner.json");
-      const owner = JSON.parse(await fs.readFile(ownerPath, "utf8")) as Record<string, unknown>;
-      owner.pid = 999_999;
-      await fs.writeFile(ownerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
+    await withFilesystemMutationLock(
+      canonicalTarget,
+      async () => {
+        const ownerPath = path.join(lockPath, "owner.json");
+        const owner = JSON.parse(await fs.readFile(ownerPath, "utf8")) as Record<string, unknown>;
+        owner.pid = 999_999;
+        await fs.writeFile(ownerPath, `${JSON.stringify(owner)}\n`, { mode: 0o600 });
 
-      const snapshot = snapshotBundleCommit(root, bundle);
-      assert.deepEqual(git(root, ["ls-tree", "-r", "--name-only", snapshot.sha]).split("\n"), ["doc.md", "index.md"]);
-      assert.ok(path.relative(bundle, lockPath).startsWith(".."), "abandoned lock must remain outside the snapshot root");
-    } finally {
-      await release();
-    }
+        const snapshot = snapshotBundleCommit(root, bundle);
+        assert.deepEqual(git(root, ["ls-tree", "-r", "--name-only", snapshot.sha]).split("\n"), ["doc.md", "index.md"]);
+        assert.ok(path.relative(bundle, lockPath).startsWith(".."), "abandoned lock must remain outside the snapshot root");
+      },
+      { portableRoot: bundle },
+    );
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
