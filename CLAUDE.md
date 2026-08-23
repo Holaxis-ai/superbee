@@ -512,9 +512,16 @@ bundle-relative**.
     full gate locally; re-run locally only what the review has reason to distrust.
 - **Security disclosure:** a defect that is (a) exploitable by someone other than the
   victim AND (b) present on main goes through a private GitHub Security Advisory —
-  fix privately, merge, then disclose — never a public PR comment or board doc.
-  Pre-merge review findings stay public by default. The board is public: the
-  write-time scrub discipline covers vulnerability details, not just secrets.
+  fix privately, merge, then disclose. The project bundle is private, but bundle privacy
+  is not advisory isolation: the bundle may carry severity, evidence class, ownership,
+  status, acceptance gates, and opaque advisory links, while exploit mechanics,
+  reproductions, affected-code detail, and private patch coordination remain advisory-only.
+  Do not duplicate those details in board docs, ordinary parent-agent transcripts, PR
+  comments, or public issues. Security-review handoffs are opaque by default: a
+  parent-visible result reports only that a private finding exists plus its severity,
+  evidence class, and advisory receipt. Once an authorized advisory exists, detailed
+  evidence moves directly into it rather than through the parent result envelope.
+  Pre-merge review findings stay public by default unless they cross this security boundary.
 - **Records live on the PROJECT BUNDLE — the product tracks its own build.** Unit-close means: update `tasks/<unit>` (bare
   `doc update tasks/<unit> --progress_status …`, with the description carrying the record — what shipped, commit hash,
   honest caveats) and, when the shipped list or sequence changed, the bundle's `roadmap`
