@@ -7,6 +7,7 @@ import {
   KindConformanceError,
   mutateDocument,
 } from "../src/document-mutation.js";
+import { InvalidInputError } from "../src/errors.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { validateAgainstKind } from "../src/kinds.js";
 import { defaultActor, VersionConflict } from "../src/versioning.js";
@@ -193,7 +194,7 @@ test("semantic patch no-op ignores an auto-refreshed timestamp and returns the u
   assert.equal((await backend.versions("notes/a")).length, 1);
 });
 
-test("v0.2 mutation persists portable mutation attribution without inventing generated, timestamp, or legacy actor metadata", async () => {
+test("v0.2 mutation persists portable mutation attribution and its standard meaningful-change clock", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const result = await mutateDocument({
@@ -212,6 +213,7 @@ test("v0.2 mutation persists portable mutation attribution without inventing gen
     type: "Note",
     title: "A",
     superbee_updated_by: "openai/codex",
+    generated: { by: "process:superbee", at: "2026-08-14T12:00:00Z" },
   });
   assert.equal((await backend.versions("notes/a"))[0]!.actor, "openai/codex");
 });
@@ -263,7 +265,7 @@ test("freshness clock creation stays edition-aware and does not add v0.2 provena
   assert.equal(result.doc.frontmatter.generated, undefined);
 });
 
-test("v0.2 freshness Kinds requiring timestamp use that one clock without invented provenance", async () => {
+test("v0.2 freshness Kinds requiring timestamp retain that extension alongside the standard clock", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const kind: KindConvention = {
@@ -289,10 +291,13 @@ test("v0.2 freshness Kinds requiring timestamp use that one clock without invent
   });
 
   assert.equal(result.doc.frontmatter.timestamp, "2026-08-20T13:15:00.000Z");
-  assert.equal(result.doc.frontmatter.generated, undefined);
+  assert.deepEqual(result.doc.frontmatter.generated, {
+    by: "process:superbee",
+    at: "2026-08-20T13:15:00.000Z",
+  });
 });
 
-test("v0.2 freshness creation preserves an explicit usable legacy clock without inventing provenance", async () => {
+test("v0.2 freshness creation preserves an explicit usable legacy clock alongside standard provenance", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const result = await mutateDocument({
@@ -313,7 +318,10 @@ test("v0.2 freshness creation preserves an explicit usable legacy clock without 
   });
 
   assert.equal(result.doc.frontmatter.timestamp, "2026-07-01T00:00:00.000Z");
-  assert.equal(result.doc.frontmatter.generated, undefined);
+  assert.deepEqual(result.doc.frontmatter.generated, {
+    by: "process:superbee",
+    at: "2026-08-20T13:15:00.000Z",
+  });
 });
 
 test("mutation edition is authoritative from the bundle root and cannot be overridden by a caller hint", async () => {
@@ -961,7 +969,7 @@ test("v0.2 persistActor without an actor does not synthesize either attribution 
   assert.equal(Object.prototype.hasOwnProperty.call(result.doc.frontmatter, "superbee_updated_by"), false);
 });
 
-test("a real unattributed v0.2 mutation clears stale portable attribution while a no-op preserves bytes", async () => {
+test("an unattributed v0.2 mutation preserves existing portable attribution and no-op bytes", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const created = await mutateDocument({
@@ -998,7 +1006,7 @@ test("a real unattributed v0.2 mutation clears stale portable attribution while 
     buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
   });
   assert.equal(changed.changed, true);
-  assert.equal(changed.doc.frontmatter.superbee_updated_by, undefined);
+  assert.equal(changed.doc.frontmatter.superbee_updated_by, "alice");
   assert.equal((await backend.versions("notes/a"))[0]?.actor, defaultActor());
 });
 
@@ -1148,7 +1156,7 @@ test("pin: compareTimestamp:true makes a timestamp-only refresh a REAL write", a
 
 // kills: document-mutation.ts:129:7 LogicalOperator #834
 // kills: document-mutation.ts:150:45 BooleanLiteral #858
-test("pin: actor is NOT persisted into frontmatter unless persistActor is set", async () => {
+test("core defaults persist a supplied actor into frontmatter without a caller opt-in", async () => {
   const backend = new MemoryBackend();
   const bundle = bundleFor(backend);
   const result = await mutateDocument({
@@ -1160,8 +1168,78 @@ test("pin: actor is NOT persisted into frontmatter unless persistActor is set", 
     actor: "alice",
     buildCandidate: () => candidate("A", "body"),
   });
-  assert.equal(Object.prototype.hasOwnProperty.call(result.doc.frontmatter, "actor"), false);
+  assert.equal(result.doc.frontmatter.actor, "alice");
   assert.equal((await backend.versions("notes/a"))[0]?.actor, "alice"); // attribution still rides the WRITE, not the doc
+});
+
+test("compatibility metadata mode explicitly preserves legacy actor and clock behavior", async () => {
+  const backend = new MemoryBackend();
+  const bundle = bundleFor(backend);
+  await writeDocVersioned(bundle, {
+    id: "notes/a",
+    frontmatter: { type: "Note", title: "A", timestamp: "2026-07-16T00:00:00.000Z" },
+    body: "before",
+  });
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "alice/codex",
+    metadataMode: "compatibility",
+    now: () => "2026-08-14T12:00:00.000Z",
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.doc.frontmatter.actor, undefined);
+  assert.equal(result.doc.frontmatter.timestamp, "2026-07-16T00:00:00.000Z");
+  assert.equal((await backend.versions("notes/a"))[0]?.actor, "alice/codex");
+});
+
+test("compatibility metadata mode preserves a v0.2 document without generated or portable actor metadata", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  await writeDocVersioned(bundle, {
+    id: "notes/a",
+    frontmatter: { type: "Note", title: "A" },
+    body: "before",
+  });
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "alice/codex",
+    metadataMode: "compatibility",
+    now: () => "2026-08-14T12:00:00.000Z",
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.equal(result.doc.frontmatter.superbee_updated_by, undefined);
+  assert.equal(result.doc.frontmatter.generated, undefined);
+});
+
+test("unknown metadata mode is rejected before the mutation reads or writes", async () => {
+  const backend = new MemoryBackend();
+  await assert.rejects(
+    () => mutateDocument({
+      bundle: bundleFor(backend),
+      id: "notes/a",
+      mode: "create-only",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      metadataMode: "unexpected" as never,
+      buildCandidate: () => candidate("A", "body"),
+    }),
+    (error: unknown) => error instanceof InvalidInputError && /metadata mode/.test(error.message),
+  );
+  assert.deepEqual(await backend.list(), []);
 });
 
 // kills: document-mutation.ts:203:22 ConditionalExpression #910

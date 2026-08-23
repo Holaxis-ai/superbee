@@ -230,7 +230,6 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
       strict: true,
       helpOnKindReject: `${cliInvocation()} kinds`,
       actor,
-      persistActor: true,
       onPersisted: boardPostPersistHook(attribution, actor),
       buildCandidate: (_existing, context) => ({
         frontmatter: {
@@ -275,7 +274,6 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
         strict: false,
         helpOnKindReject: `${cliInvocation()} kinds`,
         actor,
-        persistActor: true,
         onPersisted: boardPostPersistHook(attribution, actor),
         buildCandidate: (existingDoc, context) => {
           // patch mode guarantees the target exists; narrow it so the required Frontmatter.type carries over.

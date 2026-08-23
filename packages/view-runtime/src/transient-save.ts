@@ -252,7 +252,6 @@ export async function persistTransientView(
           registry,
           strict: true,
           actor: options.actor,
-          persistActor: true,
           now: () => mutationNow,
           buildCandidate: () => ({
             frontmatter: desiredRegistry.frontmatter,

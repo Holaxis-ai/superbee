@@ -141,6 +141,7 @@ export {
 export type {
   DocumentMutationCandidate,
   DocumentMutationContext,
+  DocumentMutationMetadataMode,
   DocumentMutationMode,
   DocumentMutationResult,
   MutateDocumentOptions,

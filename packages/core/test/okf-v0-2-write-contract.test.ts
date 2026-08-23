@@ -15,7 +15,9 @@ import type { KindRegistry } from "../src/kinds.js";
 import type { Bundle } from "../src/types.js";
 
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
-const INDEX = "---\nokf_version: '0.2'\n---\n# v0.2 contract\n";
+function indexFor(okfVersion: "0.1" | "0.2"): string {
+  return `---\nokf_version: '${okfVersion}'\n---\n# ${okfVersion} contract\n`;
+}
 
 interface Harness {
   name: string;
@@ -23,15 +25,16 @@ interface Harness {
   cleanup: () => Promise<void>;
 }
 
-async function harnesses(): Promise<Harness[]> {
+async function harnesses(okfVersion: "0.1" | "0.2" = "0.2"): Promise<Harness[]> {
+  const index = indexFor(okfVersion);
   const root = await mkdtemp(path.join(tmpdir(), "superbee-okf-v02-write-"));
-  await writeFile(path.join(root, "index.md"), INDEX, "utf8");
+  await writeFile(path.join(root, "index.md"), index, "utf8");
 
   const memoryBackend = new MemoryBackend();
-  await memoryBackend.writeReserved("", "index.md", INDEX);
+  await memoryBackend.writeReserved("", "index.md", index);
 
   const serverBackend = new MemoryBackend();
-  await serverBackend.writeReserved("", "index.md", INDEX);
+  await serverBackend.writeReserved("", "index.md", index);
   const serverBundle: Bundle = { root: "mem://okf-v02-server", backend: serverBackend };
   const router = createRouter(serverBundle);
   const remote = new RemoteBackend({
@@ -59,22 +62,21 @@ test("v0.2 create, mutate, no-op, conflict, and final receipts agree across all 
         registry: EMPTY_REGISTRY,
         strict: false,
         actor: "openai/codex",
-        persistActor: true,
-        now: () => "2026-08-14T10:00:00Z",
+        now: () => "2026-08-14T10:00:00.000Z",
         buildCandidate: () => ({
           frontmatter: {
             type: "Note",
             title: "Agreement",
-            generated: { by: "superbee/1.0.0" },
             stale_after: "2026-12-31",
           },
           body: "before\n",
         }),
       });
       assert.deepEqual(created.doc.frontmatter.generated, {
-        by: "superbee/1.0.0",
-        at: "2026-08-14T10:00:00Z",
+        by: "process:superbee",
+        at: "2026-08-14T10:00:00.000Z",
       });
+      assert.equal(created.doc.frontmatter.superbee_updated_by, "openai/codex");
 
       const changed = await mutateDocument({
         bundle: harness.bundle,
@@ -82,10 +84,16 @@ test("v0.2 create, mutate, no-op, conflict, and final receipts agree across all 
         mode: "patch",
         registry: EMPTY_REGISTRY,
         strict: false,
-        now: () => "2026-08-14T11:00:00Z",
+        actor: "human:reviewer",
+        now: () => "2026-08-14T11:00:00.000Z",
         buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after\n" }),
       });
       assert.equal(changed.changed, true);
+      assert.deepEqual(changed.doc.frontmatter.generated, {
+        by: "process:superbee",
+        at: "2026-08-14T11:00:00.000Z",
+      });
+      assert.equal(changed.doc.frontmatter.superbee_updated_by, "human:reviewer");
 
       const noop = await mutateDocument({
         bundle: harness.bundle,
@@ -93,7 +101,7 @@ test("v0.2 create, mutate, no-op, conflict, and final receipts agree across all 
         mode: "patch",
         registry: EMPTY_REGISTRY,
         strict: false,
-        now: () => "2026-08-14T12:00:00Z",
+        now: () => "2026-08-14T12:00:00.000Z",
         buildCandidate: (existing) => ({
           frontmatter: {
             ...existing!.frontmatter,
@@ -152,7 +160,6 @@ test("v0.2 mutation attribution agrees across retained history and the filesyste
         registry: EMPTY_REGISTRY,
         strict: false,
         actor: "alice",
-        persistActor: true,
         buildCandidate: () => ({ frontmatter: { type: "Note", title: "Attributed" }, body: "body\n" }),
       });
 
@@ -162,5 +169,63 @@ test("v0.2 mutation attribution agrees across retained history and the filesyste
     }
   } finally {
     await Promise.all(adapters.map((harness) => harness.cleanup()));
+  }
+});
+
+test("v0.1 meaningful edits advance timestamp and persist supplied actors across all adapters", async () => {
+  const rows: Array<{ name: string; doc: unknown; actor: string | undefined }> = [];
+  const adapters = await harnesses("0.1");
+  try {
+    for (const harness of adapters) {
+      const created = await mutateDocument({
+        bundle: harness.bundle,
+        id: "notes/legacy",
+        mode: "create-only",
+        registry: EMPTY_REGISTRY,
+        strict: false,
+        actor: "alice/codex",
+        now: () => "2026-08-14T10:00:00.000Z",
+        buildCandidate: () => ({ frontmatter: { type: "Note", title: "Legacy" }, body: "before\n" }),
+      });
+      const changed = await mutateDocument({
+        bundle: harness.bundle,
+        id: "notes/legacy",
+        mode: "patch",
+        registry: EMPTY_REGISTRY,
+        strict: false,
+        actor: "bob/codex",
+        now: () => "2026-08-14T11:00:00.000Z",
+        buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after\n" }),
+      });
+      const noop = await mutateDocument({
+        bundle: harness.bundle,
+        id: "notes/legacy",
+        mode: "patch",
+        registry: EMPTY_REGISTRY,
+        strict: false,
+        actor: "carol/codex",
+        now: () => "2026-08-14T12:00:00.000Z",
+        buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: existing!.body }),
+      });
+
+      assert.equal(created.doc.frontmatter.actor, "alice/codex", harness.name);
+      assert.equal(changed.doc.frontmatter.actor, "bob/codex", harness.name);
+      assert.equal(changed.doc.frontmatter.timestamp, "2026-08-14T11:00:00.000Z", harness.name);
+      assert.equal(noop.changed, false, harness.name);
+      assert.equal(noop.version, changed.version, harness.name);
+      rows.push({
+        name: harness.name,
+        doc: (await readDocVersioned(harness.bundle, "notes/legacy")).doc,
+        actor: (await docVersions(harness.bundle, "notes/legacy"))[0]?.actor,
+      });
+    }
+  } finally {
+    await Promise.all(adapters.map((harness) => harness.cleanup()));
+  }
+
+  const baseline = rows[0]!;
+  for (const row of rows.slice(1)) {
+    assert.deepEqual(row.doc, baseline.doc, `${row.name} final document`);
+    assert.equal(row.actor, baseline.actor, `${row.name} final actor`);
   }
 });

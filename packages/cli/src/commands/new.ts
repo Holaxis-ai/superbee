@@ -601,7 +601,6 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
           ? ` --remote ${shellArg(preRemote)}`
           : ""),
     actor,
-    persistActor: true,
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.
     onPersisted: boardPostPersistHook(attribution, actor),
     buildCandidate: (_existing, context) => {

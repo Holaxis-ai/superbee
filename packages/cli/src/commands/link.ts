@@ -398,7 +398,6 @@ export async function addLink(
     helpOnKindReject: `${cliInvocation()} kinds`,
     remoteUrl: opts.remoteUrl,
     actor: opts.actor,
-    persistActor: true,
     maxAttempts: LINK_ADD_MAX_ATTEMPTS,
     buildCandidate: (source, context) => {
       const existing = source!;

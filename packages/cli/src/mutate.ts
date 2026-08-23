@@ -56,7 +56,6 @@ export interface MutateDocOptions {
   compareTimestamp?: boolean;
   remoteUrl?: string;
   actor?: string;
-  persistActor?: boolean;
   expectedVersion?: Version;
   /** Best-effort CLI orchestration hook; it never changes mutation success. */
   onPersisted?: () => void | Promise<void>;
@@ -130,7 +129,6 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       maxAttempts: opts.maxAttempts,
       compareTimestamp: opts.compareTimestamp,
       actor: opts.actor,
-      persistActor: opts.persistActor,
       expectedVersion: opts.expectedVersion,
     });
 

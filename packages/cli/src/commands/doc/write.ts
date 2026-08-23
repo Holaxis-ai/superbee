@@ -167,7 +167,6 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     strict: Boolean(values.strict),
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,
-    persistActor: true,
     compareTimestamp: values.timestamp !== undefined,
     // Board self-attribution (PR C): fires only after a substantive persisted write — never a
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).

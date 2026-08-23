@@ -964,7 +964,6 @@ export class TrustedActionService {
         registry,
         strict: true,
         actor: this.actor!.trim(),
-        persistActor: true,
         expectedVersion: pending.action.expectedVersion,
         now: () => pending.timestamp,
         buildCandidate: (existing, context) => {

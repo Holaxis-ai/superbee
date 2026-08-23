@@ -33,13 +33,7 @@ export function persistMutationActor(
   frontmatter: Frontmatter,
   options: PersistMutationActorOptions,
 ): Frontmatter {
-  if (options.actor === undefined) {
-    if (options.okfVersion === "0.1" || !(SUPERBEE_UPDATED_BY_FIELD in frontmatter)) {
-      return frontmatter;
-    }
-    const { [SUPERBEE_UPDATED_BY_FIELD]: _previousActor, ...rest } = frontmatter;
-    return rest as Frontmatter;
-  }
+  if (options.actor === undefined) return frontmatter;
   if (options.okfVersion === "0.1") return { ...frontmatter, actor: options.actor };
   return {
     ...frontmatter,

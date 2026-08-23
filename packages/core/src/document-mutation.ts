@@ -39,6 +39,9 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 
 export type DocumentMutationMode = "create-only" | "overwrite" | "patch";
 
+/** Explicit migration posture for callers that must retain pre-core-metadata behavior. */
+export type DocumentMutationMetadataMode = "core-defaults" | "compatibility";
+
 /** The frontmatter and body a caller wants persisted; the service supplies the id. */
 export interface DocumentMutationCandidate {
   frontmatter: Frontmatter;
@@ -104,8 +107,14 @@ export interface MutateDocumentOptions {
   compareTimestamp?: boolean;
   /** Advisory backend-history attribution, applied only when a write occurs. */
   actor?: string;
-  /** Also persist the advisory actor in the edition-appropriate frontmatter field after no-op detection. */
-  persistActor?: boolean;
+  /**
+   * Core persists supplied actors by default. This legacy no-op field remains source-compatible
+   * while callers migrate; use the named `metadataMode: "compatibility"` posture to opt out.
+   * @deprecated
+   */
+  persistActor?: true;
+  /** Use `compatibility` only when intentionally preserving pre-core metadata behavior. */
+  metadataMode?: DocumentMutationMetadataMode;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
   expectedVersion?: Version;
   /** Test seam for edition-specific clocks; production defaults to the current ISO instant. */
@@ -168,6 +177,7 @@ function isNoopMutation(
   ignoreAutomaticActor = false,
   kindRequiresActor = false,
   normalizeStorageBody = false,
+  ignoreAutomaticGeneration = false,
 ): boolean {
   const comparedBody = (body: string): string =>
     normalizeStorageBody && !body.endsWith("\n") ? `${body}\n` : body;
@@ -193,7 +203,12 @@ function isNoopMutation(
       const { at: _at, ...generatedRest } = generated as Record<string, unknown>;
       return { ...frontmatter, generated: generatedRest };
     };
-    return valuesEqual(withoutGeneratedAt(existingFrontmatter), withoutGeneratedAt(candidateFrontmatter));
+    const withoutAutomaticGeneration = (frontmatter: Frontmatter): Frontmatter => {
+      const { generated: _generated, ...rest } = frontmatter;
+      return rest;
+    };
+    const normalizeGenerated = ignoreAutomaticGeneration ? withoutAutomaticGeneration : withoutGeneratedAt;
+    return valuesEqual(normalizeGenerated(existingFrontmatter), normalizeGenerated(candidateFrontmatter));
   }
   if (compareTimestamp) return valuesEqual(existingFrontmatter, candidateFrontmatter);
   const { timestamp: _existingTimestamp, ...existingRest } = existingFrontmatter;
@@ -250,6 +265,7 @@ function withV02Metadata(
   okfVersion: string,
   registry: KindRegistry,
   now: () => string,
+  metadataMode: DocumentMutationMetadataMode,
 ): DocumentMutationCandidate {
   if (okfVersion !== "0.2") return candidate;
   const kind = registry.kinds.get(String(candidate.frontmatter.type));
@@ -257,12 +273,39 @@ function withV02Metadata(
     existing,
     candidate,
     meaningfulChangeAt: now(),
-    requireGenerationClock: existing === undefined
+    requireGenerationClock: metadataMode === "core-defaults" || (
+      existing === undefined
       && kind !== undefined
       && freshnessHorizonMs(kind) !== undefined
       && !kind.fields.required.includes("timestamp")
-      && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter)) === null,
+      && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter)) === null
+    ),
   });
+}
+
+function hasCoreDefaultGeneration(existing: OkfDocument, candidate: DocumentMutationCandidate): boolean {
+  if (existing.frontmatter.generated !== undefined) return false;
+  const generated = candidate.frontmatter.generated;
+  if (generated === null || typeof generated !== "object" || Array.isArray(generated)) return false;
+  const record = generated as Record<string, unknown>;
+  return record.by === "process:superbee" && Object.keys(record).every((key) => key === "by" || key === "at");
+}
+
+function withV01MeaningfulChangeClock(
+  candidate: DocumentMutationCandidate,
+  existing: OkfDocument | undefined,
+  okfVersion: "0.1" | "0.2",
+  metadataMode: DocumentMutationMetadataMode,
+  actor: string | undefined,
+  registry: KindRegistry,
+  now: () => string,
+): DocumentMutationCandidate {
+  if (okfVersion !== "0.1" || metadataMode === "compatibility" || !existing) return candidate;
+  const kind = registry.kinds.get(String(candidate.frontmatter.type));
+  if (isNoopMutation(existing, candidate, false, okfVersion, actor !== undefined, kind?.fields.required.includes("actor") ?? false, true)) {
+    return candidate;
+  }
+  return { ...candidate, frontmatter: { ...candidate.frontmatter, timestamp: now() } };
 }
 
 /** One stable instant per CAS decision, shared by every clock a bundle Kind explicitly carries. */
@@ -290,7 +333,11 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const onAbsent = opts.onAbsent ?? "fail";
   const compareTimestamp = opts.compareTimestamp ?? false;
-  const persistActor = opts.persistActor ?? false;
+  const metadataMode = opts.metadataMode ?? "core-defaults";
+  if (metadataMode !== "core-defaults" && metadataMode !== "compatibility") {
+    throw new InvalidInputError(`Unsupported document mutation metadata mode '${metadataMode}'.`);
+  }
+  const persistActor = metadataMode === "core-defaults";
   const okfVersion = await readBundleOkfVersion(opts.bundle) ?? "0.1";
   if (okfVersion !== "0.1" && okfVersion !== "0.2") {
     throw new InvalidInputError(
@@ -309,7 +356,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       okfVersion,
       opts.registry,
     );
-    const candidate = withV02Metadata(attributed, undefined, okfVersion, opts.registry, decisionNow);
+    const candidate = withV02Metadata(attributed, undefined, okfVersion, opts.registry, decisionNow, metadataMode);
     const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, decisionNow);
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
@@ -342,7 +389,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           okfVersion,
           opts.registry,
         );
-        const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow);
+        let candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, metadataMode);
         const validated = validateCandidate(
           opts.id,
           candidate,
@@ -352,6 +399,15 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           decisionNow,
         );
         warnings = validated.warnings;
+        candidate = withV01MeaningfulChangeClock(
+          candidate,
+          existing,
+          okfVersion,
+          metadataMode,
+          opts.actor,
+          opts.registry,
+          decisionNow,
+        );
 
         // Monotone conformance ratchet (probe: tasks/overwrite-ratchet-survey, productionized
         // here): a doc that already satisfies its governing kind may not regress into
@@ -376,6 +432,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
             persistActor && opts.actor !== undefined,
             validated.kind?.fields.required.includes("actor") ?? false,
             true,
+            metadataMode === "core-defaults" && hasCoreDefaultGeneration(existing, candidate),
           )
         ) {
           return { action: "done", result: { doc: existing } };
@@ -415,17 +472,6 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       }
 
       const rawCandidate = await opts.buildCandidate(existing, context);
-      const candidateForComparison = withV02Metadata(
-        rawCandidate,
-        existing,
-        okfVersion,
-        opts.registry,
-        decisionNow,
-      );
-      if (existing && isNoopMutation(existing, candidateForComparison, compareTimestamp, okfVersion)) {
-        return { action: "done", result: { doc: existing, warnings: [] } };
-      }
-
       const attributed = attributeCandidate(
         rawCandidate,
         opts.actor,
@@ -433,8 +479,8 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         okfVersion,
         opts.registry,
       );
-      const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow);
-      const { warnings } = validateCandidate(
+      let candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, metadataMode);
+      const validated = validateCandidate(
         opts.id,
         candidate,
         opts.registry,
@@ -442,7 +488,31 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         okfVersion,
         decisionNow,
       );
-      return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
+      candidate = withV01MeaningfulChangeClock(
+        candidate,
+        existing,
+        okfVersion,
+        metadataMode,
+        opts.actor,
+        opts.registry,
+        decisionNow,
+      );
+      if (
+        existing
+        && isNoopMutation(
+          existing,
+          candidate,
+          compareTimestamp,
+          okfVersion,
+          persistActor && opts.actor !== undefined,
+          validated.kind?.fields.required.includes("actor") ?? false,
+          true,
+          metadataMode === "core-defaults" && hasCoreDefaultGeneration(existing, candidate),
+        )
+      ) {
+        return { action: "done", result: { doc: existing, warnings: [] } };
+      }
+      return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings: validated.warnings } };
     },
     write: async (next, expectedVersion) => {
       const written = await writeDocVersionedForEdition(opts.bundle, next, okfVersion, {
