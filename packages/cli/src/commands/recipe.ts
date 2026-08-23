@@ -7,7 +7,7 @@
 // (`recipes.ts`'s `applyRecipe`), so a doc that already exists is left untouched (idempotent
 // changed:false) rather than erroring or overwriting. A built-in and an external recipe both flow
 // through `resolveRecipe` -> `applyRecipe` — the SAME functions, no special-casing — which is what
-// makes recipe application generic rather than a one-off `init`-only special case (CLAUDE.md gate 3).
+// makes recipe application generic rather than a one-off `init`-only special case.
 import { parseArgs } from "node:util";
 import { loadKinds } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";

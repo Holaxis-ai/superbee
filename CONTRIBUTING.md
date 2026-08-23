@@ -168,6 +168,20 @@ section and core edition tests are the offline fallback. The fixture at
 `examples/sample-bundle/references/okf-spec.md` is explicitly a v0.1 interop reference; it is not a
 cross-edition or current-product authority.
 
+### Kind conventions
+
+Kind conventions are bundle-authored, opt-in schemas consumed through the one core registry. A
+convention document must have `type: Convention` and live under `conventions/`; a Convention
+document outside that prefix is deliberately not discovered. This keeps a conventions-free bundle
+behaviorally unchanged and makes an empty registry load a cheap prefix query.
+
+Malformed convention documents are skipped with collected warnings rather than aborting the whole
+load. When multiple documents declare the same `governs` value, the first document by ID wins. The
+command layer builds the registry at most once per invocation and passes it to kind-aware commands;
+engine reads and writes never load it implicitly. Validation reuses core's heading and freshness
+primitives rather than defining parallel parsers or clocks. Convention seeding belongs to generic
+CLI recipes, never to `initBundle` or another engine special case.
+
 ## Findings and commitments
 
 A discovery must land in the shared row table for its defect class. The project bundle document

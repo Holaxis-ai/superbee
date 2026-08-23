@@ -20,7 +20,7 @@
  * `status` and could never become a real graph edge anywhere.
  *
  * These functions are pure and dependency-free — INCLUDING free of `node:path`:
- * this module is the ONE link resolver (CLAUDE.md gate 3) and it now also runs in
+ * this module is the ONE link resolver and it now also runs in
  * the BROWSER (the shell's doc reader routes links through it), where `node:path`
  * does not bundle. The posix join/relative/basename logic is implemented as pure
  * string helpers below, parity-pinned against `node:path.posix` by

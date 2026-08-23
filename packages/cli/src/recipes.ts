@@ -1,6 +1,6 @@
 // The CLI's recipe APPLY machinery + `context-notes`'s CONTENT ("recipe zero").
 //
-// This is where Context Note SEEDING lives (moved out of `packages/core` — CLAUDE.md gate 3: "the
+// This is where Context Note SEEDING lives (moved out of `packages/core`: "the
 // engine special-cases NOTHING about conventions"). Core keeps only the generic apply primitive
 // (`writeDocVersioned` expect-absent CAS) and the generic `kindConventionDoc` serializer; this
 // module supplies the SPECIFIC content (the `Context Note` kind's convention + seed prose body,
@@ -222,8 +222,8 @@ export const TASK_KIND: KindConvention = {
 /**
  * The seed's prose body (`conventions/task.md`) explains how the generic primitives compose into
  * task tracking. Composed entirely from EXISTING lite primitives (link graph as DAG, CAS write as claim,
- * `list --type`/`status` as query/lint) — no bespoke task engine, no new verb (CLAUDE.md scope-out:
- * kind-aware columns/claim/runnable-blocked are a separate concern, not part of this recipe).
+ * `list --type`/`status` as query/lint) — no bespoke task engine, no new verb. The CLI's task-aware
+ * columns, claim, and runnable/blocked projections are a separate concern, not part of this recipe.
  */
 export const TASK_SEED_BODY =
   "# Task\n\n" +

@@ -5,8 +5,8 @@
  * the BUILT CLI (`dist/superbee.mjs`) over a real subprocess, mirroring
  * `doc-cli-integration.test.ts`'s pattern.
  *
- * The emitted-command-chain discipline (CLAUDE.md: "a review claiming it 'executed' a documented
- * command chain means character-for-character with the emitted artifacts") is honored literally
+ * The emitted-command-chain discipline (CONTRIBUTING.md: a documented command was executed only
+ * when its emitted characters ran without substitution) is honored literally
  * here: this file puts a symlink named `superbee` (the preferred bin) -> the built dist on the
  * CHILD's PATH, so `cliInvocation()` (invocation.ts) resolves to the bare bin name instead of the
  * off-PATH `npx -y superbee` fallback — the emitted `help` string is then DIRECTLY executable (no

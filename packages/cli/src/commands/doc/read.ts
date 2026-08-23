@@ -278,7 +278,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // AXI §3 detail view: show EVERY frontmatter field (kind-declared ones like `status`/`priority`
     // included), not a hardcoded allowlist. Stable order: `id`, then the known standard keys in
     // canonical order, then any remaining frontmatter keys in the doc's own insertion order. No
-    // registry load — a detail render stays a pure engine read (CLAUDE.md gate 3: kinds load ONLY in
+    // registry load — a detail render stays a pure engine read (kind registries load ONLY in
     // a command's mutate path, never on a read). Reserved OUTPUT keys are skipped so a pathological
     // frontmatter key can never clobber the body preview the branch below writes.
     const rec: Record<string, unknown> = { id: parsed.id };

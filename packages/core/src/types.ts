@@ -355,7 +355,7 @@ export interface StorageBackend {
    * `GET /docs?fields=frontmatter&prefix=&type=&tag=` push-down row was specified for).
    * Returns {@link HeadResult} rows — full frontmatter + version, NEVER bodies.
    *
-   * CONTRACT (gate 3 — the backend does not own filter semantics): this is a push-down
+   * CONTRACT (the backend does not own filter semantics): this is a push-down
    * HINT. A backend MAY over-return (ignore any facet it cannot push server-side); the
    * ENGINE re-applies the one canonical predicate (`matchesFilter`, `bundle.ts`) to
    * whatever comes back, so semantics stay in core. A backend MUST NOT under-return for

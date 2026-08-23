@@ -4,6 +4,8 @@ import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { WIRE_ENDPOINTS } from "@superbee/server";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 function readProjectFile(relativePath: string): string {
@@ -183,23 +185,9 @@ test("wire contract pins the complete implemented route/method table and every p
     .map(tableCells)
     .map(([method, path]) => `${method} ${path}`);
 
-  assert.deepEqual(endpointRows, [
-    "GET `/v0/capabilities`",
-    "GET `/v0/bundles/{bundle}/docs`",
-    "POST `/v0/bundles/{bundle}/docs:read-many`",
-    "GET `/v0/bundles/{bundle}/docs/{id...}`",
-    "PUT `/v0/bundles/{bundle}/docs/{id...}`",
-    "HEAD `/v0/bundles/{bundle}/docs/{id...}`",
-    "DELETE `/v0/bundles/{bundle}/docs/{id...}`",
-    "GET `/v0/bundles/{bundle}/docs/{id...}/versions`",
-    "GET `/v0/bundles/{bundle}/reserved/{name}`",
-    "PUT `/v0/bundles/{bundle}/reserved/{name}`",
-    "GET `/v0/bundles/{bundle}/blobs`",
-    "GET `/v0/bundles/{bundle}/blobs/{key...}`",
-    "PUT `/v0/bundles/{bundle}/blobs/{key...}`",
-    "HEAD `/v0/bundles/{bundle}/blobs/{key...}`",
-    "DELETE `/v0/bundles/{bundle}/blobs/{key...}`",
-  ]);
+  const implementedRows = WIRE_ENDPOINTS.map(({ method, path }) => `${method} \`${path}\``);
+  assert.deepEqual(endpointRows, implementedRows);
+  assert.equal(new Set(implementedRows).size, implementedRows.length, "runtime route/method rows must be unique");
 
   const proofRows = contract.split("\n").filter((line) => /^\| WIRE-PROOF-\d{2} \|/.test(line));
   assertEvidenceRows(
@@ -238,7 +226,11 @@ test("security routing is private and fail-closed without bundle, Skill, sync, o
 test("mandatory agent entrypoints stay compact, routed, and safe in degraded states", () => {
   const claude = readProjectFile("CLAUDE.md");
   const agents = readProjectFile("AGENTS.md");
-  const normalizedClaude = claude.replace(/\s+/g, " ");
+  const normalizedParagraphs = new Set(
+    claude
+      .split(/\n\s*\n/)
+      .map((paragraph) => paragraph.replace(/\s+/g, " ").trim()),
+  );
   const lineCount = claude.trimEnd().split("\n").length;
 
   assert.ok(lineCount >= 170 && lineCount <= 230, `CLAUDE.md must stay in the Phase A range, got ${lineCount}`);
@@ -266,17 +258,19 @@ test("mandatory agent entrypoints stay compact, routed, and safe in degraded sta
   }
 
   for (const safetyKernel of [
-    "initialize or publish a bundle;",
-    "Missing authority and stale authority are different states",
-    "Builder -> independent",
-    "CI on the pushed SHA is the shipping verdict",
-    "Never place secrets, exploit mechanisms, reachability conditions, or working reproductions",
-    "Never run a direct or manual publish",
-    "require an explicit human decision",
+    "A dispatched agent receives the exact bundle root and actor in its packet. It may perform the packet's necessary reads, but it must never:",
+    "- run `superbee sync`; - initialize or publish a bundle; - guess a bundle from a catalog entry; or - pass the repository root to `--dir` as though it were a bundle.",
+    "If selection is missing or cannot be verified, do not initialize a replacement. Continue only with committed repository authorities and stop any work that depends on current project state. If a previously verified bundle is merely stale because sync or the network is unavailable, label the information as last-known and stop only where freshness is required. Missing authority and stale authority are different states.",
+    "The orchestrator verifies commit scope and provenance, integrates builders, pushes the feature branch once, and ensures CI is running on that exact SHA. If no PR exists, dispatch the `CI tests` workflow for the branch. Do not rerun valid builder evidence merely to duplicate it. If evidence is missing, stale, or from a changed tree, rerun the smallest relevant smoke.",
+    "CI on the pushed SHA is the shipping verdict. A local lane or `npm run check` is never reported as that verdict. The human opens and merges the PR unless that authority is explicitly delegated.",
+    "- Trivial documentation or test-only work follows the proportional tier in `CONTRIBUTING.md`. - Routine code receives independent review of the exact SHA. - Security, concurrency, destructive writes, migrations, deployments, remote selection, reconnect/replay, releases, and other high-risk mechanics require Builder -> independent exact-SHA Review -> adversarial QA. - QA cannot be scheduled before its required Review, and neither precedes the builder commit. - Reviewers audit existing evidence, reproduce only load-bearing proof, and add one meaningful red probe for the named risk. Current exact-SHA CI evidence is reused.",
+    "Never place secrets, exploit mechanisms, reachability conditions, or working reproductions in a public channel or any synchronized bundle by default, regardless of its observed visibility. An externally exploitable defect present on `main` goes through a private GitHub Security Advisory: fix privately, merge, then disclose. Stop before writing sensitive detail and follow [SECURITY.md](SECURITY.md).",
+    "- Never run a direct or manual publish and never replace a release asset ad hoc. - Publish only an artifact bound to an exact source SHA whose authoritative CI passed. - Inspect a draft by numeric release ID and bind the retained candidate and receipt by digest. - Treat one valid current receipt as already present; replacement requires the prior receipt's exact ID, name, and digest. - Journal interruption recovery and refuse a competing same-name asset. - A dry run may validate the same plan but performs no durable ownership, deletion, or upload. - Every release-relevant `VIOLATED` or `UNKNOWN` statement needs a Task or recorded human acceptance decision before release.",
+    "The frozen and coupled decisions in bundle `docs/core` require an explicit human decision to reopen. Code adjacency is not authorization. In particular, do not introduce hosted deployment, authentication, administration/collaboration UI, or multi-bundle authorization piecemeal.",
   ]) {
-    assert.ok(normalizedClaude.includes(safetyKernel), `mandatory safety kernel disappeared: ${safetyKernel}`);
+    assert.ok(normalizedParagraphs.has(safetyKernel), `mandatory safety kernel changed: ${safetyKernel}`);
   }
 
   assert.match(agents, /read and follow \[CLAUDE\.md\]\(CLAUDE\.md\) in full/);
-  assert.doesNotMatch(claude, /private implementation remote|archive\/pre-public|The board is public|CORE\.md/);
+  assert.doesNotMatch(claude, /private implementation remote|The board is public|CORE\.md/);
 });

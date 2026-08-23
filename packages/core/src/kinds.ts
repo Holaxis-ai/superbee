@@ -1,6 +1,6 @@
 /**
- * Kind conventions — the bundle-declared document-kind mechanism (CLAUDE.md gate 3,
- * decision 5: "the mechanism is core and non-negotiable; usage is opt-in per bundle").
+ * Kind conventions — the bundle-declared, opt-in document-kind mechanism. The mechanism lives in
+ * core while each bundle chooses whether to declare and use conventions.
  *
  * A bundle MAY declare document kinds as plain OKF convention docs: a normal concept
  * document with `frontmatter.type: "Convention"`, living under the `conventions/`
@@ -93,7 +93,7 @@ export interface KindConvention {
    * Browse/listing display hint: when `true`, a browse UI collapses this kind's instances behind a
    * toggle by default — for a transient/background kind (e.g. Context Note) whose volume would
    * otherwise swamp durable knowledge. Absent → expanded. Bundle-DECLARED so the shell never
-   * privileges a kind by name (gate 3); display-only, no engine behavior. Set from `browse_collapsed: true`.
+   * privileges a kind by name; display-only, no engine behavior. Set from `browse_collapsed: true`.
    */
   browseCollapsed?: boolean;
 }

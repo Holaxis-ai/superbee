@@ -10,7 +10,7 @@
 //
 // RENDER GUARANTEE: the dashboard path passes only a local directory to `openBundle`; an explicit
 // `--remote` produces an offline pointer and never constructs a RemoteBackend here. The local read
-// is CHEAP (ONE `query()` — the sanctioned single bundle walk, gate 3; NO `loadKinds`, NO
+// is CHEAP (ONE `query()` — the sanctioned single bundle walk; NO `loadKinds`, NO
 // `freshness`, NO graph/backlink walk) and DOUBLE-GUARDED: the default summarizer swallows any
 // throw into `null` (no bundle, permissions, malformed bundle — all become "no bundle"), and
 // `home()` wraps the call in its OWN try/catch too, so even an injected/misbehaving dep can never
@@ -348,7 +348,7 @@ export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter"
  * up-tree), return `null` (the "run init" fallback); if a bundle root IS found but the read throws
  * (a malformed/unreadable doc), return an {@link UnreadableBundle} sentinel so home never tells an
  * agent to `init` over a bundle that already exists. Cheap: ONE scan (the sanctioned single
- * bundle walk, gate 3), no kinds/freshness/graph load.
+ * bundle walk), no kinds/freshness/graph load.
  */
 export async function defaultSummarizeBundle(
   dir?: string,

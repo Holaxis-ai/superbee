@@ -292,7 +292,7 @@ test("link add: environment attribution reaches local+remote content/history; a 
 // ── `addLink` onto the shared `versionedMutation` primitive: concurrent-writer racer tests ────────
 //
 // `addLink` (the core link-add mutation `link add`/`new --link` both call) now rides core's shared
-// read-decide-CAS-retry primitive instead of a hand-rolled loop (CLAUDE.md gate 3). These tests
+// read-decide-CAS-retry primitive instead of a hand-rolled loop. These tests
 // exercise it directly against a `MemoryBackend` bundle (real enforced CAS), with a `backend.write`
 // wrapper that injects a competing write exactly when our own write attempts to land — the same
 // mechanism `doc.test.ts`'s coupleRead racer tests use for `mutateDoc`.

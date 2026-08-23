@@ -118,15 +118,16 @@ the blob channel cannot become an accidental bypass around document parsing and 
 
 ## Behavior evidence
 
-The contract test requires the exact endpoint table above and validates every source/test anchor in
-this proof table. The referenced behavioral suites exercise the semantics through the router,
+The router dispatches through its exported `WIRE_ENDPOINTS` registry. The contract test requires
+the exact endpoint table above to match that runtime registry and validates every source/test anchor
+in this proof table. The referenced behavioral suites exercise the semantics through the router,
 `RemoteBackend`, and a real socket.
 
 | ID | Contract area | Implementation evidence | Behavioral proof |
 | --- | --- | --- | --- |
-| WIRE-PROOF-01 | Capabilities and single-backend routing. | `packages/server/src/router.ts::url.pathname === "/v0/capabilities"` | `packages/core/test/wire-protocol.test.ts::GET /v0/capabilities reports` |
+| WIRE-PROOF-01 | Capabilities and single-backend routing. | `packages/server/src/router.ts::pathname === "/v0/capabilities"` | `packages/core/test/wire-protocol.test.ts::GET /v0/capabilities reports` |
 | WIRE-PROOF-02 | Document collection, projections, filters, cursors, and read-many. | `packages/server/src/router.ts::rest === "docs:read-many"` | `packages/core/test/wire-protocol.test.ts::GET /docs list endpoint carries count` |
-| WIRE-PROOF-03 | Document member read/write/head/delete and version headers. | `packages/server/src/router.ts::if (req.method === "DELETE") return await handleDeleteDoc` | `packages/core/test/wire-protocol.test.ts::raw DELETE /docs/{id} response shape` |
+| WIRE-PROOF-03 | Document member read/write/head/delete and version headers. | `packages/server/src/router.ts::id: "doc-delete"` | `packages/core/test/wire-protocol.test.ts::raw DELETE /docs/{id} response shape` |
 | WIRE-PROOF-04 | History and attribution payload. | `packages/server/src/router.ts::tail.endsWith("/versions")` | `packages/core/test/wire-protocol.test.ts::GET /docs/{id}/versions returns` |
 | WIRE-PROOF-05 | Reserved file get/put only. | `packages/server/src/router.ts::reserved file name must be index.md or log.md` | `packages/core/test/wire-protocol.test.ts::reserved files have no delete route` |
 | WIRE-PROOF-06 | Blob collection and raw byte member routes. | `packages/server/src/router.ts::rest.startsWith("blobs/")` | `packages/core/test/wire-protocol.test.ts::REAL socket GET returns EXACT bytes` |

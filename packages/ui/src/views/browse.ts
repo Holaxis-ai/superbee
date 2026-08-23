@@ -6,7 +6,7 @@
  *
  * A kind renders COLLAPSED-by-default when its convention declares `browse_collapsed: true`
  * (core's `KindConvention.browseCollapsed`) — a bundle-DECLARED marker, so the shell never privileges
- * a kind by name (gate 3). This replaced an earlier freshness-horizon tiering, which wrongly collapsed
+ * a kind by name. This replaced an earlier freshness-horizon tiering, which wrongly collapsed
  * Tasks (a 30d horizon) alongside transient Context Notes. Pure — the unit-tested core.
  */
 import type { DocHead } from "../api/types.js";

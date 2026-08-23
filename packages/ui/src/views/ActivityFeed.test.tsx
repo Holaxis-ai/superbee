@@ -59,7 +59,7 @@ describe("feedRows (pure projection)", () => {
   });
 
   it("projects ownership for ANY kind that carries it — Task is not special-cased", () => {
-    // The contract is kind-GENERIC: the shell never privileges a kind by name (gate 3), so a
+    // The contract is kind-GENERIC: the shell never privileges a kind by name, so a
     // bundle-declared kind nobody shipped must behave exactly like the built-in Task. An all-Task
     // fixture would let `type === "Task" ? … : undefined` pass the whole suite, so
     // the non-Task rows below are what actually enforce the claim.

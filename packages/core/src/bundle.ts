@@ -484,8 +484,8 @@ function toSelectorList(v: string | string[] | undefined): string[] | undefined 
  * edge-shaped question reduces to — {@link backlinks} below is now a thin call into it, and
  * so is the CLI's `link list`. Edges are DERIVED by scanning every concept's outbound links,
  * never stored (gate 2) — there is exactly one link resolver ({@link parseLinksFromDoc}, via
- * {@link parseLinks}) and exactly one whole-bundle walk ({@link query}) underneath this, per
- * gate 3.
+ * {@link parseLinks}) and exactly one whole-bundle walk ({@link query}) underneath this, per the
+ * single-authority contract.
  *
  * `filter.from`/`filter.to` each accept a single id, a trailing-slash prefix, or an array of
  * either (union within the flag; providing BOTH facets ANDs them); `filter.text` is an exact
@@ -552,8 +552,8 @@ export async function backlinks(bundle: Bundle, target: ConceptId): Promise<Link
 //
 // Thin, additive engine wrappers routing through `backendFor` — mirroring
 // `writeDocVersioned`'s shape (B4). Future consumers (the CLI's `promote`/`pull`,
-// Part C) use ONLY these, never a backend directly, so storage stays pluggable
-// (gate 3). Unlike concept documents, blobs carry no OKF semantics of their own (no
+// Part C) use ONLY these, never a backend directly, so storage stays pluggable.
+// Unlike concept documents, blobs carry no OKF semantics of their own (no
 // `type` requirement, no reserved-file check, no timestamp defaulting) — the guard
 // against traversal / `.md` collision / dot-segments lives at the BACKEND layer
 // (`assertSafeBlobKey`, applied identically by every adapter), so these wrappers are

@@ -57,7 +57,7 @@ export function isEmptyChange(e: ChangeEvent): boolean {
   );
 }
 
-/** Snapshot a local bundle: doc heads via `queryHeads` (no bodies), page-blob versions via `listBlobs` over each accepted page prefix (`views/` + the legacy `pages/` location) + `readBlob` (pages are small; only the hot-reloadable prefixes are scanned). Routes through core's engine wrappers, so a pluggable backend is honored (gate 3). */
+/** Snapshot a local bundle: doc heads via `queryHeads` (no bodies), page-blob versions via `listBlobs` over each accepted page prefix (`views/` + the legacy `pages/` location) + `readBlob` (pages are small; only the hot-reloadable prefixes are scanned). Routes through core's engine wrappers, so the pluggable storage seam is honored. */
 export async function snapshotBundle(bundle: Bundle): Promise<Snapshot> {
   const heads = await queryHeads(bundle, {});
   const docs = new Map<string, string>(heads.map((h) => [h.id, h.version]));

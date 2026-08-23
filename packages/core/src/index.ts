@@ -125,7 +125,7 @@ export {
   stripETagWrapper,
 } from "./versioning.js";
 
-// The ONE versioned-mutation boundary (CLAUDE.md gate 3): a shared read-decide-CAS-retry
+// The ONE versioned-mutation boundary: a shared read-decide-CAS-retry
 // primitive consumed by document, link, and index mutation policies instead of
 // independently hand-rolled loops.
 export { versionedMutation } from "./mutation.js";
@@ -224,7 +224,7 @@ export {
 // consumer boundaries branch on the TYPE (CLI: USAGE/exit 2), never on message prose.
 export { InvalidInputError } from "./errors.js";
 
-// Kind conventions (CLAUDE.md gate 3, decision 5): a bundle-declared, opt-in document-kind
+// Kind conventions: a bundle-declared, opt-in document-kind
 // registry — validation + per-kind freshness horizons, read from `Convention` docs under
 // `conventions/`. THE mechanism is core (one implementation, consumed by CLI/server/future
 // MCP); usage is opt-in per bundle. A conventions-free bundle is byte-for-byte unaffected.
