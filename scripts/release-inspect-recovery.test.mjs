@@ -680,6 +680,30 @@ test("CLI replacement authority is all-or-none and batch replacement is row-loca
   } finally { rmSync(h.root, { recursive: true, force: true }); }
 });
 
+test("inspection key defaults from a local environment path while explicit --key wins", async () => {
+  const row = ["--stage-id", STAGE_ID, "--version", "0.1.0-pre.4", "--draft-release-id", "300"];
+  const environment = { SUPERBEE_RELEASE_INSPECTION_KEY: "/tmp/environment-inspection-key" };
+  const fromEnvironment = await parseInspectArgs(row, { env: environment, accessKey: async () => {}, resolveRepo: async () => "Holaxis-ai/agentstate-lite" });
+  assert.equal(fromEnvironment.keyPath, environment.SUPERBEE_RELEASE_INSPECTION_KEY);
+  const explicit = await parseInspectArgs([...row, "--key", "/tmp/explicit-inspection-key"], {
+    env: environment,
+    resolveRepo: async () => "Holaxis-ai/agentstate-lite",
+  });
+  assert.equal(explicit.keyPath, "/tmp/explicit-inspection-key");
+  await assert.rejects(
+    parseInspectArgs(row, { env: { SUPERBEE_RELEASE_INSPECTION_KEY: "  " }, resolveRepo: async () => "Holaxis-ai/agentstate-lite" }),
+    /missing --key; pass --key <ssh-private-key> or set SUPERBEE_RELEASE_INSPECTION_KEY/,
+  );
+  await assert.rejects(
+    parseInspectArgs(row, {
+      env: environment,
+      accessKey: async () => { throw new Error("ENOENT"); },
+      resolveRepo: async () => "Holaxis-ai/agentstate-lite",
+    }),
+    /SUPERBEE_RELEASE_INSPECTION_KEY is not a readable local key path/,
+  );
+});
+
 test("GitHub actor proof is exact, non-redirecting, and never accepts a redirect or other login", async () => {
   const seen = [];
   await proveGitHubActor({

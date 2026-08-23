@@ -5,17 +5,18 @@
 //
 // Single row:
 //   node scripts/release-inspect.mjs --stage-id <uuid> --version <semver> --draft-release-id <id> \
-//     --key <ssh-private-key> [--decision inspected|approved] [--repo <owner/repo>] \
+//     [--key <ssh-private-key>] [--decision inspected|approved] [--repo <owner/repo>] \
 //     [--allowed-signers <path>] [--recovery-dir <absolute-path>] [--dry-run] \
 //     [--replace-asset-id <id> --replace-asset-name <name> --replace-asset-digest <sha256:...>]
+// With no --key, SUPERBEE_RELEASE_INSPECTION_KEY supplies a local private-key path.
 // Batch:
-//   node scripts/release-inspect.mjs --batch <candidates.json> --key <path> [--repo <owner/repo>]
+//   node scripts/release-inspect.mjs --batch <candidates.json> [--key <path>] [--repo <owner/repo>]
 // Rows may carry decision and replace_existing:{asset_id,name,digest}. Global replacement flags
 // are rejected with --batch. Results are emitted in input order with a deterministic summary.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -129,9 +130,19 @@ export function defaultRecoveryDirectory(env = process.env) {
     : path.join(homedir(), ".local", "state", "agentstate-lite", "release-receipt-recovery");
 }
 
-export async function parseInspectArgs(argv, { read = readFile, resolveRepo } = {}) {
+export async function parseInspectArgs(argv, { read = readFile, accessKey = access, resolveRepo, env = process.env } = {}) {
   const flags = parseFlags(argv);
-  const keyPath = flags.get("--key", true);
+  const explicitKeyPath = flags.get("--key");
+  const configuredKeyPath = env.SUPERBEE_RELEASE_INSPECTION_KEY;
+  const keyPath = explicitKeyPath ?? (configuredKeyPath?.trim() ? configuredKeyPath : undefined);
+  if (!keyPath) fail("missing --key; pass --key <ssh-private-key> or set SUPERBEE_RELEASE_INSPECTION_KEY to its local path");
+  if (!explicitKeyPath) {
+    try {
+      await accessKey(keyPath);
+    } catch {
+      fail("SUPERBEE_RELEASE_INSPECTION_KEY is not a readable local key path; pass --key <ssh-private-key> or correct the setting");
+    }
+  }
   const batchPath = flags.get("--batch");
   const replaceFlags = ["--replace-asset-id", "--replace-asset-name", "--replace-asset-digest"];
   const replacementCount = replaceFlags.filter((flag) => flags.has(flag)).length;

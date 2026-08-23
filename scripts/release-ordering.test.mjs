@@ -1057,6 +1057,7 @@ test("publication executor is mutation-free in dry-run and binds the untagged dr
 test("receipt emission commands are validated and injection-shaped values throw", () => {
   const commands = receiptEmissionCommands({ stageId: STAGE_ID, version: PRE, draftReleaseId: "300" });
   assert.match(commands.inspected, /release-inspect\.mjs --stage-id/);
+  assert.doesNotMatch(commands.inspected, /\s--key\b/, "the operator may use SUPERBEE_RELEASE_INSPECTION_KEY instead of a baked-in local key path");
   assert.match(commands.approved, /--decision approved$/);
   assert.throws(() => receiptEmissionCommands({ stageId: "-rf; rm", version: PRE, draftReleaseId: "300" }), /invalid stage id/);
 });
