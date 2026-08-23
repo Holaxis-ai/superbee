@@ -257,6 +257,32 @@ test("stage summary and retained JSON are emitted from the same v2 receipt", () 
   assert.ok(!built.inspection.steps.some((step) => step.includes("--out")));
 });
 
+test("stage summary explains inspection-key configuration without embedding a key path", () => {
+  const f = fixture();
+  const built = buildReceipt({
+    target: "bridge",
+    runId: "100",
+    artifactId: "101",
+    artifactDigest: CANDIDATE_ARTIFACT_DIGEST,
+    stageId: STAGE_ID,
+    version: VERSION,
+    tag: `v${VERSION}`,
+    sourceCommit: COMMIT,
+    policyTag: "next",
+    tarballSha256: TARBALL_SHA,
+    tarballFilename: TARBALL,
+    integrity: INTEGRITY,
+    manifestSha256: MANIFEST_SHA,
+    draftReleaseId: "300",
+    draftAssets: f.release.assets,
+  });
+  const summary = renderReceiptMarkdown(built);
+  const guidance = "Set `SUPERBEE_RELEASE_INSPECTION_KEY` to your local signing-key path, or append `--key <path>`:";
+  assert.ok(summary.indexOf(guidance) < summary.indexOf(built.receipt_emission.inspected));
+  assert.doesNotMatch(built.receipt_emission.inspected, /\s--key\b/);
+  assert.doesNotMatch(summary, /~\/\.ssh|id_ed25519/);
+});
+
 test("stage summary carries the bounded stable MCP launch migration guidance", () => {
   const f = fixture();
   const built = buildReceipt({
