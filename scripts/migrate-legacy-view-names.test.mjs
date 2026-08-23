@@ -31,6 +31,13 @@ before(async () => {
 const core = () => import(CORE_DIST);
 const script = () => import(SCRIPT);
 
+function isMissingDocument(id) {
+  return (error) =>
+    error instanceof Error &&
+    error.code === "ENOENT" &&
+    error.message === `no concept document '${id}'`;
+}
+
 function writeRawDoc(dir, relative, content) {
   const target = path.join(dir, relative);
   mkdirSync(path.dirname(target), { recursive: true });
@@ -193,7 +200,7 @@ test("one run migrates the full fixture matrix in place; a second run reports ze
     const swapped = await readDoc(bundle, "conventions/view");
     assert.deepEqual(swapped.frontmatter, canonical.frontmatter);
     assert.equal(swapped.body, canonical.body);
-    await assert.rejects(() => readDoc(bundle, "conventions/page"), /ENOENT/);
+    await assert.rejects(() => readDoc(bundle, "conventions/page"), isMissingDocument("conventions/page"));
 
     // The access-only View was never written (same version token).
     assert.equal((await versionMap(bundle)).get("views-registry/roadmap"), untouchedBefore);
@@ -577,7 +584,10 @@ test("F2: a full historical install's teaching artifacts migrate too — page-au
     // Engine writes stamp a timestamp when the canonical file omits one — content equality
     // ignores it (the same rule the script's own classification applies).
     const minusTimestamp = ({ timestamp: _t, ...rest }) => rest;
-    await assert.rejects(() => readDoc(bundle, "references/page-authoring-v0"), /ENOENT/);
+    await assert.rejects(
+      () => readDoc(bundle, "references/page-authoring-v0"),
+      isMissingDocument("references/page-authoring-v0"),
+    );
     const replacement = await readDoc(bundle, "references/view-authoring-v0");
     const canonicalRef = loadCanonicalViewReference();
     assert.deepEqual(minusTimestamp(replacement.frontmatter), minusTimestamp(canonicalRef.frontmatter));
@@ -882,7 +892,7 @@ test("a bundle whose only View convention was the Page one gets the shipped View
     assert.deepEqual(receipt.page_conventions_deleted, ["conventions/page"]);
     const created = await readDoc(bundle, "conventions/view");
     assert.deepEqual(created.frontmatter, loadCanonicalViewConvention().frontmatter);
-    await assert.rejects(() => readDoc(bundle, "conventions/page"), /ENOENT/);
+    await assert.rejects(() => readDoc(bundle, "conventions/page"), isMissingDocument("conventions/page"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
