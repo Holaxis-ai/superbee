@@ -43,7 +43,7 @@
 
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
-import { assertSafeConceptId } from "./paths.js";
+import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
 import { VersionConflict, stripETagWrapper } from "./versioning.js";
 import type {
   BlobKey,
@@ -517,6 +517,7 @@ export class RemoteBackend implements StorageBackend {
   // exactly like docs.
 
   async readBlob(key: BlobKey): Promise<ReadBlobResult | null> {
+    assertSafeBlobKey(key);
     const res = await this.send(`/blobs/${encodeBlobKey(key)}`, { method: "GET" });
     if (res.status === 404) return null;
     if (!res.ok) throw await this.toError(res, key);
@@ -532,6 +533,7 @@ export class RemoteBackend implements StorageBackend {
     contentType?: string,
     options: WriteOptions = {},
   ): Promise<Version> {
+    assertSafeBlobKey(key);
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = {};
     if (contentType) headers["content-type"] = contentType;
@@ -551,6 +553,7 @@ export class RemoteBackend implements StorageBackend {
 
   /** `DELETE /blobs/{key}`, mirroring `delete`'s `If-Match`/no-404/no-actor posture exactly. */
   async deleteBlob(key: BlobKey, options: DeleteOptions = {}): Promise<boolean> {
+    assertSafeBlobKey(key);
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = {};
     if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
@@ -562,6 +565,7 @@ export class RemoteBackend implements StorageBackend {
   }
 
   async existsBlob(key: BlobKey): Promise<boolean> {
+    assertSafeBlobKey(key);
     const res = await this.send(`/blobs/${encodeBlobKey(key)}`, { method: "HEAD" });
     if (res.status === 404) return false;
     if (!res.ok) throw await this.toError(res, key);

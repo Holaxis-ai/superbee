@@ -95,6 +95,26 @@ test("retries a transient 500 on a WRITE and re-sends the body on the retry", as
   assert.equal(sent.frontmatter.title, "A");
 });
 
+test("a write with an ambiguous first response fails closed when the retry observes a conflict", async () => {
+  const transportFailure = new Error("connection closed after request dispatch");
+  const { impl, state } = scripted([
+    { throwErr: transportFailure },
+    {
+      status: 412,
+      body: JSON.stringify({
+        error: { code: "VERSION_CONFLICT", details: { expected: null, actual: "sha256:already-present" } },
+      }),
+    },
+  ]);
+  const doc = { id: "concepts/a", frontmatter: { type: "Concept" }, body: "hello world" };
+
+  await assert.rejects(
+    () => backend(impl, 1).write("concepts/a", doc, { expectedVersion: null }),
+    (error: unknown) => error instanceof VersionConflict,
+  );
+  assert.equal(state.calls, 2);
+});
+
 test("maxRetries: 0 disables retry", async () => {
   const { impl, state } = scripted([ERR500]);
   await assert.rejects(() => backend(impl, 0).exists("concepts/a"), (e: unknown) => e instanceof RemoteError);

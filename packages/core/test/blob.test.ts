@@ -12,7 +12,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -21,6 +21,7 @@ import { FilesystemBackend } from "../src/backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { blobVersion, VersionConflict } from "../src/versioning.js";
 import { assertSafeBlobKey } from "../src/paths.js";
+import { InvalidInputError } from "../src/errors.js";
 import { resolveContentType } from "../src/content-type.js";
 import type { Bundle, Version } from "../src/types.js";
 import { T_DOC } from "./scenario.js";
@@ -149,6 +150,22 @@ test("FilesystemBackend: an unsafe blob key never creates a file outside the bun
     await writeBlob(bundle, "safe/blob.bin", enc("ok"));
     assert.equal(await existsBlob(bundle, "safe/blob.bin"), true);
   });
+});
+
+test("FilesystemBackend: direct unsafe writes fail before realizing a path", async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "okf-blob-direct-"));
+  const root = path.join(parent, "bundle");
+  const escaped = path.join(parent, "outside.bin");
+  try {
+    const backend = new FilesystemBackend(root);
+    await assert.rejects(() => backend.writeBlob("../outside.bin", enc("blocked")), InvalidInputError);
+    await assert.rejects(
+      () => stat(escaped),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
 });
 
 test("FilesystemBackend: listBlobs skips dot-entries on disk (I3 — the WALK itself excludes atomicWrite-shaped temp files and dotfiles, not just the write-time guard)", async () => {
