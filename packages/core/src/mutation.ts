@@ -5,7 +5,7 @@
  * read, a domain decision over exactly that read, and a CAS write bounded-retried on
  * conflict. This module is that shape, extracted once so the retry loop cannot drift
  * between the prior hand-rolled document overwrite/patch and `link add` copies — see
- * CLAUDE.md gate 3: ONE
+ * the single-authority contract: ONE
  * implementation, consumed everywhere, not a schema fork.
  *
  * The structural property that kills the "stale decision paired with a fresher CAS token"

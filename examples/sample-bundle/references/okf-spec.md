@@ -1,14 +1,16 @@
 ---
 type: Reference
 title: Open Knowledge Format v0.1 (Draft)
-description: The vendor-neutral, filesystem-native knowledge format Superbee conforms to.
+description: A version-scoped OKF v0.1 interop reference, not Superbee's cross-edition authority.
 resource: https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md
 tags: [okf, spec, reference]
-timestamp: 2026-07-01T11:00:00Z
+timestamp: 2026-08-23T17:47:52Z
 ---
 # Summary
 
-Open Knowledge Format (OKF) v0.1 (Draft), published by Google Cloud in
+This reference is scoped to OKF v0.1 interop; it is not the authority for
+Superbee's v0.2 behavior or cross-edition compatibility. Open Knowledge Format
+(OKF) v0.1 (Draft), published by Google Cloud in
 `GoogleCloudPlatform/knowledge-catalog` under `okf/`, defines a "Knowledge
 Bundle" as a directory tree of UTF-8 markdown files. Each non-reserved `.md`
 file is a Concept whose ID is its path minus `.md`. The only required

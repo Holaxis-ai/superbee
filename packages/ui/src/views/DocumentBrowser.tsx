@@ -6,7 +6,7 @@
  *
  * Each group is collapsible; a kind whose convention declares `browse_collapsed: true`
  * (`KindConvention.browseCollapsed`) starts CLOSED — a bundle-declared marker, so the shell never
- * privileges a kind by name (gate 3). Within a group, the newest {@link GROUP_CAP} show, with a
+ * privileges a kind by name. Within a group, the newest {@link GROUP_CAP} show, with a
  * "show all N" expander. Typing in the filter FLATTENS to a recency-sorted match list across every
  * kind. Live: any doc change refetches the head list (invalidate-and-refetch, like the feed).
  */

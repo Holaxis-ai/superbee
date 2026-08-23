@@ -11,11 +11,100 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8"));
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
+const contributing = readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
+const okfBundleSource = readFileSync(path.join(root, "packages", "core", "src", "bundle.ts"), "utf8");
+const meaningfulChangeSource = readFileSync(
+  path.join(root, "packages", "core", "src", "meaningful-change-time.ts"),
+  "utf8",
+);
+const linkSource = readFileSync(path.join(root, "packages", "core", "src", "links.ts"), "utf8");
+const sampleOkfReference = readFileSync(
+  path.join(root, "examples", "sample-bundle", "references", "okf-spec.md"),
+  "utf8",
+);
 const wrapperSources = Object.fromEntries(
   Object.values(manifest.lanes)
     .filter((lane) => lane.wrapper)
     .map((lane) => [lane.wrapper, readFileSync(path.join(root, lane.wrapper), "utf8")]),
 );
+
+function projectionRows(text, name) {
+  const start = `<!-- contributing-${name}:start -->`;
+  const end = `<!-- contributing-${name}:end -->`;
+  const startAt = text.indexOf(start);
+  const endAt = text.indexOf(end);
+  assert.ok(startAt >= 0, `missing ${name} projection start`);
+  assert.ok(endAt > startAt, `missing ${name} projection end`);
+  return text
+    .slice(startAt + start.length, endAt)
+    .split("\n")
+    .filter((line) => line.startsWith("|"))
+    .slice(2)
+    .map((line) => line.slice(1, -1).split("|").map((cell) => cell.trim().replaceAll("`", "")));
+}
+
+function validateContributorAuthority(
+  text,
+  candidateManifest = manifest,
+  packageJson = pkg,
+  sources = { okfBundleSource, meaningfulChangeSource, linkSource, sampleOkfReference },
+) {
+  for (const heading of ["## OKF compatibility", "## Findings and commitments", "## Assurance evolution"]) {
+    assert.match(text, new RegExp(`^${heading}$`, "m"), `missing exact contributor anchor ${heading}`);
+  }
+  for (const pointer of [
+    "scripts/ci-lanes.json",
+    ".github/workflows/ci-tests.yml",
+    "conventions/task",
+    "conventions/review",
+  ]) {
+    assert.ok(text.includes(pointer), `missing contributor pointer ${pointer}`);
+  }
+
+  const laneRows = candidateManifest.required_jobs.map((name) => {
+    const lane = candidateManifest.lanes[name];
+    assert.ok(lane, `required contributor lane ${name} is missing`);
+    if (lane.script) {
+      assert.ok(packageJson.scripts[lane.script], `contributor lane ${name} references missing package script`);
+    }
+    return [name, lane.script ? `npm run ${lane.script}` : "workflow only", name, lane.nodes.join(", ")];
+  });
+  assert.deepEqual(
+    projectionRows(text, "ci-lanes"),
+    laneRows,
+    "the contributor lane projection must match the executable manifest and package scripts",
+  );
+
+  assert.deepEqual(projectionRows(text, "okf-matrix"), [
+    ["0.1", "--okf-version 0.1", "retain 0.1", "top-level timestamp", "this section plus core edition tests"],
+    [
+      "0.2",
+      "default",
+      "retain 0.2",
+      "generated.at when present, with legacy timestamp fallback for reads",
+      "this section plus core edition tests",
+    ],
+  ]);
+  assert.match(sources.okfBundleSource, /SUPPORTED_OKF_AUTHORING_VERSIONS = \["0\.1", "0\.2"\]/);
+  assert.match(sources.okfBundleSource, /DEFAULT_OKF_AUTHORING_VERSION = "0\.2"/);
+  assert.match(sources.meaningfulChangeSource, /if \(at !== undefined\) return at;[\s\S]*return frontmatter\.timestamp;/);
+  assert.match(sources.linkSource, /return `\$\{rel\}\.md`;/);
+  assert.match(sources.sampleOkfReference, /description: A version-scoped OKF v0\.1 interop reference/);
+  assert.match(sources.sampleOkfReference, /This reference is scoped to OKF v0\.1 interop/);
+
+  for (const policy of [
+    /A specification statement is not a work commitment/,
+    /every release-relevant `VIOLATED` or `UNKNOWN` statement must link to/,
+    /Missing, stale, unavailable, or unqueryable evidence is not an\s+approval/,
+    /five most recent completed units of the same change type and assurance stage within[\s\S]*previous 180 days/,
+    /Fewer than three comparable Review records is insufficient evidence/,
+    /persist the exact selection at[\s\S]*with a report of verdicts/,
+    /Review that report as a `subject_kind: process` Review/,
+    /leaves the current assurance stage unchanged/,
+  ]) {
+    assert.match(text, policy, `missing contributor workflow policy ${policy}`);
+  }
+}
 
 function validateLaneManifest(candidate, packageJson = pkg, sources = wrapperSources) {
   assert.equal(candidate.schema, "superbee.ci-lanes.v1");
@@ -69,6 +158,40 @@ function validateLaneManifest(candidate, packageJson = pkg, sources = wrapperSou
 test("the lane manifest owns every complete local-check component exactly once", () => {
   validateLaneManifest(manifest);
   assert.deepEqual(REQUIRED_JOBS, manifest.required_jobs);
+});
+
+test("the contributor authority agrees with CI topology and both OKF editions", () => {
+  validateContributorAuthority(contributing);
+});
+
+test("contributor projections fail red on lane, edition, pointer, and assurance drift", () => {
+  const renamedLane = structuredClone(manifest);
+  renamedLane.lanes.runtime.script = "ci:runtime-renamed";
+  assert.throws(
+    () => validateContributorAuthority(contributing, renamedLane),
+    /missing package script/,
+  );
+
+  assert.throws(
+    () => validateContributorAuthority(contributing.replace("npm run ci:runtime", "npm run test")),
+    /contributor lane projection/,
+  );
+  assert.throws(
+    () => validateContributorAuthority(contributing.replace("retain 0.2", "upgrade to 0.2")),
+    /strictly deep-equal/,
+  );
+  assert.throws(
+    () => validateContributorAuthority(contributing.replace(".github/workflows/ci-tests.yml", "CI")),
+    /missing contributor pointer/,
+  );
+  assert.throws(
+    () => validateContributorAuthority(contributing.replace("persist the exact selection at", "inspect a sample at")),
+    /missing contributor workflow policy/,
+  );
+  assert.throws(
+    () => validateContributorAuthority(contributing.replace("leaves the current assurance stage unchanged", "permits an exception")),
+    /missing contributor workflow policy/,
+  );
 });
 
 test("lane ownership is pinned to executing scripts and the exhaustive wrapper", () => {

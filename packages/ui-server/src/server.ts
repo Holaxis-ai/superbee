@@ -400,7 +400,7 @@ async function workspacesSummary(options: UiServerOptions): Promise<WorkspaceSum
 
 /**
  * The bundle's kind conventions for the shell's bridge `open` filter, derived by core's
- * `loadKinds` — the ONE registry (gate 3) — over the mode-appropriate bundle. The browser never
+ * `loadKinds` — the ONE registry — over the mode-appropriate bundle. The browser never
  * re-implements discovery/dedupe; it consumes this serialized registry plus core's pure
  * `isTerminal`. Best-effort: a bundle that cannot be read (e.g. a remote hiccup) yields an empty
  * registry, which makes `open` filter nothing — the same posture as `list --open` on a bundle
@@ -449,7 +449,7 @@ async function viewsResponse(options: UiServerOptions): Promise<Response> {
 }
 
 /**
- * The bundle's derived edge list (graph-query-v0's `queryEdges`, gate 3: proxied, never
+ * The bundle's derived edge list (graph-query-v0's `queryEdges`: proxied, never
  * reimplemented) for the bridge's `edges` request. Mode-aware exactly like `kindsResponse` above:
  * dir mode calls `queryEdges` over the mounted `Bundle`; remote mode calls it over the SAME
  * `RemoteBackend`-backed bundle `kindsResponse` already uses (`options.bundle`) — `queryEdges`

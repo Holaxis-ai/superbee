@@ -251,7 +251,7 @@ class OverReturningBackend extends MemoryBackend {
   }
 }
 
-test("engine re-filters an over-returning backend push-down (gate 3)", async () => {
+test("engine re-filters an over-returning backend push-down", async () => {
   const bundle: Bundle = { root: "mem://over", backend: new OverReturningBackend() };
   await seed(bundle);
   for (const filter of FILTERS) {

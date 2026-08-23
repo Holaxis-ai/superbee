@@ -13,7 +13,7 @@
  *
  * `test.before` builds the CLI once (`node build.mjs local-dev` in this package) so the test is self-contained
  * regardless of invocation order — no other test file in this package needs the built artifact, so
- * there is no existing "build once" convention to reuse (see CLAUDE.md's build/verify gate: `npm run
+ * there is no existing "build once" convention to reuse (see CONTRIBUTING.md's running checks: `npm run
  * build` normally precedes `npm test` in `npm run check`, but a bare `npm test -w @holaxis/aslite`
  * does not build first).
  *

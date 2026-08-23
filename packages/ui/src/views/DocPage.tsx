@@ -11,7 +11,7 @@
  * resync refetches unconditionally. A doc REMOVED while open lands in an honest terminal state
  * (PageFrame's revoke posture); an id that never existed renders not-found with a way home.
  * Kind-declared chips and the inline edge titles are display-only projections of the bundle's own
- * docs — mechanism in the shell, meaning from the bundle (gate 3).
+ * docs — mechanism in the shell, meaning from the bundle.
  */
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";

@@ -180,6 +180,166 @@ function versionHeaders(version: Version): Record<string, string> {
 const BUNDLE_PATH_RE = /^\/v0\/bundles\/([^/]+)\/(.*)$/;
 
 /**
+ * The complete public route/method registry for the reference router. Runtime dispatch consumes
+ * this table, and the repository contract test compares the same rows with WIRE-PROTOCOL.md, so a
+ * route cannot become reachable without entering the documented agreement surface.
+ */
+export const WIRE_ENDPOINTS = [
+  { id: "capabilities", resource: "capabilities", method: "GET", path: "/v0/capabilities" },
+  { id: "docs-list", resource: "docs", method: "GET", path: "/v0/bundles/{bundle}/docs" },
+  {
+    id: "docs-read-many",
+    resource: "docs-read-many",
+    method: "POST",
+    path: "/v0/bundles/{bundle}/docs:read-many",
+  },
+  { id: "doc-read", resource: "doc", method: "GET", path: "/v0/bundles/{bundle}/docs/{id...}" },
+  { id: "doc-write", resource: "doc", method: "PUT", path: "/v0/bundles/{bundle}/docs/{id...}" },
+  { id: "doc-head", resource: "doc", method: "HEAD", path: "/v0/bundles/{bundle}/docs/{id...}" },
+  { id: "doc-delete", resource: "doc", method: "DELETE", path: "/v0/bundles/{bundle}/docs/{id...}" },
+  {
+    id: "doc-versions",
+    resource: "doc-versions",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/docs/{id...}/versions",
+  },
+  {
+    id: "reserved-read",
+    resource: "reserved",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/reserved/{name}",
+  },
+  {
+    id: "reserved-write",
+    resource: "reserved",
+    method: "PUT",
+    path: "/v0/bundles/{bundle}/reserved/{name}",
+  },
+  { id: "blobs-list", resource: "blobs", method: "GET", path: "/v0/bundles/{bundle}/blobs" },
+  { id: "blob-read", resource: "blob", method: "GET", path: "/v0/bundles/{bundle}/blobs/{key...}" },
+  { id: "blob-write", resource: "blob", method: "PUT", path: "/v0/bundles/{bundle}/blobs/{key...}" },
+  { id: "blob-head", resource: "blob", method: "HEAD", path: "/v0/bundles/{bundle}/blobs/{key...}" },
+  {
+    id: "blob-delete",
+    resource: "blob",
+    method: "DELETE",
+    path: "/v0/bundles/{bundle}/blobs/{key...}",
+  },
+] as const;
+
+type WireResource = (typeof WIRE_ENDPOINTS)[number]["resource"];
+type WireEndpoint = (typeof WIRE_ENDPOINTS)[number];
+
+interface ResourceMatch {
+  resource: WireResource;
+  value?: string;
+}
+
+interface RegisteredWireRequest {
+  endpoint: WireEndpoint;
+  match: ResourceMatch;
+  searchParams: URLSearchParams;
+}
+
+/** Resolve pathname shapes independently from methods; the registry above owns allowed pairs. */
+function matchWireResources(pathname: string): ResourceMatch[] {
+  if (pathname === "/v0/capabilities") return [{ resource: "capabilities" }];
+
+  const match = BUNDLE_PATH_RE.exec(pathname);
+  if (!match) return [];
+  const rest = match[2] ?? "";
+
+  if (rest === "docs") return [{ resource: "docs" }];
+  if (rest === "docs:read-many") return [{ resource: "docs-read-many" }];
+  if (rest.startsWith("docs/")) {
+    const tail = rest.slice("docs/".length);
+    // GET gives the history sub-resource priority. Other declared member methods retain the
+    // documented ambiguity for a doc id whose own final segment is literally "versions".
+    return tail.endsWith("/versions")
+      ? [
+          { resource: "doc-versions", value: tail.slice(0, -"/versions".length) },
+          { resource: "doc", value: tail },
+        ]
+      : [{ resource: "doc", value: tail }];
+  }
+  if (rest.startsWith("reserved/")) {
+    return [{ resource: "reserved", value: rest.slice("reserved/".length) }];
+  }
+  if (rest === "blobs") return [{ resource: "blobs" }];
+  if (rest.startsWith("blobs/")) return [{ resource: "blob", value: rest.slice("blobs/".length) }];
+  return [];
+}
+
+function resolveWireEndpoint(
+  resources: readonly ResourceMatch[],
+  method: string,
+): { endpoint: WireEndpoint; match: ResourceMatch } | undefined {
+  for (const match of resources) {
+    const endpoint = WIRE_ENDPOINTS.find((row) => row.resource === match.resource && row.method === method);
+    if (endpoint) return { endpoint, match };
+  }
+  return undefined;
+}
+
+function unsupportedMethodResponse(method: string, match: ResourceMatch): Response {
+  let label: string;
+  switch (match.resource) {
+    case "docs":
+      label = "/docs";
+      break;
+    case "docs-read-many":
+      label = "/docs:read-many";
+      break;
+    case "doc":
+    case "doc-versions":
+      label = "a doc route";
+      break;
+    case "reserved":
+      label = "a reserved-file route";
+      break;
+    case "blobs":
+      label = "/blobs";
+      break;
+    case "blob":
+      label = "a blob route";
+      break;
+    case "capabilities":
+      label = "/v0/capabilities";
+      break;
+  }
+  return errorResponse(400, "USAGE", `unsupported method ${method} for ${label}`);
+}
+
+/**
+ * The sole raw URL/method boundary. Inner dispatch receives only a registered endpoint, its
+ * decoded-shape input, and query parameters; ordinary handler additions cannot make an undeclared
+ * method/path pair reachable by branching around the registry.
+ */
+function registeredWireRouter(
+  dispatch: (req: Request, registered: RegisteredWireRequest) => Promise<Response>,
+): (req: Request) => Promise<Response> {
+  return async function handle(req: Request): Promise<Response> {
+    let url: URL;
+    try {
+      url = new URL(req.url);
+    } catch {
+      return errorResponse(400, "USAGE", "invalid request URL");
+    }
+
+    const resources = matchWireResources(url.pathname);
+    if (resources.length === 0) return errorResponse(404, "NOT_FOUND", `no route for ${url.pathname}`);
+    const resolved = resolveWireEndpoint(resources, req.method);
+    if (!resolved) return unsupportedMethodResponse(req.method, resources[0]!);
+
+    try {
+      return await dispatch(req, { ...resolved, searchParams: url.searchParams });
+    } catch (err) {
+      return errorFromCaught(err);
+    }
+  };
+}
+
+/**
  * Build the fetch-style router directly over an explicit `backend` — no `Bundle`-shape
  * fallback to `new FilesystemBackend(...)`. This is the edge-runtime entry point: {@link
  * createRouter} falls back to constructing a `FilesystemBackend` when `bundle.backend` is
@@ -319,15 +479,15 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  async function handleList(url: URL): Promise<Response> {
-    const prefix = url.searchParams.get("prefix") ?? undefined;
-    const type = url.searchParams.get("type") ?? undefined;
-    const tags = url.searchParams.getAll("tag");
-    const fields = url.searchParams.get("fields");
-    const limitParam = url.searchParams.get("limit");
+  async function handleList(searchParams: URLSearchParams): Promise<Response> {
+    const prefix = searchParams.get("prefix") ?? undefined;
+    const type = searchParams.get("type") ?? undefined;
+    const tags = searchParams.getAll("tag");
+    const fields = searchParams.get("fields");
+    const limitParam = searchParams.get("limit");
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : NaN;
     const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : DEFAULT_LIST_LIMIT;
-    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const cursor = searchParams.get("cursor") ?? undefined;
 
     // HEAD-FIRST scan (this route only ever projects frontmatter — bodies never leave it),
     // via core's ONE `queryHeads` implementation: it prefers the backend's optional
@@ -448,14 +608,14 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     return jsonResponse(200, { deleted });
   }
 
-  async function handleListBlobs(url: URL): Promise<Response> {
+  async function handleListBlobs(searchParams: URLSearchParams): Promise<Response> {
     // Mirrors handleList's prefix/limit/cursor pagination shape (B2) — no type/tag
     // filters (blobs carry no frontmatter to filter on), and rows are bare keys.
-    const prefix = url.searchParams.get("prefix") ?? undefined;
-    const limitParam = url.searchParams.get("limit");
+    const prefix = searchParams.get("prefix") ?? undefined;
+    const limitParam = searchParams.get("limit");
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : NaN;
     const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : DEFAULT_LIST_LIMIT;
-    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const cursor = searchParams.get("cursor") ?? undefined;
 
     const keys = await backend.listBlobs(prefix); // already sorted (localeCompare, backend contract)
     const count = keys.length;
@@ -492,70 +652,45 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  return async function handle(req: Request): Promise<Response> {
-    let url: URL;
-    try {
-      url = new URL(req.url);
-    } catch {
-      return errorResponse(400, "USAGE", "invalid request URL");
-    }
-
-    if (url.pathname === "/v0/capabilities") {
-      return handleCapabilities();
-    }
-
-    const match = BUNDLE_PATH_RE.exec(url.pathname);
-    if (!match) return errorResponse(404, "NOT_FOUND", `no route for ${url.pathname}`);
-    const rest = match[2] ?? "";
-
-    try {
-      if (rest === "docs") {
-        if (req.method === "GET") return await handleList(url);
-        return errorResponse(400, "USAGE", `unsupported method ${req.method} for /docs`);
-      }
-      if (rest === "docs:read-many") {
-        if (req.method === "POST") return await handleReadMany(req);
-        return errorResponse(400, "USAGE", `unsupported method ${req.method} for /docs:read-many`);
-      }
-      if (rest.startsWith("docs/")) {
-        const tail = rest.slice("docs/".length);
-        // `.../versions` is a sub-resource of a doc id; an id whose OWN final segment is
-        // literally "versions" is ambiguous with this — a known, recorded deviation.
-        if (tail.endsWith("/versions") && req.method === "GET") {
-          return await handleVersions(decodeId(tail.slice(0, -"/versions".length)));
-        }
-        const id = decodeId(tail);
-        if (req.method === "GET") return await handleReadDoc(id);
-        if (req.method === "PUT") return await handleWriteDoc(id, req);
-        if (req.method === "HEAD") return await handleHeadDoc(id);
-        if (req.method === "DELETE") return await handleDeleteDoc(id, req);
-        return errorResponse(400, "USAGE", `unsupported method ${req.method} for a doc route`);
-      }
-      if (rest.startsWith("reserved/")) {
-        const name = rest.slice("reserved/".length);
+  return registeredWireRouter(async (req, { endpoint, match, searchParams }) => {
+    switch (endpoint.id) {
+      case "capabilities":
+        return handleCapabilities();
+      case "docs-list":
+        return await handleList(searchParams);
+      case "docs-read-many":
+        return await handleReadMany(req);
+      case "doc-versions":
+        return await handleVersions(decodeId(match.value!));
+      case "doc-read":
+        return await handleReadDoc(decodeId(match.value!));
+      case "doc-write":
+        return await handleWriteDoc(decodeId(match.value!), req);
+      case "doc-head":
+        return await handleHeadDoc(decodeId(match.value!));
+      case "doc-delete":
+        return await handleDeleteDoc(decodeId(match.value!), req);
+      case "reserved-read":
+      case "reserved-write": {
+        const name = match.value!;
         if (name !== "index.md" && name !== "log.md") {
           return errorResponse(400, "USAGE", `reserved file name must be index.md or log.md, got '${name}'`);
         }
-        const dir = url.searchParams.get("dir") ?? "";
-        if (req.method === "GET") return await handleReadReserved(dir, name);
-        if (req.method === "PUT") return await handleWriteReserved(dir, name, req);
-        return errorResponse(400, "USAGE", `unsupported method ${req.method} for a reserved-file route`);
+        const dir = searchParams.get("dir") ?? "";
+        return endpoint.id === "reserved-read"
+          ? await handleReadReserved(dir, name)
+          : await handleWriteReserved(dir, name, req);
       }
-      if (rest === "blobs") {
-        if (req.method === "GET") return await handleListBlobs(url);
-        return errorResponse(400, "USAGE", `unsupported method ${req.method} for /blobs`);
-      }
-      if (rest.startsWith("blobs/")) {
-        const key = decodeBlobKey(rest.slice("blobs/".length));
-        if (req.method === "GET") return await handleReadBlob(key);
-        if (req.method === "PUT") return await handleWriteBlob(key, req);
-        if (req.method === "HEAD") return await handleHeadBlob(key);
-        if (req.method === "DELETE") return await handleDeleteBlob(key, req);
-        return errorResponse(400, "USAGE", `unsupported method ${req.method} for a blob route`);
-      }
-      return errorResponse(404, "NOT_FOUND", `no route for ${url.pathname}`);
-    } catch (err) {
-      return errorFromCaught(err);
+      case "blobs-list":
+        return await handleListBlobs(searchParams);
+      case "blob-read":
+        return await handleReadBlob(decodeBlobKey(match.value!));
+      case "blob-write":
+        return await handleWriteBlob(decodeBlobKey(match.value!), req);
+      case "blob-head":
+        return await handleHeadBlob(decodeBlobKey(match.value!));
+      case "blob-delete":
+        return await handleDeleteBlob(decodeBlobKey(match.value!), req);
     }
-  };
+  });
 }

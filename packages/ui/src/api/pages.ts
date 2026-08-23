@@ -102,7 +102,7 @@ export async function resolvePageTarget(pageId: string): Promise<boolean> {
 
 /**
  * `GET /__ui/kinds` — the bundle's kind registry, serialized by the server from core's
- * `loadKinds` (gate 3: ONE registry; the browser consumes it, never re-implements discovery).
+ * `loadKinds` (ONE registry; the browser consumes it, never re-implements discovery).
  * Feeds the bridge's `open` filter. Cached until {@link invalidateKinds}; errors yield an empty
  * registry (=> `open` filters nothing — `list --open`'s posture on a terminal-free bundle).
  */

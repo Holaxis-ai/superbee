@@ -135,7 +135,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   const okfVersion = resolveOkfAuthoringVersion(
     requestedOkfVersion === undefined ? undefined : requestedOkfVersion.trim(),
   );
-  // The engine (`initBundle`) no longer seeds anything (CLAUDE.md gate 3: core special-cases
+  // The engine (`initBundle`) no longer seeds anything (the kind-convention contract: core special-cases
   // nothing about conventions) — it just creates the bundle. `init` applies the default recipe
   // via the SAME generic machinery `recipe add` uses (decision 2: full self-hosting from day
   // one, now expressed as a product-surface commitment in the CLI, not an engine default).

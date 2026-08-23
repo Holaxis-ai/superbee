@@ -2,7 +2,7 @@
 // `KindRegistry`'s per-kind `links` declarations into one `link-type text -> declaring kind(s)`
 // index. Consumed by BOTH `link.ts` (write-time lint on a just-added edge) and `status.ts`
 // (bundle-wide `link_type_violations` sweep) — kept here so the two commands share ONE
-// derivation instead of each carrying its own copy (gate 3: one registry, no parallel logic).
+// derivation instead of each carrying its own copy (one registry, no parallel logic).
 import type { KindRegistry } from "@superbee/core";
 
 /** One kind's declared `links` entry for a given link-type text: the declaring kind + its required target kind. */

@@ -811,7 +811,7 @@ test("pairing chain: the documented pull → edit → promote steps in the roadm
   }
 });
 
-test("gate 3 / conventions-free: init's default does NOT install roadmap — a bundle stays roadmap-free until it opts in", async () => {
+test("conventions-free: init's default does NOT install roadmap — a bundle stays roadmap-free until it opts in", async () => {
   const dir = await tempDir();
   try {
     await init(["--dir", dir], { stdout: () => {} });

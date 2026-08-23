@@ -1551,7 +1551,7 @@ test("kindConventionDoc: sanitizes programmatic description metadata before it c
   assert.deepEqual(parsedInvalidOnly.warnings, []);
 });
 
-// ── core never seeds (Recipes Unit A, CLAUDE.md gate 3) ──────────────────────────
+// ── core never seeds (the kind-convention contract) ──────────────────────────────
 //
 // Context Note seeding moved OUT of core entirely into the CLI's recipe machinery
 // (`packages/cli/src/recipes.ts`'s `context-notes` recipe + `applyRecipe`). The engine keeps only

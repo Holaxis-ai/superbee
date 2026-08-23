@@ -364,7 +364,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   let kindCols: string[] | undefined;
   let kindProgressCoordinate: ReturnType<typeof progressStatusCoordinate>;
   if (!fieldsFlagGiven && filter.type && docs.length > 0) {
-    const registry = await getRegistry(); // command-layer, loaded AT MOST once (gate 3)
+    const registry = await getRegistry(); // command-layer, loaded AT MOST once per invocation
     const kind = registry.kinds.get(filter.type);
     if (kind) {
       kindProgressCoordinate = progressStatusCoordinate(await getOkfVersion(), kind);

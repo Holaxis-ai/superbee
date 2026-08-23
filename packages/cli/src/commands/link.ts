@@ -299,7 +299,7 @@ export async function link(argv: string[], deps: Partial<LinkCliDeps> = {}): Pro
  * The near-miss hint for a `--text` filter that matched nothing: names the distinct link texts
  * that ARE present (sorted), so a typo/case near-miss reads as "here's what's actually here"
  * instead of "empty graph". Shared VERBATIM by `link show` and `link list` — one hint, never a
- * second independently-worded near-miss message (gate 3's "one X" spirit applied to CLI prose,
+ * second independently-worded near-miss message (the single-authority rule applied to CLI prose,
  * not just engine code). `scope` supplies the caller-specific qualifier `link show` needs
  * ("in either direction", since it filters two link lists at once) that `link list`'s single
  * filtered edge list has no equivalent for (pass "").
@@ -351,7 +351,7 @@ export interface AddLinkResult {
  * retry) → write-time link guidance. Extracted out of `linkAdd` below (the CLI
  * subcommand, which composes this into its own receipt shape unchanged) so `new --link`
  * (`commands/new.ts` — one-step create+link) rides the EXACT SAME machinery instead of a second
- * hand-rolled link-writer (gate 3: one link resolver, no parallel implementation).
+ * hand-rolled link-writer (one link resolver, no parallel implementation).
  */
 export async function addLink(
   bundle: Bundle,
