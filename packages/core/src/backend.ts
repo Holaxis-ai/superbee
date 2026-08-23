@@ -268,9 +268,9 @@ export class FilesystemBackend implements StorageBackend {
 
   /**
    * Verify every existing component is exactly the requested component, not merely a
-   * case-/normalization-folded lookup accepted by the host filesystem. `realpath` supplies the
-   * spelling actually selected by that filesystem; a missing suffix is ordinary and will be
-   * classified by {@link realizeFileTarget} below.
+   * case-/normalization-folded lookup accepted by the host filesystem. `readdir` is the spelling
+   * authority: JavaScript `realpath` can preserve the request's alias on APFS. `realpath` below
+   * remains only a symlink/physical-containment check after an exact directory entry is found.
    */
   private async assertExactRealization(rel: string): Promise<void> {
     const root = path.resolve(this.root);
@@ -284,15 +284,31 @@ export class FilesystemBackend implements StorageBackend {
 
     const components = rel.split("/");
     for (let i = 0; i < components.length; i += 1) {
-      const requested = path.join(root, ...components.slice(0, i + 1));
+      const expected = path.join(physicalRoot, ...components.slice(0, i + 1));
+      const parent = path.dirname(expected);
+      const component = components[i]!;
+      const entries = await readDirectory(parent);
+      if (!entries.some((entry) => entry.name === component)) {
+        try {
+          // A successful lookup without a byte-for-byte directory entry is precisely a folded
+          // alias. A genuinely absent suffix remains absent and is classified by lstat below.
+          await fs.lstat(expected);
+        } catch (err) {
+          if (isEnoent(err)) return;
+          throw err;
+        }
+        throw new InvalidInputError(
+          `Filesystem target '${rel}' does not realize with its exact spelling and normalization.`,
+        );
+      }
+
       let realized: string;
       try {
-        realized = await fs.realpath(requested);
+        realized = await fs.realpath(expected);
       } catch (err) {
         if (isEnoent(err)) return;
         throw err;
       }
-      const expected = path.join(physicalRoot, ...components.slice(0, i + 1));
       if (realized !== expected) {
         throw new InvalidInputError(
           `Filesystem target '${rel}' does not realize with its exact spelling and normalization.`,

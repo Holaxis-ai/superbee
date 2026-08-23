@@ -33,10 +33,11 @@ function errno(code: "EACCES" | "EPERM") {
   return Object.assign(new Error(`injected ${code}`), { code });
 }
 
-async function aliases(target: string): Promise<boolean> {
+/** True only when the host resolves a folded alias but its directory reports different bytes. */
+async function resolvesDifferentlySpelledEntry(target: string): Promise<boolean> {
   try {
     await fs.lstat(target);
-    return true;
+    return !(await fs.readdir(path.dirname(target))).includes(path.basename(target));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
@@ -170,7 +171,7 @@ export function registerFilesystemSemanticsContract(options: FilesystemSemantics
     try {
       const { backend, root } = fixture;
       await writeFile(path.join(root, "Case.md"), "---\ntype: ContractFixture\n---\nbody\n");
-      if (await aliases(path.join(root, "case.md"))) {
+      if (await resolvesDifferentlySpelledEntry(path.join(root, "case.md"))) {
         await assert.rejects(() => backend.read("case"), InvalidInputError);
         await assert.rejects(() => backend.write("case", document("case"), { expectedVersion: null }), InvalidInputError);
       }
@@ -178,7 +179,7 @@ export function registerFilesystemSemanticsContract(options: FilesystemSemantics
       const decomposed = "cafe\u0301.md";
       const composed = "caf\u00e9.md";
       await writeFile(path.join(root, decomposed), "---\ntype: ContractFixture\n---\nbody\n");
-      if (await aliases(path.join(root, composed))) {
+      if (await resolvesDifferentlySpelledEntry(path.join(root, composed))) {
         await assert.rejects(() => backend.read("caf\u00e9"), InvalidInputError);
         await assert.rejects(() => backend.write("caf\u00e9", document("caf\u00e9"), { expectedVersion: null }), InvalidInputError);
       }
