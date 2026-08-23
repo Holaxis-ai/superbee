@@ -135,6 +135,15 @@ function coreSourceSpecifierInExpression(
     expression.expression.text === "URL" &&
     expression.arguments?.[0] !== undefined
   ) {
+    const [specifier, base] = expression.arguments;
+    // The scanner deliberately follows only literal URL inputs; computed bases remain runtime-only.
+    if (ts.isStringLiteralLike(specifier) && ts.isStringLiteralLike(base) && base.text.startsWith("file:")) {
+      try {
+        return coreBoundaryBypass(file, new URL(specifier.text, base.text).href);
+      } catch {
+        return null;
+      }
+    }
     return coreSourceSpecifierInExpression(file, expression.arguments[0], urls);
   }
   return null;
@@ -317,6 +326,7 @@ test("first-party source-bypass scanner rejects static core package-boundary byp
     'namespacedLoad("../../core/src/backend.js");',
     'void import("../../core/dist/index.js");',
     `void import(${JSON.stringify(`file://${path.join(DIST_ROOT, "private.js")}`)});`,
+    `void import(new URL("./backend.js", ${JSON.stringify(`file://${DIST_ROOT}/`)}));`,
     'import { privateCoreThing } from "@superbee/core/private";',
     'import { isTerminal } from "@superbee/core/kinds";',
   ].join("\n");
@@ -333,6 +343,7 @@ test("first-party source-bypass scanner rejects static core package-boundary byp
     'packages/cli/test/source-bypass.ts:14 — core package-boundary bypass "../../core/src/backend.js"',
     'packages/cli/test/source-bypass.ts:15 — core package-boundary bypass "../../core/dist/index.js"',
     `packages/cli/test/source-bypass.ts:16 — core package-boundary bypass "file://${path.join(DIST_ROOT, "private.js")}"`,
-    'packages/cli/test/source-bypass.ts:17 — core package-boundary bypass "@superbee/core/private"',
+    `packages/cli/test/source-bypass.ts:17 — core package-boundary bypass "file://${path.join(DIST_ROOT, "backend.js")}"`,
+    'packages/cli/test/source-bypass.ts:18 — core package-boundary bypass "@superbee/core/private"',
   ]);
 });
