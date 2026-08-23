@@ -349,16 +349,23 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
 
   if (opts.mode === "create-only") {
     const decisionNow = onceNow(now);
-    const attributed = attributeCandidate(
+    const candidateWithMetadata = withV02Metadata(
       await opts.buildCandidate(undefined, context),
+      undefined,
+      okfVersion,
+      opts.registry,
+      decisionNow,
+      metadataMode,
+    );
+    const attributed = attributeCandidate(
+      candidateWithMetadata,
       opts.actor,
       persistActor,
       okfVersion,
       opts.registry,
     );
-    const candidate = withV02Metadata(attributed, undefined, okfVersion, opts.registry, decisionNow, metadataMode);
-    const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, decisionNow);
-    const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
+    const { warnings } = validateCandidate(opts.id, attributed, opts.registry, opts.strict, okfVersion, decisionNow);
+    const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...attributed }, okfVersion, {
       expectedVersion: null,
       actor: opts.actor,
     });
@@ -382,14 +389,21 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       read: readExisting,
       decide: async (existing) => {
         const decisionNow = onceNow(now);
-        const attributed = attributeCandidate(
+        const candidateWithMetadata = withV02Metadata(
           await opts.buildCandidate(existing, context),
+          existing,
+          okfVersion,
+          opts.registry,
+          decisionNow,
+          metadataMode,
+        );
+        let candidate = attributeCandidate(
+          candidateWithMetadata,
           opts.actor,
           persistActor,
           okfVersion,
           opts.registry,
         );
-        let candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, metadataMode);
         const validated = validateCandidate(
           opts.id,
           candidate,
@@ -471,15 +485,21 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         throw new VersionConflict(opts.id, opts.expectedVersion!, lastReadVersion);
       }
 
-      const rawCandidate = await opts.buildCandidate(existing, context);
-      const attributed = attributeCandidate(
-        rawCandidate,
+      const candidateWithMetadata = withV02Metadata(
+        await opts.buildCandidate(existing, context),
+        existing,
+        okfVersion,
+        opts.registry,
+        decisionNow,
+        metadataMode,
+      );
+      let candidate = attributeCandidate(
+        candidateWithMetadata,
         opts.actor,
         persistActor,
         okfVersion,
         opts.registry,
       );
-      let candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, metadataMode);
       const validated = validateCandidate(
         opts.id,
         candidate,

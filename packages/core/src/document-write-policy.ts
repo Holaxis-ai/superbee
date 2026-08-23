@@ -116,12 +116,7 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
 } {
   const existingGenerated = generatedRecord(opts.existing?.frontmatter.generated, "existing generated");
   const declaredCandidateGenerated = generatedRecord(opts.candidate.frontmatter.generated, "generated");
-  const candidateGenerated = opts.requireGenerationClock && !declaredCandidateGenerated
-    ? { by: "process:superbee" }
-    : declaredCandidateGenerated;
-  const frontmatter: Frontmatter = candidateGenerated === declaredCandidateGenerated
-    ? { ...opts.candidate.frontmatter }
-    : { ...opts.candidate.frontmatter, generated: candidateGenerated };
+  const frontmatter: Frontmatter = { ...opts.candidate.frontmatter };
   if (
     opts.existing
     && !hasOwn(frontmatter, "verified")
@@ -129,6 +124,23 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   ) {
     frontmatter.verified = opts.existing.frontmatter.verified;
   }
+
+  // Decide meaningfulness before synthesizing the core-default generation metadata. Otherwise a
+  // verification-only mutation of an older, unclocked document sees the synthetic `generated.by`
+  // as content and incorrectly makes freshness jump to this mutation.
+  const comparableGenerated = declaredCandidateGenerated
+    ? { ...existingGenerated, ...declaredCandidateGenerated }
+    : existingGenerated;
+  const meaningfulContentChanged = !opts.existing || v02MeaningfulContentChanged(opts.existing, {
+    ...opts.candidate,
+    frontmatter: comparableGenerated
+      ? { ...frontmatter, generated: comparableGenerated }
+      : frontmatter,
+  });
+  const candidateGenerated = opts.requireGenerationClock && !declaredCandidateGenerated && meaningfulContentChanged
+    ? { by: "process:superbee" }
+    : declaredCandidateGenerated;
+  if (candidateGenerated !== declaredCandidateGenerated) frontmatter.generated = candidateGenerated;
   if (!existingGenerated && !candidateGenerated) return { ...opts.candidate, frontmatter };
 
   const candidateHasBy = candidateGenerated ? hasOwn(candidateGenerated, "by") : false;
@@ -152,10 +164,7 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
     else if (typeof generated.at !== "string" || Number.isNaN(Date.parse(generated.at))) {
       throw new InvalidInputError("OKF v0.2 generated.at must be an ISO-8601 date/time when present");
     }
-  } else if (v02MeaningfulContentChanged(opts.existing, {
-    ...opts.candidate,
-    frontmatter: { ...frontmatter, generated },
-  })) {
+  } else if (meaningfulContentChanged) {
     generated.at = opts.meaningfulChangeAt;
   } else if (existingGenerated && hasOwn(existingGenerated, "at")) {
     generated.at = existingGenerated.at;

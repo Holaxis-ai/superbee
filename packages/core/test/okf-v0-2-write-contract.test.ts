@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { createRouter } from "@superbee/server";
 
-import { docVersions, readDocVersioned } from "../src/bundle.js";
+import { docVersions, readDocVersioned, writeDocVersioned } from "../src/bundle.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
@@ -169,6 +169,63 @@ test("v0.2 mutation attribution agrees across retained history and the filesyste
     }
   } finally {
     await Promise.all(adapters.map((harness) => harness.cleanup()));
+  }
+});
+
+test("v0.2 verification-only mutations leave unclocked documents unclocked across all storage adapters", async () => {
+  const rows: Array<{ name: string; doc: unknown; version: string; actor: string | undefined }> = [];
+  const adapters = await harnesses();
+  try {
+    for (const harness of adapters) {
+      await writeDocVersioned(harness.bundle, {
+        id: "notes/unclocked-verification",
+        frontmatter: {
+          type: "Note",
+          title: "Unclocked verification",
+          verified: [{ at: "2026-08-01T00:00:00.000Z", by: "human:first" }],
+        },
+        body: "body\n",
+      });
+
+      const verified = await mutateDocument({
+        bundle: harness.bundle,
+        id: "notes/unclocked-verification",
+        mode: "patch",
+        registry: EMPTY_REGISTRY,
+        strict: false,
+        actor: "human:reviewer",
+        now: () => "2026-08-14T12:00:00.000Z",
+        buildCandidate: (existing) => ({
+          frontmatter: {
+            ...existing!.frontmatter,
+            verified: [
+              ...(existing!.frontmatter.verified as unknown[]),
+              { at: "2026-08-14T11:00:00.000Z", by: "human:reviewer" },
+            ],
+          },
+          body: existing!.body,
+        }),
+      });
+
+      assert.equal(verified.changed, true, harness.name);
+      assert.equal(verified.doc.frontmatter.generated, undefined, harness.name);
+      assert.equal(verified.doc.frontmatter.superbee_updated_by, "human:reviewer", harness.name);
+      rows.push({
+        name: harness.name,
+        doc: verified.doc,
+        version: verified.version,
+        actor: (await docVersions(harness.bundle, "notes/unclocked-verification"))[0]?.actor,
+      });
+    }
+  } finally {
+    await Promise.all(adapters.map((harness) => harness.cleanup()));
+  }
+
+  const baseline = rows[0]!;
+  for (const row of rows.slice(1)) {
+    assert.deepEqual(row.doc, baseline.doc, `${row.name} final document`);
+    assert.equal(row.version, baseline.version, `${row.name} final version`);
+    assert.equal(row.actor, baseline.actor, `${row.name} final actor`);
   }
 });
 
