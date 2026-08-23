@@ -70,6 +70,8 @@ export function renderReceiptMarkdown(built) {
     "One command downloads the stage, verifies the SHA, and uploads your SIGNED inspection",
     "receipt (the finalize ordering gate consumes it; stable candidates REQUIRE it):",
     "",
+    "Set `SUPERBEE_RELEASE_INSPECTION_KEY` to your local signing-key path, or append `--key <path>`:",
+    "",
     "```sh",
     emission.inspected,
     "```",

@@ -596,7 +596,7 @@ export function receiptEmissionCommands({ stageId, version, draftReleaseId }) {
   field("stage id", stageId, stageId === DRY_RUN_STAGE_ID ? /^dry-run-stage$/ : LIVE_STAGE_ID);
   strictVersion("version", version);
   field("draft release id", draftReleaseId, TOKEN);
-  const base = `node scripts/release-inspect.mjs --stage-id ${stageId} --version ${version} --draft-release-id ${draftReleaseId} --key ~/.ssh/id_ed25519`;
+  const base = `node scripts/release-inspect.mjs --stage-id ${stageId} --version ${version} --draft-release-id ${draftReleaseId}`;
   return {
     inspected: base,
     approved: `${base} --decision approved`,
