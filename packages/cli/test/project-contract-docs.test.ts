@@ -189,6 +189,21 @@ test("wire contract pins the complete implemented route/method table and every p
   assert.deepEqual(endpointRows, implementedRows);
   assert.equal(new Set(implementedRows).size, implementedRows.length, "runtime route/method rows must be unique");
 
+  const routerSource = readProjectFile("packages/server/src/router.ts");
+  const boundaryStart = routerSource.indexOf("function registeredWireRouter(");
+  const boundaryEnd = routerSource.indexOf("\n/**\n * Build the fetch-style router", boundaryStart);
+  assert.ok(boundaryStart >= 0 && boundaryEnd > boundaryStart, "registered wire boundary must remain identifiable");
+  const rawBoundary = routerSource.slice(boundaryStart, boundaryEnd);
+  const outsideBoundary = routerSource.slice(0, boundaryStart) + routerSource.slice(boundaryEnd);
+  assert.equal((rawBoundary.match(/req\.url/g) ?? []).length, 1, "the boundary owns one raw URL read");
+  assert.equal((rawBoundary.match(/req\.method/g) ?? []).length, 2, "the boundary owns method resolution and refusal");
+  assert.equal((rawBoundary.match(/url\.pathname/g) ?? []).length, 2, "the boundary owns path matching and refusal");
+  assert.doesNotMatch(
+    outsideBoundary,
+    /\b(?:req|request)\.(?:url|method)\b|\burl\.pathname\b/,
+    "raw route identity must not be read outside registeredWireRouter",
+  );
+
   const proofRows = contract.split("\n").filter((line) => /^\| WIRE-PROOF-\d{2} \|/.test(line));
   assertEvidenceRows(
     proofRows,

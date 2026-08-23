@@ -235,6 +235,12 @@ interface ResourceMatch {
   value?: string;
 }
 
+interface RegisteredWireRequest {
+  endpoint: WireEndpoint;
+  match: ResourceMatch;
+  searchParams: URLSearchParams;
+}
+
 /** Resolve pathname shapes independently from methods; the registry above owns allowed pairs. */
 function matchWireResources(pathname: string): ResourceMatch[] {
   if (pathname === "/v0/capabilities") return [{ resource: "capabilities" }];
@@ -302,6 +308,35 @@ function unsupportedMethodResponse(method: string, match: ResourceMatch): Respon
       break;
   }
   return errorResponse(400, "USAGE", `unsupported method ${method} for ${label}`);
+}
+
+/**
+ * The sole raw URL/method boundary. Inner dispatch receives only a registered endpoint, its
+ * decoded-shape input, and query parameters; ordinary handler additions cannot make an undeclared
+ * method/path pair reachable by branching around the registry.
+ */
+function registeredWireRouter(
+  dispatch: (req: Request, registered: RegisteredWireRequest) => Promise<Response>,
+): (req: Request) => Promise<Response> {
+  return async function handle(req: Request): Promise<Response> {
+    let url: URL;
+    try {
+      url = new URL(req.url);
+    } catch {
+      return errorResponse(400, "USAGE", "invalid request URL");
+    }
+
+    const resources = matchWireResources(url.pathname);
+    if (resources.length === 0) return errorResponse(404, "NOT_FOUND", `no route for ${url.pathname}`);
+    const resolved = resolveWireEndpoint(resources, req.method);
+    if (!resolved) return unsupportedMethodResponse(req.method, resources[0]!);
+
+    try {
+      return await dispatch(req, { ...resolved, searchParams: url.searchParams });
+    } catch (err) {
+      return errorFromCaught(err);
+    }
+  };
 }
 
 /**
@@ -444,15 +479,15 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  async function handleList(url: URL): Promise<Response> {
-    const prefix = url.searchParams.get("prefix") ?? undefined;
-    const type = url.searchParams.get("type") ?? undefined;
-    const tags = url.searchParams.getAll("tag");
-    const fields = url.searchParams.get("fields");
-    const limitParam = url.searchParams.get("limit");
+  async function handleList(searchParams: URLSearchParams): Promise<Response> {
+    const prefix = searchParams.get("prefix") ?? undefined;
+    const type = searchParams.get("type") ?? undefined;
+    const tags = searchParams.getAll("tag");
+    const fields = searchParams.get("fields");
+    const limitParam = searchParams.get("limit");
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : NaN;
     const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : DEFAULT_LIST_LIMIT;
-    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const cursor = searchParams.get("cursor") ?? undefined;
 
     // HEAD-FIRST scan (this route only ever projects frontmatter — bodies never leave it),
     // via core's ONE `queryHeads` implementation: it prefers the backend's optional
@@ -573,14 +608,14 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     return jsonResponse(200, { deleted });
   }
 
-  async function handleListBlobs(url: URL): Promise<Response> {
+  async function handleListBlobs(searchParams: URLSearchParams): Promise<Response> {
     // Mirrors handleList's prefix/limit/cursor pagination shape (B2) — no type/tag
     // filters (blobs carry no frontmatter to filter on), and rows are bare keys.
-    const prefix = url.searchParams.get("prefix") ?? undefined;
-    const limitParam = url.searchParams.get("limit");
+    const prefix = searchParams.get("prefix") ?? undefined;
+    const limitParam = searchParams.get("limit");
     const parsedLimit = limitParam ? parseInt(limitParam, 10) : NaN;
     const limit = Number.isFinite(parsedLimit) && parsedLimit > 0 ? parsedLimit : DEFAULT_LIST_LIMIT;
-    const cursor = url.searchParams.get("cursor") ?? undefined;
+    const cursor = searchParams.get("cursor") ?? undefined;
 
     const keys = await backend.listBlobs(prefix); // already sorted (localeCompare, backend contract)
     const count = keys.length;
@@ -617,62 +652,45 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  return async function handle(req: Request): Promise<Response> {
-    let url: URL;
-    try {
-      url = new URL(req.url);
-    } catch {
-      return errorResponse(400, "USAGE", "invalid request URL");
-    }
-
-    const resources = matchWireResources(url.pathname);
-    if (resources.length === 0) return errorResponse(404, "NOT_FOUND", `no route for ${url.pathname}`);
-    const resolved = resolveWireEndpoint(resources, req.method);
-    if (!resolved) return unsupportedMethodResponse(req.method, resources[0]!);
-    const { endpoint, match } = resolved;
-
-    try {
-      switch (endpoint.id) {
-        case "capabilities":
-          return handleCapabilities();
-        case "docs-list":
-          return await handleList(url);
-        case "docs-read-many":
-          return await handleReadMany(req);
-        case "doc-versions":
-          return await handleVersions(decodeId(match.value!));
-        case "doc-read":
-          return await handleReadDoc(decodeId(match.value!));
-        case "doc-write":
-          return await handleWriteDoc(decodeId(match.value!), req);
-        case "doc-head":
-          return await handleHeadDoc(decodeId(match.value!));
-        case "doc-delete":
-          return await handleDeleteDoc(decodeId(match.value!), req);
-        case "reserved-read":
-        case "reserved-write": {
-          const name = match.value!;
-          if (name !== "index.md" && name !== "log.md") {
-            return errorResponse(400, "USAGE", `reserved file name must be index.md or log.md, got '${name}'`);
-          }
-          const dir = url.searchParams.get("dir") ?? "";
-          return endpoint.id === "reserved-read"
-            ? await handleReadReserved(dir, name)
-            : await handleWriteReserved(dir, name, req);
+  return registeredWireRouter(async (req, { endpoint, match, searchParams }) => {
+    switch (endpoint.id) {
+      case "capabilities":
+        return handleCapabilities();
+      case "docs-list":
+        return await handleList(searchParams);
+      case "docs-read-many":
+        return await handleReadMany(req);
+      case "doc-versions":
+        return await handleVersions(decodeId(match.value!));
+      case "doc-read":
+        return await handleReadDoc(decodeId(match.value!));
+      case "doc-write":
+        return await handleWriteDoc(decodeId(match.value!), req);
+      case "doc-head":
+        return await handleHeadDoc(decodeId(match.value!));
+      case "doc-delete":
+        return await handleDeleteDoc(decodeId(match.value!), req);
+      case "reserved-read":
+      case "reserved-write": {
+        const name = match.value!;
+        if (name !== "index.md" && name !== "log.md") {
+          return errorResponse(400, "USAGE", `reserved file name must be index.md or log.md, got '${name}'`);
         }
-        case "blobs-list":
-          return await handleListBlobs(url);
-        case "blob-read":
-          return await handleReadBlob(decodeBlobKey(match.value!));
-        case "blob-write":
-          return await handleWriteBlob(decodeBlobKey(match.value!), req);
-        case "blob-head":
-          return await handleHeadBlob(decodeBlobKey(match.value!));
-        case "blob-delete":
-          return await handleDeleteBlob(decodeBlobKey(match.value!), req);
+        const dir = searchParams.get("dir") ?? "";
+        return endpoint.id === "reserved-read"
+          ? await handleReadReserved(dir, name)
+          : await handleWriteReserved(dir, name, req);
       }
-    } catch (err) {
-      return errorFromCaught(err);
+      case "blobs-list":
+        return await handleListBlobs(searchParams);
+      case "blob-read":
+        return await handleReadBlob(decodeBlobKey(match.value!));
+      case "blob-write":
+        return await handleWriteBlob(decodeBlobKey(match.value!), req);
+      case "blob-head":
+        return await handleHeadBlob(decodeBlobKey(match.value!));
+      case "blob-delete":
+        return await handleDeleteBlob(decodeBlobKey(match.value!), req);
     }
-  };
+  });
 }

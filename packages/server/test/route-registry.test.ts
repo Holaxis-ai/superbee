@@ -43,7 +43,13 @@ test("every declared wire endpoint reaches runtime dispatch and undeclared metho
     assert.doesNotMatch(body, /no route for|unsupported method/, `${endpoint.method} ${endpoint.path} must dispatch`);
   }
 
-  const undeclared = await router(new Request("http://wire.local/v0/capabilities", { method: "POST" }));
-  assert.equal(undeclared.status, 400);
-  assert.match(await undeclared.text(), /unsupported method POST for \/v0\/capabilities/);
+  const undeclaredMethod = await router(new Request("http://wire.local/v0/capabilities", { method: "POST" }));
+  assert.equal(undeclaredMethod.status, 400);
+  assert.match(await undeclaredMethod.text(), /unsupported method POST for \/v0\/capabilities/);
+
+  for (const path of ["/v0/bundles/default/docs:purge", "/v0/bundles/default/purge"]) {
+    const undeclaredPath = await router(new Request(`http://wire.local${path}`, { method: "POST" }));
+    assert.equal(undeclaredPath.status, 404, `${path} must not bypass WIRE_ENDPOINTS`);
+    assert.match(await undeclaredPath.text(), /no route for/);
+  }
 });

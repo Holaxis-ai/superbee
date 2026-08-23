@@ -118,10 +118,10 @@ the blob channel cannot become an accidental bypass around document parsing and 
 
 ## Behavior evidence
 
-The router dispatches through its exported `WIRE_ENDPOINTS` registry. The contract test requires
-the exact endpoint table above to match that runtime registry and validates every source/test anchor
-in this proof table. The referenced behavioral suites exercise the semantics through the router,
-`RemoteBackend`, and a real socket.
+The router's sole raw URL/method boundary dispatches through its exported `WIRE_ENDPOINTS` registry.
+The contract test pins that boundary, requires the exact endpoint table above to match the runtime
+registry, and validates every source/test anchor in this proof table. The referenced behavioral
+suites exercise the semantics through the router, `RemoteBackend`, and a real socket.
 
 | ID | Contract area | Implementation evidence | Behavioral proof |
 | --- | --- | --- | --- |
