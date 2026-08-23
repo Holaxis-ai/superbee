@@ -1,609 +1,209 @@
-# Superbee — Orchestrator Guide
+# Superbee agent entrypoint
 
-This file is read automatically at every session start. Superbee is an
-**OKF-native, CLI-first, local-first** knowledge store: `packages/core` (the OKF
-engine), `packages/board-git` (`@superbee/board-git` — the board's git channel:
-porcelain/diff/state-store/engine/flow/autopull; imports ONLY node + core, machine-enforced by
-its own import-direction test with no allowlist; command UX stays in the CLI),
-`packages/server` (`@superbee/server`
-— the wire-protocol REFERENCE server, a pure consumer of core; see gate 3 and Scope),
-`packages/view-runtime` (`@superbee/view-runtime` — the private host-neutral launch and
-trusted-action authority; imports only Node + core),
-`packages/ui-server` (`@superbee/ui-server` — the private reusable loopback shell host;
-imports only Node + core + server + view-runtime, while CLI policy and generated assets stay in
-the CLI), `packages/markdown-renderer` (`@superbee/markdown-renderer` — the private shared
-bounded Markdown-to-React security boundary), `packages/ui` (the browser SPA — PRIVATE workspace;
-only its BUILT assets ship, gzip-embedded into the CLI bundle; it launches bundle-authored Views
-and consumes markdown-renderer, see gate 4), `packages/mcp-app` (the PRIVATE local stdio adapter:
-one fixed document-reader App plus one fixed active-View shell for registered or process-local
-Views; the reader delegates to the shared renderer, and the View shell uses the same launch,
-bridge, authorization, rendering, and governed-action authorities as the web host),
-and `packages/cli` —
-the **publishable npm package `superbee`** (it installs only the canonical `superbee` bin; legacy
-`aslite` and `agentstate-lite` invocations remain recognized solely for migration), an
-esbuild bundle that inlines core + board-git + server + the built UI assets + deps into one
-self-contained ESM file. The filesystem is the
-DEFAULT local backend; the storage seam is pluggable (gate 3). Hosted deployment code is outside
-this OSS repository; the former Cloudflare implementation is preserved only as a private frozen
-reference.
+Superbee is an OKF-native, CLI-first, local-first knowledge environment. This file is the
+mandatory project entrypoint; it routes agents to the smallest authority needed for the work.
 
-Before changing anything, orient through the PROJECT BUNDLE: run `superbee sync`, then read
-`docs/core` (the one-page product statement + frozen-scope list), live board state (`list --type
-Task`; per-unit records live in `tasks/<unit>` descriptions), and, as needed, `docs/vision` and
-`docs/north-star` — then the packages' `src/`. Use Superbee CLI commands as configured during
-setup; this guide does not duplicate their workspace discovery, synchronization, or recovery
-logic. If a Superbee command fails or selects an unexpected workspace, treat Superbee as
-misconfigured: run `superbee setup` and follow its guidance. Ground every change in the ACTUAL
-current code, not assumptions — including the claims in THIS file: when this guide and the code
-disagree, the code wins and this file gets fixed.
+## 1. Authority and orientation
 
-## Three layers, three verbs
+Use these sources for different kinds of truth:
 
-Your position in the pipeline is defined by the verb you own, not by what your packet implies.
+- Bundle `docs/core` owns product purpose and frozen or coupled scope.
+- Bundle `docs/vision` owns durable architecture intent and component boundaries.
+- Bundle `docs/north-star` owns long-term remote and versioning direction.
+- Bundle `roadmaps/superbee-platform`, Tasks, Plans, and Reviews own current state and evidence.
+- Repository source, manifests, tests, and CI own current executable behavior.
+- [CONTRIBUTING.md](CONTRIBUTING.md) owns repository workflow policy.
 
-**A dispatched sub-agent owns `commit`.** Produce one claim's worth of change, run the pre-commit
-smoke — `npm run build && npm run typecheck` plus the touched package's tests
-(`npm test -w <pkg>`) — commit, and report the SHA plus the exit code you read directly. The
-smoke is not a gate: it says your commit compiles and its own package passes, nothing more. Never
-push, open a PR, dispatch CI, publish, emit a release asset, or `superbee sync` the board — those
-verbs belong to the orchestrating session, so you are never the last step and never have to
-decide whether you are. If your deliverable is not a commit — a review, a research note — you
-have no gate to run before reporting; do exactly what the review requires (the sampled re-run,
-the one red probe) and nothing as a pre-report ritual. A packet that explicitly names a gate
-overrides this default; that is the packet author's cost to justify.
+When intent and implementation disagree, do not silently choose one. Treat the disagreement as a
+defect, record it, and reconcile the two authorities.
 
-**The orchestrating session owns `push` and `dispatch`.** Integrate the sub-agents' commits,
-push the branch once, and make sure the authoritative gate is running on that SHA: if a PR is
-already open on the branch, the push itself started it; if not, start it with
-`gh workflow run "CI tests" --ref <branch>` — once per pushed SHA, never per sub-agent. Do not
-re-run a sub-agent's smoke and do not run `npm run check`: CI is a strict superset of it (it
-adds `check:release-exhaustive` and a node-20 engines-floor smoke) and finishes in about five
-minutes of parallel wall clock against roughly seven minutes serial locally for less coverage.
-Report to the human the moment the dispatch is in flight, with the run URL — do not wait for
-green, or the blocked time has only moved. Publish or emit release assets only from a SHA CI has
-passed. Before rewriting history you have already pushed, check `gh pr view`: if the human opened
-the PR in between, the open-PR force-push rule is now active. A solo session with no sub-agents
-owns every verb and follows both paragraphs.
+### Select the project bundle safely
 
-**CI owns the verdict.** A push to a branch with no PR does not start it — only a pull request
-event, a push to `main`, or the dispatch above does. A pre-PR dispatched run is not the PR's
-required check, so opening the PR later runs CI again on the same SHA: redundant execution on
-GitHub's clock, accepted knowingly because it is off the critical path and buys the early signal.
+An orchestrating or solo session may establish freshness only after confirming that Superbee has
+selected this project's existing bundle. The expected bundle document IDs above must resolve.
+A catalog entry is available for explicit selection; it is not ambient project context.
 
-## Standing gates (honor these before shipping)
+A dispatched agent receives the exact bundle root and actor in its packet. It may perform the
+packet's necessary reads, but it must never:
 
-### 1. AXI-conformance is a pre-ship check for the CLI
+- run `superbee sync`;
+- initialize or publish a bundle;
+- guess a bundle from a catalog entry; or
+- pass the repository root to `--dir` as though it were a bundle.
 
-Any change to `packages/cli` must satisfy the ten AXI principles (see the `axi` skill).
-Watch-points that are easy to regress here:
+If selection is missing or cannot be verified, do not initialize a replacement. Continue only
+with committed repository authorities and stop any work that depends on current project state.
+If a previously verified bundle is merely stale because sync or the network is unavailable, label
+the information as last-known and stop only where freshness is required. Missing authority and
+stale authority are different states.
 
-- **`read` truncates large bodies.** A `read` of a large document body must truncate and
-  point at `doc read --out <file>` (the byte channel), never dump the whole body to
-  stdout.
-- **`list`/`query` default to a minimal schema.** Default output is a 3–4 field row
-  (`id`, `type`, `title`, `timestamp`), with a `--fields` hatch for more — not the full
-  frontmatter+body per row.
-- **List output includes total counts.** `list`/`query` emit a `count`; `link show` emits
-  `outbound_count` / `backlink_count`.
-- **A `view`/detail shows backlink counts inline.** `link show` reports the derived
-  "cited by" count next to the concept.
-- **Errors go to stdout in structured form.** Error envelopes render as TOON on stdout with
-  a capped exit-code taxonomy (0/1/2/4/5/6). Exceptions: `doc read --out -` routes the
-  envelope to STDERR because stdout is reserved for raw bytes, and `mcp` routes every startup or
-  runtime envelope to STDERR because stdout is the JSON-RPC transport.
-- **Mutations are idempotent.** Re-writing a doc or re-adding an existing link must be a
-  no-op that exits 0 (`link add` returns `changed:false` when the link already exists).
-- **The SessionStart hook targets Claude Code, Codex, AND OpenCode.** `hook install` writes a
-  REAL `session-start` hook to all three. A durable npm install binds the stable npm-prefix Node
-  launcher and absolute package entry, so GUI hosts do not depend on their inherited `PATH`.
-  Install/status/uninstall share one exact token-and-shape ownership classifier; familiar
-  substrings or an OpenCode marker alone never authorize rewriting or deleting user config.
+For Superbee command syntax and recovery, use the installed Superbee Skill when present and the
+current `superbee <command> --help` or `superbee setup` output as the cross-host fallback. Never
+copy a command manual into this file.
 
-### 2. OKF-conformance for bundles
+### Begin from purpose
 
-Every produced bundle must stay a valid OKF v0.1 or v0.2 Knowledge Bundle. Genuinely new bundles
-default to v0.2 without asking users to choose an edition; `init --okf-version 0.1` remains the
-explicit legacy-compatibility path. Existing bundles always retain their declared edition:
+Before substantive work:
 
-- Frontmatter on every non-reserved `.md`, with a **required, non-empty `type`**
-  (OKF v0.1 §9; v0.2 §11).
-- `index.md` / `log.md` are **reserved** at any directory level (§3.1); only the bundle-root
-  `index.md` may carry frontmatter, solely to declare `okf_version`.
-- **Cross-links are relative** bundle-relative markdown links (the form the reference graph
-  builder counts as edges); core still resolves absolute `/…md` too, but the CLI **emits
-  relative**.
-- **Backlinks are derived**, never stored. **Freshness** is derived from the edition's meaningful
-  change clock: v0.1 `timestamp`, or v0.2 `generated.at` when present. A v0.1 `timestamp` may arrive
-  **unquoted** from external bundles, so it is normalized to an ISO string at the one parse layer.
-  Do not reintroduce string-only timestamp guards upstream of that normalization.
+1. Read `docs/core` or the workspace's highest-level goal.
+2. State and record one proximate goal and how it serves that ultimate goal.
+3. Inspect relevant current tasks and context notes before creating new work.
+4. Claim implementation work by changing its Task to `in_progress` with `--actor`; the
+   compare-and-swap write is the claim.
 
-### 3. Pluggable-core principle
+Bundle records and code commits are separate. The orchestrator owns synchronization of bundle
+writes. A bundle document belongs in a code commit only when that document is the reviewed
+deliverable itself.
 
-- Storage lives behind the `StorageBackend` seam (`core/src/types.ts`); the filesystem is
-  the **default** adapter (`FilesystemBackend` in `core/src/backend.ts`). Remote backends are
-  plug-ins that implement the same interface — never baked into the engine. The
-  engine keeps all OKF semantics; a backend only persists and retrieves. **`RemoteBackend`
-  (`core/src/remote-backend.ts`) is the first remote adapter, proving the wire-protocol v0
-  REFERENCE contract (`docs/WIRE-PROTOCOL.md`, `packages/server`). A concrete hosted deployment
-  is deliberately outside this repository. The CLI is now `RemoteBackend`'s first REAL
-  consumer** (`--remote <url>` on every bundle command, `packages/cli/src/bundle.ts`), not just a
-  test-suite exerciser — so a wiring bug here is a user-facing bug, not a contract-test gap.
-- **Flagship remote backend = document-centric** (per-doc identity, per-doc/namespace
-  access, per-doc CAS concurrency), carrying canonical Superbee's proven versioning model:
-  content-addressed snapshots + a head with a version + compare-and-swap writes + actor
-  attribution. Git is an **export / interop + optional** adapter (OKF bundles are just
-  files), **not** the flagship — it is repo-coarse for granular sharing and awkward for
-  serving artifacts. Generated HTML is stored as a blob and served by content-type. See
-  bundle doc `docs/north-star` and the versioning rationale it records.
-- **The seam contract now carries the hard-case capabilities** (delivered in the
-  "core-shape" pass): `read` returns a content-addressed (SHA-shaped) version token;
-  `write` takes an optional compare-and-swap `expectedVersion` (throwing a typed
-  `VersionConflict` on mismatch) plus an `actor`; `versions(id)` returns attributed history
-  newest-first; and `readMany(ids)` batches reads so graph/backlink traversal is ONE
-  round-trip, not N. `FilesystemBackend` is the **degenerate** adapter (version = SHA of the
-  on-disk bytes, single-version `versions()` because a plain filesystem keeps no history).
-  Its compare-and-swap is serialized per physical target **across same-user local processes** through
-  a private external runtime lock; a process-local queue avoids needless polling. A crash leftover
-  fails closed with inspectable owner metadata rather than being silently stolen. **`MemoryBackend`
-  (`core/src/memory-backend.ts`) proves the same
-  contract for the hard case** — a real version chain, enforced CAS, per-write attribution —
-  and is the standing evidence that the engine leaks no filesystem assumptions (a
-  dual-backend test asserts identical core-operation results over both). The seam is shaped
-  for the hardest backend — networked, concurrent, multi-writer — so a document-centric (or
-  git) remote adapter is a plug-in, not a rewrite.
-- **The ENGINE API now surfaces those capabilities too** (delivered in the "engine-surface"
-  pass): the seam no longer swallows version/CAS/actor/history. `writeDoc` takes an
-  optional `WriteOptions` (compare-and-swap `expectedVersion` → typed `VersionConflict`, plus
-  `actor`); `writeDocVersioned` returns the write's version token; `readDocVersioned` returns a
-  document with its version; `docVersions(id)` exposes attributed history — all ADDITIVE, so the
-  plain `writeDoc`/`readDoc` returns are unchanged and no version leaks into CLI (TOON) output.
-  `link add` is the proof consumer: versioned read → append → CAS write with bounded conflict
-  retry (preserving the idempotent `changed:false`). **Reserved files (`index.md`/`log.md`) are
-  in the versioning/CAS model now**, not outside it: `readReserved` returns `{content, version}`,
-  `writeReserved` honors CAS (FilesystemBackend cross-process lock + hash/rename; MemoryBackend
-  in-memory enforcement). Portable-index projection preflights ownership across its whole target
-  set, then uses each preflight read's exact version for single-shot per-file CAS; a conflict stops
-  with completed/pending paths so a fresh run can resume without bypassing the global refusal. `log.md`
-  remains an optional OKF reserved file carried by the generic seam and git sync; engine mutations
-  do not automatically emit provenance entries into it.
-- **Document mutation policy lives below the CLI** in core's `mutateDocument` service
-  (`core/src/document-mutation.ts`). It owns create-only / overwrite / patch behavior, fresh
-  read-decide-CAS-retry coupling, hard CAS, semantic no-op detection, timestamp-before-kind
-  validation, actor propagation, and final-version receipts. Trusted consumers pass an already
-  loaded kind registry and receive typed core failures. The CLI's `mutateDoc` is only an adapter for
-  CLI error wording, remote hints, help text, and the best-effort board-attribution hook. Do not
-  duplicate this policy in a future UI or server action path.
-- Keep exactly **ONE** frontmatter parser, **ONE** bundle walk, **ONE** link resolver, and
-  **ONE** View semantics/action authority. Human-facing hosts are adapters over those authorities:
-  the supported local `ui` shell launches durable bundle-authored Views; the local `mcp` command
-  displays authoritative documents in a fixed reader or launches process-local/registered active
-  Views. Do not reintroduce a parallel Markdown parser or mutation policy inside either host: the
-  MCP reader delegates to the shared bounded renderer, while both View hosts delegate the same
-  `document.set-field` proposal to view-runtime, which requires trusted-shell confirmation and hard
-  CAS through core's mutation service; MCP keeps its prepare/finish tools app-only so the model and
-  sandboxed View cannot invoke writes directly.
-- **Kind conventions (`core/src/kinds.ts`) are ONE registry, in core, consumed everywhere —
-  not a schema fork.** A bundle MAY declare document kinds as plain OKF convention docs
-  (`type: Convention`) naming the `type` value they govern, its required/optional fields,
-  allowed enum values, expected body sections, and a freshness horizon. **THE MECHANISM IS
-  CORE AND NON-NEGOTIABLE; USAGE IS OPT-IN PER BUNDLE**: a conventions-free bundle (every
-  external OKF bundle today) behaves byte-for-byte as before. **The discovery contract is
-  prefix-scoped and documented, not incidental:** a kind convention doc MUST live under the
-  `conventions/` prefix to be discovered (`loadKinds` calls `query(bundle, { prefix:
-  "conventions/", type: "Convention" })`) — a `Convention` doc anywhere else is silently
-  NOT a kind, by design, and this is what keeps a conventions-free bundle's registry load a
-  cheap list-of-nothing. Malformed conventions are skipped with a collected warning, never
-  thrown; a duplicate `governs` keeps the first-by-id declaration. The registry is built
-  ONCE per invocation, in the COMMAND layer (`kinds`/`new`/`doc write`/`doc update`/`list`'s
-  kind columns, and the other kind-aware commands — `status`, `link`, `home`, `promote`,
-  recipe/init seeding); no engine path (`readDoc`/`writeDoc`/…) loads it
-  implicitly. `validateAgainstKind` returns core's existing `ValidationWarning` shape and
-  reuses THE one heading splitter (`splitSections`, now in `kinds.ts`) for section linting —
-  no second heading parser. `freshnessHorizonMs` FEEDS the existing
-  `FreshnessOptions.maxAgeMs`; it does not fork `freshness()`. **Seeding is a CLI RECIPE
-  concern, never an engine one** (the recipe-zero + pluggable-recipes passes): `initBundle`
-  seeds NOTHING (core carries zero convention content — the former `note` command and its
-  core codec are deleted; context notes are a plain default recipe authored via the generic
-  path); the CLI's `init` applies the built-in `context-notes` recipe (`--recipe none` opts
-  out), `recipe add` installs others (e.g. `work-tracking`), and every recipe — built-in or
-  external folder — flows through ONE `RecipeSource`/`parseRecipeFiles` pipeline applying
-  via expect-absent CAS (idempotent, never clobbers a hand-edited convention). If a future
-  consumer (server/an MCP surface) needs kind awareness, it calls `loadKinds` itself
-  — do not thread a second registry implementation through a different layer.
+## 2. Roles, verbs, and evidence
 
-### 4. Human visibility — one View model, host-specific adapters
+Your role is defined by the verbs you own, not by what a packet happens to request.
 
-The human-visibility surface is the **local `superbee ui` command**: one loopback
-server serving the embedded SPA over a bundle (`--dir` mounts the reference router
-in-process; `--remote` reverse-proxies with the stored key; per-run token + Host allowlist
-+ CSP). `superbee doc open <id>` is its thin exact-document entrypoint: it verifies the document and
-opens the existing DocPage route. `superbee doc read <id> --rendered-out <path|->` is the one static
-HTML byte channel, backed by the same canonical bounded renderer rather than a second renderer. The shell is a
-launcher for registered `type: View` docs rendered in sandboxed
-iframes (`Page` is the legacy kind name and `bridge` the legacy access-field spelling — both are
-RETIRED: a legacy Page-typed doc no longer registers and a legacy bridge-only doc resolves to
-`access: none`; `scripts/migrate-legacy-view-names.mjs` renames legacy content in place and
-`status`'s legacy_naming finding is the loud diagnostic for leftover stock. Old folder LOCATIONS
-stay recognized — relocation is a separate open decision); Views are bundle content, and their live data
-access goes through one server-owned, launch-bound bridge. Active Views that request bundle data
-are mounted only after trusted shell chrome approves their exact HTML bytes and declared access;
-the CLI remembers that approval locally (never in the synced bundle), and changed bytes or
-expanded access ask again. Approval treats those exact bytes as trusted executable code with the
-declared bundle authority; sandboxing and CSP remain defense-in-depth, not a substitute for
-trusting the View's source. Bridge authority is revalidated before and after each request. V0 data
-access remains read-only; a local `--dir` View may
-opt into `bundle-propose` for one human-confirmed, version-guarded scalar-field action. The former
-`packages/viewer` / `view` → `viz.html` surface is removed — author human
-views as bundle Views rather than adding a second rendering engine.
+| Role | Owns | Must not do |
+| --- | --- | --- |
+| Builder | One coherent change, scoped smoke, commit, SHA report | Push, PR, CI dispatch, sync, publish, release assets |
+| Reviewer or QA | Exact-SHA evaluation and named probes | Modify the reviewed SHA, push, sync, publish, release assets |
+| Researcher | Read-only evidence and a durable finding | Repository or external mutations not explicitly authorized |
+| Orchestrator or solo agent | Claim, integrate, bundle sync, one branch push, CI dispatch | Open the PR, merge, or expand human-gated scope without permission |
+| CI | Authoritative shipping verdict on the pushed SHA | Substitute a result from another SHA |
+| Human | PR and merge gate; product, disclosure, and release decisions | None delegated by implication |
 
-The local `superbee mcp` command is a second host adapter, not a second View system. Its
-default bundle-unbound mode exposes the user's private catalog through `list_workspaces`; its
-`show_document`, `list_views`, and bundle-capable `show_view` root tools require one exact catalog
-label or ID and never accept a filesystem path. A transient View that explicitly requests
-`access:none` may omit the workspace and stays bundleless; it cannot later gain bundle authority or
-be saved. Once a View is launched, one bounded server-owned `launchId` routing table pins every
-bridge, navigation, resume, save, and governed-action call to that original bundle runtime; hidden
-tools accept no workspace selector. Explicit `mcp --dir <bundle>` retains the fixed-bundle
-compatibility/developer contract unchanged. Its
-model-visible `show_document` tool presents one exact authoritative bundle document in a fixed,
-non-executable reader through the shared bounded Markdown renderer; its compact model result
-carries only a one-shot claim, and the App retrieves the rendered payload through an app-only
-resolver. The separate model-visible `show_view` tool launches either agent-authored active HTML
-as a process-local transient View or one existing registered View unchanged by exact id. Both use the
-same active source contract, launch/bridge authority, sandbox, CSP, shared bounded Markdown
-renderer, subscription and sizing behavior, and require exact-byte local trust approval before
-bundle data is exposed. Transient approval is process-local and never enters the persistent
-registered-View trust store. The model-visible `save_transient_view` tool can persist an approved
-launch unchanged as a registered View; it accepts no HTML, and the new durable identity requires
-its own local approval. App-only lifecycle and prepare/finish tools remain hidden from the model;
-actions require a configured actor, explicit human confirmation, version revalidation, and hard
-CAS through the shared action and mutation authorities. The adapter is deliberately local,
-stdio-only, and shipped inside the supported npm CLI rather than as a standalone package.
-`superbee mcp install|status|uninstall --host <id>` owns one explicit user-level registration
-for Codex/ChatGPT, Claude Code, Claude Desktop, or OpenCode. Mutation requires an exact host,
-durable npm-install authority, exact ownership classification, and read-back verification; it
-never detects a host as mutation authority, pins a bundle directory, or replaces/removes a foreign
-same-name entry. Bare `status` is the bounded read-only multi-host inspector.
-Bare and host-scoped `superbee setup` are the read-only AXI conductor over that registration status plus the existing
-distribution, Agent Skill, SessionStart hook, bundle-selection, and private-catalog inspectors. A
-host-scoped run emits one deterministic safe next command while leaving every existing installer
-as the sole mutation authority; a hostless run projects private-state health before the four
-bounded supported choices, so a cause-specific state remedy cannot disappear behind host selection.
-The private catalog is explicit MCP inventory, never ambient current-project selection: setup
-reports catalog access separately from the bundle resolved by the current checkout, and a legacy
-registration's referenced bundle cannot authorize project orientation, writes, or sync.
-The only legacy operational-state bridge is the explicit `superbee setup migrate-state` leaf:
-ordinary Superbee readers use `~/.superbee-state` exclusively, migration draws from an ORDERED
-source list (`~/.agentstate`, then the superseded `~/.config/superbee`), and it never moves bundles
-or deletes source bytes. The location is ONE constant in `user-state.ts`; it lives back in `$HOME`
-because nothing stored is user-editable configuration and a `-config` name invites dotfile/backup
-tooling to sweep it. Private operational state is categorically not a Knowledge Bundle, and the
-invariant is CONTAINMENT rather than identity: one inode-based relation
-(`private-state-bundle-boundary.ts`) classifies every target against every guarded root
-(canonical + `~/.agentstate` + every superseded root, on both builds), and EVERY resolution path
-answers to it: `--dir`, the committed project binding, the cwd discovery walk (`findBundleRoot` —
-the one place a "no bundle here" verdict is reached, so the one place it is denied to private
-state), `sync`/`session-start`'s run directories, init, board-path derivation, the
-`promote`/`artifact create` source positionals, and the `pull`/`doc read`/`sync --show-incoming`
-`--out` destinations. A guarded root is reported as the CONFLICT it is — never as absence, and
-never with a next command whose path lands inside it. The state root
-carries a `.gitignore` of `*`, written after its ownership assertion.
+A dispatched builder produces one claim's worth of change, runs:
 
-The multi-human collaboration substrate (hosted worker, auth, admin) is FROZEN per bundle doc
-`docs/core` and preserved outside the OSS repository — it is not a build or deployment target
-without an explicit human decision.
+```sh
+npm run build
+npm run typecheck
+npm test -w <touched-package>
+```
 
-### 5. Local-first, standards-clean
+It commits and reports the SHA plus the exit codes it observed. This is a pre-commit smoke, not the
+shipping gate. Reviews and research run only the evidence their packet names; they do not perform a
+ritual full gate.
 
-Local-first: everything works with the network off. No bundled secret; credentials (if
-any) live in `~/.superbee-state/` with 0600/0700 discipline and are never printed. Stay
-standards-clean (plain OKF markdown; no bespoke schema). Link form is **relative
-bundle-relative**.
+The orchestrator verifies commit scope and provenance, integrates builders, pushes the feature
+branch once, and ensures CI is running on that exact SHA. If no PR exists, dispatch the `CI tests`
+workflow for the branch. Do not rerun valid builder evidence merely to duplicate it. If evidence is
+missing, stale, or from a changed tree, rerun the smallest relevant smoke.
 
-## Working here
+CI on the pushed SHA is the shipping verdict. A local lane or `npm run check` is never reported as
+that verdict. The human opens and merges the PR unless that authority is explicitly delegated.
 
-### Engineering discipline
+Detailed branch, commit, lane, generated-artifact, mutation-testing, integration, and review policy
+lives in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-- Keep each PR to one coherent behavioral or policy claim. If its correctness depends on a
-  second decision, split it or make that decision explicit before implementation.
-- Keep source comments short. Explain only stable, non-obvious reasons; review-round history and
-  adjudication narrative belong in the PR or project bundle, not beside the code.
-- Treat words such as **canonical**, **parity**, and **gate** as testable claims. Use them only when
-  the implementation or an executable check directly proves the stated relationship.
-- When one behavioral contract has multiple public surfaces, exercise every surface from one
-  per-row agreement table. Prefer one owning primitive when the behavior can be collapsed;
-  agreement tests pin irreducible projections and boundaries, not duplicated implementations.
-- Add deterministic adversarial tests for dangerous boundaries, including concurrency,
-  authentication, migration, reconnect/replay, and destructive writes.
-- Consolidation removes the superseded implementation, tests, and commentary in the same unit;
-  do not leave two paths with a comment declaring which one should win.
-- **A discovery needs somewhere to go, or it gets re-derived rather than recorded.** When a
-  defect class has a shared row table, its fix adds a ROW to that table, never a one-off test
-  beside the fix — that is this repo's "risky mechanic and its test ship together" rule applied
-  to a class instead of an instance. If recording a finding would need new scaffolding rather
-  than a new row, the table is shaped wrong; say so instead of working around it. The
-  private-state boundary went four rounds rediscovering the same class because several kinds of
-  discovery — state-class, read/write agreement, interruption, recoverability — had no home at
-  all. Bundle doc `docs/boundary-finding-routing` routes each finding type to its table.
-- **A specification statement is not a commitment.** Tables ratchet BEHAVIOR; nothing ratchets
-  the WORK. A statement marked VIOLATED describes a defect; a task commits to fixing it. Before
-  any release, every VIOLATED statement must have either a task or a recorded decision to accept
-  it, and the same for every UNKNOWN — "we know about it" is the state that lets a blocker ship.
-  Found the hard way: of thirteen violations, the release-blocking one had no task and survived a
-  merge as a line in a 494-line document.
-- A recurring bug class is API-design feedback. Move the invariant into one owning primitive so
-  callers cannot reproduce the mistake; do not keep patching consumers or adding reminders.
-- Keep verification output out of agent context. Whichever gate you run (see the next bullet
-  for choosing one), send complete output to a temporary log rather than the terminal — that
-  applies equally to `npm run check`, a single lane, workspace-wide tests, browser/E2E suites,
-  and mutation runs. On success, inspect nothing further; on failure, inspect only
-  failure matches and a bounded tail. Inspect summaries before potentially large diffs or searches.
-  When uncertain, capture output instead of streaming it.
+### Review ordering
 
-- **Which gate to run: CI on the pushed SHA is the gate; locally, run the lane for what you
-  are iterating on.** Who pushes and who dispatches is settled by the verb you own (see "Three
-  layers, three verbs" above). CI is a strict superset of `npm run check`; run `npm run check`
-  locally only when CI is unreachable and you need the fullest local stand-in. While iterating
-  on one area, run the LANE that covers it — `ci:runtime`, `ci:distribution`, `ci:browser`,
-  `ci:release-policy`, and `check:release-exhaustive` are exactly the lanes CI runs, so a lane
-  result means what the corresponding CI lane will mean. What is NOT safe is presenting a subset
-  as the shipping record: `build && typecheck && test` is the pre-commit smoke, not a lane, and
-  it omits the packaging and release proofs — reported as "the gate is green" it has shipped a
-  red CI at least once. Rough mapping:
+Review is a dependency, not a label applied after testing:
 
-  | Touched | Run at minimum |
-  | --- | --- |
-  | `packages/*/src`, tests | `ci:runtime` |
-  | a `package.json`, `scripts/`, release or packaging code | `ci:distribution` AND `ci:release-policy` |
-  | `packages/ui`, `packages/mcp-app`, the embedded SPA | `ci:browser` |
-  | `release/`, candidate or tarball proofs | `check:release-exhaustive` too |
-  | `.github/workflows`, `scripts/ci-lanes.json` | `ci:release-policy` (carries the topology tests) |
+- Trivial documentation or test-only work follows the proportional tier in `CONTRIBUTING.md`.
+- Routine code receives independent review of the exact SHA.
+- Security, concurrency, destructive writes, migrations, deployments, remote selection,
+  reconnect/replay, releases, and other high-risk mechanics require Builder -> independent
+  exact-SHA Review -> adversarial QA.
+- QA cannot be scheduled before its required Review, and neither precedes the builder commit.
+- Reviewers audit existing evidence, reproduce only load-bearing proof, and add one meaningful red
+  probe for the named risk. Current exact-SHA CI evidence is reused.
 
-  **Adding a workflow file costs more than it looks.** Every workflow enters the release
-  packet-input closure, so the committed manifest must be regenerated and whatever the workflow
-  reaches must be pinned. A workflow that runs `npm test -w superbee` also fails topology
-  validation, because that resolves to a glob rather than a tracked file. Both were hit for real
-  while adding a ten-second diagnostic, and the diagnostic was dropped rather than carry the
-  ongoing cost.
+Every PR remains one coherent behavioral or policy claim. Review or QA fixes made after a PR opens
+are appended as clearly labeled commits; do not amend or force-push review history except for a
+base rebase, which must be reported with old and new SHAs.
 
-  A manifest edit is the counter-intuitive case: it looks trivial and the two EXPENSIVE lanes are
-  precisely the relevant ones, because the release and packaging proofs are what the manifest is an
-  input to. CI is the backstop for a wrong guess — but only on the platforms CI runs, which is Linux
-  alone, so a guess about Windows or case-folding behavior is caught by nothing.
+## 3. Engineering contracts
 
-- Build/verify gate: **CI on the pushed SHA is the authoritative gate; `npm run check` is its
-  fullest local stand-in** (see "Three layers, three verbs"). Never present
-  `npm run build && npm run typecheck && npm test` as either: it is the pre-commit smoke, it
-  omits the packaging and release proofs, and reported as the gate it has shipped a red CI here. Those three (`build`, `typecheck`, and `npm test
-  --workspaces --if-present`: board-git + core + cli + server + ui suites) are the fast inner
-  loop, not the gate. `npm run check` runs all of that plus this repo's own `scripts/` tests (`test:scripts`),
-  the installed-tarball proof (`verify:npm-package`), and the npm-target SKILL.md drift gate
-  (`check:skill`) in one shot. npm is the sole executable distribution authority: the package
-  ships the CLI plus a generated, optional Agent Skill containing guidance and references only.
-  **Always build from the REPO ROOT** — a package-scoped build leaves sibling `dist/`s stale and
-  test files that import them crash confusingly. `npm run build` bundles the CLI to
-  `packages/cli/dist/superbee.mjs` (esbuild). Invoke the freshly-built CLI in-repo via the
-  repo-root **`./superbee`** shim (`./superbee doc write …`) — a short, shell-agnostic wrapper over that
-  dist; prefer it over the long `node packages/cli/dist/…` path and never alias the path into a shell
-  variable (`B="node …"; $B …` breaks under zsh, which does not word-split). The shim is dev-only and
-  never ships (`files: ["dist"]`). Smoke-test the built CLI — at minimum `init`, `doc write`/`doc read`,
-  `list`, `link add`/`show`, and `status` on `examples/sample-bundle`. Run
-  `npm run verify:npm-package` to prove the exact tarball allowlist, zero-runtime-dependency
-  boundary, the canonical command on an isolated `PATH`, the absence of legacy alias bins and the retired marketplace
-  executable roots, and an offline create/query workflow. The developer gate builds an honestly labeled
-  `local-dev` tarball so it remains runnable on an in-progress/dirty checkout. `prepublishOnly`
-  runs the same journey in strict `npm-package` mode and refuses unless Git proves an exact clean
-  source commit.
-- **Mutation testing measures the SUITE, on demand — never a merge gate.** `npm run
-  mutation:core` / `mutation:cli` run Stryker (tap-runner over the repo's own `node --test`
-  ts-loader invocation; `inPlace`, so run them in a clean tree — a crash restores from
-  `.stryker-tmp`, or `git checkout` recovers) against `packages/{core,cli}/src`; build from the
-  repo root FIRST (core's tests import sibling dists; cli's config rebuilds its bundle once,
-  post-instrumentation, via `buildCommand`). CI runs both weekly and by dispatch
-  (`.github/workflows/mutation-tests.yml`), publishing the survivor list — the suite's named
-  gaps — to the job summary (`npm run mutation:survivors` locally); file recurring survivors as
-  board tasks rather than chasing a score.
-- **Verify a gate by its own exit code, never through a pipe.** A piped tail or grep (`npm test |
-  tail`, `... | grep -v Skip`) reports the PIPE's last command's exit status, not the gate's — a
-  failing gate can read as green. Run gates unpiped, or redirect to a file and grep the file
-  separately; check the exit code from the LAST change made, never a stale run from before it.
-- A fresh git worktree has no node_modules: run `npm ci` inside it before trusting any
-  test or drift-gate result (up-tree module resolution manufactures phantom failures).
-- `examples/sample-bundle` is the interop fixture: externally-shaped (unquoted timestamps,
-  relative links, wrapped bullets). If a change breaks its round-trip, the change is wrong.
-- **Operator receipt emission is non-clobbering and release-ID bound.**
-  `scripts/release-inspect.mjs` completely inventories the draft by numeric release ID, binds the
-  retained `candidate.json`, and treats one valid current receipt as `already_present`. A missing
-  receipt uses a private journaled no-clobber upload. Re-emission is destructive only when the
-  operator supplies the old receipt's exact ID, name, and digest (row-local `replace_existing` in
-  batch mode); interruption recovery resumes the one journaled signed digest and never deletes a
-  competing same-name asset. `--dry-run` signs and validates the same plan without durable owner,
-  journal, DELETE, or upload writes.
-- **Branch from CURRENT `origin/main`, never from a previous PR's tip.** The npm-target
-  `packages/cli/SKILL.md` (`check:skill`) is still generated from `reference.ts` and PR-verified, so
-  a branch cut from a stale tip can carry a stale version of it relative to current main. More
-  generally, regenerated prose can go semantically stale without any drift gate catching it — a
-  change can make a sentence FALSE without any generator noticing. After any merge into a branch,
-  re-read the regenerated prose near your change and check the front-door docs (README quickstart)
-  still tell the truth.
-- Commit cadence: one commit per reviewed unit of work, with a descriptive message; push to
-  the private implementation remote until public cutover approval. The
-  pre-public development history lives on the local `archive/pre-public` branch — NEVER push
-  it (it predates the open-source scrub).
-- **Review and QA are risk-tiered by change-type, and standing gates absorb review work.**
-  Every PR remains one coherent claim and must pass the relevant automated and pre-ship gates
-  above. Assurance effort tracks RESIDUAL risk — the risk left after the machine gates (CI on
-  every PR, drift gates, import-direction tests, parity/agreement suites, mutation runs) have
-  had their say. Apply judgment to the whole change and its consequences, not its label:
-  - Trivial docs, metadata, dependency, or test-only corrections with no runtime-behavior or
-    consequential-mechanism change may ship after author validation and the relevant automated
-    checks; independent review and dedicated QA are not mandatory.
-  - Behavior-preserving changes carrying a MECHANICAL parity contract (pre-change rendered-byte
-    fixtures, byte-parity transcript batteries, agreement suites): Builder → ONE independent
-    review whose center of gravity is the CONTRACT'S PROVENANCE — prove the fixtures/battery
-    derive from the pre-change code, spot-re-run a sample, probe the contract red once. No
-    separate QA stage unless that review finds drift or the contract cannot cover a reachable
-    state. Do not build a second from-scratch verification battery to re-prove what the
-    contract already pins.
-  - Ordinary code changes require independent review of the exact SHA plus the repository gate;
-    dedicated QA is optional based on the change's risk and the review findings.
-  - New or changed MECHANICS on high-risk boundaries — security/auth, concurrency, destructive
-    writes, migrations/deployments, remote-target selection, reconnect/replay — require
-    Builder → independent review → adversarial QA, with QA aimed at what no gate can reach
-    (true multi-process concurrency, interruption, states nobody enumerated).
-  - Do not game a lower tier by splitting or relabeling a consequential change. A reviewer may
-    escalate the tier when evidence or findings justify it — and may recommend de-escalation
-    with the reasoning stated, which the orchestrating session decides.
-- **The ladder is subject to its own epistemics.** Per-unit board records carry findings per
-  review/QA stage. When a stage's find-rate is zero across consecutive units of the same
-  change-type, that is evidence the stage is redundant with the standing gates for that
-  change-type — retire or thin it there deliberately (a recorded decision, not silent decay).
-  A stage that keeps finding real defects keeps its place. Words like "verified" and "proven"
-  remain testable claims at every stage.
-- **Dispatching sub-agents: scope the unit, name no gate, never trade away the probing.** A
-  dispatched agent inherits whatever gate its packet names, so naming `npm run check` for a
-  change that cannot reach most lanes makes it wait on Chromium, 20 Playwright specs, and five
-  release tarballs for nothing — and puts all of it on the human's critical path. Name no gate:
-  the sub-agent's default is the pre-commit smoke and CI on the integrated SHA is the gate. Keep
-  one claim per agent - a packet carrying four INDEPENDENT units produces one long-running agent
-  where four concurrent ones would do, and the human waits on the sum instead of the slowest.
-  And do not dispatch an agent to do a read a grep would answer. What must NOT be traded for speed is
-  empirical probing: real concurrent processes, real interruption, real invocations of the
-  built artifact. That is slow and it is what finds defects that reasoning about the code
-  does not.
+The repository's detailed contribution contracts are intentionally one hop away:
 
-- **A dispatched agent's position is fixed by the verbs it owns, not by its packet** (see
-  "Three layers, three verbs" above). Three gate runs for one piece of evidence was the failure
-  this replaces: the agent gated like the last step, the orchestrator re-ran it, CI ran it again.
-  Only CI's is authoritative: it runs on the exact SHA, branch protection enforces it, and no
-  dirty tree or stale build can fool it.
+- [Contributor workflow](CONTRIBUTING.md)
+- [OKF compatibility](CONTRIBUTING.md#okf-compatibility)
+- [Findings and commitments](CONTRIBUTING.md#findings-and-commitments)
+- [Assurance evolution](CONTRIBUTING.md#assurance-evolution)
+- [CLI AXI contract](packages/cli/AXI-CONTRACT.md)
+- [Wire protocol](docs/WIRE-PROTOCOL.md)
 
-  | Layer | Question it answers | Runs |
-  | --- | --- | --- |
-  | sub-agent | does my commit compile and pass its own package? | the pre-commit smoke |
-  | orchestrator | is this commit what it claims to be? | nothing - pushes once, dispatches CI |
-  | CI | is this SHA shippable? | the full gate, authoritative |
+Do not recreate package or shipped-feature inventories here. Read workspace manifests, package
+source, import-boundary tests, and bundle records for current facts.
 
-  **Verifying the commit and re-running the gate are different jobs.** Checking the parent, that
-  nothing was amended, that no AI attribution crept in, and that the diff matches the stated
-  scope is cheap, is duplicated nowhere else, and is what the orchestrator is actually positioned
-  to do. Re-running tests the agent already ran is duplication wearing the word "verify".
+Apply these cross-cutting rules:
 
-  The combination of several agents' work is untested even when each part passed; that is what
-  the dispatch on the integrated SHA is for, not a local gate. The one case for re-running
-  locally is void evidence - the agent did not read the exit code directly, or the tree changed
-  after its run - and then re-run its smoke, not `npm run check`.
+- One parser, resolver, registry, mutation policy, or action authority owns each semantic concern;
+  adapters do not fork it.
+- Storage stays behind the core backend seam; backends persist and retrieve while the engine owns
+  OKF semantics.
+- Public behavior with multiple surfaces uses one owning primitive or a per-row agreement table.
+- A risky mechanic and its deterministic adversarial test ship in the same reviewed unit.
+- Recurring bug classes move into an owning primitive or shared row table, not one-off reminders.
+- Terms such as `canonical`, `parity`, `gate`, `verified`, and `proven` require executable or
+  traceable evidence.
+- Build from the repository root. Fresh worktrees install their own dependencies before test
+  results are trusted.
+- Verify a command by its own exit code. Do not infer success from a piped `tail` or `grep`.
+- Keep full verification output in temporary logs; inspect bounded failures and summaries.
 
-- **When independent review or QA is required, use these review-process conventions:**
-  - Agents that touch git or run tests work in an ISOLATED worktree/checkout, never the
-    shared working tree; reviewers detach onto the exact sha under review.
-  - A risky mechanic and the test that makes it safe ship in the SAME reviewed unit —
-    a gate must own the risk it guards.
-  - A review claiming it "executed" a documented command chain means character-for-character
-    with the emitted artifacts — no reasonable substitutions; pin such chains with tests that
-    literally run the emitted strings.
-  - Reviewers verify empirically where feasible (built artifact, scratch environments),
-    label each finding empirical vs reasoned, and report survived attacks alongside
-    findings so an APPROVE is calibrated.
-  - Reviewers AUDIT the builder's verification rather than rebuilding it: check its
-    construction, re-run a sampled subset, and probe it red once — a full independent
-    re-verification is reserved for provenance checks and for evidence of drift. Where CI
-    already ran the repository gate on the exact SHA, cite that run instead of re-running the
-    full gate locally; re-run locally only what the review has reason to distrust.
-- **Security disclosure:** a defect that is (a) exploitable by someone other than the
-  victim AND (b) present on main goes through a private GitHub Security Advisory —
-  fix privately, merge, then disclose. The project bundle is private, but bundle privacy
-  is not advisory isolation: the bundle may carry severity, evidence class, ownership,
-  status, acceptance gates, and opaque advisory links, while exploit mechanics,
-  reproductions, affected-code detail, and private patch coordination remain advisory-only.
-  Do not duplicate those details in board docs, ordinary parent-agent transcripts, PR
-  comments, or public issues. Security-review handoffs are opaque by default: a
-  parent-visible result reports only that a private finding exists plus its severity,
-  evidence class, and advisory receipt. Once an authorized advisory exists, detailed
-  evidence moves directly into it rather than through the parent result envelope.
-  Pre-merge review findings stay public by default unless they cross this security boundary.
-- **Records live on the PROJECT BUNDLE — the product tracks its own build.** Unit-close means: update `tasks/<unit>` (bare
-  `doc update tasks/<unit> --progress_status …`, with the description carrying the record — what shipped, commit hash,
-  honest caveats) and, when the shipped list or sequence changed, the bundle's `roadmap`
-  doc. Plans are authored as bundle docs (`plans/<unit>`, `type: Plan`); research as
-  `research/<topic>` (`type: Research`). Byte-channel moves (files ↔ bundle) go through
-  `promote`/`pull`, never model retyping. Stale records have real cost here (a session once
-  nearly rebuilt a shipped unit), so: BEFORE building any "queued" item, grep the tree —
-  records may lag the code. Work is CLAIMED before it is built: flip `tasks/<unit>` to
-  `in_progress` with `--actor` — the CAS write IS the claim (see the bundle's Task convention).
-  **Board writes are not code commits.** Board/bundle writes (records, claims, context notes, and
-  task updates) go through `superbee sync`; code ships via branch + PR + review gates. A board doc
-  rides a PR only when it is itself the reviewed deliverable (a plan under vetting, records that
-  explain a code change they accompany).
+`examples/sample-bundle` is the external OKF interop fixture. Existing bundles retain their
+declared OKF edition; genuinely new bundles default to v0.2 unless v0.1 is explicitly requested.
+The complete edition and reserved-file rules live at the OKF compatibility link above.
 
-## Scope
+Source comments explain stable, non-obvious reasons. Review history, adjudication narrative,
+timings, and shipped-pass narration belong in the project bundle or PR, not beside the code.
 
-**This section states what EXISTS and what is GATED — the authoritative, per-unit current-state
-record is the PROJECT BUNDLE (board task descriptions + the `roadmap` doc; the frozen pre-shrink
-changelog is bundle doc `archive/status`), and the forward sequence is `roadmap` plus
-bundle doc `docs/north-star`. Do not grow a second changelog here: an earlier revision of this section
-accreted per-unit history, fell out of sync with the moving tree, and became the most-misleading
-file in the repo (a coherence audit's top finding). Keep it SHORT and re-verify claims against
-the code when touching it.**
+## 4. Security, releases, and human gates
 
-What exists, end to end (each verified in production or by the full suite — per-unit records on
-the bundle):
+### Security
 
-- **Stage 1 wire CLOSED.** The wire protocol (v0.1: docs + reserved files + blobs + delete +
-  push-down list) is implemented by the reference server (`packages/server`, loopback/no-auth by
-  design). The former Cloudflare Worker + D1/R2 + hosted-auth implementation has been extracted
-  from OSS and preserved as a private frozen reference; no hosted deployment package is built or
-  maintained here.
-- **Three backends, one contract:** Filesystem (degenerate history; CAS serialized per target
-  across same-user local processes with fail-closed crash-leftover recovery),
-  Memory (enforced), and Remote (wire client, typed `RemoteError` with server-derived codes).
-  Tri-backend parity tests pin byte-identical version tokens.
-- **Explicit `--remote <url>` on every bundle command** is the only HTTP activation path; `serve` boots the
-  reference server locally; `promote`/`pull`/`blobs`/`delete` are the byte channel. Known
-  divergence (recorded in `docs/WIRE-PROTOCOL.md` open questions): a concept doc's RAW bytes
-  don't cross the wire — `doc read --out --remote` re-serializes via `stringifyDoc` (canonical
-  form; byte-identical only for engine-written docs).
-- **Kinds + recipes:** kind conventions (gate 3) with three built-in recipes (`context-notes` —
-  init's default — `work-tracking`, the Task kind the team's own board runs on, and `roadmap`)
-  over one pluggable `RecipeSource` pipeline.
-- **Scans are cheap end to end:** `list`/`query` ride head projections (`queryHeads`) so a
-  capable remote can return frontmatter without transferring document bodies.
-- **The local `ui` command + bundle Views** (gate 4): the SPA-over-loopback launcher is shipped
-  and working in both modes; registered Views are the one human-facing rendering primitive. The
-  bundle now also holds the project's own plans/research/changelog-archive docs — the records
-  convention above.
-- **The `sync` verb (git tier)** — shares a project's board over a `board` branch on the
-  repo's own remote: self-healing provisioning (sync is the SETUP verb on a fresh clone of a
-  board-sharing project), commit/pull/push touching nothing outside the board, CONVERGING
-  conflict resolution (teammate's version kept, yours exported to a file; reconcile via
-  `doc update`, exit 5), `--show-incoming <id>` viewer, `--pull-only`, cursor + awareness
-  cache (`packages/board-git` is the channel mechanics; the CLI's `commands/sync*.ts` +
-  `cursor.ts`/`autopull.ts` wiring keep command UX — core never
-  learns git exists), and the SessionStart integration: `session-start` — ONE hook
-  subcommand doing a time-boxed (≤7s) best-effort pull then the home render in-process, with
-  the board-awareness block ("since this machine last synced" attributed per actor,
-  self-authored rows filtered, unpushed/uncommitted backstop, probe-gated "run sync — never
-  init" first contact), wired by `hook install` across Claude Code/Codex/OpenCode
-  (`commands/session-start.ts`, `commands/home.ts`'s board block, `commands/hook.ts`).
-  An IN-TREE board — the bundle committed WITH code on the current branch, no board branch
-  anywhere — is a supported READ-SIDE mode: `detectBoardChannel` routes at
-  sync's/session-start's own resolution points, awareness rides the branch's tracking upstream
-  (decision table, never a guessed `origin/<branch>`; mode-scoped `git-intree` cursor;
-  prefix-scoped diffs/backstops; NO autopull), delivery is the user's own `git pull`, write
-  verbs refuse with guidance, and doc-write self-attribution rides mutate.ts's injected
-  post-persist hook (`board-attribution.ts`).
+Never place secrets, exploit mechanisms, reachability conditions, or working reproductions in a
+public channel or any synchronized bundle by default, regardless of its observed visibility.
+An externally exploitable defect present on `main` goes through a private GitHub Security Advisory:
+fix privately, merge, then disclose. Stop before writing sensitive detail and follow
+[SECURITY.md](SECURITY.md).
 
-Standing gates on future work:
+Bundle privacy is not advisory isolation. A bundle may carry sanitized coordination metadata such
+as severity, evidence class, ownership, status, acceptance gates, and an opaque advisory link.
+Exploit mechanics, reproductions, affected-code detail, and private patch coordination remain
+advisory-only. Parent-visible handoffs report only that a private finding exists plus its severity,
+evidence class, and advisory receipt; detailed evidence moves directly into the advisory.
 
-- **Hosted revival is human-gated.** This repository carries no Cloudflare deployment target.
-  The frozen private reference records that any future revival must review the architecture and
-  apply D1 migrations before deploying dependent code.
-- **The npm prerelease is the executable distribution channel.** `superbee` ships the
-  self-contained CLI plus an optional installable Agent Skill containing guidance and references;
-  keep `npm run verify:npm-package` and the npm-target SKILL drift gate green. Automated publishing
-  and the durable update-notification contract remain separate explicit units.
-- **Multi-bundle partitioning + per-bundle key scoping + bundle-scoped authz** is its own
-  future unit, designed and built TOGETHER (the Stage-2 review's adjudication) — do not build
-  piecemeal, and do not build without an explicit decision. Same for the GitHub device-flow
-  browser login, any admin/collaboration UI, and everything on bundle doc `docs/core`'s FROZEN list —
-  CORE.md is the standing scope arbiter.
+Pre-merge non-sensitive review findings may use the normal review route. Unknown, changed, or
+mismatched visibility never weakens the conservative rule.
+
+### Releases
+
+Release authority is separate from ordinary builder or orchestrator authority. Until the contained
+release controller is the committed authority, preserve these safeguards:
+
+- Never run a direct or manual publish and never replace a release asset ad hoc.
+- Publish only an artifact bound to an exact source SHA whose authoritative CI passed.
+- Inspect a draft by numeric release ID and bind the retained candidate and receipt by digest.
+- Treat one valid current receipt as already present; replacement requires the prior receipt's
+  exact ID, name, and digest.
+- Journal interruption recovery and refuse a competing same-name asset.
+- A dry run may validate the same plan but performs no durable ownership, deletion, or upload.
+- Every release-relevant `VIOLATED` or `UNKNOWN` statement needs a Task or recorded human
+  acceptance decision before release.
+
+Use the repository's package scripts and the active bundle release Task; do not reconstruct a
+procedure from this summary. The human must explicitly authorize release execution. The future
+committed release contract and controller replace this kernel only after their agreement and
+adversarial tests pass.
+
+### Frozen scope
+
+The frozen and coupled decisions in bundle `docs/core` require an explicit human decision to
+reopen. Code adjacency is not authorization. In particular, do not introduce hosted deployment,
+authentication, administration/collaboration UI, or multi-bundle authorization piecemeal.
+
+## 5. Delivery and records
+
+Branch from current `origin/main` on a descriptively named feature branch. Do not push to `main`.
+Do not add AI attribution or `Co-Authored-By` lines to commits.
+
+Agents do not open pull requests. After pushing the feature branch, provide a plain-ASCII,
+paste-ready PR title and description. The human owns the PR and merge gate.
+
+When a unit closes:
+
+1. Update its bundle Task with the delivered SHA, evidence, and honest caveats.
+2. Update the platform roadmap only when the shipped order or commitment changed.
+3. Record review and QA against the exact artifact they evaluated.
+4. Synchronize the bundle through the orchestrating session, never a dispatched agent.
+
+The project bundle is the current-state record. Do not grow a changelog, roadmap, package tour,
+historical failure narrative, or copied task list in this entrypoint.

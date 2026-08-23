@@ -120,3 +120,49 @@ test("security routing is private and fail-closed without bundle, Skill, sync, o
   assert.doesNotMatch(policy, /superbee (status|list|doc read|sync)/);
   assert.match(policy, /There is no public fallback for sensitive disclosure/);
 });
+
+test("mandatory agent entrypoints stay compact, routed, and safe in degraded states", () => {
+  const claude = readProjectFile("CLAUDE.md");
+  const agents = readProjectFile("AGENTS.md");
+  const normalizedClaude = claude.replace(/\s+/g, " ");
+  const lineCount = claude.trimEnd().split("\n").length;
+
+  assert.ok(lineCount >= 170 && lineCount <= 230, `CLAUDE.md must stay in the Phase A range, got ${lineCount}`);
+  assert.deepEqual(
+    claude.split("\n").filter((line) => /^## \d\. /.test(line)),
+    [
+      "## 1. Authority and orientation",
+      "## 2. Roles, verbs, and evidence",
+      "## 3. Engineering contracts",
+      "## 4. Security, releases, and human gates",
+      "## 5. Delivery and records",
+    ],
+  );
+
+  for (const route of [
+    "[CONTRIBUTING.md](CONTRIBUTING.md)",
+    "[OKF compatibility](CONTRIBUTING.md#okf-compatibility)",
+    "[Findings and commitments](CONTRIBUTING.md#findings-and-commitments)",
+    "[Assurance evolution](CONTRIBUTING.md#assurance-evolution)",
+    "[CLI AXI contract](packages/cli/AXI-CONTRACT.md)",
+    "[Wire protocol](docs/WIRE-PROTOCOL.md)",
+    "[SECURITY.md](SECURITY.md)",
+  ]) {
+    assert.ok(claude.includes(route), `mandatory entrypoint route disappeared: ${route}`);
+  }
+
+  for (const safetyKernel of [
+    "initialize or publish a bundle;",
+    "Missing authority and stale authority are different states",
+    "Builder -> independent",
+    "CI on the pushed SHA is the shipping verdict",
+    "Never place secrets, exploit mechanisms, reachability conditions, or working reproductions",
+    "Never run a direct or manual publish",
+    "require an explicit human decision",
+  ]) {
+    assert.ok(normalizedClaude.includes(safetyKernel), `mandatory safety kernel disappeared: ${safetyKernel}`);
+  }
+
+  assert.match(agents, /read and follow \[CLAUDE\.md\]\(CLAUDE\.md\) in full/);
+  assert.doesNotMatch(claude, /private implementation remote|archive\/pre-public|The board is public|CORE\.md/);
+});
