@@ -15,7 +15,7 @@
 // are rejected with --batch. Results are emitted in input order with a deterministic summary.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { constants, mkdtempSync, rmSync } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -138,7 +138,7 @@ export async function parseInspectArgs(argv, { read = readFile, accessKey = acce
   if (!keyPath) fail("missing --key; pass --key <ssh-private-key> or set SUPERBEE_RELEASE_INSPECTION_KEY to its local path");
   if (!explicitKeyPath) {
     try {
-      await accessKey(keyPath);
+      await accessKey(keyPath, constants.R_OK);
     } catch {
       fail("SUPERBEE_RELEASE_INSPECTION_KEY is not a readable local key path; pass --key <ssh-private-key> or correct the setting");
     }
