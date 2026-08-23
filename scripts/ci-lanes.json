@@ -13,6 +13,7 @@
     "smoke-node-20",
     "distribution",
     "browser",
+    "case-folding-volume",
     "release-policy",
     "release-exhaustive"
   ],
@@ -46,6 +47,16 @@
       "components": ["mcp-browser", "ui-end-to-end"],
       "prerequisites": ["build"],
       "nodes": [26]
+    },
+    "case-folding-volume": {
+      "display_name": "case-folding private-state boundary (macOS)",
+      "script": "ci:case-folding",
+      "workflow_only": true,
+      "components": [],
+      "nodes": [26],
+      "runner": "macos-latest",
+      "environment": { "SUPERBEE_EXPECT_CASE_FOLDING": "1" },
+      "test_name_pattern": "a different spelling of an EXISTING state root is refused \\(the shipped case bypass\\)"
     },
     "release-policy": {
       "display_name": "deterministic release policy",

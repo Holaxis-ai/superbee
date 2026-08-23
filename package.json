@@ -19,6 +19,7 @@
     "ci:runtime": "npm run build && npm run typecheck --workspaces --if-present --ignore-scripts && npm test --workspaces --if-present --ignore-scripts",
     "ci:distribution": "npm run verify:npm-package && npm run check:skill -w superbee",
     "ci:browser": "npm run build && npm run test:browser -w @superbee/mcp-app && npm run e2e:gate -w @superbee/ui",
+    "ci:case-folding": "npm run build && npm run test:case-folding -w superbee",
     "ci:release-policy": "npm run build && npm run test:scripts",
     "ci:aggregate": "node scripts/ci-aggregate.mjs",
     "check:release-exhaustive": "node scripts/ci-release-exhaustive.mjs",

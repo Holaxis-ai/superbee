@@ -63,6 +63,13 @@ function assertSmokeJob(job, lane) {
   assert.deepEqual(surface, [...lane.built_cli_commands].sort(), "floor smoke built-CLI command surface drifted");
 }
 
+function assertCaseFoldingJob(job, lane) {
+  assert.match(job, new RegExp(`^ {4}runs-on: ${lane.runner}\\s*$`, "m"));
+  assert.match(job, new RegExp(`^ {10}node-version: ${lane.nodes[0]}\\s*$`, "m"));
+  assert.match(job, new RegExp(`SUPERBEE_EXPECT_CASE_FOLDING: ["']${lane.environment.SUPERBEE_EXPECT_CASE_FOLDING}["']`));
+  assert.match(job, new RegExp(`run: npm run ${lane.script.replace(":", "\\:")}`));
+}
+
 function validateCiTopology(text, candidate = manifest) {
   const jobs = extractJobs(text);
   assert.deepEqual(
@@ -88,6 +95,7 @@ function validateCiTopology(text, candidate = manifest) {
   assert.match(jobs["release-exhaustive"], /check:release-exhaustive -- --expected-sha "\$EXPECTED_SOURCE_SHA"/);
   assert.match(jobs["release-exhaustive"], /fetch-depth: 0/, "exact-SHA proof needs complete history");
   assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
+  assertCaseFoldingJob(jobs["case-folding-volume"], candidate.lanes["case-folding-volume"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
   assert.equal(
     /^ {2}merge_group:/m.test(text),
@@ -138,6 +146,8 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
     ["          node-version: 20", "          node-version: 22", /second setup-node/],
     ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
     ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
+    ["    runs-on: macos-latest", "    runs-on: ubuntu-latest", /runs-on/],
+    ["          SUPERBEE_EXPECT_CASE_FOLDING: \"1\"", "          SUPERBEE_EXPECT_CASE_FOLDING: \"0\"", /SUPERBEE_EXPECT_CASE_FOLDING/],
   ]) {
     assert.throws(() => validateCiTopology(workflow.replace(from, to)), error);
   }

@@ -80,6 +80,28 @@ jobs:
         working-directory: packages/ui
       - run: npm run ci:browser
 
+  # macOS runner time costs more than Linux, so this lane runs only the regression
+  # whose positive assertion requires a case-folding volume. The test fails closed
+  # if the runner's temporary volume stops folding case.
+  case-folding-volume:
+    name: case-folding private-state boundary (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Prove the case-variant private-state defense on a case-folding volume
+        env:
+          SUPERBEE_EXPECT_CASE_FOLDING: "1"
+        run: npm run ci:case-folding
+
   release-policy:
     name: deterministic release policy
     runs-on: ubuntu-latest
@@ -146,7 +168,7 @@ jobs:
 
   required:
     name: CI required lanes
-    needs: [runtime, smoke-node-20, distribution, browser, release-policy, release-exhaustive]
+    needs: [runtime, smoke-node-20, distribution, browser, case-folding-volume, release-policy, release-exhaustive]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -164,7 +186,7 @@ jobs:
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, smoke-node-20, distribution, browser, release-policy, release-exhaustive]
+    needs: [runtime, smoke-node-20, distribution, browser, case-folding-volume, release-policy, release-exhaustive]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -182,7 +204,7 @@ jobs:
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, smoke-node-20, distribution, browser, release-policy, release-exhaustive]
+    needs: [runtime, smoke-node-20, distribution, browser, case-folding-volume, release-policy, release-exhaustive]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

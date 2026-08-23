@@ -111,6 +111,24 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and singleton lan
   }
 });
 
+test("the case-folding lane declares the narrow macOS regression and its fail-closed volume expectation", () => {
+  const lane = manifest.lanes["case-folding-volume"];
+  assert.equal(lane.workflow_only, true);
+  assert.deepEqual(lane.components, []);
+  assert.equal(lane.runner, "macos-latest");
+  assert.deepEqual(lane.nodes, [manifest.singleton_node]);
+  assert.deepEqual(lane.environment, { SUPERBEE_EXPECT_CASE_FOLDING: "1" });
+  assert.equal(lane.test_name_pattern, "a different spelling of an EXISTING state root is refused \\(the shipped case bypass\\)");
+  assert.equal(
+    pkg.scripts[lane.script],
+    "npm run build && npm run test:case-folding -w superbee",
+  );
+  assert.equal(
+    cliPkg.scripts["test:case-folding"],
+    `node --test --import ./test/ts-loader.mjs --test-name-pattern="${lane.test_name_pattern}" ./test/private-state-bundle-boundary.test.ts`,
+  );
+});
+
 test("the fail-closed result contract accepts success only", () => {
   const green = Object.fromEntries(REQUIRED_JOBS.map((name) => [name, { result: "success", outputs: {} }]));
   assert.deepEqual(evaluateRequiredResults(green), { ok: true, errors: [] });

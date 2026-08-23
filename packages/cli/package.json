@@ -44,6 +44,7 @@
     "typecheck": "tsc --noEmit",
     "pretest": "node build.mjs local-dev",
     "test": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
+    "test:case-folding": "node --test --import ./test/ts-loader.mjs --test-name-pattern=\"a different spelling of an EXISTING state root is refused \\(the shipped case bypass\\)\" ./test/private-state-bundle-boundary.test.ts",
     "mutation": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid stryker run",
     "gen:skill": "node scripts/gen-skill.mjs",
     "check:skill": "node scripts/gen-skill.mjs --check",

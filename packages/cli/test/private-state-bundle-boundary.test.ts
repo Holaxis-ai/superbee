@@ -322,6 +322,12 @@ test("a different spelling of an EXISTING state root is refused (the shipped cas
     const stateRoot = await ensureUserStateRoot(home);
     const variant = caseVariantOf(stateRoot);
 
+    // The macOS CI lane sets this expectation so a runner-image change cannot turn the
+    // case-folding regression into a case-sensitive no-op.
+    if (process.env.SUPERBEE_EXPECT_CASE_FOLDING === "1") {
+      assert.equal(foldsCase(variant, stateRoot), true, "the case-folding CI lane needs a case-folding temporary volume");
+    }
+
     if (foldsCase(variant, stateRoot)) {
       // Case-folding volume (macOS default): the two spellings are ONE directory. This is exactly
       // what shipped broken — the identity check resolved both coordinates, saw two different
