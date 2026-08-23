@@ -95,9 +95,9 @@ export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
 /** The npm projection (packages/cli/references/, shipped in the tarball). */
 export const NPM_RESOURCES: ProjectedResource[] = DISTRIBUTION_RESOURCES.map(({ src, dest }) => ({ src, dest }));
 
-// NOT DISTRIBUTED: the wire-protocol v0.1 contract currently lives only as project-bundle doc
-// `docs/wire-protocol`. Shipping it requires a tracked distribution-neutral source or a
-// bundle-aware release input; neither belongs in this ownership-only unit.
+// NOT DISTRIBUTED: the repository-owned wire-protocol contract lives at docs/WIRE-PROTOCOL.md.
+// It governs server/client development but is not an Agent Skill runtime reference, so it remains
+// outside the npm projection unless a later release decision deliberately adds that audience.
 
 /**
  * Every command NAME (as {@link commandName} in reference.ts would extract it from a usage
