@@ -1,5 +1,6 @@
 import {
   applyQuerySelectionFilters,
+  normalizeQuerySelection,
   loadKinds,
   projectLogicalKindFields,
   queryEdges,
@@ -511,10 +512,8 @@ export class BridgeService {
       };
     }
     if (request.type === "query") {
-      const rows = await queryHeads(this.options.bundle, {
-        ...(request.params.type ? { type: request.params.type } : {}),
-        ...(request.params.prefix ? { prefix: request.params.prefix } : {}),
-      });
+      const selection = normalizeQuerySelection(request.params);
+      const rows = await queryHeads(this.options.bundle, selection.pushdown);
       // Every View query is a product-facing projection, including untyped feeds such as Pulse.
       // Resolve logical Kind fields here once so durable web and MCP Views never need to know the
       // physical coordinate selected by a bundle edition.
@@ -524,7 +523,7 @@ export class BridgeService {
       ]);
       const result = boundedRows(
         rows,
-        { ...request.params, okfVersion },
+        { ...selection.params, okfVersion },
         [...registry.kinds.values()],
       );
       result.rows = result.rows.map((row) => {

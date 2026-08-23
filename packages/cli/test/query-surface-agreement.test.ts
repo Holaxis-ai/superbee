@@ -34,6 +34,7 @@ interface AgreementRow {
 const AGREEMENT_ROWS: AgreementRow[] = [
   { name: "unfiltered, unlimited", params: { limit: 0 }, ids: ["tasks/a", "tasks/b", "tasks/c", "tasks/d"], count: 4 },
   { name: "scalar and array field membership", params: { field: "status=todo", limit: 0 }, ids: ["tasks/a", "tasks/b"], count: 2 },
+  { name: "whitespace around set members is normalized", params: { field: "status=todo, in_progress", limit: 0 }, ids: ["tasks/a", "tasks/b", "tasks/d"], count: 3 },
   { name: "string coercion", params: { field: "priority=1", limit: 0 }, ids: ["tasks/a"], count: 1 },
   { name: "open uses declared terminal membership", params: { open: true, limit: 0 }, ids: ["tasks/a", "tasks/d"], count: 2 },
   { name: "field and open compose", params: { field: "status=todo", open: true, limit: 0 }, ids: ["tasks/a"], count: 1 },
@@ -63,7 +64,7 @@ async function makeBundle(): Promise<{ bundle: Bundle; cleanup: () => Promise<vo
     ["tasks/a", "todo", 1],
     ["tasks/b", ["todo", "done"], 2],
     ["tasks/c", "done", 3],
-    ["tasks/d", "blocked", 4],
+    ["tasks/d", "in_progress", 4],
   ] as const) {
     await writeDoc(bundle, {
       id,

@@ -37,15 +37,16 @@ import { parseArgs } from "node:util";
 import {
   PROGRESS_STATUS_FIELD,
   queryHeads,
+  applyQuerySelectionFilters,
+  normalizeQuerySelection,
   loadKinds,
-  isTerminal,
-  matchesFilter,
   readBundleOkfVersion,
   readKindField,
   progressStatusCoordinate,
   projectKindForAuthoring,
   type KindRegistry,
   type QueryFilter,
+  type QuerySelectionParams,
 } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { maybeAutoPull } from "../autopull.js";
@@ -140,68 +141,22 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   }
 
   const filter: QueryFilter = {};
-  if (values.type?.trim()) filter.type = values.type.trim();
   if (values.tag && values.tag.length > 0) filter.tags = values.tag;
-  if (values.prefix?.trim()) filter.prefix = values.prefix.trim();
-
-  // Fork B: --field key=value (repeatable, ANDed across different keys). Split on the FIRST "="
-  // (a deliberate value containing "=" survives); an empty key, or a token with no "=" at all, is
-  // USAGE (exit 2). A comma in the value is the set-membership
-  // separator (OR within that one field) — the value is split on "," into members (each taken
-  // verbatim, not trimmed, same as before a comma existed, so a deliberately spaced member
-  // survives untouched); an EMPTY member (--field progress_status=todo,,done, or a leading/trailing comma)
-  // is USAGE, since it can never match anything and is almost certainly a typo. A single-member
-  // value (no comma) is unchanged from before and rides core's `QueryFilter.fields` push-down
-  // byte-identically; a multi-member value is collected into `orFieldSets` and post-filtered
-  // below (reader-side — no engine/wire change). A repeated `--field` for the SAME key keeps
-  // last-one-wins (matching the pre-existing single-value behavior), whichever variant it lands as.
-  const singleFields: Record<string, string> = {};
-  const orFieldSets: Record<string, string[]> = {};
-  let progressFieldSet: string[] | undefined;
-  if (values.field && values.field.length > 0) {
-    for (const entry of values.field) {
-      const eq = entry.indexOf("=");
-      const key = eq >= 0 ? entry.slice(0, eq).trim() : "";
-      if (eq < 0 || key === "") {
-        throw new CliError("USAGE", `--field expects key=value (got '${entry}')`, {
-          help: `${cliInvocation()} list --field progress_status=done`,
-        });
-      }
-      const rawValue = entry.slice(eq + 1);
-      const members = rawValue.split(",");
-      if (members.some((m) => m === "")) {
-        // Two distinct typos share the "empty member" shape but deserve different wording: a
-        // BARE value (no comma at all, e.g. `--field status=`) is an empty value, not a
-        // set-membership mistake — tailor the message so it doesn't talk about commas the user
-        // never typed. Both stay a loud USAGE (exit 2): a silent count:0 on either typo would be
-        // a false negative for an agent scanning for a real match.
-        if (!rawValue.includes(",")) {
-          throw new CliError(
-            "USAGE",
-            `--field ${key} has an empty value — expected --field ${key}=<value>, or comma-separated set membership --field ${key}=a,b`,
-            { help: `${cliInvocation()} list --field progress_status=done` },
-          );
-        }
-        throw new CliError(
-          "USAGE",
-          `--field ${key} has an empty member in '${rawValue}' (comma is the set-membership separator — use 'a,b', not 'a,,b' or a leading/trailing comma)`,
-          { help: `${cliInvocation()} list --field progress_status=todo,in_progress` },
-        );
-      }
-      if (key === PROGRESS_STATUS_FIELD) {
-        progressFieldSet = members;
-        delete singleFields[key];
-        delete orFieldSets[key];
-      } else if (members.length > 1) {
-        orFieldSets[key] = members;
-        delete singleFields[key];
-      } else {
-        singleFields[key] = rawValue;
-        delete orFieldSets[key];
-      }
-    }
-    if (Object.keys(singleFields).length > 0) filter.fields = singleFields;
+  const selectionInput: QuerySelectionParams = {
+    ...(values.type?.trim() ? { type: values.type.trim() } : {}),
+    ...(values.prefix?.trim() ? { prefix: values.prefix.trim() } : {}),
+    ...(values.field?.length ? { fields: values.field } : {}),
+    ...(values.open ? { open: true } : {}),
+  };
+  let selection: ReturnType<typeof normalizeQuerySelection>;
+  try {
+    selection = normalizeQuerySelection(selectionInput);
+  } catch (error) {
+    throw new CliError("USAGE", `--${error instanceof Error ? error.message : "field expects key=value"}`, {
+      help: `${cliInvocation()} list --field progress_status=todo,in_progress`,
+    });
   }
+  Object.assign(filter, selection.pushdown);
 
   // Row cap (AXI §9 "reveal truncated lists"): `list` is THE query verb and the one most likely to
   // hit large N, so it bounds its rows by default like `status` does its finding categories. Default
@@ -258,50 +213,26 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     return okfVersionCache;
   };
 
-  // OR-within-field post-filter for every multi-member --field (comma
-  // sets). AND across fields (a doc must satisfy EVERY field's set), each field itself OR'd across
-  // its declared members. Reuses core's OWN exact-match predicate (`matchesFilter`) per candidate
-  // member instead of a second value-coercion implementation — reader-side only, no engine/wire
-  // change (the single-member case above already rode the real push-down).
-  for (const [field, members] of Object.entries(orFieldSets)) {
-    docs = docs.filter((d) => members.some((m) => matchesFilter(d, { fields: { [field]: m } })));
-  }
-  if (progressFieldSet) {
-    const registry = await getRegistry();
-    const okfVersion = await getOkfVersion();
-    docs = docs.filter((doc) => {
-      const kind = registry.kinds.get(String(doc.frontmatter.type ?? ""));
-      if (!kind) return false;
-      const raw = readKindField(okfVersion, kind, doc.frontmatter, PROGRESS_STATUS_FIELD);
-      const actual = raw === undefined || raw === null
-        ? []
-        : (Array.isArray(raw) ? raw : [raw]).map((value) => String(value));
-      return progressFieldSet!.some((value) => actual.includes(value));
-    });
-  }
-
-  // --open excludes a doc whose own kind declares a terminal
-  // set (`kind.fields.terminal`) that its current frontmatter matches (`isTerminal`) — purely
-  // declaration-driven: an ungoverned type, a governed type with no terminal declaration, or a doc
-  // missing the field are all kept (not-terminal is the safe default). A bundle where NO kind
-  // declares ANY terminal set makes --open a structural no-op; that's reported via a help line
-  // below rather than silently doing nothing.
+  // Core owns field-set, logical-progress, and --open selection after optional pushdown. The CLI
+  // retains only presentation policy and the explanatory no-op help for an undeclared terminal set.
   let openNoopReason: string | undefined;
-  if (values.open) {
+  if (selection.params.open) {
     const registry = await getRegistry();
     const anyTerminalDeclared = [...registry.kinds.values()].some(
       (k) => Object.keys(k.fields.terminal).length > 0,
     );
     if (!anyTerminalDeclared) {
       openNoopReason = "no kind declares terminal values — --open filtered nothing";
-    } else {
-      docs = docs.filter((d) => {
-        const kind = registry.kinds.get(typeof d.frontmatter.type === "string" ? d.frontmatter.type : "");
-        if (!kind) return true;
-        return !isTerminal(kind, d.frontmatter);
-      });
     }
   }
+  const selectionNeedsKinds = selection.params.open || selection.params.fields?.some(
+    (field) => field.startsWith(`${PROGRESS_STATUS_FIELD}=`),
+  );
+  const selectionKinds = selectionNeedsKinds ? [...(await getRegistry()).kinds.values()] : [];
+  docs = applyQuerySelectionFilters(docs, {
+    ...selection.params,
+    ...(selectionNeedsKinds ? { okfVersion: await getOkfVersion() } : {}),
+  }, selectionKinds).rows;
 
   // Core owns the storage-facing canonical-ID ordering. The CLI presents a different, orientation
   // facing order only after every CLI filter has settled: newest meaningful change first, then
