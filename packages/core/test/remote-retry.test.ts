@@ -147,17 +147,25 @@ const MUTATION_CASES: MutationCase[] = [
  * lets another writer replace that state. A replay must therefore either be refused (unguarded) or
  * receive a 412 against the original premise (CAS/expect-absent).
  */
-function lostResponseWithInterposedWriter() {
+function lostResponseWithInterposedWriter(initiallyAbsent = false) {
   const lost = new Error("lost response after commit");
   const state = {
     calls: 0,
-    current: "sha256:before",
+    current: initiallyAbsent ? null : "sha256:before",
     events: [] as string[],
     requestGuards: [] as Array<{ ifMatch: string | null; ifNoneMatch: string | null }>,
   };
   const impl = async (req: Request): Promise<Response> => {
     state.calls++;
-    state.requestGuards.push({ ifMatch: req.headers.get("if-match"), ifNoneMatch: req.headers.get("if-none-match") });
+    const guard = { ifMatch: req.headers.get("if-match"), ifNoneMatch: req.headers.get("if-none-match") };
+    state.requestGuards.push(guard);
+    const guardMatches = guard.ifNoneMatch === "*" ? state.current === null : guard.ifMatch === null || guard.ifMatch === state.current;
+    if (!guardMatches) {
+      return new Response(
+        JSON.stringify({ error: { code: "VERSION_CONFLICT", details: { expected: guard.ifNoneMatch ? null : guard.ifMatch, actual: state.current } } }),
+        { status: 412 },
+      );
+    }
     if (state.calls === 1) {
       state.current = "sha256:client-commit";
       state.events.push("client committed");
@@ -220,7 +228,7 @@ for (const mutation of MUTATION_CASES) {
 
   if (mutation.supportsExpectAbsent) {
     test(`replays an expect-absent ${mutation.name} after a lost response and surfaces the interposed writer conflict`, async () => {
-      const { impl, state } = lostResponseWithInterposedWriter();
+      const { impl, state } = lostResponseWithInterposedWriter(true);
       await assert.rejects(
         () => mutation.run(backend(impl, 1), "expect-absent"),
         (err: unknown) => err instanceof VersionConflict && err.expected === null && err.actual === "sha256:interposed-writer",
