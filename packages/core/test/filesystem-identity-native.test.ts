@@ -22,6 +22,7 @@ const isEnoent = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.
 
 let hostClassPromise: Promise<HostClass> | undefined;
 const hostClass = (): Promise<HostClass> => (hostClassPromise ??= detectHostClass());
+const backend = (root: string): FilesystemBackend => new FilesystemBackend(root);
 
 async function tempRoot(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), `superbee-identity-native-${prefix}-`));
@@ -159,6 +160,61 @@ test("AC-15 (cond): concurrent first creation of Docs/a and docs/b yields exactl
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("AC-15 (cond): concurrent first creation of a full-case-folding pair never fulfils both writers on an aliasing host", async () => {
+  const aliasing = (await hostClass()) !== "exact";
+  const pairs: Array<[string, string]> = [
+    ["concepts/straße", "concepts/STRASSE"],
+    ["concepts/ẞ", "concepts/SS"],
+    ["concepts/ς", "concepts/σ"],
+    ["concepts/ᾈ", "concepts/ἀι"],
+  ];
+  for (const [first, second] of pairs) {
+    for (let round = 0; round < 3; round++) {
+      const root = await tempRoot(`fold-race-${round}`);
+      try {
+        const writers = [first, second].map((id) => [id, new FilesystemBackend(root)] as const);
+        const outcomes = await Promise.allSettled(writers.map(([id, backend]) => backend.write(id, doc(id, id))));
+        const fulfilled = outcomes.flatMap((outcome, index) => (outcome.status === "fulfilled" ? [writers[index]![0]] : []));
+        const rejected = outcomes.flatMap((outcome) => (outcome.status === "rejected" ? [outcome.reason as unknown] : []));
+        const files = await readdir(path.join(root, "concepts"));
+        const label = `${first} vs ${second}, round ${round}: ${JSON.stringify(outcomes.map((o) => o.status))} files=${files.join(",")}`;
+        assert.ok(!(fulfilled.length === 2 && files.length < 2), `forbidden: both fulfilled with one file (${label})`);
+        if (aliasing) {
+          assert.equal(fulfilled.length, 1, label);
+          assert.ok(rejected[0] instanceof FilesystemIdentityAliasError, label);
+          assert.deepEqual(files, [`${fulfilled[0]!.slice("concepts/".length)}.md`], label);
+          assert.equal((await backend(root).read(fulfilled[0]!)).doc.body.trimEnd(), fulfilled[0]);
+        } else {
+          assert.deepEqual(fulfilled.sort(), [first, second].sort(), label);
+          assert.equal(files.length, 2, label);
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  }
+});
+
+test("I4: a backend built with a relative root keeps its identity across a later chdir", async () => {
+  const parent = await tempRoot("relative-root");
+  const cwd = process.cwd();
+  try {
+    process.chdir(parent);
+    const relative = new FilesystemBackend("bundle");
+    await relative.write("concepts/a", doc("concepts/a", "a"));
+    const elsewhere = path.join(parent, "elsewhere");
+    await mkdir(elsewhere);
+    process.chdir(elsewhere);
+    assert.equal((await relative.read("concepts/a")).doc.body.trimEnd(), "a");
+    await relative.write("concepts/b", doc("concepts/b", "b"));
+    assert.deepEqual(await readdir(elsewhere), [], "nothing was created relative to the new cwd");
+    assert.deepEqual((await readdir(path.join(parent, "bundle", "concepts"))).sort(), ["a.md", "b.md"]);
+  } finally {
+    process.chdir(cwd);
+    await rm(parent, { recursive: true, force: true });
   }
 });
 

@@ -135,8 +135,13 @@ function reservedPath(dir: string, name: ReservedFilename): string {
 export class FilesystemBackend implements StorageBackend {
   readonly #root: string;
 
+  /**
+   * The root is resolved once here: a relative root would otherwise re-resolve against the
+   * process's current directory on every operation, so a later `chdir` would silently move the
+   * bundle and derive a different identity key.
+   */
   constructor(root: string) {
-    this.#root = root;
+    this.#root = path.resolve(root);
   }
 
   async read(id: ConceptId): Promise<ReadResult> {

@@ -145,9 +145,17 @@ function relSegments(rel: string): string[] {
 
 // ── identity key ──────────────────────────────────────────────────────────────
 
-/** NFKD then locale-independent lower case: a superset of every supported host's equivalence. */
+/**
+ * NFKD, then Unicode FULL case folding applied as lower-upper-lower (locale-independent). A plain
+ * lower-case fold misses the pairs a case-insensitive host equates through full case mapping
+ * (ß/ss, ẞ/SS, final sigma ς/σ, iota-subscript ᾈ/ἀι and its family): two such spellings would get
+ * different keys, both first-creation writers would realize ABSENT, and the second rename would
+ * silently replace the first document. The round trip through upper case expands every such
+ * pair to a common form, so the fold is a superset of every supported host's equivalence;
+ * over-folding (dotless ı with i) only adds serialization, never removes exclusion.
+ */
 export function foldSegment(segment: string): string {
-  return segment.normalize("NFKD").toLowerCase();
+  return segment.normalize("NFKD").toLowerCase().toUpperCase().toLowerCase();
 }
 
 /** The physical path of the longest existing ancestor of `resolved`, plus the absent remainder. */
