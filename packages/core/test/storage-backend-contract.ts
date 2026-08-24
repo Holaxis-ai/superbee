@@ -368,6 +368,10 @@ export function registerStorageBackendBlobContract(options: BackendContractOptio
   // A key nested under an existing FILE entry names a shape no backend can hold. Every observation
   // reports absence (never a raw ENOTDIR): the filesystem adapter classifies the shape mismatch as
   // absence, exactly like the adapters that have no notion of a path segment being a file.
+  // Contract record: before the identity protocol the filesystem adapter raised a raw ENOTDIR from
+  // read/readBlob/readReserved/versions here. Mutations under a file segment are NOT in this parity
+  // row: the filesystem adapter raises its typed shape-mismatch error (where it used to raise raw
+  // ENOTDIR), while the in-memory and remote adapters report the key as absent.
   test(`${name} blob contract: a key nested under an existing file entry is absent for every observation`, async () => {
     await withFixture(create, async (backend) => {
       await backend.writeBlob("artifacts/parent.bin", enc("a file, not a directory"));
