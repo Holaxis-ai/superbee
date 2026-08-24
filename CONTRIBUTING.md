@@ -90,8 +90,7 @@ the same unit.
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
-| release-policy | `npm run ci:release-policy` | `release-policy` | 26 |
-| release-exhaustive | `npm run check:release-exhaustive` | `release-exhaustive` | 26 |
+| scripts | `npm run ci:scripts` | `scripts` | 26 |
 <!-- contributing-ci-lanes:end -->
 
 Minimum iteration lanes by reach:
@@ -99,14 +98,13 @@ Minimum iteration lanes by reach:
 | Touched surface | Run at minimum |
 | --- | --- |
 | Package source or tests | `npm run ci:runtime` |
-| `package.json`, `scripts/`, release or packaging code | `npm run ci:distribution` and `npm run ci:release-policy` |
+| `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
 | `packages/ui`, `packages/mcp-app`, or embedded browser code | `npm run ci:browser` |
-| Release candidates, retained artifacts, or tarball proofs | `npm run check:release-exhaustive` too |
-| Workflow topology or `scripts/ci-lanes.json` | `npm run ci:release-policy` |
+| Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts` |
+| `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 
-Workflow files enter the release packet-input closure. A topology change must update its tracked
-inputs and agreement proofs; never add path skipping without a separately reviewed fail-closed
-classifier. CI currently runs on Linux, so platform-specific claims need their own empirical probe.
+A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
+add path skipping without a separately reviewed fail-closed classifier. CI currently runs on Linux, so platform-specific claims need their own empirical probe.
 
 ### Running checks
 
@@ -199,8 +197,8 @@ either:
 
 Use the selected bundle's `conventions/task` and `conventions/review` for record shape; do not copy
 their field definitions here. Record acceptance as a `subject_kind: process` Review that targets the
-exact statement version; its Verdict states the accepted release scope and residual risk. Until the
-release controller can query this state, the operator must stop and perform this one-hop check.
+exact statement version; its Verdict states the accepted release scope and residual risk. The
+person tagging a release performs this one-hop check before pushing the tag.
 Missing, stale, unavailable, or unqueryable evidence is not an approval.
 
 Recurring defect classes are API-design feedback. Move the invariant into one owning primitive so
@@ -267,8 +265,7 @@ unit. Use the owning drift check (including `npm run check:skill -w superbee` fo
 Skill). After a merge or policy change, also inspect the generated prose semantically: byte parity
 cannot detect a source sentence that became false.
 
-Never hand-edit a generated target to make a drift check pass. If a generator reaches workflows or
-release packet inputs, update and verify that closure in the same claim.
+Never hand-edit a generated target to make a drift check pass.
 
 ## Mutation testing
 

@@ -1,7 +1,0 @@
-# Operators authorized to sign release inspection/approval receipts (ssh-keygen -Y verify).
-# Principal = GitHub login; namespace is fixed to aslite-release-receipt. Seeded from the
-# public key endpoints https://github.com/<login>.keys — key list changes are reviewed commits
-# verified by Brian at PR review.
-briand-ai namespaces="aslite-release-receipt" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIF3Y1oo4fO3sTtSNLqsf7+FM9n7wzrAxQUGM3bDW74HY
-mikec-ai namespaces="aslite-release-receipt" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE6kKEpqRTC2EOt2FQ6xCtL2KVQtPTFnisk84inUTonm
-mikec-ai namespaces="aslite-release-receipt" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE/TQzVCZMmwdevrwZdjxWcSqIWUzujU8G9U8h0RT3bn

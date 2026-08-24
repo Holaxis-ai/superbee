@@ -29,9 +29,8 @@ packages/worker/wrangler.local.jsonc
 .superbee/
 .agentstate-lite/
 
-# retained release-candidate output (scripts/release-candidate.mjs): the built tarball + manifest
-# are transient CI/run artifacts, never committed.
-release-candidate/
+# release workflow pack output: transient CI artifacts, never committed.
+out/
 
 # Stryker mutation-testing output (npm run mutation:core / mutation:cli) — reports are CI
 # artifacts, never committed; .stryker-tmp holds inPlace-mode backups during a run;

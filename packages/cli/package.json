@@ -41,13 +41,14 @@
   ],
   "scripts": {
     "build": "node build.mjs local-dev",
+    "build:npm-package": "node build.mjs npm-package",
     "typecheck": "tsc --noEmit",
     "pretest": "node build.mjs local-dev",
     "test": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
     "mutation": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid stryker run",
     "gen:skill": "node scripts/gen-skill.mjs",
     "check:skill": "node scripts/gen-skill.mjs --check",
-    "prepublishOnly": "node ../../scripts/prepublish-guard.mjs"
+    "prepublishOnly": "node -e \"console.error('superbee is released by .github/workflows/release.yml (npm stage publish); do not run npm publish here'); process.exit(1)\""
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

@@ -296,22 +296,18 @@ test("package proof modes separate dirty-tree verification from strict release c
   }
 });
 
-test("the retained-artifact mode requires BOTH --tarball and --manifest", () => {
-  assert.deepEqual(parseVerificationArgs(["--tarball", "/p/x.tgz", "--manifest", "/p/candidate.json", "--json"]), {
+test("the tarball mode takes exactly one already-packed path", () => {
+  assert.deepEqual(parseVerificationArgs(["--tarball", "/p/x.tgz", "--json"]), {
     mode: "tarball",
     tarball: "/p/x.tgz",
-    manifest: "/p/candidate.json",
     json: true,
   });
-  // The manifest is mandatory (QA finding #2): a bare --tarball is rejected. --tarball is also
-  // mutually exclusive with the scratch modes and needs a value.
+  // --tarball needs a value and is mutually exclusive with the scratch modes and stray flags.
   for (const invalid of [
     ["--tarball"],
     ["--tarball", "--json"],
-    ["--tarball", "/p/x.tgz"], // no manifest -> refused
     ["--tarball", "/p/x.tgz", "--local"],
-    ["--tarball", "/p/x.tgz", "--manifest"],
-    ["--tarball", "/p/x.tgz", "--manifest", "/p/c.json", "--stray"],
+    ["--tarball", "/p/x.tgz", "--stray"],
   ]) {
     assert.throws(() => parseVerificationArgs(invalid), /usage: verify-npm-package/);
   }
