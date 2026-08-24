@@ -1,8 +1,9 @@
 /**
  * Scripted double of `FilesystemIdentityPort` for protocol trace proofs: an in-memory tree with
  * an optional aliasing lookup (case and normalization folded, spelling preserved as written,
- * like case-insensitive APFS), a call trace, per-call hooks, and outright overrides. Tests bind
- * it through the protocol functions' port parameter only; production never sees it.
+ * like case-insensitive APFS), a call trace, handle accounting, per-call hooks, and outright
+ * overrides. Tests bind it through the protocol functions' port parameter only; production
+ * never sees it.
  */
 import path from "node:path";
 
@@ -11,8 +12,9 @@ import type {
   FilesystemIdentityPort,
   IdentityDescriptor,
   ListedEntry,
+  OpenedFile,
+  PortHandle,
   ProbeResult,
-  ReadWitness,
 } from "../src/filesystem-identity.js";
 
 export interface ScriptedNode {
@@ -20,6 +22,12 @@ export interface ScriptedNode {
   ino: number;
   bytes: Buffer;
   children: Map<string, ScriptedNode>;
+}
+
+interface ScriptedHandle {
+  id: number;
+  node: ScriptedNode;
+  closed: boolean;
 }
 
 const DEV = 1;
@@ -42,7 +50,11 @@ export class ScriptedPort implements FilesystemIdentityPort {
   readonly trace: string[] = [];
   readonly root: ScriptedNode = { kind: "directory", ino: 1, bytes: Buffer.alloc(0), children: new Map() };
   aliasing: boolean;
+  /** Handles open right now, and the most ever open at once. */
+  openCount = 0;
+  maxOpen = 0;
   #nextIno = 100;
+  #nextHandle = 0;
   readonly #counts = new Map<string, number>();
   readonly #hooks: Array<{ op: string; nth: number; fn: () => void }> = [];
   readonly #overrides = new Map<string, Override>();
@@ -69,7 +81,7 @@ export class ScriptedPort implements FilesystemIdentityPort {
 
   /** Trace lines whose operation is one of `ops`. */
   ops(...ops: string[]): string[] {
-    return this.trace.filter((line) => ops.includes(line.slice(0, line.indexOf("("))));
+    return this.trace.filter((line) => ops.includes(opOf(line)));
   }
 
   mkdirp(target: string): ScriptedNode {
@@ -86,15 +98,12 @@ export class ScriptedPort implements FilesystemIdentityPort {
   }
 
   file(target: string, bytes: string | Buffer, ino?: number): ScriptedNode {
-    const parent = this.mkdirp(path.dirname(target));
-    const node: ScriptedNode = {
-      kind: "file",
-      ino: ino ?? this.#nextIno++,
-      bytes: typeof bytes === "string" ? Buffer.from(bytes) : bytes,
-      children: new Map(),
-    };
-    parent.children.set(path.basename(target), node);
-    return node;
+    return this.#place(target, "file", typeof bytes === "string" ? Buffer.from(bytes) : bytes, ino);
+  }
+
+  /** A symbolic link entry; the tree keeps no target because the walk must never follow it. */
+  symlink(target: string, ino?: number): ScriptedNode {
+    return this.#place(target, "symlink", Buffer.alloc(0), ino);
   }
 
   /** Exact lookup (never folded), or `null`. */
@@ -130,16 +139,38 @@ export class ScriptedPort implements FilesystemIdentityPort {
     return this.#call("entries", [dir], async () => {
       const node = this.#resolve(dir, this.aliasing);
       if (node === null || node.kind !== "directory") return null;
-      return [...node.children].map(([name, child]) => ({ name, kind: child.kind, dev: DEV, ino: child.ino }));
+      return [...node.children].map(([name, child]) => ({ name, kind: child.kind }));
     });
   }
 
-  readFile(target: string): Promise<ReadWitness> {
-    return this.#call("readFile", [target], async () => {
+  open(target: string): Promise<OpenedFile> {
+    return this.#call("open", [target], async () => {
       const node = this.#resolve(target, this.aliasing);
       if (node === null) throw errno("ENOENT", "open", target);
-      if (node.kind === "directory") throw errno("EISDIR", "read", target);
-      return { bytes: node.bytes, dev: DEV, ino: node.ino };
+      if (node.kind === "symlink") throw errno("ELOOP", "open", target);
+      const handle: ScriptedHandle = { id: ++this.#nextHandle, node, closed: false };
+      this.openCount++;
+      this.maxOpen = Math.max(this.maxOpen, this.openCount);
+      this.trace.push(`opened(#${handle.id})`);
+      return { handle, dev: DEV, ino: node.ino };
+    });
+  }
+
+  readAll(handle: PortHandle): Promise<Buffer> {
+    const scripted = handle as ScriptedHandle;
+    return this.#call("readAll", [`#${scripted.id}`], async () => {
+      if (scripted.closed) throw new Error(`readAll after close on handle #${scripted.id}`);
+      if (scripted.node.kind === "directory") throw errno("EISDIR", "read", `#${scripted.id}`);
+      return scripted.node.bytes;
+    });
+  }
+
+  close(handle: PortHandle): Promise<void> {
+    const scripted = handle as ScriptedHandle;
+    return this.#call("close", [`#${scripted.id}`], async () => {
+      if (scripted.closed) throw new Error(`double close on handle #${scripted.id}`);
+      scripted.closed = true;
+      this.openCount--;
     });
   }
 
@@ -202,6 +233,13 @@ export class ScriptedPort implements FilesystemIdentityPort {
 
   // ── internals ──────────────────────────────────────────────────────────────
 
+  #place(target: string, kind: EntryKind, bytes: Buffer, ino: number | undefined): ScriptedNode {
+    const parent = this.mkdirp(path.dirname(target));
+    const node: ScriptedNode = { kind, ino: ino ?? this.#nextIno++, bytes, children: new Map() };
+    parent.children.set(path.basename(target), node);
+    return node;
+  }
+
   #segments(target: string): string[] {
     return path.resolve(target).split(path.sep).filter((segment) => segment !== "");
   }
@@ -238,4 +276,8 @@ export class ScriptedPort implements FilesystemIdentityPort {
     for (const hook of this.#hooks) if (hook.op === op && hook.nth === count) hook.fn();
     return result;
   }
+}
+
+export function opOf(line: string): string {
+  return line.slice(0, line.indexOf("("));
 }

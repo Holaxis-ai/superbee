@@ -5,13 +5,13 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, stat, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readdir, rm, stat, symlink, writeFile, mkdir } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import { FilesystemBackend } from "../src/backend.js";
-import { FilesystemIdentityAliasError } from "../src/errors.js";
-import { identityKey } from "../src/filesystem-identity.js";
+import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
+import { FilesystemSymlinkEntryError, identityKey } from "../src/filesystem-identity.js";
 import { FilesystemMutationLockError, filesystemIdentityLockPath, filesystemMutationLockRoot } from "../src/filesystem-lock.js";
 import { VersionConflict } from "../src/versioning.js";
 import { detectHostClass, type HostClass } from "./host-class.js";
@@ -222,6 +222,126 @@ test("AC-17 (cond): a normalizing store is unsupported and fails closed; CI host
       assert.equal(await backend.exists(nfc), true);
       assert.deepEqual(await backend.list(), [nfc]);
     }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ── AC-18 readers under a hot delete/write loop ───────────────────────────────
+
+const AC18_RUN_MS = 1_000;
+
+interface ReaderTally {
+  bytes: number;
+  absent: number;
+  replaced: number;
+  aliased: number;
+}
+
+async function readerLoop(
+  backend: FilesystemBackend,
+  id: string,
+  deadline: number,
+  allowedBodies: () => Set<string>,
+  aliasAllowed: boolean,
+): Promise<ReaderTally> {
+  const tally: ReaderTally = { bytes: 0, absent: 0, replaced: 0, aliased: 0 };
+  while (Date.now() < deadline) {
+    try {
+      const body = (await backend.read(id)).doc.body.trimEnd();
+      assert.ok(allowedBodies().has(body), `read returned bytes never written under '${id}': ${body}`);
+      tally.bytes++;
+    } catch (err) {
+      if (isEnoent(err)) tally.absent++;
+      else if (err instanceof ConcurrentReplacementError) tally.replaced++;
+      else if (err instanceof FilesystemIdentityAliasError && aliasAllowed) tally.aliased++;
+      else throw err;
+    }
+  }
+  return tally;
+}
+
+test("AC-18: readers of a document under a delete/write loop see only written bytes, absence, or a bounded-replacement error", async () => {
+  const root = await tempRoot("ac18-churn");
+  try {
+    const backend = new FilesystemBackend(root);
+    const deadline = Date.now() + AC18_RUN_MS;
+    const written = new Set<string>();
+    let iteration = 0;
+    const writer = (async () => {
+      while (Date.now() < deadline) {
+        const body = `iteration-${++iteration}`;
+        written.add(body);
+        await backend.write("concepts/a", doc("concepts/a", body));
+        await backend.delete("concepts/a");
+      }
+    })();
+    const readers = await Promise.all([
+      readerLoop(backend, "concepts/a", deadline, () => written, false),
+      readerLoop(backend, "concepts/a", deadline, () => written, false),
+    ]);
+    await writer;
+    assert.ok(iteration > 0);
+    assert.ok(readers.some((tally) => tally.bytes + tally.absent + tally.replaced > 0));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AC-18 (cond): alternating exact and alias spellings never yield an alias-tagged body to readers of the exact id", async () => {
+  const aliasing = (await hostClass()) !== "exact";
+  const root = await tempRoot("ac18-alternate");
+  try {
+    const backend = new FilesystemBackend(root);
+    const deadline = Date.now() + AC18_RUN_MS;
+    const exactBodies = new Set<string>();
+    let iteration = 0;
+    const writer = (async () => {
+      while (Date.now() < deadline) {
+        const n = ++iteration;
+        exactBodies.add(`a-${n}`);
+        await backend.write("concepts/a", doc("concepts/a", `a-${n}`));
+        await backend.delete("concepts/a");
+        await backend.write("concepts/A", doc("concepts/A", `A-${n}`));
+        await backend.delete("concepts/A");
+      }
+    })();
+    const [tally] = await Promise.all([
+      readerLoop(backend, "concepts/a", deadline, () => exactBodies, aliasing),
+      writer,
+    ]);
+    assert.ok(iteration > 0);
+    if (!aliasing) assert.equal(tally.aliased, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ── V3A-4 / R1: symlinked entries fail closed ─────────────────────────────────
+
+// Behavior change recorded for R1 layouts: a symlinked document or directory inside a bundle used
+// to be read through; it is now refused on every operation with an input-class error, because
+// the walk never follows links and a link's inode cannot witness what opening it would reach.
+test("R1: a symlinked document or directory inside a bundle is refused as caller input on every operation", async () => {
+  const root = await tempRoot("symlink");
+  try {
+    const backend = new FilesystemBackend(root);
+    await backend.write("concepts/real", doc("concepts/real", "real"));
+    await symlink("real.md", path.join(root, "concepts", "linked.md"));
+    await symlink("concepts", path.join(root, "linked-dir"));
+    const isSymlinkRefusal = (err: unknown): boolean =>
+      err instanceof FilesystemSymlinkEntryError && err instanceof InvalidInputError;
+
+    await assert.rejects(() => backend.read("concepts/linked"), isSymlinkRefusal);
+    await assert.rejects(() => backend.exists("concepts/linked"), isSymlinkRefusal);
+    await assert.rejects(() => backend.versions("concepts/linked"), isSymlinkRefusal);
+    await assert.rejects(() => backend.write("concepts/linked", doc("concepts/linked", "x")), isSymlinkRefusal);
+    await assert.rejects(() => backend.delete("concepts/linked"), isSymlinkRefusal);
+    await assert.rejects(() => backend.read("linked-dir/real"), isSymlinkRefusal);
+    await assert.rejects(() => backend.write("linked-dir/other", doc("linked-dir/other", "x")), isSymlinkRefusal);
+    assert.equal((await backend.read("concepts/real")).doc.body.trimEnd(), "real");
+    assert.deepEqual(await backend.list(), ["concepts/real"], "listings skip links as before");
+    assert.deepEqual(await readdir(path.join(root, "concepts")), ["linked.md", "real.md"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
