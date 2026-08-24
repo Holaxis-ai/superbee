@@ -202,8 +202,8 @@ test("N4: only the lock module reads an ambient host input", async () => {
   //
   // Recorded reach and limits: the allowlist is engine-wide, not identity-specific, so a future
   // legitimate `node:os` use anywhere in `src` has to be added here deliberately. The scan
-  // matches by imported name, so a local import that happens to be called `hostname`,
-  // `userInfo`, or `networkInterfaces` would false-positive (none does today). It covers
+  // matches by imported name, so a local import that happens to be called `tmpdir`, `homedir`,
+  // `hostname`, `userInfo`, or `networkInterfaces` would false-positive (none does today). It covers
   // imports only: `process.platform`, `process.getuid()`, `require("os")`, and a computed
   // dynamic specifier are outside it, and outside the sibling `process.env` guard as well.
   assert.deepEqual(ambientImporters, ["filesystem-lock.ts"]);
@@ -218,7 +218,10 @@ test("N4: only the lock module reads an ambient host input", async () => {
 // say WHICH port implementation it binds. A second port declared beside the production one and
 // bound here keeps every import legal, typechecks, and passes every behavioral row in the
 // repository, because the protocol rows pass their own port and the backend-driven rows cannot
-// see the difference. The binding is therefore pinned structurally, at both ends.
+// see the difference. So is a port derived locally at the call sites from the legally imported
+// constant, which leaves the imports and the owning module untouched. The binding is therefore
+// pinned structurally at three points: what the backend imports, what the owning module declares,
+// and what each protocol call actually receives.
 
 test("N4: backend.ts imports exactly the protocol entry points and the one production port", async () => {
   const backend = await parse("backend.ts");
@@ -257,6 +260,37 @@ test("N4: the identity module declares exactly one FilesystemIdentityPort consta
   };
   visit(identity);
   assert.deepEqual(ports, ["nodeFilesystemIdentityPort"], "a second port in the owning module is a binding the backend could take");
+});
+
+test("N4: every protocol call in backend.ts passes the imported production port", async () => {
+  const backend = await parse("backend.ts");
+  const protocolEntryPoints = new Set(["mutateExact", "observeExact", "probeExact"]);
+  let binding: string | undefined;
+  const passed: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteralLike(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === "./filesystem-identity.js" &&
+      node.importClause?.namedBindings &&
+      ts.isNamedImports(node.importClause.namedBindings)
+    ) {
+      for (const element of node.importClause.namedBindings.elements) {
+        // The local name the production constant is bound to, so the `as port` alias is followed.
+        if ((element.propertyName ?? element.name).text === "nodeFilesystemIdentityPort") binding = element.name.text;
+      }
+    }
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && protocolEntryPoints.has(node.expression.text)) {
+      const [port] = node.arguments;
+      passed.push(port && ts.isIdentifier(port) ? port.text : "a derived expression");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(backend);
+  assert.ok(binding, "backend.ts must import the production port");
+  // Without a count the row would pass vacuously once the call sites move or disappear.
+  assert.ok(passed.length >= 10, `expected the backend's protocol call sites, found ${passed.length}`);
+  assert.deepEqual([...new Set(passed)], [binding], "a protocol call takes a port other than the imported production constant");
 });
 
 test("N4: the boundary scanner recognizes every ambient-input import form", () => {
