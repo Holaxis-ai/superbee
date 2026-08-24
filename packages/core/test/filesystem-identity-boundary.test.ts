@@ -19,6 +19,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_ROOT = path.resolve(here, "..", "src");
 const IDENTITY_MODULES = ["backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"];
 const FS_SPECIFIERS = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
+const AMBIENT_SPECIFIERS = new Set(["node:os", "os"]);
+/** Ambient host inputs: values that vary with the machine, the user, or the environment. */
+const AMBIENT_BINDINGS = new Set(["tmpdir", "homedir", "hostname", "userInfo", "networkInterfaces"]);
 
 async function parse(file: string): Promise<ts.SourceFile> {
   return ts.createSourceFile(file, await readFile(path.join(SOURCE_ROOT, file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -38,6 +41,33 @@ function importSpecifiers(source: ts.SourceFile): string[] {
   };
   visit(source);
   return specifiers;
+}
+
+/**
+ * Ambient host inputs an import brings into a module: the `node:os` specifier in any import form,
+ * and any ambient binding by its imported name whatever module it comes from, so a re-export
+ * cannot launder one in. Identity keys are a pure fold of the root and `rel` (I4); a machine-,
+ * user-, or environment-derived value reaching that derivation would make one logical identity
+ * key differently per host, which no runtime assertion downstream can detect.
+ */
+function ambientImports(source: ts.SourceFile): string[] {
+  const found = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      if (AMBIENT_SPECIFIERS.has(node.moduleSpecifier.text)) found.add(node.moduleSpecifier.text);
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const [specifier] = node.arguments;
+      if (specifier && ts.isStringLiteralLike(specifier) && AMBIENT_SPECIFIERS.has(specifier.text)) found.add(specifier.text);
+    }
+    if (ts.isImportSpecifier(node) || ts.isExportSpecifier(node)) {
+      const imported = (node.propertyName ?? node.name).text;
+      if (AMBIENT_BINDINGS.has(imported)) found.add(imported);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...found].sort();
 }
 
 function processEnvAccesses(source: ts.SourceFile): number[] {
@@ -158,6 +188,38 @@ test("N4: the three runtime modules never read process.env", async () => {
     assert.doesNotMatch(source.text, /process\s*\.\s*env|process\s*\[/, `${file} references process.env textually`);
     assert.doesNotMatch(source.text, /SUPERBEE_TEST_/, `${file} references a test-only environment name`);
   }
+});
+
+test("N4: only the lock module reads an ambient host input", async () => {
+  const files = (await readdir(SOURCE_ROOT)).filter((name) => /\.[cm]?ts$/.test(name)).sort();
+  const ambientImporters: string[] = [];
+  for (const file of files) {
+    if (ambientImports(await parse(file)).length > 0) ambientImporters.push(file);
+  }
+  // The lock module owns the runtime namespace and the owner record, so the temp directory, the
+  // home directory, the user, and the host name are its inputs by design. Nothing else in the
+  // engine may take one, and the two modules that decide identity least of all.
+  assert.deepEqual(ambientImporters, ["filesystem-lock.ts"]);
+  for (const file of ["backend.ts", "filesystem-identity.ts"]) {
+    assert.deepEqual(ambientImports(await parse(file)), [], `${file} imports an ambient host input; identity keys must stay pure`);
+  }
+});
+
+test("N4: the boundary scanner recognizes every ambient-input import form", () => {
+  const source = ts.createSourceFile(
+    "synthetic.ts",
+    [
+      'import { tmpdir } from "node:os";',
+      'import * as os from "os";',
+      'import { hostname as hn } from "./laundered.js";',
+      'const later = import("node:os");',
+      "void [tmpdir, os, hn, later];",
+    ].join("\n"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  assert.deepEqual(ambientImports(source), ["hostname", "node:os", "os", "tmpdir"]);
 });
 
 test("N4: the boundary scanner recognizes every process.env access form", () => {

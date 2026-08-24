@@ -5,13 +5,21 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, rm, stat, symlink, writeFile, mkdir } from "node:fs/promises";
+import { link, lstat, mkdtemp, readdir, readFile, rename, rm, stat, symlink, writeFile, mkdir } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
 import { FilesystemBackend } from "../src/backend.js";
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
-import { FilesystemSymlinkEntryError, identityKey } from "../src/filesystem-identity.js";
+import {
+  FilesystemSymlinkEntryError,
+  identityKey,
+  mutateExact,
+  nodeFilesystemIdentityPort,
+  observeExact,
+  type FilesystemIdentityPort,
+  type PortHandle,
+} from "../src/filesystem-identity.js";
 import { FilesystemMutationLockError, filesystemIdentityLockPath, filesystemMutationLockRoot } from "../src/filesystem-lock.js";
 import { VersionConflict } from "../src/versioning.js";
 import { detectHostClass, type HostClass } from "./host-class.js";
@@ -27,6 +35,75 @@ const backend = (root: string): FilesystemBackend => new FilesystemBackend(root)
 async function tempRoot(prefix: string): Promise<string> {
   return mkdtemp(path.join(tmpdir(), `superbee-identity-native-${prefix}-`));
 }
+
+/**
+ * Whether this filesystem supports hard links. The rows below assert a different expected value
+ * per answer rather than skipping, so a host that loses hard-link support is reported, not hidden.
+ */
+async function hardLinkSupport(dir: string): Promise<boolean> {
+  const source = path.join(dir, ".hard-link-probe");
+  await writeFile(source, "probe");
+  try {
+    await link(source, path.join(dir, ".hard-link-probe-2"));
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EPERM" || code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV") return false;
+    throw err;
+  } finally {
+    await rm(source, { force: true });
+    await rm(path.join(dir, ".hard-link-probe-2"), { force: true });
+  }
+}
+
+type PortMember = keyof FilesystemIdentityPort;
+
+/**
+ * The production port with call counting and one-shot after-hooks. Every member delegates to
+ * `nodeFilesystemIdentityPort`, so the syscalls and every classification the protocol sees stay
+ * the production ones; the wrapper only records the call order and lets a row act as a non-core
+ * actor at a chosen instant. It is a test-side observer of the real binding, not a seam: nothing
+ * in `src` knows it exists.
+ */
+interface ObservedPort {
+  readonly port: FilesystemIdentityPort;
+  readonly trace: string[];
+  calls(member: PortMember): number;
+  probesOf(target: string): number;
+  after(member: PortMember, nth: number, hook: (args: unknown[], result: unknown) => Promise<void>): void;
+}
+
+function observedPort(): ObservedPort {
+  const counts = new Map<string, number>();
+  const probed: string[] = [];
+  const trace: string[] = [];
+  const hooks = new Map<string, (args: unknown[], result: unknown) => Promise<void>>();
+  const production = nodeFilesystemIdentityPort as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
+  const port = Object.fromEntries(
+    Object.keys(production).map((member) => [
+      member,
+      async (...args: unknown[]): Promise<unknown> => {
+        const nth = (counts.get(member) ?? 0) + 1;
+        counts.set(member, nth);
+        if (member === "probe") probed.push(String(args[0]));
+        const result = await production[member]!.apply(production, args);
+        // `link` carries the host's own verdict, which is the point of the AC-4 native row.
+        trace.push(member === "link" ? `link:${String(result)}` : member);
+        await hooks.get(`${member}:${nth}`)?.(args, result);
+        return result;
+      },
+    ]),
+  ) as unknown as FilesystemIdentityPort;
+  return {
+    port,
+    trace,
+    calls: (member) => counts.get(member) ?? 0,
+    probesOf: (target) => probed.filter((seen) => seen === target).length,
+    after: (member, nth, hook) => void hooks.set(`${member}:${nth}`, hook),
+  };
+}
+
+const readText = async (handle: PortHandle): Promise<string> => (await nodeFilesystemIdentityPort.readAll(handle)).toString();
 
 // ── AC-7 absent-root observation ──────────────────────────────────────────────
 
@@ -212,6 +289,64 @@ test("AC-15b (cond): concurrent first creation of a full-case-folding pair never
   }
 });
 
+// ── AC-4 first creation through the production link binding ──────────────────
+
+// The port's `link` classification is what makes a first creation fail closed on names the host
+// equates but the identity fold does not: `rename` would replace the winner silently. Forcing
+// `link` to report "unsupported" leaves every scripted, contract, and L1 row green, so this row
+// observes the real binding: on a host with hard links, first creation must publish through
+// `link` and the published name must be the temp file's own inode while both names exist.
+test("AC-4 (cond): first creation publishes the leaf through the production link binding, never a silent rename fallback", async () => {
+  const root = await tempRoot("link-binding");
+  try {
+    const hardLinks = await hardLinkSupport(root);
+    const aliasing = (await hostClass()) !== "exact";
+    const observed = observedPort();
+    const linkFacts: Array<{ sameInode: boolean; links: number }> = [];
+    observed.after("link", 1, async (args, outcome) => {
+      if (outcome !== "linked") return;
+      const [from, to] = args as [string, string];
+      const [source, published] = await Promise.all([lstat(from), lstat(to)]);
+      linkFacts.push({ sameInode: source.dev === published.dev && source.ino === published.ino, links: published.nlink });
+    });
+
+    await mutateExact(observed.port, root, "concepts/x.md", async (context) => {
+      assert.equal(context.state, "absent");
+      await context.replace(Buffer.from("first\n"));
+    });
+
+    const published = path.join(root, "concepts", "x.md");
+    const publishing = observed.trace.filter((call) => call === "rename" || call.startsWith("link:"));
+    if (hardLinks) {
+      assert.deepEqual(publishing, ["link:linked"], "a first creation that renames would replace an equated name silently");
+      assert.deepEqual(linkFacts, [{ sameInode: true, links: 2 }], "the published name is the temp file's own inode");
+    } else {
+      assert.deepEqual(publishing, ["link:unsupported", "rename"], "the fallback is taken only when the host has no hard links");
+      assert.deepEqual(linkFacts, []);
+    }
+    assert.equal(await readFile(published, "utf8"), "first\n");
+    assert.deepEqual(await readdir(path.join(root, "concepts")), ["x.md"], "the temp name is removed");
+    assert.equal((await lstat(published)).nlink, 1);
+
+    // The same binding's refusal: `link` never publishes over a name the host already resolves,
+    // whatever spelling that name was written under.
+    const contender = path.join(root, "concepts", ".contender.tmp");
+    await writeFile(contender, "second\n");
+    const overExact = await nodeFilesystemIdentityPort.link(contender, published);
+    const overAlias = await nodeFilesystemIdentityPort.link(contender, path.join(root, "concepts", "X.md"));
+    if (hardLinks) {
+      assert.equal(overExact, "exists");
+      assert.equal(overAlias, aliasing ? "exists" : "linked");
+    } else {
+      assert.notEqual(overExact, "linked");
+      assert.notEqual(overAlias, "linked");
+    }
+    assert.equal(await readFile(published, "utf8"), "first\n", "the existing document is never replaced by a link");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("I4: a backend built with a relative root keeps its identity across a later chdir", async () => {
   const parent = await tempRoot("relative-root");
   const cwd = process.cwd();
@@ -384,6 +519,81 @@ test("AC-18 (cond): alternating exact and alias spellings never yield an alias-t
     if (!aliasing) assert.equal(tally.aliased, 0);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+// ── I6 native: a directory replaced under its own spelling ───────────────────
+
+/**
+ * Replace `<root>/concepts` with a different directory under the same spelling, the way a git
+ * checkout or a manual `mv` would. `carryLeaf` reproduces the harder shape: the replacement holds
+ * the ORIGINAL document as a hard link, so the post-walk's leaf table still sees the handle's own
+ * inode and only the directory witness can tell that the walk straddled two directories. Every
+ * created path lives inside `parent`, which the row removes on every exit.
+ */
+async function replaceConcepts(parent: string, root: string, body: string, carryLeaf: boolean): Promise<void> {
+  const concepts = path.join(root, "concepts");
+  const replacement = path.join(parent, "replacement");
+  await mkdir(replacement);
+  if (carryLeaf) await link(path.join(concepts, "x.md"), path.join(replacement, "x.md"));
+  else await writeFile(path.join(replacement, "x.md"), body);
+  await rename(concepts, path.join(parent, "retired"));
+  await rename(replacement, concepts);
+}
+
+// The scripted I6 rows (`filesystem-identity.test.ts`) pin this decision through a scripted port;
+// these two run the same interleavings against the real filesystem through the production port,
+// so the aliasing lane observes the guarantee rather than a model of it.
+test("I6 (native): a directory replaced under its own spelling after the first verification listing never validates a read against the retired generation", async () => {
+  const parent = await tempRoot("i6-verify-swap");
+  const root = path.join(parent, "bundle");
+  const concepts = path.join(root, "concepts");
+  try {
+    await mkdir(concepts, { recursive: true });
+    await writeFile(path.join(concepts, "x.md"), "ORIGINAL");
+    const retired = await stat(concepts);
+    const observed = observedPort();
+    observed.after("entries", 1, () => replaceConcepts(parent, root, "SWAPPED", false));
+
+    const result = await observeExact(observed.port, root, "concepts/x.md", readText);
+
+    assert.notEqual((await stat(concepts)).ino, retired.ino, "the replacement is a different directory under the same spelling");
+    assert.deepEqual(result, { state: "exact", value: "SWAPPED" });
+    assert.equal(observed.calls("open"), 1, "no bytes were read through the straddling walk");
+    assert.ok(
+      observed.probesOf(concepts) > 1,
+      `the directory's witness is compared even while its exact spelling is listed (probes: ${observed.probesOf(concepts)})`,
+    );
+    assert.equal((await backend(root).read("concepts/x")).doc.body.trimEnd(), "SWAPPED");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("I6 (native, cond): a directory replaced between the read and the post-walk restarts even when the leaf inode survives", async () => {
+  const parent = await tempRoot("i6-postread-swap");
+  const root = path.join(parent, "bundle");
+  const concepts = path.join(root, "concepts");
+  try {
+    const carryLeaf = await hardLinkSupport(parent);
+    await mkdir(concepts, { recursive: true });
+    await writeFile(path.join(concepts, "x.md"), "BODY");
+    const retired = await stat(concepts);
+    let reads = 0;
+    // The swap runs inside the read callback: after `open` and the bytes, before the post-walk.
+    const result = await observeExact(nodeFilesystemIdentityPort, root, "concepts/x.md", async (handle) => {
+      const body = await readText(handle);
+      if (++reads === 1) await replaceConcepts(parent, root, "BODY", carryLeaf);
+      return body;
+    });
+
+    assert.notEqual((await stat(concepts)).ino, retired.ino);
+    assert.deepEqual(result, { state: "exact", value: "BODY" });
+    // Without hard links the replacement carries a copy, so the leaf table restarts it too; the
+    // restart is asserted either way and the returned bytes belong to one generation.
+    assert.equal(reads, 2, "the post-walk restarted the observation instead of accepting the straddling walk");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
   }
 });
 
