@@ -716,9 +716,40 @@ const DIGEST_SPELLINGS: Array<[string, string]> = [
   ["/superbee-identity-digest-fixture/./nested/../nested", "concepts/a.md"],
 ];
 
+/**
+ * Pairs a case-insensitive host equates through Unicode FULL case folding that NFKD plus a plain
+ * lower-case fold does NOT equate (verified on APFS: each pair aliases on disk). Every pair must
+ * derive one key, or two concurrent first-creation writers would both realize ABSENT.
+ */
+const FULL_CASE_FOLD_PAIRS: Array<[string, string]> = [
+  ["straße", "STRASSE"],
+  ["straße", "strasse"],
+  ["ẞ", "SS"],
+  ["ς", "σ"],
+  ["ᾈ", "ἀι"],
+  ["ᾳ", "αι"],
+  ["ῳ", "ωι"],
+  ["ᾨ", "ὠι"],
+  ["ῌ", "ηι"],
+];
+
+test("AC-5: full-case-folding pairs derive one identity key, and a plain lower-case fold would not", async () => {
+  assert.equal(FULL_CASE_FOLD_PAIRS.length, 9);
+  for (const [a, b] of FULL_CASE_FOLD_PAIRS) {
+    assert.equal(await identityKey("/x/bundle", `concepts/${a}.md`), await identityKey("/x/bundle", `concepts/${b}.md`), `${a} / ${b}`);
+    assert.notEqual(a.normalize("NFKD").toLowerCase(), b.normalize("NFKD").toLowerCase(), `${a} / ${b} is the class a lower-case fold misses`);
+  }
+  // Root segments fold the same way as rel segments.
+  assert.equal(await identityKey("/x/Straße", "concepts/a.md"), await identityKey("/x/STRASSE", "concepts/a.md"));
+});
+
 test("AC-5: fold digest over the checked-in spelling list is pinned", async () => {
   assert.equal(DIGEST_SPELLINGS.length, 50);
   const digest = createHash("sha256");
   for (const [root, rel] of DIGEST_SPELLINGS) digest.update(`${await identityKey(root, rel)}\n`);
-  assert.equal(digest.digest("hex"), "687f7be02e929e42325997ccffc85b11caca7e5378dbd4d83685e832fb557e20");
+  for (const [a, b] of FULL_CASE_FOLD_PAIRS) {
+    digest.update(`${await identityKey("/", `concepts/${a}.md`)}\n`);
+    digest.update(`${await identityKey("/", `concepts/${b}.md`)}\n`);
+  }
+  assert.equal(digest.digest("hex"), "7307f1939479537efaac08c000c1e3552d855434e29bb93ba1ee493c086d5f4e");
 });
