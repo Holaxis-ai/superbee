@@ -63,6 +63,29 @@ function assertSmokeJob(job, lane) {
   assert.deepEqual(surface, [...lane.built_cli_commands].sort(), "floor smoke built-CLI command surface drifted");
 }
 
+// Every lane that declares a host-class expectation must run on the pinned runner, export the
+// expectation to the tests, and self-check the filesystem before any test can observe it.
+function assertHostExpectations(jobs, candidate) {
+  const variable = candidate.host_expectation_variable;
+  assert.equal(typeof variable, "string", "manifest must name the host-class expectation variable");
+  const expectations = {};
+  for (const [name, lane] of Object.entries(candidate.lanes)) {
+    if (lane.expect_aliasing_host === undefined) continue;
+    expectations[name] = lane.expect_aliasing_host;
+    const job = jobs[name];
+    assert.match(job, new RegExp(`^ {4}runs-on: ${lane.runs_on}\\s*$`, "m"), `${name} must run on ${lane.runs_on}`);
+    assert.match(job, /^ {4}env:\s*$/m, `${name} must export the host-class expectation at job level`);
+    assert.match(
+      job,
+      new RegExp(`^ {6}${variable}: "${lane.expect_aliasing_host}"\\s*$`, "m"),
+      `${name} must pin the host-class expectation`,
+    );
+    assert.ok(job.includes(lane.host_guard), `${name} must self-check its host class`);
+    assert.match(job, /run: npm run ci:runtime/, `${name} must run the runtime contract`);
+  }
+  assert.deepEqual(expectations, { runtime: "0", "aliasing-host": "1" }, "both host classes must be pinned");
+}
+
 function validateCiTopology(text, candidate = manifest) {
   const jobs = extractJobs(text);
   assert.deepEqual(
@@ -77,6 +100,8 @@ function validateCiTopology(text, candidate = manifest) {
   }
   assert.match(jobs.runtime, /node-version: \[22, 26\]/);
   assert.match(jobs.runtime, /run: npm run ci:runtime/);
+  assert.match(jobs["aliasing-host"], /node-version: 26/);
+  assertHostExpectations(jobs, candidate);
   for (const [job, script] of [
     ["distribution", "ci:distribution"],
     ["browser", "ci:browser"],
@@ -133,6 +158,11 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
     /distribution display name drifted/,
   );
   for (const [from, to, error] of [
+    ["    runs-on: macos-latest", "    runs-on: ubuntu-latest", /aliasing-host must run on macos-latest/],
+    ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', /aliasing-host must pin the host-class expectation/],
+    ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', /runtime must pin the host-class expectation/],
+    ['test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /aliasing-host must self-check its host class/],
+    ['test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /runtime must self-check its host class/],
     ["          node-version: 20", "          node-version: 22", /second setup-node/],
     ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
     ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
