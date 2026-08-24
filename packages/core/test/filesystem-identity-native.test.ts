@@ -69,13 +69,11 @@ interface ObservedPort {
   readonly port: FilesystemIdentityPort;
   readonly trace: string[];
   calls(member: PortMember): number;
-  probesOf(target: string): number;
   after(member: PortMember, nth: number, hook: (args: unknown[], result: unknown) => Promise<void>): void;
 }
 
 function observedPort(): ObservedPort {
   const counts = new Map<string, number>();
-  const probed: string[] = [];
   const trace: string[] = [];
   const hooks = new Map<string, (args: unknown[], result: unknown) => Promise<void>>();
   const production = nodeFilesystemIdentityPort as unknown as Record<string, (...args: unknown[]) => Promise<unknown>>;
@@ -85,7 +83,6 @@ function observedPort(): ObservedPort {
       async (...args: unknown[]): Promise<unknown> => {
         const nth = (counts.get(member) ?? 0) + 1;
         counts.set(member, nth);
-        if (member === "probe") probed.push(String(args[0]));
         const result = await production[member]!.apply(production, args);
         // `link` carries the host's own verdict, which is the point of the AC-4 native row.
         trace.push(member === "link" ? `link:${String(result)}` : member);
@@ -98,7 +95,6 @@ function observedPort(): ObservedPort {
     port,
     trace,
     calls: (member) => counts.get(member) ?? 0,
-    probesOf: (target) => probed.filter((seen) => seen === target).length,
     after: (member, nth, hook) => void hooks.set(`${member}:${nth}`, hook),
   };
 }
@@ -560,10 +556,12 @@ test("I6 (native): a directory replaced under its own spelling after the first v
     assert.notEqual((await stat(concepts)).ino, retired.ino, "the replacement is a different directory under the same spelling");
     assert.deepEqual(result, { state: "exact", value: "SWAPPED" });
     assert.equal(observed.calls("open"), 1, "no bytes were read through the straddling walk");
-    assert.ok(
-      observed.probesOf(concepts) > 1,
-      `the directory's witness is compared even while its exact spelling is listed (probes: ${observed.probesOf(concepts)})`,
-    );
+    // A restart is another listing walk, so the number of listings counts the guarantee rather
+    // than the mechanism: the aborted walk's root listing, then two listings each for the
+    // verification and post-verification walks of the attempt that returns. An implementation
+    // that never probes the listed directory, or probes it and discards the witness, completes
+    // in one walk and lists four times.
+    assert.equal(observed.calls("entries"), 5, "the recorded witness is compared, so the swap restarts the observation");
     assert.equal((await backend(root).read("concepts/x")).doc.body.trimEnd(), "SWAPPED");
   } finally {
     await rm(parent, { recursive: true, force: true });

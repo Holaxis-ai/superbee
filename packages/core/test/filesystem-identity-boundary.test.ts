@@ -199,10 +199,64 @@ test("N4: only the lock module reads an ambient host input", async () => {
   // The lock module owns the runtime namespace and the owner record, so the temp directory, the
   // home directory, the user, and the host name are its inputs by design. Nothing else in the
   // engine may take one, and the two modules that decide identity least of all.
+  //
+  // Recorded reach and limits: the allowlist is engine-wide, not identity-specific, so a future
+  // legitimate `node:os` use anywhere in `src` has to be added here deliberately. The scan
+  // matches by imported name, so a local import that happens to be called `hostname`,
+  // `userInfo`, or `networkInterfaces` would false-positive (none does today). It covers
+  // imports only: `process.platform`, `process.getuid()`, `require("os")`, and a computed
+  // dynamic specifier are outside it, and outside the sibling `process.env` guard as well.
   assert.deepEqual(ambientImporters, ["filesystem-lock.ts"]);
   for (const file of ["backend.ts", "filesystem-identity.ts"]) {
     assert.deepEqual(ambientImports(await parse(file)), [], `${file} imports an ambient host input; identity keys must stay pure`);
   }
+});
+
+// ── N4: the backend binds the one production port ─────────────────────────────
+
+// `backend.ts` reaching the filesystem only through the identity module (asserted above) does not
+// say WHICH port implementation it binds. A second port declared beside the production one and
+// bound here keeps every import legal, typechecks, and passes every behavioral row in the
+// repository, because the protocol rows pass their own port and the backend-driven rows cannot
+// see the difference. The binding is therefore pinned structurally, at both ends.
+
+test("N4: backend.ts imports exactly the protocol entry points and the one production port", async () => {
+  const backend = await parse("backend.ts");
+  const values: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteralLike(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === "./filesystem-identity.js"
+    ) {
+      const clause = node.importClause;
+      assert.ok(clause, "backend.ts must not import the identity module for its side effects");
+      assert.equal(clause.name, undefined, "no default import");
+      assert.ok(clause.namedBindings && ts.isNamedImports(clause.namedBindings), "a namespace import would reach every export");
+      for (const element of clause.namedBindings.elements) {
+        if (!clause.isTypeOnly && !element.isTypeOnly) values.push((element.propertyName ?? element.name).text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(backend);
+  assert.deepEqual(values.sort(), ["mutateExact", "nodeFilesystemIdentityPort", "observeExact", "probeExact"]);
+});
+
+test("N4: the identity module declares exactly one FilesystemIdentityPort constant", async () => {
+  const identity = await parse("filesystem-identity.ts");
+  const ports: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && node.type && ts.isTypeReferenceNode(node.type)) {
+      const annotation = node.type.typeName;
+      if (ts.isIdentifier(annotation) && annotation.text === "FilesystemIdentityPort" && ts.isIdentifier(node.name)) {
+        ports.push(node.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(identity);
+  assert.deepEqual(ports, ["nodeFilesystemIdentityPort"], "a second port in the owning module is a binding the backend could take");
 });
 
 test("N4: the boundary scanner recognizes every ambient-input import form", () => {
