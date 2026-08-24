@@ -172,7 +172,8 @@ receipt, or approval transport of its own. The mechanism is `.github/workflows/r
 `.github/workflows/release-finalize.yml` (after the human's `npm stage approve`, verify the
 registry against the build attestation and create the GitHub release, immutable once the
 repository setting is on). Read those two files; do not reconstruct a
-procedure from memory.
+procedure from memory. The package's `prepublishOnly` refusal is an ergonomics tripwire, not a
+boundary; npm's require-2FA/disallow-tokens setting is the boundary.
 
 Agents may prepare a version-bump PR and, when explicitly asked, push the `v<version>` tag that
 starts a release. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any

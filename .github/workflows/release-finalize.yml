@@ -75,13 +75,19 @@ jobs:
           # exist for this tag. Drafts are addressed here by tag through gh, which resolves them.
           STATE="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo "absent")"
           case "$STATE" in
-            false) echo "release $TAG is already published; nothing to do" ;;
+            false) echo "release $TAG is already published; verifying its asset below" ;;
             true)
               gh release upload "$TAG" "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" --clobber
               gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false "$FLAG" ;;
             *)
               gh release create "$TAG" "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "$FLAG" ;;
           esac
+          # Every path ends here: the published release must carry exactly the bytes npm serves.
+          mkdir -p check
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "superbee-$V.tgz" -D check --clobber \
+            || { echo "::error::release $TAG has no asset superbee-$V.tgz; upload it or recreate the release"; exit 1; }
+          test "$(shasum -a 256 "check/superbee-$V.tgz" | cut -d' ' -f1)" = "$(shasum -a 256 "out/superbee-$V.tgz" | cut -d' ' -f1)" \
+            || { echo "::error::asset superbee-$V.tgz on release $TAG differs from the bytes npm serves for superbee@$V"; exit 1; }
           URL="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url --jq .url)"
           if gh release verify "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then IMMUTABLE="immutable (verified)"; else IMMUTABLE="not immutable - enable Immutable releases in repository settings"; fi
           {

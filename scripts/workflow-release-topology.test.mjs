@@ -43,6 +43,7 @@ test("payload code runs only in the credential-free build job; staging runs no p
   assert.match(build, /^ {4}permissions:\n {6}contents: read$/m, "build holds only contents: read");
   assert.doesNotMatch(build, /id-token|environment:|secrets\./, "build must not mint OIDC tokens or see environment secrets");
   assert.match(build, /npm ci --ignore-scripts/, "dependency lifecycle scripts stay off in the release build");
+  assert.match(build, /compare\/main\.\.\.\$GITHUB_SHA[\s\S]*case "\$REL" in identical\|behind\) ;; \*\)/, "the tag must point at a commit already on main");
   assert.doesNotMatch(build, /npm view[^\n]*\|\| true/, "registry reads must fail closed, never fall through");
   assert.match(build, /npm run build:npm-package -w superbee/, "the release build runs through npm (npm_execpath)");
   assert.match(build, /npm run verify:npm-package:tarball -- "out\//, "the packed tarball is proved before upload");
@@ -62,4 +63,13 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /gh attestation verify "out\/superbee-\$V\.tgz"[\s\S]*--source-ref "refs\/tags\/v\$V"/, "published bytes are bound to the build attestation and the tag ref");
   assert.match(job, /gh release view "\$TAG"[\s\S]*gh release create "\$TAG"/, "look before create so re-runs are idempotent");
   assert.match(job, /--verify-tag/, "the release must be created against the existing tag");
+  assert.match(job, /gh release download "\$TAG"[\s\S]*differs from the bytes npm serves/, "every finalize path verifies the release asset against the npm bytes");
+});
+
+test("an ordinary npm publish from the package directory trips before it can publish", () => {
+  // Ergonomics only: npm's "require 2FA and disallow tokens" setting is the real boundary, and
+  // --ignore-scripts bypasses this hook. It exists so a maintainer cannot publish by reflex.
+  const pkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "package.json"), "utf8"));
+  assert.match(pkg.scripts.prepublishOnly ?? "", /process\.exit\(1\)/, "prepublishOnly must refuse");
+  assert.doesNotMatch(pkg.scripts.prepublishOnly, /\.\.\/|scripts\//, "the tripwire must not depend on files outside the package");
 });
