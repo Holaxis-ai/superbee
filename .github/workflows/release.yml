@@ -1,0 +1,159 @@
+name: Release (build once, stage on npm)
+
+# Provider-native release. Pushing a `v<version>` tag builds the package exactly once, proves the
+# packed tarball, and stages those literal bytes on npm through OIDC trusted publishing. Nothing is
+# public until a maintainer inspects the staged package and runs `npm stage approve` with 2FA.
+# After that, dispatch release-finalize.yml to verify the registry and create the GitHub release.
+#
+# Gotchas encoded here cost a burned version number each; keep the comments with their run IDs.
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # No secrets, no OIDC, no write scopes: payload code (dependencies, build, tests) runs here and
+    # nowhere else. Lifecycle scripts are disabled; the CLI is a self-contained esbuild bundle.
+    name: build and prove the package once
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      dist_tag: ${{ steps.meta.outputs.dist_tag }}
+      tgz: ${{ steps.meta.outputs.tgz }}
+      sha256: ${{ steps.pack.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Resolve version and dist-tag from the tag
+        id: meta
+        run: |
+          set -euo pipefail
+          V="$(node -p 'require("./packages/cli/package.json").version')"
+          test "v$V" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME does not match packages/cli version $V"; exit 1; }
+          case "$V" in *-*) T=next ;; *) T=latest ;; esac
+          # npm applies the staged dist-tag unconditionally on approval, so a version below the
+          # tag's current value would move it backwards. Refuse here, before anything is built,
+          # and refuse when the registry cannot be read: never build blind.
+          TAGS="$(npm view superbee dist-tags --json)" || { echo "::error::cannot read npm dist-tags for superbee; refusing to build without them"; exit 1; }
+          node --input-type=module -e '
+            import { compareStrictSemver } from "./scripts/strict-semver.mjs";
+            const [v, t, tags] = process.argv.slice(1);
+            const cur = JSON.parse(tags)[t];
+            if (cur === undefined) process.exit(0); // the tag does not exist yet
+            const c = compareStrictSemver(v, cur);
+            if (c === undefined || c <= 0) { console.error(`::error::${v} would not advance the npm ${t} tag (currently ${cur}); backports need a different tag and are not supported by this workflow`); process.exit(1); }
+          ' -- "$V" "$T" "$TAGS"
+          {
+            echo "version=$V"
+            echo "dist_tag=$T"
+            echo "tgz=superbee-$V.tgz"
+          } >> "$GITHUB_OUTPUT"
+      - name: Build the npm-package bundle from this exact clean checkout
+        # Through npm on purpose: the build rebuilds the embedded UI with the running npm.
+        run: npm run build:npm-package -w superbee
+      - name: Pack once and prove the packed tarball (installed smoke, file allowlist, one bin)
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p out   # npm pack does not create --pack-destination
+          npm pack -w superbee --ignore-scripts --pack-destination out --json > pack.json
+          test "$(node -p 'require("./pack.json").length')" = "1"
+          test -f "out/${{ steps.meta.outputs.tgz }}" || { echo "::error::expected out/${{ steps.meta.outputs.tgz }}"; ls out; exit 1; }
+          npm run verify:npm-package:tarball -- "out/${{ steps.meta.outputs.tgz }}"
+          echo "sha256=$(shasum -a 256 "out/${{ steps.meta.outputs.tgz }}" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tgz
+          path: out/*.tgz
+          if-no-files-found: error
+          retention-days: 90
+
+  stage:
+    # Runs no payload code: it downloads the proven tarball, attests it, and hands the literal file
+    # to npm. `environment: release` is what the npm trusted publisher is bound to.
+    name: stage the exact tarball on npm (OIDC)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tgz
+          path: out
+      - name: Re-hash the bytes about to be staged
+        run: |
+          set -euo pipefail
+          test "$(shasum -a 256 "out/${{ needs.build.outputs.tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.sha256 }}" \
+            || { echo "::error::tarball digest changed between build and stage"; exit 1; }
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/${{ needs.build.outputs.tgz }}
+      # registry-url is load-bearing: npm writes the exchanged OIDC token into the user config layer
+      # this creates (npm oidc.js). Removing it produced ENEEDAUTH in run 31975597582.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          registry-url: "https://registry.npmjs.org"
+      - name: Pin an npm with staged publishing
+        run: |
+          set -euo pipefail
+          npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund
+          test "$(npm --version)" = "11.15.0"
+      - name: Stage the literal tarball with its final dist-tag
+        id: stage
+        env:
+          TGZ: ${{ needs.build.outputs.tgz }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          # The leading ./ is load-bearing: npm parses a bare dir/file.tgz as github:owner/repo
+          # shorthand (run 31499362043). --loglevel verbose is where npm reports a failed OIDC
+          # exchange (run 31972609262).
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --provenance --json --loglevel verbose > stage.json
+          STAGE_ID="$(node -e '
+            const j = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
+            const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
+            const id = find(j); if (!id) { console.error(JSON.stringify(j)); process.exit(1); } process.stdout.write(id);
+          ')"
+          echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
+      - name: Print the human gate
+        env:
+          STAGE_ID: ${{ steps.stage.outputs.stage_id }}
+          V: ${{ needs.build.outputs.version }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+        run: |
+          {
+            echo "## superbee@$V staged on npm (dist-tag \`$DIST_TAG\` applies on approval)"
+            echo ""
+            echo "- stage id: \`$STAGE_ID\`"
+            echo "- tarball sha256: \`$SHA256\`"
+            echo ""
+            echo "Inspect, then approve with 2FA (nothing is public until you do):"
+            echo ""
+            echo '```sh'
+            echo "npm stage download $STAGE_ID && shasum -a 256 superbee-$V-$STAGE_ID.tgz   # must equal the sha256 above"
+            echo "npm stage approve $STAGE_ID"
+            echo "gh workflow run release-finalize.yml -f version=$V"
+            echo '```'
+            echo ""
+            echo "To withdraw instead: \`npm stage reject $STAGE_ID\`. The next tag may reuse a higher number."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -80,13 +80,11 @@ function validateCiTopology(text, candidate = manifest) {
   for (const [job, script] of [
     ["distribution", "ci:distribution"],
     ["browser", "ci:browser"],
-    ["release-policy", "ci:release-policy"],
+    ["scripts", "ci:scripts"],
   ]) {
     assert.match(jobs[job], /node-version: 26/);
     assert.match(jobs[job], new RegExp(`run: npm run ${script.replace(":", "\\:")}`));
   }
-  assert.match(jobs["release-exhaustive"], /check:release-exhaustive -- --expected-sha "\$EXPECTED_SOURCE_SHA"/);
-  assert.match(jobs["release-exhaustive"], /fetch-depth: 0/, "exact-SHA proof needs complete history");
   assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
   assert.equal(

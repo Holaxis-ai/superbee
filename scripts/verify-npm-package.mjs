@@ -8,18 +8,19 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isMainModule } from "./is-main-module.mjs";
-import {
-  DEFAULT_RELEASE_TARGETS_PATH,
-  RELEASE_CANDIDATE_SCHEMA,
-  assertAllowedTuple,
-  defaultReleaseTargets,
-  loadReleaseTargets,
-  tarballFilename,
-} from "./release-targets.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const SUCCESSOR_TARGET = defaultReleaseTargets()["successor-stable"];
+/** The one published package this repository ships; product-owned facts, not release policy. */
+const SUCCESSOR_TARGET = Object.freeze({
+  id: "superbee",
+  package: { name: "superbee", directory: ["superbee"] },
+  artifact: "dist/superbee.mjs",
+  bins: { superbee: "dist/superbee.mjs" },
+  expected_commands: ["superbee"],
+  preferred_command: "superbee",
+  workflow_contract: "full",
+});
 const SUCCESSOR_PACKAGE_NAME = SUCCESSOR_TARGET.package.name;
 const SUCCESSOR_INSTALL_ROOT = SUCCESSOR_TARGET.package.directory;
 const SUCCESSOR_ARTIFACT = SUCCESSOR_TARGET.artifact;
@@ -81,7 +82,7 @@ export function verificationPolicy(mode) {
   throw new Error("usage: verify-npm-package.mjs --local|--release [--json]");
 }
 
-const USAGE = "usage: verify-npm-package.mjs (--local | --release | --tarball <path> --manifest <path>) [--json]";
+const USAGE = "usage: verify-npm-package.mjs (--local | --release | --tarball <path>) [--json]";
 
 export function parseVerificationArgs(argv) {
   const json = argv.includes("--json");
@@ -89,21 +90,12 @@ export function parseVerificationArgs(argv) {
 
   const tarballAt = rest.indexOf("--tarball");
   if (tarballAt !== -1) {
-    // Retained-artifact mode: verify an ALREADY-PACKED tarball with NO build and NO pack. This is
-    // the mode the staged-release workflow and prepublishOnly use so the verified bytes are the
-    // SAME bytes that get staged/published — never a freshly-rebuilt second candidate. The manifest
-    // is REQUIRED: without it the SHA cross-check is impossible and ANY valid npm-package tarball
-    // would pass instead of specifically the staged candidate (QA finding #2). Fail closed.
+    // Tarball mode: verify an ALREADY-PACKED tarball with NO build and NO pack. The release
+    // workflow uses it so the verified bytes are the SAME bytes that get staged.
     const tarball = rest[tarballAt + 1];
     if (!tarball || tarball.startsWith("--")) throw new Error(USAGE);
-    const manifestAt = rest.indexOf("--manifest");
-    if (manifestAt === -1) throw new Error(USAGE);
-    const manifest = rest[manifestAt + 1];
-    if (!manifest || manifest.startsWith("--")) throw new Error(USAGE);
-    const consumed = new Set([tarballAt, tarballAt + 1, manifestAt, manifestAt + 1]);
-    const leftover = rest.filter((_, i) => !consumed.has(i));
-    if (leftover.length !== 0) throw new Error(USAGE);
-    return { mode: "tarball", tarball, manifest, json };
+    if (rest.length !== 2) throw new Error(USAGE);
+    return { mode: "tarball", tarball, json };
   }
 
   if (rest.length !== 1 || (rest[0] !== "--local" && rest[0] !== "--release")) {
@@ -1149,9 +1141,9 @@ async function runInstalledProof(spec) {
 }
 
 /**
- * Scratch-candidate mode (developer `--local`, PR-gate `--release`): builds+packs a FRESH candidate
- * in the scratch dir, then proves it. This is ordinary verification — NOT the production release
- * candidate. "Build/pack once" is a claim about the release-candidate command, not this mode.
+ * Scratch mode (developer `--local`, strict `--release`): builds+packs a FRESH tarball in the
+ * scratch dir, then proves it. This is ordinary verification; the release workflow proves its own
+ * packed tarball through `--tarball` instead.
  */
 export async function verifyNpmPackage({ mode }) {
   const policy = verificationPolicy(mode);
@@ -1190,103 +1182,33 @@ export async function verifyNpmPackage({ mode }) {
 }
 
 /**
- * Retained-artifact mode (`--tarball <path> [--manifest <candidate.json>]`): verifies an
- * ALREADY-PACKED tarball with NO build and NO pack. Contains, by construction, zero calls to
- * build.mjs or `npm pack` — the whole point of P5A's no-rebuild invariant. When a candidate
- * manifest is supplied its recorded SHA-256 must equal the tarball's actual bytes, so a swapped
- * or rebuilt artifact fails closed here before it can be staged.
+ * Tarball mode (`--tarball <path>`): verifies an ALREADY-PACKED npm-package tarball with NO build
+ * and NO pack, so the bytes proved here are the exact bytes the release workflow stages.
  */
-export async function verifyRetainedTarball({ tarball, manifest, targetsPath = DEFAULT_RELEASE_TARGETS_PATH }) {
+export async function verifyTarball({ tarball }) {
   const tarballPath = path.resolve(tarball);
-  // The manifest is MANDATORY (QA finding #2): it is the only thing that ties these exact bytes to
-  // the staged candidate. Without it we could only prove "some valid npm-package tarball", which is
-  // not the retained-artifact guarantee. Fail closed.
-  if (!manifest) {
-    throw new Error("verifyRetainedTarball requires a candidate manifest (the retained SHA cross-check anchor)");
-  }
   await access(tarballPath, constants.R_OK).catch(() => {
-    throw new Error(`retained tarball not found: ${tarballPath}`);
+    throw new Error(`tarball not found: ${tarballPath}`);
   });
-  const actualSha = await fileSha256(tarballPath);
-  const recorded = parseJson(await readFile(path.resolve(manifest), "utf8"), "candidate manifest");
-  const targetId = recorded?.target;
-  if (!targetId) throw new Error("candidate manifest requires an explicit target");
-  const targetManifest = await loadReleaseTargets(targetsPath, {
-    burnedFile: path.join(path.dirname(targetsPath), "burned-versions.json"),
-    cliPackageFile: null,
-  });
-  if (recorded?.agreement?.release_targets_sha256) {
-    assert.equal(
-      await fileSha256(targetsPath),
-      recorded.agreement.release_targets_sha256,
-      "candidate manifest release-target agreement does not match release/targets.json",
-    );
-  }
-  const target = targetManifest.targets[targetId];
-  if (!target) throw new Error(`candidate manifest names unknown release target ${JSON.stringify(targetId)}`);
-  const recordedSha = recorded?.tarball?.sha256;
-  assert.equal(
-    actualSha,
-    recordedSha,
-    `retained tarball SHA-256 ${actualSha} does not match candidate manifest ${recordedSha ?? "<missing>"}`,
-  );
-  assert.equal(recorded?.schema, RELEASE_CANDIDATE_SCHEMA, "retained candidate manifest schema mismatch");
-  const tuple = assertAllowedTuple(targetManifest, {
-    target: targetId,
-    packageName: recorded?.package?.name,
-    version: recorded?.version,
-    tag: recorded?.tag,
-  });
-  assert.equal(recorded?.tarball?.version, tuple.version, "candidate tarball version does not match the reviewed tuple");
-  assert.equal(recorded?.tarball?.filename, path.basename(tarballPath), "candidate tarball filename does not match the retained file");
-  assert.equal(recorded.tarball.filename, tarballFilename(target, tuple.version), "candidate tarball filename does not match the reviewed tuple");
-  assert.deepEqual(recorded?.build_identity?.package, { name: tuple.package, version: tuple.version }, "candidate build identity package does not match the reviewed tuple");
-  assert.deepEqual(recorded?.build_identity?.source, recorded?.source, "candidate build identity source does not match candidate source");
-  assert.deepEqual(recorded?.build_identity?.compatibility_contracts, recorded?.compatibility_contracts, "candidate compatibility contracts do not agree");
-  assert.equal(
-    recorded?.build_identity?.artifact?.channel,
-    "npm-package",
-    "a retained release candidate must carry the npm-package artifact channel",
-  );
-  const proof = await runInstalledProof({
+  const sha256 = await fileSha256(tarballPath);
+  return runInstalledProof({
     mode: "tarball",
-    target,
-    // A retained release candidate is always an npm-package build; the identity proof enforces it.
+    target: SUCCESSOR_TARGET,
     expectedChannel: "npm-package",
     async produce() {
       return {
         tarball: tarballPath,
-        meta: {
-          path: tarballPath,
-          filename: path.basename(tarballPath),
-          sha256: actualSha,
-          shasum: recorded?.tarball?.shasum ?? null,
-          integrity: recorded?.tarball?.integrity ?? null,
-          size: recorded?.tarball?.size ?? null,
-          unpackedSize: recorded?.tarball?.unpacked_size ?? null,
-        },
+        meta: { path: tarballPath, filename: path.basename(tarballPath), sha256, shasum: null, integrity: null, size: null, unpackedSize: null },
       };
     },
   });
-  const expectedPackage = { name: tuple.package, version: tuple.version };
-  assert.equal(proof.package, `${tuple.package}@${tuple.version}`, "installed package coordinate does not match the reviewed tuple");
-  assert.deepEqual(proof?.identity?.identity?.package, expectedPackage, "embedded package identity does not match the reviewed tuple");
-  assert.deepEqual(proof?.identity?.identity?.source, recorded.build_identity.source, "embedded source identity does not match the candidate build identity");
-  assert.equal(proof?.identity?.identity?.artifact?.channel, recorded.build_identity.artifact.channel, "embedded artifact channel does not match the candidate build identity");
-  assert.equal(proof?.identity?.identity?.artifact?.sha256, recorded.build_identity.artifact.sha256, "embedded artifact digest does not match the candidate build identity");
-  assert.deepEqual(
-    proof?.identity?.identity?.compatibility_contracts,
-    recorded.build_identity.compatibility_contracts,
-    "embedded compatibility contracts do not match the candidate build identity",
-  );
-  return proof;
 }
 
 async function main(argv = process.argv.slice(2)) {
   const args = parseVerificationArgs(argv);
   const result =
     args.mode === "tarball"
-      ? await verifyRetainedTarball({ tarball: args.tarball, manifest: args.manifest })
+      ? await verifyTarball({ tarball: args.tarball })
       : await verifyNpmPackage({ mode: args.mode });
   if (args.json) {
     console.log(JSON.stringify(result));
