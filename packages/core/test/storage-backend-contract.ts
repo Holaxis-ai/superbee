@@ -364,6 +364,27 @@ export function registerStorageBackendBlobContract(options: BackendContractOptio
     });
   });
 
+
+  // A key nested under an existing FILE entry names a shape no backend can hold. Every observation
+  // reports absence (never a raw ENOTDIR): the filesystem adapter classifies the shape mismatch as
+  // absence, exactly like the adapters that have no notion of a path segment being a file.
+  test(`${name} blob contract: a key nested under an existing file entry is absent for every observation`, async () => {
+    await withFixture(create, async (backend) => {
+      await backend.writeBlob("artifacts/parent.bin", enc("a file, not a directory"));
+      const nestedId = "artifacts/parent.bin/nested";
+      const isEnoent = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+      await assert.rejects(() => backend.read(nestedId), isEnoent);
+      await assert.rejects(() => backend.readMany([nestedId]), isEnoent);
+      assert.equal(await backend.exists(nestedId), false);
+      assert.deepEqual(await backend.versions(nestedId), []);
+      assert.equal(await backend.readReserved("artifacts/parent.bin", "index.md"), null);
+      assert.equal(await backend.readBlob("artifacts/parent.bin/nested.bin"), null);
+      assert.equal(await backend.existsBlob("artifacts/parent.bin/nested.bin"), false);
+      assert.deepEqual(await backend.list("artifacts/"), []);
+      assert.deepEqual(await backend.listBlobs("artifacts/"), ["artifacts/parent.bin"]);
+      assert.equal(new TextDecoder().decode((await backend.readBlob("artifacts/parent.bin"))?.bytes), "a file, not a directory");
+    });
+  });
 }
 
 export function registerStorageBackendHistoryContract(
