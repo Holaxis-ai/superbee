@@ -221,7 +221,9 @@ test("N4: only the lock module reads an ambient host input", async () => {
 // see the difference. So is a port derived locally at the call sites from the legally imported
 // constant, which leaves the imports and the owning module untouched. The binding is therefore
 // pinned structurally at three points: what the backend imports, what the owning module declares,
-// and what each protocol call actually receives.
+// and what each protocol call actually receives. The last of those fails closed on any reference
+// to an entry point that is not the callee of its own call, because an aliased or forwarded
+// binding puts the port argument beyond the reach of a static check.
 
 test("N4: backend.ts imports exactly the protocol entry points and the one production port", async () => {
   const backend = await parse("backend.ts");
@@ -265,9 +267,9 @@ test("N4: the identity module declares exactly one FilesystemIdentityPort consta
 test("N4: every protocol call in backend.ts passes the imported production port", async () => {
   const backend = await parse("backend.ts");
   const protocolEntryPoints = new Set(["mutateExact", "observeExact", "probeExact"]);
-  let binding: string | undefined;
-  const passed: string[] = [];
-  const visit = (node: ts.Node): void => {
+  const protocolBindings = new Set<string>();
+  let portBinding: string | undefined;
+  const importedVisit = (node: ts.Node): void => {
     if (
       ts.isImportDeclaration(node) &&
       ts.isStringLiteralLike(node.moduleSpecifier) &&
@@ -276,21 +278,41 @@ test("N4: every protocol call in backend.ts passes the imported production port"
       ts.isNamedImports(node.importClause.namedBindings)
     ) {
       for (const element of node.importClause.namedBindings.elements) {
-        // The local name the production constant is bound to, so the `as port` alias is followed.
-        if ((element.propertyName ?? element.name).text === "nodeFilesystemIdentityPort") binding = element.name.text;
+        // Local names, so an `as` alias on either the port or an entry point is followed.
+        const imported = (element.propertyName ?? element.name).text;
+        if (imported === "nodeFilesystemIdentityPort") portBinding = element.name.text;
+        if (protocolEntryPoints.has(imported)) protocolBindings.add(element.name.text);
       }
     }
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && protocolEntryPoints.has(node.expression.text)) {
-      const [port] = node.arguments;
-      passed.push(port && ts.isIdentifier(port) ? port.text : "a derived expression");
+    ts.forEachChild(node, importedVisit);
+  };
+  importedVisit(backend);
+  assert.ok(portBinding, "backend.ts must import the production port");
+  assert.equal(protocolBindings.size, protocolEntryPoints.size, "backend.ts must import every protocol entry point");
+
+  const passed: string[] = [];
+  const escaped: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && protocolBindings.has(node.text) && !ts.isImportSpecifier(node.parent)) {
+      if (ts.isCallExpression(node.parent) && node.parent.expression === node) {
+        const [port] = node.parent.arguments;
+        passed.push(port && ts.isIdentifier(port) ? port.text : "a derived expression");
+      } else {
+        // Fail closed on every other reference shape rather than resolving arbitrary bindings:
+        // once an entry point is aliased, assigned, or passed on, no static rule here can tell
+        // which port the eventual call receives.
+        escaped.push(`${node.text} in a ${ts.SyntaxKind[node.parent.kind]}`);
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(backend);
-  assert.ok(binding, "backend.ts must import the production port");
-  // Without a count the row would pass vacuously once the call sites move or disappear.
+
+  assert.deepEqual(escaped, [], "a protocol entry point is referenced somewhere other than as the callee of its own call");
+  // Every reference is now a checked call site, so this count cannot be met by other call sites
+  // covering for a hidden one; it guards only against the row passing with no call sites at all.
   assert.ok(passed.length >= 10, `expected the backend's protocol call sites, found ${passed.length}`);
-  assert.deepEqual([...new Set(passed)], [binding], "a protocol call takes a port other than the imported production constant");
+  assert.deepEqual([...new Set(passed)], [portBinding], "a protocol call takes a port other than the imported production constant");
 });
 
 test("N4: the boundary scanner recognizes every ambient-input import form", () => {
