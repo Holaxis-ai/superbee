@@ -247,7 +247,12 @@ async function canonicalTargetInDirectory(directory: string, requestedBasename: 
   return requested;
 }
 
-function timeoutError(lockPath: string, owner: FilesystemMutationLockOwner | null): FilesystemMutationLockError {
+/** `guarded` names what the claimer wanted to mutate, so a leftover is diagnosable even when malformed. */
+function timeoutError(
+  lockPath: string,
+  owner: FilesystemMutationLockOwner | null,
+  guarded: string,
+): FilesystemMutationLockError {
   const malformed = owner === null;
   const sameHost = owner?.hostname === hostname();
   const stale = owner !== null && sameHost && !processExists(owner.pid);
@@ -264,48 +269,36 @@ function timeoutError(lockPath: string, owner: FilesystemMutationLockOwner | nul
     message =
       `timed out waiting for filesystem mutation lock '${lockPath}' held by PID ${owner.pid} on ${owner.hostname}; retry the mutation.`;
   }
-  return new FilesystemMutationLockError(message, { lockPath, owner, stale, malformed });
+  return new FilesystemMutationLockError(`${message} The lock guards '${guarded}'.`, { lockPath, owner, stale, malformed });
 }
 
-/**
- * Acquire one same-user cross-process mutation lock for `target`.
- *
- * `mkdir` is the atomic claim. Locks live in a private per-user runtime namespace keyed by the
- * canonical target path, never inside the portable bundle: Git staging, establishment snapshots,
- * copying, and packaging cannot capture them. The owner record makes a crash leftover diagnosable,
- * but this primitive never steals one automatically.
- */
-export async function acquireFilesystemMutationLock(
-  target: string,
-  options: FilesystemMutationLockOptions = {},
-): Promise<() => Promise<void>> {
-  const waitMs = positiveOption(options.waitMs, DEFAULT_WAIT_MS, "waitMs");
-  const pollMs = positiveOption(options.pollMs, DEFAULT_POLL_MS, "pollMs");
-  const targetResolved = path.resolve(target);
-  const targetDir = path.dirname(targetResolved);
-  const started = Date.now();
+/** Resolve `portableRoot` the way both claim entry points do: physical when it exists, else lexical. */
+async function resolvedPortableRoot(portableRoot: string | undefined): Promise<string | undefined> {
+  if (portableRoot === undefined) return undefined;
+  return fs.realpath(portableRoot).catch(() => path.resolve(portableRoot));
+}
 
-  await fs.mkdir(targetDir, { recursive: true });
-  // Two callers may spell the same bundle through real and symlinked parent paths. Canonicalize
-  // the now-existing parent so both claim the same runtime lock for the physical target.
-  const canonicalDir = await fs.realpath(targetDir);
-  const targetCanonical = await canonicalTargetInDirectory(canonicalDir, path.basename(targetResolved));
-  const portableRoot = options.portableRoot
-    ? await fs.realpath(options.portableRoot).catch(() => path.resolve(options.portableRoot!))
-    : undefined;
+async function selectLockRoot(options: FilesystemMutationLockOptions): Promise<string> {
+  const portableRoot = await resolvedPortableRoot(options.portableRoot);
   const lockRoot = options.lockRoot !== undefined
     ? explicitFilesystemMutationLockRoot(options.lockRoot, portableRoot)
     : filesystemMutationLockRoot(portableRoot);
   await ensurePrivateLockRoot(lockRoot);
-  const lockPath = filesystemMutationLockPathInRoot(targetCanonical, lockRoot);
-  const owner: FilesystemMutationLockOwner = {
-    pid: process.pid,
-    hostname: hostname(),
-    created_at_ms: started,
-    token: randomUUID(),
-    target: targetCanonical,
-  };
+  return lockRoot;
+}
 
+/**
+ * The claim itself, shared by every entry point: `mkdir(lockPath)` is the atomic claim, the
+ * owner record makes a crash leftover diagnosable, and release is token-checked so a caller can
+ * never remove a lock it no longer owns. Waits up to `waitMs`, polling every `pollMs`.
+ */
+async function claimLockPath(
+  lockPath: string,
+  owner: FilesystemMutationLockOwner,
+  waitMs: number,
+  pollMs: number,
+): Promise<() => Promise<void>> {
+  const started = owner.created_at_ms;
   while (true) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
@@ -342,9 +335,78 @@ export async function acquireFilesystemMutationLock(
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
 
-    if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath));
+    if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);
     await delay(pollMs);
   }
+}
+
+function newOwner(target: string): FilesystemMutationLockOwner {
+  return {
+    pid: process.pid,
+    hostname: hostname(),
+    created_at_ms: Date.now(),
+    token: randomUUID(),
+    target,
+  };
+}
+
+/**
+ * Acquire one same-user cross-process mutation lock for `target`.
+ *
+ * `mkdir` is the atomic claim. Locks live in a private per-user runtime namespace keyed by the
+ * canonical target path, never inside the portable bundle: Git staging, establishment snapshots,
+ * copying, and packaging cannot capture them. The owner record makes a crash leftover diagnosable,
+ * but this primitive never steals one automatically.
+ */
+export async function acquireFilesystemMutationLock(
+  target: string,
+  options: FilesystemMutationLockOptions = {},
+): Promise<() => Promise<void>> {
+  const waitMs = positiveOption(options.waitMs, DEFAULT_WAIT_MS, "waitMs");
+  const pollMs = positiveOption(options.pollMs, DEFAULT_POLL_MS, "pollMs");
+  const targetResolved = path.resolve(target);
+  const targetDir = path.dirname(targetResolved);
+  const owner = newOwner(targetResolved);
+
+  await fs.mkdir(targetDir, { recursive: true });
+  // Two callers may spell the same bundle through real and symlinked parent paths. Canonicalize
+  // the now-existing parent so both claim the same runtime lock for the physical target.
+  const canonicalDir = await fs.realpath(targetDir);
+  const targetCanonical = await canonicalTargetInDirectory(canonicalDir, path.basename(targetResolved));
+  const lockRoot = await selectLockRoot(options);
+  const lockPath = filesystemMutationLockPathInRoot(targetCanonical, lockRoot);
+  return claimLockPath(lockPath, { ...owner, target: targetCanonical }, waitMs, pollMs);
+}
+
+const IDENTITY_KEY_SHAPE = /^[0-9a-f]{64}$/;
+
+function assertIdentityKey(key: string): void {
+  if (!IDENTITY_KEY_SHAPE.test(key)) throw new TypeError("identity key must be a lowercase hex sha256 digest");
+}
+
+/** @internal Runtime lock directory for one identity key; the key is the whole path component. */
+export function filesystemIdentityLockPath(key: string, portableRoot?: string): string {
+  assertIdentityKey(key);
+  return path.join(filesystemMutationLockRoot(portableRoot), `${key}.lock`);
+}
+
+/**
+ * @internal Claim the same-user cross-process lock for an identity key that the caller derived
+ * purely (`filesystem-identity.ts`). Unlike {@link acquireFilesystemMutationLock} this creates no
+ * target directory and resolves no target path: the bundle stays exactly as it was until the
+ * caller decides to mutate it. `identity` is recorded as the owner's `target` for diagnosis.
+ */
+export async function acquireFilesystemIdentityLock(
+  key: string,
+  identity: string,
+  options: FilesystemMutationLockOptions = {},
+): Promise<() => Promise<void>> {
+  assertIdentityKey(key);
+  const waitMs = positiveOption(options.waitMs, DEFAULT_WAIT_MS, "waitMs");
+  const pollMs = positiveOption(options.pollMs, DEFAULT_POLL_MS, "pollMs");
+  const owner = newOwner(identity);
+  const lockRoot = await selectLockRoot(options);
+  return claimLockPath(path.join(lockRoot, `${key}.lock`), owner, waitMs, pollMs);
 }
 
 /** Run `fn` while holding the same-user cross-process mutation lock for `target`. */

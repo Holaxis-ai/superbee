@@ -193,6 +193,73 @@ try {
     );
     await run(process.execPath, ["consumer.mjs"], scratch);
 
+    // N3: the filesystem identity unit is not reachable from the packed package. Each negative
+    // consumer must FAIL to typecheck for the named reason, and a runtime deep import must be
+    // refused by the exports map, so the sealed boundary is protected by CI rather than by naming.
+    const internalNames = [
+      "identityKey",
+      "classifyLeaf",
+      "classifyMkdir",
+      "observeExact",
+      "mutateExact",
+      "acquireFilesystemIdentityLock",
+      "filesystemIdentityLockPath",
+      "nodeFilesystemIdentityPort",
+    ];
+    const negatives = [
+      {
+        file: "negative-internal.ts",
+        source: `import { ${internalNames.join(", ")} } from "@superbee/core";\nvoid [${internalNames.join(", ")}];\n`,
+        expect: internalNames.map((name) => new RegExp(`error TS2305: .*has no exported member '${name}'`)),
+      },
+      {
+        file: "negative-deep.ts",
+        source: 'import { identityKey } from "@superbee/core/dist/filesystem-identity.js";\nvoid identityKey;\n',
+        expect: [/error TS2307: Cannot find module '@superbee\/core\/dist\/filesystem-identity\.js'/],
+      },
+      {
+        file: "negative-options.ts",
+        source:
+          'import { withFilesystemMutationLock } from "@superbee/core";\n' +
+          'void withFilesystemMutationLock("/tmp/x", async () => 1, { waitMs: 1, unknownKey: true });\n',
+        expect: [/error TS2353: .*'unknownKey' does not exist in type 'FilesystemMutationLockOptions'/],
+      },
+    ];
+    for (const negative of negatives) {
+      await writeFile(path.join(scratch, negative.file), negative.source);
+      await writeFile(
+        path.join(scratch, "tsconfig.negative.json"),
+        JSON.stringify({ extends: "./tsconfig.json", include: [negative.file] }, null, 2),
+      );
+      let diagnostics = "";
+      try {
+        await run(
+          process.execPath,
+          [path.join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.negative.json"],
+          scratch,
+        );
+        assert.fail(`${negative.file} must not typecheck against the packed package`);
+      } catch (error) {
+        if (error?.code === "ERR_ASSERTION") throw error;
+        diagnostics = String(error.stdout ?? "") + String(error.stderr ?? "");
+      }
+      for (const pattern of negative.expect) {
+        assert.match(diagnostics, pattern, `${negative.file}: expected ${pattern} in:\n${diagnostics}`);
+      }
+    }
+    await writeFile(
+      path.join(scratch, "deep-import.mjs"),
+      `try {
+  await import("@superbee/core/dist/filesystem-identity.js");
+  console.log("RESOLVED");
+} catch (error) {
+  console.log(error?.code ?? "NO_CODE");
+}
+`,
+    );
+    const deep = await run(process.execPath, ["deep-import.mjs"], scratch);
+    assert.equal(deep.stdout.trim(), "ERR_PACKAGE_PATH_NOT_EXPORTED");
+
     const installed = path.join(scratch, "node_modules", "@superbee", "core");
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
     assert.equal(installedManifest.private, true);

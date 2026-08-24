@@ -1,32 +1,33 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { promises as fs } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { FilesystemBackend } from "../src/backend.js";
 
-test("FilesystemBackend expect-absent observation propagates read uncertainty", async () => {
+// An unreadable target (EACCES) is an entry that exists, is listed exactly, and cannot be opened.
+// The expect-absent premise must treat that read failure as uncertainty, never as absence:
+// nothing may be replaced, and the error must surface unchanged.
+test("FilesystemBackend expect-absent observation propagates read uncertainty", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.diagnostic("running as root: EACCES cannot be provoked; this row is not exercised");
+    return;
+  }
   const root = await mkdtemp(path.join(tmpdir(), "agentstate-lite-expected-version-"));
   const target = path.join(root, "index.md");
-  const originalReadFile = fs.readFile;
   try {
     await writeFile(target, "foreign bytes\n");
-    Reflect.set(fs, "readFile", async (...args: unknown[]) => {
-      if (path.resolve(String(args[0])) === path.resolve(target)) {
-        throw Object.assign(new Error("injected version-observation fault"), { code: "EIO" });
-      }
-      return Reflect.apply(originalReadFile, fs, args);
-    });
+    await chmod(target, 0o000);
     await assert.rejects(
       () => new FilesystemBackend(root).writeReserved("", "index.md", "replacement\n", { expectedVersion: null }),
-      (err: unknown) => (err as NodeJS.ErrnoException).code === "EIO",
+      (err: unknown) => (err as NodeJS.ErrnoException).code === "EACCES",
     );
-    Reflect.set(fs, "readFile", originalReadFile);
+    await chmod(target, 0o600);
     assert.equal(await readFile(target, "utf8"), "foreign bytes\n");
+    assert.deepEqual(await readdir(root), ["index.md"]);
   } finally {
-    Reflect.set(fs, "readFile", originalReadFile);
+    await chmod(target, 0o600).catch(() => {});
     await rm(root, { recursive: true, force: true });
   }
 });

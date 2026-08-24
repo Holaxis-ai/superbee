@@ -8,7 +8,9 @@ import { fileURLToPath } from "node:url";
 
 import { initBundle, parseLinks, readDoc, writeDoc } from "@superbee/core";
 import { snapshotBundleCommit, stageAndCommit } from "@superbee/board-git";
+import { identityKey } from "../../core/src/filesystem-identity.js";
 import {
+  acquireFilesystemIdentityLock,
   acquireFilesystemMutationLock,
   filesystemMutationLockPath,
 } from "../../core/src/filesystem-lock.js";
@@ -114,9 +116,10 @@ test("independent link-add processes converge losslessly through one filesystem 
       });
     }
 
-    // Hold the source's physical lock before the independent processes begin. Their IPC
-    // "attempting" signal proves they reached the mutation; no result may arrive until release.
-    const release = await acquireFilesystemMutationLock(path.join(root, "hub.md"), {
+    // Hold the source's identity lock (the one the filesystem adapter claims for every mutation of
+    // `hub.md`) before the independent processes begin. Their IPC "attempting" signal proves they
+    // reached the mutation; no result may arrive until release.
+    const release = await acquireFilesystemIdentityLock(await identityKey(root, "hub.md"), "test-hold", {
       portableRoot: root,
     });
     for (const target of targets) children.push(spawnLinkChild(root, target));

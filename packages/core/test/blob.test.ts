@@ -12,7 +12,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, mkdir, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -276,20 +276,31 @@ test("FilesystemBackend: readBlob returns null (not a throw) for a DIRECTORY-sha
   });
 });
 
-test("FilesystemBackend: readBlob PROPAGATES a real fs error (ENOTDIR) rather than silently reporting 'absent' — a blanket catch would misreport a genuine failure as a normal miss", async () => {
+test("FilesystemBackend: readBlob reports a file-shaped path segment as 'absent' but PROPAGATES a genuine fs error — a blanket catch would misreport a real failure as a normal miss", async (t) => {
   await withFsBundle(async (bundle) => {
-    // "artifacts/x.bin" is a FILE; treating it as a directory to read a NESTED path
-    // underneath it is a genuine filesystem error (ENOTDIR) — deterministic and
-    // non-flaky (no chmod/permissions involved), unlike ENOENT/EISDIR, which readBlob
-    // legitimately treats as "no blob here."
+    // "artifacts/x.bin" is a FILE; a NESTED key underneath it names a shape the bundle cannot
+    // hold (ENOTDIR), which the identity protocol classifies as absence for observations,
+    // exactly like ENOENT and EISDIR.
     await writeBlob(bundle, "artifacts/x.bin", enc("a file, not a dir"));
-    await assert.rejects(
-      () => readBlob(bundle, "artifacts/x.bin/nested.bin"),
-      (err: unknown) => {
-        assert.equal((err as NodeJS.ErrnoException).code, "ENOTDIR");
-        return true;
-      },
-    );
+    assert.equal(await readBlob(bundle, "artifacts/x.bin/nested.bin"), null);
+    if (process.getuid?.() === 0) {
+      t.diagnostic("running as root: EACCES cannot be provoked, permission-failure row not exercised");
+      return;
+    }
+    // An unreadable blob is a real failure (EACCES), deterministic and non-flaky, and it must surface.
+    const unreadable = path.join(bundle.root, "artifacts", "x.bin");
+    await chmod(unreadable, 0o000);
+    try {
+      await assert.rejects(
+        () => readBlob(bundle, "artifacts/x.bin"),
+        (err: unknown) => {
+          assert.equal((err as NodeJS.ErrnoException).code, "EACCES");
+          return true;
+        },
+      );
+    } finally {
+      await chmod(unreadable, 0o600);
+    }
   });
 });
 
