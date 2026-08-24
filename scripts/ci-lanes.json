@@ -6,6 +6,7 @@
     26
   ],
   "singleton_node": 26,
+  "host_expectation_variable": "SUPERBEE_TEST_EXPECT_ALIASING_HOST",
   "merge_queue": {
     "enabled": false,
     "evidence": "No merge-queue workflow or repository-settings evidence exists at this revision",
@@ -13,6 +14,7 @@
   },
   "required_jobs": [
     "runtime",
+    "aliasing-host",
     "smoke-node-20",
     "distribution",
     "browser",
@@ -72,7 +74,22 @@
       "nodes": [
         22,
         26
-      ]
+      ],
+      "runs_on": "ubuntu-latest",
+      "expect_aliasing_host": "0",
+      "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test ! -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
+    },
+    "aliasing-host": {
+      "display_name": "runtime on an aliasing host (macos, node 26)",
+      "workflow_only": true,
+      "components": [],
+      "nodes": [
+        26
+      ],
+      "runs_on": "macos-latest",
+      "runtime_script": "ci:runtime",
+      "expect_aliasing_host": "1",
+      "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
     },
     "distribution": {
       "display_name": "distribution package and installed behavior",

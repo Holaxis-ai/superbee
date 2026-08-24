@@ -87,6 +87,7 @@ the same unit.
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
 | runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
+| aliasing-host | workflow only | `aliasing-host` | 26 |
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
@@ -104,7 +105,11 @@ Minimum iteration lanes by reach:
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
-add path skipping without a separately reviewed fail-closed classifier. CI currently runs on Linux, so platform-specific claims need their own empirical probe.
+add path skipping without a separately reviewed fail-closed classifier. CI runs on Linux plus
+the `aliasing-host` lane, which repeats `npm run ci:runtime` on macOS with
+`SUPERBEE_TEST_EXPECT_ALIASING_HOST=1` (the Linux runtime jobs set `0`) so tests whose native
+branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. Other
+platform-specific claims still need their own empirical probe.
 
 ### Running checks
 

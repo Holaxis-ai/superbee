@@ -1,9 +1,11 @@
 name: CI tests
 
-# Runtime-sensitive suites run identically on Node 22 and 26. Distribution, browser/UI, local
-# release policy, and exhaustive target proofs are platform-independent lanes on one supported
-# runtime. The first implementation is deliberately unconditional: path classification and skip
-# receipts require a separate fail-closed classifier contract.
+# Runtime-sensitive suites run identically on Node 22 and 26, then once more on macOS so that
+# tests whose native branch only executes on a case-aliasing filesystem actually run; each runtime
+# job pins the host class it expects and fails closed if the runner disagrees. Distribution,
+# browser/UI, local release policy, and exhaustive target proofs are platform-independent lanes on
+# one supported runtime. The first implementation is deliberately unconditional: path
+# classification and skip receipts require a separate fail-closed classifier contract.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
 # app-bound context, then remove the two legacy `gate (node N)` requirements. Roll back by restoring
@@ -35,6 +37,8 @@ jobs:
         node-version: [22, 26]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,7 +48,29 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      - name: Confirm the runner filesystem does not alias case
+        run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
       - name: Run the identical runtime-sensitive contract
+        run: npm run ci:runtime
+
+  aliasing-host:
+    name: runtime on an aliasing host (macos, node 26)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    env:
+      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci
+      - name: Confirm the runner filesystem aliases case
+        run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
+      - name: Run the runtime-sensitive contract on a case-aliasing filesystem
         run: npm run ci:runtime
 
   distribution:
@@ -128,7 +154,7 @@ jobs:
 
   required:
     name: CI required lanes
-    needs: [runtime, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -146,7 +172,7 @@ jobs:
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -164,7 +190,7 @@ jobs:
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
