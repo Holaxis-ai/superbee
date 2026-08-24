@@ -30,6 +30,7 @@
  * re-splicing field lists would not prove that the convention still governs the kind being edited.
  */
 
+import { ConcurrentReplacementError } from "./errors.js";
 import { VersionConflict } from "./versioning.js";
 import type { Version } from "./types.js";
 
@@ -79,15 +80,25 @@ export interface VersionedMutationOutcome<R> {
  * state only; (3) `done` returns immediately with no write; (4) `write` CASes with THAT
  * attempt's own version; (5) a `VersionConflict` retries (fresh read, fresh decide) while
  * budget remains, else the final `VersionConflict` is RETHROWN unchanged — callers map it
- * to their own conflict shape (e.g. `STALE_HEAD`, exit 5); (6) any other thrown error is
- * terminal and propagates unchanged.
+ * to their own conflict shape (e.g. `STALE_HEAD`, exit 5); (6) a `ConcurrentReplacementError`
+ * from `read` (the filesystem adapter saw the document replaced on every bounded re-read) is the
+ * same contention in read-phase clothing and retries on the SAME attempt budget, so
+ * `maxAttempts: 1` makes it terminal too; (7) any other thrown error is terminal and propagates
+ * unchanged.
  */
 export async function versionedMutation<S, R>(
   opts: VersionedMutationOptions<S, R>,
 ): Promise<VersionedMutationOutcome<R>> {
   const maxAttempts = opts.maxAttempts ?? CAS_MAX_ATTEMPTS;
   for (let attempt = 0; ; attempt++) {
-    const { state, version } = await opts.read();
+    let fresh: { state: S | undefined; version: Version | null };
+    try {
+      fresh = await opts.read();
+    } catch (err) {
+      if (err instanceof ConcurrentReplacementError && attempt < maxAttempts - 1) continue;
+      throw err;
+    }
+    const { state, version } = fresh;
     const decision = await opts.decide(state, attempt);
     if (decision.action === "done") {
       return { result: decision.result, version, wrote: false };

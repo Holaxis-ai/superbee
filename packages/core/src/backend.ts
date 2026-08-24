@@ -42,8 +42,8 @@ import {
   mutateExact,
   nodeFilesystemIdentityPort as port,
   observeExact,
-  type EntryKind,
-  type EntryWitness,
+  probeExact,
+  type PortHandle,
 } from "./filesystem-identity.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
@@ -92,21 +92,14 @@ function notFound(root: string, rel: string): NodeJS.ErrnoException {
   return err;
 }
 
-/** Observation use: the file's bytes bound to the handle's inode; `null` when no file is there. */
-async function readBytes(target: string): Promise<(EntryWitness & { value: Buffer }) | null> {
+/** Observation read: every byte through the open handle; `null` when no file is there. */
+async function readBytes(handle: PortHandle): Promise<Buffer | null> {
   try {
-    const { bytes, dev, ino } = await port.readFile(target);
-    return { value: bytes, dev, ino };
+    return await port.readAll(handle);
   } catch (err) {
     if (isAbsentFileError(err)) return null;
     throw err;
   }
-}
-
-/** Observation use: whether any entry is at the path, bound to that entry's inode. */
-async function probePresent(target: string): Promise<(EntryWitness & { value: EntryKind }) | null> {
-  const probed = await port.probe(target);
-  return probed === null ? null : { value: probed.kind, dev: probed.dev, ino: probed.ino };
 }
 
 /** Recursively collect bundle-relative posix paths of files `keep` accepts (skips dot-entries). */
@@ -213,11 +206,11 @@ export class FilesystemBackend implements StorageBackend {
   async versions(id: ConceptId): Promise<VersionInfo[]> {
     assertSafeConceptId(id);
     const rel = pathFromConceptId(id);
-    const observed = await observeExact(port, this.#root, rel, async (target) => {
+    const observed = await observeExact(port, this.#root, rel, async (handle, target) => {
       try {
-        const { bytes, dev, ino } = await port.readFile(target);
+        const bytes = await port.readAll(handle);
         const { mtime } = await port.stat(target);
-        return { value: { raw: bytes.toString("utf8"), mtime }, dev, ino };
+        return { raw: bytes.toString("utf8"), mtime };
       } catch {
         return null; // no readable document ⇒ no history
       }
@@ -233,8 +226,7 @@ export class FilesystemBackend implements StorageBackend {
 
   async exists(id: ConceptId): Promise<boolean> {
     assertSafeConceptId(id);
-    const observed = await observeExact(port, this.#root, pathFromConceptId(id), probePresent);
-    return observed.state === "exact";
+    return (await probeExact(port, this.#root, pathFromConceptId(id))).state === "exact";
   }
 
   async list(prefix?: string): Promise<ConceptId[]> {
@@ -352,8 +344,8 @@ export class FilesystemBackend implements StorageBackend {
     // key like `artifacts/x/y.bin` leaves `artifacts/x` a directory) must report `false` here,
     // matching MemoryBackend/RemoteBackend — neither has a filesystem notion of "a path that is
     // a directory," so a directory-counts-as-exists answer would break tri-adapter parity.
-    const observed = await observeExact(port, this.#root, key, probePresent);
-    return observed.state === "exact" && observed.value === "file";
+    const observed = await probeExact(port, this.#root, key);
+    return observed.state === "exact" && observed.value.kind === "file";
   }
 
   async listBlobs(prefix?: string): Promise<BlobKey[]> {

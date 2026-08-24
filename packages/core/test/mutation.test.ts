@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { ConcurrentReplacementError } from "../src/errors.js";
 import { versionedMutation } from "../src/mutation.js";
 import { VersionConflict } from "../src/versioning.js";
 import type { Version } from "../src/types.js";
@@ -217,4 +218,78 @@ test("maxAttempts: 1 makes a conflict TERMINAL — no retry even though a normal
   );
 
   assert.equal(decides, 1);
+});
+
+// ── AC-19: read-phase ConcurrentReplacementError is the same contention, retried on the same budget ──
+
+test("AC-19: a read that throws ConcurrentReplacementError twice then succeeds is retried; the mutation succeeds with two retries recorded", async () => {
+  const store = new FakeStore();
+  store.seed("a");
+  let reads = 0;
+  const attempts: number[] = [];
+  const outcome = await versionedMutation<string, string>({
+    read: async () => {
+      reads++;
+      if (reads <= 2) throw new ConcurrentReplacementError("concepts/a.md", 4);
+      return store.read();
+    },
+    decide: async (state, attempt) => {
+      attempts.push(attempt);
+      return { action: "write", next: `${state}+mine`, result: "ok" };
+    },
+    write: async (next, expectedVersion) => store.write(next, expectedVersion),
+  });
+  assert.equal(reads, 3);
+  assert.deepEqual(attempts, [2], "decide ran once, on the third attempt");
+  assert.equal(outcome.result, "ok");
+  assert.equal(outcome.wrote, true);
+  assert.equal(store.read().state, "a+mine");
+});
+
+test("AC-19: a read that throws ConcurrentReplacementError beyond the bound propagates it unchanged; maxAttempts: 1 makes it terminal", async () => {
+  const thrown = new ConcurrentReplacementError("concepts/a.md", 4);
+  let reads = 0;
+  await assert.rejects(
+    () =>
+      versionedMutation<string, string>({
+        read: async () => {
+          reads++;
+          throw thrown;
+        },
+        decide: () => assert.fail("decide must not run without a read"),
+        write: () => assert.fail("write must not run without a read"),
+        maxAttempts: 3,
+      }),
+    (err: unknown) => err === thrown,
+  );
+  assert.equal(reads, 3, "read-phase retries share the attempt budget");
+
+  reads = 0;
+  await assert.rejects(
+    () =>
+      versionedMutation<string, string>({
+        read: async () => {
+          reads++;
+          throw thrown;
+        },
+        decide: () => assert.fail("decide must not run"),
+        write: () => assert.fail("write must not run"),
+        maxAttempts: 1,
+      }),
+    (err: unknown) => err === thrown,
+  );
+  assert.equal(reads, 1);
+
+  // Any other read error stays terminal on the first attempt.
+  await assert.rejects(
+    () =>
+      versionedMutation<string, string>({
+        read: async () => {
+          throw new Error("disk on fire");
+        },
+        decide: () => assert.fail("decide must not run"),
+        write: () => assert.fail("write must not run"),
+      }),
+    /disk on fire/,
+  );
 });
