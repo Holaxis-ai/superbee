@@ -1298,6 +1298,8 @@ test("inspection refuses a draft/tag mismatch before download, signing, or uploa
     const controlledTmp = path.join(harness, "tmp");
     mkdirSync(bin);
     mkdirSync(controlledTmp);
+    const keyPath = path.join(harness, "unused-key");
+    writeFileSync(keyPath, "readable test key\n", { mode: 0o600 });
     const ghLog = path.join(harness, "gh.log");
     const operationsLog = path.join(harness, "operations.log");
     const recoveryDir = path.join(harness, "recovery");
@@ -1323,7 +1325,7 @@ exit 99
       "--stage-id", STAGE_ID,
       "--version", PRE,
       "--draft-release-id", "300",
-      "--key", path.join(harness, "unused-key"),
+      "--key", keyPath,
       "--repo", "Holaxis-ai/agentstate-lite",
       "--recovery-dir", recoveryDir,
     ], {
@@ -1353,6 +1355,8 @@ test("inspection mismatch unwinds batch scratch state, emits no receipt, and pri
     const controlledTmp = path.join(harness, "tmp");
     mkdirSync(bin);
     mkdirSync(controlledTmp);
+    const keyPath = path.join(harness, "unused-key");
+    writeFileSync(keyPath, "readable test key\n", { mode: 0o600 });
     const manifestPath = path.join(harness, "candidate.json");
     const batchPath = path.join(harness, "batch.json");
     const ghLog = path.join(harness, "gh.log");
@@ -1397,7 +1401,7 @@ exit 2
     const result = spawnSync(process.execPath, [
       path.join(repoRoot, "scripts", "release-inspect.mjs"),
       "--batch", batchPath,
-      "--key", path.join(harness, "unused-key"),
+      "--key", keyPath,
       "--repo", "Holaxis-ai/agentstate-lite",
       "--recovery-dir", recoveryDir,
     ], {
