@@ -15,7 +15,8 @@ import type {
   Version,
 } from "../src/types.js";
 import { blobVersion, contentVersion, VersionConflict } from "../src/versioning.js";
-import { InvalidInputError } from "../src/errors.js";
+import { FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
+import type { HostClass } from "./host-class.js";
 
 export interface BackendFixture {
   backend: StorageBackend;
@@ -25,6 +26,12 @@ export interface BackendFixture {
 export interface BackendContractOptions {
   name: string;
   create(): Promise<BackendFixture> | BackendFixture;
+}
+
+export interface IdentityBackendContractOptions {
+  name: string;
+  /** The fixture reports the host class its storage actually sits on ("exact" for non-filesystem adapters). */
+  create(): Promise<BackendFixture & { hostClass: HostClass }> | (BackendFixture & { hostClass: HostClass });
 }
 
 export interface AtomicBackendContractOptions {
@@ -466,6 +473,125 @@ export function registerStorageBackendQueryHeadsContract(options: BackendContrac
           assert.equal("body" in head, false);
         }
       }
+    });
+  });
+}
+
+/**
+ * Identity rows (I7): one conditional row per operation for a spelling that aliases an existing
+ * entry on the fixture's host class. On an aliasing host every operation with the alias is
+ * refused with the typed alias verdict and the canonical entry is untouched; on an exact host
+ * the alias is simply a distinct absent identity. A normalizing host (legacy HFS+) is out of
+ * scope: it treats case pairs like an aliasing host, and its NFC/NFD behavior is pinned by the
+ * native suite's AC-17 row instead. `dev`/`ino` are assumed stable per observation on local
+ * APFS/ext4; network filesystems are unsupported.
+ */
+export function registerStorageBackendIdentityContract(options: IdentityBackendContractOptions): void {
+  const { name, create } = options;
+  const isAlias = (error: unknown): boolean =>
+    error instanceof FilesystemIdentityAliasError && error instanceof InvalidInputError;
+  const isEnoent = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+
+  async function withIdentityFixture(
+    run: (backend: StorageBackend, hostClass: HostClass) => Promise<void>,
+  ): Promise<void> {
+    const fixture = await create();
+    try {
+      await run(fixture.backend, fixture.hostClass);
+    } finally {
+      await fixture.cleanup();
+    }
+  }
+
+  const documentPairs: Array<[string, string, string]> = [
+    ["case", "concepts/exact-name", "concepts/EXACT-NAME"],
+    ["normalization", "concepts/caf\u00e9", "concepts/cafe\u0301"],
+  ];
+
+  for (const [label, id, alias] of documentPairs) {
+    test(`${name} contract: document ${label} alias is refused on an aliasing host and distinct otherwise`, async () => {
+      await withIdentityFixture(async (backend, hostClass) => {
+        if (label === "normalization" && hostClass === "normalizing") return; // pinned by AC-17 instead
+        const aliasing = hostClass !== "exact";
+        const version = await backend.write(id, doc(id, "canonical"));
+        assert.deepEqual(await backend.list("concepts/"), [id]);
+
+        if (aliasing) {
+          await assert.rejects(() => backend.read(alias), isAlias);
+          await assert.rejects(() => backend.readMany([id, alias]), isAlias);
+          await assert.rejects(() => backend.exists(alias), isAlias);
+          await assert.rejects(() => backend.versions(alias), isAlias);
+          await assert.rejects(() => backend.write(alias, doc(alias, "alias")), isAlias);
+          await assert.rejects(() => backend.write(alias, doc(alias, "alias"), { expectedVersion: null }), isAlias);
+          await assert.rejects(() => backend.delete(alias), isAlias);
+          await assert.rejects(() => backend.delete(alias, { expectedVersion: version }), isAlias);
+          assert.deepEqual(await backend.list("concepts/"), [id]);
+        } else {
+          await assert.rejects(() => backend.read(alias), isEnoent);
+          await assert.rejects(() => backend.readMany([id, alias]), isEnoent);
+          assert.equal(await backend.exists(alias), false);
+          assert.deepEqual(await backend.versions(alias), []);
+          assert.equal(await backend.delete(alias), false);
+          const aliasVersion = await backend.write(alias, doc(alias, "alias"), { expectedVersion: null });
+          assert.notEqual(aliasVersion, version);
+          assert.equal((await backend.read(alias)).doc.body.trimEnd(), "alias");
+          assert.deepEqual((await backend.list("concepts/")).sort(), [id, alias].sort());
+          assert.equal(await backend.delete(alias, { expectedVersion: aliasVersion }), true);
+        }
+        const canonical = await backend.read(id);
+        assert.equal(canonical.version, version);
+        assert.equal(canonical.doc.body.trimEnd(), "canonical");
+        assert.equal(await backend.exists(id), true);
+      });
+    });
+  }
+
+  test(`${name} contract: reserved-file directory alias is refused on an aliasing host and distinct otherwise`, async () => {
+    await withIdentityFixture(async (backend, hostClass) => {
+      const aliasing = hostClass !== "exact";
+      const version = await backend.writeReserved("Docs", "index.md", "# Docs\n");
+      if (aliasing) {
+        await assert.rejects(() => backend.readReserved("docs", "index.md"), isAlias);
+        await assert.rejects(() => backend.writeReserved("docs", "index.md", "# docs\n"), isAlias);
+        await assert.rejects(() => backend.writeReserved("docs", "index.md", "# docs\n", { expectedVersion: null }), isAlias);
+      } else {
+        assert.equal(await backend.readReserved("docs", "index.md"), null);
+        const other = await backend.writeReserved("docs", "index.md", "# docs\n", { expectedVersion: null });
+        assert.notEqual(other, version);
+        assert.equal((await backend.readReserved("docs", "index.md"))?.content, "# docs\n");
+      }
+      const canonical = await backend.readReserved("Docs", "index.md");
+      assert.equal(canonical?.content, "# Docs\n");
+      assert.equal(canonical?.version, version);
+    });
+  });
+
+  test(`${name} contract: blob key alias is refused on an aliasing host and distinct otherwise`, async () => {
+    await withIdentityFixture(async (backend, hostClass) => {
+      const aliasing = hostClass !== "exact";
+      const key = "artifacts/Exact.bin";
+      const alias = "artifacts/exact.bin";
+      const version = await backend.writeBlob(key, enc("canonical"));
+      if (aliasing) {
+        await assert.rejects(() => backend.readBlob(alias), isAlias);
+        await assert.rejects(() => backend.existsBlob(alias), isAlias);
+        await assert.rejects(() => backend.writeBlob(alias, enc("alias")), isAlias);
+        await assert.rejects(() => backend.writeBlob(alias, enc("alias"), undefined, { expectedVersion: null }), isAlias);
+        await assert.rejects(() => backend.deleteBlob(alias), isAlias);
+        assert.deepEqual(await backend.listBlobs("artifacts/"), [key]);
+      } else {
+        assert.equal(await backend.readBlob(alias), null);
+        assert.equal(await backend.existsBlob(alias), false);
+        assert.equal(await backend.deleteBlob(alias), false);
+        const other = await backend.writeBlob(alias, enc("alias"), undefined, { expectedVersion: null });
+        assert.notEqual(other, version);
+        assert.deepEqual((await backend.listBlobs("artifacts/")).sort(), [key, alias].sort());
+        assert.equal(await backend.deleteBlob(alias, { expectedVersion: other }), true);
+      }
+      const canonical = await backend.readBlob(key);
+      assert.equal(canonical?.version, version);
+      assert.equal(new TextDecoder().decode(canonical?.bytes), "canonical");
+      assert.equal(await backend.existsBlob(key), true);
     });
   });
 }

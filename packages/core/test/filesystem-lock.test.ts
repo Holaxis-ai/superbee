@@ -7,9 +7,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { FilesystemBackend } from "../src/backend.js";
+import { identityKey } from "../src/filesystem-identity.js";
 import {
+  acquireFilesystemIdentityLock,
   acquireFilesystemMutationLock,
   FilesystemMutationLockError,
+  filesystemIdentityLockPath,
   filesystemMutationLockPath,
   filesystemMutationLockRoot,
   isPrivateFilesystemMutationLockRoot,
@@ -297,6 +300,9 @@ test("filesystem mutation lock diagnoses stale and malformed leftovers without r
   }
 });
 
+// Timing-shaped (a fixed settle delay stands in for "no child completed"); not part of the
+// identity proof, which lives in filesystem-identity-cross-process.test.ts. The parent holds the
+// backend's own identity lock for `shared.md` through the pure-key entry point.
 test("two independent processes with different POSIX TMPDIR values share one CAS lock", async () => {
   const root = await tempDir();
   const children: ChildHarness[] = [];
@@ -307,7 +313,7 @@ test("two independent processes with different POSIX TMPDIR values share one CAS
       frontmatter: { type: "Concept", timestamp: "2026-07-16T00:00:00.000Z" },
       body: "initial",
     });
-    const release = await acquireFilesystemMutationLock(path.join(root, "shared.md"), {
+    const release = await acquireFilesystemIdentityLock(await identityKey(root, "shared.md"), "test-hold", {
       portableRoot: root,
     });
     const childTmpA = path.join(root, "session-tmp-a");
@@ -353,6 +359,41 @@ test("two independent processes with different POSIX TMPDIR values share one CAS
     }
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("pure-key identity lock claims by key only: no target directory, no target realpath, descriptor recorded", async () => {
+  const parent = await tempDir();
+  const root = path.join(parent, "Bundle");
+  try {
+    const key = await identityKey(root, "concepts/doc.md");
+    const release = await acquireFilesystemIdentityLock(key, `${root}:concepts/doc.md`, { portableRoot: root });
+    try {
+      const lockPath = filesystemIdentityLockPath(key, root);
+      assert.equal(lockPath, path.join(filesystemMutationLockRoot(root), `${key}.lock`));
+      assert.ok(path.relative(parent, lockPath).startsWith(".."), "runtime lock must be outside the bundle");
+      const owner = parseFilesystemMutationLockOwner(
+        JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")),
+      );
+      assert.equal(owner?.pid, process.pid);
+      assert.equal(owner?.target, `${root}:concepts/doc.md`);
+      await assert.rejects(() => fs.stat(root), (err: unknown) => (err as NodeJS.ErrnoException).code === "ENOENT");
+      await assert.rejects(
+        () => acquireFilesystemIdentityLock(key, "second", { portableRoot: root, waitMs: 20, pollMs: 5 }),
+        (err: unknown) => err instanceof FilesystemMutationLockError && err.owner?.token === owner?.token,
+      );
+    } finally {
+      await release();
+    }
+    await assert.rejects(() => fs.stat(filesystemIdentityLockPath(key, root)));
+    assert.deepEqual(await fs.readdir(parent), []);
+  } finally {
+    await fs.rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("pure-key identity lock refuses a key that is not a sha256 digest", async () => {
+  await assert.rejects(() => acquireFilesystemIdentityLock("../escape", "x"), TypeError);
+  assert.throws(() => filesystemIdentityLockPath("not-hex"), TypeError);
 });
 
 // ── mutation-survivor pins (core-survivor-triage unit) ────────────────────────

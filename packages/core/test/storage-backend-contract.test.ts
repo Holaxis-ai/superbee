@@ -14,9 +14,11 @@ import {
   registerStorageBackendBaseContract,
   registerStorageBackendBlobContract,
   registerStorageBackendHistoryContract,
+  registerStorageBackendIdentityContract,
   registerStorageBackendQueryHeadsContract,
   type BackendFixture,
 } from "./storage-backend-contract.js";
+import { assertHostClassExpectation, detectHostClassIn } from "./host-class.js";
 
 async function filesystemFixture(): Promise<BackendFixture> {
   const root = await mkdtemp(path.join(tmpdir(), "aslite-storage-contract-"));
@@ -112,4 +114,30 @@ registerStorageBackendAtomicCasContract({
 registerStorageBackendQueryHeadsContract({
   name: "RemoteBackend",
   create: remoteFixture,
+});
+
+registerStorageBackendIdentityContract({
+  name: "FilesystemBackend",
+  async create() {
+    const probeRoot = await mkdtemp(path.join(tmpdir(), "aslite-storage-identity-probe-"));
+    const hostClass = await detectHostClassIn(probeRoot);
+    await rm(probeRoot, { recursive: true, force: true });
+    assertHostClassExpectation(hostClass);
+    const root = await mkdtemp(path.join(tmpdir(), "aslite-storage-identity-contract-"));
+    return {
+      backend: new FilesystemBackend(root),
+      hostClass,
+      cleanup: () => rm(root, { recursive: true, force: true }),
+    };
+  },
+});
+
+registerStorageBackendIdentityContract({
+  name: "MemoryBackend",
+  create: () => ({ ...memoryFixture(), hostClass: "exact" }),
+});
+
+registerStorageBackendIdentityContract({
+  name: "RemoteBackend",
+  create: () => ({ ...remoteFixture(), hostClass: "exact" }),
 });

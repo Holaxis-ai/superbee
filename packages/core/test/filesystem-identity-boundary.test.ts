@@ -1,0 +1,172 @@
+/**
+ * Non-public boundary assertions for the filesystem identity unit (N1, N2, N4): the public index
+ * exports exactly the allowlisted names from the storage modules, the adapter class has exactly
+ * the contract shape with no statics, the filesystem is reachable only from the identity and lock
+ * modules, and none of the three runtime modules reads the environment. N3 (the packed package)
+ * lives in `scripts/package-core-external-proof.test.mjs`.
+ */
+import assert from "node:assert/strict";
+import { readdir, readFile } from "node:fs/promises";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+import ts from "typescript";
+
+import { FilesystemBackend } from "../src/backend.js";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const SOURCE_ROOT = path.resolve(here, "..", "src");
+const IDENTITY_MODULES = ["backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"];
+const FS_SPECIFIERS = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
+
+async function parse(file: string): Promise<ts.SourceFile> {
+  return ts.createSourceFile(file, await readFile(path.join(SOURCE_ROOT, file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+}
+
+function importSpecifiers(source: ts.SourceFile): string[] {
+  const specifiers: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      specifiers.push(node.moduleSpecifier.text);
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const [specifier] = node.arguments;
+      if (specifier && ts.isStringLiteralLike(specifier)) specifiers.push(specifier.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return specifiers;
+}
+
+function processEnvAccesses(source: ts.SourceFile): number[] {
+  const lines: number[] = [];
+  const isProcess = (node: ts.Expression): boolean => ts.isIdentifier(node) && node.text === "process";
+  const visit = (node: ts.Node): void => {
+    const hit =
+      (ts.isPropertyAccessExpression(node) && isProcess(node.expression) && node.name.text === "env") ||
+      (ts.isElementAccessExpression(node) && isProcess(node.expression)) ||
+      (ts.isIdentifier(node) && node.text === "env" && ts.isBindingElement(node.parent));
+    if (hit) lines.push(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return lines;
+}
+
+// ── N1: index export allowlist per storage module ─────────────────────────────
+
+test("N1: index.ts exports exactly the allowlisted names from the storage modules", async () => {
+  const index = await parse("index.ts");
+  const exported = new Map<string, { values: string[]; types: string[] }>();
+  const visit = (node: ts.Node): void => {
+    if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const bucket = exported.get(node.moduleSpecifier.text) ?? { values: [], types: [] };
+      assert.ok(node.exportClause && ts.isNamedExports(node.exportClause), `index.ts must not re-export * from ${node.moduleSpecifier.text}`);
+      for (const element of node.exportClause.elements) {
+        const name = element.name.text;
+        if (node.isTypeOnly || element.isTypeOnly) bucket.types.push(name);
+        else bucket.values.push(name);
+      }
+      exported.set(node.moduleSpecifier.text, bucket);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(index);
+  const sorted = (bucket: { values: string[]; types: string[] } | undefined) => ({
+    values: [...(bucket?.values ?? [])].sort(),
+    types: [...(bucket?.types ?? [])].sort(),
+  });
+  assert.deepEqual(sorted(exported.get("./backend.js")), { values: ["FilesystemBackend"], types: [] });
+  assert.deepEqual(sorted(exported.get("./filesystem-lock.js")), {
+    values: ["FilesystemMutationLockError", "filesystemMutationLockPath", "withFilesystemMutationLock"],
+    types: ["FilesystemMutationLockOptions", "FilesystemMutationLockOwner"],
+  });
+  assert.equal(exported.has("./filesystem-identity.js"), false, "the identity module is not exported at all");
+  assert.deepEqual(sorted(exported.get("./errors.js")), {
+    values: ["ConcurrentReplacementError", "FilesystemIdentityAliasError", "InvalidInputError"],
+    types: [],
+  });
+});
+
+// ── N2: structural class shape ────────────────────────────────────────────────
+
+test("N2: FilesystemBackend has a one-argument constructor, exactly the contract prototype, and no statics", () => {
+  assert.equal(FilesystemBackend.length, 1);
+  assert.deepEqual(Object.getOwnPropertyNames(FilesystemBackend.prototype).sort(), [
+    "capabilities",
+    "constructor",
+    "delete",
+    "deleteBlob",
+    "exists",
+    "existsBlob",
+    "list",
+    "listBlobs",
+    "read",
+    "readBlob",
+    "readMany",
+    "readReserved",
+    "versions",
+    "write",
+    "writeBlob",
+    "writeReserved",
+  ]);
+  assert.deepEqual(Object.getOwnPropertyNames(FilesystemBackend).sort(), ["length", "name", "prototype"]);
+  assert.deepEqual(Object.getOwnPropertySymbols(FilesystemBackend), []);
+  assert.deepEqual(Object.getOwnPropertySymbols(FilesystemBackend.prototype), []);
+  assert.equal(Object.getPrototypeOf(FilesystemBackend), Function.prototype, "no base class carries hidden members");
+  const instance = new FilesystemBackend("/nonexistent");
+  assert.deepEqual(Object.getOwnPropertyNames(instance), [], "state is private, not an own property");
+});
+
+test("N2: FilesystemMutationLockOptions has exactly waitMs, pollMs, portableRoot, lockRoot", async () => {
+  const lock = await parse("filesystem-lock.ts");
+  let members: string[] | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isInterfaceDeclaration(node) && node.name.text === "FilesystemMutationLockOptions") {
+      members = node.members.map((member) => (member.name && ts.isIdentifier(member.name) ? member.name.text : "?"));
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(lock);
+  assert.deepEqual(members, ["waitMs", "pollMs", "portableRoot", "lockRoot"]);
+});
+
+// ── N4: import surface and environment isolation ──────────────────────────────
+
+test("N4: only the identity and lock modules import node:fs, and the backend reaches neither fs, crypto, nor the lock", async () => {
+  const files = (await readdir(SOURCE_ROOT)).filter((name) => /\.[cm]?ts$/.test(name)).sort();
+  const fsImporters: string[] = [];
+  for (const file of files) {
+    const specifiers = importSpecifiers(await parse(file));
+    if (specifiers.some((specifier) => FS_SPECIFIERS.has(specifier))) fsImporters.push(file);
+  }
+  assert.deepEqual(fsImporters, ["filesystem-identity.ts", "filesystem-lock.ts"]);
+
+  const backend = importSpecifiers(await parse("backend.ts"));
+  for (const banned of [...FS_SPECIFIERS, "node:crypto", "crypto", "./filesystem-lock.js"]) {
+    assert.ok(!backend.includes(banned), `backend.ts must not import ${banned}`);
+  }
+  assert.ok(backend.includes("./filesystem-identity.js"), "the backend reaches the filesystem only through the identity port");
+});
+
+test("N4: the three runtime modules never read process.env", async () => {
+  for (const file of IDENTITY_MODULES) {
+    const source = await parse(file);
+    assert.deepEqual(processEnvAccesses(source), [], `${file} references process.env`);
+    assert.doesNotMatch(source.text, /process\s*\.\s*env|process\s*\[/, `${file} references process.env textually`);
+    assert.doesNotMatch(source.text, /SUPERBEE_TEST_/, `${file} references a test-only environment name`);
+  }
+});
+
+test("N4: the boundary scanner recognizes every process.env access form", () => {
+  const source = ts.createSourceFile(
+    "synthetic.ts",
+    ['const a = process.env.X;', 'const b = process["env"];', 'const { env } = process;', "void [a, b, env];"].join("\n"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  assert.deepEqual(processEnvAccesses(source), [1, 2, 3]);
+});
