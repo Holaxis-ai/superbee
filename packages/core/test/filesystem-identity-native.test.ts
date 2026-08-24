@@ -115,6 +115,8 @@ test("AC-8 (cond): an aliased write leaves listings unchanged at every level", a
       await assert.rejects(() => attempt, FilesystemIdentityAliasError);
       assert.deepEqual(await readdir(root), ["Docs"]);
     }
+    // After the operation completes no residue remains at any level, dot entries included: a
+    // refused first creation removes its own temp file before reporting the refusal.
     assert.deepEqual(await readdir(path.join(root, "Docs")), ["a.md"]);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -163,7 +165,11 @@ test("AC-15 (cond): concurrent first creation of Docs/a and docs/b yields exactl
   }
 });
 
-test("AC-15 (cond): concurrent first creation of a full-case-folding pair never fulfils both writers on an aliasing host", async () => {
+// AC-15b, forbidden-outcome form: on every host class, never two `fulfilled` with fewer than two
+// files, and every fulfilled writer's file is at its exact requested path with its own body. With
+// the fold in place the pair shares one key (excluded by the lock); with the fold reverted the
+// loser's link still fails EEXIST, so the forbidden outcomes cannot occur either way.
+test("AC-15b (cond): concurrent first creation of a full-case-folding pair never fulfils both writers on an aliasing host", async () => {
   const aliasing = (await hostClass()) !== "exact";
   const pairs: Array<[string, string]> = [
     ["concepts/straße", "concepts/STRASSE"],
@@ -182,11 +188,19 @@ test("AC-15 (cond): concurrent first creation of a full-case-folding pair never 
         const files = await readdir(path.join(root, "concepts"));
         const label = `${first} vs ${second}, round ${round}: ${JSON.stringify(outcomes.map((o) => o.status))} files=${files.join(",")}`;
         assert.ok(!(fulfilled.length === 2 && files.length < 2), `forbidden: both fulfilled with one file (${label})`);
+        for (const id of fulfilled) {
+          const name = `${id.slice("concepts/".length)}.md`;
+          assert.ok(files.includes(name), `forbidden: fulfilled '${id}' is not at its exact path (${label})`);
+          assert.equal((await backend(root).read(id)).doc.body.trimEnd(), id, `forbidden: fulfilled '${id}' lost its body (${label})`);
+        }
+        assert.deepEqual(files.filter((name) => name.startsWith(".")), [], `no temp residue (${label})`);
         if (aliasing) {
           assert.equal(fulfilled.length, 1, label);
-          assert.ok(rejected[0] instanceof FilesystemIdentityAliasError, label);
+          assert.ok(
+            rejected[0] instanceof FilesystemIdentityAliasError || rejected[0] instanceof ConcurrentReplacementError,
+            label,
+          );
           assert.deepEqual(files, [`${fulfilled[0]!.slice("concepts/".length)}.md`], label);
-          assert.equal((await backend(root).read(fulfilled[0]!)).doc.body.trimEnd(), fulfilled[0]);
         } else {
           assert.deepEqual(fulfilled.sort(), [first, second].sort(), label);
           assert.equal(files.length, 2, label);

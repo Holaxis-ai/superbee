@@ -11,9 +11,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
 import {
@@ -22,6 +23,7 @@ import {
   confirmAlias,
   FilesystemShapeMismatchError,
   FilesystemSymlinkEntryError,
+  foldSegment,
   identityKey,
   mutateExact,
   observeExact,
@@ -36,7 +38,7 @@ const ROOT = "/root";
 const CONCEPTS = path.join(ROOT, "concepts");
 const REL = "concepts/x.md";
 const TARGET = path.join(ROOT, REL);
-const WRITE_CLASS = ["mkdir", "writeTemp", "rename", "unlink", "claim"];
+const WRITE_CLASS = ["mkdir", "writeTemp", "link", "rename", "unlink", "claim"];
 
 /** The read every observation row uses: bytes through the handle, absent-class errors as `null`. */
 const readText = (port: ScriptedPort) => async (handle: PortHandle) => {
@@ -468,7 +470,7 @@ const casWrite = (expected: string | null) => async (context: MutationContext) =
   return "written";
 };
 
-test("AC-4: write ordering is claim, walk, CAS read, per-segment mkdir, writeTemp, rename, release", async () => {
+test("AC-4: first-creation ordering is claim, walk, CAS read, per-segment mkdir, writeTemp, link, unlink(tmp), release", async () => {
   const port = new ScriptedPort();
   port.mkdirp(ROOT);
   const key = await identityKey(ROOT, "a/b/c.md");
@@ -476,23 +478,24 @@ test("AC-4: write ordering is claim, walk, CAS read, per-segment mkdir, writeTem
   const ops = opsOf(port);
   assert.equal(ops[0], "claim");
   assert.equal(ops[ops.length - 1], "release");
-  assert.deepEqual(port.ops("mkdir", "writeTemp", "rename", "unlink").map(opOf), [
-    "mkdir",
-    "mkdir",
-    "writeTemp",
-    "rename",
-  ]);
+  assert.deepEqual(port.ops("mkdir", "writeTemp", "link", "rename", "unlink").map(opOf), ["mkdir", "mkdir", "writeTemp", "link", "unlink"]);
   assert.deepEqual(port.ops("mkdir"), [`mkdir(${path.join(ROOT, "a")})`, `mkdir(${path.join(ROOT, "a/b")})`]);
   assert.ok(ops.indexOf("probe") > ops.indexOf("claim") && ops.indexOf("mkdir") > ops.lastIndexOf("entries"));
   assert.equal(port.trace[0], `claim(${key})`);
+  const [link] = port.ops("link");
+  const [unlink] = port.ops("unlink");
+  assert.ok(link!.endsWith(`, ${path.join(ROOT, "a/b/c.md")})`), "link publishes the temp under the exact name");
+  assert.equal(unlink, `unlink(${link!.slice("link(".length, link!.indexOf(","))})`, "the temp name is unlinked after the link");
   assert.equal(port.node(path.join(ROOT, "a/b/c.md"))?.bytes.toString(), "new");
+  assert.deepEqual([...port.node(path.join(ROOT, "a/b"))!.children.keys()], ["c.md"], "no temp link remains");
 });
 
-test("AC-4: an existing leaf is read for CAS before mkdir/write, and no mkdir is issued for present segments", async () => {
+test("AC-4: an existing leaf is read for CAS before mkdir/write, replaced by rename, and no mkdir is issued for present segments", async () => {
   const port = new ScriptedPort();
   port.file(TARGET, "old", 9);
   assert.equal(await mutateExact(port, ROOT, REL, casWrite("old")), "written");
   const ops = opsOf(port);
+  assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "rename"], "a replace never links");
   assert.ok(ops.indexOf("open") > ops.indexOf("claim") && ops.indexOf("open") < ops.indexOf("writeTemp"));
   assert.ok(ops.indexOf("close") < ops.indexOf("writeTemp"), "the CAS read handle is closed before the write");
   assert.deepEqual(port.ops("mkdir"), []);
@@ -544,15 +547,108 @@ test("AC-4: release happens on a thrown body and on delete", async () => {
   assert.equal(port.node(TARGET), null);
 });
 
-test("AC-4: a failed rename removes its own temp file", async () => {
-  const port = new ScriptedPort();
-  port.mkdirp(CONCEPTS);
-  port.override("rename", async ([from]) => {
+test("AC-4: a failed link or rename removes its own temp file", async () => {
+  const first = new ScriptedPort();
+  first.mkdirp(CONCEPTS);
+  first.override("link", async ([from]) => {
     throw Object.assign(new Error("EIO"), { code: "EIO", path: from });
   });
-  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite(null)), /EIO/);
-  assert.equal(port.calls("unlink"), 1);
-  assert.deepEqual([...port.node(CONCEPTS)!.children.keys()], []);
+  await assert.rejects(() => mutateExact(first, ROOT, REL, casWrite(null)), /EIO/);
+  assert.equal(first.calls("unlink"), 1);
+  assert.deepEqual([...first.node(CONCEPTS)!.children.keys()], []);
+
+  const replace = new ScriptedPort();
+  replace.file(TARGET, "old", 9);
+  replace.override("rename", async ([from]) => {
+    throw Object.assign(new Error("EIO"), { code: "EIO", path: from });
+  });
+  await assert.rejects(() => mutateExact(replace, ROOT, REL, casWrite("old")), /EIO/);
+  assert.equal(replace.calls("unlink"), 1);
+  assert.deepEqual([...replace.node(CONCEPTS)!.children.keys()], ["x.md"]);
+  assert.equal(replace.node(TARGET)?.bytes.toString(), "old");
+});
+
+test("AC-4: a first creation whose link hits EEXIST is refused as an alias when the listing lacks the exact spelling, with only its temp unlinked", async () => {
+  const port = new ScriptedPort({ aliasing: true });
+  port.mkdirp(CONCEPTS);
+  // The equated entry appears between M-REALIZE (absent) and M-APPLY: a fold-gap writer won.
+  port.after("writeTemp", 1, () => void port.file(path.join(CONCEPTS, "X.md"), "winner", 7));
+  await assert.rejects(
+    () => mutateExact(port, ROOT, REL, casWrite(null)),
+    (err: unknown) => err instanceof FilesystemIdentityAliasError && err.segment === "x.md",
+  );
+  assert.deepEqual(port.ops("link", "rename", "unlink").map(opOf), ["link", "unlink"]);
+  assert.ok(port.ops("unlink")[0]!.includes(".x.md."), "only the temp file is unlinked");
+  assert.deepEqual([...port.node(CONCEPTS)!.children.keys()], ["X.md"], "the winner is intact and no residue remains");
+  assert.equal(port.node(path.join(CONCEPTS, "X.md"))?.bytes.toString(), "winner");
+  assert.equal(opsOf(port).at(-1), "release");
+});
+
+test("AC-4: a first creation whose link hits EEXIST with the exact spelling listed fails closed as a concurrent replacement", async () => {
+  const port = new ScriptedPort();
+  port.mkdirp(CONCEPTS);
+  // A same-spelling entry appearing under our own key is impossible for core; a non-core actor did it.
+  port.after("writeTemp", 1, () => void port.file(TARGET, "foreign", 7));
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite(null)), ConcurrentReplacementError);
+  assert.deepEqual(port.ops("link", "rename", "unlink").map(opOf), ["link", "unlink"]);
+  assert.equal(port.node(TARGET)?.bytes.toString(), "foreign", "the existing document is intact");
+  assert.deepEqual([...port.node(CONCEPTS)!.children.keys()], ["x.md"]);
+});
+
+test("F1: a filesystem without hard links falls back to rename for first creation, learned once per root, with no probe file", async () => {
+  const port = new ScriptedPort();
+  port.mkdirp("/nolink/concepts");
+  port.override("link", async () => "unsupported");
+  assert.equal(await mutateExact(port, "/nolink", REL, casWrite(null)), "written");
+  assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "rename"]);
+  assert.equal(port.node("/nolink/concepts/x.md")?.bytes.toString(), "new");
+  assert.deepEqual([...port.node("/nolink/concepts")!.children.keys()], ["x.md"], "no probe or temp file remains");
+
+  port.trace.length = 0;
+  assert.equal(await mutateExact(port, "/nolink", "concepts/y.md", casWrite(null)), "written");
+  assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "rename"], "the root is remembered; no second link attempt");
+
+  // Another root is unaffected by the first root's answer.
+  port.mkdirp("/haslink/concepts");
+  port.override("link", async (args, base) => base());
+  port.trace.length = 0;
+  assert.equal(await mutateExact(port, "/haslink", REL, casWrite(null)), "written");
+  assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "unlink"]);
+});
+
+test("F2: a failed unlink of the temp name after a successful link does not fail the write", async () => {
+  const port = new ScriptedPort();
+  port.mkdirp(CONCEPTS);
+  port.override("unlink", async ([target]) => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY", path: target });
+  });
+  assert.equal(await mutateExact(port, ROOT, REL, casWrite(null)), "written");
+  assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "unlink"]);
+  assert.equal(port.node(TARGET)?.bytes.toString(), "new");
+  const names = [...port.node(CONCEPTS)!.children.keys()];
+  assert.deepEqual(names.filter((name) => !name.startsWith(".")), ["x.md"]);
+  assert.equal(names.length, 2, "the leftover temp link is the dot-prefixed crash-residue class");
+  assert.equal(opsOf(port).at(-1), "release");
+});
+
+test("AC-15c: two first creations under different keys for names the host equates: the loser's link fails EEXIST and it is refused with the winner intact", async () => {
+  const port = new ScriptedPort();
+  port.mkdirp(CONCEPTS);
+  // A fold gap: the keys differ (distinct rels), but the scripted host equates the two names at
+  // link time. The second writer's M-REALIZE sees nothing (non-aliasing probes), so it reaches
+  // link, which is scripted to report EEXIST exactly as the host would.
+  assert.notEqual(await identityKey(ROOT, "concepts/x.md"), await identityKey(ROOT, "concepts/y.md"));
+  assert.equal(await mutateExact(port, ROOT, "concepts/x.md", casWrite(null)), "written");
+  port.trace.length = 0;
+  port.override("link", async ([, to]) => (to === path.join(CONCEPTS, "y.md") ? "exists" : "linked"));
+  await assert.rejects(
+    () => mutateExact(port, ROOT, "concepts/y.md", casWrite(null)),
+    (err: unknown) => err instanceof FilesystemIdentityAliasError && err.segment === "y.md",
+  );
+  assert.deepEqual(port.ops("link", "rename", "unlink").map(opOf), ["link", "unlink"], "one link, no rename, its own temp unlinked");
+  assert.ok(port.ops("unlink")[0]!.includes(".y.md."));
+  assert.deepEqual([...port.node(CONCEPTS)!.children.keys()], ["x.md"]);
+  assert.equal(port.node(path.join(CONCEPTS, "x.md"))?.bytes.toString(), "new");
 });
 
 test("AC-14: EEXIST on a rel segment the walk found absent is refused when the listing spells it differently", async () => {
@@ -741,6 +837,26 @@ test("AC-5: full-case-folding pairs derive one identity key, and a plain lower-c
   }
   // Root segments fold the same way as rel segments.
   assert.equal(await identityKey("/x/Straße", "concepts/a.md"), await identityKey("/x/STRASSE", "concepts/a.md"));
+});
+
+test("AC-5 row 3: every C and F entry of the checked-in Unicode CaseFolding table folds to one key", async () => {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const table = await readFile(path.join(here, "fixtures", "CaseFolding-17.0.0.txt"), "utf8");
+  assert.match(table, /^# CaseFolding-17\.0\.0\.txt/m, "fixture is the pinned Unicode version");
+  const entries = { C: 0, F: 0 };
+  const failures: string[] = [];
+  for (const line of table.split("\n")) {
+    const match = /^([0-9A-F]+); ([CFST]); ([0-9A-F ]+);/.exec(line);
+    if (match === null) continue;
+    const [, code, status, mapping] = match as unknown as [string, string, "C" | "F" | "S" | "T", string];
+    if (status !== "C" && status !== "F") continue;
+    entries[status]++;
+    const source = String.fromCodePoint(Number.parseInt(code, 16));
+    const folded = String.fromCodePoint(...mapping.trim().split(" ").map((hex) => Number.parseInt(hex, 16)));
+    if (foldSegment(source) !== foldSegment(folded)) failures.push(`${code} ${status} ${mapping.trim()}`);
+  }
+  assert.deepEqual(entries, { C: 1481, F: 104 }, "entry counts pin the table's content");
+  assert.deepEqual(failures, []);
 });
 
 test("AC-5: fold digest over the checked-in spelling list is pinned", async () => {

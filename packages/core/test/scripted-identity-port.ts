@@ -204,6 +204,19 @@ export class ScriptedPort implements FilesystemIdentityPort {
     });
   }
 
+  link(from: string, to: string): Promise<"linked" | "exists" | "unsupported"> {
+    return this.#call("link", [from, to], async () => {
+      const source = this.#resolve(path.dirname(from), this.aliasing);
+      const node = source?.children.get(path.basename(from));
+      if (source === null || source === undefined || node === undefined) throw errno("ENOENT", "link", from);
+      const destination = this.#resolve(path.dirname(to), this.aliasing);
+      if (destination === null || destination.kind !== "directory") throw errno("ENOENT", "link", to);
+      if (this.#child(destination, path.basename(to), this.aliasing) !== undefined) return "exists";
+      destination.children.set(path.basename(to), node);
+      return "linked";
+    });
+  }
+
   rename(from: string, to: string): Promise<void> {
     return this.#call("rename", [from, to], async () => {
       const source = this.#resolve(path.dirname(from), this.aliasing);

@@ -494,7 +494,11 @@ export function registerStorageBackendQueryHeadsContract(options: BackendContrac
  * the alias is simply a distinct absent identity. A normalizing host (legacy HFS+) is out of
  * scope: it treats case pairs like an aliasing host, and its NFC/NFD behavior is pinned by the
  * native suite's AC-17 row instead. `dev`/`ino` are assumed stable per observation on local
- * APFS/ext4; network filesystems are unsupported.
+ * APFS/ext4; network filesystems are unsupported. First creation of a document is published with a
+ * hard link so the host's own equivalence refuses a second spelling the identity fold did not
+ * equate; on a local filesystem without hard links (exFAT, FAT32, some FUSE mounts) first creation
+ * falls back to rename, and two CONCURRENT first-creation writers of such a host-equated pair are
+ * not excluded there (sequential access is still refused). That residual is confined to those hosts.
  */
 export function registerStorageBackendIdentityContract(options: IdentityBackendContractOptions): void {
   const { name, create } = options;

@@ -13,8 +13,10 @@
  *   bound to a live inode. They hold no lock and write nothing, so an absent bundle root stays
  *   absent. Symbolic links at any segment are refused; the walk never follows them.
  * - Mutations hold one cross-process lock keyed by a pure fold of the root and `rel`, decide
- *   inside it, and create directories one segment at a time with a spelling check, so a
- *   first-creation race cannot succeed with the wrong spelling.
+ *   inside it, create directories one segment at a time with a spelling check, and publish a
+ *   first-created leaf with `link` so the host's own equivalence refuses a second spelling the
+ *   fold did not equate; a first-creation race cannot succeed with the wrong spelling and cannot
+ *   silently replace the winner.
  *
  * Exactness applies to `rel` segments only. The bundle root is the declared storage context:
  * a root (tail) segment that already exists as a directory under any spelling is accepted,
@@ -83,6 +85,12 @@ export interface FilesystemIdentityPort {
   stat(target: string): Promise<{ mtime: Date }>;
   mkdir(dir: string): Promise<"created" | "exists">;
   writeTemp(dir: string, name: string, bytes: Uint8Array): Promise<void>;
+  /**
+   * Hard-link `from` to `to` without replacing anything: `exists` when ANY entry the host equates
+   * with `to` is present; `unsupported` when the filesystem has no hard links (EPERM, ENOTSUP,
+   * EOPNOTSUPP, EXDEV); other failures throw.
+   */
+  link(from: string, to: string): Promise<"linked" | "exists" | "unsupported">;
   rename(from: string, to: string): Promise<void>;
   unlink(target: string): Promise<void>;
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
@@ -451,6 +459,16 @@ export async function probeExact(
 // ── mutation ──────────────────────────────────────────────────────────────────
 
 /**
+ * Roots (resolved) whose filesystem refused a hard link. Learned lazily on the first creation
+ * that hit the unsupported error class, never by a probe write, and remembered per root so later
+ * first creations there go straight to `rename`. On such filesystems (exFAT, FAT32, some FUSE
+ * mounts) the host's own EEXIST cannot arbitrate a fold gap, so the residual "two concurrent
+ * first-creation writers of a host-equated pair the fold misses are not excluded" applies there
+ * and only there.
+ */
+const linkUnsupportedRoots = new Set<string>();
+
+/**
  * Process-local queue per identity key, shared by every `FilesystemBackend` instance: the
  * engine constructs a fresh adapter per bundle operation, so an instance-level map would
  * serialize nothing. The entry is dropped once it drains and no newer waiter replaced it.
@@ -565,6 +583,41 @@ async function ensureExactDirectories(
 }
 
 /**
+ * First creation of a leaf that M-REALIZE found ABSENT: publish the complete temp file under the
+ * exact name with `link`, which is atomic and fails EEXIST for ANY entry the host equates with
+ * the name, whatever the identity fold thought. The identity lock prevents spurious refusals
+ * between writers of one identity; the host's EEXIST is what prevents a silent overwrite when
+ * two writers hold different keys for names the host equates. On EEXIST the parent listing
+ * decides: our exact spelling absent means an equated entry won (refused as an alias); present
+ * means a same-spelling entry appeared under our key, which core cannot do (fail closed).
+ * A successful link leaves the temp name as a second hard link to the same inode; removing it can
+ * fail without unmaking the write, so that failure is not reported (the leftover is the
+ * dot-prefixed crash-residue class listings already skip).
+ */
+async function createExactLeaf(
+  port: FilesystemIdentityPort,
+  tmp: string,
+  target: string,
+  rel: string,
+  leaf: string,
+  rootResolved: string,
+): Promise<void> {
+  const outcome = await port.link(tmp, target);
+  if (outcome === "linked") {
+    await port.unlink(tmp).catch(() => {});
+    return;
+  }
+  if (outcome === "unsupported") {
+    linkUnsupportedRoots.add(rootResolved);
+    await port.rename(tmp, target);
+    return;
+  }
+  const listing = (await port.entries(path.dirname(target))) ?? [];
+  if (hasExact(listing, leaf)) throw new ConcurrentReplacementError(rel, 1);
+  throw new FilesystemIdentityAliasError(rel, leaf);
+}
+
+/**
  * Mutate `(root, rel)` inside its identity lock: claim the key, realize the exact state, and let
  * `body` decide (compare-and-swap, delete-of-absent) before anything is written. An alias at
  * any segment, a conflict, or an early return leaves the bundle untouched; the bundle root and
@@ -598,11 +651,18 @@ export async function mutateExact<T>(
           // Unique per call, not per process: one process can issue two writes to the same
           // target within a millisecond, and the second's temp file must not clobber the first's.
           const tmpName = `.${leaf}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+          const tmp = path.join(dir, tmpName);
           await port.writeTemp(dir, tmpName, bytes);
           try {
-            await port.rename(path.join(dir, tmpName), target);
+            if (realized.state === "exact" || linkUnsupportedRoots.has(rootResolved)) {
+              // Replace: the target exists under our exact spelling, so any writer of an
+              // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
+              await port.rename(tmp, target);
+              return;
+            }
+            await createExactLeaf(port, tmp, target, rel, leaf, rootResolved);
           } catch (err) {
-            await port.unlink(path.join(dir, tmpName)).catch(() => {});
+            await port.unlink(tmp).catch(() => {});
             throw err;
           }
         },
@@ -677,6 +737,17 @@ export const nodeFilesystemIdentityPort: FilesystemIdentityPort = Object.freeze(
   },
   async writeTemp(dir: string, name: string, bytes: Uint8Array): Promise<void> {
     await fs.writeFile(path.join(dir, name), bytes);
+  },
+  async link(from: string, to: string): Promise<"linked" | "exists" | "unsupported"> {
+    try {
+      await fs.link(from, to);
+      return "linked";
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") return "exists";
+      if (code === "EPERM" || code === "ENOTSUP" || code === "EOPNOTSUPP" || code === "EXDEV") return "unsupported";
+      throw err;
+    }
   },
   async rename(from: string, to: string): Promise<void> {
     await fs.rename(from, to);
