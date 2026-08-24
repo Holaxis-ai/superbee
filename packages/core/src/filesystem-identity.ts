@@ -11,7 +11,10 @@
  *   before and after use, confirm any would-be alias by probing the requested spelling against
  *   the recorded inode, and hold the read handle open through the post-walk so the bytes stay
  *   bound to a live inode. They hold no lock and write nothing, so an absent bundle root stays
- *   absent. Symbolic links at any segment are refused; the walk never follows them.
+ *   absent. A symbolic link observed by any probe is refused; a link swapped in and out
+ *   entirely between two probes of one observation can be traversed by the operating system
+ *   during a listing or open, but its bytes can never be returned as EXACT, because the leaf
+ *   witness at the post-walk must match the entry the requested path reaches.
  * - Mutations hold one cross-process lock keyed by a pure fold of the root and `rel`, decide
  *   inside it, create directories one segment at a time with a spelling check, and publish a
  *   first-created leaf with `link` so the host's own equivalence refuses a second spelling the
@@ -207,20 +210,24 @@ function sameWitness(a: EntryWitness, b: EntryWitness): boolean {
 export type ConfirmVerdict = "continue" | "absent" | "aliased" | "restart";
 
 /**
- * The confirmed-ALIASED rule for one `rel` segment whose parent listing was just taken. A listing
- * that lacks the exact spelling is never a verdict on its own: the requested spelling is probed,
- * and ALIASED requires that probe to reach the inode recorded for this segment earlier in the
- * same observation. A different inode is ambiguous (alias replaced, or exact deleted and recreated
- * between the two snapshots) and restarts the observation instead.
+ * The confirmed-witness rule for one `rel` segment: a fresh probe of the requested spelling is
+ * compared with the inode recorded for that segment earlier in the same observation, whether or
+ * not the exact spelling is present in the parent listing. A listing on its own is never a
+ * verdict: an entry can be REPLACED under its own spelling (a non-core actor swapping a whole
+ * directory) without the listing changing at all, and that must restart the observation rather
+ * than let records from two different states pass as one EXACT read (I6). ALIASED requires the
+ * probe to reach the recorded inode while the exact spelling is absent; a different inode is
+ * ambiguous (replaced under either spelling, or deleted and recreated) and restarts; a
+ * same-spelling replacement is NOT an alias.
  */
 export function confirmAlias(
   listingHasExact: boolean,
   probe: ProbeResult | null,
   recorded: EntryWitness,
 ): ConfirmVerdict {
-  if (listingHasExact) return "continue";
   if (probe === null) return "absent";
-  return sameWitness(probe, recorded) ? "aliased" : "restart";
+  if (!sameWitness(probe, recorded)) return "restart";
+  return listingHasExact ? "continue" : "aliased";
 }
 
 export type LeafVerdict = "exact" | "replaced" | "aliased" | "absent";
@@ -344,9 +351,17 @@ async function recordWalk(
 }
 
 /**
- * One listing walk under the confirmed-ALIASED rule. O-VERIFY confirms every segment against its
- * recorded inode. O-POSTVERIFY (`handle` given) confirms directory segments the same way and
- * applies the six-cell leaf table against the handle's inode, probing the leaf unconditionally.
+ * One listing walk under the confirmed-witness rule. Every DIRECTORY segment is probed and
+ * compared with its recorded inode even when its exact spelling is listed, so a directory
+ * replaced under the same spelling between walks restarts the observation instead of letting the
+ * replacement's contents pass as EXACT (I6: under non-core directory renames the protocol
+ * restarts or refuses; A11 narrows only the case where a rename away and back restores the SAME
+ * inode between two probes of one walk, which no witness can distinguish from no change). The
+ * LEAF of a handle-bearing pre-walk is deliberately exempt when its spelling is listed: a
+ * same-spelling document replacement is a legitimate concurrent update, and the open handle plus
+ * the post-walk's six-cell leaf table bind the returned bytes to one entry. O-POSTVERIFY
+ * (`handle` given) applies that leaf table against the handle's inode, probing the leaf
+ * unconditionally.
  */
 async function confirmedWalk(
   port: FilesystemIdentityPort,
@@ -368,8 +383,8 @@ async function confirmedWalk(
       if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
       return verdict === "replaced" ? "restart" : verdict;
     }
-    if (!listed) {
-      const verdict = confirmAlias(false, await probeSegment(port, candidate, rel, segment), recorded[index]!);
+    if (index < segments.length - 1 || !listed) {
+      const verdict = confirmAlias(listed, await probeSegment(port, candidate, rel, segment), recorded[index]!);
       if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, segment);
       if (verdict !== "continue") return verdict;
     }

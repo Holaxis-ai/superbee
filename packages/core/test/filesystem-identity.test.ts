@@ -142,13 +142,17 @@ test("AC-2: classifyLeaf covers all six (listed, probe) cells", () => {
   assert.equal(classifyLeaf({ listed: true, probe: { kind: "file", dev: 2, ino: 9 }, handle }), "replaced", "dev is part of the witness");
 });
 
-test("AC-2: confirmAlias rows for a segment whose listing lacks the exact spelling", () => {
+test("AC-2: confirmAlias covers all six (listed, probe) cells; a listing alone is never a verdict", () => {
   const recorded = { dev: 1, ino: 7 };
-  assert.equal(confirmAlias(true, null, recorded), "continue");
-  assert.equal(confirmAlias(true, { kind: "file", dev: 1, ino: 99 }, recorded), "continue");
+  const same = { kind: "directory", dev: 1, ino: 7 } as const;
+  const other = { kind: "directory", dev: 1, ino: 9 } as const;
+  assert.equal(confirmAlias(true, same, recorded), "continue");
+  assert.equal(confirmAlias(true, other, recorded), "restart", "a same-spelling replacement restarts; it is not an alias");
+  assert.equal(confirmAlias(true, null, recorded), "absent");
+  assert.equal(confirmAlias(false, same, recorded), "aliased");
+  assert.equal(confirmAlias(false, other, recorded), "restart");
   assert.equal(confirmAlias(false, null, recorded), "absent");
-  assert.equal(confirmAlias(false, { kind: "file", dev: 1, ino: 7 }, recorded), "aliased");
-  assert.equal(confirmAlias(false, { kind: "file", dev: 1, ino: 9 }, recorded), "restart");
+  assert.equal(confirmAlias(true, { kind: "directory", dev: 2, ino: 7 }, recorded), "restart", "dev is part of the witness");
 });
 
 test("AC-2: classifyMkdir rows, rel segments exact directories only and tail segments any spelling", () => {
@@ -180,6 +184,7 @@ test("AC-3(b): O-PROBE via an alias records ino 7; listing lacks the exact leaf;
     `probe(${CONCEPTS})`,
     `probe(${TARGET})`,
     `entries(${ROOT})`,
+    `probe(${CONCEPTS})`,
     `entries(${CONCEPTS})`,
     `probe(${TARGET})`,
   ]);
@@ -203,7 +208,7 @@ test("AC-3(m): O-PROBE ok recording 7; listing lacks the exact leaf; confirming 
   port.after("probe", 2, () => port.remove(TARGET));
   assert.deepEqual(await observe(port), { state: "absent" });
   assert.equal(port.calls("open"), 0);
-  assert.equal(port.calls("probe"), 3);
+  assert.equal(port.calls("probe"), 4, "O-PROBE twice, the O-VERIFY directory witness, and the leaf confirmation");
 });
 
 test("AC-3(n): confirming probe reaches a different inode: exactly one restart that begins at O-PROBE, not with a listing", async () => {
@@ -256,11 +261,13 @@ test("AC-3(c): exact throughout with a stable inode is EXACT, in the documented 
     `probe(${CONCEPTS})`,
     `probe(${TARGET})`,
     `entries(${ROOT})`,
+    `probe(${CONCEPTS})`,
     `entries(${CONCEPTS})`,
     `open(${TARGET})`,
     "opened(#1)",
     "readAll(#1)",
     `entries(${ROOT})`,
+    `probe(${CONCEPTS})`,
     `entries(${CONCEPTS})`,
     `probe(${TARGET})`,
     "close(#1)",
@@ -341,7 +348,7 @@ test("AC-3(j): post-walk lacks the exact leaf and the probe reaches a different 
   j3.file(TARGET, "old", 9);
   j3.after("readAll", 1, () => j3.remove(TARGET));
   j3.after("entries", 4, () => void j3.file(TARGET, "recreated", 12));
-  j3.after("probe", 3, () => j3.remove(TARGET));
+  j3.after("probe", 5, () => j3.remove(TARGET));
   assert.deepEqual(await observe(j3), { state: "absent" });
   assert.equal(probeWalks(j3), 2);
   assertHandleDiscipline(j3);
@@ -352,7 +359,7 @@ test("AC-3(j): post-walk lacks the exact leaf and the probe reaches a different 
   j4.file(TARGET, "old", 9);
   j4.after("readAll", 1, () => j4.remove(TARGET));
   j4.after("entries", 4, () => void j4.file(TARGET, "recreated", 12));
-  j4.after("probe", 5, () => j4.remove(TARGET));
+  j4.after("probe", 7, () => j4.remove(TARGET));
   assert.deepEqual(await observe(j4), { state: "absent" });
   assert.equal(probeWalks(j4), 2);
   assert.equal(j4.calls("open"), 1);
@@ -383,9 +390,10 @@ test("AC-3(i'): restarts from O-VERIFY confirmation count against the same bound
   const port = new ScriptedPort({ aliasing: true });
   port.file(TARGET, "body", 7);
   let ino = 7;
-  // After every O-PROBE leaf probe (probes 2, 5, 8, 11) swap the entry for a fresh alias inode,
-  // so each O-VERIFY confirmation reaches a different inode and restarts.
-  for (const nth of [2, 5, 8, 11]) {
+  // After every O-PROBE leaf probe (probes 2, 6, 10, 14: each attempt also probes the directory
+  // witness at O-VERIFY) swap the entry for a fresh alias inode, so each O-VERIFY confirmation
+  // reaches a different inode and restarts.
+  for (const nth of [2, 6, 10, 14]) {
     port.after("probe", nth, () => {
       port.remove(path.join(CONCEPTS, ino === 7 ? "x.md" : "X.md"));
       port.file(path.join(CONCEPTS, "X.md"), "alias", ++ino);
@@ -394,6 +402,86 @@ test("AC-3(i'): restarts from O-VERIFY confirmation count against the same bound
   await assert.rejects(() => observe(port), ConcurrentReplacementError);
   assert.equal(port.calls("open"), 0);
   assert.equal(probeWalks(port), 4);
+});
+
+// ── I6: a directory replaced under its own spelling between walks ─────────────
+// The defect these rows pin: a walk that only re-probed a segment when its spelling was MISSING
+// let a same-spelling directory swap pass unnoticed, and one observation returned bytes whose
+// verification straddled two different directories. The confirmed-witness rule compares every
+// directory segment's fresh probe with its recorded inode, so the swap forces a counted restart:
+// bytes are only ever returned by a walk that ran entirely within one state.
+
+test("I6-a: a parent directory swapped for a same-spelling replacement after the first verification listing forces a restart", async () => {
+  const port = new ScriptedPort();
+  port.file(TARGET, "original", 9);
+  // After O-VERIFY's root listing: replace `concepts` wholesale (new directory inode, same name)
+  // with a different document body inside — the reviewer's interleaving.
+  port.after("entries", 1, () => {
+    port.remove(CONCEPTS);
+    port.file(TARGET, "swapped-in", 12);
+  });
+  assert.deepEqual(await observe(port), { state: "exact", value: "swapped-in" });
+  assert.equal(probeWalks(port), 2, "the swap is detected by the directory witness and the observation restarts at O-PROBE");
+  assert.equal(port.calls("open"), 1, "no bytes were read through the straddling walk");
+  assertHandleDiscipline(port);
+});
+
+test("I6-b: a directory swapped before every attempt exhausts the bound and refuses; the replacement's bytes are never returned", async () => {
+  const port = new ScriptedPort();
+  port.file(TARGET, "original", 9);
+  let generation = 0;
+  // Each attempt's O-VERIFY consumes exactly one listing before the directory witness restarts it,
+  // so the swap fires after every root listing.
+  for (const nth of [1, 2, 3, 4]) {
+    port.after("entries", nth, () => {
+      port.remove(CONCEPTS);
+      port.file(TARGET, `swap-${++generation}`, 100 + generation);
+    });
+  }
+  await assert.rejects(() => observe(port), ConcurrentReplacementError);
+  assert.equal(probeWalks(port), 4, "three counted restarts from the directory witness");
+  assert.equal(port.calls("open"), 0);
+});
+
+test("I6-c: a deeper directory segment swapped under its own spelling in a two-level rel path forces a restart", async () => {
+  const rel = "a/b/x.md";
+  const target = path.join(ROOT, rel);
+  const port = new ScriptedPort();
+  port.file(target, "original", 9);
+  // O-VERIFY listings for a 3-segment rel are entries(root), entries(a), entries(a/b); swap `b`
+  // after entries(a) (#2).
+  port.after("entries", 2, () => {
+    port.remove(path.join(ROOT, "a/b"));
+    port.file(target, "swapped-in", 12);
+  });
+  assert.deepEqual(await observeExact(port, ROOT, rel, readText(port)), { state: "exact", value: "swapped-in" });
+  assert.equal(probeWalks(port, rel), 2);
+  assertHandleDiscipline(port);
+});
+
+test("I6-d: a same-spelling directory swap between use and the post-walk restarts even when the leaf inode survives", async () => {
+  const port = new ScriptedPort();
+  const original = port.file(TARGET, "body", 9);
+  // After the read: swap `concepts` for a new directory carrying the SAME leaf node (a hard link),
+  // so the leaf table alone would say EXACT; only the directory witness can notice.
+  port.after("readAll", 1, () => {
+    port.remove(CONCEPTS);
+    port.mkdirp(CONCEPTS).children.set("x.md", original);
+  });
+  assert.deepEqual(await observe(port), { state: "exact", value: "body" });
+  assert.equal(probeWalks(port), 2, "the post-walk directory witness forces the restart");
+  assertHandleDiscipline(port);
+});
+
+test("I6-e: a swap whose replacement lacks the leaf resolves to ABSENT after the restart", async () => {
+  const port = new ScriptedPort();
+  port.file(TARGET, "original", 9);
+  port.after("entries", 1, () => {
+    port.remove(CONCEPTS);
+    port.mkdirp(CONCEPTS);
+  });
+  assert.deepEqual(await observe(port), { state: "absent" });
+  assert.equal(port.calls("open"), 0);
 });
 
 test("V3A-4: a symbolic link at any rel segment is refused as caller input, before any open", async () => {
@@ -434,8 +522,10 @@ test("probeExact: presence is bound to the recorded inode and restarts on replac
     `probe(${CONCEPTS})`,
     `probe(${TARGET})`,
     `entries(${ROOT})`,
+    `probe(${CONCEPTS})`,
     `entries(${CONCEPTS})`,
     `entries(${ROOT})`,
+    `probe(${CONCEPTS})`,
     `entries(${CONCEPTS})`,
     `probe(${TARGET})`,
   ]);
