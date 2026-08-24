@@ -255,6 +255,17 @@ export function registerStorageBackendBaseContract(options: BackendContractOptio
 export function registerStorageBackendBlobContract(options: BackendContractOptions): void {
   const { name, create } = options;
 
+  test(`${name} blob contract: unsafe keys fail at the storage boundary`, async () => {
+    await withFixture(create, async (backend) => {
+      for (const key of ["../escape.bin", "/absolute.bin", "artifacts/report.MD", ".hidden/blob.bin"]) {
+        await assert.rejects(() => backend.readBlob(key), InvalidInputError);
+        await assert.rejects(() => backend.writeBlob(key, enc("x")), InvalidInputError);
+        await assert.rejects(() => backend.existsBlob(key), InvalidInputError);
+        await assert.rejects(() => backend.deleteBlob(key), InvalidInputError);
+      }
+    });
+  });
+
   test(`${name} blob contract: bytes, versions, absence, and sorted listing round-trip`, async () => {
     await withFixture(create, async (backend) => {
       assert.equal(await backend.readBlob("artifacts/missing.bin"), null);
