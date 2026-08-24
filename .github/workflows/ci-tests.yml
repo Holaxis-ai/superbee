@@ -80,8 +80,8 @@ jobs:
         working-directory: packages/ui
       - run: npm run ci:browser
 
-  release-policy:
-    name: deterministic release policy
+  scripts:
+    name: repository scripts and CI topology
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -93,25 +93,7 @@ jobs:
           node-version: 26
           cache: npm
       - run: npm ci
-      - run: npm run ci:release-policy
-
-  release-exhaustive:
-    name: exhaustive release targets
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-          cache: npm
-      - run: npm ci
-      - name: Prove all release targets from this exact workflow SHA
-        env:
-          EXPECTED_SOURCE_SHA: ${{ github.sha }}
-        run: npm run check:release-exhaustive -- --expected-sha "$EXPECTED_SOURCE_SHA"
+      - run: npm run ci:scripts
 
   smoke-node-20:
     name: built-CLI smoke on the engines floor (node 20)
@@ -146,7 +128,7 @@ jobs:
 
   required:
     name: CI required lanes
-    needs: [runtime, smoke-node-20, distribution, browser, release-policy, release-exhaustive]
+    needs: [runtime, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -164,7 +146,7 @@ jobs:
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, smoke-node-20, distribution, browser, release-policy, release-exhaustive]
+    needs: [runtime, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -182,7 +164,7 @@ jobs:
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, smoke-node-20, distribution, browser, release-policy, release-exhaustive]
+    needs: [runtime, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

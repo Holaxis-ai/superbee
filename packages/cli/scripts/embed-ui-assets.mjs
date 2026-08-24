@@ -4,7 +4,7 @@
 // rebuilding `packages/ui` here (rather than merely checking a staleness heuristic) is what
 // makes "the CLI build FAILS FAST when packages/ui/dist is missing or stale" trivially true: it
 // can never be stale, because this step just produced it, in THIS SAME invocation, for the
-// root build, `npm run build -w @holaxis/aslite`, and `prepublishOnly` alike (all three run
+// root build, `npm run build -w superbee`, and the release workflow alike (all three run
 // `packages/cli/build.mjs`, which calls this first).
 //
 // Determinism: files are walked in a stable sorted order, and each is gzipped with the

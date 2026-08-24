@@ -5,7 +5,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { evaluateRequiredResults, REQUIRED_JOBS } from "./ci-aggregate.mjs";
-import { parseExpectedSha } from "./ci-release-exhaustive.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -194,25 +193,17 @@ test("contributor projections fail red on lane, edition, pointer, and assurance 
   );
 });
 
-test("lane ownership is pinned to executing scripts and the exhaustive wrapper", () => {
+test("lane ownership is pinned to executing scripts", () => {
   const scriptMutations = [
     ["ci:distribution", "npm run verify:npm-package", /skill-drift-proof/],
-    ["ci:release-policy", "npm run build", /script-and-release-tests/],
+    ["ci:scripts", "npm run build", /script-tests/],
     ["ci:browser", "npm run build && npm run test:browser -w @superbee\/mcp-app", /ui-end-to-end/],
-    ["check:release-exhaustive", "node -e \"process.exit(0)\"", /does not invoke wrapper/],
   ];
   for (const [script, replacement, error] of scriptMutations) {
     const changedPackage = structuredClone(pkg);
     changedPackage.scripts[script] = replacement;
     assert.throws(() => validateLaneManifest(manifest, changedPackage), error, script);
   }
-
-  const changedWrapper = {
-    ...wrapperSources,
-    [manifest.lanes["release-exhaustive"].wrapper]: wrapperSources[manifest.lanes["release-exhaustive"].wrapper]
-      .replaceAll("test:packet-candidates", "test:one-packet-candidate"),
-  };
-  assert.throws(() => validateLaneManifest(manifest, pkg, changedWrapper), /wrapper does not reach all-release-targets/);
 
   const incomplete = structuredClone(manifest);
   incomplete.required_jobs.pop();
@@ -249,12 +240,4 @@ test("the fail-closed result contract accepts success only", () => {
   renamed[`${REQUIRED_JOBS[0]}-renamed`] = renamed[REQUIRED_JOBS[0]];
   delete renamed[REQUIRED_JOBS[0]];
   assert.equal(evaluateRequiredResults(renamed).ok, false, "a renamed dependency must fail closed");
-});
-
-test("the exact-SHA wrapper accepts only an explicit 40-hex identity", () => {
-  assert.equal(parseExpectedSha([]), null);
-  assert.equal(parseExpectedSha(["--expected-sha", "a".repeat(40)]), "a".repeat(40));
-  for (const argv of [["--expected-sha"], ["--expected-sha", "HEAD"], ["--other", "a".repeat(40)]]) {
-    assert.throws(() => parseExpectedSha(argv), /usage/);
-  }
 });

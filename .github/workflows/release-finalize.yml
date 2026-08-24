@@ -1,610 +1,106 @@
-name: Finalize release (separately dispatched)
+name: Release finalize (GitHub release after npm approval)
 
-# P5A finalizer — separately dispatched after interactive npm stage inspection and approval. Every
-# job independently downloads the original candidate and stage-receipt artifacts by immutable ID,
-# queries their Actions API metadata, and compares the candidate bytes, source SHA, stage ID, draft
-# ID, and exact GitHub asset IDs/digests before doing anything live. The ordering-verified job (and
-# a pre-publish re-check) additionally verifies SIGNED operator inspection/approval receipts
-# (draft-release assets, ssh-signed against .github/release-allowed-signers) by replaying the
-# release-state machine: stable candidates require both receipts; a prerelease missing receipts
-# publishes with a permanent public receipt-status stamp; invalid evidence is always fatal. The
-# prepare job then deletes only planned asset IDs, replaces status/body evidence, re-queries the
-# draft, proves the exact retained id/name/digest inventory, and persists that authority before
-# PATCH. A protected publish job performs only the provisional numeric-ID PATCH; a separate
-# read-only proof job converges on and proves published state without repeating draft validation.
-#
-# P5S must protect the `release` environment and set SUPERBEE_RELEASE_LIVE_ENABLED=true there. GitHub
-# auto-creates missing environments without protection, so absence of that explicit variable always
-# fails closed even if someone dispatches with mode=live.
-#
-# CREDENTIAL MODEL — this workflow holds NO npm write credential and performs no npm registry write.
-# Every npm write in the release is a 2FA operator action emitted by the stage receipt: `npm stage
-# approve` puts the version on its npm_tag, and `npm dist-tag add` moves it to its npm_promote_tag.
-# The workflow's job is to PROVE the operator's half landed, not to perform it. That is not a
-# convenience: npm's trusted publishing exchanges the GitHub OIDC token inside `npm publish` only
-# (npm 11.15.0, lib/utils/oidc.js has exactly one call site, lib/commands/publish.js), so no amount
-# of id-token/registry-url wiring authenticates `npm dist-tag add`, and the alternative is a
-# long-lived npm token this design deliberately does not hold. The proof runs in target-authorized,
-# the FIRST job, so a registry that has not reached the declared state costs nothing to discover.
-#
-# OPERATOR SEQUENCE — the npm steps are yours, and they come BEFORE this workflow:
-#   1. Run the staged release. It builds the candidate once, prepares an unpublished GitHub draft,
-#      and stages the retained tarball to npm. The stage receipt in that run's summary carries every
-#      command below with the exact ids already filled in; follow it rather than retyping them.
-#   2. Inspect the staged tarball and check its SHA-256 against the receipt.
-#   3. `npm stage approve <stage-id>` (+2FA) — this publishes the version on its npm_tag.
-#   4. If the target declares an npm_promote_tag: `npm dist-tag add <pkg>@<version> <tag>` (+2FA).
-#      This is the act that moves `latest`, so it is deliberately a human one.
-#   5. Dispatch THIS workflow. Its first job proves steps 3 and 4 landed and stops before touching
-#      anything if they did not, naming the exact command still owed.
-# Dispatching before steps 3-4 is safe: it stops in the first job with nothing mutated.
+# Dispatched by a maintainer after `npm stage approve`. Holds no npm credential and performs no
+# npm write: it proves the registry already serves the version on its dist-tag, downloads the
+# exact published bytes back from npm, checks them against the build attestation from release.yml,
+# and creates the GitHub release published in one step (no draft). Re-running is safe: an existing
+# published release is left alone.
 on:
   workflow_dispatch:
     inputs:
-      run_id:
-        description: "Original staged workflow run id"
-        required: true
-      artifact_id:
-        description: "Candidate artifact id from the staged run"
-        required: true
-      stage_receipt_artifact_id:
-        description: "Stage-receipt artifact id from the staged run summary"
-        required: true
-      stage_receipt_artifact_digest:
-        description: "Stage-receipt artifact sha256 digest from the staged run summary"
-        required: true
-      stage_id:
-        description: "npm stage id from the staged run"
-        required: true
-      draft_release_id:
-        description: "GitHub draft release id captured before staging"
-        required: true
       version:
-        description: "Exact version, e.g. 0.1.0-pre.4"
+        description: "Exact version already approved on npm, e.g. 0.1.3 or 0.1.3-pre.1"
         required: true
-      target:
-        description: "Release target from release/targets.json"
-        type: choice
-        options: ["bridge", "successor-stable", "successor-preview", "rehearsal-reject", "rehearsal-approve"]
-        default: "successor-stable"
-      mode:
-        description: "dry-run (default) verifies/prints; live REQUIRES the npm stage approve (and the dist-tag promotion, if the target declares one) to already be done, then publishes the draft"
-        type: choice
-        options: ["dry-run", "live"]
-        default: "dry-run"
 
 permissions: {}
 
 concurrency:
-  group: release-finalize-${{ inputs.target }}-${{ inputs.version }}
+  group: release
   cancel-in-progress: false
 
-env:
-  MODE: ${{ inputs.mode }}
-  ARTIFACT_DIR: release-candidate
-  RECEIPT_DIR: release-stage-receipt
-  FINALIZATION_PROOF_DIR: release-finalization-proof
-
 jobs:
-  # Every cheap precondition lives HERE, in the first job, which holds contents:read and runs no
-  # mutating command: resolving the manifest's publication facts, refusing identity-only targets,
-  # and proving the registry already holds the declared dist-tag state. Downstream jobs consume the
-  # resolved facts as job outputs, so nothing re-derives policy after a mutation has landed.
-  target-authorized:
-    name: target-authorized — resolve policy and prove the registry BEFORE any mutation
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    outputs:
-      target: ${{ steps.facts.outputs.target }}
-      package: ${{ steps.facts.outputs.package }}
-      version: ${{ steps.facts.outputs.version }}
-      tag: ${{ steps.facts.outputs.tag }}
-      policy_tag: ${{ steps.facts.outputs.policy_tag }}
-      npm_promote_tag: ${{ steps.facts.outputs.npm_promote_tag }}
-      github_latest: ${{ steps.facts.outputs.github_latest }}
-      workflow_contract: ${{ steps.facts.outputs.workflow_contract }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Resolve final publication policy facts
-        id: facts
-        env:
-          TARGET: ${{ inputs.target }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" --github-output "$GITHUB_OUTPUT"
-
-      - name: Refuse identity-only rehearsal targets
-        env:
-          WORKFLOW_CONTRACT: ${{ steps.facts.outputs.workflow_contract }}
-        run: |
-          set -euo pipefail
-          test "$WORKFLOW_CONTRACT" = "full" \
-            || { echo "::error::identity-only rehearsal targets have no finalization path"; exit 1; }
-
-      - name: Prove the registry already holds the declared publication policy
-        env:
-          TARGET: ${{ inputs.target }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -uo pipefail
-          # The npm side of the release is the operator's, with 2FA (see the credential model at the
-          # top of this file). This proves it landed while nothing has been mutated yet: a version
-          # missing its declared dist-tag, or sitting on one the manifest never gives it, stops the
-          # finalizer here rather than between two irreversible steps. The script prints the exact
-          # operator command for whichever half is missing.
-          #
-          # Both failures are fatal — an unevaluated precondition has not been met — but they are
-          # DIFFERENT failures and the operator is told which, so a registry outage is never read as
-          # "the release is off policy". The script's own bounded retry has already absorbed registry
-          # read-after-write lag before either verdict is reached.
-          set +e
-          node scripts/release-publication-policy.mjs verify \
-            --target "$TARGET" --version "$VERSION" --mode "$MODE"
-          code=$?
-          set -e
-          if [ "$code" -eq 0 ]; then exit 0; fi
-          if [ "$code" -eq 20 ]; then
-            echo "::error title=precondition not evaluated::npm registry unreachable - publication policy could NOT be checked. NOTHING has been mutated; re-dispatch when the registry is reachable."
-          else
-            echo "::error title=publication policy not met::the registry does not hold the state release/targets.json declares for this target. NOTHING has been mutated; run the operator command printed above (+2FA), then re-dispatch."
-          fi
-          exit "$code"
-
-  ordering-verified:
-    name: approved — signed operator receipt ordering gate
-    needs: target-authorized
+  finalize:
+    name: verify registry and create the GitHub release
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: release
     permissions:
-      actions: read
-      # contents:write is held ONLY because GitHub gates DRAFT-release VISIBILITY behind write —
-      # a read token 403s on GET releases/<id> for an unpublished draft (live run 31507532220).
-      # Every step in this job remains a pure read; the finalize job is still the only mutator.
       contents: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Download candidate by exact artifact id from the original run
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ inputs.artifact_id }}
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.ARTIFACT_DIR }}
-          merge-multiple: true
-
-      - name: Download stage receipt by exact artifact id from the original run
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ inputs.stage_receipt_artifact_id }}
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.RECEIPT_DIR }}
-          merge-multiple: true
-
-      - name: Query independent artifact and draft metadata
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CANDIDATE_ARTIFACT_ID: ${{ inputs.artifact_id }}
-          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-        run: |
-          set -euo pipefail
-          case "$CANDIDATE_ARTIFACT_ID:$RECEIPT_ARTIFACT_ID:$DRAFT_RELEASE_ID" in
-            *[!0-9:]*) echo "::error::artifact and release ids must be decimal integers"; exit 1 ;;
-          esac
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CANDIDATE_ARTIFACT_ID" > candidate-artifact.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RECEIPT_ARTIFACT_ID" > receipt-artifact.json
-          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft-release.json
-
-      - name: Verify the complete immutable receipt chain
-        env:
-          RUN_ID: ${{ inputs.run_id }}
-          ARTIFACT_ID: ${{ inputs.artifact_id }}
-          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
-          RECEIPT_ARTIFACT_DIGEST: ${{ inputs.stage_receipt_artifact_digest }}
-          STAGE_ID: ${{ inputs.stage_id }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-          VERSION: ${{ inputs.version }}
-          TARGET: ${{ inputs.target }}
-        run: |
-          set -euo pipefail
-          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" >/dev/null
-          node scripts/release-verify-chain.mjs verify-finalizer \
-            --candidate "$ARTIFACT_DIR/candidate.json" --receipt "$RECEIPT_DIR/stage-receipt.json" \
-            --candidate-artifact candidate-artifact.json --receipt-artifact receipt-artifact.json \
-            --release draft-release.json --run-id "$RUN_ID" --artifact-id "$ARTIFACT_ID" \
-            --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
-            --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
-            --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --draft-tag-phase pre-patch --out verified-chain.json
-
-      - name: Download this candidate's signed operator receipts
-        env:
-          GH_TOKEN: ${{ github.token }}
-          STAGE_ID: ${{ inputs.stage_id }}
-        run: |
-          set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at > run-created-at.txt
-          mkdir -p operator-receipts
-          node scripts/release-verify-ordering.mjs assets --release draft-release.json --stage-id "$STAGE_ID" > receipt-assets.txt
-          while read -r ASSET_ID ASSET_NAME; do
-            case "$ASSET_ID" in *[!0-9]*) echo "::error::receipt asset id must be numeric"; exit 1 ;; esac
-            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" > "operator-receipts/$ASSET_NAME"
-          done < receipt-assets.txt
-
-      - name: Verify signed receipt ordering through the release-state machine
-        run: |
-          set -euo pipefail
-          node scripts/release-verify-ordering.mjs verify \
-            --mode "$MODE" --chain verified-chain.json --receipt "$RECEIPT_DIR/stage-receipt.json" \
-            --release draft-release.json --receipts-dir operator-receipts \
-            --run-created-at "$(cat run-created-at.txt)" \
-            --allowed-signers .github/release-allowed-signers --out ordering-result.json
-
-  registry-verify:
-    name: registry_verified — integrity/signature/provenance/install proof
-    needs: ordering-verified
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: release
-    permissions:
-      actions: read
-      # contents:write is held ONLY because GitHub gates DRAFT-release VISIBILITY behind write —
-      # a read token 403s on GET releases/<id> for an unpublished draft (live run 31507532220).
-      # Every step in this job remains a pure read; the finalize job is still the only mutator.
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download candidate by exact artifact id from the original run
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ inputs.artifact_id }}
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.ARTIFACT_DIR }}
-          merge-multiple: true
-
-      - name: Download stage receipt by exact artifact id from the original run
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ inputs.stage_receipt_artifact_id }}
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.RECEIPT_DIR }}
-          merge-multiple: true
-
-      - name: Query independent artifact and draft metadata
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CANDIDATE_ARTIFACT_ID: ${{ inputs.artifact_id }}
-          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-        run: |
-          set -euo pipefail
-          case "$CANDIDATE_ARTIFACT_ID:$RECEIPT_ARTIFACT_ID:$DRAFT_RELEASE_ID" in
-            *[!0-9:]*) echo "::error::artifact and release ids must be decimal integers"; exit 1 ;;
-          esac
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CANDIDATE_ARTIFACT_ID" > candidate-artifact.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RECEIPT_ARTIFACT_ID" > receipt-artifact.json
-          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft-release.json
-
-      - name: Verify the complete immutable receipt chain
-        env:
-          RUN_ID: ${{ inputs.run_id }}
-          ARTIFACT_ID: ${{ inputs.artifact_id }}
-          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
-          RECEIPT_ARTIFACT_DIGEST: ${{ inputs.stage_receipt_artifact_digest }}
-          STAGE_ID: ${{ inputs.stage_id }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-          VERSION: ${{ inputs.version }}
-          TARGET: ${{ inputs.target }}
-        run: |
-          set -euo pipefail
-          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" >/dev/null
-          node scripts/release-verify-chain.mjs verify-finalizer \
-            --candidate "$ARTIFACT_DIR/candidate.json" --receipt "$RECEIPT_DIR/stage-receipt.json" \
-            --candidate-artifact candidate-artifact.json --receipt-artifact receipt-artifact.json \
-            --release draft-release.json --run-id "$RUN_ID" --artifact-id "$ARTIFACT_ID" \
-            --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
-            --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
-            --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --draft-tag-phase pre-patch --out verified-chain.json
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.14.0
-          registry-url: "https://registry.npmjs.org"
-
-      - name: Pin npm used for signature and provenance verification
+      - name: Prove npm serves this version on its dist-tag
+        id: registry
+        env:
+          V: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund
-          test "$(npm --version)" = "11.15.0"
-
-      - name: Verify registry bytes, signatures, provenance, install, and build identity
+          case "$V" in v*) echo "::error::pass the bare version, not the tag"; exit 1 ;; esac
+          case "$V" in *-*) T=next ;; *) T=latest ;; esac
+          # Registry reads lag writes by seconds (commit d6e4f6f); retry briefly, then fail with the
+          # command still owed. Unreachable and mismatch both stop here; nothing has been mutated.
+          for attempt in 1 2 3 4 5 6; do
+            SEEN="$(npm view "superbee@$V" version 2>/dev/null || true)"
+            TAGGED="$(npm view superbee "dist-tags.$T" 2>/dev/null || true)"
+            [ "$SEEN" = "$V" ] && [ "$TAGGED" = "$V" ] && break
+            echo "registry not settled yet (attempt $attempt): version=$SEEN $T=$TAGGED"; sleep 10
+          done
+          test "$SEEN" = "$V" || { echo "::error::npm does not serve superbee@$V. If the stage is still pending run: npm stage approve <stage-id>"; exit 1; }
+          test "$TAGGED" = "$V" || { echo "::error::the npm $T tag points at $TAGGED, expected $V"; exit 1; }
+          echo "dist_tag=$T" >> "$GITHUB_OUTPUT"
+      - name: Download the exact published bytes from npm and verify the build attestation
         env:
-          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
-          VERSION: ${{ inputs.version }}
-          TARGET: ${{ inputs.target }}
-        run: |
-          set -euo pipefail
-          if [ "$MODE" = "live" ]; then
-            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
-            node scripts/release-verify-registry.mjs --target "$TARGET" --version "$VERSION" \
-              --manifest "$ARTIFACT_DIR/candidate.json" --out registry-proof.json
-          else
-            echo "[dry-run] verified immutable chain; would run the exact registry proof for $TARGET@$VERSION"
-          fi
-
-  prepare:
-    name: prepare — persist exact pre-publication authority before PATCH
-    needs: [target-authorized, registry-verify]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment: release
-    permissions:
-      actions: read
-      contents: write
-    outputs:
-      proof_artifact_id: ${{ steps.upload_proof.outputs.artifact-id }}
-      proof_artifact_digest: ${{ steps.upload_proof.outputs.artifact-digest }}
-      source_commit: ${{ steps.verified_chain.outputs.source_commit }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download candidate by exact artifact id from the original run
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ inputs.artifact_id }}
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.ARTIFACT_DIR }}
-          merge-multiple: true
-
-      - name: Download stage receipt by exact artifact id from the original run
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ inputs.stage_receipt_artifact_id }}
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.RECEIPT_DIR }}
-          merge-multiple: true
-
-      - name: Query independent artifact and draft metadata again
-        env:
+          V: ${{ inputs.version }}
           GH_TOKEN: ${{ github.token }}
-          CANDIDATE_ARTIFACT_ID: ${{ inputs.artifact_id }}
-          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
         run: |
           set -euo pipefail
-          case "$CANDIDATE_ARTIFACT_ID:$RECEIPT_ARTIFACT_ID:$DRAFT_RELEASE_ID" in
-            *[!0-9:]*) echo "::error::artifact and release ids must be decimal integers"; exit 1 ;;
+          mkdir -p out
+          npm pack "superbee@$V" --ignore-scripts --pack-destination out >/dev/null
+          test -f "out/superbee-$V.tgz"
+          # The attestation was made by release.yml's stage job on the tarball it staged; a match
+          # proves npm published exactly those bytes.
+          gh attestation verify "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --source-ref "refs/tags/v$V" \
+            || { echo "::error::no build attestation from release.yml at refs/tags/v$V matches the bytes npm serves for superbee@$V (was this version staged by release.yml?)"; exit 1; }
+      - name: Create the GitHub release (published, once) with the npm tarball attached
+        env:
+          V: ${{ inputs.version }}
+          T: ${{ steps.registry.outputs.dist_tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v$V"
+          if [ "$T" = "latest" ]; then FLAG="--latest"; else FLAG="--prerelease"; fi
+          # Look before creating: a prior run may have already published, and a legacy draft may
+          # exist for this tag. Drafts are addressed here by tag through gh, which resolves them.
+          STATE="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo "absent")"
+          case "$STATE" in
+            false) echo "release $TAG is already published; verifying its asset below" ;;
+            true)
+              gh release upload "$TAG" "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" --clobber
+              gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false "$FLAG" ;;
+            *)
+              gh release create "$TAG" "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "$FLAG" ;;
           esac
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$CANDIDATE_ARTIFACT_ID" > candidate-artifact.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$RECEIPT_ARTIFACT_ID" > receipt-artifact.json
-          gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > draft-release.json
-
-      - name: Re-verify the complete chain immediately before publication
-        id: verified_chain
+          # Every path ends here: the published release must carry exactly the bytes npm serves.
+          mkdir -p check
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "superbee-$V.tgz" -D check --clobber \
+            || { echo "::error::release $TAG has no asset superbee-$V.tgz; upload it or recreate the release"; exit 1; }
+          test "$(shasum -a 256 "check/superbee-$V.tgz" | cut -d' ' -f1)" = "$(shasum -a 256 "out/superbee-$V.tgz" | cut -d' ' -f1)" \
+            || { echo "::error::asset superbee-$V.tgz on release $TAG differs from the bytes npm serves for superbee@$V"; exit 1; }
+          URL="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json url --jq .url)"
+          if gh release verify "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then IMMUTABLE="immutable (verified)"; else IMMUTABLE="not immutable - enable Immutable releases in repository settings"; fi
+          {
+            echo "## superbee@$V released"
+            echo ""
+            echo "- npm: https://www.npmjs.com/package/superbee/v/$V (dist-tag \`$T\`)"
+            echo "- GitHub: $URL ($IMMUTABLE)"
+            echo "- tarball sha256: \`$(shasum -a 256 "out/superbee-$V.tgz" | cut -d' ' -f1)\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke the published package as a user would
         env:
-          RUN_ID: ${{ inputs.run_id }}
-          ARTIFACT_ID: ${{ inputs.artifact_id }}
-          RECEIPT_ARTIFACT_ID: ${{ inputs.stage_receipt_artifact_id }}
-          RECEIPT_ARTIFACT_DIGEST: ${{ inputs.stage_receipt_artifact_digest }}
-          STAGE_ID: ${{ inputs.stage_id }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-          VERSION: ${{ inputs.version }}
-          TARGET: ${{ inputs.target }}
+          V: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          node scripts/release-resolve-target.mjs --target "$TARGET" --tag "v$VERSION" >/dev/null
-          node scripts/release-verify-chain.mjs verify-finalizer \
-            --candidate "$ARTIFACT_DIR/candidate.json" --receipt "$RECEIPT_DIR/stage-receipt.json" \
-            --candidate-artifact candidate-artifact.json --receipt-artifact receipt-artifact.json \
-            --release draft-release.json --run-id "$RUN_ID" --artifact-id "$ARTIFACT_ID" \
-            --stage-receipt-artifact-id "$RECEIPT_ARTIFACT_ID" \
-            --stage-receipt-artifact-digest "$RECEIPT_ARTIFACT_DIGEST" \
-            --stage-id "$STAGE_ID" --draft-release-id "$DRAFT_RELEASE_ID" --version "$VERSION" \
-            --draft-tag-phase pre-patch --out verified-chain.json --github-output "$GITHUB_OUTPUT"
-
-      - name: Re-download this candidate's signed operator receipts
-        env:
-          GH_TOKEN: ${{ github.token }}
-          STAGE_ID: ${{ inputs.stage_id }}
-        run: |
-          set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at > run-created-at.txt
-          mkdir -p operator-receipts
-          node scripts/release-verify-ordering.mjs assets --release draft-release.json --stage-id "$STAGE_ID" > receipt-assets.txt
-          while read -r ASSET_ID ASSET_NAME; do
-            case "$ASSET_ID" in *[!0-9]*) echo "::error::receipt asset id must be numeric"; exit 1 ;; esac
-            gh api -H "Accept: application/octet-stream" "repos/$GITHUB_REPOSITORY/releases/assets/$ASSET_ID" > "operator-receipts/$ASSET_NAME"
-          done < receipt-assets.txt
-
-      - name: Re-verify signed receipt ordering immediately before publication
-        run: |
-          set -euo pipefail
-          node scripts/release-verify-ordering.mjs verify \
-            --mode "$MODE" --chain verified-chain.json --receipt "$RECEIPT_DIR/stage-receipt.json" \
-            --release draft-release.json --receipts-dir operator-receipts \
-            --run-created-at "$(cat run-created-at.txt)" \
-            --allowed-signers .github/release-allowed-signers --out ordering-result.json
-
-      - name: Plan exact publication inventory and workflow-owned receipt status
-        env:
-          FINALIZE_RUN_ID: ${{ github.run_id }}
-        run: |
-          set -euo pipefail
-          node scripts/release-verify-ordering.mjs plan --result ordering-result.json \
-            --chain verified-chain.json --release draft-release.json --out-dir publication-out \
-            --finalize-run-id "$FINALIZE_RUN_ID" --out publication-plan.json
-
-      - name: Apply ID-only cleanup, retry-safe numeric-ID status upload, and owned body normalization
-        env:
-          GH_TOKEN: ${{ github.token }}
-          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
-        run: |
-          set -euo pipefail
-          if [ "$MODE" = "live" ]; then
-            test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
-          fi
-          node scripts/release-verify-ordering.mjs apply --mode "$MODE" --plan publication-plan.json \
-            --repo "$GITHUB_REPOSITORY" --out-dir publication-out
-
-      - name: Re-prove the declared publication policy immediately before publication
-        env:
-          TARGET: ${{ inputs.target }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          # target-authorized proved this before anything was mutated; dist-tags can move between
-          # jobs (an operator rollback mid-run), so the pre-publish re-check mirrors the ordering
-          # gate. Still a pure read: this job holds no npm credential and writes nothing to npm.
-          node scripts/release-publication-policy.mjs verify \
-            --target "$TARGET" --version "$VERSION" --mode "$MODE"
-
-      - name: Re-query and prove exact final inventory and owned body before publication
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-        run: |
-          set -euo pipefail
-          if [ "$MODE" = "live" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/releases/$DRAFT_RELEASE_ID" > final-draft-release.json
-            node scripts/release-verify-ordering.mjs final --release final-draft-release.json \
-              --plan publication-plan.json --out final-publication-proof.json
-          else
-            echo "[dry-run] would re-query and prove exact pre-publication inventory and body"
-          fi
-
-      - name: Assemble the fixed pre-publication proof packet
-        if: inputs.mode == 'live'
-        run: |
-          set -euo pipefail
-          mkdir -p "$FINALIZATION_PROOF_DIR"
-          cp verified-chain.json publication-plan.json final-publication-proof.json "$FINALIZATION_PROOF_DIR/"
-
-      - name: Persist exact pre-publication authority before PATCH
-        if: inputs.mode == 'live'
-        id: upload_proof
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-finalization-proof
-          path: ${{ env.FINALIZATION_PROOF_DIR }}
-          if-no-files-found: error
-          retention-days: 14
-
-  publish:
-    name: publish — provisional numeric-ID PATCH only
-    needs: prepare
-    if: inputs.mode == 'live'
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: release
-    permissions:
-      actions: read
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download pre-publication authority by exact artifact id
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ needs.prepare.outputs.proof_artifact_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.FINALIZATION_PROOF_DIR }}
-          merge-multiple: true
-
-      - name: Independently verify proof artifact metadata and bindings
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PROOF_ARTIFACT_ID: ${{ needs.prepare.outputs.proof_artifact_id }}
-          PROOF_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.proof_artifact_digest }}
-          PROOF_ARTIFACT_HEAD_SHA: ${{ github.sha }}
-          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
-        run: |
-          set -euo pipefail
-          case "$PROOF_ARTIFACT_ID" in *[!0-9]*) echo "::error::proof artifact id must be numeric"; exit 1 ;; esac
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PROOF_ARTIFACT_ID" > proof-artifact.json
-          node scripts/release-verify-ordering.mjs prepared-artifact \
-            --artifact proof-artifact.json --artifact-id "$PROOF_ARTIFACT_ID" \
-            --artifact-digest "$PROOF_ARTIFACT_DIGEST" --run-id "$GITHUB_RUN_ID" \
-            --head-sha "$PROOF_ARTIFACT_HEAD_SHA" --source-commit "$SOURCE_COMMIT" \
-            --chain "$FINALIZATION_PROOF_DIR/verified-chain.json" \
-            --plan "$FINALIZATION_PROOF_DIR/publication-plan.json" \
-            --final-proof "$FINALIZATION_PROOF_DIR/final-publication-proof.json"
-
-      - name: Publish the exact numeric release with manifest-derived identity (provisional)
-        id: patch_release
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-          DRAFT_RELEASE_ID: ${{ inputs.draft_release_id }}
-          LIVE_RELEASE_ENABLED: ${{ vars.SUPERBEE_RELEASE_LIVE_ENABLED }}
-          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
-          TARGET: ${{ inputs.target }}
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          test "$LIVE_RELEASE_ENABLED" = "true" || { echo "::error::release environment is not explicitly live-enabled"; exit 1; }
-          node scripts/release-run-operations.mjs --op immutable-release \
-            --target "$TARGET" --version "$VERSION" --release-id "$DRAFT_RELEASE_ID" \
-            --source-commit "$SOURCE_COMMIT" --execute
-
-  proof:
-    name: proof — independently resumable published-state verdict
-    needs: [prepare, publish]
-    if: ${{ always() && needs.prepare.result == 'success' && inputs.mode == 'live' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download pre-publication authority by exact artifact id
-        uses: actions/download-artifact@v4
-        with:
-          artifact-ids: ${{ needs.prepare.outputs.proof_artifact_id }}
-          github-token: ${{ github.token }}
-          path: ${{ env.FINALIZATION_PROOF_DIR }}
-          merge-multiple: true
-
-      - name: Independently verify the same proof artifact metadata and bindings
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PROOF_ARTIFACT_ID: ${{ needs.prepare.outputs.proof_artifact_id }}
-          PROOF_ARTIFACT_DIGEST: ${{ needs.prepare.outputs.proof_artifact_digest }}
-          PROOF_ARTIFACT_HEAD_SHA: ${{ github.sha }}
-          SOURCE_COMMIT: ${{ needs.prepare.outputs.source_commit }}
-        run: |
-          set -euo pipefail
-          case "$PROOF_ARTIFACT_ID" in *[!0-9]*) echo "::error::proof artifact id must be numeric"; exit 1 ;; esac
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PROOF_ARTIFACT_ID" > proof-artifact.json
-          node scripts/release-verify-ordering.mjs prepared-artifact \
-            --artifact proof-artifact.json --artifact-id "$PROOF_ARTIFACT_ID" \
-            --artifact-digest "$PROOF_ARTIFACT_DIGEST" --run-id "$GITHUB_RUN_ID" \
-            --head-sha "$PROOF_ARTIFACT_HEAD_SHA" --source-commit "$SOURCE_COMMIT" \
-            --chain "$FINALIZATION_PROOF_DIR/verified-chain.json" \
-            --plan "$FINALIZATION_PROOF_DIR/publication-plan.json" \
-            --final-proof "$FINALIZATION_PROOF_DIR/final-publication-proof.json"
-
-      - name: Converge and prove published identity inventory body and latest selection
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          node scripts/release-verify-ordering.mjs published-live --repo "$GITHUB_REPOSITORY" \
-            --chain "$FINALIZATION_PROOF_DIR/verified-chain.json" \
-            --plan "$FINALIZATION_PROOF_DIR/publication-plan.json" \
-            --out published-publication-proof.json
+          OBSERVED="$(npx --yes "superbee@$V" --version)"
+          test "$OBSERVED" = "$V" || { echo "::error::npx superbee@$V --version printed '$OBSERVED'"; exit 1; }

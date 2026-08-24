@@ -10,7 +10,7 @@
 // The workspace deps are aliased to their SOURCE entry points so this build is self-contained:
 // it does NOT require core/server to be pre-compiled to dist first (esbuild transpiles the .ts and
 // resolves their NodeNext `.js`-extension imports to the sibling `.ts` files). That keeps
-// `prepublishOnly` a single step.
+// the release build a single step.
 //
 // A createRequire shim is injected in the banner because a bundled CommonJS dependency (gray-matter)
 // may call require() at runtime; ESM output has no ambient `require`, so we provide one.
@@ -22,30 +22,23 @@ import { dirname, resolve } from "node:path";
 import { isMainModule } from "../../scripts/is-main-module.mjs";
 import { buildCliBundle } from "./scripts/build-bundle.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
-import { loadReleaseTargets } from "../../scripts/release-targets.mjs";
+import { FUNCTIONAL_VERSION_FLOOR } from "./scripts/functional-version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const r = (p) => resolve(here, p);
 const outfile = r("dist/superbee.mjs");
 
 /**
- * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`'s
- * scratch-candidate mode, AND the release-candidate command. It cleans dist, regenerates the
+ * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`, and the
+ * release workflow. It cleans dist, regenerates the
  * embedded inputs, bundles, and marks the bin executable — exactly once per call.
  *
- * `source` is an OPTIONAL injection: the release-candidate builder passes the exact protected
- * tag/checkout SHA (dirty:false) so the npm-package identity is baked from the tag, not from
- * whatever `currentSourceFacts()` observes in a CI checkout. When omitted, build-bundle derives
- * the facts itself (the ordinary dev/verify path).
+ * `source` and `packageIdentity` are OPTIONAL injections for tests; when omitted, build-bundle
+ * derives the source facts itself (the ordinary dev, verify, and release path).
  */
-export async function buildCli(artifactChannel, { source, packageIdentity, releaseManifest, updatePolicy } = {}) {
+export async function buildCli(artifactChannel, { source, packageIdentity, updatePolicy } = {}) {
   if (artifactChannel !== "local-dev" && artifactChannel !== "npm-package") {
     throw new Error("usage: buildCli(local-dev|npm-package)");
-  }
-  const releasePolicy = releaseManifest ?? await loadReleaseTargets();
-  // Validate release policy before deleting dist or rebuilding the embedded UI.
-  if (typeof releasePolicy?.functional_successor_floor !== "string") {
-    throw new Error("buildCli requires a normalized release manifest with a functional successor floor");
   }
   // Clean dist so the packed tarball never carries stale files (files: ["dist"]).
   await rm(r("dist"), { recursive: true, force: true });
@@ -55,7 +48,7 @@ export async function buildCli(artifactChannel, { source, packageIdentity, relea
   await prepareCliBundleInputs();
   await buildCliBundle(outfile, {
     artifactChannel,
-    functionalVersionFloor: releasePolicy.functional_successor_floor,
+    functionalVersionFloor: FUNCTIONAL_VERSION_FLOOR,
     updatePolicy: updatePolicy ?? { enabled: false },
     ...(source === undefined ? {} : { source }),
     ...(packageIdentity === undefined ? {} : { packageIdentity }),

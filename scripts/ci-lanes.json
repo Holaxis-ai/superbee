@@ -1,7 +1,10 @@
 {
   "schema": "superbee.ci-lanes.v1",
   "path_skipping": false,
-  "runtime_nodes": [22, 26],
+  "runtime_nodes": [
+    22,
+    26
+  ],
   "singleton_node": 26,
   "merge_queue": {
     "enabled": false,
@@ -13,66 +16,121 @@
     "smoke-node-20",
     "distribution",
     "browser",
-    "release-policy",
-    "release-exhaustive"
+    "scripts"
   ],
   "components": [
-    { "id": "build", "command": "npm run build", "owner": "runtime" },
-    { "id": "typecheck", "command": "npm run typecheck", "owner": "runtime" },
-    { "id": "workspace-tests", "command": "npm test --workspaces --if-present", "owner": "runtime" },
-    { "id": "script-and-release-tests", "command": "npm run test:scripts", "owner": "release-policy" },
-    { "id": "installed-package-proof", "command": "npm run verify:npm-package", "owner": "distribution" },
-    { "id": "skill-drift-proof", "command": "npm run check:skill -w superbee", "owner": "distribution" },
-    { "id": "mcp-browser", "command": "npm run test:browser -w @superbee/mcp-app", "owner": "browser" },
-    { "id": "ui-end-to-end", "command": "npm run e2e:gate -w @superbee/ui", "owner": "browser" },
-    { "id": "all-release-targets", "command": "npm run test:packet-candidates", "owner": "release-exhaustive" }
+    {
+      "id": "build",
+      "command": "npm run build",
+      "owner": "runtime"
+    },
+    {
+      "id": "typecheck",
+      "command": "npm run typecheck",
+      "owner": "runtime"
+    },
+    {
+      "id": "workspace-tests",
+      "command": "npm test --workspaces --if-present",
+      "owner": "runtime"
+    },
+    {
+      "id": "script-tests",
+      "command": "npm run test:scripts",
+      "owner": "scripts"
+    },
+    {
+      "id": "installed-package-proof",
+      "command": "npm run verify:npm-package",
+      "owner": "distribution"
+    },
+    {
+      "id": "skill-drift-proof",
+      "command": "npm run check:skill -w superbee",
+      "owner": "distribution"
+    },
+    {
+      "id": "mcp-browser",
+      "command": "npm run test:browser -w @superbee/mcp-app",
+      "owner": "browser"
+    },
+    {
+      "id": "ui-end-to-end",
+      "command": "npm run e2e:gate -w @superbee/ui",
+      "owner": "browser"
+    }
   ],
   "lanes": {
     "runtime": {
       "display_name": "runtime compatibility (node ${{ matrix.node-version }})",
       "script": "ci:runtime",
-      "components": ["build", "typecheck", "workspace-tests"],
-      "nodes": [22, 26]
+      "components": [
+        "build",
+        "typecheck",
+        "workspace-tests"
+      ],
+      "nodes": [
+        22,
+        26
+      ]
     },
     "distribution": {
       "display_name": "distribution package and installed behavior",
       "script": "ci:distribution",
-      "components": ["installed-package-proof", "skill-drift-proof"],
-      "nodes": [26]
+      "components": [
+        "installed-package-proof",
+        "skill-drift-proof"
+      ],
+      "nodes": [
+        26
+      ]
     },
     "browser": {
       "display_name": "browser and UI",
       "script": "ci:browser",
-      "components": ["mcp-browser", "ui-end-to-end"],
-      "prerequisites": ["build"],
-      "nodes": [26]
+      "components": [
+        "mcp-browser",
+        "ui-end-to-end"
+      ],
+      "prerequisites": [
+        "build"
+      ],
+      "nodes": [
+        26
+      ]
     },
-    "release-policy": {
-      "display_name": "deterministic release policy",
-      "script": "ci:release-policy",
-      "components": ["script-and-release-tests"],
-      "prerequisites": ["build"],
-      "nodes": [26]
-    },
-    "release-exhaustive": {
-      "display_name": "exhaustive release targets",
-      "script": "check:release-exhaustive",
-      "wrapper": "scripts/ci-release-exhaustive.mjs",
-      "wrapper_component_literals": {
-        "all-release-targets": "test:packet-candidates"
-      },
-      "components": ["all-release-targets"],
-      "nodes": [26]
+    "scripts": {
+      "display_name": "repository scripts and CI topology",
+      "script": "ci:scripts",
+      "components": [
+        "script-tests"
+      ],
+      "prerequisites": [
+        "build"
+      ],
+      "nodes": [
+        26
+      ]
     },
     "smoke-node-20": {
       "display_name": "built-CLI smoke on the engines floor (node 20)",
       "workflow_only": true,
       "components": [],
-      "nodes": [20],
+      "nodes": [
+        20
+      ],
       "runtime_setup_node": 20,
       "version_guard": "node --version | grep -q '^v20\\.'",
       "built_cli": "packages/cli/dist/superbee.mjs",
-      "built_cli_commands": ["init", "doc write", "doc read", "link add", "link show", "list", "status"]
+      "built_cli_commands": [
+        "init",
+        "doc write",
+        "doc read",
+        "link add",
+        "link show",
+        "list",
+        "status"
+      ]
     }
   }
 }

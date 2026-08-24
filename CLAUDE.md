@@ -166,23 +166,24 @@ mismatched visibility never weakens the conservative rule.
 
 ### Releases
 
-Release authority is separate from ordinary builder or orchestrator authority. Until the contained
-release controller is the committed authority, preserve these safeguards:
+Releases use GitHub and npm's native controls; the repository adds no release state, ledger,
+receipt, or approval transport of its own. The mechanism is `.github/workflows/release.yml`
+(build once, stage the exact tarball on npm through OIDC trusted publishing) and
+`.github/workflows/release-finalize.yml` (after the human's `npm stage approve`, verify the
+registry against the build attestation and create the GitHub release, immutable once the
+repository setting is on). Read those two files; do not reconstruct a
+procedure from memory. The package's `prepublishOnly` refusal is an ergonomics tripwire, not a
+boundary; npm's require-2FA/disallow-tokens setting is the boundary.
 
-- Never run a direct or manual publish and never replace a release asset ad hoc.
-- Publish only an artifact bound to an exact source SHA whose authoritative CI passed.
-- Inspect a draft by numeric release ID and bind the retained candidate and receipt by digest.
-- Treat one valid current receipt as already present; replacement requires the prior receipt's
-  exact ID, name, and digest.
-- Journal interruption recovery and refuse a competing same-name asset.
-- A dry run may validate the same plan but performs no durable ownership, deletion, or upload.
-- Every release-relevant `VIOLATED` or `UNKNOWN` statement needs a Task or recorded human
-  acceptance decision before release.
+Agents may prepare a version-bump PR and, when explicitly asked, push the `v<version>` tag that
+starts a release. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any
+other authenticated npm mutation; the human's interactive 2FA approval of the staged bytes is the
+one release gate. Prereleases stage on `next`, stable versions on `latest`, chosen at stage time.
 
-Use the repository's package scripts and the active bundle release Task; do not reconstruct a
-procedure from this summary. The human must explicitly authorize release execution. The future
-committed release contract and controller replace this kernel only after their agreement and
-adversarial tests pass.
+Record each release as one `Release` document in the project bundle (`releases/superbee-<version>`)
+with pointers to the workflow run, stage id, tarball digest, GitHub release, current `status`, and
+`next_action`. The bundle is memory, never release authority; the registry and the GitHub release
+are the facts.
 
 ### Frozen scope
 
