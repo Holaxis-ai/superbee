@@ -9,11 +9,9 @@ import { query } from "./bundle.js";
 import {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
-  RESERVED_KIND_FIELD_NAMES,
-  parseConventionDoc,
-  freshnessHorizonMs,
+  buildKindRegistry,
 } from "./kinds.js";
-import type { KindConvention, KindRegistry } from "./kinds.js";
+import type { KindRegistry } from "./kinds.js";
 import type { ValidationWarning } from "./validation.js";
 import type { Bundle } from "./types.js";
 
@@ -27,7 +25,6 @@ import type { Bundle } from "./types.js";
  * and pass it down — no engine path calls this on its own.
  */
 export async function loadKinds(bundle: Bundle): Promise<KindRegistry> {
-  const kinds = new Map<string, KindConvention>();
   const warnings: ValidationWarning[] = [];
 
   // A convention doc whose YAML frontmatter is itself corrupt must not crash the WHOLE registry
@@ -43,46 +40,5 @@ export async function loadKinds(bundle: Bundle): Promise<KindRegistry> {
       }),
   });
 
-  for (const doc of docs) {
-    const parsed = parseConventionDoc(doc);
-    if (!parsed.ok) {
-      warnings.push({
-        code: "KIND_CONVENTION_MALFORMED",
-        message: `skipped malformed kind convention '${doc.id}': ${parsed.reason}`,
-        field: doc.id,
-        severity: "warning",
-      });
-      continue;
-    }
-    const { kind, reservedFieldsIgnored, reservedFieldPaths } = parsed;
-    warnings.push(...parsed.warnings);
-    if (reservedFieldsIgnored.length > 0) {
-      warnings.push({
-        code: "KIND_RESERVED_FIELD",
-        message: `kind convention '${doc.id}' declares reserved field name(s) ${reservedFieldsIgnored.join(", ")} (reserved by the CLI: ${RESERVED_KIND_FIELD_NAMES.join("/")}); ignoring them — rename those domain fields before authoring instances.`,
-        field: reservedFieldPaths.join(","),
-        severity: "warning",
-      });
-    }
-    if (kinds.has(kind.governs)) {
-      warnings.push({
-        code: "KIND_DUPLICATE_GOVERNS",
-        message: `duplicate kind convention for '${kind.governs}': '${doc.id}' ignored, keeping the first-declared '${kinds.get(kind.governs)!.id}'.`,
-        field: kind.governs,
-        severity: "warning",
-      });
-      continue;
-    }
-    if (kind.freshnessHorizon !== undefined && freshnessHorizonMs(kind) === undefined) {
-      warnings.push({
-        code: "KIND_HORIZON_MALFORMED",
-        message: `kind convention '${doc.id}' has a malformed freshness_horizon '${kind.freshnessHorizon}' (expected <n>(m|h|d)); ignoring it.`,
-        field: "freshness_horizon",
-        severity: "warning",
-      });
-    }
-    kinds.set(kind.governs, kind);
-  }
-
-  return { kinds, warnings };
+  return buildKindRegistry(docs, warnings);
 }

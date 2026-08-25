@@ -249,6 +249,7 @@ export {
   freshnessHorizonMs,
   kindConventionDoc,
   parseConventionDoc,
+  buildKindRegistry,
   splitSections,
   isTerminal,
 } from "./kinds.js";

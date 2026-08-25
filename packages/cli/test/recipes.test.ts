@@ -29,8 +29,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
   initBundle,
+  MemoryBackend,
   query,
   readBlob,
+  readDoc,
   writeBlob,
   writeDoc,
   parseMarkdown,
@@ -38,7 +40,11 @@ import {
   kindConventionDoc,
   CONVENTION_TYPE,
   type Bundle,
+  type ConceptId,
   type KindConvention,
+  type OkfDocument,
+  type Version,
+  type WriteOptions,
 } from "@superbee/core";
 import { parseRegistration, PAGE_REGISTRY_PREFIX, VIEW_REGISTRY_PREFIX } from "@superbee/core/page";
 import { serve, type ServerHandle } from "@superbee/server";
@@ -62,17 +68,59 @@ import {
   ROADMAP_DESC_BODY,
   applyRecipe,
 } from "../src/recipes.js";
+import { applyRecipeEvolution, planRecipeEvolution } from "../src/recipe-evolution.js";
 import {
   CONTEXT_NOTES_RECIPE,
   filesRecipeSource,
   parseRecipeFiles,
   type RecipeFile,
+  type LoadedRecipe,
 } from "../src/recipe-source.js";
 import { cliInvocation, shellArg } from "../src/invocation.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 const EXAMPLE_RECIPE_FIXTURE = path.resolve(import.meta.dirname, "fixtures/example-recipe");
 const REVIEW_WORKFLOW_RECIPE = path.resolve(import.meta.dirname, "../../../examples/recipes/review-workflow");
+
+function widgetRecipe(
+  version: string,
+  fields: KindConvention["fields"],
+  body = "# Widget\n",
+): LoadedRecipe {
+  const kind: KindConvention = {
+    id: "conventions/widget",
+    title: "Widget",
+    governs: "Widget",
+    path: "widgets/",
+    fields,
+  };
+  return {
+    id: "widget-workflow",
+    title: "Widget workflow",
+    version,
+    summary: "Widget definitions for recipe-evolution tests.",
+    offer: "Widget workflow",
+    source: `test:widget-workflow:${version}`,
+    docs: [kindConventionDoc(kind, body, T)],
+    pages: [],
+    references: [],
+    governs: ["Widget"],
+    warnings: [],
+  };
+}
+
+const widgetFields = (
+  required: string[] = ["title"],
+  optional: string[] = [],
+  values: Record<string, string[]> = {},
+): KindConvention["fields"] => ({
+  required,
+  optional,
+  values,
+  valueDescriptions: {},
+  terminal: {},
+  descriptions: {},
+});
 
 async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "agentstate-lite-recipes-test-"));
@@ -1044,7 +1092,10 @@ test("recipe add <path>: a version bump with changed convention content reports 
     assert.equal(warnings.length, 1);
     assert.equal(warnings[0]!.code, "RECIPE_SOURCE_DIFFERS");
     assert.match(String(warnings[0]!.message), /conventions\/widget\.md/);
-    assert.match(String(warnings[0]!.message), /superbee promote/);
+    assert.match(String(warnings[0]!.message), /recipe evolve/);
+    assert.deepEqual(second.commands, {
+      plan_evolution: `${cliInvocation()} recipe evolve '${recipeDir}' --dir '${bundleDir}'`,
+    });
 
     assert.equal(await readFile(installedPath, "utf8"), installedBefore);
     const widget = (await loadKinds({ root: bundleDir })).kinds.get("Widget");
@@ -1053,6 +1104,216 @@ test("recipe add <path>: a version bump with changed convention content reports 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("recipe evolve: a compatible installed convention requires the exact read-only plan token", async () => {
+  const root = await tempDir();
+  const bundleDir = path.join(root, "bundle");
+  const recipeDir = path.join(root, "recipe");
+  const conventionPath = path.join(recipeDir, "conventions", "widget.md");
+  const manifest = (version: string) =>
+    `---\ntype: Recipe\nid: widget-workflow\ntitle: Widget workflow\nversion: "${version}"\nsummary: Widget definitions.\n---\n`;
+  const convention = (withColour: boolean) =>
+    "---\ntype: Convention\ntitle: Widget\ngoverns: Widget\npath: widgets/\nfields:\n" +
+    "  required: [title]\n" +
+    (withColour ? "  optional: [colour]\n" : "  optional: []\n") +
+    "---\n# Widget\n";
+
+  try {
+    await initBundle(bundleDir);
+    await mkdir(path.dirname(conventionPath), { recursive: true });
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("1"), "utf8");
+    await writeFile(conventionPath, convention(false), "utf8");
+    await runJson(recipe, ["add", recipeDir, "--dir", bundleDir]);
+    await writeDoc({ root: bundleDir }, {
+      id: "widgets/one",
+      frontmatter: { type: "Widget", title: "One" },
+      body: "A compatible existing instance.",
+    });
+
+    await writeFile(path.join(recipeDir, "recipe.md"), manifest("2"), "utf8");
+    await writeFile(conventionPath, convention(true), "utf8");
+
+    const before = await readFile(path.join(bundleDir, "conventions", "widget.md"), "utf8");
+    const plan = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.equal(plan.recipe, "evolution plan");
+    assert.equal(plan.ready, true);
+    assert.equal(plan.changed, true);
+    assert.equal((plan.counts as Record<string, unknown>).updates, 1);
+    assert.equal((plan.counts as Record<string, unknown>).instances_checked, 1);
+    const definitions = plan.definitions as Array<Record<string, unknown>>;
+    assert.equal(definitions[0]!.action, "update");
+    assert.deepEqual(definitions[0]!.changed_facets, ["fields"]);
+    assert.equal(await readFile(path.join(bundleDir, "conventions", "widget.md"), "utf8"), before);
+    const token = String(plan.plan_token);
+    assert.match(token, /^sha256:[0-9a-f]{64}$/);
+    assert.match(String((plan.commands as Record<string, unknown>).apply), new RegExp(`--apply ${token}$`));
+
+    await writeDoc({ root: bundleDir }, {
+      id: "widgets/one",
+      frontmatter: { type: "Widget", title: "One" },
+      body: "The instance changed after the plan.",
+    });
+    await assert.rejects(
+      runJson(recipe, ["evolve", recipeDir, "--apply", token, "--dir", bundleDir]),
+      (error: unknown) => error instanceof CliError && error.code === "STALE_HEAD",
+    );
+    assert.equal(await readFile(path.join(bundleDir, "conventions", "widget.md"), "utf8"), before);
+
+    const refreshed = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.notEqual(refreshed.plan_token, token);
+    const applied = await runJson(recipe, [
+      "evolve", recipeDir, "--apply", String(refreshed.plan_token), "--actor", "test-agent", "--dir", bundleDir,
+    ]);
+    assert.equal(applied.recipe, "evolved");
+    assert.equal(applied.changed, true);
+    assert.equal((applied.counts as Record<string, unknown>).updated, 1);
+    assert.deepEqual((await loadKinds({ root: bundleDir })).kinds.get("Widget")?.fields.optional, ["colour"]);
+
+    const settled = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
+    assert.equal(settled.ready, true);
+    assert.equal(settled.changed, false);
+    assert.equal((settled.counts as Record<string, unknown>).unchanged, 1);
+    assert.equal(settled.commands, undefined);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("recipe evolve: a tightening schema and its incompatible instances block before every write", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "mem://recipe-evolution-tightening", backend };
+  const initial = widgetRecipe("1", widgetFields(["title"]));
+  await applyRecipe(bundle, initial, T);
+  await writeDoc(bundle, {
+    id: "widgets/one",
+    frontmatter: { type: "Widget", title: "One" },
+    body: "No priority yet.",
+  });
+  const desired = widgetRecipe("2", widgetFields(["title", "priority"]));
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  assert.equal(plan.changed, true);
+  assert.equal(plan.counts.instances_checked, 1);
+  assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_NON_MONOTONIC"));
+  assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_INSTANCE_INVALID"));
+
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.required, ["title"]);
+});
+
+test("recipe evolve: legacy v0.1 writes a fresh timestamp rather than its comparison sentinel", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir, { okfVersion: "0.1" });
+    await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+    const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
+    const plan = await planRecipeEvolution(bundle, desired);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent");
+
+    const evolved = await readDoc(bundle, "conventions/widget");
+    assert.notEqual(evolved.frontmatter.timestamp, "1970-01-01T00:00:00.000Z");
+    assert.match(String(evolved.frontmatter.timestamp), /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("recipe evolve: a race after exact-plan recomputation fails with completed/pending recovery and preserves the winner", async () => {
+  class EvolutionRaceBackend extends MemoryBackend {
+    armed = false;
+
+    override async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
+      if (this.armed && id === "conventions/widget" && options.expectedVersion !== undefined) {
+        this.armed = false;
+        const current = await super.read(id);
+        await super.write(id, { ...current.doc, body: "# Concurrent winner\n" }, { expectedVersion: current.version });
+      }
+      return super.write(id, doc, options);
+    }
+  }
+
+  const backend = new EvolutionRaceBackend();
+  const bundle: Bundle = { root: "mem://recipe-evolution-race", backend };
+  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true);
+  backend.armed = true;
+
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token, "test-agent"),
+    (error: unknown) => {
+      if (!(error instanceof CliError) || error.code !== "STALE_HEAD") return false;
+      const details = error.details as Record<string, unknown>;
+      assert.deepEqual(details.completed, []);
+      assert.deepEqual(details.pending, ["conventions/widget"]);
+      return true;
+    },
+  );
+  assert.equal((await readDoc(bundle, "conventions/widget")).body, "# Concurrent winner\n");
+});
+
+test("recipe evolve: a competing convention authority blocks the prospective registry", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "mem://recipe-evolution-duplicate", backend };
+  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  await writeDoc(bundle, kindConventionDoc({
+    id: "conventions/alternate-widget",
+    title: "Alternate Widget",
+    governs: "Widget",
+    path: "alternate-widgets/",
+    fields: widgetFields(),
+  }, "# Alternate Widget\n", T));
+
+  const plan = await planRecipeEvolution(bundle, widgetRecipe("2", widgetFields(["title"], ["colour"])));
+  assert.equal(plan.ready, false);
+  assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_DUPLICATE_GOVERNS"));
+  await assert.rejects(
+    applyRecipeEvolution(bundle, widgetRecipe("2", widgetFields(["title"], ["colour"])), plan.plan_token),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+});
+
+test("recipe evolve: an active View asset change blocks instead of updating a registry/blob pair non-atomically", async () => {
+  const recipeFiles = (version: string, html: string): RecipeFile[] => [
+    {
+      path: "recipe.md",
+      bytes:
+        `---\ntype: Recipe\nid: view-evolution\ntitle: View evolution\nversion: "${version}"\n` +
+        "summary: Evolution safety fixture.\ncontent_policy: definitions-only\npages:\n" +
+        "  - registry: views-registry/board.md\n    entry: views/board.html\n---\n",
+    },
+    { path: "conventions/term.md", bytes: "---\ntype: Convention\ngoverns: Term\n---\n# Term\n" },
+    {
+      path: "views-registry/board.md",
+      bytes: "---\ntype: View\ntitle: Board\nentry: views/board.html\naccess: bundle-read\n---\nA board view.\n",
+    },
+    { path: "views/board.html", bytes: html },
+  ];
+  const initial = parseRecipeFiles(recipeFiles("1", "<!doctype html><title>Board v1</title>"), "test:view-evolution");
+  const desired = parseRecipeFiles(recipeFiles("2", "<!doctype html><title>Board v2</title>"), "test:view-evolution");
+  assert.equal(initial.ok, true);
+  assert.equal(desired.ok, true);
+  if (!initial.ok || !desired.ok) return;
+
+  const bundle: Bundle = { root: "mem://recipe-evolution-view", backend: new MemoryBackend() };
+  await applyRecipe(bundle, initial.recipe, T);
+  const plan = await planRecipeEvolution(bundle, desired.recipe);
+  assert.equal(plan.ready, false);
+  assert.ok(plan.blockers.some((blocker) =>
+    blocker.code === "RECIPE_EVOLUTION_ASSET_CHANGE_UNSUPPORTED" && blocker.id === "views/board.html"
+  ));
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired.recipe, plan.plan_token),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  const installed = await readBlob(bundle, "views/board.html");
+  assert.equal(Buffer.from(installed!.bytes).toString("utf8"), "<!doctype html><title>Board v1</title>");
 });
 
 test("portable Review Workflow: clean-room install carries Kinds, a View, and its authoring Reference but zero Review Request instances", async () => {
@@ -1625,6 +1886,39 @@ test("--remote: recipe add against a served bundle, idempotent parity with the s
     }
   } finally {
     await rm(localDir, { recursive: true, force: true });
+    await rm(remoteDir, { recursive: true, force: true });
+  }
+});
+
+test("--remote: recipe evolve plans and applies through the same state-bound CAS authority", async () => {
+  const remoteDir = await tempDir();
+  try {
+    await initBundle(remoteDir);
+    await applyRecipe({ root: remoteDir }, CONTEXT_NOTES_RECIPE, T);
+    const installed = await readDoc({ root: remoteDir }, "conventions/context-note");
+    const olderFrontmatter = { ...installed.frontmatter };
+    delete olderFrontmatter.browse_collapsed;
+    await writeDoc({ root: remoteDir }, { ...installed, frontmatter: olderFrontmatter });
+
+    const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
+    const url = `http://${handle.host}:${handle.port}`;
+    try {
+      const plan = await runJson(recipe, ["evolve", "context-notes", "--remote", url]);
+      assert.equal(plan.ready, true);
+      assert.equal(plan.changed, true);
+      assert.equal((plan.counts as Record<string, unknown>).updates, 1);
+      assert.deepEqual((plan.definitions as Array<Record<string, unknown>>)[0]!.changed_facets, ["browse_collapsed"]);
+
+      const applied = await runJson(recipe, [
+        "evolve", "context-notes", "--apply", String(plan.plan_token), "--remote", url,
+      ]);
+      assert.equal(applied.recipe, "evolved");
+      assert.equal(applied.changed, true);
+      assert.equal((await loadKinds({ root: remoteDir })).kinds.get("Context Note")?.browseCollapsed, true);
+    } finally {
+      await handle.close();
+    }
+  } finally {
     await rm(remoteDir, { recursive: true, force: true });
   }
 });

@@ -493,7 +493,7 @@ function renameLogicalFieldMap(
 }
 
 /** Materialize explicit logical recipe fields into the target edition's physical convention keys. */
-function materializeRecipeForEdition(
+export function materializeRecipeForEdition(
   recipe: LoadedRecipe,
   okfVersion: string,
 ): LoadedRecipe {
@@ -537,7 +537,7 @@ function materializeRecipeForEdition(
   return { ...recipe, docs };
 }
 
-function recipeDocumentForApply(
+export function recipeDocumentForApply(
   doc: OkfDocument,
   okfVersion: string,
   now: string,
@@ -644,7 +644,7 @@ export async function applyRecipe(
             code: "RECIPE_SOURCE_DIFFERS",
             message:
               `recipe '${recipe.id}' source for '${doc.id}.md' differs from the existing convention; ` +
-              "the existing bundle content was left untouched — inspect it and use 'superbee promote' with an expected version to update explicitly",
+              "the existing bundle content was left untouched — run 'recipe evolve <same-name-or-path>' to inspect a safe, exact-state upgrade plan",
             severity: "warning",
           });
         }
@@ -832,7 +832,7 @@ async function assertPortableTargetsCompatible(
   }
 }
 
-function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
+export function sameInstalledDoc(existing: OkfDocument, desired: OkfDocument, okfVersion: string): boolean {
   const { timestamp: _existingTimestamp, ...existingFrontmatter } = existing.frontmatter;
   const { timestamp: _desiredTimestamp, ...desiredFrontmatter } = desired.frontmatter;
   if (okfVersion === "0.2") {

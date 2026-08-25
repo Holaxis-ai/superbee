@@ -121,6 +121,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("kindFieldRemove", "interposed-action", 2),
   ordinary("recipes", 0),
   ordinary("recipeAdd", 1),
+  ordinary("recipeEvolve", 1),
   ordinary("serve", 0),
   ordinary("ui", 0),
   ordinary("mcp", 0, { errorChannel: "stderr" }),

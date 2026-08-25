@@ -100,6 +100,7 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     },
     recipes: simple(CLI_LEAVES.recipes, ["recipes"], [], dir),
     recipeAdd: simple(CLI_LEAVES.recipeAdd, ["recipe", "add"], ["work-tracking"], dir),
+    recipeEvolve: simple(CLI_LEAVES.recipeEvolve, ["recipe", "evolve"], ["work-tracking"], dir),
     serve: simple(CLI_LEAVES.serve, ["serve"], [], [...dir, "--port", "0"]),
     ui: simple(CLI_LEAVES.ui, ["ui"], [], [...dir, "--port", "0"]),
     mcp: simple(CLI_LEAVES.mcp, ["mcp"], [], dir, "stderr"),

@@ -420,6 +420,12 @@ export const CLI_COMMAND_GROUPS = [
         usage: "recipe add <name-or-path> [--dir <path>] [--remote <url>]",
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
+      {
+        id: "recipeEvolve",
+        leaves: [publicLeaf("recipeEvolve", "recipe evolve", one, undefined, DIR_RECIPE_ROOT_SURFACE)],
+        usage: "recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url>]",
+        summary: "Plan or apply an exact-state, CAS-safe evolution of installed recipe conventions",
+      },
     ],
   },
   {
