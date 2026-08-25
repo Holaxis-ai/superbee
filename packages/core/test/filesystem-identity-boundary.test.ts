@@ -19,6 +19,10 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_ROOT = path.resolve(here, "..", "src");
 const IDENTITY_MODULES = ["backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"];
 const FS_SPECIFIERS = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
+const IDENTITY_MODULE = "./filesystem-identity.js";
+const AMBIENT_SPECIFIERS = new Set(["node:os", "os"]);
+/** Ambient host inputs: values that vary with the machine, the user, or the environment. */
+const AMBIENT_BINDINGS = new Set(["tmpdir", "homedir", "hostname", "userInfo", "networkInterfaces"]);
 
 async function parse(file: string): Promise<ts.SourceFile> {
   return ts.createSourceFile(file, await readFile(path.join(SOURCE_ROOT, file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -38,6 +42,33 @@ function importSpecifiers(source: ts.SourceFile): string[] {
   };
   visit(source);
   return specifiers;
+}
+
+/**
+ * Ambient host inputs an import brings into a module: the `node:os` specifier in any import form,
+ * and any ambient binding by its imported name whatever module it comes from, so a re-export
+ * cannot launder one in. Identity keys are a pure fold of the root and `rel` (I4); a machine-,
+ * user-, or environment-derived value reaching that derivation would make one logical identity
+ * key differently per host, which no runtime assertion downstream can detect.
+ */
+function ambientImports(source: ts.SourceFile): string[] {
+  const found = new Set<string>();
+  const visit = (node: ts.Node): void => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      if (AMBIENT_SPECIFIERS.has(node.moduleSpecifier.text)) found.add(node.moduleSpecifier.text);
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      const [specifier] = node.arguments;
+      if (specifier && ts.isStringLiteralLike(specifier) && AMBIENT_SPECIFIERS.has(specifier.text)) found.add(specifier.text);
+    }
+    if (ts.isImportSpecifier(node) || ts.isExportSpecifier(node)) {
+      const imported = (node.propertyName ?? node.name).text;
+      if (AMBIENT_BINDINGS.has(imported)) found.add(imported);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return [...found].sort();
 }
 
 function processEnvAccesses(source: ts.SourceFile): number[] {
@@ -158,6 +189,174 @@ test("N4: the three runtime modules never read process.env", async () => {
     assert.doesNotMatch(source.text, /process\s*\.\s*env|process\s*\[/, `${file} references process.env textually`);
     assert.doesNotMatch(source.text, /SUPERBEE_TEST_/, `${file} references a test-only environment name`);
   }
+});
+
+test("N4: only the lock module reads an ambient host input", async () => {
+  const files = (await readdir(SOURCE_ROOT)).filter((name) => /\.[cm]?ts$/.test(name)).sort();
+  const ambientImporters: string[] = [];
+  for (const file of files) {
+    if (ambientImports(await parse(file)).length > 0) ambientImporters.push(file);
+  }
+  // The lock module owns the runtime namespace and the owner record, so the temp directory, the
+  // home directory, the user, and the host name are its inputs by design. Nothing else in the
+  // engine may take one, and the two modules that decide identity least of all.
+  //
+  // Recorded reach and limits: the allowlist is engine-wide, not identity-specific, so a future
+  // legitimate `node:os` use anywhere in `src` has to be added here deliberately. The scan
+  // matches by imported name, so a local import that happens to be called `tmpdir`, `homedir`,
+  // `hostname`, `userInfo`, or `networkInterfaces` would false-positive (none does today). It covers
+  // imports only: `process.platform`, `process.getuid()`, `require("os")`, and a computed
+  // dynamic specifier are outside it, and outside the sibling `process.env` guard as well.
+  assert.deepEqual(ambientImporters, ["filesystem-lock.ts"]);
+  for (const file of ["backend.ts", "filesystem-identity.ts"]) {
+    assert.deepEqual(ambientImports(await parse(file)), [], `${file} imports an ambient host input; identity keys must stay pure`);
+  }
+});
+
+// ── N4: the backend binds the one production port ─────────────────────────────
+
+// `backend.ts` reaching the filesystem only through the identity module (asserted above) does not
+// say WHICH port implementation it binds. A second port declared beside the production one and
+// bound here keeps every import legal, typechecks, and passes every behavioral row in the
+// repository, because the protocol rows pass their own port and the backend-driven rows cannot
+// see the difference. So is a port derived locally at the call sites from the legally imported
+// constant, which leaves the imports and the owning module untouched. The binding is therefore
+// pinned structurally at three points: what the backend imports, what the owning module declares,
+// and what each protocol call actually receives. The last of those fails closed twice over: the
+// backend may reach a module only through a static import declaration, so there is one route to
+// the identity module and no unresolvable specifier to argue about, and an entry point may be
+// referenced only as the callee of its own call, because an aliased or forwarded binding puts the
+// port argument beyond the reach of a static check.
+
+test("N4: backend.ts imports exactly the protocol entry points and the one production port", async () => {
+  const backend = await parse("backend.ts");
+  const values: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isImportDeclaration(node) &&
+      ts.isStringLiteralLike(node.moduleSpecifier) &&
+      node.moduleSpecifier.text === IDENTITY_MODULE
+    ) {
+      const clause = node.importClause;
+      assert.ok(clause, "backend.ts must not import the identity module for its side effects");
+      assert.equal(clause.name, undefined, "no default import");
+      assert.ok(clause.namedBindings && ts.isNamedImports(clause.namedBindings), "a namespace import would reach every export");
+      for (const element of clause.namedBindings.elements) {
+        if (!clause.isTypeOnly && !element.isTypeOnly) values.push((element.propertyName ?? element.name).text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(backend);
+  assert.deepEqual(values.sort(), ["mutateExact", "nodeFilesystemIdentityPort", "observeExact", "probeExact"]);
+});
+
+test("N4: the identity module declares exactly one FilesystemIdentityPort constant", async () => {
+  const identity = await parse("filesystem-identity.ts");
+  const ports: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && node.type && ts.isTypeReferenceNode(node.type)) {
+      const annotation = node.type.typeName;
+      if (ts.isIdentifier(annotation) && annotation.text === "FilesystemIdentityPort" && ts.isIdentifier(node.name)) {
+        ports.push(node.name.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(identity);
+  assert.deepEqual(ports, ["nodeFilesystemIdentityPort"], "a second port in the owning module is a binding the backend could take");
+});
+
+test("N4: every protocol call in backend.ts passes the imported production port", async () => {
+  const backend = await parse("backend.ts");
+  const protocolEntryPoints = new Set(["mutateExact", "observeExact", "probeExact"]);
+  const line = (node: ts.Node): number => backend.getLineAndCharacterOfPosition(node.getStart(backend)).line + 1;
+
+  // One route in. Every module reference that is not a static import declaration is rejected
+  // wholesale -- a dynamic `import()` literal or computed, a `require`, an `import =`, a
+  // re-export -- so no specifier has to be resolved to know whether it reaches the identity
+  // module, and a computed one cannot hide behind the fact that it cannot be resolved.
+  const otherRoutes: string[] = [];
+  const identityImports: ts.ImportDeclaration[] = [];
+  const protocolBindings = new Map<string, string>();
+  let portBinding: string | undefined;
+  const routes = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const specifier = node.moduleSpecifier.text;
+      if (specifier === IDENTITY_MODULE) identityImports.push(node);
+      const named = node.importClause?.namedBindings;
+      if (named && ts.isNamedImports(named)) {
+        for (const element of named.elements) {
+          // Local names, so an `as` alias on the port or on an entry point is followed, and the
+          // entry points are recognized by their imported name whatever module supplies them.
+          const imported = (element.propertyName ?? element.name).text;
+          if (imported === "nodeFilesystemIdentityPort" && specifier === IDENTITY_MODULE) portBinding = element.name.text;
+          if (protocolEntryPoints.has(imported)) protocolBindings.set(element.name.text, specifier);
+        }
+      }
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      otherRoutes.push(`a dynamic import() at line ${line(node)}`);
+    } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "require") {
+      otherRoutes.push(`a require() at line ${line(node)}`);
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      otherRoutes.push(`an import = declaration at line ${line(node)}`);
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      otherRoutes.push(`a re-export at line ${line(node)}`);
+    }
+    ts.forEachChild(node, routes);
+  };
+  routes(backend);
+
+  assert.deepEqual(otherRoutes, [], "backend.ts must reach every module it uses through a static import declaration");
+  assert.equal(identityImports.length, 1, "the identity module must be imported by exactly one declaration");
+  assert.ok(portBinding, "backend.ts must import the production port");
+  assert.deepEqual(
+    [...protocolBindings].filter(([, specifier]) => specifier !== IDENTITY_MODULE),
+    [],
+    "a protocol entry point is bound from a module other than the identity module",
+  );
+  assert.equal(protocolBindings.size, protocolEntryPoints.size, "backend.ts must import every protocol entry point");
+
+  const passed: string[] = [];
+  const escaped: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && protocolBindings.has(node.text) && !ts.isImportSpecifier(node.parent)) {
+      if (ts.isCallExpression(node.parent) && node.parent.expression === node) {
+        const [port] = node.parent.arguments;
+        passed.push(port && ts.isIdentifier(port) ? port.text : "a derived expression");
+      } else {
+        // Fail closed on every other reference shape rather than resolving arbitrary bindings:
+        // once an entry point is aliased, assigned, or passed on, no static rule here can tell
+        // which port the eventual call receives.
+        escaped.push(`${node.text} in a ${ts.SyntaxKind[node.parent.kind]} at line ${line(node)}`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(backend);
+
+  assert.deepEqual(escaped, [], "a protocol entry point is referenced somewhere other than as the callee of its own call");
+  // Every reference is now a checked call site, so this count cannot be met by other call sites
+  // covering for a hidden one; it guards only against the row passing with no call sites at all.
+  assert.ok(passed.length >= 10, `expected the backend's protocol call sites, found ${passed.length}`);
+  assert.deepEqual([...new Set(passed)], [portBinding], "a protocol call takes a port other than the imported production constant");
+});
+
+test("N4: the boundary scanner recognizes every ambient-input import form", () => {
+  const source = ts.createSourceFile(
+    "synthetic.ts",
+    [
+      'import { tmpdir } from "node:os";',
+      'import * as os from "os";',
+      'import { hostname as hn } from "./laundered.js";',
+      'const later = import("node:os");',
+      "void [tmpdir, os, hn, later];",
+    ].join("\n"),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  assert.deepEqual(ambientImports(source), ["hostname", "node:os", "os", "tmpdir"]);
 });
 
 test("N4: the boundary scanner recognizes every process.env access form", () => {
