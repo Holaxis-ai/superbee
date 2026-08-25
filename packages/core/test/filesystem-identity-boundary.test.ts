@@ -19,6 +19,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const SOURCE_ROOT = path.resolve(here, "..", "src");
 const IDENTITY_MODULES = ["backend.ts", "filesystem-identity.ts", "filesystem-lock.ts"];
 const FS_SPECIFIERS = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
+const IDENTITY_MODULE = "./filesystem-identity.js";
 const AMBIENT_SPECIFIERS = new Set(["node:os", "os"]);
 /** Ambient host inputs: values that vary with the machine, the user, or the environment. */
 const AMBIENT_BINDINGS = new Set(["tmpdir", "homedir", "hostname", "userInfo", "networkInterfaces"]);
@@ -221,9 +222,11 @@ test("N4: only the lock module reads an ambient host input", async () => {
 // see the difference. So is a port derived locally at the call sites from the legally imported
 // constant, which leaves the imports and the owning module untouched. The binding is therefore
 // pinned structurally at three points: what the backend imports, what the owning module declares,
-// and what each protocol call actually receives. The last of those fails closed on any reference
-// to an entry point that is not the callee of its own call, because an aliased or forwarded
-// binding puts the port argument beyond the reach of a static check.
+// and what each protocol call actually receives. The last of those fails closed twice over: the
+// backend may reach a module only through a static import declaration, so there is one route to
+// the identity module and no unresolvable specifier to argue about, and an entry point may be
+// referenced only as the callee of its own call, because an aliased or forwarded binding puts the
+// port argument beyond the reach of a static check.
 
 test("N4: backend.ts imports exactly the protocol entry points and the one production port", async () => {
   const backend = await parse("backend.ts");
@@ -232,7 +235,7 @@ test("N4: backend.ts imports exactly the protocol entry points and the one produ
     if (
       ts.isImportDeclaration(node) &&
       ts.isStringLiteralLike(node.moduleSpecifier) &&
-      node.moduleSpecifier.text === "./filesystem-identity.js"
+      node.moduleSpecifier.text === IDENTITY_MODULE
     ) {
       const clause = node.importClause;
       assert.ok(clause, "backend.ts must not import the identity module for its side effects");
@@ -267,27 +270,51 @@ test("N4: the identity module declares exactly one FilesystemIdentityPort consta
 test("N4: every protocol call in backend.ts passes the imported production port", async () => {
   const backend = await parse("backend.ts");
   const protocolEntryPoints = new Set(["mutateExact", "observeExact", "probeExact"]);
-  const protocolBindings = new Set<string>();
+  const line = (node: ts.Node): number => backend.getLineAndCharacterOfPosition(node.getStart(backend)).line + 1;
+
+  // One route in. Every module reference that is not a static import declaration is rejected
+  // wholesale -- a dynamic `import()` literal or computed, a `require`, an `import =`, a
+  // re-export -- so no specifier has to be resolved to know whether it reaches the identity
+  // module, and a computed one cannot hide behind the fact that it cannot be resolved.
+  const otherRoutes: string[] = [];
+  const identityImports: ts.ImportDeclaration[] = [];
+  const protocolBindings = new Map<string, string>();
   let portBinding: string | undefined;
-  const importedVisit = (node: ts.Node): void => {
-    if (
-      ts.isImportDeclaration(node) &&
-      ts.isStringLiteralLike(node.moduleSpecifier) &&
-      node.moduleSpecifier.text === "./filesystem-identity.js" &&
-      node.importClause?.namedBindings &&
-      ts.isNamedImports(node.importClause.namedBindings)
-    ) {
-      for (const element of node.importClause.namedBindings.elements) {
-        // Local names, so an `as` alias on either the port or an entry point is followed.
-        const imported = (element.propertyName ?? element.name).text;
-        if (imported === "nodeFilesystemIdentityPort") portBinding = element.name.text;
-        if (protocolEntryPoints.has(imported)) protocolBindings.add(element.name.text);
+  const routes = (node: ts.Node): void => {
+    if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      const specifier = node.moduleSpecifier.text;
+      if (specifier === IDENTITY_MODULE) identityImports.push(node);
+      const named = node.importClause?.namedBindings;
+      if (named && ts.isNamedImports(named)) {
+        for (const element of named.elements) {
+          // Local names, so an `as` alias on the port or on an entry point is followed, and the
+          // entry points are recognized by their imported name whatever module supplies them.
+          const imported = (element.propertyName ?? element.name).text;
+          if (imported === "nodeFilesystemIdentityPort" && specifier === IDENTITY_MODULE) portBinding = element.name.text;
+          if (protocolEntryPoints.has(imported)) protocolBindings.set(element.name.text, specifier);
+        }
       }
+    } else if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) {
+      otherRoutes.push(`a dynamic import() at line ${line(node)}`);
+    } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "require") {
+      otherRoutes.push(`a require() at line ${line(node)}`);
+    } else if (ts.isImportEqualsDeclaration(node)) {
+      otherRoutes.push(`an import = declaration at line ${line(node)}`);
+    } else if (ts.isExportDeclaration(node) && node.moduleSpecifier) {
+      otherRoutes.push(`a re-export at line ${line(node)}`);
     }
-    ts.forEachChild(node, importedVisit);
+    ts.forEachChild(node, routes);
   };
-  importedVisit(backend);
+  routes(backend);
+
+  assert.deepEqual(otherRoutes, [], "backend.ts must reach every module it uses through a static import declaration");
+  assert.equal(identityImports.length, 1, "the identity module must be imported by exactly one declaration");
   assert.ok(portBinding, "backend.ts must import the production port");
+  assert.deepEqual(
+    [...protocolBindings].filter(([, specifier]) => specifier !== IDENTITY_MODULE),
+    [],
+    "a protocol entry point is bound from a module other than the identity module",
+  );
   assert.equal(protocolBindings.size, protocolEntryPoints.size, "backend.ts must import every protocol entry point");
 
   const passed: string[] = [];
@@ -301,7 +328,7 @@ test("N4: every protocol call in backend.ts passes the imported production port"
         // Fail closed on every other reference shape rather than resolving arbitrary bindings:
         // once an entry point is aliased, assigned, or passed on, no static rule here can tell
         // which port the eventual call receives.
-        escaped.push(`${node.text} in a ${ts.SyntaxKind[node.parent.kind]}`);
+        escaped.push(`${node.text} in a ${ts.SyntaxKind[node.parent.kind]} at line ${line(node)}`);
       }
     }
     ts.forEachChild(node, visit);
