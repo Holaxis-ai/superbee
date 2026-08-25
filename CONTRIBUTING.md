@@ -87,7 +87,7 @@ the same unit.
 | Lane | Local command | CI job | Node |
 | --- | --- | --- | --- |
 | runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
-| aliasing-host | workflow only | `aliasing-host` | 26 |
+| aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
@@ -102,13 +102,16 @@ Minimum iteration lanes by reach:
 | `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
 | `packages/ui`, `packages/mcp-app`, or embedded browser code | `npm run ci:browser` |
 | Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts` |
+| Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
 add path skipping without a separately reviewed fail-closed classifier. CI runs on Linux plus
-the `aliasing-host` lane, which repeats `npm run ci:runtime` on macOS with
+the `aliasing-host` lane, which runs `npm run ci:aliasing-host` on macOS with
 `SUPERBEE_TEST_EXPECT_ALIASING_HOST=1` (the Linux runtime jobs set `0`) so tests whose native
-branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. Other
+branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. The lane's
+scope is a constraint, not a list: `scripts/aliasing-host-coverage.test.mjs` fails when a
+host-sensitive workspace test is not executed by the lane's script chain. Other
 platform-specific claims still need their own empirical probe.
 
 ### Running checks

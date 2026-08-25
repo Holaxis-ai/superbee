@@ -81,7 +81,8 @@ function assertHostExpectations(jobs, candidate) {
       `${name} must pin the host-class expectation`,
     );
     assert.ok(job.includes(lane.host_guard), `${name} must self-check its host class`);
-    assert.match(job, /run: npm run ci:runtime/, `${name} must run the runtime contract`);
+    assert.equal(typeof lane.script, "string", `${name} must declare the script its job runs`);
+    assert.match(job, new RegExp(`run: npm run ${lane.script}$`, "m"), `${name} must run its declared script`);
   }
   assert.deepEqual(expectations, { runtime: "0", "aliasing-host": "1" }, "both host classes must be pinned");
 }
@@ -159,6 +160,7 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   );
   for (const [from, to, error] of [
     ["    runs-on: macos-latest", "    runs-on: ubuntu-latest", /aliasing-host must run on macos-latest/],
+    ["        run: npm run ci:aliasing-host", "        run: npm run ci:runtime", /aliasing-host must run its declared script/],
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', /aliasing-host must pin the host-class expectation/],
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', /runtime must pin the host-class expectation/],
     ['test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /aliasing-host must self-check its host class/],
