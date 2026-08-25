@@ -54,7 +54,7 @@ jobs:
         run: npm run ci:runtime
 
   aliasing-host:
-    name: runtime on an aliasing host (macos, node 26)
+    name: host-class proofs on an aliasing host (macos, node 26)
     runs-on: macos-latest
     timeout-minutes: 30
     env:
@@ -70,8 +70,8 @@ jobs:
       - run: npm ci
       - name: Confirm the runner filesystem aliases case
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
-      - name: Run the runtime-sensitive contract on a case-aliasing filesystem
-        run: npm run ci:runtime
+      - name: Run the host-class-dependent proofs on a case-aliasing filesystem
+        run: npm run ci:aliasing-host
 
   distribution:
     name: distribution package and installed behavior

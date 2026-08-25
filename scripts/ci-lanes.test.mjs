@@ -228,10 +228,9 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and singleton lan
 test("the aliasing-host lane pins a fail-closed host expectation on both host classes", () => {
   assert.equal(manifest.host_expectation_variable, "SUPERBEE_TEST_EXPECT_ALIASING_HOST");
   const lane = manifest.lanes["aliasing-host"];
-  assert.equal(lane.workflow_only, true, "the lane reuses the runtime script rather than owning components");
-  assert.deepEqual(lane.components, []);
+  assert.equal(lane.script, "ci:aliasing-host", "the lane runs the scoped host-class target");
+  assert.deepEqual(lane.components, [], "scoped coverage is proven by aliasing-host-coverage, not owned components");
   assert.equal(lane.runs_on, "macos-latest");
-  assert.equal(lane.runtime_script, manifest.lanes.runtime.script);
   assert.equal(lane.expect_aliasing_host, "1");
   assert.equal(manifest.lanes.runtime.expect_aliasing_host, "0");
   for (const name of ["runtime", "aliasing-host"]) {
