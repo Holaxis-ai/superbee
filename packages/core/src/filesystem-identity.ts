@@ -21,6 +21,14 @@
  *   fold did not equate; a first-creation race cannot succeed with the wrong spelling and cannot
  *   silently replace the winner.
  *
+ * An observation's linearization point is the post-walk that validated the bytes: what it returns
+ * is a state of THIS identity at that instant, never a foreign one and never bytes straddling two
+ * states. A read concurrent with a legitimate same-spelling replacement may therefore return the
+ * old value or the new one, both real; a caller that needs one state across several reads uses
+ * versions and compare-and-swap, as mutations already do. Sustained interference is bounded
+ * rather than resolved: after MAX_RESTARTS the observation refuses with
+ * {@link ConcurrentReplacementError} instead of attributing bytes to a state it cannot name.
+ *
  * Exactness applies to `rel` segments only. The bundle root is the declared storage context:
  * a root (tail) segment that already exists as a directory under any spelling is accepted,
  * and the root's spelling is folded into the lock key rather than verified.

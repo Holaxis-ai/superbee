@@ -26,13 +26,15 @@ import {
   docVersions,
   parseLinks,
   MemoryBackend,
+  FilesystemIdentityAliasError,
   type Bundle,
   type OkfDocument,
   type Version,
 } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
 import { link, addLink } from "../src/commands/link.js";
-import { CliError } from "../src/errors.js";
+import { CliError, classifyBundleError, toExit } from "../src/errors.js";
+import { detectHostClass } from "../../core/test/host-class.js";
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
@@ -526,6 +528,60 @@ test("link add: an absent target attaches a LINK_TARGET_ABSENT warning to the su
     // The link itself IS written — forward-declaration stays legal, never refused.
     const doc = await readDoc({ root: dir }, "concepts/a");
     assert.match(doc.body, /\[cites\]\(ghots\.md\)/);
+  } finally {
+    await cleanup();
+  }
+});
+
+// ── link add to an ALIAS spelling: refused, never forward-declared ─────────────────────────────
+//
+// Adversarial QA (2026-08-24) saw `link add <exact-id> <alias-spelling>` SUCCEED on an aliasing
+// host: it wrote a dangling forward declaration whose stored href resolves to the REAL file for
+// any tool that does not enforce exact identity, and reported the reason as LINK_LINT_UNAVAILABLE
+// rather than naming the alias. Core refuses every operation on an alias spelling, so such a link
+// can never be fulfilled. Decided (Brian, 2026-08-24): refuse, with core's own typed alias
+// verdict, which is an InvalidInputError and therefore USAGE/exit 2 like every other alias refusal.
+//
+// Host-conditional and never skipped: where the host does NOT alias case pairs, `concepts/B` is a
+// genuinely distinct absent id and must keep the ordinary forward-declaration behavior. Either
+// way the absent-but-legal class below must still be accepted with its existing warning.
+test("link add: an alias spelling of an existing target is refused, while an absent-but-legal id stays a forward declaration", async () => {
+  const aliasing = (await detectHostClass()) !== "exact";
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    const before = await readDocVersioned({ root: dir }, "concepts/a");
+    if (aliasing) {
+      await assert.rejects(
+        () => linkAdd(dir, ["concepts/a", "concepts/B"]),
+        (err: unknown) => {
+          assert.ok(err instanceof FilesystemIdentityAliasError, `expected the typed alias verdict, got ${String(err)}`);
+          assert.equal(classifyBundleError(err).code, "USAGE");
+          assert.equal(toExit(err).exitCode, 2);
+          return true;
+        },
+      );
+      // Refused BEFORE the mutation: nothing written, no clock advanced, no version moved.
+      const after = await readDocVersioned({ root: dir }, "concepts/a");
+      assert.equal(after.version, before.version);
+      assert.equal(after.doc.body, before.doc.body);
+      assert.deepEqual(parseLinks({ root: dir }, after.doc), []);
+    } else {
+      const distinct = await linkAdd(dir, ["concepts/a", "concepts/B"]);
+      assert.equal(distinct.changed, true);
+      const warnings = distinct.warnings as Array<Record<string, unknown>>;
+      assert.equal(warnings.length, 1);
+      assert.equal(warnings[0]!.code, "LINK_TARGET_ABSENT");
+    }
+
+    const forward = await linkAdd(dir, ["concepts/a", "concepts/not-written-yet"]);
+    assert.equal(forward.changed, true);
+    const forwardWarnings = forward.warnings as Array<Record<string, unknown>>;
+    assert.equal(forwardWarnings.length, 1);
+    assert.equal(forwardWarnings[0]!.code, "LINK_TARGET_ABSENT");
+    assert.match(
+      forwardWarnings[0]!.message as string,
+      /'concepts\/not-written-yet' has no document yet/,
+    );
   } finally {
     await cleanup();
   }

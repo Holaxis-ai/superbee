@@ -11,7 +11,9 @@ import { FilesystemBackend } from "../src/backend.js";
 // nothing may be replaced, and the error must surface unchanged.
 test("FilesystemBackend expect-absent observation propagates read uncertainty", async (t) => {
   if (process.getuid?.() === 0) {
-    t.diagnostic("running as root: EACCES cannot be provoked; this row is not exercised");
+    // Skip, not a diagnostic: as root there is no EACCES to provoke, so nothing here is proven
+    // and a pass would say otherwise. A skip counts in the runner's summary.
+    t.skip("running as root: EACCES cannot be provoked; this row is not exercised");
     return;
   }
   const root = await mkdtemp(path.join(tmpdir(), "agentstate-lite-expected-version-"));

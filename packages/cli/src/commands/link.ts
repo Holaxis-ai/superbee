@@ -37,6 +37,7 @@ import {
   isReservedFile,
   pathFromConceptId,
   loadKinds,
+  FilesystemIdentityAliasError,
   type Bundle,
   type EdgeFilter,
   type KindRegistry,
@@ -256,6 +257,28 @@ async function lintLinkType(
  * Warn when a newly linked local target is absent. Remote deliberately skips this advisory to
  * avoid adding a HEAD request; non-absence read failures propagate to the post-write fallback.
  */
+/**
+ * Pre-write refusal for a target whose spelling ALIASES an existing entry on this host (a
+ * differently cased or normalized spelling of a document that is already there). Core refuses
+ * every operation on such a spelling, so the link could never be fulfilled: a forward declaration
+ * to an id that can never be created is not a forward declaration, and the href we would store
+ * still resolves to the real file for any tool that does not enforce exact identity. Raised as
+ * core's own typed alias verdict, which is an `InvalidInputError` and maps to USAGE like every
+ * other operation on an alias spelling.
+ *
+ * Only the alias verdict blocks. A target that is merely ABSENT stays legal and keeps its
+ * post-write `LINK_TARGET_ABSENT` warning, and any other read failure stays non-blocking here:
+ * the post-write checks own it, and a degraded read must not refuse a legal link.
+ */
+async function assertTargetNotAlias(bundle: Bundle, to: string, remoteUrl: string | undefined): Promise<void> {
+  if (remoteUrl !== undefined) return;
+  try {
+    await readDoc(bundle, to);
+  } catch (err) {
+    if (err instanceof FilesystemIdentityAliasError) throw err;
+  }
+}
+
 async function targetAbsentWarning(
   bundle: Bundle,
   to: string,
@@ -382,6 +405,8 @@ export async function addLink(
       { help: `${cliInvocation()} list` },
     );
   }
+
+  await assertTargetNotAlias(bundle, normalizedTo, opts.remoteUrl);
 
   // Link addition is an ordinary body patch through the shared document mutation service. That
   // service owns CAS/retry, edition-aware clocks, actor persistence, no-op receipts, and Kind

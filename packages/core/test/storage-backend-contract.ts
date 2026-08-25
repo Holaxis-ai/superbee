@@ -16,7 +16,7 @@ import type {
 } from "../src/types.js";
 import { blobVersion, contentVersion, VersionConflict } from "../src/versioning.js";
 import { FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
-import type { HostClass } from "./host-class.js";
+import type { HostAliasing } from "./host-class.js";
 
 export interface BackendFixture {
   backend: StorageBackend;
@@ -31,7 +31,7 @@ export interface BackendContractOptions {
 export interface IdentityBackendContractOptions {
   name: string;
   /** The fixture reports the host class its storage actually sits on ("exact" for non-filesystem adapters). */
-  create(): Promise<BackendFixture & { hostClass: HostClass }> | (BackendFixture & { hostClass: HostClass });
+  create(): Promise<BackendFixture & { host: HostAliasing }> | (BackendFixture & { host: HostAliasing });
 }
 
 export interface AtomicBackendContractOptions {
@@ -504,16 +504,29 @@ export function registerStorageBackendQueryHeadsContract(options: BackendContrac
 
 /**
  * Identity rows (I7): one conditional row per operation for a spelling that aliases an existing
- * entry on the fixture's host class. On an aliasing host every operation with the alias is
- * refused with the typed alias verdict and the canonical entry is untouched; on an exact host
- * the alias is simply a distinct absent identity. A normalizing host (legacy HFS+) is out of
- * scope: it treats case pairs like an aliasing host, and its NFC/NFD behavior is pinned by the
- * native suite's AC-17 row instead. `dev`/`ino` are assumed stable per observation on local
+ * entry. Each row branches on whether the host aliases THAT KIND of pair (case, normalization),
+ * not on the aggregate host class: a case-sensitive but normalization-insensitive volume aliases
+ * one and not the other, and an aggregate branch would score correct behavior as a failure there.
+ * On a host that aliases the pair, every operation with the alias is refused with the typed alias
+ * verdict and the canonical entry is untouched; otherwise the alias is simply a distinct absent
+ * identity. A normalizing host (legacy HFS+) is out of scope: its NFC/NFD behavior is pinned by
+ * the native suite's AC-17 row instead. `dev`/`ino` are assumed stable per observation on local
  * APFS/ext4; network filesystems are unsupported. First creation of a document is published with a
  * hard link so the host's own equivalence refuses a second spelling the identity fold did not
  * equate; on a local filesystem without hard links (exFAT, FAT32, some FUSE mounts) first creation
  * falls back to rename, and two CONCURRENT first-creation writers of such a host-equated pair are
  * not excluded there (sequential access is still refused). That residual is confined to those hosts.
+ *
+ * Two further shapes these rows do not exercise, recorded so the contract states them:
+ *
+ * - Hard-link publication means a crash between `link` and `unlink(tmp)` leaves the document's
+ *   inode carrying a SECOND name, the dot-prefixed temp. Listings skip dot entries, so the
+ *   document reads normally, but a later replace or delete of the document leaves the OLD bytes
+ *   on disk under that invisible name until the residue is swept.
+ * - "This filesystem has no hard links" is classified by errno (EPERM/ENOTSUP/EOPNOTSUPP/EXDEV),
+ *   not by a positive capability check, and is remembered per root for the process. A transient
+ *   EPERM on a link-capable mount therefore moves that root onto the rename fallback — and onto
+ *   the fold-gap residual above — for the rest of the process lifetime.
  */
 export function registerStorageBackendIdentityContract(options: IdentityBackendContractOptions): void {
   const { name, create } = options;
@@ -522,26 +535,28 @@ export function registerStorageBackendIdentityContract(options: IdentityBackendC
   const isEnoent = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 
   async function withIdentityFixture(
-    run: (backend: StorageBackend, hostClass: HostClass) => Promise<void>,
+    run: (backend: StorageBackend, host: HostAliasing) => Promise<void>,
   ): Promise<void> {
     const fixture = await create();
     try {
-      await run(fixture.backend, fixture.hostClass);
+      await run(fixture.backend, fixture.host);
     } finally {
       await fixture.cleanup();
     }
   }
 
-  const documentPairs: Array<[string, string, string]> = [
+  // The label is the pair KIND and indexes the host's per-kind verdict, so a row can never be
+  // scored against a kind of aliasing its own pair does not exercise.
+  const documentPairs: Array<["case" | "normalization", string, string]> = [
     ["case", "concepts/exact-name", "concepts/EXACT-NAME"],
     ["normalization", "concepts/caf\u00e9", "concepts/cafe\u0301"],
   ];
 
   for (const [label, id, alias] of documentPairs) {
-    test(`${name} contract: document ${label} alias is refused on an aliasing host and distinct otherwise`, async () => {
-      await withIdentityFixture(async (backend, hostClass) => {
-        if (label === "normalization" && hostClass === "normalizing") return; // pinned by AC-17 instead
-        const aliasing = hostClass !== "exact";
+    test(`${name} contract: document ${label} alias is refused where the host aliases that pair and distinct otherwise`, async () => {
+      await withIdentityFixture(async (backend, host) => {
+        if (label === "normalization" && host.hostClass === "normalizing") return; // pinned by AC-17 instead
+        const aliasing = host[label];
         const version = await backend.write(id, doc(id, "canonical"));
         assert.deepEqual(await backend.list("concepts/"), [id]);
 
@@ -575,9 +590,9 @@ export function registerStorageBackendIdentityContract(options: IdentityBackendC
     });
   }
 
-  test(`${name} contract: reserved-file directory alias is refused on an aliasing host and distinct otherwise`, async () => {
-    await withIdentityFixture(async (backend, hostClass) => {
-      const aliasing = hostClass !== "exact";
+  test(`${name} contract: reserved-file directory alias is refused where the host aliases case and distinct otherwise`, async () => {
+    await withIdentityFixture(async (backend, host) => {
+      const aliasing = host.case; // "Docs" vs "docs" is a case pair only
       const version = await backend.writeReserved("Docs", "index.md", "# Docs\n");
       if (aliasing) {
         await assert.rejects(() => backend.readReserved("docs", "index.md"), isAlias);
@@ -595,9 +610,9 @@ export function registerStorageBackendIdentityContract(options: IdentityBackendC
     });
   });
 
-  test(`${name} contract: blob key alias is refused on an aliasing host and distinct otherwise`, async () => {
-    await withIdentityFixture(async (backend, hostClass) => {
-      const aliasing = hostClass !== "exact";
+  test(`${name} contract: blob key alias is refused where the host aliases case and distinct otherwise`, async () => {
+    await withIdentityFixture(async (backend, host) => {
+      const aliasing = host.case; // "Exact.bin" vs "exact.bin" is a case pair only
       const key = "artifacts/Exact.bin";
       const alias = "artifacts/exact.bin";
       const version = await backend.writeBlob(key, enc("canonical"));
