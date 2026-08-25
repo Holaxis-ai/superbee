@@ -64,10 +64,24 @@ export function classifyHostAliasing(outcome: HostProbeOutcome): HostAliasing {
  * branch a row on `hostClass` — the aggregate is true whenever EITHER kind aliases.
  *
  * Model: case-insensitivity is full Unicode case folding (what APFS, NTFS, and ext4 casefold do),
- * and normalization-insensitivity is NFC/NFD equivalence. A host whose case-insensitivity is
- * narrower than full folding would equate fewer pairs than this predicts; none of the supported
- * hosts is such a host, and `detectHostAliasingIn` measures the two dimensions rather than
- * assuming them.
+ * and normalization-insensitivity is NFC/NFD equivalence. `detectHostAliasingIn` measures the two
+ * dimensions rather than assuming them, but the reducer approximates full folding with a
+ * lower/upper/lower round trip, and that approximation is not exact in both directions:
+ *
+ * - Narrower host: one whose case-insensitivity is less than full folding would equate fewer pairs
+ *   than this predicts. None of the supported hosts is such a host.
+ * - WIDER predicate, measured: the round trip maps U+0131 (dotless i) to `i`, but Unicode default
+ *   full case folding leaves U+0131 alone — its only mapping is the Turkic variant. So the
+ *   predicate calls `ı`/`I` and `ı`/`i` aliased; on case-insensitive APFS neither `I` nor `i`
+ *   reaches a file written as `ı`, and an external review measured the same on case-sensitive
+ *   APFS. U+0130 (dotted capital I) is predicted distinct and is distinct. No row writes such a
+ *   pair, so nothing is red today; a row that did would get a false red, which is this file's own
+ *   defect class one layer down. `Intl.Collator` with `sensitivity: "accent"` was measured as the
+ *   alternative and is worse — it calls ß/STRASSE, ẞ/SS, ᾈ/ἀι and ſ/S distinct, all of which the
+ *   host really does equate — so the round trip stays and the exception is recorded instead.
+ *
+ * This is the TEST fixture's fold, not the identity fold in `filesystem-identity.ts`; that one is
+ * a lock key, where over-equating is the safe direction, and it is not affected by anything here.
  */
 export function hostAliasesPair(host: HostAliasing, first: string, second: string): boolean {
   const reduce = (name: string): string => {
