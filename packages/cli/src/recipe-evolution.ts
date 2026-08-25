@@ -130,6 +130,15 @@ function pointerSegment(value: string): string {
   return value.replaceAll("~", "~0").replaceAll("/", "~1");
 }
 
+function setOwn(record: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 /**
  * Merge recipe declarations into a user-owned convention without deleting or replacing any
  * existing semantic value. Arrays are declaration sets: additions append, while omissions are
@@ -173,7 +182,7 @@ function additiveConventionCandidate(
         }
       }
       for (const value of next) {
-        if (current.some((candidate) => isDeepStrictEqual(candidate, value))) continue;
+        if (merged.some((candidate) => isDeepStrictEqual(candidate, value))) continue;
         merged.push(value);
         addedPaths.push(`${pointer}/${pointerSegment(String(value))}`);
       }
@@ -184,11 +193,11 @@ function additiveConventionCandidate(
     if (currentRecord && nextRecord) {
       const merged: Record<string, unknown> = { ...currentRecord };
       for (const key of new Set([...Object.keys(currentRecord), ...Object.keys(nextRecord)])) {
-        merged[key] = merge(
+        setOwn(merged, key, merge(
           currentRecord[key],
           nextRecord[key],
           `${pointer}/${pointerSegment(key)}`,
-        );
+        ));
       }
       return merged;
     }
@@ -206,18 +215,14 @@ function additiveConventionCandidate(
   const desiredFrontmatter = desired.frontmatter;
   const candidateFrontmatter: Record<string, unknown> = { ...currentFrontmatter };
   for (const key of new Set([...Object.keys(currentFrontmatter), ...Object.keys(desiredFrontmatter)])) {
-    if (PRESERVED_ROOT_METADATA.has(key)) {
-      if (currentFrontmatter[key] === undefined && desiredFrontmatter[key] !== undefined) {
-        candidateFrontmatter[key] = desiredFrontmatter[key];
-        addedPaths.push(`/frontmatter/${pointerSegment(key)}`);
-      }
-      continue;
-    }
-    candidateFrontmatter[key] = merge(
+    // Evolution never imports recipe-authored provenance, verification, or mutation attribution.
+    // These coordinates come exclusively from the installed document and the shared write policy.
+    if (PRESERVED_ROOT_METADATA.has(key)) continue;
+    setOwn(candidateFrontmatter, key, merge(
       currentFrontmatter[key],
       desiredFrontmatter[key],
       `/frontmatter/${pointerSegment(key)}`,
-    );
+    ));
   }
 
   let body = existing.body;

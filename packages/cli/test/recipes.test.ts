@@ -1297,6 +1297,79 @@ test("recipe evolve: preserved v0.2 provenance converges after one additive appl
   }
 });
 
+test("recipe evolve: recipe-authored provenance and mutation attribution are never injected", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir);
+    await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+    const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
+    desired.docs[0] = {
+      ...desired.docs[0]!,
+      frontmatter: {
+        ...desired.docs[0]!.frontmatter,
+        generated: { by: "process:recipe-author", at: T },
+        verified: [{ by: "human:mike", at: T }],
+        superbee_updated_by: "claimed-author",
+      },
+    };
+
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true);
+    assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token);
+    const evolved = await readDoc(bundle, "conventions/widget");
+    assert.equal(evolved.frontmatter.generated, undefined);
+    assert.equal(evolved.frontmatter.verified, undefined);
+    assert.equal(evolved.frontmatter.superbee_updated_by, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("recipe evolve: additive declaration arrays behave as sets and never persist duplicates", async () => {
+  const bundle: Bundle = { root: "mem://recipe-evolution-array-set", backend: new MemoryBackend() };
+  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  const desired = widgetRecipe("2", widgetFields(["title"], ["colour", "colour"]));
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true);
+  assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
+  await applyRecipeEvolution(bundle, desired, plan.plan_token);
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")?.fields.optional, ["colour"]);
+  assert.equal((await planRecipeEvolution(bundle, desired)).changed, false);
+});
+
+test("recipe evolve: prototype-looking nested declaration keys remain own data properties", async () => {
+  const initial = widgetRecipe("1", widgetFields());
+  initial.docs[0] = {
+    ...initial.docs[0]!,
+    frontmatter: { ...initial.docs[0]!.frontmatter, custom: {} },
+  };
+  const desired = widgetRecipe("2", widgetFields());
+  const custom: Record<string, unknown> = {};
+  Object.defineProperty(custom, "__proto__", {
+    value: { flag: true },
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+  desired.docs[0] = {
+    ...desired.docs[0]!,
+    frontmatter: { ...desired.docs[0]!.frontmatter, custom },
+  };
+  const bundle: Bundle = { root: "mem://recipe-evolution-own-keys", backend: new MemoryBackend() };
+  await applyRecipe(bundle, initial, T);
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true);
+  assert.deepEqual(plan.definitions[0]!.added_paths, ["/frontmatter/custom/__proto__/flag"]);
+  await applyRecipeEvolution(bundle, desired, plan.plan_token);
+  const installed = await readDoc(bundle, "conventions/widget");
+  const installedCustom = installed.frontmatter.custom as Record<string, unknown>;
+  assert.equal(Object.prototype.hasOwnProperty.call(installedCustom, "__proto__"), true);
+  assert.deepEqual(installedCustom.__proto__, { flag: true });
+});
+
 test("recipe evolve: a locally added declaration is preserved and source removal blocks automatic apply", async () => {
   const bundle: Bundle = { root: "mem://recipe-evolution-local-extension", backend: new MemoryBackend() };
   const initial = widgetRecipe("1", widgetFields(["title"], ["owner"]));
