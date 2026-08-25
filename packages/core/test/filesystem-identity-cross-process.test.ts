@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 import { identityKey } from "../src/filesystem-identity.js";
 import { acquireFilesystemIdentityLock, filesystemIdentityLockPath } from "../src/filesystem-lock.js";
-import { detectHostClass } from "./host-class.js";
+import { detectHostAliasing, hostAliasesPair } from "./host-class.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOADER = path.join(HERE, "ts-loader.mjs");
@@ -147,7 +147,10 @@ async function ownerToken(lockPath: string): Promise<string> {
 }
 
 test("AC-10: witnessed first-creation exclusion across processes on the same leaf", async () => {
-  const hostClass = await detectHostClass();
+  // Branch on whether this host equates the two spellings this row writes, never on the
+  // aggregate class: a case-sensitive, normalization-insensitive host is "aliasing" overall and
+  // still treats these two case spellings as distinct ids.
+  const aliasesPair = hostAliasesPair(await detectHostAliasing(), "concepts/first-name", "concepts/FIRST-NAME");
   const a = await arena();
   const children: Mailbox[] = [];
   let release: (() => Promise<void>) | undefined;
@@ -183,7 +186,7 @@ test("AC-10: witnessed first-creation exclusion across processes on the same lea
 
     // (iv, cond) outcome set by host class.
     const files = await fs.readdir(path.join(a.root, "concepts"));
-    if (hostClass === "exact") {
+    if (!aliasesPair) {
       assert.deepEqual(fulfilled.sort(), ["concepts/FIRST-NAME", "concepts/first-name"]);
       assert.deepEqual(refused, []);
       assert.deepEqual(files.sort(), ["FIRST-NAME.md", "first-name.md"]);

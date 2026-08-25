@@ -22,7 +22,7 @@ import {
 } from "../src/filesystem-identity.js";
 import { FilesystemMutationLockError, filesystemIdentityLockPath, filesystemMutationLockRoot } from "../src/filesystem-lock.js";
 import { VersionConflict } from "../src/versioning.js";
-import { detectHostClass, type HostClass } from "./host-class.js";
+import { classifyHostAliasing, detectHostAliasing, detectHostClass, hostAliasesPair, type HostAliasing, type HostClass } from "./host-class.js";
 
 const TIMESTAMP = "2026-07-01T00:00:00.000Z";
 const doc = (id: string, body: string) => ({ id, frontmatter: { type: "NativeFixture", timestamp: TIMESTAMP }, body });
@@ -30,6 +30,11 @@ const isEnoent = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.
 
 let hostClassPromise: Promise<HostClass> | undefined;
 const hostClass = (): Promise<HostClass> => (hostClassPromise ??= detectHostClass());
+let hostAliasingPromise: Promise<HostAliasing> | undefined;
+const hostAliasing = (): Promise<HostAliasing> => (hostAliasingPromise ??= detectHostAliasing());
+/** Does this host equate the two spellings this row writes? Never branch on the aggregate class. */
+const aliasesPair = async (first: string, second: string): Promise<boolean> =>
+  hostAliasesPair(await hostAliasing(), first, second);
 const backend = (root: string): FilesystemBackend => new FilesystemBackend(root);
 
 async function tempRoot(prefix: string): Promise<string> {
@@ -177,7 +182,7 @@ test("AC-8 (cond): an aliased write leaves listings unchanged at every level", a
   const root = await tempRoot("alias-write");
   try {
     const backend = new FilesystemBackend(root);
-    const aliasing = (await hostClass()) !== "exact";
+    const aliasing = await aliasesPair("Docs", "docs");
     await backend.write("Docs/a", doc("Docs/a", "a"));
     const attempt = backend.write("docs/b", doc("docs/b", "b"));
     if (!aliasing) {
@@ -196,10 +201,85 @@ test("AC-8 (cond): an aliased write leaves listings unchanged at every level", a
   }
 });
 
+// ── host-class model: the two kinds of aliasing are carried independently ───────────
+//
+// A row that writes a case pair must be scored against CASE aliasing and a row that writes an
+// NFC/NFD pair against NORMALIZATION aliasing. Hosts exist that have one and not the other (a
+// case-SENSITIVE but normalization-insensitive APFS volume), and no CI host can demonstrate that
+// combination, so the decision is proved here as a pure table over every combination of probe
+// outcomes. A model that collapsed the two kinds into one verdict goes red on the mixed rows.
+test("host class: case and normalization aliasing are decided independently, and the aggregate is their disjunction", () => {
+  const rows = [
+    { case: false, normalization: false, hostClass: "exact" as const },
+    { case: true, normalization: false, hostClass: "aliasing" as const },
+    { case: false, normalization: true, hostClass: "aliasing" as const },
+    { case: true, normalization: true, hostClass: "aliasing" as const },
+  ];
+  for (const row of rows) {
+    assert.deepEqual(
+      classifyHostAliasing({ keptWrittenSpelling: true, caseReaches: row.case, normalizationReaches: row.normalization }),
+      { hostClass: row.hostClass, case: row.case, normalization: row.normalization },
+      JSON.stringify(row),
+    );
+    // A store that rewrote the written spelling is "normalizing" whatever the two kinds say, and
+    // still reports them: the aggregate never overwrites a measured per-kind fact.
+    assert.deepEqual(
+      classifyHostAliasing({ keptWrittenSpelling: false, caseReaches: row.case, normalizationReaches: row.normalization }),
+      { hostClass: "normalizing", case: row.case, normalization: row.normalization },
+      JSON.stringify(row),
+    );
+  }
+});
+
+// The predicate every conditional row branches on. Proved as a pure table over both host
+// dimensions and every kind of pair, because no CI host has the mixed class the rows must survive.
+test("host class: a pair aliases only where the host equates the dimensions that pair differs in", () => {
+  const CASE_ONLY = ["concepts/b", "concepts/B"] as const;
+  const FOLD_ONLY = ["concepts/stra\u00dfe", "concepts/STRASSE"] as const;
+  const NORMALIZATION_ONLY = ["concepts/caf\u00e9", "concepts/cafe\u0301"] as const;
+  const BOTH = ["concepts/Caf\u00e9", "concepts/cafe\u0301"] as const;
+  const UNRELATED = ["concepts/a", "concepts/b"] as const;
+  const hosts = [
+    { case: false, normalization: false },
+    { case: true, normalization: false },
+    { case: false, normalization: true },
+    { case: true, normalization: true },
+  ];
+  for (const dimensions of hosts) {
+    const host: HostAliasing = { hostClass: "aliasing", ...dimensions }; // aggregate-class-branch: deliberately wrong, to prove it is unread
+    const label = JSON.stringify(dimensions);
+    for (const pair of [CASE_ONLY, FOLD_ONLY]) {
+      assert.equal(hostAliasesPair(host, pair[0], pair[1]), dimensions.case, `${label} ${pair[0]}`);
+    }
+    assert.equal(
+      hostAliasesPair(host, NORMALIZATION_ONLY[0], NORMALIZATION_ONLY[1]),
+      dimensions.normalization,
+      `${label} normalization pair`,
+    );
+    assert.equal(
+      hostAliasesPair(host, BOTH[0], BOTH[1]),
+      dimensions.case && dimensions.normalization,
+      `${label} pair differing in both dimensions`,
+    );
+    assert.equal(hostAliasesPair(host, UNRELATED[0], UNRELATED[1]), false, `${label} unrelated names`);
+    assert.equal(hostAliasesPair(host, CASE_ONLY[0], CASE_ONLY[0]), false, `${label} one name is not a pair`);
+  }
+});
+
+test("host class: this host's detected aliasing agrees with its own aggregate class", async () => {
+  const detected = await detectHostAliasing();
+  assert.equal(detected.hostClass, await hostClass());
+  if (detected.hostClass === "exact") { // aggregate-class-branch: this row's subject IS the aggregate
+    assert.deepEqual([detected.case, detected.normalization], [false, false], "an exact host aliases neither kind");
+  } else {
+    assert.ok(detected.case || detected.normalization, "an aliasing host must alias at least one kind");
+  }
+});
+
 // ── AC-15 directory first-creation race ───────────────────────────────────────
 
 test("AC-15 (cond): concurrent first creation of Docs/a and docs/b yields exactly one spelling on an aliasing host", async () => {
-  const aliasing = (await hostClass()) !== "exact";
+  const aliasing = await aliasesPair("Docs", "docs");
   for (let round = 0; round < 5; round++) {
     const root = await tempRoot(`race-${round}`);
     try {
@@ -242,8 +322,18 @@ test("AC-15 (cond): concurrent first creation of Docs/a and docs/b yields exactl
 // files, and every fulfilled writer's file is at its exact requested path with its own body. With
 // the fold in place the pair shares one key (excluded by the lock); with the fold reverted the
 // loser's link still fails EEXIST, so the forbidden outcomes cannot occur either way.
+//
+// Rounds per pair: a race row's discrimination is probabilistic, and three was chosen for cost
+// rather than for power. Measured at 20 (2026-08-25, macOS/APFS): the row costs ~0.4 s, and
+// against the mutation that produces the forbidden outcome here — the fold reverted AND `link`
+// forced to report "unsupported", so first creation falls back to `rename` — three rounds and
+// twenty both went red on five of five runs. So this raise is margin, not a demonstrated gap: it
+// is honest only as a hedge against a regression whose losing interleaving is rarer than any
+// mutation reachable on this host, and it does not make the row a pin for anything three rounds
+// missed. It stays at twenty because that margin costs under half a second on the lane.
+const AC_15B_ROUNDS = 20;
+
 test("AC-15b (cond): concurrent first creation of a full-case-folding pair never fulfils both writers on an aliasing host", async () => {
-  const aliasing = (await hostClass()) !== "exact";
   const pairs: Array<[string, string]> = [
     ["concepts/straße", "concepts/STRASSE"],
     ["concepts/ẞ", "concepts/SS"],
@@ -251,7 +341,10 @@ test("AC-15b (cond): concurrent first creation of a full-case-folding pair never
     ["concepts/ᾈ", "concepts/ἀι"],
   ];
   for (const [first, second] of pairs) {
-    for (let round = 0; round < 3; round++) {
+    // Per pair, not per suite: these are case pairs, and a case-sensitive host equates none of
+    // them however it treats normalization.
+    const aliasing = await aliasesPair(first, second);
+    for (let round = 0; round < AC_15B_ROUNDS; round++) {
       const root = await tempRoot(`fold-race-${round}`);
       try {
         const writers = [first, second].map((id) => [id, new FilesystemBackend(root)] as const);
@@ -296,7 +389,7 @@ test("AC-4 (cond): first creation publishes the leaf through the production link
   const root = await tempRoot("link-binding");
   try {
     const hardLinks = await hardLinkSupport(root);
-    const aliasing = (await hostClass()) !== "exact";
+    const aliasing = await aliasesPair("x.md", "X.md");
     const observed = observedPort();
     const linkFacts: Array<{ sameInode: boolean; links: number }> = [];
     observed.after("link", 1, async (args, outcome) => {
@@ -365,11 +458,16 @@ test("I4: a backend built with a relative root keeps its identity across a later
 
 // ── AC-12a crash residue, single process ──────────────────────────────────────
 
+// I5 says the diagnosis names the LOGICAL identity. The fold gives one lock key to every
+// spelling of that identity, so the holder that crashed and the writer now blocked can hold
+// different spellings of it. The stale case records the alias spelling as the holder's target:
+// the message must name the blocked spelling AND the holder's, or a human reading it goes
+// looking for a file that does not exist under the name they were shown.
 test("AC-12a: a stale or malformed identity lock fails the next write closed, naming the identity, with no partial file", async () => {
   const cases = [
     {
       name: "stale",
-      owner: { pid: 999_999, hostname: hostname(), created_at_ms: Date.now() - 60_000, token: "dead", target: "unused" },
+      owner: { pid: 999_999, hostname: hostname(), created_at_ms: Date.now() - 60_000, token: "dead" },
       stale: true,
       malformed: false,
     },
@@ -378,11 +476,16 @@ test("AC-12a: a stale or malformed identity lock fails the next write closed, na
   for (const fixture of cases) {
     const root = await tempRoot(`residue-${fixture.name}`);
     const key = await identityKey(root, "concepts/x.md");
+    // The holder's spelling folds to the same key as the claimant's, so it is the same lock.
+    const holderTarget = `${path.resolve(root)}:concepts/X.md`;
+    assert.equal(await identityKey(root, "concepts/X.md"), key, "the two spellings must share one key");
     const lockPath = filesystemIdentityLockPath(key, root);
     try {
       await mkdir(filesystemMutationLockRoot(root), { recursive: true, mode: 0o700 });
       await mkdir(lockPath, { recursive: true });
-      if (fixture.owner) await writeFile(path.join(lockPath, "owner.json"), JSON.stringify(fixture.owner));
+      if (fixture.owner) {
+        await writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ ...fixture.owner, target: holderTarget }));
+      }
       await assert.rejects(
         () => new FilesystemBackend(root).write("concepts/x", doc("concepts/x", "x")),
         (err: unknown) => {
@@ -391,6 +494,12 @@ test("AC-12a: a stale or malformed identity lock fails the next write closed, na
           assert.equal(err.malformed, fixture.malformed);
           assert.equal(err.lockPath, lockPath);
           assert.ok(err.message.includes(`${path.resolve(root)}:concepts/x.md`), err.message);
+          if (fixture.owner) {
+            assert.ok(err.message.includes(holderTarget), `holder spelling missing from: ${err.message}`);
+            assert.equal(err.owner?.target, holderTarget);
+          } else {
+            assert.ok(!/holder recorded/.test(err.message), `no holder to name, but claimed one: ${err.message}`);
+          }
           return true;
         },
       );
@@ -490,7 +599,7 @@ test("AC-18: readers of a document under a delete/write loop see only written by
 });
 
 test("AC-18 (cond): alternating exact and alias spellings never yield an alias-tagged body to readers of the exact id", async () => {
-  const aliasing = (await hostClass()) !== "exact";
+  const aliasing = await aliasesPair("concepts/a", "concepts/A");
   const root = await tempRoot("ac18-alternate");
   try {
     const backend = new FilesystemBackend(root);

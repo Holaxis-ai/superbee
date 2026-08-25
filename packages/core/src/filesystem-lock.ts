@@ -247,7 +247,15 @@ async function canonicalTargetInDirectory(directory: string, requestedBasename: 
   return requested;
 }
 
-/** `guarded` names what the claimer wanted to mutate, so a leftover is diagnosable even when malformed. */
+/**
+ * `guarded` names what the claimer wanted to mutate, so a leftover is diagnosable even when
+ * malformed. One lock key is one LOGICAL identity, and on a host that equates spellings the
+ * claimer and the holder can spell it differently; naming only the claimer's spelling sends a
+ * human looking for a file that may not exist under that name. Name the holder's recorded
+ * spelling too whenever it differs. The message reports what the owner record SAYS and no more:
+ * a lock reached through its own fold key holds the same identity by construction, but nothing
+ * here re-derives that from an arbitrary `owner.json`, so it must not assert the equivalence.
+ */
 function timeoutError(
   lockPath: string,
   owner: FilesystemMutationLockOwner | null,
@@ -269,7 +277,11 @@ function timeoutError(
     message =
       `timed out waiting for filesystem mutation lock '${lockPath}' held by PID ${owner.pid} on ${owner.hostname}; retry the mutation.`;
   }
-  return new FilesystemMutationLockError(`${message} The lock guards '${guarded}'.`, { lockPath, owner, stale, malformed });
+  const heldFor =
+    owner !== null && owner.target !== guarded
+      ? ` Its holder recorded '${owner.target}' for the same lock key.`
+      : "";
+  return new FilesystemMutationLockError(`${message} The lock guards '${guarded}'.${heldFor}`, { lockPath, owner, stale, malformed });
 }
 
 /** Resolve `portableRoot` the way both claim entry points do: physical when it exists, else lexical. */

@@ -18,7 +18,10 @@ import {
   registerStorageBackendQueryHeadsContract,
   type BackendFixture,
 } from "./storage-backend-contract.js";
-import { assertHostClassExpectation, detectHostClassIn } from "./host-class.js";
+import { assertHostClassExpectation, detectHostAliasingIn } from "./host-class.js";
+
+// Neither adapter stores by filename, so no spelling pair aliases at either kind.
+const EXACT_HOST = { hostClass: "exact", case: false, normalization: false } as const;
 
 async function filesystemFixture(): Promise<BackendFixture> {
   const root = await mkdtemp(path.join(tmpdir(), "aslite-storage-contract-"));
@@ -120,13 +123,13 @@ registerStorageBackendIdentityContract({
   name: "FilesystemBackend",
   async create() {
     const probeRoot = await mkdtemp(path.join(tmpdir(), "aslite-storage-identity-probe-"));
-    const hostClass = await detectHostClassIn(probeRoot);
+    const host = await detectHostAliasingIn(probeRoot);
     await rm(probeRoot, { recursive: true, force: true });
-    assertHostClassExpectation(hostClass);
+    assertHostClassExpectation(host.hostClass);
     const root = await mkdtemp(path.join(tmpdir(), "aslite-storage-identity-contract-"));
     return {
       backend: new FilesystemBackend(root),
-      hostClass,
+      host,
       cleanup: () => rm(root, { recursive: true, force: true }),
     };
   },
@@ -134,10 +137,10 @@ registerStorageBackendIdentityContract({
 
 registerStorageBackendIdentityContract({
   name: "MemoryBackend",
-  create: () => ({ ...memoryFixture(), hostClass: "exact" }),
+  create: () => ({ ...memoryFixture(), host: EXACT_HOST }),
 });
 
 registerStorageBackendIdentityContract({
   name: "RemoteBackend",
-  create: () => ({ ...remoteFixture(), hostClass: "exact" }),
+  create: () => ({ ...remoteFixture(), host: EXACT_HOST }),
 });

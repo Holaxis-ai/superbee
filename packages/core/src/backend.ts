@@ -214,6 +214,14 @@ export class FilesystemBackend implements StorageBackend {
     const observed = await observeExact(port, this.#root, rel, async (handle, target) => {
       try {
         const bytes = await port.readAll(handle);
+        // mtime is taken by path rather than through the open handle: the port has no
+        // stat-by-handle call, and widening the protocol surface for a fallback timestamp used
+        // only when the frontmatter carries none is not worth it. It cannot attribute another
+        // entry's mtime to this identity: the post-walk that follows requires the leaf the
+        // requested path reaches to still be this handle's inode and every directory segment to
+        // still be its recorded one, so a swap between this call and that check restarts the
+        // observation instead of returning EXACT — under the same A11 witness limit the walk
+        // itself carries.
         const { mtime } = await port.stat(target);
         return { raw: bytes.toString("utf8"), mtime };
       } catch {

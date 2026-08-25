@@ -4,6 +4,11 @@
  * written spelling (case-insensitive APFS, NTFS, ext4 casefold); "normalizing" when the store
  * rewrites names on write (legacy HFS+); otherwise "exact".
  *
+ * Case aliasing and normalization aliasing are detected separately because a host can have one
+ * without the other: a case-SENSITIVE APFS volume still resolves an NFD spelling to an NFC entry.
+ * A row that writes one kind of pair must branch on that kind; branching on the aggregate class
+ * makes correct product behavior look like a failure on any host that aliases only one kind.
+ *
  * `SUPERBEE_TEST_EXPECT_ALIASING_HOST=1|0` pins what a CI lane claims its host is: the detected
  * class must agree or the proof fails closed. Read by test files only, never by runtime source.
  */
@@ -14,32 +19,118 @@ import path from "node:path";
 
 export type HostClass = "aliasing" | "exact" | "normalizing";
 
-const NFC_PROBE = "café-probe";
+/** The kinds of spelling pair a contract row can write. Keys match the row labels. */
+export interface HostAliasing {
+  /** Aggregate class: "aliasing" when the host aliases ANY probed pair kind. */
+  hostClass: HostClass;
+  /** A differently cased spelling reaches the entry that was written. */
+  case: boolean;
+  /** A differently normalized (NFC/NFD) spelling reaches the entry that was written. */
+  normalization: boolean;
+}
 
-export async function detectHostClassIn(dir: string): Promise<HostClass> {
-  await writeFile(path.join(dir, "probe-name"), "probe");
-  await writeFile(path.join(dir, NFC_PROBE), "probe");
-  const listed = await readdir(dir);
-  if (!listed.includes(NFC_PROBE)) return "normalizing";
+const NFC_PROBE = "café-probe".normalize("NFC");
+const NFD_PROBE = NFC_PROBE.normalize("NFD");
+
+/** What one probe round observed, before any classification. */
+export interface HostProbeOutcome {
+  /** The NFC probe name came back from `readdir` exactly as it was written. */
+  keptWrittenSpelling: boolean;
+  /** A differently CASED spelling of a written entry resolved. */
+  caseReaches: boolean;
+  /** A differently NORMALIZED (NFD) spelling of a written entry resolved. */
+  normalizationReaches: boolean;
+}
+
+/**
+ * The whole host-class decision, as a pure function of what was probed, so the per-kind
+ * verdicts are provable without owning a volume of every class. The two kinds are carried
+ * independently by construction: neither is derived from the other, and the aggregate is a
+ * disjunction over them, never a substitute for them.
+ */
+export function classifyHostAliasing(outcome: HostProbeOutcome): HostAliasing {
+  const kinds = { case: outcome.caseReaches, normalization: outcome.normalizationReaches };
+  // A store that did not keep the written NFC spelling rewrote it, so both kinds were measured
+  // against a name the store chose; the aggregate is "normalizing" whatever they say.
+  if (!outcome.keptWrittenSpelling) return { hostClass: "normalizing", ...kinds };
+  return { hostClass: kinds.case || kinds.normalization ? "aliasing" : "exact", ...kinds };
+}
+
+/**
+ * Does THIS host equate these two spellings? The row passes the spellings it actually writes and
+ * the predicate reduces them under exactly the equivalences the host was measured to have, so a
+ * row can never be scored against a kind of aliasing its own pair does not exercise: the wrong-kind
+ * mistake is not expressible. Prefer this over reading `case` / `normalization` by hand, and never
+ * branch a row on `hostClass` — the aggregate is true whenever EITHER kind aliases.
+ *
+ * Model: case-insensitivity is full Unicode case folding (what APFS, NTFS, and ext4 casefold do),
+ * and normalization-insensitivity is NFC/NFD equivalence. `detectHostAliasingIn` measures the two
+ * dimensions rather than assuming them, but the reducer approximates full folding with a
+ * lower/upper/lower round trip, and that approximation is not exact in both directions:
+ *
+ * - Narrower host: one whose case-insensitivity is less than full folding would equate fewer pairs
+ *   than this predicts. None of the supported hosts is such a host.
+ * - WIDER predicate, measured: the round trip maps U+0131 (dotless i) to `i`, but Unicode default
+ *   full case folding leaves U+0131 alone — its only mapping is the Turkic variant. So the
+ *   predicate calls `ı`/`I` and `ı`/`i` aliased; on case-insensitive APFS neither `I` nor `i`
+ *   reaches a file written as `ı`, and an external review measured the same on case-sensitive
+ *   APFS. U+0130 (dotted capital I) is predicted distinct and is distinct. No row writes such a
+ *   pair, so nothing is red today; a row that did would get a false red, which is this file's own
+ *   defect class one layer down. `Intl.Collator` with `sensitivity: "accent"` was measured as the
+ *   alternative and is worse — it calls ß/STRASSE, ẞ/SS, ᾈ/ἀι and ſ/S distinct, all of which the
+ *   host really does equate — so the round trip stays and the exception is recorded instead.
+ *
+ * This is the TEST fixture's fold, not the identity fold in `filesystem-identity.ts`; that one is
+ * a lock key, where over-equating is the safe direction, and it is not affected by anything here.
+ */
+export function hostAliasesPair(host: HostAliasing, first: string, second: string): boolean {
+  const reduce = (name: string): string => {
+    const normalized = host.normalization ? name.normalize("NFC") : name;
+    return host.case ? normalized.toLowerCase().toUpperCase().toLowerCase() : normalized;
+  };
+  return first !== second && reduce(first) === reduce(second);
+}
+
+/** `lstat` reduced to reachability; anything other than ENOENT is a host fault, not a verdict. */
+async function reaches(target: string): Promise<boolean> {
   try {
-    await lstat(path.join(dir, "PROBE-NAME"));
-    return "aliasing";
+    await lstat(target);
+    return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return "exact";
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw err;
   }
 }
 
+export async function detectHostAliasingIn(dir: string): Promise<HostAliasing> {
+  await writeFile(path.join(dir, "probe-name"), "probe");
+  await writeFile(path.join(dir, NFC_PROBE), "probe");
+  const listed = await readdir(dir);
+  return classifyHostAliasing({
+    keptWrittenSpelling: listed.includes(NFC_PROBE),
+    caseReaches: await reaches(path.join(dir, "PROBE-NAME")),
+    normalizationReaches: await reaches(path.join(dir, NFD_PROBE)),
+  });
+}
+
+export async function detectHostClassIn(dir: string): Promise<HostClass> {
+  return (await detectHostAliasingIn(dir)).hostClass;
+}
+
 /** Detect in a fresh temp directory, then hold the lane's expectation to account. */
-export async function detectHostClass(): Promise<HostClass> {
+export async function detectHostAliasing(): Promise<HostAliasing> {
   const dir = await mkdtemp(path.join(tmpdir(), "superbee-host-class-"));
   try {
-    const detected = await detectHostClassIn(dir);
-    assertHostClassExpectation(detected);
+    const detected = await detectHostAliasingIn(dir);
+    assertHostClassExpectation(detected.hostClass);
     return detected;
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+export async function detectHostClass(): Promise<HostClass> {
+  return (await detectHostAliasing()).hostClass;
 }
 
 export function assertHostClassExpectation(detected: HostClass): void {
