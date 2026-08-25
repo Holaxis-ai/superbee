@@ -44,10 +44,11 @@ list built-ins and which are already applied, and 'superbee kinds' for the resul
 per-bundle registry.
 
 'recipe evolve' is the explicit installed-convention upgrade path. Without --apply it is READ-ONLY:
-it compares definitions, checks that the change is monotonic, revalidates existing instances, and
-returns one exact apply command. Applying requires that plan's token, recomputes the whole plan, and
-writes changed conventions with exact-version CAS. It never replaces active View assets or deletes
-artifacts omitted from the source.
+it compares definitions, permits additive declarations only, revalidates existing instances, and
+returns one exact apply command. Applying requires that plan's token, recomputes the preflight, and
+writes each changed convention with exact-version CAS. Concurrent non-target changes are detected
+by a postcondition check and reported with completed work. It never replaces existing values,
+active View assets, or artifacts omitted from the source.
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)

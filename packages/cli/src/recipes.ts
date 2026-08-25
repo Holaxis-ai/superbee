@@ -644,7 +644,7 @@ export async function applyRecipe(
             code: "RECIPE_SOURCE_DIFFERS",
             message:
               `recipe '${recipe.id}' source for '${doc.id}.md' differs from the existing convention; ` +
-              "the existing bundle content was left untouched — run 'recipe evolve <same-name-or-path>' to inspect a safe, exact-state upgrade plan",
+              "the existing bundle content was left untouched — run 'recipe evolve <same-name-or-path>' to inspect a safe additive upgrade plan",
             severity: "warning",
           });
         }

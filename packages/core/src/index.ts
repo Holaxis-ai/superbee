@@ -225,6 +225,7 @@ export {
 // adapter (a subclass, so it maps through the same branch); `ConcurrentReplacementError` is its
 // bounded-retry runtime condition.
 export { InvalidInputError, FilesystemIdentityAliasError, ConcurrentReplacementError } from "./errors.js";
+export { applyV02MutationMetadata } from "./document-write-policy.js";
 
 // Kind conventions: a bundle-declared, opt-in document-kind
 // registry — validation + per-kind freshness horizons, read from `Convention` docs under

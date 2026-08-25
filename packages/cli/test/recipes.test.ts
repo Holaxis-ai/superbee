@@ -1143,7 +1143,7 @@ test("recipe evolve: a compatible installed convention requires the exact read-o
     assert.equal((plan.counts as Record<string, unknown>).instances_checked, 1);
     const definitions = plan.definitions as Array<Record<string, unknown>>;
     assert.equal(definitions[0]!.action, "update");
-    assert.deepEqual(definitions[0]!.changed_facets, ["fields"]);
+    assert.deepEqual(definitions[0]!.added_paths, ["/frontmatter/fields/optional/colour"]);
     assert.equal(await readFile(path.join(bundleDir, "conventions", "widget.md"), "utf8"), before);
     const token = String(plan.plan_token);
     assert.match(token, /^sha256:[0-9a-f]{64}$/);
@@ -1223,6 +1223,126 @@ test("recipe evolve: legacy v0.1 writes a fresh timestamp rather than its compar
   }
 });
 
+test("recipe evolve: write-policy-invalid source metadata blocks the whole plan before its first write", async () => {
+  const convention = (id: string, governs: string, optional: string[] = []): OkfDocument =>
+    kindConventionDoc({
+      id,
+      title: governs,
+      governs,
+      path: `${governs.toLowerCase()}s/`,
+      fields: widgetFields(["title"], optional),
+    }, `# ${governs}\n`, T);
+  const initial: LoadedRecipe = {
+    ...widgetRecipe("1", widgetFields()),
+    docs: [convention("conventions/alpha", "Alpha"), convention("conventions/beta", "Beta")],
+    governs: ["Alpha", "Beta"],
+  };
+  const beta = convention("conventions/beta", "Beta", ["colour"]);
+  const desired: LoadedRecipe = {
+    ...initial,
+    version: "2",
+    source: "test:two-kind:2",
+    docs: [
+      convention("conventions/alpha", "Alpha", ["colour"]),
+      { ...beta, frontmatter: { ...beta.frontmatter, generated: { by: "not a valid actor" } } },
+    ],
+  };
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir);
+    await applyRecipe(bundle, initial, T);
+    const alphaBefore = await readDoc(bundle, "conventions/alpha");
+
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, false);
+    assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_WRITE_POLICY_INVALID"));
+    await assert.rejects(
+      applyRecipeEvolution(bundle, desired, plan.plan_token),
+      (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+    );
+    assert.deepEqual(await readDoc(bundle, "conventions/alpha"), alphaBefore);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("recipe evolve: preserved v0.2 provenance converges after one additive apply", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir);
+    const initial = widgetRecipe("1", widgetFields());
+    await applyRecipe(bundle, initial, T);
+    const installed = await readDoc(bundle, "conventions/widget");
+    await writeDoc(bundle, {
+      ...installed,
+      frontmatter: {
+        ...installed.frontmatter,
+        generated: { by: "process:test", at: T },
+        verified: [{ by: "human:mike", at: T }],
+      },
+    });
+    const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
+
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.ready, true);
+    await applyRecipeEvolution(bundle, desired, plan.plan_token);
+    const evolved = await readDoc(bundle, "conventions/widget");
+    assert.equal((evolved.frontmatter.generated as Record<string, unknown>).by, "process:test");
+    assert.deepEqual(evolved.frontmatter.verified, [{ by: "human:mike", at: T }]);
+    const settled = await planRecipeEvolution(bundle, desired);
+    assert.equal(settled.ready, true);
+    assert.equal(settled.changed, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("recipe evolve: a locally added declaration is preserved and source removal blocks automatic apply", async () => {
+  const bundle: Bundle = { root: "mem://recipe-evolution-local-extension", backend: new MemoryBackend() };
+  const initial = widgetRecipe("1", widgetFields(["title"], ["owner"]));
+  initial.docs[0] = {
+    ...initial.docs[0]!,
+    frontmatter: {
+      ...initial.docs[0]!.frontmatter,
+      fields: {
+        ...(initial.docs[0]!.frontmatter.fields as Record<string, unknown>),
+        descriptions: { owner: "Local owner declaration." },
+      },
+    },
+  };
+  await applyRecipe(bundle, initial, T);
+  const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
+
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED"));
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token),
+    (error: unknown) => error instanceof CliError && error.code === "CONFLICT",
+  );
+  const kind = (await loadKinds(bundle)).kinds.get("Widget")!;
+  assert.deepEqual(kind.fields.optional, ["owner"]);
+  assert.equal(kind.fields.descriptions.owner, "Local owner declaration.");
+});
+
+test("recipe evolve: terminal-set changes block because they alter open-work visibility", async () => {
+  const fields = widgetFields(["title"], ["state"], { state: ["todo", "done"] });
+  fields.terminal = { state: ["done"] };
+  const desiredFields = widgetFields(["title"], ["state"], { state: ["todo", "done"] });
+  desiredFields.terminal = { state: ["todo", "done"] };
+  const bundle: Bundle = { root: "mem://recipe-evolution-terminal", backend: new MemoryBackend() };
+  await applyRecipe(bundle, widgetRecipe("1", fields), T);
+  await writeDoc(bundle, {
+    id: "widgets/open",
+    frontmatter: { type: "Widget", title: "Open", state: "todo" },
+    body: "Still open.",
+  });
+
+  const plan = await planRecipeEvolution(bundle, widgetRecipe("2", desiredFields));
+  assert.equal(plan.ready, false);
+  assert.ok(plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_TERMINAL_CHANGE"));
+});
+
 test("recipe evolve: a race after exact-plan recomputation fails with completed/pending recovery and preserves the winner", async () => {
   class EvolutionRaceBackend extends MemoryBackend {
     armed = false;
@@ -1256,6 +1376,46 @@ test("recipe evolve: a race after exact-plan recomputation fails with completed/
     },
   );
   assert.equal((await readDoc(bundle, "conventions/widget")).body, "# Concurrent winner\n");
+});
+
+test("recipe evolve: a competing authority racing after preflight is reported by the postcondition", async () => {
+  class AuthorityRaceBackend extends MemoryBackend {
+    armed = false;
+
+    override async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
+      if (this.armed && id === "conventions/widget" && options.expectedVersion !== undefined) {
+        this.armed = false;
+        await super.write("conventions/alternate-widget", kindConventionDoc({
+          id: "conventions/alternate-widget",
+          title: "Alternate Widget",
+          governs: "Widget",
+          path: "alternate-widgets/",
+          fields: widgetFields(),
+        }, "# Alternate Widget\n", T), { expectedVersion: null });
+      }
+      return super.write(id, doc, options);
+    }
+  }
+
+  const backend = new AuthorityRaceBackend();
+  const bundle: Bundle = { root: "mem://recipe-evolution-authority-race", backend };
+  await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+  const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
+  const plan = await planRecipeEvolution(bundle, desired);
+  backend.armed = true;
+
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token),
+    (error: unknown) => {
+      if (!(error instanceof CliError) || error.code !== "CONFLICT") return false;
+      const details = error.details as Record<string, unknown>;
+      assert.equal((details.completed as Array<Record<string, unknown>>)[0]!.changed, true);
+      assert.ok((details.blockers as Array<Record<string, unknown>>).some((blocker) =>
+        blocker.code === "RECIPE_EVOLUTION_DUPLICATE_GOVERNS"
+      ));
+      return true;
+    },
+  );
 });
 
 test("recipe evolve: a competing convention authority blocks the prospective registry", async () => {
@@ -1907,7 +2067,10 @@ test("--remote: recipe evolve plans and applies through the same state-bound CAS
       assert.equal(plan.ready, true);
       assert.equal(plan.changed, true);
       assert.equal((plan.counts as Record<string, unknown>).updates, 1);
-      assert.deepEqual((plan.definitions as Array<Record<string, unknown>>)[0]!.changed_facets, ["browse_collapsed"]);
+      assert.deepEqual(
+        (plan.definitions as Array<Record<string, unknown>>)[0]!.added_paths,
+        ["/frontmatter/browse_collapsed"],
+      );
 
       const applied = await runJson(recipe, [
         "evolve", "context-notes", "--apply", String(plan.plan_token), "--remote", url,

@@ -2,11 +2,14 @@
 //
 // Recipe installation is create-only and intentionally never overwrites bundle-authored content.
 // This module owns the distinct upgrade authority: a read-only compatibility plan followed by an
-// exact-token, exact-version CAS apply.
+// exact-token preflight and exact-version CAS apply over each changed target. Since the bundle has
+// no cross-document transaction, a postcondition reports concurrent non-target changes honestly.
 import {
   CONVENTIONS_PREFIX,
   DocumentNotFoundError,
+  InvalidInputError,
   VersionConflict,
+  applyV02MutationMetadata,
   blobVersion,
   buildKindRegistry,
   contentVersion,
@@ -49,7 +52,8 @@ export interface RecipeEvolutionDefinition {
   action: "missing" | "unchanged" | "update";
   expected_version: Version | null;
   desired_version: Version;
-  changed_facets: string[];
+  /** Exact additive semantic paths this automatic plan will introduce. */
+  added_paths: string[];
 }
 
 export interface RecipeEvolutionBlocker {
@@ -59,7 +63,7 @@ export interface RecipeEvolutionBlocker {
   field?: string;
 }
 
-/** Public, byte-bounded-by-the-command representation of one read-only evolution decision. */
+/** Public representation of one read-only, state-bound preflight decision. */
 export interface RecipeEvolutionPlan {
   recipe: "evolution plan";
   id: string;
@@ -115,15 +119,125 @@ function comparableRecipeDoc(doc: OkfDocument, okfVersion: string): OkfDocument 
   return { id: doc.id, frontmatter, body: doc.body };
 }
 
-function changedRecipeFacets(existing: OkfDocument, desired: OkfDocument, okfVersion: string): string[] {
-  const current = comparableRecipeDoc(existing, okfVersion);
-  const next = comparableRecipeDoc(desired, okfVersion);
-  const facets = new Set<string>();
-  for (const key of new Set([...Object.keys(current.frontmatter), ...Object.keys(next.frontmatter)])) {
-    if (!isDeepStrictEqual(current.frontmatter[key], next.frontmatter[key])) facets.add(key);
+const PRESERVED_ROOT_METADATA = new Set(["timestamp", "actor", "generated", "verified", "superbee_updated_by"]);
+
+interface AdditiveMergeResult {
+  candidate: OkfDocument;
+  addedPaths: string[];
+}
+
+function pointerSegment(value: string): string {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+/**
+ * Merge recipe declarations into a user-owned convention without deleting or replacing any
+ * existing semantic value. Arrays are declaration sets: additions append, while omissions are
+ * blockers. Root mutation/provenance metadata is preserved by the shared write policy instead of
+ * being treated as recipe-owned schema.
+ */
+function additiveConventionCandidate(
+  existing: OkfDocument,
+  desired: OkfDocument,
+  blockers: RecipeEvolutionBlocker[],
+): AdditiveMergeResult {
+  const addedPaths: string[] = [];
+
+  const merge = (current: unknown, next: unknown, pointer: string): unknown => {
+    if (current === undefined) {
+      addedPaths.push(pointer);
+      return next;
+    }
+    if (next === undefined) {
+      evolutionBlocker(
+        blockers,
+        "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+        desired.id,
+        `automatic evolution preserves the existing declaration at '${pointer}'; remove it manually after reviewing dependent content`,
+        pointer,
+      );
+      return current;
+    }
+    if (isDeepStrictEqual(current, next)) return current;
+    if (Array.isArray(current) && Array.isArray(next)) {
+      const merged = [...current];
+      for (const value of current) {
+        if (!next.some((candidate) => isDeepStrictEqual(candidate, value))) {
+          evolutionBlocker(
+            blockers,
+            "RECIPE_EVOLUTION_REMOVAL_UNSUPPORTED",
+            desired.id,
+            `automatic evolution preserves the existing declaration value at '${pointer}'`,
+            pointer,
+          );
+        }
+      }
+      for (const value of next) {
+        if (current.some((candidate) => isDeepStrictEqual(candidate, value))) continue;
+        merged.push(value);
+        addedPaths.push(`${pointer}/${pointerSegment(String(value))}`);
+      }
+      return merged;
+    }
+    const currentRecord = plainRecord(current);
+    const nextRecord = plainRecord(next);
+    if (currentRecord && nextRecord) {
+      const merged: Record<string, unknown> = { ...currentRecord };
+      for (const key of new Set([...Object.keys(currentRecord), ...Object.keys(nextRecord)])) {
+        merged[key] = merge(
+          currentRecord[key],
+          nextRecord[key],
+          `${pointer}/${pointerSegment(key)}`,
+        );
+      }
+      return merged;
+    }
+    evolutionBlocker(
+      blockers,
+      "RECIPE_EVOLUTION_REPLACEMENT_UNSUPPORTED",
+      desired.id,
+      `automatic evolution will not replace the existing declaration at '${pointer}'`,
+      pointer,
+    );
+    return current;
+  };
+
+  const currentFrontmatter = existing.frontmatter;
+  const desiredFrontmatter = desired.frontmatter;
+  const candidateFrontmatter: Record<string, unknown> = { ...currentFrontmatter };
+  for (const key of new Set([...Object.keys(currentFrontmatter), ...Object.keys(desiredFrontmatter)])) {
+    if (PRESERVED_ROOT_METADATA.has(key)) {
+      if (currentFrontmatter[key] === undefined && desiredFrontmatter[key] !== undefined) {
+        candidateFrontmatter[key] = desiredFrontmatter[key];
+        addedPaths.push(`/frontmatter/${pointerSegment(key)}`);
+      }
+      continue;
+    }
+    candidateFrontmatter[key] = merge(
+      currentFrontmatter[key],
+      desiredFrontmatter[key],
+      `/frontmatter/${pointerSegment(key)}`,
+    );
   }
-  if (current.body !== next.body) facets.add("body");
-  return [...facets].sort();
+
+  let body = existing.body;
+  if (existing.body === "" && desired.body !== "") {
+    body = desired.body;
+    addedPaths.push("/body");
+  } else if (existing.body !== desired.body) {
+    evolutionBlocker(
+      blockers,
+      "RECIPE_EVOLUTION_BODY_REPLACEMENT_UNSUPPORTED",
+      desired.id,
+      "automatic evolution will not replace an existing convention body; update it manually after review",
+      "/body",
+    );
+  }
+
+  return {
+    candidate: { id: desired.id, frontmatter: candidateFrontmatter as OkfDocument["frontmatter"], body },
+    addedPaths: [...new Set(addedPaths)].sort(),
+  };
 }
 
 async function readRecipeDocIfPresent(
@@ -222,6 +336,15 @@ function monotonicEvolutionBlockers(
       "expects_inbound",
     );
   }
+  if (!isDeepStrictEqual(current.fields.terminal, desired.fields.terminal)) {
+    evolutionBlocker(
+      blockers,
+      "RECIPE_EVOLUTION_TERMINAL_CHANGE",
+      desired.id,
+      `automatic evolution does not change terminal workflow values for '${desired.governs}' because open-work visibility can change`,
+      "fields.terminal",
+    );
+  }
 }
 
 function evolutionPlanToken(input: unknown): string {
@@ -258,8 +381,6 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
   for (const authored of recipe.docs) {
     const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
-    desired.set(target.id, target);
-    prospectiveById.set(target.id, target);
     const parsedDesired = parseConventionDoc(target);
     if (!parsedDesired.ok) {
       evolutionBlocker(
@@ -270,7 +391,6 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       );
       continue;
     }
-    desiredKinds.set(parsedDesired.kind.governs, parsedDesired.kind);
     for (const warning of parsedDesired.warnings) {
       evolutionBlocker(blockers, warning.code, target.id, warning.message, warning.field);
     }
@@ -283,17 +403,36 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
         parsedDesired.reservedFieldPaths.join(","),
       );
     }
+    if (okfVersion === "0.2") {
+      try {
+        applyV02MutationMetadata({
+          candidate: { frontmatter: target.frontmatter, body: target.body },
+          meaningfulChangeAt: "1970-01-01T00:00:00.000Z",
+        });
+      } catch (error) {
+        if (!(error instanceof InvalidInputError)) throw error;
+        evolutionBlocker(
+          blockers,
+          "RECIPE_EVOLUTION_WRITE_POLICY_INVALID",
+          target.id,
+          `recipe convention cannot satisfy the OKF v0.2 write policy: ${error.message}`,
+        );
+      }
+    }
 
     const existing = await readRecipeDocIfPresent(bundle, target.id);
-    const desiredVersion = contentVersion(comparableRecipeDoc(target, okfVersion));
     if (!existing) {
+      desired.set(target.id, target);
+      prospectiveById.set(target.id, target);
+      desiredKinds.set(parsedDesired.kind.governs, parsedDesired.kind);
+      const desiredVersion = contentVersion(comparableRecipeDoc(target, okfVersion));
       definitions.push({
         id: target.id,
         governs: parsedDesired.kind.governs,
         action: "missing",
         expected_version: null,
         desired_version: desiredVersion,
-        changed_facets: [],
+        added_paths: [],
       });
       proofs.push({ kind: "definition", id: target.id, current_version: null, desired_version: desiredVersion });
       evolutionBlocker(
@@ -324,14 +463,49 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       );
     }
 
-    const unchanged = sameInstalledDoc(existing.doc, target, okfVersion);
+    const merged = additiveConventionCandidate(existing.doc, target, blockers);
+    let candidate = merged.candidate;
+    if (okfVersion === "0.2") {
+      try {
+        const withMetadata = applyV02MutationMetadata({
+          existing: existing.doc,
+          candidate: { frontmatter: candidate.frontmatter, body: candidate.body },
+          meaningfulChangeAt: "1970-01-01T00:00:00.000Z",
+        });
+        candidate = { id: candidate.id, ...withMetadata };
+      } catch (error) {
+        if (!(error instanceof InvalidInputError)) throw error;
+        evolutionBlocker(
+          blockers,
+          "RECIPE_EVOLUTION_WRITE_POLICY_INVALID",
+          target.id,
+          `prospective convention cannot satisfy the OKF v0.2 write policy: ${error.message}`,
+        );
+      }
+    }
+    desired.set(target.id, candidate);
+    prospectiveById.set(target.id, candidate);
+    const parsedCandidate = parseConventionDoc(candidate);
+    if (!parsedCandidate.ok) {
+      evolutionBlocker(
+        blockers,
+        "RECIPE_EVOLUTION_DEFINITION_INVALID",
+        target.id,
+        `prospective convention '${target.id}' is malformed: ${parsedCandidate.reason}`,
+      );
+    } else {
+      desiredKinds.set(parsedCandidate.kind.governs, parsedCandidate.kind);
+    }
+
+    const desiredVersion = contentVersion(comparableRecipeDoc(candidate, okfVersion));
+    const unchanged = sameInstalledDoc(existing.doc, candidate, okfVersion);
     definitions.push({
       id: target.id,
       governs: parsedDesired.kind.governs,
       action: unchanged ? "unchanged" : "update",
       expected_version: existing.version,
       desired_version: desiredVersion,
-      changed_facets: unchanged ? [] : changedRecipeFacets(existing.doc, target, okfVersion),
+      added_paths: unchanged ? [] : merged.addedPaths,
     });
     proofs.push({
       kind: "definition",
@@ -343,9 +517,10 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       !unchanged
       && existing.doc.frontmatter.type === "Convention"
       && parsedCurrent.ok
-      && parsedCurrent.kind.governs === parsedDesired.kind.governs
+      && parsedCandidate.ok
+      && parsedCurrent.kind.governs === parsedCandidate.kind.governs
     ) {
-      monotonicEvolutionBlockers(parsedCurrent.kind, parsedDesired.kind, blockers);
+      monotonicEvolutionBlockers(parsedCurrent.kind, parsedCandidate.kind, blockers);
     }
   }
 
@@ -501,7 +676,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
   };
 }
 
-/** Build a read-only, exact-state-bound plan for installed recipe convention evolution. */
+/** Build a read-only, state-bound preflight for installed recipe convention evolution. */
 export async function planRecipeEvolution(
   bundle: Bundle,
   recipe: LoadedRecipe,
@@ -568,16 +743,49 @@ export async function applyRecipeEvolution(
       completed.push({ id: definition.id, changed: result.changed, version: result.version });
       pending.shift();
     } catch (error) {
-      if (!(error instanceof VersionConflict) && !(error instanceof DocumentNotFoundError)) throw error;
-      throw new CliError(
-        "STALE_HEAD",
-        `recipe evolution lost its exact-version race at '${definition.id}'; inspect a fresh plan and resume`,
-        { details: { completed, pending } },
-      );
+      if (error instanceof VersionConflict || error instanceof DocumentNotFoundError) {
+        throw new CliError(
+          "STALE_HEAD",
+          `recipe evolution lost its exact-version race at '${definition.id}'; inspect a fresh plan and resume`,
+          { details: { completed, pending } },
+        );
+      }
+      if (error instanceof InvalidInputError) {
+        throw new CliError(
+          "CONFLICT",
+          `recipe evolution write policy rejected '${definition.id}' after preflight: ${error.message}`,
+          { details: { completed, pending } },
+        );
+      }
+      throw error;
     }
   }
 
   const updated = completed.filter((definition) => definition.changed).length;
+  let postcondition: PreparedRecipeEvolution;
+  try {
+    postcondition = await prepareRecipeEvolution(bundle, recipe);
+  } catch (error) {
+    throw new CliError(
+      "RUNTIME",
+      `recipe evolution wrote ${updated} definition(s), but its postcondition could not be verified: ${error instanceof Error ? error.message : String(error)}`,
+      { details: { completed, pending: [] } },
+    );
+  }
+  if (!postcondition.plan.ready || postcondition.plan.changed) {
+    throw new CliError(
+      "CONFLICT",
+      `recipe evolution wrote ${updated} definition(s), but the prospective registry changed before the postcondition check`,
+      {
+        details: {
+          completed,
+          pending: [],
+          blockers: postcondition.plan.blockers.slice(0, 20),
+          postcondition_plan: postcondition.plan.plan_token,
+        },
+      },
+    );
+  }
   return {
     recipe: updated > 0 ? "evolved" : "already current",
     id: plan.id,
