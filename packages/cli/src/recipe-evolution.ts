@@ -30,7 +30,7 @@ import {
 } from "@superbee/core";
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { CliError } from "./errors.js";
+import { CliError, classifyBundleError } from "./errors.js";
 import type { LoadedRecipe } from "./recipe-source.js";
 import {
   materializeRecipeForEdition,
@@ -762,7 +762,12 @@ export async function applyRecipeEvolution(
           { details: { completed, pending } },
         );
       }
-      throw error;
+      const classified = error instanceof CliError ? error : classifyBundleError(error);
+      throw new CliError(classified.code, classified.message, {
+        details: { ...(classified.details ?? {}), completed, pending },
+        ...(classified.help ? { help: classified.help } : {}),
+        ...(classified.handled ? { handled: true } : {}),
+      });
     }
   }
 

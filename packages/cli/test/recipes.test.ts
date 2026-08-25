@@ -1451,6 +1451,57 @@ test("recipe evolve: a race after exact-plan recomputation fails with completed/
   assert.equal((await readDoc(bundle, "conventions/widget")).body, "# Concurrent winner\n");
 });
 
+test("recipe evolve: every mid-loop failure retains completed/pending recovery", async () => {
+  class EditionFlipBackend extends MemoryBackend {
+    armed = false;
+
+    override async write(id: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> {
+      const version = await super.write(id, doc, options);
+      if (this.armed && id === "conventions/alpha" && options.expectedVersion !== undefined) {
+        this.armed = false;
+        await super.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Flipped\n");
+      }
+      return version;
+    }
+  }
+  const convention = (id: string, governs: string, optional: string[] = []): OkfDocument =>
+    kindConventionDoc({
+      id,
+      title: governs,
+      governs,
+      path: `${governs.toLowerCase()}s/`,
+      fields: widgetFields(["title"], optional),
+    }, `# ${governs}\n`, T);
+  const recipeWith = (version: string, optional: string[] = []): LoadedRecipe => ({
+    ...widgetRecipe(version, widgetFields()),
+    source: `test:edition-flip:${version}`,
+    docs: [convention("conventions/alpha", "Alpha", optional), convention("conventions/beta", "Beta", optional)],
+    governs: ["Alpha", "Beta"],
+  });
+  const backend = new EditionFlipBackend();
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.1'\n---\n# Initial\n");
+  const bundle: Bundle = { root: "mem://recipe-evolution-edition-flip", backend };
+  await applyRecipe(bundle, recipeWith("1"), T);
+  const desired = recipeWith("2", ["colour"]);
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, true);
+  backend.armed = true;
+
+  await assert.rejects(
+    applyRecipeEvolution(bundle, desired, plan.plan_token),
+    (error: unknown) => {
+      if (!(error instanceof CliError) || error.code !== "STALE_HEAD") return false;
+      const details = error.details as Record<string, unknown>;
+      assert.deepEqual(
+        (details.completed as Array<Record<string, unknown>>).map(({ id, changed }) => ({ id, changed })),
+        [{ id: "conventions/alpha", changed: true }],
+      );
+      assert.deepEqual(details.pending, ["conventions/beta"]);
+      return true;
+    },
+  );
+});
+
 test("recipe evolve: a competing authority racing after preflight is reported by the postcondition", async () => {
   class AuthorityRaceBackend extends MemoryBackend {
     armed = false;
