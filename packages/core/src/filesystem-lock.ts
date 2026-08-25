@@ -252,7 +252,9 @@ async function canonicalTargetInDirectory(directory: string, requestedBasename: 
  * malformed. One lock key is one LOGICAL identity, and on a host that equates spellings the
  * claimer and the holder can spell it differently; naming only the claimer's spelling sends a
  * human looking for a file that may not exist under that name. Name the holder's recorded
- * spelling too whenever it differs.
+ * spelling too whenever it differs. The message reports what the owner record SAYS and no more:
+ * a lock reached through its own fold key holds the same identity by construction, but nothing
+ * here re-derives that from an arbitrary `owner.json`, so it must not assert the equivalence.
  */
 function timeoutError(
   lockPath: string,
@@ -277,7 +279,7 @@ function timeoutError(
   }
   const heldFor =
     owner !== null && owner.target !== guarded
-      ? ` Its holder recorded '${owner.target}', the same identity under this host's name equivalence.`
+      ? ` Its holder recorded '${owner.target}' for the same lock key.`
       : "";
   return new FilesystemMutationLockError(`${message} The lock guards '${guarded}'.${heldFor}`, { lockPath, owner, stale, malformed });
 }

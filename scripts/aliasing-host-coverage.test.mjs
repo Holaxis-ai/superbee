@@ -207,6 +207,45 @@ export function laneCoveredFiles(
   return covered;
 }
 
+// A host-sensitive row must be scored against the aliasing its OWN pair of spellings exercises.
+// The aggregate class is true whenever EITHER kind aliases, so a row that branches on it demands
+// a refusal on a case-sensitive, normalization-insensitive volume for a case pair the product
+// correctly treats as two distinct ids. This prohibits the SHAPE — any comparison of a host-class
+// value against "exact" or "aliasing" — rather than listing the rows known to get it wrong, so an
+// unrecognized new row fails closed. Escaping it takes an explicit annotated reason on the line.
+const AGGREGATE_BRANCH = /(?:!==|===)\s*"(?:exact|aliasing)"|"(?:exact|aliasing)"\s*(?:!==|===)/;
+const AGGREGATE_BRANCH_ESCAPE = /\/\/\s*aggregate-class-branch:\s*\S/;
+// The module that OWNS the classification necessarily compares against these literals.
+const AGGREGATE_BRANCH_OWNER = path.join("packages", "core", "test", "host-class.ts");
+
+/** Every offending `file:line` in one file's text, ignoring annotated escapes. */
+export function aggregateBranchesIn(text) {
+  return text
+    .split("\n")
+    .map((line, index) => ({ line: index + 1, text: line }))
+    .filter(({ text: line }) => AGGREGATE_BRANCH.test(line) && !AGGREGATE_BRANCH_ESCAPE.test(line));
+}
+
+export function assertNoAggregateHostClassBranches(repoRoot = root) {
+  const offenders = [];
+  for (const [file] of detectHostSensitiveTests(repoRoot)) {
+    for (const part of testLocalClosure(path.join(repoRoot, file))) {
+      const relative = path.relative(repoRoot, part.file);
+      if (relative === AGGREGATE_BRANCH_OWNER) continue;
+      for (const hit of aggregateBranchesIn(part.text)) {
+        offenders.push(`${relative}:${hit.line}: ${hit.text.trim()}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    [...new Set(offenders)].sort(),
+    [],
+    "a host-sensitive test decides an expectation from the AGGREGATE host class; branch on the " +
+      "pair the row writes instead (hostAliasesPair(host, first, second)), or annotate the line " +
+      "with `// aggregate-class-branch: <reason>` when the aggregate really is the row's subject",
+  );
+}
+
 export function assertLaneCoversHostSensitiveTests(detected, covered) {
   const missing = [...detected].filter(([file]) => !covered.has(file));
   assert.deepEqual(
@@ -231,6 +270,28 @@ test("every host-sensitive workspace test is executed by the aliasing-host lane"
   assert.equal(manifest.lanes["aliasing-host"].script, "ci:aliasing-host", "the lane manifest must run the scoped target");
   const covered = laneCoveredFiles(rootPkg.scripts["ci:aliasing-host"]);
   assertLaneCoversHostSensitiveTests(detectHostSensitiveTests(), covered);
+});
+
+test("no host-sensitive test decides an expectation from the aggregate host class", () => {
+  assertNoAggregateHostClassBranches();
+});
+
+test("the aggregate-branch prohibition catches the shape and honours only an annotated escape", () => {
+  for (const forbidden of [
+    'const aliasing = (await hostClass()) !== "exact";',
+    'if (detected.hostClass === "exact") {',
+    'const aliasing = host.hostClass === "aliasing";',
+    'if ("exact" !== detected) skip();',
+  ]) {
+    assert.equal(aggregateBranchesIn(forbidden).length, 1, `must be caught: ${forbidden}`);
+  }
+  assert.deepEqual(aggregateBranchesIn('if (h === "exact") {} // aggregate-class-branch: subject'), []);
+  // The escape must carry a reason; a bare marker does not buy the exemption.
+  assert.equal(aggregateBranchesIn('if (h === "exact") {} // aggregate-class-branch:').length, 1);
+  // Shapes it deliberately does not touch: the classifier's own output, and the unrelated
+  // "exact" states this codebase asserts on elsewhere.
+  assert.deepEqual(aggregateBranchesIn('const EXACT_HOST = { hostClass: "exact", case: false };'), []);
+  assert.deepEqual(aggregateBranchesIn('assert.deepEqual(result, { state: "exact", value: "body" });'), []);
 });
 
 test("the completeness check goes red on host-sensitive tests outside the lane", () => {

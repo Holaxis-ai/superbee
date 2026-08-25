@@ -254,17 +254,18 @@ async function lintLinkType(
 }
 
 /**
- * Warn when a newly linked local target is absent. Remote deliberately skips this advisory to
- * avoid adding a HEAD request; non-absence read failures propagate to the post-write fallback.
- */
-/**
- * Pre-write refusal for a target whose spelling ALIASES an existing entry on this host (a
- * differently cased or normalized spelling of a document that is already there). Core refuses
- * every operation on such a spelling, so the link could never be fulfilled: a forward declaration
- * to an id that can never be created is not a forward declaration, and the href we would store
- * still resolves to the real file for any tool that does not enforce exact identity. Raised as
- * core's own typed alias verdict, which is an `InvalidInputError` and maps to USAGE like every
- * other operation on an alias spelling.
+ * Pre-write refusal for a target the read of which returns core's alias verdict: an existing
+ * document reached by a differently cased or normalized spelling. Core refuses every operation on
+ * such a spelling, so the link could never be fulfilled — a forward declaration to an id that can
+ * never be created is not a forward declaration, and the href we would store still resolves to the
+ * real file for any tool that does not enforce exact identity. Raised as core's own typed alias
+ * verdict, which is an `InvalidInputError` and maps to USAGE like every other alias refusal.
+ *
+ * Scope is exactly what the read reports. An observation short-circuits to ABSENT at the first
+ * missing segment, so an id whose DIRECTORY prefix is an alias spelling but whose leaf does not
+ * exist reads as absent and is still written as a forward declaration (its
+ * `LINK_TARGET_ABSENT` warning then names a `doc write` that core will refuse). Widening the
+ * refusal to the directory prefix is a separate decision, not something this check does today.
  *
  * Only the alias verdict blocks. A target that is merely ABSENT stays legal and keeps its
  * post-write `LINK_TARGET_ABSENT` warning, and any other read failure stays non-blocking here:
@@ -279,6 +280,10 @@ async function assertTargetNotAlias(bundle: Bundle, to: string, remoteUrl: strin
   }
 }
 
+/**
+ * Warn when a newly linked local target is absent. Remote deliberately skips this advisory to
+ * avoid adding a HEAD request; non-absence read failures propagate to the post-write fallback.
+ */
 async function targetAbsentWarning(
   bundle: Bundle,
   to: string,

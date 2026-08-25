@@ -56,6 +56,27 @@ export function classifyHostAliasing(outcome: HostProbeOutcome): HostAliasing {
   return { hostClass: kinds.case || kinds.normalization ? "aliasing" : "exact", ...kinds };
 }
 
+/**
+ * Does THIS host equate these two spellings? The row passes the spellings it actually writes and
+ * the predicate reduces them under exactly the equivalences the host was measured to have, so a
+ * row can never be scored against a kind of aliasing its own pair does not exercise: the wrong-kind
+ * mistake is not expressible. Prefer this over reading `case` / `normalization` by hand, and never
+ * branch a row on `hostClass` — the aggregate is true whenever EITHER kind aliases.
+ *
+ * Model: case-insensitivity is full Unicode case folding (what APFS, NTFS, and ext4 casefold do),
+ * and normalization-insensitivity is NFC/NFD equivalence. A host whose case-insensitivity is
+ * narrower than full folding would equate fewer pairs than this predicts; none of the supported
+ * hosts is such a host, and `detectHostAliasingIn` measures the two dimensions rather than
+ * assuming them.
+ */
+export function hostAliasesPair(host: HostAliasing, first: string, second: string): boolean {
+  const reduce = (name: string): string => {
+    const normalized = host.normalization ? name.normalize("NFC") : name;
+    return host.case ? normalized.toLowerCase().toUpperCase().toLowerCase() : normalized;
+  };
+  return first !== second && reduce(first) === reduce(second);
+}
+
 /** `lstat` reduced to reachability; anything other than ENOENT is a host fault, not a verdict. */
 async function reaches(target: string): Promise<boolean> {
   try {

@@ -34,7 +34,7 @@ import {
 import { serve, type ServerHandle } from "@superbee/server";
 import { link, addLink } from "../src/commands/link.js";
 import { CliError, classifyBundleError, toExit } from "../src/errors.js";
-import { detectHostClass } from "../../core/test/host-class.js";
+import { detectHostAliasing, hostAliasesPair } from "../../core/test/host-class.js";
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
@@ -546,7 +546,11 @@ test("link add: an absent target attaches a LINK_TARGET_ABSENT warning to the su
 // genuinely distinct absent id and must keep the ordinary forward-declaration behavior. Either
 // way the absent-but-legal class below must still be accepted with its existing warning.
 test("link add: an alias spelling of an existing target is refused, while an absent-but-legal id stays a forward declaration", async () => {
-  const aliasing = (await detectHostClass()) !== "exact";
+  // `concepts/B` is a CASE spelling of the fixture's `concepts/b`, so the verdict that decides
+  // this row is whether the host equates THAT pair. Branching on the aggregate class would demand
+  // a refusal on a case-sensitive, normalization-insensitive volume, where the product correctly
+  // adds the link because `concepts/B` is a genuinely distinct absent id.
+  const aliasing = hostAliasesPair(await detectHostAliasing(), "concepts/b", "concepts/B");
   const { dir, cleanup } = await makeFixtureBundle();
   try {
     const before = await readDocVersioned({ root: dir }, "concepts/a");

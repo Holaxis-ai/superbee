@@ -28,6 +28,9 @@
  * versions and compare-and-swap, as mutations already do. Sustained interference is bounded
  * rather than resolved: after MAX_RESTARTS the observation refuses with
  * {@link ConcurrentReplacementError} instead of attributing bytes to a state it cannot name.
+ * This rests on published bytes being immutable per inode — every write publishes a complete temp
+ * file with `link` or `rename` and never edits a live one — since the bytes are read BEFORE the
+ * post-walk. A non-core writer editing a published file in place is the case it excludes.
  *
  * Exactness applies to `rel` segments only. The bundle root is the declared storage context:
  * a root (tail) segment that already exists as a directory under any spelling is accepted,
