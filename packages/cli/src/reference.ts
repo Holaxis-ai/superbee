@@ -174,6 +174,18 @@ export function helpIndexText(invocation: string): string {
       lines.push(`  ${commandLine}`);
     }
   }
+  lines.push(
+    "",
+    "Agent setup:",
+    "  After installation, the calling agent should run:",
+    "",
+    `    ${invocation} setup --host <host> --scope <scope> --json`,
+    "",
+    "  The calling agent executes the returned action, reports what it is doing, requests approval",
+    "  when required, and repeats setup until ready. Do not ask the user to copy or run setup",
+    "  commands unless execution is unavailable. Prefer the resolved project binary or",
+    "  `npx --no-install superbee`; do not use a download-permitting npx invocation for setup guidance.",
+  );
   lines.push("", wrapText(ref.kinds), "", wrapText(ref.remoteEnv));
   return `${lines.join("\n")}\n`;
 }

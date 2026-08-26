@@ -67,6 +67,14 @@ test("helpIndexText: is invocation-parameterized (no hardcoded bin name)", () =>
   assert.doesNotMatch(text, /\bagentstate-lite\b/);
 });
 
+test("helpIndexText: agent setup quick-start uses the resolved no-download invocation", () => {
+  const invocation = "npx --no-install superbee";
+  const text = helpIndexText(invocation);
+  assert.match(text, /The calling agent executes the returned action/);
+  assert.ok(text.includes(`    ${invocation} setup --host <host> --scope <scope> --json`));
+  assert.doesNotMatch(text, /npx -y superbee/);
+});
+
 test("wrapText: wraps long prose at existing spaces without breaking words, and leaves short text on one line", () => {
   assert.equal(wrapText("short line"), "short line");
 

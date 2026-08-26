@@ -102,8 +102,10 @@ export function renderNpm(): string {
   lines.push("## Host setup");
   lines.push("");
   lines.push(`Persistent integrations require \`npm install -g ${NPM_COORDINATE}\` followed by \`superbee setup\`.`);
-  lines.push("Setup is a read-only conductor: select the exact host, ask before running its returned mutating");
-  lines.push("command, restart after Skill, Hook, or MCP changes, and rerun setup to verify. A catalog entry");
+  lines.push("Setup is an agent-driven read-only conductor: the calling agent selects its exact host, executes");
+  lines.push("the returned argv action, reports what it is doing, requests approval only when the action says");
+  lines.push("`approval.required: true`, restarts after Skill, Hook, or MCP changes, and reruns setup to verify.");
+  lines.push("Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry");
   lines.push("preserves a workspace for explicit selection; it never makes that workspace the current project.");
   lines.push("If home or SessionStart reports `skill_update`, run its exact scope-specific command, restart the");
   lines.push("host, and continue; Superbee never rewrites an installed Skill automatically.");

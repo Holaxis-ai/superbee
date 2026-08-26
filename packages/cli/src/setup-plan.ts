@@ -13,6 +13,29 @@ import type { UserStateMigrationInspection } from "./user-state-migration.js";
 
 export type SetupRequirement = "required" | "recommended" | "not_applicable";
 export type SetupCapabilityState = "ready" | "needs_action" | "blocked" | "not_applicable";
+export type SetupActionKind = "run" | "inspect" | "choose_value" | "select_host";
+
+export interface SetupApproval {
+  readonly required: boolean;
+  readonly reason: string | null;
+}
+
+/**
+ * A machine-executable next step for the calling agent. `command` is an argv vector, never shell
+ * prose. Shell recovery is explicit (`sh -c`) because the command itself is a fixed CLI-owned
+ * remedy; a template is deliberately not executable until the agent has obtained its value.
+ */
+export interface SetupAction {
+  readonly action: SetupActionKind;
+  readonly command?: readonly string[];
+  readonly command_template?: string;
+  readonly description: string;
+  readonly mutates: boolean;
+  readonly approval: SetupApproval;
+}
+
+export const AGENT_SETUP_INSTRUCTION =
+  "The calling agent executes the returned action, reports what it is doing, requests approval when approval.required is true, then reruns setup until status is ready. The calling agent must not relay the command to the user unless execution is unavailable.";
 
 export interface SetupCapability {
   readonly id: "distribution" | "state" | "skill" | "mcp" | "hook" | "bundle" | "catalog";
@@ -62,6 +85,8 @@ export interface SetupPlanInput {
   readonly projectHookUnavailable?: boolean;
   readonly mcp: { readonly state: McpRegistrationState; readonly reason: string };
   readonly workspace: SetupWorkspaceState;
+  /** Resolved launcher for follow-up actions; defaults to the portable installed bin. */
+  readonly invocation?: readonly string[];
 }
 
 export function setupStateCapability(state: UserStateMigrationInspection): SetupCapability {
@@ -104,24 +129,105 @@ export function setupStateCapability(state: UserStateMigrationInspection): Setup
   };
 }
 
-export function setupNextForCapability(capability: SetupCapability): SetupPlan["next"] {
+function commandForInvocation(command: string, invocation: readonly string[]): string {
+  const launcher = invocation.join(" ");
+  if (launcher === "superbee") return command;
+
+  // Only replace an executable command head (including one after a fixed shell
+  // chain). Package operands and private-state paths may also contain the word
+  // "superbee" and must remain untouched.
+  return command
+    .replace(/^superbee(?=\s|$)/, launcher)
+    .replace(/([;&]{1,2}\s*)superbee(?=\s|$)/g, `$1${launcher}`);
+}
+
+function commandArgv(command: string, invocation: readonly string[]): readonly string[] {
+  // These are CLI-owned recovery strings. Preserve shell semantics only when control syntax or
+  // home expansion is required; ordinary setup actions remain directly executable argv vectors.
+  const resolved = commandForInvocation(command, invocation);
+  if (/[&|;$`"']/.test(resolved) || resolved.includes("~")) return ["sh", "-c", resolved];
+  return resolved.split(/\s+/).filter(Boolean);
+}
+
+function mutatesCapability(capability: SetupCapability): boolean {
+  const command = capability.command ?? "";
+  if (capability.id === "distribution") return command.startsWith("npm install ");
+  if (capability.id === "skill" || capability.id === "mcp" || capability.id === "hook") {
+    return command.includes(" install ");
+  }
+  if (capability.id === "bundle") return command.startsWith("superbee init ");
+  if (capability.id === "catalog") return command.startsWith("superbee catalog add ");
+  if (capability.id === "state") {
+    return command.startsWith("superbee setup migrate-state")
+      || command.startsWith("chmod ")
+      || command.includes(" mv ");
+  }
+  return false;
+}
+
+function approvalFor(capability: SetupCapability, mutates: boolean): SetupApproval {
+  if (!mutates) return { required: false, reason: null };
+  const command = capability.command ?? "";
+  if (capability.id === "skill" && command.includes("--scope project")) {
+    return { required: false, reason: null };
+  }
+  if (capability.id === "hook" && command.includes("--scope project")) {
+    return { required: false, reason: null };
+  }
+  if (capability.id === "bundle") {
+    return { required: true, reason: "This creates durable project knowledge-bundle files." };
+  }
+  if (capability.id === "state") {
+    return { required: true, reason: "This writes to the user-level Superbee private-state directory." };
+  }
+  if (capability.id === "distribution") {
+    return { required: true, reason: "This writes to the user-level npm global installation." };
+  }
+  return { required: true, reason: "This writes to user-level host configuration." };
+}
+
+function actionDescription(capability: SetupCapability): string {
+  const command = capability.command ?? "";
+  if (command.startsWith("superbee skill install")) return "Install Superbee's Agent Skill for the selected scope.";
+  if (command.startsWith("superbee mcp install")) return "Install Superbee's MCP registration for the selected host.";
+  if (command.startsWith("superbee hook install")) return "Install Superbee's SessionStart hook for the selected scope.";
+  if (command.startsWith("superbee setup migrate-state")) return "Migrate validated legacy private state into Superbee's canonical user-state directory.";
+  if (command.startsWith("npm install ")) return "Install Superbee into the user's global npm prefix.";
+  if (command.startsWith("superbee init ")) return "Create the requested project-local Superbee bundle.";
+  return capability.reason;
+}
+
+export function setupNextForCapability(
+  capability: SetupCapability,
+  invocation: readonly string[] = ["superbee"],
+): SetupAction | undefined {
   if (!capability.command) return undefined;
+  const mutates = mutatesCapability(capability);
+  const approval = approvalFor(capability, mutates);
   return {
-    // Blocked rows describe uncertainty or foreign state. Even when inspection identifies the
-    // product-owned quarantine leaf, setup must not present that destructive preservation move as
-    // directly runnable before the operator inspects the conflict.
-    action: capability.state === "blocked"
+    // A mutating recovery remains executable only through the explicit approval gate. Other
+    // blocked rows are diagnostics and therefore remain inspect actions.
+    action: capability.command.includes("<")
+      ? "choose_value"
+      : mutates
+        ? "run"
+        : capability.state === "blocked"
       ? "inspect"
-      : capability.command.includes("<")
-        ? "choose_value"
         : "run",
-    command: capability.command,
-    reason: capability.reason,
+    ...(capability.command.includes("<")
+      ? { command_template: commandForInvocation(capability.command, invocation) }
+      : { command: commandArgv(capability.command, invocation) }),
+    description: actionDescription(capability),
+    mutates,
+    approval,
   };
 }
 
 export interface SetupPlan {
-  readonly schema_version: 1;
+  readonly schema_version: 2;
+  readonly protocol: "agent_setup_v1";
+  readonly status: "ready" | "action_required" | "blocked";
+  readonly agent_instruction: string;
   readonly host: McpInstallTargetId;
   readonly scope: InstallScope;
   readonly ready: boolean;
@@ -132,12 +238,8 @@ export interface SetupPlan {
     readonly catalog_selects_current_project: false;
   };
   readonly capabilities: readonly SetupCapability[];
-  readonly next?: {
-    readonly action: "run" | "inspect" | "choose_value";
-    readonly command: string;
-    readonly reason: string;
-  };
-  readonly verify: { readonly command: string };
+  readonly next?: SetupAction;
+  readonly verify: SetupAction;
   readonly restart: { readonly after: readonly ("skill" | "mcp" | "hook")[] };
 }
 
@@ -447,7 +549,10 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
   const actionable = capabilities.find((capability) =>
     capability.state === "needs_action" || capability.state === "blocked",
   );
-  const next = actionable ? setupNextForCapability(actionable) : undefined;
+  const invocation = input.invocation ?? ["superbee"];
+  const next = actionable ? setupNextForCapability(actionable, invocation) : undefined;
+  const ready = required.every((capability) => capability.state === "ready");
+  const complete = capabilities.every((capability) => capability.state === "ready" || capability.state === "not_applicable");
   const restartAfter = capabilities
     .filter((capability): capability is SetupCapability & { id: "skill" | "mcp" | "hook" } =>
       (capability.id === "skill" || capability.id === "mcp" || capability.id === "hook")
@@ -455,11 +560,14 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
     )
     .map((capability) => capability.id);
   return {
-    schema_version: 1,
+    schema_version: 2,
+    protocol: "agent_setup_v1",
+    status: complete ? "ready" : next?.action === "inspect" ? "blocked" : "action_required",
+    agent_instruction: AGENT_SETUP_INSTRUCTION,
     host: input.host,
     scope: input.scope,
-    ready: required.every((capability) => capability.state === "ready"),
-    complete: capabilities.every((capability) => capability.state === "ready" || capability.state === "not_applicable"),
+    ready,
+    complete,
     workspace: {
       current_project_bundle: input.workspace.bundle,
       catalog_access: input.workspace.catalog,
@@ -467,7 +575,13 @@ export function buildSetupPlan(input: SetupPlanInput): SetupPlan {
     },
     capabilities,
     ...(next ? { next } : {}),
-    verify: { command: `superbee setup --host ${input.host} --scope ${input.scope}` },
+    verify: {
+      action: "run",
+      command: [...invocation, "setup", "--host", input.host, "--scope", input.scope, "--json"],
+      description: "Reinspect setup readiness after the preceding action.",
+      mutates: false,
+      approval: { required: false, reason: null },
+    },
     restart: { after: restartAfter },
   };
 }

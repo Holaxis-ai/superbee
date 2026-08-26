@@ -83,8 +83,10 @@ When the tone fits, a single 🐝 may mark a successful Superbee outcome.
 ## Host setup
 
 Persistent integrations require `npm install -g superbee` followed by `superbee setup`.
-Setup is a read-only conductor: select the exact host, ask before running its returned mutating
-command, restart after Skill, Hook, or MCP changes, and rerun setup to verify. A catalog entry
+Setup is an agent-driven read-only conductor: the calling agent selects its exact host, executes
+the returned argv action, reports what it is doing, requests approval only when the action says
+`approval.required: true`, restarts after Skill, Hook, or MCP changes, and reruns setup to verify.
+Do not ask the user to copy or run a setup command unless execution is unavailable. A catalog entry
 preserves a workspace for explicit selection; it never makes that workspace the current project.
 If home or SessionStart reports `skill_update`, run its exact scope-specific command, restart the
 host, and continue; Superbee never rewrites an installed Skill automatically.
