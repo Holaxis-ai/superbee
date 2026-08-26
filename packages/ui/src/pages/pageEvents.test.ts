@@ -111,6 +111,48 @@ describe("createChangeStream", () => {
     expect(changes).toEqual([CHANGE]);
   });
 
+  it("every drop probes the shell session without overlapping probes", async () => {
+    let finishProbe!: () => void;
+    const probeSession = vi.fn(async () => {});
+    probeSession.mockImplementationOnce(() => new Promise<void>((resolve) => { finishProbe = resolve; }));
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, probeSession);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropRetryable();
+    expect(probeSession).toHaveBeenCalledTimes(1);
+
+    sources[0]!.dropRetryable();
+    sources[0]!.dropFatal();
+    expect(probeSession).toHaveBeenCalledTimes(1);
+
+    finishProbe();
+    await Promise.resolve();
+    await Promise.resolve();
+    sources[0]!.dropFatal();
+    expect(probeSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("a failed session probe never suppresses the reconnect timer", async () => {
+    const probeSession = vi.fn(async () => { throw new Error("server is offline"); });
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, probeSession);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropFatal();
+    await Promise.resolve();
+    vi.advanceTimersByTime(3_000);
+    expect(sources).toHaveLength(2);
+  });
+
   it("unsubscribing the last listener closes the stream and cancels a pending retry", () => {
     const s = stream();
     const unsub = s.subscribeToResync(() => {});

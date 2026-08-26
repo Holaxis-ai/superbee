@@ -10,14 +10,19 @@
  *
  * RESILIENCE (tasks/ui-pages-spike P1 — connection resilience): a dropped stream must never
  * permanently stale an open page. The server keeps no replay buffer, so any frame emitted during a
- * gap is GONE — reconnecting alone is not recovery. Two mechanisms close that:
+ * gap is GONE — reconnecting alone is not recovery. Three mechanisms close that:
  *   1. Reconnect always: the browser auto-retries a dropped-but-retryable stream itself
  *      (readyState CONNECTING); a FATALLY closed one (readyState CLOSED — e.g. the reconnect got a
  *      non-200 after a server restart) is re-created here on a timer.
  *   2. Resync on every reconnect: the first successful (re)open after ANY drop notifies the
  *      {@link subscribeToResync} listeners, whose contract is a FULL refresh (re-query/reload) —
  *      never "trust the stream caught you up".
+ *   3. Probe the shell session after a drop: a stable-port restart can rotate the session secret,
+ *      making every reconnect fail before another ordinary request wakes the interceptor. The
+ *      existing config endpoint distinguishes that authenticated refusal from an offline host.
  */
+
+import { setInterceptorStatus } from "../query/interceptor.js";
 
 export interface ChangeEvent {
   docs: { changed: { id: string; version: string }[]; removed: string[] };
@@ -52,14 +57,31 @@ export interface ChangeStream {
 /** The real EventSource IS an EventSourceLike at runtime (our handlers take no/fewer args and `MessageEvent` carries `.data`); the cast only bridges the DOM lib's `this`/event-typed handler slots to the minimal seam. */
 const domEventSource = (url: string): EventSourceLike => new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike;
 
-export function createChangeStream(newEventSource: (url: string) => EventSourceLike = domEventSource): ChangeStream {
+async function probeShellSession(): Promise<void> {
+  const response = await fetch("/__ui/config", { credentials: "same-origin" });
+  if (response.status === 403) setInterceptorStatus("session_expired");
+}
+
+export function createChangeStream(
+  newEventSource: (url: string) => EventSourceLike = domEventSource,
+  probeSession: () => Promise<void> = probeShellSession,
+): ChangeStream {
   const changeListeners = new Set<ChangeListener>();
   const resyncListeners = new Set<ResyncListener>();
   let source: EventSourceLike | null = null;
   let dropped = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let probeInFlight = false;
 
   const anySubscriber = (): boolean => changeListeners.size + resyncListeners.size > 0;
+
+  function probeCurrentSession(): void {
+    if (probeInFlight) return;
+    probeInFlight = true;
+    // Offline/unreachable remains a reconnect condition. Only the session-gated endpoint's
+    // explicit 403 trips the terminal recovery UI inside the production probe.
+    void probeSession().catch(() => {}).finally(() => { probeInFlight = false; });
+  }
 
   function connect(): void {
     if (source) return;
@@ -81,6 +103,7 @@ export function createChangeStream(newEventSource: (url: string) => EventSourceL
     };
     es.onerror = () => {
       dropped = true;
+      probeCurrentSession();
       // CONNECTING: the browser is auto-retrying this same EventSource — onopen will fire on
       // success and trigger the resync. CLOSED: the browser gave up (fatal response); re-create.
       if (es.readyState === READY_STATE_CLOSED) {
