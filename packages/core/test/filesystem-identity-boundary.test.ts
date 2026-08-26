@@ -284,6 +284,14 @@ test("N4: the identity module has exactly one importer in the package", async ()
       }
       const factory = namesRequireFactory(node);
       if (factory !== undefined) unfollowable.push(`${file} names '${factory}', which yields a module loader`);
+      // A loader may appear only as the callee of its own call, where the specifier above is
+      // resolved. Every other reference -- assigned, destructured, passed on, mentioned bare --
+      // sends the loader somewhere this scan cannot follow, exactly as an aliased protocol entry
+      // point does in the backend row, so the reference shape is refused rather than the alias
+      // being chased.
+      if (ts.isIdentifier(node) && node.text === "require" && !(ts.isCallExpression(node.parent) && node.parent.expression === node)) {
+        unfollowable.push(`${file} references 'require' in a ${ts.SyntaxKind[node.parent.kind]}, not as the callee of its own call`);
+      }
       ts.forEachChild(node, visit);
     };
     visit(source);
@@ -298,7 +306,7 @@ test("N4: the identity module has exactly one importer in the package", async ()
   //
   // `import-direction.test.ts` independently bans the require family across this directory. This
   // row does not lean on it: a narrowing there must not silently cost the port guarantee its
-  // backstop, so the require-style routes are recognized here too.
+  // backstop, so the require-style routes are recognized here too, callee rule included.
   assert.deepEqual(importers, ["backend.ts"], "only the backend may import the identity module; a second importer can forward its entry points");
 });
 
