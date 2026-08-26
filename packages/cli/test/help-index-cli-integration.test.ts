@@ -44,8 +44,9 @@ for (const argv of [["--help"], ["-h"], ["help"]]) {
 
     // The new shape: a description header, a Usage line, and every group as its own plain heading
     // with each command on its own indented physical line. (The resolved invocation off-PATH is
-    // `npx -y superbee`, a multi-word prefix, so match loosely on the leading token.)
-    assert.match(out, /^.+ — read and write a local OKF knowledge bundle/);
+    // `npx --no-install superbee`, a multi-word prefix, so match loosely on the leading token.)
+    const heading = out.match(/^(.+) — read and write a local OKF knowledge bundle/m);
+    assert.ok(heading, "must render the invocation in the heading");
     assert.match(out, /\nUsage: .+ <command> \[options\]\n/);
     assert.match(out, /\nBundle:\n {2}bundle locate \[--dir <path>\][^\n]* — Resolve the exact canonical local bundle path/);
     assert.match(out, /\n {2}catalog \(add <label>[^\n]* — Register and deterministically resolve this user's explicitly named local workspaces/);
@@ -56,6 +57,11 @@ for (const argv of [["--help"], ["-h"], ["help"]]) {
       /\nSession:\n {2}version \[--check\] \[--tag latest\|next\] \[--json\][^\n]* — Show the complete local build\/runtime identity[^\n]*\n {2}session-start/,
     );
     assert.match(out, /\n {2}hook install\|status\|uninstall/);
+    assert.match(out, /\nAgent setup:\n/);
+    assert.match(out, /The calling agent executes the returned action/);
+    assert.match(out, /npx --no-install superbee/);
+    assert.ok(out.includes(`    ${heading[1]} setup --host <host> --scope <scope> --json`));
+    assert.doesNotMatch(out, /npx -y superbee/);
 
     // The footer pointers are still present, and readably wrapped (no single line runs the whole
     // bundle-resolution paragraph together).
@@ -123,6 +129,6 @@ test("built CLI: a nearby list option typo names the exact correction", () => {
   const result = spawnSync("node", [cliBin, "list", "--limt", "5"], { encoding: "utf8" });
   assert.equal(result.status, 2);
   assert.match(result.stdout, /unknown option '--limt' — did you mean '--limit'\?/);
-  assert.match(result.stdout, /help: npx -y superbee list --help/);
+  assert.match(result.stdout, /help: (?:superbee|npx --no-install superbee) list --help/);
   assert.equal(result.stderr, "");
 });

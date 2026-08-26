@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../src/offers.js";
 import { parseRecipeFiles } from "../src/recipe-parser.js";
 
-const INVOKE = "npx -y superbee";
+const INVOKE = "npx --no-install superbee";
 
 const CONTEXT_NOTES: OfferRow = {
   recipe: "context-notes",

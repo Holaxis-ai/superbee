@@ -40,8 +40,8 @@ import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 import { canonicalUserStateDir, USER_STATE_MARKER_BYTES } from "../src/user-state.js";
 
-const INVOKE = "npx -y superbee";
-const DEFAULT_INVOKE = "npx -y superbee";
+const INVOKE = "npx --no-install superbee";
+const DEFAULT_INVOKE = "npx --no-install superbee";
 const BASE_DEPS = { binPath: () => "/bin/superbee", invocation: () => INVOKE };
 
 /** The full builtin offer set — what derives when a summary carries no conventions or instances. */

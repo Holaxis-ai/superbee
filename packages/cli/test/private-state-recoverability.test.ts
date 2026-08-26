@@ -182,7 +182,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     expectStatus: 0,
     // The emitted command travels inside a JSON string, so its quotes arrive backslash-escaped.
     help: /mv ~\/\.superbee-state \\"\$superbee_quarantine\\"\/ && echo \\"preserved: \$superbee_quarantine\/\.superbee-state\\"/,
-    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    remedy: (output) => ({ command: actionCommand((JSON.parse(output) as SetupEnvelope).setup.next.command) }),
     effect: "changes-state",
     verify: (f, executed) => {
       assert.equal(existsSync(f.stateRoot), false, "the blocked root must be moved aside");
@@ -215,7 +215,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     verify: (_f, executed) => {
       assert.match(executed.stdout, /capabilities\[1\]\{id,requirement,state,reason,command\}/);
       assert.match(executed.stdout, /state,required,blocked,/);
-      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command:/);
+      assert.match(executed.stdout, /next:\n\s+action: run\n\s+command\[\d+\]:/);
     },
   },
   {
@@ -236,7 +236,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
       assert.doesNotMatch(row.reason, /unrecognized/, "and it is never described as unrecognized");
       assert.doesNotMatch(row.command ?? "", /\bmv\b/, "proportionality: no quarantine for a root we repair");
     },
-    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    remedy: (output) => ({ command: actionCommand((JSON.parse(output) as SetupEnvelope).setup.next.command) }),
     effect: "changes-state",
     verify: (f) => {
       assert.equal(statSync(f.stateRoot).mode & 0o777, 0o700, "the emitted repair must actually tighten the root");
@@ -265,7 +265,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
       assert.doesNotMatch(row.command ?? "", /\bmv\b/, "a quarantine here would destroy the only copy");
       assert.doesNotMatch(row.command ?? "", /\brm\b/);
     },
-    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    remedy: (output) => ({ command: actionCommand((JSON.parse(output) as SetupEnvelope).setup.next.command) }),
     effect: "changes-state",
     verify: (f) => {
       assertDurableRecordsIntact(f);
@@ -323,9 +323,15 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
 
 interface SetupEnvelope {
   readonly setup: {
-    readonly next: { readonly command: string };
+    readonly next: { readonly command: readonly string[] };
     readonly capabilities: readonly { readonly id: string; readonly state: string; readonly reason: string; readonly command?: string }[];
   };
+}
+
+/** Recover the exact shell program from the explicit agent argv protocol for execution testing. */
+function actionCommand(command: readonly string[]): string {
+  if (command[0] === "sh" && command[1] === "-c" && command.length === 3) return command[2]!;
+  return command.join(" ");
 }
 
 /**

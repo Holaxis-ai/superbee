@@ -10,9 +10,11 @@ import { CliError } from "../errors.js";
 import { inspectMcpHosts, MCP_INSTALL_TARGETS, type McpHostStatus, type McpInstallTarget, type McpInstallTargetId } from "../mcp-install-targets.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
 import { resolvePersistentInstallAuthority, type PersistentInstallAuthority } from "../install-authority.js";
+import { cliInvocation } from "../invocation.js";
 import { render, resolveMode } from "../output.js";
 import {
   buildSetupPlan,
+  AGENT_SETUP_INSTRUCTION,
   setupNextForCapability,
   setupStateCapability,
   type SetupHookHostState,
@@ -29,20 +31,24 @@ import {
   type UserStateMigrationReceipt,
 } from "../user-state-migration.js";
 
-export const SETUP_USAGE = `superbee setup — inspect the complete host integration and emit one safe next command
+export const SETUP_USAGE = `superbee setup — inspect setup readiness and return the next action for the calling agent
 
 Usage:
   superbee setup [--host codex|claude-code|claude-desktop|opencode]
                  [--scope project|user] [--json]
   superbee setup migrate-state [--json]
 
-Without --host, the command reports private-state health plus the four bounded supported host
-surfaces. A required state remedy comes first; otherwise it asks the agent to select the exact
-host. With --host, it composes the existing distribution, Agent Skill,
+Setup is an agent-driven workflow. The calling agent selects its exact host, executes the returned
+next action, reports what it is doing, requests approval when \`approval.required\` is true, and
+reruns setup until status is ready. Do not ask the user to copy or run setup commands unless the
+agent cannot execute them. With --host, setup composes the existing distribution, Agent Skill,
 SessionStart hook, MCP registration, local bundle, and private catalog inspectors into one
 deterministic plan. It never writes configuration or treats detected software as mutation
-authority. Run the returned next.command, restart the named host after integration changes, and
-re-run the same setup command to verify.
+authority. \`--json\` returns argv arrays plus mutation and approval metadata; a command template is
+not executable until its placeholder value is chosen.
+
+Without --host, the command reports private-state health plus the four bounded supported host
+surfaces. A required state remedy comes first; otherwise the calling agent selects the exact host.
 
 When setup reports validated legacy operational state, migrate-state copies only the private
 catalog, remote credentials, and immutable View approvals into Superbee's canonical state root.
@@ -83,6 +89,7 @@ export interface SetupDeps {
   listCatalog: (home: string) => Promise<CatalogEntryView[]>;
   inspectState: (home: string) => Promise<UserStateMigrationInspection>;
   migrateState: (home: string) => Promise<UserStateMigrationReceipt>;
+  invocation: () => string;
 }
 
 function setupHost(value: string | undefined): McpInstallTargetId | undefined {
@@ -111,7 +118,12 @@ function hookForHost(
       : inspection.hosts.opencode;
 }
 
-function planForHost(inspection: SetupInspection, host: McpInstallTargetId, scope: InstallScope): SetupPlan {
+function planForHost(
+  inspection: SetupInspection,
+  host: McpInstallTargetId,
+  scope: InstallScope,
+  invocation: readonly string[],
+): SetupPlan {
   const mcp = inspection.mcp.find((row) => row.host === host);
   if (!mcp) throw new Error(`missing setup MCP inspection for ${host}`);
   return buildSetupPlan({
@@ -130,6 +142,7 @@ function planForHost(inspection: SetupInspection, host: McpInstallTargetId, scop
     mcp,
     workspace: inspection.workspace,
     state: inspection.state,
+    invocation,
   });
 }
 
@@ -274,6 +287,7 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     listCatalog: injected.listCatalog ?? listCatalogEntries,
     inspectState: injected.inspectState ?? inspectUserStateMigration,
     migrateState: injected.migrateState ?? migrateUserState,
+    invocation: injected.invocation ?? cliInvocation,
   };
   if (parsed.selection.kind === "selected" && parsed.selection.payload.action === "migrate") {
     if (values.host !== undefined || values.scope !== undefined) {
@@ -287,33 +301,45 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
   if (requestedHost) {
     const target = MCP_INSTALL_TARGETS.find((candidate) => candidate.id === requestedHost)!;
     const inspection = await inspectAll(scope, [target], deps);
-    stdout(render({ setup: planForHost(inspection, requestedHost, scope) }, resolveMode(values)));
+    stdout(render({ setup: planForHost(inspection, requestedHost, scope, deps.invocation().split(/\s+/)) }, resolveMode(values)));
     return;
   }
   const inspection = await inspectAll(scope, MCP_INSTALL_TARGETS, deps);
+  const invocation = deps.invocation().split(/\s+/);
   const state = setupStateCapability(inspection.state);
-  const stateNext = setupNextForCapability(state);
+  const stateNext = setupNextForCapability(state, invocation);
   const hosts = MCP_INSTALL_TARGETS.map((target) => {
-    const plan = planForHost(inspection, target.id, scope);
+    const plan = planForHost(inspection, target.id, scope, invocation);
     return {
       id: target.id,
       label: target.label,
       ready: plan.ready,
       complete: plan.complete,
       mcp_state: inspection.mcp.find((row) => row.host === target.id)!.state,
-      command: `superbee setup --host ${target.id} --scope ${scope}`,
+      action: {
+        action: "run" as const,
+        command: [...invocation, "setup", "--host", target.id, "--scope", scope, "--json"],
+        description: `Inspect setup readiness for ${target.label}.`,
+        mutates: false,
+        approval: { required: false, reason: null },
+      },
     };
   });
   stdout(render({
     setup: {
-      schema_version: 1,
+      schema_version: 2,
+      protocol: "agent_setup_v1",
+      status: stateNext?.action === "inspect" ? "blocked" : "action_required",
+      agent_instruction: AGENT_SETUP_INSTRUCTION,
       mode: "select_host",
       scope,
       hosts,
       capabilities: [state],
       next: stateNext ?? {
         action: "select_host",
-        instruction: "choose the exact host running this agent, then run that row's command",
+        description: "Identify the exact host running this agent, then execute that host row's action.",
+        mutates: false,
+        approval: { required: false, reason: null },
       },
     },
   }, resolveMode(values)));
