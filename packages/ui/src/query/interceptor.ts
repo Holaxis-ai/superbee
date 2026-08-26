@@ -5,8 +5,8 @@
  * by the current `ui` process.
  *
  * The sandboxed View-bytes route's 403 is separate: iframe navigation does not pass through this
- * fetch interceptor. `PageFrame` writes here only when its ordinary `/v0/*` read proves the shell
- * session is dead, never when nonce minting rejects a malformed View entry.
+ * fetch interceptor. The SSE reconnect probe writes here only when the ordinary session-gated
+ * `/__ui/config` endpoint returns 403, never when nonce minting rejects a malformed View entry.
  *
  * The module-level store is exposed through `useSyncExternalStore`. Once tripped it remains
  * terminal until a fresh page load, preventing dead credentials from poll-looping into 429s.
