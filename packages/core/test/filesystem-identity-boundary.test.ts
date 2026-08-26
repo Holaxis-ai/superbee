@@ -21,6 +21,10 @@ const IDENTITY_MODULES = ["backend.ts", "filesystem-identity.ts", "filesystem-lo
 const FS_SPECIFIERS = new Set(["node:fs", "node:fs/promises", "fs", "fs/promises"]);
 const IDENTITY_MODULE = "./filesystem-identity.js";
 const IDENTITY_MODULE_PATH = path.join(SOURCE_ROOT, "filesystem-identity");
+/** Modules whose require factory hands out a loader this scan cannot follow to its call sites. */
+const MODULE_LOADER_SPECIFIERS = new Set(["node:module", "module"]);
+/** Names that produce a `require` function, however they are spelled at the access site. */
+const REQUIRE_FACTORIES = new Set(["createRequire", "getBuiltinModule"]);
 const AMBIENT_SPECIFIERS = new Set(["node:os", "os"]);
 /** Ambient host inputs: values that vary with the machine, the user, or the environment. */
 const AMBIENT_BINDINGS = new Set(["tmpdir", "homedir", "hostname", "userInfo", "networkInterfaces"]);
@@ -44,7 +48,16 @@ async function sourceModules(dir = SOURCE_ROOT): Promise<string[]> {
 function moduleSpecifierOf(node: ts.Node): ts.Expression | null | undefined {
   if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier) return node.moduleSpecifier;
   if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) return node.moduleReference.expression;
-  if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) return node.arguments[0] ?? null;
+  if (!ts.isCallExpression(node)) return undefined;
+  if (node.expression.kind === ts.SyntaxKind.ImportKeyword) return node.arguments[0] ?? null;
+  if (ts.isIdentifier(node.expression) && node.expression.text === "require") return node.arguments[0] ?? null;
+  return undefined;
+}
+
+/** A name that yields a `require` function, whether written as an identifier or as a computed key. */
+function namesRequireFactory(node: ts.Node): string | undefined {
+  if (ts.isIdentifier(node) && REQUIRE_FACTORIES.has(node.text)) return node.text;
+  if (ts.isStringLiteralLike(node) && REQUIRE_FACTORIES.has(node.text)) return node.text;
   return undefined;
 }
 
@@ -251,31 +264,41 @@ test("N4: only the lock module reads an ambient host input", async () => {
 
 test("N4: the identity module has exactly one importer in the package", async () => {
   const importers: string[] = [];
-  const unresolvable: string[] = [];
+  const unfollowable: string[] = [];
   for (const file of await sourceModules()) {
     const source = await parse(file);
     const from = path.dirname(path.join(SOURCE_ROOT, file));
     const visit = (node: ts.Node): void => {
       const specifier = moduleSpecifierOf(node);
       if (specifier === null || (specifier !== undefined && !ts.isStringLiteralLike(specifier))) {
-        unresolvable.push(`${file} names a module through a specifier that is not a string literal`);
+        unfollowable.push(`${file} names a module through a specifier that is not a string literal`);
+      } else if (specifier !== undefined && MODULE_LOADER_SPECIFIERS.has(specifier.text)) {
+        // A require function obtained here can be called under any name, so its call sites cannot
+        // be found without dataflow. Naming the module at all is the route, and it fails closed.
+        unfollowable.push(`${file} names '${specifier.text}', whose loader cannot be followed to its call sites`);
       } else if (specifier !== undefined && specifier.text.startsWith(".")) {
         // Resolved, so a different spelling of the same module is the same importer.
         if (path.resolve(from, specifier.text).replace(/\.js$/, "") === IDENTITY_MODULE_PATH && !importers.includes(file)) {
           importers.push(file);
         }
       }
+      const factory = namesRequireFactory(node);
+      if (factory !== undefined) unfollowable.push(`${file} names '${factory}', which yields a module loader`);
       ts.forEachChild(node, visit);
     };
     visit(source);
   }
-  assert.deepEqual(unresolvable, [], "a module specifier that cannot be resolved could reach the identity module");
+  assert.deepEqual(unfollowable, [], "a module route that cannot be followed statically could reach the identity module");
   // The rules below bound how backend.ts reaches the identity module and what it does with what
   // it gets. Neither can see a SECOND module that imports the identity module and hands an entry
   // point on under another name, as a namespace member, or as a default export: to the backend
   // that is an ordinary import of an ordinary module. There is no name-based defence against
   // that, so no such module may exist. Growing this list is therefore a deliberate act, and it
   // reopens the forwarding route for whatever is added.
+  //
+  // `import-direction.test.ts` independently bans the require family across this directory. This
+  // row does not lean on it: a narrowing there must not silently cost the port guarantee its
+  // backstop, so the require-style routes are recognized here too.
   assert.deepEqual(importers, ["backend.ts"], "only the backend may import the identity module; a second importer can forward its entry points");
 });
 
