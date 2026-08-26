@@ -57,14 +57,14 @@ export interface ChangeStream {
 /** The real EventSource IS an EventSourceLike at runtime (our handlers take no/fewer args and `MessageEvent` carries `.data`); the cast only bridges the DOM lib's `this`/event-typed handler slots to the minimal seam. */
 const domEventSource = (url: string): EventSourceLike => new EventSource(url, { withCredentials: true }) as unknown as EventSourceLike;
 
-async function probeShellSession(): Promise<void> {
+async function probeShellSession(): Promise<boolean> {
   const response = await fetch("/__ui/config", { credentials: "same-origin" });
-  if (response.status === 403) setInterceptorStatus("session_expired");
+  return response.status === 403;
 }
 
 export function createChangeStream(
   newEventSource: (url: string) => EventSourceLike = domEventSource,
-  probeSession: () => Promise<void> = probeShellSession,
+  probeSession: () => Promise<boolean> = probeShellSession,
 ): ChangeStream {
   const changeListeners = new Set<ChangeListener>();
   const resyncListeners = new Set<ResyncListener>();
@@ -72,15 +72,26 @@ export function createChangeStream(
   let dropped = false;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
   let probeInFlight = false;
+  let recoveryGeneration = 0;
 
   const anySubscriber = (): boolean => changeListeners.size + resyncListeners.size > 0;
 
   function probeCurrentSession(): void {
     if (probeInFlight) return;
     probeInFlight = true;
+    const generation = recoveryGeneration;
     // Offline/unreachable remains a reconnect condition. Only the session-gated endpoint's
-    // explicit 403 trips the terminal recovery UI inside the production probe.
-    void probeSession().catch(() => {}).finally(() => { probeInFlight = false; });
+    // explicit 403 trips the terminal recovery UI. A successful stream reopen or teardown makes
+    // an older response stale: another tab may have installed a fresh session cookie while the
+    // old request was in flight, so never let that delayed 403 poison the recovered session.
+    void probeSession()
+      .then((expired) => {
+        if (expired && generation === recoveryGeneration && dropped && anySubscriber()) {
+          setInterceptorStatus("session_expired");
+        }
+      })
+      .catch(() => {})
+      .finally(() => { probeInFlight = false; });
   }
 
   function connect(): void {
@@ -88,11 +99,14 @@ export function createChangeStream(
     const es = newEventSource("/events");
     source = es;
     es.onopen = () => {
+      if (source !== es) return;
+      recoveryGeneration += 1;
       if (!dropped) return; // first-ever open: subscribers are loading fresh anyway
       dropped = false;
       for (const l of resyncListeners) l();
     };
     es.onmessage = (ev) => {
+      if (source !== es) return;
       let parsed: ChangeEvent;
       try {
         parsed = JSON.parse(ev.data) as ChangeEvent;
@@ -102,6 +116,7 @@ export function createChangeStream(
       for (const l of changeListeners) l(parsed);
     };
     es.onerror = () => {
+      if (source !== es) return;
       dropped = true;
       probeCurrentSession();
       // CONNECTING: the browser is auto-retrying this same EventSource — onopen will fire on
@@ -131,6 +146,7 @@ export function createChangeStream(
     source?.close();
     source = null;
     dropped = false;
+    recoveryGeneration += 1;
   }
 
   return {
