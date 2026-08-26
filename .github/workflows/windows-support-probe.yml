@@ -96,11 +96,48 @@ jobs:
             echo 'parse, so this probe sets npm `script-shell` to git-bash before measuring.'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # A build failure yields no inventory at all, so it fails the job loudly rather than
-      # producing an empty table that reads like a clean result.
+      # `--force` is not optional here. npm enforces a workspace's `os` field during install, so
+      # the interim `"os": ["!win32"]` in packages/cli blocks the very measurement that would
+      # retire it: run 33015817024 got EBADPLATFORM at `npm ci` and produced no inventory at all.
+      # `--force` is npm's own documented escape for platform and engine checks and leaves the tree
+      # unmodified, which is why the probe uses it rather than editing the manifest on the runner.
+      # Verified locally against an `os: ["!darwin"]` workspace on npm 11.15.0: plain exits 1,
+      # forced exits 0.
+      #
+      # A build failure yields no inventory at all, so it is recorded and then fails the job loudly
+      # rather than producing an empty table that reads like a clean result.
       - name: Install and build
         shell: bash
-        run: npm ci && npm run build
+        run: |
+          set +e
+          npm ci --force > install.log 2>&1
+          install_code=$?
+          npm run build > build.log 2>&1
+          build_code=$?
+          {
+            echo
+            echo '## Install and build'
+            echo
+            echo '| step | exit |'
+            echo '| --- | --- |'
+            echo "| \`npm ci --force\` | $install_code |"
+            echo "| \`npm run build\` | $build_code |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for stage in install build; do
+            code_var="${stage}_code"
+            code="${!code_var}"
+            [ "$code" -eq 0 ] && continue
+            {
+              echo
+              echo "<details><summary>tail: $stage</summary>"
+              echo
+              echo '```'
+              tail -40 "$stage.log"
+              echo '```'
+              echo '</details>'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          [ "$install_code" -eq 0 ] && [ "$build_code" -eq 0 ]
 
       # Every workspace runs independently. Exit codes are captured as values rather than with
       # continue-on-error, so a failure is reported instead of disappearing, and no suite's failure
