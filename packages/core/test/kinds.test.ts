@@ -25,6 +25,7 @@ import { RemoteBackend } from "../src/remote-backend.js";
 import {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
+  buildKindRegistry,
   freshnessHorizonMs,
   isTerminal,
   kindConventionDoc,
@@ -84,6 +85,26 @@ const ROADMAP_KIND_DOC: OkfDocument = {
   },
   body: "Roadmap items track committed-but-not-yet-built work.",
 };
+
+test("prospective registry construction is the same pure authority loadKinds uses", async () => {
+  const first = ROADMAP_KIND_DOC;
+  const duplicate: OkfDocument = {
+    ...ROADMAP_KIND_DOC,
+    id: "conventions/z-roadmap-item",
+    frontmatter: { ...ROADMAP_KIND_DOC.frontmatter, title: "Shadowed" },
+  };
+  const pure = buildKindRegistry([duplicate, first]);
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "mem://prospective-kind-registry", backend };
+  await writeDoc(bundle, duplicate);
+  await writeDoc(bundle, first);
+  const loaded = await loadKinds(bundle);
+
+  assert.deepEqual([...pure.kinds.entries()], [...loaded.kinds.entries()]);
+  assert.deepEqual(pure.warnings, loaded.warnings);
+  assert.equal(pure.kinds.get("Roadmap Item")?.id, "conventions/roadmap-item");
+  assert.equal(pure.warnings.some((warning) => warning.code === "KIND_DUPLICATE_GOVERNS"), true);
+});
 
 async function withFsBundle(fn: (bundle: Bundle) => Promise<void>): Promise<void> {
   const root = await mkdtemp(path.join(tmpdir(), "okf-kinds-fs-"));

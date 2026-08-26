@@ -106,6 +106,62 @@ export interface KindRegistry {
   warnings: ValidationWarning[];
 }
 
+/**
+ * Build the one authoritative Kind registry from already-selected convention documents.
+ * Callers own discovery; this pure half owns parsing, warnings, and first-by-id duplicate
+ * resolution so prospective registries cannot drift from {@link loadKinds} semantics.
+ */
+export function buildKindRegistry(
+  docs: readonly OkfDocument[],
+  initialWarnings: readonly ValidationWarning[] = [],
+): KindRegistry {
+  const kinds = new Map<string, KindConvention>();
+  const warnings = [...initialWarnings];
+
+  for (const doc of [...docs].sort((a, b) => a.id.localeCompare(b.id))) {
+    const parsed = parseConventionDoc(doc);
+    if (!parsed.ok) {
+      warnings.push({
+        code: "KIND_CONVENTION_MALFORMED",
+        message: `skipped malformed kind convention '${doc.id}': ${parsed.reason}`,
+        field: doc.id,
+        severity: "warning",
+      });
+      continue;
+    }
+    const { kind, reservedFieldsIgnored, reservedFieldPaths } = parsed;
+    warnings.push(...parsed.warnings);
+    if (reservedFieldsIgnored.length > 0) {
+      warnings.push({
+        code: "KIND_RESERVED_FIELD",
+        message: `kind convention '${doc.id}' declares reserved field name(s) ${reservedFieldsIgnored.join(", ")} (reserved by the CLI: ${RESERVED_KIND_FIELD_NAMES.join("/")}); ignoring them — rename those domain fields before authoring instances.`,
+        field: reservedFieldPaths.join(","),
+        severity: "warning",
+      });
+    }
+    if (kinds.has(kind.governs)) {
+      warnings.push({
+        code: "KIND_DUPLICATE_GOVERNS",
+        message: `duplicate kind convention for '${kind.governs}': '${doc.id}' ignored, keeping the first-declared '${kinds.get(kind.governs)!.id}'.`,
+        field: kind.governs,
+        severity: "warning",
+      });
+      continue;
+    }
+    if (kind.freshnessHorizon !== undefined && freshnessHorizonMs(kind) === undefined) {
+      warnings.push({
+        code: "KIND_HORIZON_MALFORMED",
+        message: `kind convention '${doc.id}' has a malformed freshness_horizon '${kind.freshnessHorizon}' (expected <n>(m|h|d)); ignoring it.`,
+        field: "freshness_horizon",
+        severity: "warning",
+      });
+    }
+    kinds.set(kind.governs, kind);
+  }
+
+  return { kinds, warnings };
+}
+
 /** Stable product-level name for a Kind's workflow progress field. */
 export const PROGRESS_STATUS_FIELD = "progress_status";
 

@@ -515,6 +515,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "kindFieldRemove", surface: "--dir", argv: (t) => ["kind", "field", "Context Note", "remove", "probe_field", "--dir", t, "--json"] },
   { leaf: "recipes", surface: "--dir", argv: (t) => ["recipes", "--dir", t, "--json"] },
   { leaf: "recipeAdd", surface: "--dir", argv: (t) => ["recipe", "add", "work-tracking", "--dir", t, "--json"] },
+  { leaf: "recipeEvolve", surface: "--dir", argv: (t) => ["recipe", "evolve", "work-tracking", "--dir", t, "--json"] },
   {
     leaf: "serve",
     surface: "--dir",
@@ -611,6 +612,11 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   },
   {
     leaf: "recipeAdd",
+    surface: "<0>",
+    skip: "specification F11 / N7: see the `init --recipe` row.",
+  },
+  {
+    leaf: "recipeEvolve",
     surface: "<0>",
     skip: "specification F11 / N7: see the `init --recipe` row.",
   },
