@@ -33,7 +33,11 @@ async function parse(file: string): Promise<ts.SourceFile> {
   return ts.createSourceFile(file, await readFile(path.join(SOURCE_ROOT, file), "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 }
 
-/** Every source module, subdirectories included, named relative to `SOURCE_ROOT`. */
+/**
+ * Every source module, subdirectories included, named relative to `SOURCE_ROOT`. Every scan over
+ * the source tree in this file goes through here: a rule that reads one directory level is a rule
+ * a new subdirectory silently escapes.
+ */
 async function sourceModules(dir = SOURCE_ROOT): Promise<string[]> {
   const found: string[] = [];
   for (const entry of await readdir(dir, { withFileTypes: true })) {
@@ -200,7 +204,7 @@ test("N2: FilesystemMutationLockOptions has exactly waitMs, pollMs, portableRoot
 // ── N4: import surface and environment isolation ──────────────────────────────
 
 test("N4: only the identity and lock modules import node:fs, and the backend reaches neither fs, crypto, nor the lock", async () => {
-  const files = (await readdir(SOURCE_ROOT)).filter((name) => /\.[cm]?ts$/.test(name)).sort();
+  const files = await sourceModules();
   const fsImporters: string[] = [];
   for (const file of files) {
     const specifiers = importSpecifiers(await parse(file));
@@ -225,7 +229,7 @@ test("N4: the three runtime modules never read process.env", async () => {
 });
 
 test("N4: only the lock module reads an ambient host input", async () => {
-  const files = (await readdir(SOURCE_ROOT)).filter((name) => /\.[cm]?ts$/.test(name)).sort();
+  const files = await sourceModules();
   const ambientImporters: string[] = [];
   for (const file of files) {
     if (ambientImports(await parse(file)).length > 0) ambientImporters.push(file);
