@@ -182,6 +182,34 @@ describe("createChangeStream", () => {
     expect(getInterceptorStatus()).toBe("ok");
   });
 
+  it("probes a new outage generation even while the recovered generation's probe is unresolved", async () => {
+    let finishOldProbe!: (expired: boolean) => void;
+    const probeSession = vi.fn()
+      .mockImplementationOnce((_signal: AbortSignal) => new Promise<boolean>((resolve) => { finishOldProbe = resolve; }))
+      .mockResolvedValueOnce(false);
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, probeSession);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropRetryable();
+    expect(probeSession).toHaveBeenCalledTimes(1);
+    const oldSignal = probeSession.mock.calls[0]![0] as AbortSignal;
+
+    sources[0]!.open();
+    expect(oldSignal.aborted).toBe(true);
+    sources[0]!.dropRetryable();
+    expect(probeSession).toHaveBeenCalledTimes(2);
+
+    finishOldProbe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getInterceptorStatus()).toBe("ok");
+  });
+
   it("surfaces a current 403 while the dropped stream is still unrecovered", async () => {
     const s = createChangeStream((url) => {
       const es = new FakeEventSource(url);
