@@ -29,7 +29,7 @@ import { docDelete } from "./doc/delete.js";
 import { docOpen } from "./doc/open.js";
 
 export { DOC_USAGE, type DocCliDeps, readErrorToCliError } from "./doc/common.js";
-export { inBundlePollutionWarning } from "./doc/read.js";
+export { inBundlePollutionWarning } from "./egress.js";
 
 export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));

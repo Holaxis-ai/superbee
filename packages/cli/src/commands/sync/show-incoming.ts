@@ -32,6 +32,7 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
 import { BODY_PREVIEW_LIMIT } from "../doc/common.js";
+import { inBundlePollutionWarning } from "../egress.js";
 import type { ResolvedLocalRoute } from "../../bundle.js";
 // `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches
 // implicitly — the refusal string lives in THE sync-outcome table; this re-export keeps the
@@ -215,6 +216,11 @@ export async function showIncoming(
         stderr(render(receipt, mode));
         return;
       }
+      const bundleRoot = route?.kind === "bound-board"
+        ? route.owner.bundleRoot
+        : path.join(top, inTreeBundleDir);
+      const warning = await inBundlePollutionWarning({ root: bundleRoot }, out);
+      if (warning) receipt.warning = warning;
       await fs.writeFile(out, bytes);
       stdout(render(receipt, mode));
       return;
