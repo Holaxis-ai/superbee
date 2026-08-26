@@ -35,6 +35,13 @@ Agent Skill that teaches agents how to use it.
 
 ## Install Steps
 
+**Requirements: macOS or Linux, and Node.js 20 or newer.** Windows is not supported yet: the
+private-state layer that keeps per-user operational records contained relies on POSIX file modes
+that Windows does not distinguish, so the package declares `"os": ["!win32"]` and npm stops with
+`EBADPLATFORM` rather than installing something that fails on first use. Windows support is tracked
+work, not a permanent boundary. Under WSL2 npm sees a Linux platform and installs the package; that
+path is untested and no CI lane covers it.
+
 1. Install the CLI globally:
 
    ```sh
