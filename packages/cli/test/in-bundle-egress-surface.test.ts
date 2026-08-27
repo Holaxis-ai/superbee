@@ -11,12 +11,13 @@
 // Rows are checked against the DECLARED egress surface set, so a new egress flag cannot be added
 // without deciding — in this table, visibly — what it does to an in-bundle target.
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
 import { HOME_LEAF, PUBLIC_LEAVES, type CliLeafSpec } from "../src/command-spec.js";
 import { runCli, scratch } from "./support/private-state-fixtures.js";
+import { makeTwoCloneTopology } from "../../board-git/test/git-harness.js";
 
 const ALL_LEAVES: readonly CliLeafSpec[] = [...PUBLIC_LEAVES, HOME_LEAF];
 
@@ -28,6 +29,12 @@ type TargetShape =
   | "in-bundle-reserved-md"
   /** Any non-`.md` in-bundle path: the walk never looks at it, so writing it is inert. */
   | "in-bundle-inert"
+  /** Lexically outside, but a symlink ancestor makes the write land on a bundle document. */
+  | "outside-alias-into-bundle-doc"
+  /** A dangling outside file symlink whose eventual write creates a new in-bundle document. */
+  | "outside-dangling-alias-into-bundle-doc"
+  /** Lexically inside, but the bundle walk skips the symlink and the write lands outside. */
+  | "in-bundle-alias-outside-doc"
   /** The control: outside the bundle entirely, where every surface must simply write. */
   | "outside-bundle";
 
@@ -40,7 +47,7 @@ interface EgressRow {
   /** A COMPLETE VALID invocation (F6): a row that exits 2 on argument parsing proves nothing. */
   readonly argv?: (target: string) => string[];
   readonly expect?: Readonly<Record<TargetShape, Expected>>;
-  readonly skip?: string;
+  readonly fixture?: "local" | "board";
 }
 
 const EGRESS_ROWS: readonly EgressRow[] = [
@@ -53,6 +60,9 @@ const EGRESS_ROWS: readonly EgressRow[] = [
       "in-bundle-doc-md": "warn",
       "in-bundle-reserved-md": "warn",
       "in-bundle-inert": "silent-ok",
+      "outside-alias-into-bundle-doc": "warn",
+      "outside-dangling-alias-into-bundle-doc": "warn",
+      "in-bundle-alias-outside-doc": "silent-ok",
       "outside-bundle": "silent-ok",
     },
   },
@@ -65,6 +75,9 @@ const EGRESS_ROWS: readonly EgressRow[] = [
       "in-bundle-doc-md": "refuse",
       "in-bundle-reserved-md": "refuse",
       "in-bundle-inert": "silent-ok",
+      "outside-alias-into-bundle-doc": "refuse",
+      "outside-dangling-alias-into-bundle-doc": "refuse",
+      "in-bundle-alias-outside-doc": "silent-ok",
       "outside-bundle": "silent-ok",
     },
   },
@@ -79,6 +92,9 @@ const EGRESS_ROWS: readonly EgressRow[] = [
       "in-bundle-doc-md": "refuse",
       "in-bundle-reserved-md": "refuse",
       "in-bundle-inert": "silent-ok",
+      "outside-alias-into-bundle-doc": "refuse",
+      "outside-dangling-alias-into-bundle-doc": "refuse",
+      "in-bundle-alias-outside-doc": "silent-ok",
       "outside-bundle": "silent-ok",
     },
   },
@@ -91,21 +107,28 @@ const EGRESS_ROWS: readonly EgressRow[] = [
       "in-bundle-doc-md": "warn",
       "in-bundle-reserved-md": "warn",
       "in-bundle-inert": "silent-ok",
+      "outside-alias-into-bundle-doc": "warn",
+      "outside-dangling-alias-into-bundle-doc": "warn",
+      "in-bundle-alias-outside-doc": "silent-ok",
       "outside-bundle": "silent-ok",
     },
   },
   {
     leaf: "sync",
     flag: "--out",
-    // KNOWN GAP, recorded rather than omitted (routing doc: add the row, mark it skipped-with-reason).
-    // `sync --show-incoming <id> --out` reaches `fs.writeFile` in `sync/show-incoming.ts` with NO
-    // in-bundle classification at all — neither refusal nor warning — so on the evidence of this
-    // table it is silent for all three in-bundle shapes, the same defect `--rendered-out` had.
-    // Executing the row needs a board branch with a real incoming divergence, which this fixture
-    // does not build; the surface is NOT covered here, and that is the finding, not an omission.
-    skip:
-      "needs a board-branch fixture with an incoming divergence; the surface has no in-bundle "
-      + "classification at its write site, which is its own unit of work",
+    argv: (t) => ["sync", "--show-incoming", "tasks/seed-one", "--out", t, "--dir", ".", "--json"],
+    // Incoming bytes are a whole OKF document, like doc read --out. Preserve deliberate recovery
+    // copies but make a teammate-version overwrite loud; inert and outside paths remain quiet.
+    expect: {
+      "in-bundle-doc-md": "warn",
+      "in-bundle-reserved-md": "warn",
+      "in-bundle-inert": "silent-ok",
+      "outside-alias-into-bundle-doc": "warn",
+      "outside-dangling-alias-into-bundle-doc": "warn",
+      "in-bundle-alias-outside-doc": "silent-ok",
+      "outside-bundle": "silent-ok",
+    },
+    fixture: "board",
   },
 ];
 
@@ -133,6 +156,8 @@ interface Fixture {
   readonly project: string;
   readonly home: string;
   readonly bundle: string;
+  readonly docPath: string;
+  cleanup(): void | Promise<void>;
 }
 
 function fixture(): Fixture {
@@ -146,19 +171,60 @@ function fixture(): Fixture {
     path.join(bundle, "concepts", "a.md"),
     "---\ntype: Concept\ntitle: A\ntimestamp: 2026-08-02T00:00:00.000Z\n---\n# Hi\n\nBody.\n",
   );
-  return { project, home, bundle };
+  return {
+    project,
+    home,
+    bundle,
+    docPath: "concepts/a.md",
+    cleanup: () => {
+      rmSync(project, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    },
+  };
+}
+
+async function boardFixture(): Promise<Fixture> {
+  const topology = await makeTwoCloneTopology();
+  const home = scratch("superbee-in-bundle-egress-board-home-");
+  return {
+    project: topology.b.root,
+    home,
+    bundle: topology.b.board,
+    docPath: "tasks/seed-two.md",
+    cleanup: async () => {
+      rmSync(home, { recursive: true, force: true });
+      await topology.cleanup();
+    },
+  };
 }
 
 /** The target for one shape, plus the bytes that must survive a refusal. */
 function targetFor(fx: Fixture, shape: TargetShape): { target: string; guarded?: string } {
+  const bundleFromProject = path.relative(fx.project, fx.bundle);
   switch (shape) {
     // The SOURCE doc itself: the worst case, because a silent write destroys the very document read.
     case "in-bundle-doc-md":
-      return { target: path.join("bundle", "concepts", "a.md"), guarded: path.join(fx.bundle, "concepts", "a.md") };
+      return { target: path.join(bundleFromProject, fx.docPath), guarded: path.join(fx.bundle, fx.docPath) };
     case "in-bundle-reserved-md":
-      return { target: path.join("bundle", "index.md"), guarded: path.join(fx.bundle, "index.md") };
+      return { target: path.join(bundleFromProject, "index.md"), guarded: path.join(fx.bundle, "index.md") };
     case "in-bundle-inert":
-      return { target: path.join("bundle", "exported.html") };
+      return { target: path.join(bundleFromProject, "exported.html") };
+    case "outside-alias-into-bundle-doc": {
+      const alias = path.join(fx.project, "outside-alias");
+      symlinkSync(fx.bundle, alias, "dir");
+      return { target: path.join("outside-alias", fx.docPath), guarded: path.join(fx.bundle, fx.docPath) };
+    }
+    case "outside-dangling-alias-into-bundle-doc": {
+      const alias = path.join(fx.project, "outside-dangling.md");
+      symlinkSync(path.join(fx.bundle, "new-import.md"), alias);
+      return { target: "outside-dangling.md", guarded: path.join(fx.bundle, "new-import.md") };
+    }
+    case "in-bundle-alias-outside-doc": {
+      const outside = path.join(fx.project, "outside-target");
+      mkdirSync(outside, { recursive: true });
+      symlinkSync(outside, path.join(fx.bundle, "alias-out"), "dir");
+      return { target: path.join(bundleFromProject, "alias-out", "exported.md") };
+    }
     case "outside-bundle":
       return { target: "exported.out" };
   }
@@ -168,43 +234,50 @@ const SHAPES: readonly TargetShape[] = [
   "in-bundle-doc-md",
   "in-bundle-reserved-md",
   "in-bundle-inert",
+  "outside-alias-into-bundle-doc",
+  "outside-dangling-alias-into-bundle-doc",
+  "in-bundle-alias-outside-doc",
   "outside-bundle",
 ];
 
 for (const row of EGRESS_ROWS) {
   const key = `${row.leaf} ${row.flag}`;
-  if (row.skip) {
-    test(`${key}: in-bundle behavior NOT covered — ${row.skip}`, { skip: row.skip }, () => {});
-    continue;
-  }
-  test(`${key}: classifies every in-bundle target shape`, () => {
+  test(`${key}: classifies every in-bundle target shape`, async () => {
     for (const shape of SHAPES) {
-      const fx = fixture();
-      const { target, guarded } = targetFor(fx, shape);
-      const before = guarded ? readFileSync(guarded, "utf8") : undefined;
-      const run = runCli(row.argv!(target), { cwd: fx.project, home: fx.home });
-      const label = `${key} / ${shape}: ${run.stdout}${run.stderr}`;
-      const expected = row.expect![shape];
+      const fx = row.fixture === "board" ? await boardFixture() : fixture();
+      try {
+        const { target, guarded } = targetFor(fx, shape);
+        const before = guarded && existsSync(guarded) ? readFileSync(guarded, "utf8") : undefined;
+        const run = runCli(row.argv!(target), { cwd: fx.project, home: fx.home });
+        const label = `${key} / ${shape}: ${run.stdout}${run.stderr}`;
+        const expected = row.expect![shape];
 
-      if (expected === "refuse") {
-        assert.equal(run.status, 2, label);
-        assert.match(run.stdout, /code: USAGE/, label);
-        // The refusal is only worth anything if the bytes are still there.
-        assert.equal(readFileSync(guarded!, "utf8"), before, `${key} / ${shape}: refused BUT wrote anyway`);
-        continue;
-      }
+        if (expected === "refuse") {
+          assert.equal(run.status, 2, label);
+          assert.match(run.stdout, /code: USAGE/, label);
+          // The refusal is only worth anything if the bytes are still there.
+          if (before === undefined) {
+            assert.equal(existsSync(guarded!), false, `${key} / ${shape}: refused BUT created the target`);
+          } else {
+            assert.equal(readFileSync(guarded!, "utf8"), before, `${key} / ${shape}: refused BUT wrote anyway`);
+          }
+          continue;
+        }
 
-      assert.equal(run.status, 0, label);
-      // Rows run under --json, so a receipt is JSON while an error envelope is always TOON. Read the
-      // warning off the PARSED receipt: a substring probe would silently match neither shape.
-      const receipt = JSON.parse(run.stdout) as Record<string, unknown>;
-      const warned = receipt.warning !== undefined;
-      if (expected === "warn") {
-        assert.ok(warned, `${key} / ${shape}: wrote an in-bundle target with NO warning`);
-        continue;
+        assert.equal(run.status, 0, label);
+        // Rows run under --json, so a receipt is JSON while an error envelope is always TOON. Read the
+        // warning off the PARSED receipt: a substring probe would silently match neither shape.
+        const receipt = JSON.parse(run.stdout) as Record<string, unknown>;
+        const warned = receipt.warning !== undefined;
+        if (expected === "warn") {
+          assert.ok(warned, `${key} / ${shape}: wrote an in-bundle target with NO warning`);
+          continue;
+        }
+        // silent-ok: inert or outside the bundle — a warning here would be noise, not safety.
+        assert.equal(warned, false, `${key} / ${shape}: warned about a target that is not at risk`);
+      } finally {
+        await fx.cleanup();
       }
-      // silent-ok: inert or outside the bundle — a warning here would be noise, not safety.
-      assert.equal(warned, false, `${key} / ${shape}: warned about a target that is not at risk`);
     }
   });
 }
