@@ -473,6 +473,12 @@ async function runInstalledProof(spec) {
       HOME: home,
       USERPROFILE: home,
       XDG_CONFIG_HOME: path.join(home, ".config"),
+      ...(process.platform === "win32"
+        ? {
+            LOCALAPPDATA: path.join(home, "AppData", "Local"),
+            APPDATA: path.join(home, "AppData", "Roaming"),
+          }
+        : {}),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
     };
     for (const command of target.expected_commands) await assertCommandInBin(command, commandEnv, binDir);
