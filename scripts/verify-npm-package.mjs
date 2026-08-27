@@ -540,6 +540,7 @@ async function runInstalledProof(spec) {
     }
 
     const discoverySnapshot = await snapshotTree(quickstartProject);
+    const conventionalDirArgument = process.platform === "win32" ? ".superbee" : "'.superbee'";
     const noBundleHome = parseJson(
       (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
       `${target.preferred_command} home --json outside a bundle`,
@@ -548,9 +549,10 @@ async function runInstalledProof(spec) {
     assert.equal(homeIdentity.version, manifest.version);
     assert.equal(homeIdentity.channel, spec.expectedChannel);
     assert.equal(homeIdentity.bin, installedEntrypointRealPath);
-    assert.match(
-      noBundleHome.getting_started,
-      /init --create-only --recipe none --dir '\.superbee'/,
+    assert.ok(
+      noBundleHome.getting_started.includes(
+        `${target.preferred_command} init --create-only --recipe none --dir ${conventionalDirArgument}`,
+      ),
       "bundle-free home must advertise fail-closed conventional creation",
     );
     assert.match(
@@ -575,13 +577,13 @@ async function runInstalledProof(spec) {
     assert.ok(contextNotes, "the installed recipe inventory must include context-notes");
     assert.equal(contextNotes.applied, null, "bundle-free discovery must not imply an applied state");
     assert.deepEqual(contextNotes.commands, {
-      create_bundle: `${target.preferred_command} init --create-only --recipe context-notes --dir '.superbee'`,
+      create_bundle: `${target.preferred_command} init --create-only --recipe context-notes --dir ${conventionalDirArgument}`,
       add_to_bundle: `${target.preferred_command} recipe add context-notes`,
     });
     const workTracking = discoveredRecipes.recipes.find((recipe) => recipe.name === "work-tracking");
     assert.ok(workTracking, "the installed recipe inventory must include work-tracking");
     assert.deepEqual(workTracking.commands, {
-      create_bundle: `${target.preferred_command} init --create-only --recipe work-tracking --dir '.superbee'`,
+      create_bundle: `${target.preferred_command} init --create-only --recipe work-tracking --dir ${conventionalDirArgument}`,
       add_to_bundle: `${target.preferred_command} recipe add work-tracking`,
     });
     assertSnapshotUnchanged(
