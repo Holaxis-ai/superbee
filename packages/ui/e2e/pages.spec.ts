@@ -422,7 +422,7 @@ test("P1: an SSE outage self-heals — a change made while the stream was down a
   }
 });
 
-test("P1: a session-rotating restart surfaces 'Connection lost' instead of staying silently stale (adversarial-review fold-in)", async ({ page }) => {
+test("P1: an idle tab surfaces 'Connection lost' after a session-rotating restart", async ({ page }) => {
   // Unlike the SSE-resilience test above (which pins the SAME
   // secret across the restart to prove reconnect recovery), THIS restart mints a genuinely
   // DIFFERENT secret — the real "stable port, rotated session" case. The open tab's cookie is
@@ -438,13 +438,11 @@ test("P1: a session-rotating restart surfaces 'Connection lost' instead of stayi
     await expect(page.locator("iframe.page-frame-iframe")).toBeVisible();
 
     // The server goes away and comes back on the SAME port with a DIFFERENT secret — the open
-    // tab's cookie no longer authenticates anything.
+    // tab's cookie no longer authenticates anything. Do not navigate or make another deliberate
+    // request: the failed SSE reconnect must probe the shell session and wake the terminal UI.
     await first.close();
     second = await bootUiServerInProcess({ dir, port: first.port, sessionSecret: "restart-403-second-secret" });
 
-    // The first request the dead cookie can no longer carry: navigating back to the launcher
-    // (mounting `pagesQuery`, which polls the new server directly regardless of SSE state).
-    await page.locator(".page-back").click();
     await expect(page.getByRole("heading", { name: "Connection lost" })).toBeVisible({ timeout: 15_000 });
     await expect(page.locator(".relogin-screen")).toContainText(/reopen the url/i);
   } finally {

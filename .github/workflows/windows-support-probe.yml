@@ -1,0 +1,208 @@
+# Diagnostic, not a gate. Answers one question with evidence instead of estimation: what does
+# Windows actually do to Superbee, and how much of the suite has never run there?
+#
+# `user-state.ts` asserts `(status.mode & 0o077) === 0` at five sites with no `win32` branch, and
+# every required lane runs on ubuntu or macos. libuv synthesizes `st_mode` on Windows as 0o666 for
+# a writable file and 0o777 for a directory, and `chmod` there only toggles the read-only bit. Run
+# 32204601930 confirmed that: the assertion is false everywhere on Windows, so the private-state
+# layer has never worked there and the package now declares `"os": ["!win32"]`.
+#
+# That run measured one workspace. It exited at the first private-state throw, which hides
+# everything behind it, and the other workspaces have never executed on a Windows runner at all.
+# This probe runs every workspace suite independently so one early failure cannot mask the rest,
+# and reports each suite's skip count, because several suites switch themselves off on Windows and
+# a suite that abstains must never read as a suite that passed.
+#
+# NOTE: `superbee catalog list` is NOT a valid probe - it passes vacuously, because an absent state
+# root returns "absent" and the command prints an empty catalog at rc 0.
+#
+# Deliberately a separate `workflow_dispatch` workflow rather than a lane in ci-tests.yml: the
+# required-lane manifest and aggregator are topology-tested and admit no optional tier, so a
+# diagnostic cannot join the required set before its answer is known. Dispatch it against any ref
+# with `gh workflow run windows-support-probe.yml --ref <branch>`.
+name: Windows support probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    name: What Windows does to Superbee
+    runs-on: windows-latest
+    # Windows minutes bill at a multiplier and an unmeasured suite can hang rather than fail; a
+    # diagnostic must not be able to burn the default six-hour ceiling to tell us nothing.
+    timeout-minutes: 45
+    # SUPERBEE_TEST_EXPECT_ALIASING_HOST is deliberately unset. The required lanes pin it because
+    # they know their host class; what NTFS reports is one of the things this probe measures, so
+    # pinning it here would assert the answer instead of observing it.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The decisive test. POSIX prints "600 700". If Windows prints "666 777" the assertion
+      # `(mode & 0o077) === 0` is false for both, and cannot be satisfied.
+      - name: Probe the mode Node reports for a 0600 file and a 0700 directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e "
+            const { statSync, writeFileSync, mkdirSync } = require('fs');
+            mkdirSync('probe', { recursive: true, mode: 0o700 });
+            writeFileSync('probe/x', 'y', { mode: 0o600 });
+            const f = statSync('probe/x').mode & 0o777;
+            const d = statSync('probe').mode & 0o777;
+            const ok = (f & 0o077) === 0 && (d & 0o077) === 0;
+            console.log('file_mode=' + f.toString(8));
+            console.log('dir_mode=' + d.toString(8));
+            console.log('assertion_can_pass=' + ok);
+          " | tee probe.txt
+          {
+            echo '## Windows mode semantics'
+            echo
+            echo '| value | result |'
+            echo '| --- | --- |'
+            sed 's/^\(.*\)=\(.*\)$/| `\1` | `\2` |/' probe.txt
+            echo
+            if grep -q 'assertion_can_pass=false' probe.txt; then
+              echo 'CONCLUSION: the private-state mode assertions CANNOT pass on Windows.'
+              echo 'Containment has to hold through a different mechanism there - a per-user'
+              echo 'location under %LOCALAPPDATA%, which is per-user by OS ACL - rather than'
+              echo 'through a mode the platform does not report.'
+            else
+              echo 'CONCLUSION: the assertions CAN pass. The recorded finding no longer holds;'
+              echo 'reopen it before trusting anything downstream.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The workspace scripts carry POSIX `VAR=1 command` prefixes, which cmd.exe cannot parse.
+      # Pointing npm at git-bash is a precondition for measuring anything, and is itself a finding:
+      # a supported Windows lane needs those prefixes moved out of the scripts or a declared shell.
+      - name: Point npm script execution at git-bash
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm config set script-shell "C:\\Program Files\\git\\bin\\bash.exe"
+          {
+            echo
+            echo '## Precondition'
+            echo
+            echo 'Workspace test scripts use POSIX env-assignment prefixes that cmd.exe cannot'
+            echo 'parse, so this probe sets npm `script-shell` to git-bash before measuring.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # `--force` is not optional here. npm enforces a workspace's `os` field during install, so
+      # the interim `"os": ["!win32"]` in packages/cli blocks the very measurement that would
+      # retire it: run 33015817024 got EBADPLATFORM at `npm ci` and produced no inventory at all.
+      # `--force` is npm's own documented escape for platform and engine checks and leaves the tree
+      # unmodified, which is why the probe uses it rather than editing the manifest on the runner.
+      # Verified locally against an `os: ["!darwin"]` workspace on npm 11.15.0: plain exits 1,
+      # forced exits 0.
+      #
+      # A build failure yields no inventory at all, so it is recorded and then fails the job loudly
+      # rather than producing an empty table that reads like a clean result.
+      - name: Install and build
+        shell: bash
+        run: |
+          set +e
+          npm ci --force > install.log 2>&1
+          install_code=$?
+          npm run build > build.log 2>&1
+          build_code=$?
+          {
+            echo
+            echo '## Install and build'
+            echo
+            echo '| step | exit |'
+            echo '| --- | --- |'
+            echo "| \`npm ci --force\` | $install_code |"
+            echo "| \`npm run build\` | $build_code |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for stage in install build; do
+            code_var="${stage}_code"
+            code="${!code_var}"
+            [ "$code" -eq 0 ] && continue
+            {
+              echo
+              echo "<details><summary>tail: $stage</summary>"
+              echo
+              echo '```'
+              tail -40 "$stage.log"
+              echo '```'
+              echo '</details>'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          [ "$install_code" -eq 0 ] && [ "$build_code" -eq 0 ]
+
+      # Every workspace runs independently. Exit codes are captured as values rather than with
+      # continue-on-error, so a failure is reported instead of disappearing, and no suite's failure
+      # prevents the next suite from being measured.
+      - name: Run every workspace suite independently
+        shell: bash
+        run: |
+          set +e
+          mkdir -p probe-logs
+          {
+            echo
+            echo '## Workspace inventory'
+            echo
+            echo '| workspace | exit | pass | fail | skipped |'
+            echo '| --- | --- | --- | --- | --- |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          failed=0
+          for pkg in $(node -e "
+            const { readdirSync, readFileSync, existsSync } = require('fs');
+            for (const dir of readdirSync('packages')) {
+              const manifest = 'packages/' + dir + '/package.json';
+              if (!existsSync(manifest)) continue;
+              const parsed = JSON.parse(readFileSync(manifest, 'utf8'));
+              if (parsed.scripts && parsed.scripts.test) console.log(parsed.name);
+            }
+          "); do
+            log="probe-logs/${pkg//[^A-Za-z0-9]/-}.log"
+            npm test -w "$pkg" > "$log" 2>&1
+            code=$?
+            [ "$code" -ne 0 ] && failed=1
+            count() { grep -oE "^[^ ]* $1 [0-9]+$" "$log" | tail -1 | grep -oE "[0-9]+$" || echo "-"; }
+            echo "| \`$pkg\` | $code | $(count pass) | $(count fail) | $(count skipped) |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          for log in probe-logs/*.log; do
+            {
+              echo
+              echo "<details><summary>tail: $(basename "$log" .log)</summary>"
+              echo
+              echo '```'
+              tail -60 "$log"
+              echo '```'
+              echo '</details>'
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "any_suite_failed=$failed" >> "$GITHUB_OUTPUT"
+          exit 0
+        id: suites
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-probe-logs
+          path: probe-logs/
+
+      # The probe's own exit code answers the headline question, so a run is green only when
+      # Superbee actually works on Windows. Nothing requires this job, so red costs nothing and a
+      # misleading green costs the next estimate.
+      - name: Report the verdict as this job's exit code
+        shell: bash
+        run: |
+          if [ "${{ steps.suites.outputs.any_suite_failed }}" = "1" ]; then
+            echo "At least one workspace suite failed on Windows; read the job summary." >&2
+            exit 1
+          fi
+          echo "Every workspace suite passed on Windows. Audit the skipped counts before calling that support."
