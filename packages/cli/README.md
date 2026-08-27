@@ -79,7 +79,7 @@ instructions into CLI commands. For example:
 - "Write up what we decided about the auth design as a doc, and link it to the task."
 - "What did the last session leave off on? Check the context notes."
 - "Sync the board so my teammate's agent sees this."
-- "Give me a view of the open tasks grouped by owner, and open it."
+- "Give me a view of the open tasks grouped by owner."
 
 Behind those requests, the agent drives a small, predictable CLI: `init` creates a bundle in a
 conventional `.superbee/` folder (discovered automatically, the way git finds `.git`); `new`,
