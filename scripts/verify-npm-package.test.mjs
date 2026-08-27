@@ -12,6 +12,7 @@ import {
   assertPackageContract,
   assertRetiredDistributionAbsent,
   expectedTarballFiles,
+  expectedPrivateStateRoot,
   parseVerificationArgs,
   resolveCommandOnPath,
   sanitizedNpmEnvironment,
@@ -225,6 +226,20 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "references/a.md",
     "references/b/c.md",
   ]);
+});
+
+test("the package proof projects the platform-native private-state root", () => {
+  assert.equal(expectedPrivateStateRoot("/tmp/home", "linux", {}), "/tmp/home/.superbee-state");
+  assert.equal(
+    expectedPrivateStateRoot("C:\\Users\\proof", "win32", {
+      LOCALAPPDATA: String.raw`C:\Users\proof\AppData\Local`,
+    }),
+    String.raw`C:\Users\proof\AppData\Local\Superbee`,
+  );
+  assert.throws(
+    () => expectedPrivateStateRoot("C:\\Users\\proof", "win32", {}),
+    /requires an isolated LOCALAPPDATA/,
+  );
 });
 
 test("the npm package contract accepts the intended self-contained artifact", () => {

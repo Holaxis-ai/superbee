@@ -50,6 +50,15 @@ const runtimeDependencyFields = [
   "bundleDependencies",
 ];
 
+/** Independently project the canonical private-state root used by the installed CLI. */
+export function expectedPrivateStateRoot(home, platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    assert.ok(env.LOCALAPPDATA, "Windows package proof requires an isolated LOCALAPPDATA");
+    return path.win32.join(env.LOCALAPPDATA, "Superbee");
+  }
+  return path.join(home, ".superbee-state");
+}
+
 function npmPrefixShimSource(prefix) {
   return `#!/usr/bin/env node
 if (process.argv.slice(2).join(" ") === "prefix --global") {
@@ -481,6 +490,7 @@ async function runInstalledProof(spec) {
         : {}),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
     };
+    const canonicalState = expectedPrivateStateRoot(home, process.platform, commandEnv);
     for (const command of target.expected_commands) await assertCommandInBin(command, commandEnv, binDir);
     for (const absent of ["superbee", "aslite", "agentstate-lite"].filter((command) => !target.expected_commands.includes(command))) {
       const resolved = await resolveCommandOnPath(absent, commandEnv);
@@ -1108,11 +1118,11 @@ async function runInstalledProof(spec) {
       assert.match(migrationOutput, /status: migrated/);
       assert.equal(await readFile(path.join(legacyState, "catalog.json"), "utf8"), legacyCatalog);
       assert.equal(
-        await readFile(path.join(home, ".superbee-state", "catalog.json"), "utf8"),
+        await readFile(path.join(canonicalState, "catalog.json"), "utf8"),
         legacyCatalog,
       );
       assert.equal(
-        await readFile(path.join(home, ".superbee-state", "state.json"), "utf8"),
+        await readFile(path.join(canonicalState, "state.json"), "utf8"),
         '{"product":"superbee","schema_version":1}\n',
       );
       const setupAfterMigration = parseJson(
