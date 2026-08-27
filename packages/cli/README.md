@@ -20,8 +20,8 @@ know invisible to the humans they work for. Superbee fixes all three:
   pages with derived backlinks, a live activity feed, and launchable bundle Views. `superbee
   sync` shares the bundle with teammates on a dedicated `board` branch — pulling their changes
   and pushing yours without touching your code.
-- **Views your agent generates.** Ask to see the knowledge some particular way and the agent builds
-  that view: a self-contained HTML View, registered in the bundle as a typed document, that
+- **Views on demand.** Ask your agent to create whatever representation you need and Superbee will
+  create it: a self-contained HTML View, registered in the bundle as a typed document, that
   `superbee ui` launches in a sandboxed iframe. A reading surface for one dense document, a board, a
   timeline, a filtered queue, a chart, a dashboard — the shape follows the question rather than a
   fixed set of built-in screens, and a view worth keeping stays. A data View reads live bundle
