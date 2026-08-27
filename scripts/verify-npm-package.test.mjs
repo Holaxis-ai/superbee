@@ -180,6 +180,16 @@ test("root README teaches the literal create-only quickstart; npm README teaches
     /translate your\s+instructions into CLI commands/i,
     "npm README must explain the Agent Skill's translation role",
   );
+  assert.match(
+    npmReadme,
+    /Node\.js 20 or newer on macOS, Linux, or Windows/,
+    "npm README must advertise every supported native platform",
+  );
+  assert.doesNotMatch(
+    npmReadme,
+    /Windows is not supported|EBADPLATFORM|["']!win32["']/i,
+    "npm README must not retain the retired Windows package block",
+  );
 });
 
 test("root and npm package license declarations agree", async () => {

@@ -4,8 +4,8 @@
 # Run 32204601930 established that libuv synthesizes `st_mode` on Windows as 0o666 for a writable
 # file and 0o777 for a directory, while `chmod` there only toggles the read-only bit. Superbee now
 # applies a platform-native private-state policy instead of asking POSIX mode assertions to prove
-# Windows containment. The package still declares `"os": ["!win32"]` until the remaining Windows
-# support slices are complete.
+# Windows containment. The required CI workflow now owns the release gate; this manually dispatched
+# workflow remains a detailed diagnostic inventory when a Windows regression needs investigation.
 #
 # That run measured one workspace. It exited at the first private-state throw, which hides
 # everything behind it, and the other workspaces have never executed on a Windows runner at all.
@@ -80,21 +80,13 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # `--force` is not optional here. npm enforces a workspace's `os` field during install, so
-      # the interim `"os": ["!win32"]` in packages/cli blocks the very measurement that would
-      # retire it: run 33015817024 got EBADPLATFORM at `npm ci` and produced no inventory at all.
-      # `--force` is npm's own documented escape for platform and engine checks and leaves the tree
-      # unmodified, which is why the probe uses it rather than editing the manifest on the runner.
-      # Verified locally against an `os: ["!darwin"]` workspace on npm 11.15.0: plain exits 1,
-      # forced exits 0.
-      #
       # A build failure yields no inventory at all, so it is recorded and then fails the job loudly
       # rather than producing an empty table that reads like a clean result.
       - name: Install and build
         shell: bash
         run: |
           set +e
-          npm ci --force > install.log 2>&1
+          npm ci > install.log 2>&1
           install_code=$?
           npm run build > build.log 2>&1
           build_code=$?
@@ -104,7 +96,7 @@ jobs:
             echo
             echo '| step | exit |'
             echo '| --- | --- |'
-            echo "| \`npm ci --force\` | $install_code |"
+            echo "| \`npm ci\` | $install_code |"
             echo "| \`npm run build\` | $build_code |"
           } >> "$GITHUB_STEP_SUMMARY"
           for stage in install build; do
