@@ -892,7 +892,11 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
     assert.match(capUn.out(), /installed: false/);
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {
-    await rm(base, { recursive: true, force: true });
+    // Windows can retain a transient loader/Defender handle after the spawned
+    // hook process exits. The fixture is uniquely owned by this test, so let
+    // fs.rm retry that documented EBUSY cleanup window instead of turning a
+    // successful hook contract into a platform-only teardown failure.
+    await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
