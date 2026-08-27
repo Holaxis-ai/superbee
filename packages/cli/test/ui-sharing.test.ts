@@ -267,6 +267,7 @@ test("humanizeRemote degrades: GitHub https/ssh → org/repo; host-only and path
 test("workspaces loader projects labels+paths from the catalog with the open entry marked (no probes)", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "aslite-ws-home-"));
   const bundleRoot = path.join(home, "proj", ".agentstate-lite");
+  const missingPath = path.join(path.parse(home).root, "nowhere", "zeta");
   try {
     await ensureUserStateRoot(home);
     await mkdir(bundleRoot, { recursive: true });
@@ -275,7 +276,7 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
       JSON.stringify({
         schema_version: 1,
         entries: [
-          { id: `bnd_${"0".repeat(32)}`, label: "zeta", locator: { kind: "local-path", path: "/nowhere/zeta" } },
+          { id: `bnd_${"0".repeat(32)}`, label: "zeta", locator: { kind: "local-path", path: missingPath } },
           { id: `bnd_${"1".repeat(32)}`, label: "alpha", locator: { kind: "local-path", path: bundleRoot } },
         ],
       }),
@@ -285,7 +286,7 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
       const rows = await createWorkspacesLoader(bundleRoot, home)();
       assert.deepEqual(rows, [
         { label: "alpha", path: bundleRoot, open: true },
-        { label: "zeta", path: "/nowhere/zeta", open: false },
+        { label: "zeta", path: missingPath, open: false },
       ]);
     });
   } finally {

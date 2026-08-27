@@ -507,10 +507,13 @@ test("provisionBoardWorktree: a FOREIGN repo's board worktree at .superbee is re
 
     const command = err.help.split("  # ")[0]!;
     if (process.platform === "win32") {
-      // cmd.exe /S requires an outer quote pair around a command that itself contains quotes;
-      // without it, cmd strips the PowerShell -Command delimiter and can return zero without
-      // executing the intended script.
-      execFileSync("cmd.exe", ["/d", "/s", "/c", `"${command}"`], { cwd: foreignRoot, stdio: "pipe" });
+      // Feed the emitted characters to Windows PowerShell as a script. This is equivalent to a
+      // paste without Node's execFile -> cmd.exe nested-quote rewriting.
+      const powershell = path.join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+      );
+      execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", command], { cwd: foreignRoot, stdio: "pipe" });
     } else {
       execFileSync("/bin/sh", ["-c", command], { cwd: foreignRoot, stdio: "pipe" });
     }

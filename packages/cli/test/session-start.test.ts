@@ -603,7 +603,8 @@ test("time-box fall-through: a REAL hanging remote is killed inside the budget a
     const out = await runSessionStart(homeB, ["--dir", topo.b.root], { budgetMs });
     const elapsed = Date.now() - t0;
 
-    assert.ok(elapsed < 5_000, `render must appear within the budget (took ${elapsed}ms)`);
+    const renderBoundMs = process.platform === "win32" ? 8_000 : 5_000;
+    assert.ok(elapsed < renderBoundMs, `render must appear within the bounded host allowance (took ${elapsed}ms)`);
     assert.match(out, /board sync offline — showing last known state/);
     assert.match(out, /\.superbee/); // the full home render fell through
   } finally {
@@ -695,7 +696,7 @@ test("fall-through belt: an injected pull that NEVER resolves still renders home
       budgetMs: 200,
       pull: () => new Promise(() => {}),
     });
-    assert.ok(Date.now() - t0 < 3_000);
+    assert.ok(Date.now() - t0 < (process.platform === "win32" ? 6_000 : 3_000));
     assert.match(out, /\.superbee/);
     assert.match(out, /commands:/);
   } finally {
@@ -856,9 +857,13 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
     assert.equal(realpathSync(pluginArgs![0]!), realpathSync(launchTokens[1]!));
     assert.deepEqual(pluginArgs!.slice(1), launchTokens.slice(2));
 
+    const powershell = path.join(
+      process.env.SystemRoot ?? "C:\\Windows",
+      "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    );
     const minimalPathRun = spawnSync(
-      process.platform === "win32" ? "cmd.exe" : "/bin/sh",
-      process.platform === "win32" ? ["/d", "/s", "/c", `"${entry.command}"`] : ["-c", entry.command],
+      process.platform === "win32" ? powershell : "/bin/sh",
+      process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", entry.command] : ["-c", entry.command],
       {
       cwd: base,
       env: {

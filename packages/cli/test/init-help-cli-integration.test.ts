@@ -61,9 +61,13 @@ function runEmitted(
   command: string,
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
+  const powershell = path.join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+  );
   const result = spawnSync(
-    process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "sh",
-    process.platform === "win32" ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command],
+    process.platform === "win32" ? powershell : "sh",
+    process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", command] : ["-c", command],
     {
     cwd: opts.cwd,
     env: opts.env,

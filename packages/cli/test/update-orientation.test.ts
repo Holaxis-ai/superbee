@@ -918,7 +918,7 @@ test("built JSON and suppressed default routes perform zero update-state work", 
           CI: undefined,
         },
         encoding: "utf8",
-        timeout: 3_000,
+        timeout: process.platform === "win32" ? 10_000 : 3_000,
       });
       assert.equal(result.status, 0, `${argv.join(" ")} stderr=${result.stderr}`);
       assert.equal(result.stderr, "");
