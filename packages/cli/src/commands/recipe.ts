@@ -17,7 +17,7 @@ import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { cliInvocation, shellArg } from "../invocation.js";
+import { cliInvocation, exactCliInvocation, shellArg } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
 import { applyRecipeEvolution, planRecipeEvolution } from "../recipe-evolution.js";
 import { resolveRecipe } from "../recipe-source.js";
@@ -127,6 +127,7 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
       ? ` --remote ${shellArg(remote)}`
       : "";
   const planCommand = `${cliInvocation()} recipe evolve ${shellArg(ref)}${target}`;
+  const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${shellArg(ref)}${target}`;
 
   if (values.apply !== undefined) {
     const result = await applyRecipeEvolution(bundle, loaded.recipe, values.apply.trim(), values.actor?.trim());
@@ -142,7 +143,7 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   };
   if (plan.ready && plan.changed) {
     receipt.commands = {
-      apply: `${planCommand} --apply ${plan.plan_token}${values.actor ? ` --actor ${shellArg(values.actor.trim())}` : ""}`,
+      apply: `${exactPlanCommand} --apply ${plan.plan_token}${values.actor ? ` --actor ${shellArg(values.actor.trim())}` : ""}`,
     };
   } else if (plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_DEFINITION_MISSING" || blocker.code === "RECIPE_EVOLUTION_ASSET_MISSING")) {
     receipt.commands = { install_missing: `${cliInvocation()} recipe add ${shellArg(ref)}${target}` };
