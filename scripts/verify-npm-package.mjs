@@ -29,6 +29,15 @@ const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
 
 const baseExpectedFiles = ["LICENSE", "NOTICE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
 
+/** Independently project the native shell argument form the installed CLI must advertise. */
+function expectedShellArgument(value) {
+  if (process.platform === "win32") {
+    const normalized = value.replaceAll("\\", "/");
+    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(normalized) ? normalized : `"${normalized}"`;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 /** The exact expected tarball file set: the fixed base plus the committed references/ tree. */
 export function expectedTarballFiles(referenceFiles) {
   return [...baseExpectedFiles, ...referenceFiles.map((relative) => `references/${relative}`)].sort();
@@ -540,7 +549,7 @@ async function runInstalledProof(spec) {
     }
 
     const discoverySnapshot = await snapshotTree(quickstartProject);
-    const conventionalDirArgument = process.platform === "win32" ? ".superbee" : "'.superbee'";
+    const conventionalDirArgument = expectedShellArgument(".superbee");
     const noBundleHome = parseJson(
       (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
       `${target.preferred_command} home --json outside a bundle`,
@@ -727,7 +736,7 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(
       appliedRecipes.recipes.find((recipe) => recipe.name === "work-tracking")?.commands,
-      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir '${bundle}'` },
+      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir ${expectedShellArgument(bundle)}` },
       "an existing local bundle must expose only the actionable add command",
     );
     parseJson(
