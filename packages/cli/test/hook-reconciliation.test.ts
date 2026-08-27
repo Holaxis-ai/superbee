@@ -252,7 +252,7 @@ test("durable authority composes a stable npm-prefix Node launch", () => {
       executable_path: "/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs",
     },
   };
-  assert.deepEqual(buildHookLaunchSpec(authority), {
+  assert.deepEqual(buildHookLaunchSpec(authority, "linux"), {
     program: "/opt/superbee/bin/node",
     args: [
       "/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs",

@@ -380,10 +380,19 @@ export async function acquireFilesystemMutationLock(
   const targetDir = path.dirname(targetResolved);
   const owner = newOwner(targetResolved);
 
-  await fs.mkdir(targetDir, { recursive: true });
+  // An existing Windows drive root (for example C:\) can reject even a recursive mkdir with
+  // EPERM. Resolve first and create only when the parent is genuinely absent. This preserves the
+  // create-on-demand behavior without mutating an already-existing filesystem root.
+  let canonicalDir: string;
+  try {
+    canonicalDir = await fs.realpath(targetDir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    await fs.mkdir(targetDir, { recursive: true });
+    canonicalDir = await fs.realpath(targetDir);
+  }
   // Two callers may spell the same bundle through real and symlinked parent paths. Canonicalize
   // the now-existing parent so both claim the same runtime lock for the physical target.
-  const canonicalDir = await fs.realpath(targetDir);
   const targetCanonical = await canonicalTargetInDirectory(canonicalDir, path.basename(targetResolved));
   const lockRoot = await selectLockRoot(options);
   const lockPath = filesystemMutationLockPathInRoot(targetCanonical, lockRoot);

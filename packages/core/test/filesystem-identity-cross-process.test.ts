@@ -11,7 +11,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { identityKey } from "../src/filesystem-identity.js";
 import { acquireFilesystemIdentityLock, filesystemIdentityLockPath } from "../src/filesystem-lock.js";
@@ -110,10 +110,14 @@ function withBound<T>(promise: Promise<T>, boundMs: number, what: string): Promi
 }
 
 function spawnWriter(label: string, root: string, id: string, tmp: string): Mailbox {
-  const child = spawn(process.execPath, ["--import", LOADER, CHILD, root, id], {
+  const child = spawn(
+    process.execPath,
+    ["--import", pathToFileURL(LOADER).href, CHILD, root, id],
+    {
     stdio: ["ignore", "ignore", "pipe", "ipc"],
     env: { ...process.env, TMPDIR: tmp, TMP: tmp, TEMP: tmp },
-  });
+    },
+  );
   return new Mailbox(label, child);
 }
 

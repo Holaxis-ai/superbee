@@ -12,6 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
+import { isolatedUserEnv } from "./support/user-env.js";
 
 const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
@@ -259,17 +260,22 @@ test("literal PATH `aslite mcp` reports the selected CLI release and never rewri
   const home = path.join(base, "home");
   await mkdir(binDir, { recursive: true });
   await mkdir(path.join(home, ".claude"), { recursive: true });
-  await symlink(CLI, path.join(binDir, "aslite"));
+  if (process.platform === "win32") {
+    await writeFile(
+      path.join(binDir, "aslite.cmd"),
+      `@echo off\r\n"${process.execPath}" "${CLI}" %*\r\n`,
+    );
+  } else {
+    await symlink(CLI, path.join(binDir, "aslite"));
+  }
   const sentinel = path.join(home, ".claude", "mcp.json");
   const sentinelBytes = '{"command":"/old/plugin/cache/0.1.0/scripts/agentstate-lite.mjs"}\n';
   await writeFile(sentinel, sentinelBytes);
   await initBundle(root);
-  const env = {
-    ...process.env,
+  const env = isolatedUserEnv(home, {
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-    HOME: home,
     ASLITE_NO_UPDATE_CHECK: "1",
-  };
+  });
   const selected = spawn("aslite", ["version", "--json"], {
     cwd: root,
     env,

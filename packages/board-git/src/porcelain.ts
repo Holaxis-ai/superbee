@@ -577,7 +577,18 @@ function shellQuote(s: string): string {
   return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
+/** Single-quote escaping inside a PowerShell script literal. */
+function powershellQuote(s: string): string {
+  return `'${s.replaceAll("'", "''")}'`;
+}
+
 function moveAsideHelp(boardPath: string, note: string): string {
+  if (process.platform === "win32") {
+    return (
+      `powershell -NoProfile -Command "Move-Item -LiteralPath ${powershellQuote(boardPath)} ` +
+      `-Destination ${powershellQuote(`${boardPath}.bak`)}; # ${note.replaceAll('"', "'")}"`
+    );
+  }
   return `mv ${shellQuote(boardPath)} ${shellQuote(`${boardPath}.bak`)}  # ${note}`;
 }
 
@@ -1337,7 +1348,23 @@ export function snapshotBundleCommit(top: string, bundlePath: string): BundleSna
     // not silently drop otherwise-valid bundle files from the first published commit.
     mustGit(
       bundlePath,
-      ["-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", "add", "-f", "-A", "--", "."],
+      [
+        // The snapshot contract is the source's literal bytes. A Windows user's ambient
+        // core.autocrlf setting is a checkout preference, not bundle policy, so neutralize it at
+        // this one plumbing boundary. Explicit attributes and clean filters remain active and are
+        // still caught by assertBundleBytesMatchCommit below.
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.sparseCheckout=false",
+        "-c",
+        "core.sparseCheckoutCone=false",
+        "add",
+        "-f",
+        "-A",
+        "--",
+        ".",
+      ],
       snapshotOptions,
     );
     const stagedRows = mustGit(bundlePath, ["ls-files", "--stage", "-z"], snapshotOptions)
@@ -1396,7 +1423,7 @@ export function snapshotBundleCommit(top: string, bundlePath: string): BundleSna
     assertBundleBytesMatchCommit(top, bundlePath, sha);
     return { committed: true, sha, tree, subject, docs };
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

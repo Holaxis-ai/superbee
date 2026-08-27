@@ -140,13 +140,19 @@ function assertPathIndependentLocalLaunch(command: string): string[] {
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
+  const prevLocalAppData = process.env.LOCALAPPDATA;
+  const prevAppData = process.env.APPDATA;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  process.env.LOCALAPPDATA = path.join(home, "AppData", "Local");
+  process.env.APPDATA = path.join(home, "AppData", "Roaming");
   try {
     return await run();
   } finally {
-    process.env.HOME = prevHome;
-    process.env.USERPROFILE = prevProfile;
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
+    if (prevLocalAppData === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prevLocalAppData;
+    if (prevAppData === undefined) delete process.env.APPDATA; else process.env.APPDATA = prevAppData;
   }
 }
 
@@ -1688,7 +1694,9 @@ test("hook install preserves a 0600 settings.json mode while rewriting a legacy 
     await hook(["install"], { base, commandBase: "aslite", stdout: () => {} });
     const rewritten = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.ok(rewritten.hooks.SessionStart[0].hooks[0].command.endsWith(" session-start"));
-    assert.equal((await stat(settingsPath)).mode & 0o777, 0o600, "install must not widen a private settings file");
+    if (process.platform !== "win32") {
+      assert.equal((await stat(settingsPath)).mode & 0o777, 0o600, "install must not widen a private settings file");
+    }
   } finally {
     await rm(base, { recursive: true, force: true });
   }
@@ -1746,7 +1754,9 @@ test("hook install writes THROUGH a symlinked settings.json: the link survives, 
     const updated = JSON.parse(await readFile(real, "utf8"));
     assertPathIndependentLocalLaunch(updated.hooks.SessionStart[0].hooks[0].command);
     assert.equal(updated.theme, "dark", "unrelated keys in the dotfile target survive");
-    assert.equal((await stat(real)).mode & 0o777, 0o600, "the target's mode is preserved");
+    if (process.platform !== "win32") {
+      assert.equal((await stat(real)).mode & 0o777, 0o600, "the target's mode is preserved");
+    }
     assert.deepEqual(await readdir(dotfiles), ["claude-settings.json"], "no temp residue beside the target");
   } finally {
     await rm(base, { recursive: true, force: true });

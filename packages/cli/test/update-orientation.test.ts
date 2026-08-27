@@ -15,6 +15,7 @@ import { execFileSync, fork, spawnSync, type ChildProcess } from "node:child_pro
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   UPDATE_CACHE_MAX_BYTES,
@@ -186,7 +187,7 @@ function startConcurrencyFixture(input: {
   token: string;
 }): ChildProcess {
   return fork(CONCURRENCY_FIXTURE, [], {
-    execArgv: ["--import", TEST_LOADER],
+    execArgv: ["--import", pathToFileURL(TEST_LOADER).href],
     env: {
       ...process.env,
       ASLITE_TEST_HOME: input.home,

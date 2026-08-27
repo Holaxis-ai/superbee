@@ -1401,10 +1401,14 @@ async function bindingRouteTraversesSymlink(target: LocalBundleTarget): Promise<
   const lexicalAnchor = path.resolve(path.dirname(target.bindingFile));
   const lexicalAnchors = lexicalBindingAnchors(lexicalAnchor);
   const targetRoot = path.resolve(target.root);
-  const targetParts = targetRoot.split(path.sep).filter(Boolean);
+  const parsedTargetRoot = path.parse(targetRoot).root;
+  // Split only the path below its filesystem root. Splitting an absolute Windows path directly
+  // includes the drive designator ("C:") and would incorrectly probe "C:\\C:" as the first
+  // lexical component.
+  const targetParts = targetRoot.slice(parsedTargetRoot.length).split(path.sep).filter(Boolean);
 
   let traversesBindingSymlink = false;
-  let current = path.parse(targetRoot).root;
+  let current = parsedTargetRoot;
   for (const segment of targetParts) {
     current = path.join(current, segment);
     let info;

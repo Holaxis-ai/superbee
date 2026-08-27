@@ -34,7 +34,11 @@ import {
 } from "../src/filesystem-identity.js";
 import { opOf, ScriptedPort } from "./scripted-identity-port.js";
 
-const ROOT = "/root";
+const HOST_ROOT = path.parse(process.cwd()).root;
+const ROOT = path.resolve(HOST_ROOT, "root");
+const BASE = path.resolve(HOST_ROOT, "base");
+const NO_LINK = path.resolve(HOST_ROOT, "nolink");
+const HAS_LINK = path.resolve(HOST_ROOT, "haslink");
 const CONCEPTS = path.join(ROOT, "concepts");
 const REL = "concepts/x.md";
 const TARGET = path.join(ROOT, REL);
@@ -687,22 +691,22 @@ test("AC-4: a first creation whose link hits EEXIST with the exact spelling list
 
 test("F1: a filesystem without hard links falls back to rename for first creation, learned once per root, with no probe file", async () => {
   const port = new ScriptedPort();
-  port.mkdirp("/nolink/concepts");
+  port.mkdirp(path.join(NO_LINK, "concepts"));
   port.override("link", async () => "unsupported");
-  assert.equal(await mutateExact(port, "/nolink", REL, casWrite(null)), "written");
+  assert.equal(await mutateExact(port, NO_LINK, REL, casWrite(null)), "written");
   assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "rename"]);
-  assert.equal(port.node("/nolink/concepts/x.md")?.bytes.toString(), "new");
-  assert.deepEqual([...port.node("/nolink/concepts")!.children.keys()], ["x.md"], "no probe or temp file remains");
+  assert.equal(port.node(path.join(NO_LINK, "concepts/x.md"))?.bytes.toString(), "new");
+  assert.deepEqual([...port.node(path.join(NO_LINK, "concepts"))!.children.keys()], ["x.md"], "no probe or temp file remains");
 
   port.trace.length = 0;
-  assert.equal(await mutateExact(port, "/nolink", "concepts/y.md", casWrite(null)), "written");
+  assert.equal(await mutateExact(port, NO_LINK, "concepts/y.md", casWrite(null)), "written");
   assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "rename"], "the root is remembered; no second link attempt");
 
   // Another root is unaffected by the first root's answer.
-  port.mkdirp("/haslink/concepts");
+  port.mkdirp(path.join(HAS_LINK, "concepts"));
   port.override("link", async (args, base) => base());
   port.trace.length = 0;
-  assert.equal(await mutateExact(port, "/haslink", REL, casWrite(null)), "written");
+  assert.equal(await mutateExact(port, HAS_LINK, REL, casWrite(null)), "written");
   assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "unlink"]);
 });
 
@@ -782,26 +786,35 @@ test("AC-14 variant: a rel segment that is a regular file at the walk is a typed
 
 test("AC-14 tail variant: a root segment that exists under another spelling is accepted", async () => {
   const port = new ScriptedPort({ aliasing: true });
-  port.mkdirp("/base/mybundle");
+  port.mkdirp(path.join(BASE, "mybundle"));
   let raced = false;
   port.override("probe", async ([target], base) => {
-    if (target === "/base/MyBundle" && !raced) return null;
+    if (target === path.join(BASE, "MyBundle") && !raced) return null;
     return base();
   });
   port.override("mkdir", async ([dir], base) => {
-    if (dir === "/base/MyBundle") raced = true;
+    if (dir === path.join(BASE, "MyBundle")) raced = true;
     return base();
   });
-  assert.equal(await mutateExact(port, "/base/MyBundle", REL, casWrite(null)), "written");
-  assert.deepEqual(port.ops("mkdir"), ["mkdir(/base/MyBundle)", "mkdir(/base/MyBundle/concepts)"]);
-  assert.equal(port.node("/base/mybundle/concepts/x.md")?.bytes.toString(), "new");
+  const requestedRoot = path.join(BASE, "MyBundle");
+  assert.equal(await mutateExact(port, requestedRoot, REL, casWrite(null)), "written");
+  assert.deepEqual(port.ops("mkdir"), [
+    `mkdir(${requestedRoot})`,
+    `mkdir(${path.join(requestedRoot, "concepts")})`,
+  ]);
+  assert.equal(port.node(path.join(BASE, "mybundle/concepts/x.md"))?.bytes.toString(), "new");
 });
 
 test("AC-14 tail variant: an absent multi-level root is created root-first before rel segments", async () => {
   const port = new ScriptedPort();
-  port.mkdirp("/base");
-  assert.equal(await mutateExact(port, "/base/a/b", REL, casWrite(null)), "written");
-  assert.deepEqual(port.ops("mkdir"), ["mkdir(/base/a)", "mkdir(/base/a/b)", "mkdir(/base/a/b/concepts)"]);
+  port.mkdirp(BASE);
+  const nestedRoot = path.join(BASE, "a", "b");
+  assert.equal(await mutateExact(port, nestedRoot, REL, casWrite(null)), "written");
+  assert.deepEqual(port.ops("mkdir"), [
+    `mkdir(${path.join(BASE, "a")})`,
+    `mkdir(${nestedRoot})`,
+    `mkdir(${path.join(nestedRoot, "concepts")})`,
+  ]);
 });
 
 // ── AC-5 key purity and stability ─────────────────────────────────────────────
@@ -949,7 +962,9 @@ test("AC-5 row 3: every C and F entry of the checked-in Unicode CaseFolding tabl
   assert.deepEqual(failures, []);
 });
 
-test("AC-5: fold digest over the checked-in spelling list is pinned", async () => {
+test("AC-5: fold digest over the checked-in spelling list is pinned", {
+  skip: process.platform === "win32" ? "the historical digest pins POSIX absolute-root spelling" : false,
+}, async () => {
   assert.equal(DIGEST_SPELLINGS.length, 50);
   const digest = createHash("sha256");
   for (const [root, rel] of DIGEST_SPELLINGS) digest.update(`${await identityKey(root, rel)}\n`);

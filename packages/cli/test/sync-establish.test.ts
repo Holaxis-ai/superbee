@@ -16,6 +16,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile, mkdir, rename, symlink } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -499,6 +500,23 @@ test("Git clean filters cannot rewrite bundle bytes during establishment", async
     assert.notEqual(gitTry(topo.origin, ["show-ref", "--verify", `refs/heads/${BOARD_BRANCH}`]).status, 0);
   } finally {
     await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("ambient core.autocrlf does not rewrite literal bundle bytes during establishment", async () => {
+  const topo = await makeGreenfieldTopology();
+  try {
+    await initPlainBundleDir(topo.a);
+    git(topo.a.root, ["config", "core.autocrlf", "true"]);
+
+    const expected = readFileSync(path.join(topo.a.board, "index.md"));
+    const snapshot = snapshotBundleCommit(topo.a.root, topo.a.board);
+    assert.deepEqual(
+      execFileSync("git", ["-C", topo.a.root, "show", `${snapshot.sha}:index.md`]),
+      expected,
+    );
+  } finally {
     await topo.cleanup();
   }
 });

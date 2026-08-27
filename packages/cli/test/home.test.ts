@@ -25,6 +25,8 @@ process.chdir(await mkdtemp(path.join(tmpdir(), "aslite-hermetic-home-")));
 const HERMETIC_HOME = await mkdtemp(path.join(tmpdir(), "aslite-hermetic-user-home-"));
 process.env.HOME = HERMETIC_HOME;
 process.env.USERPROFILE = HERMETIC_HOME;
+process.env.LOCALAPPDATA = path.join(HERMETIC_HOME, "AppData", "Local");
+process.env.APPDATA = path.join(HERMETIC_HOME, "AppData", "Roaming");
 
 import {
   buildHomeView,
@@ -449,7 +451,11 @@ test("default workspace loader sorts labels but does not probe or expose ids and
   }
 });
 
-test("built home rejects a FIFO catalog and exits after its fail-soft receipt", async () => {
+test("built home rejects a FIFO catalog and exits after its fail-soft receipt", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("native Windows has no FIFO filesystem entry; unsafe-entry policy is covered by platform-neutral units");
+    return;
+  }
   const root = await realpath(await tempDir());
   const homeDir = path.join(root, "home");
   const stateDir = canonicalUserStateDir(homeDir);

@@ -342,7 +342,9 @@ test("migration interruption: one row per kill point, with the exit node a rerun
           assert.equal(await readFile(join(fixture.canonical, "catalog.json"), "utf8"), CATALOG);
           assert.equal(await readFile(join(fixture.canonical, "okf-config.json"), "utf8"), CREDENTIALS);
           if (process.platform !== "win32") {
-            assert.equal((await stat(join(fixture.canonical, "okf-config.json"))).mode & 0o777, 0o600);
+            if (process.platform !== "win32") {
+              assert.equal((await stat(join(fixture.canonical, "okf-config.json"))).mode & 0o777, 0o600);
+            }
           }
           assert.equal(
             await readFile(join(fixture.canonical, AUTHORIZATION_DIR_NAME, AUTHORIZATION_NAME), "utf8"),

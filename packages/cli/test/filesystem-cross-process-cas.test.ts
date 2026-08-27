@@ -4,7 +4,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { initBundle, parseLinks, readDoc, writeDoc } from "@superbee/core";
 import { snapshotBundleCommit, stageAndCommit } from "@superbee/board-git";
@@ -38,10 +38,14 @@ interface ChildHarness {
 }
 
 function spawnLinkChild(root: string, target: string): ChildHarness {
-  const child = spawn(process.execPath, ["--import", LOADER, LINK_CHILD, root, target], {
+  const child = spawn(
+    process.execPath,
+    ["--import", pathToFileURL(LOADER).href, LINK_CHILD, root, target],
+    {
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     env: { ...process.env, AGENTSTATE_LITE_NO_AUTOPULL: "1" },
-  });
+    },
+  );
   let resultSeen = false;
   let resolveAttempting!: () => void;
   let resolveResult!: (result: Record<string, unknown>) => void;

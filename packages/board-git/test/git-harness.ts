@@ -172,6 +172,11 @@ export interface TopologyOptions {
   provision?: boolean;
 }
 
+/** Windows can retain short-lived Git/process handles after a fixture exits. Bound cleanup only. */
+function cleanupTopology(dir: string): Promise<void> {
+  return rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
+
 /**
  * Bare-origin init with background maintenance OFF (receive.autogc / maintenance.auto / gc.auto):
  * receive-pack otherwise leaves a DETACHED `git maintenance run --auto --quiet --detach` running
@@ -248,7 +253,7 @@ export async function makeTwoCloneTopology(options: TopologyOptions = {}): Promi
     origin,
     a,
     b,
-    cleanup: () => rm(dir, { recursive: true, force: true }),
+    cleanup: () => cleanupTopology(dir),
   };
 }
 
@@ -288,7 +293,7 @@ export async function makeCommittedFolderTopology(
   git(dir, ["clone", "--no-local", origin, "B"]);
   const a: BoardRepo = { name: "A", root: path.join(dir, "A"), board: path.join(dir, "A", bundleDir) };
   const b: BoardRepo = { name: "B", root: path.join(dir, "B"), board: path.join(dir, "B", bundleDir) };
-  return { dir, origin, a, b, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { dir, origin, a, b, cleanup: () => cleanupTopology(dir) };
 }
 
 /**
@@ -320,7 +325,7 @@ export async function makeGreenfieldTopology(): Promise<TwoCloneTopology> {
   git(dir, ["clone", "--no-local", origin, "B"]);
   const a: BoardRepo = { name: "A", root: path.join(dir, "A"), board: path.join(dir, "A", BUNDLE_DIR) };
   const b: BoardRepo = { name: "B", root: path.join(dir, "B"), board: path.join(dir, "B", BUNDLE_DIR) };
-  return { dir, origin, a, b, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { dir, origin, a, b, cleanup: () => cleanupTopology(dir) };
 }
 
 /**

@@ -499,13 +499,18 @@ test("provisionBoardWorktree: a FOREIGN repo's board worktree at .superbee is re
     assert.match(err.message, /belongs to a different git repository/i);
     assert.match(err.message, new RegExp(topo.a.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.ok(err.help, "carries a fixing command");
-    assert.ok(
-      err.help.startsWith(`mv '${topo.a.board}' '${topo.a.board}.bak'`),
-      "remedy uses absolute paths, so it works from any invocation directory",
-    );
+    if (process.platform === "win32") {
+      assert.match(err.help, /^powershell -NoProfile -Command "Move-Item -LiteralPath /);
+    } else {
+      assert.ok(err.help.startsWith(`mv '${topo.a.board}' '${topo.a.board}.bak'`));
+    }
 
     const command = err.help.split("  # ")[0]!;
-    execFileSync("/bin/sh", ["-c", command], { cwd: foreignRoot, stdio: "pipe" });
+    if (process.platform === "win32") {
+      execFileSync("cmd.exe", ["/d", "/s", "/c", command], { cwd: foreignRoot, stdio: "pipe" });
+    } else {
+      execFileSync("/bin/sh", ["-c", command], { cwd: foreignRoot, stdio: "pipe" });
+    }
     assert.equal(existsSync(topo.a.board), false, "verbatim remedy moved the foreign checkout aside");
     assert.equal(existsSync(`${topo.a.board}.bak`), true, "backup path exists for manual recovery");
   } finally {
@@ -654,7 +659,11 @@ test("provisionBoardWorktree: THE MOUNT-MOVE FIELD FINDING — stale ABSOLUTE po
   const topo = await makeTwoCloneTopology();
   try {
     const staleGitFile = (await readFile(path.join(topo.a.board, ".git"), "utf8")).trim();
-    assert.match(staleGitFile, /^gitdir:\s*\//, "precondition: the harness's own provisioning wrote ABSOLUTE pointers");
+    assert.match(
+      staleGitFile,
+      /^gitdir:\s*(?:[A-Za-z]:[\\/]|\/)/,
+      "precondition: the harness's own provisioning wrote ABSOLUTE pointers",
+    );
 
     const movedRoot = path.join(path.dirname(topo.a.root), `moved-${path.basename(topo.a.root)}`);
     await rename(topo.a.root, movedRoot);
@@ -852,7 +861,9 @@ test("provision: a repo with NO board branch anywhere → no_board", async () =>
   }
 });
 
-test("provision: a timed-out remote check degrades to unknown within the supplied budget", async () => {
+test("provision: a timed-out remote check degrades to unknown within the supplied budget", {
+  skip: process.platform === "win32" ? "fixture uses Git's POSIX-only ext::sleep helper" : false,
+}, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-board-timeout-"));
   try {
     git(dir, ["init", "-b", "main", "."]);
@@ -962,7 +973,9 @@ test("stageAndCommit: non-ASCII doc id crosses the receipt's doc rows and commit
 //    literal quoted-and-escaped string instead of the real path. `-z` framing sidesteps quoting
 //    entirely: raw bytes, one NUL per field.
 
-test("stageAndCommit: -z name-status framing survives a literal TAB byte inside a doc path", async () => {
+test("stageAndCommit: -z name-status framing survives a literal TAB byte inside a doc path", {
+  skip: process.platform === "win32" ? "Win32 filenames cannot contain control bytes" : false,
+}, async () => {
   const topo = await makeTwoCloneTopology();
   try {
     const tabbedId = "tasks/ta\tb";

@@ -325,7 +325,11 @@ export interface DocCliDeps {
 function hasRealStdinInput(): boolean {
   try {
     const stats = fstatSync(0);
-    return stats.isFIFO() || stats.isFile() || stats.isSocket();
+    if (stats.isFIFO() || stats.isFile() || stats.isSocket()) return true;
+    // libuv does not classify an anonymous child-process pipe as a FIFO or socket on Windows.
+    // It is still a real byte source. NUL and other redirected-but-dataless handles remain
+    // character devices, so retain the original false-positive guard there.
+    return process.platform === "win32" && !stats.isCharacterDevice() && !stats.isDirectory();
   } catch {
     return false;
   }

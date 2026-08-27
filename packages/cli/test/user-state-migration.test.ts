@@ -85,8 +85,10 @@ test("ordinary Superbee state is canonical-only and initializes an exact private
     assert.equal((await loadCredentials(root))?.remotes?.["https://old.example"], undefined);
     assert.equal(await readUserStateMarker(root), USER_STATE_MARKER_BYTES);
     if (POSIX_MODE_AUTHORITY) {
-      assert.equal((await stat(canonicalUserStateDir(root))).mode & 0o777, 0o700);
-      assert.equal((await stat(join(canonicalUserStateDir(root), "state.json"))).mode & 0o777, 0o600);
+      if (process.platform !== "win32") {
+        assert.equal((await stat(canonicalUserStateDir(root))).mode & 0o777, 0o700);
+        assert.equal((await stat(join(canonicalUserStateDir(root), "state.json"))).mode & 0o777, 0o600);
+      }
     }
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -294,8 +296,10 @@ test("one-shot migration copies only validated durable records, preserves legacy
     assert.equal(await absent(join(canonical, "sync")), true);
     assert.equal(await absent(join(canonical, "ui-url")), true);
     if (POSIX_MODE_AUTHORITY) {
-      assert.equal((await stat(join(canonical, "catalog.json"))).mode & 0o777, 0o600);
-      assert.equal((await stat(join(canonical, "view-authorizations"))).mode & 0o777, 0o700);
+      if (process.platform !== "win32") {
+        assert.equal((await stat(join(canonical, "catalog.json"))).mode & 0o777, 0o600);
+        assert.equal((await stat(join(canonical, "view-authorizations"))).mode & 0o777, 0o700);
+      }
     }
 
     assert.equal(await readFile(join(legacy, "catalog.json"), "utf8"), before.catalog);
@@ -499,7 +503,9 @@ test("the emitted quarantine command executes and clears the block even against 
       assert.equal(quarantined.length, 1, `${label}: exactly one fresh quarantine destination`);
       assert.deepEqual(await readdir(join(canonicalParent, quarantined[0]!)), [canonicalBase], label);
       if (POSIX_MODE_AUTHORITY) {
-        assert.equal((await stat(join(canonicalParent, quarantined[0]!))).mode & 0o777, 0o700, `${label}: private mode`);
+        if (process.platform !== "win32") {
+          assert.equal((await stat(join(canonicalParent, quarantined[0]!))).mode & 0o777, 0o700, `${label}: private mode`);
+        }
       }
     }
 

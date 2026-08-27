@@ -35,7 +35,8 @@ function violationsIn(file: string, source: string): string[] {
   const violations: string[] = [];
   const flag = (node: ts.Node, message: string): void => {
     const { line } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-    violations.push(`${path.relative(PACKAGE_ROOT, file)}:${line + 1} — ${message}`);
+    const relativeFile = path.relative(PACKAGE_ROOT, file).split("\\").join("/");
+    violations.push(`${relativeFile}:${line + 1} — ${message}`);
   };
 
   const checkSpecifier = (node: ts.Node, specifier: ts.Expression): void => {

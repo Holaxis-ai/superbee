@@ -22,7 +22,7 @@ function source(relative: string): string {
 function clientFrom(relative: string): string {
   const text = source(relative);
   const match = relative.endsWith(".md")
-    ? text.match(/```js\n(\(function \(\) \{[\s\S]*?\n\}\)\(\);)\n```/)
+    ? text.match(/```js\r?\n(\(function \(\) \{[\s\S]*?\r?\n\}\)\(\);)\r?\n```/)
     : text.match(/<script>\s*(\(function \(\) \{[\s\S]*?\n\}\)\(\);)/);
   assert.ok(match, `could not extract literal bridge client from ${relative}`);
   return match[1]!;

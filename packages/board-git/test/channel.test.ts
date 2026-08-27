@@ -24,7 +24,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -134,6 +134,7 @@ test("matrix: stale worktree-side pointer (this repo's registration survives) â†
   try {
     // Break ONLY the worktree-side `.git` file; the registration under `<root>/.git/worktrees/`
     // still names the conventional path â€” the structural "ours, pointers stale" signal.
+    await chmod(path.join(topo.a.board, ".git"), 0o666);
     await writeFile(
       path.join(topo.a.board, ".git"),
       `gitdir: ${path.join(topo.dir, "nonexistent", ".git", "worktrees", BUNDLE_DIR)}\n`,
@@ -402,7 +403,7 @@ test("the injected probe replaces the real one and receives the repo top", async
     });
     // No board exists anywhere in this topology; the injected answer alone drove the JOIN row.
     assertBranch(d);
-    assert.equal(seen, topo.a.root);
+    assert.equal(path.normalize(seen!), path.normalize(topo.a.root));
   } finally {
     await topo.cleanup();
   }

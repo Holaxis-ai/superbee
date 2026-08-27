@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import { initBundle } from "@superbee/core";
 import { credentialsDir } from "../src/credentials.js";
+import { isolatedUserEnv } from "./support/user-env.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
@@ -27,7 +28,7 @@ interface ChildResult {
 function run(home: string, args: string[]): Promise<ChildResult> {
   return new Promise((resolve, reject) => {
     const child = spawn("node", [cliBin, ...args], {
-      env: { ...process.env, HOME: home, AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+      env: isolatedUserEnv(home, { AGENTSTATE_LITE_NO_AUTOPULL: "1" }),
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
