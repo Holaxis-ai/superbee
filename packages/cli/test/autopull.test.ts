@@ -485,12 +485,18 @@ async function installGitSpawnShim(): Promise<{
   reset: () => Promise<void>;
   restore: () => Promise<void>;
 }> {
-  const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const realGit = process.platform === "win32"
+    ? execFileSync("where.exe", ["git"], { encoding: "utf8" }).split(/\r?\n/)[0]!.trim()
+    : execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
   const shimDir = await mkdtemp(path.join(tmpdir(), "aslite-git-spawn-shim-"));
   const logPath = path.join(shimDir, "spawns.log");
-  const shim = path.join(shimDir, "git");
-  await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logPath}"\nexec "${realGit}" "$@"\n`);
-  chmodSync(shim, 0o755);
+  const shim = path.join(shimDir, process.platform === "win32" ? "git.cmd" : "git");
+  if (process.platform === "win32") {
+    await writeFile(shim, `@echo off\r\necho %*>>"${logPath}"\r\n"${realGit}" %*\r\n`);
+  } else {
+    await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logPath}"\nexec "${realGit}" "$@"\n`);
+    chmodSync(shim, 0o755);
+  }
   const prevPath = process.env.PATH;
   process.env.PATH = `${shimDir}${path.delimiter}${prevPath ?? ""}`;
   return {

@@ -843,11 +843,22 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
     assert.ok(plugin.includes(`const command = ${JSON.stringify(launchTokens[0])}`));
     assert.ok(plugin.includes(`const commandArgs = ${JSON.stringify(launchTokens.slice(1))}`));
 
-    const minimalPathRun = spawnSync("/bin/sh", ["-c", entry.command], {
+    const minimalPathRun = spawnSync(
+      process.platform === "win32" ? "cmd.exe" : "/bin/sh",
+      process.platform === "win32" ? ["/d", "/s", "/c", entry.command] : ["-c", entry.command],
+      {
       cwd: base,
-      env: { HOME: base, USERPROFILE: base, PATH: "/usr/bin:/bin", AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+      env: {
+        HOME: base,
+        USERPROFILE: base,
+        LOCALAPPDATA: path.join(base, "AppData", "Local"),
+        APPDATA: path.join(base, "AppData", "Roaming"),
+        PATH: process.platform === "win32" ? process.env.SystemRoot ?? "C:\\Windows" : "/usr/bin:/bin",
+        AGENTSTATE_LITE_NO_AUTOPULL: "1",
+      },
       encoding: "utf8",
-    });
+      },
+    );
     assert.equal(minimalPathRun.status, 0, minimalPathRun.stdout + minimalPathRun.stderr);
 
     // A freshly installed hook needs no update…
