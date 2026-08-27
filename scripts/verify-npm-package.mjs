@@ -900,7 +900,7 @@ async function runInstalledProof(spec) {
     assert.equal(setupBeforeIntegrations.setup.ready, false);
     assert.equal(
       setupBeforeIntegrations.setup.next.command,
-      process.platform === "win32" ? "npm install -g superbee" : "superbee skill install --scope user",
+      "superbee skill install --scope user",
       "the installed artifact must guide the first missing host integration without exposing paths",
     );
     assert.doesNotMatch(JSON.stringify(setupBeforeIntegrations), new RegExp(scratch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
