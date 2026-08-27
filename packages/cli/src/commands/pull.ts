@@ -50,7 +50,8 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, renderErrorEnvelope, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
-import { inBundlePollutionWarning, readErrorToCliError } from "./doc.js";
+import { readErrorToCliError } from "./doc.js";
+import { inBundlePollutionWarning } from "./egress.js";
 
 export const PULL_USAGE = `superbee pull — pull a doc or blob's bytes out of the store (the reverse of 'promote')
 
@@ -225,7 +226,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
     // F3-shaped warning (reused verbatim, never a parallel copy) — fires whenever the RESOLVED out
     // path looks like a concept doc / reserved filename inside an open local bundle, regardless of
     // which route produced the bytes (see file header).
-    const warning = inBundlePollutionWarning(bundle, out);
+    const warning = await inBundlePollutionWarning(bundle, out);
     if (warning) receipt.warning = warning;
     await fs.writeFile(out, result.bytes);
     stdout(render(receipt, mode));

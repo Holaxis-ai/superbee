@@ -9,7 +9,6 @@ import {
   pathFromConceptId,
   assertSafeConceptId,
   inferContentTypeFromDocKey,
-  isReservedFile,
   stringifyDoc,
   type Bundle,
   type OkfDocument,
@@ -27,6 +26,7 @@ import { assertPathOutsidePrivateState } from "../../private-state-bundle-bounda
 import { DOC_READ_USAGE, type DocCliDeps, BODY_PREVIEW_LIMIT, readErrorToCliError } from "./common.js";
 import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
+import { effectiveOutputPath, inBundlePollutionWarning } from "../egress.js";
 
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
@@ -368,7 +368,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // bundle's root would otherwise silently re-ingest the exported file as a new concept doc on the
     // next bundle walk (list/query/status). Still write it — a deliberate in-bundle copy (e.g.
     // re-exporting a doc back onto its own canonical path) is conceivable — but attach a loud warning.
-    const warning = inBundlePollutionWarning(bundle, out);
+    const warning = await inBundlePollutionWarning(bundle, out);
     if (warning) result.warning = warning;
     await fs.writeFile(out, bytes);
     stdout(render(result, resolveMode(values)));
@@ -412,31 +412,14 @@ async function assertSafeNonDocumentOutTarget(
   const effectiveTarget = await effectiveOutputPath(lexicalTarget);
   const inside = (candidate: string, base: string): boolean =>
     candidate === base || candidate.startsWith(base + path.sep);
-  const unsafeLexical = inside(lexicalTarget, rootReal) && lexicalTarget.endsWith(".md");
   const unsafeEffective = inside(effectiveTarget, rootReal) && effectiveTarget.endsWith(".md");
-  if (!unsafeLexical && !unsafeEffective) return;
+  if (!unsafeEffective) return;
   throw new CliError(
     "USAGE",
     `${flag} ${outValue} targets ${effectiveTarget}, a .md path INSIDE this bundle (${rootReal}); ` +
       `${payload} has no OKF frontmatter and cannot be written into the bundle.`,
     { help: `${cliInvocation()} doc read ${id} ${flag} <path-outside-bundle>` },
   );
-}
-
-/** Resolve an output's effective path even when one or more final path segments do not exist yet. */
-async function effectiveOutputPath(absoluteTarget: string): Promise<string> {
-  let probe = absoluteTarget;
-  const missingSuffix: string[] = [];
-  while (true) {
-    try {
-      return path.join(await fs.realpath(probe), ...missingSuffix);
-    } catch {
-      const parent = path.dirname(probe);
-      if (parent === probe) return absoluteTarget;
-      missingSuffix.unshift(path.basename(probe));
-      probe = parent;
-    }
-  }
 }
 
 /**
@@ -473,54 +456,4 @@ function resolveField(parsed: OkfDocument, version: Version, field: string, id: 
 function formatFieldValue(value: unknown): string {
   if (typeof value === "object") return `${JSON.stringify(value)}\n`;
   return `${String(value)}\n`;
-}
-
-/**
- * F3 (P2, bundle pollution): for a LOCAL bundle (`bundle.backend` absent — a `--remote` bundle's
- * "root" is a URL, not a filesystem path an exported file could ever land inside), classify what an
- * `--out` path landing INSIDE the open bundle's root actually does on the next bundle walk:
- *
- *  - a path whose FINAL segment is a reserved OKF filename (`index.md`/`log.md`, at any directory
- *    level — §3.1) CLOBBERS that reserved file outright, a DIFFERENT failure than re-ingestion (the
- *    walk special-cases reserved files rather than re-parsing them as concepts);
- *  - any other `.md` path is silently RE-INGESTED as a new concept doc (the walk's own filter is
- *    `entry.name.endsWith(".md")` — see `backend.ts` — so it parses every `.md` file's frontmatter);
- *  - a non-`.md` path is inert: the walk never looks at it, so nothing happens on the next bundle
- *    walk and no warning is warranted.
- *
- * Never refuses the write — a deliberate in-bundle copy or reserved-file re-export is conceivable —
- * just makes the ACTUAL risk loud instead of silent (or silently mischaracterized, in the reserved
- * case, which used to get the SAME "re-ingested as a concept" message even though reserved files are
- * never parsed as concepts at all).
- *
- * Exported (not just internal to `doc read --out`) because `pull` (Stage-1 Unit 2a Part C) reuses
- * this EXACT function for its own `--out` byte-out path — the same in-bundle re-ingestion risk
- * applies whenever the resolved OUT PATH itself looks like a concept doc, regardless of whether the
- * bytes being written came from a `doc`-route or `blob`-route pull (a blob pull's `--out` naturally
- * won't trigger this in the common case, since it won't be `.md`-shaped — see `pull.ts`'s usage text
- * on the asymmetry with `doc read --out`).
- */
-export function inBundlePollutionWarning(
-  bundle: Bundle,
-  out: string,
-): string | undefined {
-  if (bundle.backend) return undefined;
-  const resolvedOut = path.resolve(out);
-  const root = bundle.root;
-  const isInside = resolvedOut === root || resolvedOut.startsWith(root + path.sep);
-  if (!isInside) return undefined;
-
-  if (isReservedFile(resolvedOut)) {
-    return (
-      `--out ${out} resolves to ${resolvedOut}, which is INSIDE this bundle (${root}) at a reserved ` +
-      `OKF filename — the write will CLOBBER that reserved file (index.md/log.md is never re-parsed ` +
-      `as a concept doc). Pass a path outside the bundle if that is not intended.`
-    );
-  }
-  if (!resolvedOut.endsWith(".md")) return undefined;
-  return (
-    `--out ${out} resolves to ${resolvedOut}, which is INSIDE this bundle (${root}) — the exported ` +
-    `file will be re-ingested as a new concept doc on the next bundle walk (list/query/status). ` +
-    `Pass a path outside the bundle if that is not intended.`
-  );
 }
