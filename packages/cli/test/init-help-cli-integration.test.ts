@@ -45,12 +45,14 @@ function run(
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync("superbee", args, {
+  // Invoke the JS entry directly while keeping the managed shim on PATH. The child still proves
+  // cliInvocation() resolves the bare `superbee` name, without asking cmd.exe to re-quote an argv
+  // array (Node's shell+args bridge is lossy for spaces and empty values on Windows).
+  const result = spawnSync(process.execPath, [cliBin, ...args], {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
-    shell: process.platform === "win32",
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }

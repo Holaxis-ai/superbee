@@ -184,11 +184,14 @@ export function createSharingLoader(bundleRoot: string, ttlMs: number = SHARING_
 }
 
 /** Registered-workspace rows for the home's collapsed block: labels + paths ONLY — deliberately NOT `listCatalogEntries` (its per-entry availability probes are the slow path home.ts also avoids). */
-export function createWorkspacesLoader(bundleRoot: string): () => Promise<WorkspaceSummaryEntry[]> {
+export function createWorkspacesLoader(
+  bundleRoot: string,
+  home?: string,
+): () => Promise<WorkspaceSummaryEntry[]> {
   const root = realOr(bundleRoot);
   return async () => {
     try {
-      const catalog = await loadCatalog();
+      const catalog = await loadCatalog(home);
       return [...catalog.entries]
         .sort((a, b) => a.label.localeCompare(b.label))
         .map((entry) => ({

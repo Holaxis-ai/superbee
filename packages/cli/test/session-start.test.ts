@@ -113,19 +113,18 @@ test.after(async () => {
   if (preferredBinDirPromise) await rm(await preferredBinDirPromise, { recursive: true, force: true });
 });
 
-/** Spawn the built CLI as the bare `superbee` bin (see {@link preferredBinDir}). */
+/** Spawn the built CLI with the managed bare bin available for its emitted-command identity. */
 async function runCliHook(
   args: string[],
   opts: { cwd: string; env?: NodeJS.ProcessEnv },
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const binDir = await preferredBinDir();
   const baseEnv = opts.env ?? process.env;
-  const result = spawnSync("superbee", args, {
+  const result = spawnSync(process.execPath, [cliBin, ...args], {
     cwd: opts.cwd,
     env: { ...baseEnv, PATH: `${binDir}${path.delimiter}${baseEnv.PATH ?? ""}` },
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
-    shell: process.platform === "win32",
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -135,7 +134,7 @@ function assertPathIndependentLocalLaunch(command: string): string[] {
   assert.ok(tokens, `expected generated hook command: ${command}`);
   assert.equal(tokens.length, 3);
   assert.equal(path.basename(tokens[0]!).toLowerCase(), process.platform === "win32" ? "node.exe" : "node");
-  assert.equal(tokens[1], realpathSync(cliBin));
+  assert.equal(realpathSync(tokens[1]!), realpathSync(cliBin));
   assert.equal(tokens[2], "session-start");
   assert.equal(path.isAbsolute(tokens[0]!), true);
   assert.equal(path.isAbsolute(tokens[1]!), true);
@@ -209,8 +208,8 @@ test("bare binding session-start and home retain the private owner state, not th
     assert.equal(result?.boardPath, topo.b.board);
     assert.ok(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.b.board))), "private board marker was refreshed");
     assert.equal(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.a.board))), null, "public board marker was untouched");
-    const rendered = await withHome(homeDir, () => withCwd(topo.a.root, () => runHome(homeDir, [])));
-    const renderedRoot = /^\s*root: (.+)$/m.exec(rendered)?.[1];
+    const rendered = await withHome(homeDir, () => withCwd(topo.a.root, () => runHome(homeDir, ["--json"])));
+    const renderedRoot = (JSON.parse(rendered) as { bundle?: { root?: string } }).bundle?.root;
     assert.ok(renderedRoot, "bare home rendered a bundle root");
     const [renderedStat, expectedStat] = await Promise.all([stat(renderedRoot!), stat(topo.b.board)]);
     assert.equal(renderedStat.dev, expectedStat.dev, "bare home rendered the private bundle device");

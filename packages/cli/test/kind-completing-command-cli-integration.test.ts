@@ -64,12 +64,13 @@ function run(
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync("superbee", args, {
+  // Preserve argv exactly on Windows; the PATH shim remains present so emitted follow-ups still
+  // resolve to and exercise the bare `superbee` command.
+  const result = spawnSync(process.execPath, [cliBin, ...args], {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
-    shell: process.platform === "win32",
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }

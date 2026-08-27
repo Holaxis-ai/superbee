@@ -15,7 +15,11 @@ export const CATALOG_SCHEMA_VERSION = 1;
 
 const DIR_MODE = 0o700;
 const LOCK_MODE = 0o600;
-const DEFAULT_LOCK_WAIT_MS = 2_000;
+// Several ordinary agent processes can register workspaces together during setup. Windows process
+// startup and antivirus/indexer activity can keep this tiny critical section queued for seconds;
+// treating that as a conflict loses an otherwise valid registration. Keep the wait bounded, but
+// long enough for every writer in that common burst to serialize.
+const DEFAULT_LOCK_WAIT_MS = 10_000;
 const DEFAULT_LOCK_POLL_MS = 25;
 const STALE_LOCK_MIN_AGE_MS = 30_000;
 const LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;

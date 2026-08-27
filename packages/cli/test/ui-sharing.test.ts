@@ -280,7 +280,7 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
       }),
     );
     await withIsolatedUserEnv(home, async () => {
-      const rows = await createWorkspacesLoader(bundleRoot)();
+      const rows = await createWorkspacesLoader(bundleRoot, home)();
       assert.deepEqual(rows, [
         { label: "alpha", path: bundleRoot, open: true },
         { label: "zeta", path: "/nowhere/zeta", open: false },

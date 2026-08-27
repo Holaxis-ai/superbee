@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -141,7 +141,15 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
     assert.match(missingProgress.stdout, /progress_status/);
     assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
-    assert.ok(missingProgress.stdout.includes(`new ${shellArg("Task")} --help --dir ${shellArg(dir)}`));
+    const fixingCommand = /^  help: (.+)$/m.exec(missingProgress.stdout)?.[1];
+    assert.ok(fixingCommand, `missing-field refusal carries a fixing command: ${missingProgress.stdout}`);
+    const validTargets = [dir, realpathSync(dir)].map((target) =>
+      `new ${shellArg("Task")} --help --dir ${shellArg(target)}`
+    );
+    assert.ok(
+      validTargets.some((tail) => fixingCommand!.endsWith(tail)),
+      `fixing command retains the requested physical target: ${fixingCommand}`,
+    );
 
     for (const duplicateFields of [
       ["--progress_status", "todo", "--superbee_progress_status", "done"],

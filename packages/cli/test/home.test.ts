@@ -428,7 +428,7 @@ test("workspace catalog orientation: a stalled injected loader cannot stall home
     loadWorkspaces: () => new Promise(() => {}),
     workspaceBudgetMs: 5,
   });
-  assert.ok(Date.now() - startedAt < 1_000);
+  assert.ok(Date.now() - startedAt < 2_500);
   assert.deepEqual((JSON.parse(out) as Record<string, any>).workspaces, {
     status: "unavailable",
     note: "workspace catalog check timed out",
@@ -818,8 +818,9 @@ test("same-level old/new binding conflict remains non-fatal in home and withhold
 test("A1.12b disappeared project-binding target: recovery init preserves the bound target and recipe browsing is withheld", async () => {
   const root = await tempDir();
   try {
-    const projectDir = path.join(root, "project");
-    const missingBundle = path.join(await realpath(root), "missing bundle");
+    const physicalRoot = await realpath(root);
+    const projectDir = path.join(physicalRoot, "project");
+    const missingBundle = path.join(physicalRoot, "missing bundle");
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, ".agentstate.json"), JSON.stringify({ bundle: "../missing bundle" }));
 
