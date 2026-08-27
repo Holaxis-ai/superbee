@@ -63,6 +63,23 @@ function assertSmokeJob(job, lane) {
   assert.deepEqual(surface, [...lane.built_cli_commands].sort(), "floor smoke built-CLI command surface drifted");
 }
 
+function assertWindowsJob(job, lane) {
+  assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
+  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2);
+  assert.deepEqual(
+    [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])),
+    [lane.runtime_node, lane.installed_package_node],
+  );
+  assert.match(job, /run: npm run ci:runtime/);
+  assert.match(job, /npm pack \.\/packages\/cli --ignore-scripts/);
+  assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
+  assert.match(job, /npm install --global \$env:SUPERBEE_WINDOWS_TARBALL --prefix \$prefix/);
+  assert.match(job, /Join-Path \$prefix "superbee\.cmd"/);
+  for (const command of lane.built_cli_commands) {
+    assert.ok(job.includes(`& $cli ${command}`), `Windows smoke is missing ${command}`);
+  }
+}
+
 // Every lane that declares a host-class expectation must run on the pinned runner, export the
 // expectation to the tests, and self-check the filesystem before any test can observe it.
 function assertHostExpectations(jobs, candidate) {
@@ -112,6 +129,7 @@ function validateCiTopology(text, candidate = manifest) {
     assert.match(jobs[job], new RegExp(`run: npm run ${script.replace(":", "\\:")}`));
   }
   assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
+  assertWindowsJob(jobs.windows, candidate.lanes.windows);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
   assert.equal(
     /^ {2}merge_group:/m.test(text),
@@ -165,7 +183,7 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
     ['      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "0"', '      SUPERBEE_TEST_EXPECT_ALIASING_HOST: "1"', /runtime must pin the host-class expectation/],
     ['test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /aliasing-host must self-check its host class/],
     ['test ! -e "$RUNNER_TEMP/host-probe/PROBE-NAME"', "true", /runtime must self-check its host class/],
-    ["          node-version: 20", "          node-version: 22", /second setup-node/],
+    ["          node-version: 20", "          node-version: 22", /second setup-node|deep-equal/],
     ["          node --version | grep -q '^v20\\.'", "          node --version", /self-check/],
     ["          node \"$CLI\" status --dir \"$DIR\"", "          node --version", /command surface/],
   ]) {

@@ -36,9 +36,6 @@
   "engines": {
     "node": ">=20"
   },
-  "os": [
-    "!win32"
-  ],
   "scripts": {
     "build": "node build.mjs local-dev",
     "build:npm-package": "node build.mjs npm-package",

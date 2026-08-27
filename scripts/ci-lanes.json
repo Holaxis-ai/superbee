@@ -15,6 +15,7 @@
   "required_jobs": [
     "runtime",
     "aliasing-host",
+    "windows",
     "smoke-node-20",
     "distribution",
     "browser",
@@ -89,6 +90,27 @@
       "runs_on": "macos-latest",
       "expect_aliasing_host": "1",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
+    },
+    "windows": {
+      "display_name": "native Windows runtime and installed package",
+      "workflow_only": true,
+      "components": [],
+      "nodes": [
+        22,
+        20
+      ],
+      "runs_on": "windows-latest",
+      "runtime_node": 22,
+      "installed_package_node": 20,
+      "built_cli_commands": [
+        "init",
+        "doc write",
+        "doc read",
+        "link add",
+        "link show",
+        "list",
+        "status"
+      ]
     },
     "distribution": {
       "display_name": "distribution package and installed behavior",

@@ -210,7 +210,7 @@ test("lane ownership is pinned to executing scripts", () => {
   assert.throws(() => validateLaneManifest(incomplete), /required_jobs must equal the complete lane set/);
 });
 
-test("runtime-sensitive suites are identical on Node 22 and 26 and singleton lanes use Node 26", () => {
+test("runtime-sensitive suites are identical on Node 22 and 26 and platform lanes pin their runtimes", () => {
   assert.deepEqual(manifest.runtime_nodes, [22, 26]);
   assert.deepEqual(manifest.lanes.runtime.nodes, manifest.runtime_nodes);
   assert.equal(
@@ -220,9 +220,14 @@ test("runtime-sensitive suites are identical on Node 22 and 26 and singleton lan
   assert.equal(cliPkg.scripts.pretest, "node build.mjs local-dev", "ordinary npm test must keep its build prerequisite");
   assert.doesNotMatch(cliPkg.scripts.test, /build\.mjs/, "the CI runtime lane must be able to skip the pretest rebuild");
   for (const [name, lane] of Object.entries(manifest.lanes)) {
-    if (name === "runtime" || name === "smoke-node-20") continue;
+    if (name === "runtime" || name === "smoke-node-20" || name === "windows") continue;
     assert.deepEqual(lane.nodes, [manifest.singleton_node], `${name} must not amplify across runtime versions`);
   }
+  assert.deepEqual(manifest.lanes.windows.nodes, [22, 20]);
+  assert.equal(manifest.lanes.windows.runs_on, "windows-latest");
+  assert.equal(manifest.lanes.windows.runtime_node, 22);
+  assert.equal(manifest.lanes.windows.installed_package_node, 20);
+  assert.equal(cliPkg.os, undefined, "the publishable package must admit native Windows installs");
 });
 
 test("the aliasing-host lane pins a fail-closed host expectation on both host classes", () => {
