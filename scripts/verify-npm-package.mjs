@@ -884,11 +884,24 @@ async function runInstalledProof(spec) {
       ).stdout,
       "setup before integrations",
     );
+    assert.equal(setupBeforeIntegrations.setup.schema_version, 2);
+    assert.equal(setupBeforeIntegrations.setup.protocol, "agent_setup_v1");
+    assert.equal(setupBeforeIntegrations.setup.status, "action_required");
+    assert.match(setupBeforeIntegrations.setup.agent_instruction, /calling agent executes the returned action/i);
     assert.equal(setupBeforeIntegrations.setup.host, "claude-code");
     assert.equal(setupBeforeIntegrations.setup.ready, false);
-    assert.equal(
-      setupBeforeIntegrations.setup.next.command,
-      "superbee skill install --scope user",
+    assert.deepEqual(
+      setupBeforeIntegrations.setup.next,
+      {
+        action: "run",
+        command: ["superbee", "skill", "install", "--scope", "user"],
+        description: "Install Superbee's Agent Skill for the selected scope.",
+        mutates: true,
+        approval: {
+          required: true,
+          reason: "This writes to user-level host configuration.",
+        },
+      },
       "the installed artifact must guide the first missing host integration without exposing paths",
     );
     assert.doesNotMatch(JSON.stringify(setupBeforeIntegrations), new RegExp(scratch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -1081,9 +1094,18 @@ async function runInstalledProof(spec) {
         })).stdout,
         "setup with legacy user state",
       );
-      const migrationCommand = legacySetup.setup.next.command;
-      assert.equal(migrationCommand, "superbee setup migrate-state");
-      const [migrationBin, ...migrationArgs] = migrationCommand.split(" ");
+      const migrationAction = legacySetup.setup.next;
+      assert.deepEqual(migrationAction, {
+        action: "run",
+        command: ["superbee", "setup", "migrate-state"],
+        description: "Migrate validated legacy private state into Superbee's canonical user-state directory.",
+        mutates: true,
+        approval: {
+          required: true,
+          reason: "This writes to the user-level Superbee private-state directory.",
+        },
+      });
+      const [migrationBin, ...migrationArgs] = migrationAction.command;
       assert.equal(migrationBin, target.preferred_command);
       const migrationOutput = (await runCli(migrationBin, migrationArgs, { cwd: scratch })).stdout;
       assert.match(migrationOutput, /^migration:/);
@@ -1103,7 +1125,10 @@ async function runInstalledProof(spec) {
         })).stdout,
         "setup after one-shot state migration",
       );
-      assert.equal(setupAfterMigration.setup.next.command, "superbee skill install --scope user");
+      assert.deepEqual(
+        setupAfterMigration.setup.next.command,
+        ["superbee", "skill", "install", "--scope", "user"],
+      );
     }
 
     return {
