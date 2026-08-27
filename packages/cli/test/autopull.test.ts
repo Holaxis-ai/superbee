@@ -507,7 +507,11 @@ async function installGitSpawnShim(): Promise<{
   };
 }
 
-test("detection cost: 0 spawns on non-board paths; exactly ONE (remote get-url) on a provisioned board with a fresh cache", async () => {
+test("detection cost: 0 spawns on non-board paths; exactly ONE (remote get-url) on a provisioned board with a fresh cache", {
+  skip: process.platform === "win32"
+    ? "Node's shell-free executable lookup bypasses a PATH git.cmd shim; behavior is covered by the native board-channel suite"
+    : undefined,
+}, async () => {
   const topoProvisioned = await makeTwoCloneTopology();
   const topoBare = await makeTwoCloneTopology({ provision: false });
   const plain = await mkdtemp(path.join(tmpdir(), "aslite-autopull-cost-"));

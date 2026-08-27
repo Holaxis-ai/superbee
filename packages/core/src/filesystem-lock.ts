@@ -247,7 +247,15 @@ async function canonicalTargetInDirectory(directory: string, requestedBasename: 
   // atomicWrite replaces the symlink directory entry inside it.
   for (const entry of entries) {
     const candidate = path.join(directory, entry);
-    const candidateStat = await fs.lstat(candidate);
+    let candidateStat: Stats;
+    try {
+      candidateStat = await fs.lstat(candidate);
+    } catch {
+      // A sibling may disappear during the scan, or Windows may deny metadata for a protected
+      // system entry in an otherwise-readable directory. Neither sibling can be the successfully
+      // witnessed requested entry, so it contributes no alias evidence and must not block locking.
+      continue;
+    }
     if (candidateStat.dev === requestedStat.dev && candidateStat.ino === requestedStat.ino) return candidate;
   }
   return requested;

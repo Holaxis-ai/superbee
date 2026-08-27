@@ -20,6 +20,8 @@
  *   - Worktree internals via `git rev-parse --git-path` (`.git` is a FILE in a linked worktree).
  *   - Rename detection OFF (`--no-renames`): a doc's identity IS its path; add+delete is the true
  *     story. Explicit (not merely `-M` omitted) so a host `diff.renames=true` config cannot leak in.
+ *   - Git text conversion OFF (`-c core.autocrlf=false -c core.eol=lf`): portable bundle bytes
+ *     are never rewritten by a host's global Windows checkout policy.
  *   - Path quoting OFF (`-c core.quotepath=off`): non-ASCII paths come back as raw UTF-8, never
  *     C-quoted — parsed paths must round-trip back into git as pathspecs (see `runGit`'s header).
  *   - No raw git on stdout: every failure routes through `classifyGitError` (errors.ts)
@@ -256,7 +258,18 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
     ...(opts.gitDir ? [`--git-dir=${opts.gitDir}`] : []),
     ...(opts.workTree ? [`--work-tree=${opts.workTree}`] : []),
   ];
-  const r = spawnSync("git", ["-C", dir, "-c", "core.quotepath=off", ...repositoryArgs, ...args], {
+  const r = spawnSync("git", [
+    "-C",
+    dir,
+    "-c",
+    "core.quotepath=off",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.eol=lf",
+    ...repositoryArgs,
+    ...args,
+  ], {
     env: gitEnv(opts.rebase ?? false, opts.connectTimeoutSeconds, opts.indexFile),
     timeout: opts.timeoutMs ?? LOCAL_TIMEOUT_MS,
     input: opts.input,
@@ -592,8 +605,8 @@ function powershellQuote(s: string): string {
 function moveAsideHelp(boardPath: string, note: string): string {
   if (process.platform === "win32") {
     return (
-      `powershell -NoProfile -Command "Move-Item -Force -ErrorAction Stop ` +
-      `-LiteralPath ${powershellQuote(boardPath)} -Destination ${powershellQuote(`${boardPath}.bak`)}"`
+      `powershell -NoProfile -Command "Rename-Item -Force -ErrorAction Stop ` +
+      `-LiteralPath ${powershellQuote(boardPath)} -NewName ${powershellQuote(`${path.basename(boardPath)}.bak`)}"`
     );
   }
   return `mv ${shellQuote(boardPath)} ${shellQuote(`${boardPath}.bak`)}  # ${note}`;

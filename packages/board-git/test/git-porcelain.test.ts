@@ -84,8 +84,8 @@ import {
 
 // ── hermetic ambient env (the porcelain inherits process.env; pin identity + neutralize host
 //    config so `stageAndCommit`'s commits work on any machine, gitconfig or not) ──────────────
-process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_SYSTEM = process.platform === "win32" ? "NUL" : "/dev/null";
+process.env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_AUTHOR_NAME = "Porcelain Suite";
 process.env.GIT_AUTHOR_EMAIL = "porcelain@example.invalid";
@@ -500,7 +500,7 @@ test("provisionBoardWorktree: a FOREIGN repo's board worktree at .superbee is re
     assert.match(err.message, new RegExp(topo.a.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.ok(err.help, "carries a fixing command");
     if (process.platform === "win32") {
-      assert.match(err.help, /^powershell -NoProfile -Command "Move-Item -Force -ErrorAction Stop /);
+      assert.match(err.help, /^powershell -NoProfile -Command "Rename-Item -Force -ErrorAction Stop /);
     } else {
       assert.ok(err.help.startsWith(`mv '${topo.a.board}' '${topo.a.board}.bak'`));
     }

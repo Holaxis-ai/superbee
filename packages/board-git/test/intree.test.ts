@@ -44,8 +44,8 @@ import {
 } from "../src/index.js";
 
 // Hermetic ambient env (the porcelain inherits process.env; neutralize host git config).
-process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_SYSTEM = process.platform === "win32" ? "NUL" : "/dev/null";
+process.env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
 
 /** A plain temp-dir store (the CLI's credentials discipline is not under test here). */
 function tempStore(topo: TwoCloneTopology): SyncStore {
