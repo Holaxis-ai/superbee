@@ -140,6 +140,8 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("skillUninstall", "leading-required", 0),
   selector("setup", "leading-navigation", 0),
   selector("setupMigrateState", "leading-navigation", 0),
+  selector("setupHardenState", "leading-navigation", 0),
+  selector("setupQuarantineState", "leading-navigation", 0),
 ] as const satisfies readonly BehaviorAssignment[];
 
 /** Exactly one built subprocess owner for every real key above. */

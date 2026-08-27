@@ -82,7 +82,7 @@ test("saveApiKeyForOrigin: the on-disk file keeps 0600 perms (same atomic write 
   try {
     await saveApiKeyForOrigin("https://worker.example", "k", home);
     const stat = await import("node:fs/promises").then((fs) => fs.stat(credentialsPath(home)));
-    assert.equal(stat.mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(stat.mode & 0o777, 0o600);
     // Sanity: the file is real, valid JSON, and the key value is present in it.
     const raw = await readFile(credentialsPath(home), "utf8");
     assert.match(raw, /"k"/);

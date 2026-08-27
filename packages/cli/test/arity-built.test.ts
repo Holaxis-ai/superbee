@@ -119,6 +119,8 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     skillUninstall: simple(CLI_LEAVES.skillUninstall, ["skill", "uninstall"], [], ["--scope", "project"]),
     setup: simple(CLI_LEAVES.setup, ["setup"], [], ["--host", "claude-desktop", "--json"]),
     setupMigrateState: simple(CLI_LEAVES.setupMigrateState, ["setup", "migrate-state"], []),
+    setupHardenState: simple(CLI_LEAVES.setupHardenState, ["setup", "harden-state"], []),
+    setupQuarantineState: simple(CLI_LEAVES.setupQuarantineState, ["setup", "quarantine-state"], []),
   };
 }
 

@@ -1,4 +1,4 @@
-// Credential persistence: ~/.superbee-state/okf-config.json (file 0600, dir 0700).
+// Credential persistence inside the platform-native private user-state root.
 //
 // Token VALUES are never logged. The home directory is injectable so unit tests can point at a temp
 // dir. The on-disk field SHAPE stays compatible with holaxis-agentstate `packages/cli/src/credentials.ts`

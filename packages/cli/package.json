@@ -44,9 +44,9 @@
     "build:npm-package": "node build.mjs npm-package",
     "typecheck": "tsc --noEmit",
     "pretest": "node build.mjs local-dev",
-    "test:host-class": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts",
-    "test": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
-    "mutation": "ASLITE_NO_UPDATE_CHECK=1 AGENTSTATE_LITE_NO_AUTOPULL=1 GIT_AUTHOR_NAME=test-suite GIT_AUTHOR_EMAIL=test-suite@example.invalid GIT_COMMITTER_NAME=test-suite GIT_COMMITTER_EMAIL=test-suite@example.invalid stryker run",
+    "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts",
+    "test": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
+    "mutation": "node scripts/run-test-command.mjs npm-exec stryker run",
     "gen:skill": "node scripts/gen-skill.mjs",
     "check:skill": "node scripts/gen-skill.mjs --check",
     "prepublishOnly": "node -e \"console.error('superbee is released by .github/workflows/release.yml (npm stage publish); do not run npm publish here'); process.exit(1)\""

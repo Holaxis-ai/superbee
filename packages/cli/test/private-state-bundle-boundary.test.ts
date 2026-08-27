@@ -35,6 +35,7 @@ import {
   type PrivateStateRelation,
 } from "../src/private-state-bundle-boundary.js";
 import { boundaryFixture, runCli, type BoundaryFixture } from "./support/private-state-fixtures.js";
+import { isolatedUserEnv } from "./support/user-env.js";
 import { syncExportsRoot } from "../src/cursor.js";
 import {
   canonicalUserStateDir,
@@ -63,6 +64,8 @@ function run(command: string, args: string[], cwd: string, env: NodeJS.ProcessEn
     encoding: "utf8",
   });
 }
+
+const directoryLinkType: "dir" | "junction" = process.platform === "win32" ? "junction" : "dir";
 
 function git(cwd: string, args: string[]): ReturnType<typeof spawnSync> {
   const result = run("git", args, cwd);
@@ -197,9 +200,10 @@ test("truth table — a symlinked ancestor cannot alias across the boundary", ()
     mkdirSync(bundle, { recursive: true });
     mkdirSync(home, { recursive: true });
     const state = canonicalUserStateDir(home);
+    mkdirSync(path.dirname(state), { recursive: true });
 
     // The state root IS the bundle, reached under a different name.
-    symlinkSync(bundle, state, "dir");
+    symlinkSync(bundle, state, directoryLinkType);
     assert.equal(relateToPrivateState(bundle, state), "identical");
     assert.equal(relateToPrivateState(path.join(bundle, "sub"), state), "bundle-inside-state");
     assert.equal(relateToPrivateState(path.dirname(bundle), state), "bundle-contains-state");
@@ -209,7 +213,7 @@ test("truth table — a symlinked ancestor cannot alias across the boundary", ()
     // cannot quietly become a bundle later.
     const future = path.join(root, "future-project", ".superbee");
     mkdirSync(path.dirname(future), { recursive: true });
-    symlinkSync(future, state, "dir");
+    symlinkSync(future, state, directoryLinkType);
     assert.equal(relateToPrivateState(future, state), "identical");
     assert.equal(existsSync(future), false);
   } finally {
@@ -220,6 +224,7 @@ test("truth table — a symlinked ancestor cannot alias across the boundary", ()
 test("truth table — a REGULAR FILE at the state-root path classifies, never raises RUNTIME", () => {
   withHome((home, root) => {
     const state = canonicalUserStateDir(home);
+    mkdirSync(path.dirname(state), { recursive: true });
     writeFileSync(state, "not a directory\n");
 
     assert.equal(relateToPrivateState(state, state), "identical");
@@ -248,7 +253,9 @@ test("every guarded root is enforced unconditionally, canonical first and dedupl
     const roots = guardedStateRoots(home);
     assert.deepEqual(
       roots,
-      [canonicalUserStateDir(home), legacyUserStateDir(home), ...supersededUserStateDirs(home)],
+      process.platform === "win32"
+        ? [canonicalUserStateDir(home), ...supersededUserStateDirs(home), legacyUserStateDir(home)]
+        : [canonicalUserStateDir(home), legacyUserStateDir(home), ...supersededUserStateDirs(home)],
       "canonical first, then every root that is still a migration source",
     );
     assert.equal(new Set(roots).size, roots.length, "the set is deduplicated");
@@ -279,7 +286,8 @@ test("a refusal that breaks a working configuration carries a move-out exit node
       () => assertBundleOutsidePrivateState(home, home),
       (error: unknown) => {
         const help = (error as { details?: unknown; help?: string }).help ?? "";
-        assert.match(help, /mkdir -p/, "the user has to be told how to move the bundle out");
+        if (process.platform === "win32") assert.match(help, /choose a project directory outside private state/);
+        else assert.match(help, /mkdir -p/, "the user has to be told how to move the bundle out");
         assert.match(help, /init --create-only --dir \.superbee/);
         return true;
       },
@@ -293,7 +301,7 @@ test("built init refuses the private state root before creating bundle bytes", (
   withHome((home, root) => {
     const stateRoot = canonicalUserStateDir(home);
     for (const extra of [[], ["--create-only"]]) {
-      const result = run(process.execPath, [CLI, "init", ...extra, "--dir", stateRoot, "--json"], root, { HOME: home });
+      const result = run(process.execPath, [CLI, "init", ...extra, "--dir", stateRoot, "--json"], root, isolatedUserEnv(home));
       assert.equal(result.status, 5, result.stderr || result.stdout);
       assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
       assert.equal(existsSync(stateRoot), false);
@@ -305,7 +313,7 @@ test("built init refuses a missing portable case variant before creating bundle 
   withHome((home, root) => {
     const caseVariant = caseVariantOf(canonicalUserStateDir(home));
     for (const extra of [[], ["--create-only"]]) {
-      const result = run(process.execPath, [CLI, "init", ...extra, "--dir", caseVariant, "--json"], root, { HOME: home });
+      const result = run(process.execPath, [CLI, "init", ...extra, "--dir", caseVariant, "--json"], root, isolatedUserEnv(home));
       assert.equal(result.status, 5, result.stderr || result.stdout);
       assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
       assert.equal(existsSync(caseVariant), false);
@@ -328,7 +336,7 @@ test("a different spelling of an EXISTING state root is refused (the shipped cas
       // strings, and allowed it. Only inode identity closes it.
       assert.equal(relateToPrivateState(variant, stateRoot), "identical");
       for (const extra of [[], ["--create-only"]]) {
-        const result = run(process.execPath, [CLI, "init", ...extra, "--dir", variant, "--json"], root, { HOME: home });
+        const result = run(process.execPath, [CLI, "init", ...extra, "--dir", variant, "--json"], root, isolatedUserEnv(home));
         assert.equal(result.status, 5, result.stderr || result.stdout);
         assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
       }
@@ -340,9 +348,9 @@ test("a different spelling of an EXISTING state root is refused (the shipped cas
 
     // Deterministic on every volume: a second NAME that resolves to the existing root is refused.
     const alias = path.join(root, "alias");
-    symlinkSync(stateRoot, alias, "dir");
+    symlinkSync(stateRoot, alias, directoryLinkType);
     assert.equal(relateToPrivateState(alias, stateRoot), "identical");
-    const aliased = run(process.execPath, [CLI, "init", "--dir", alias, "--json"], root, { HOME: home });
+    const aliased = run(process.execPath, [CLI, "init", "--dir", alias, "--json"], root, isolatedUserEnv(home));
     assert.equal(aliased.status, 5, aliased.stderr || aliased.stdout);
     assert.match(aliased.stdout, /private user-state directory cannot be used as an OKF bundle/);
   } finally {
@@ -356,7 +364,7 @@ test("explicit bundle selection preserves the path-free private-state conflict",
     const home = path.join(root, "home");
     mkdirSync(home, { recursive: true });
     const stateRoot = await ensureUserStateRoot(home);
-    const result = run(process.execPath, [CLI, "bundle", "locate", "--dir", stateRoot, "--json"], root, { HOME: home });
+    const result = run(process.execPath, [CLI, "bundle", "locate", "--dir", stateRoot, "--json"], root, isolatedUserEnv(home));
     assert.equal(result.status, 5, result.stderr || result.stdout);
     assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
     assert.doesNotMatch(result.stdout, /NOT_FOUND|init --create-only/);
@@ -380,12 +388,13 @@ test("sync publication refuses a physical alias of private state", () => {
     git(root, ["init", "--bare", remote]);
     git(project, ["remote", "add", "origin", remote]);
 
-    const initialized = run(process.execPath, [CLI, "init", "--create-only", "--dir", ".superbee", "--json"], project, { HOME: home });
+    const initialized = run(process.execPath, [CLI, "init", "--create-only", "--dir", ".superbee", "--json"], project, isolatedUserEnv(home));
     assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
     git(project, ["commit", "--allow-empty", "-m", "initialize project"]);
 
-    symlinkSync(path.join(project, ".superbee"), canonicalUserStateDir(home), "dir");
-    const result = run(process.execPath, [CLI, "sync", "--establish", "--json"], project, { HOME: home });
+    mkdirSync(path.dirname(canonicalUserStateDir(home)), { recursive: true });
+    symlinkSync(path.join(project, ".superbee"), canonicalUserStateDir(home), directoryLinkType);
+    const result = run(process.execPath, [CLI, "sync", "--establish", "--json"], project, isolatedUserEnv(home));
     assert.equal(result.status, 5, result.stderr || result.stdout);
     assert.match(result.stdout, /private user-state directory cannot be used as an OKF bundle/);
     const board = run("git", ["--git-dir", remote, "show-ref", "--verify", "refs/heads/board"], root);
@@ -670,7 +679,9 @@ test("every byte-channel crossing point refuses a private-state path", async (t)
 
     // No refused destination left residue, and no refused source positional reached the bundle.
     assert.equal(readFileSync(path.join(fixture.stateRoot, USER_STATE_MARKER_FILE_NAME), "utf8"), USER_STATE_MARKER_BYTES);
-    assert.equal(statSync(path.join(fixture.stateRoot, USER_STATE_MARKER_FILE_NAME)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(path.join(fixture.stateRoot, USER_STATE_MARKER_FILE_NAME)).mode & 0o777, 0o600);
+    }
     assert.equal(existsSync(path.join(fixture.stateRoot, "deep")), false, "a refused --out created a parent directory");
     for (const entry of readdirSync(fixture.stateRoot)) {
       assert.doesNotMatch(entry, /\.md$/, `a refused --out destination created ${entry}`);
@@ -1078,7 +1089,7 @@ test("the state root carries a total .gitignore, added opportunistically to olde
     const stateRoot = await ensureUserStateRoot(home);
     const ignore = path.join(stateRoot, ".gitignore");
     assert.equal(readFileSync(ignore, "utf8"), "*\n");
-    assert.equal(statSync(ignore).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal(statSync(ignore).mode & 0o777, 0o600);
 
     // A root created by an earlier version has no .gitignore; the next ensure republishes it,
     // strictly after the ownership assertion (so a foreign root never receives product bytes).

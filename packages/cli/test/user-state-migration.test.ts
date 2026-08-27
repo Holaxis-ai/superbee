@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -20,8 +20,11 @@ import {
   userStateDirForPackage,
 } from "../src/user-state.js";
 import { inspectUserStateMigration, migrateUserState, migrationSourceRoots } from "../src/user-state-migration.js";
+import { isolatedUserEnv } from "./support/user-env.js";
 
 const BUILT_CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+const POSIX_MODE_AUTHORITY = process.platform !== "win32";
+const directoryLinkType: "dir" | "junction" = process.platform === "win32" ? "junction" : "dir";
 
 async function home(): Promise<string> {
   return mkdtemp(join(tmpdir(), "superbee-user-state-"));
@@ -45,7 +48,7 @@ async function runBuiltCli(
   args: string[],
   options: { home: string; cwd: string },
 ): Promise<{ stdout: string; stderr: string }> {
-  const env = { ...process.env, HOME: options.home };
+  const env = isolatedUserEnv(options.home);
   delete env.SUPERBEE_NO_UPDATE_CHECK;
   delete env.AGENTSTATE_LITE_NO_UPDATE_CHECK;
   return new Promise((resolveRun, reject) => {
@@ -81,8 +84,10 @@ test("ordinary Superbee state is canonical-only and initializes an exact private
     assert.equal((await loadCredentials(root))?.remotes?.["https://new.example"]?.api_key, "new");
     assert.equal((await loadCredentials(root))?.remotes?.["https://old.example"], undefined);
     assert.equal(await readUserStateMarker(root), USER_STATE_MARKER_BYTES);
-    assert.equal((await stat(canonicalUserStateDir(root))).mode & 0o777, 0o700);
-    assert.equal((await stat(join(canonicalUserStateDir(root), "state.json"))).mode & 0o777, 0o600);
+    if (POSIX_MODE_AUTHORITY) {
+      assert.equal((await stat(canonicalUserStateDir(root))).mode & 0o777, 0o700);
+      assert.equal((await stat(join(canonicalUserStateDir(root), "state.json"))).mode & 0o777, 0o600);
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -143,9 +148,15 @@ test("migration draws from an ORDERED source list, so every superseded root is c
   const root = await home();
   try {
     const sources = migrationSourceRoots(root);
-    assert.deepEqual(sources, [legacyUserStateDir(root), ...supersededUserStateDirs(root)]);
+    assert.deepEqual(
+      sources,
+      process.platform === "win32"
+        ? [...supersededUserStateDirs(root), legacyUserStateDir(root)]
+        : [legacyUserStateDir(root), ...supersededUserStateDirs(root)],
+    );
     assert.ok(sources.length > 1, "a superseded canonical root is still a migration source");
-    const [bridge, superseded] = sources as [string, string];
+    const winningSource = sources[0]!;
+    const authorizationSource = sources.at(-1)!;
 
     const catalog = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
     const winning = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "from-bridge" } } })}\n`;
@@ -163,21 +174,27 @@ test("migration draws from an ORDERED source list, so every superseded root is c
     });
     const authorizationName = `${createHash("sha256").update(authorization).digest("hex")}.json`;
 
-    // The released bridge root supplies the catalog and the WINNING credentials.
-    await mkdir(bridge, { recursive: true, mode: 0o700 });
-    await chmod(bridge, 0o700);
-    await writeLegacy(join(bridge, "catalog.json"), catalog);
-    await writeLegacy(join(bridge, "okf-config.json"), winning);
+    // The first source supplies the catalog and WINNING credentials.
+    await mkdir(winningSource, { recursive: true, mode: 0o700 });
+    await chmod(winningSource, 0o700);
+    await writeLegacy(join(winningSource, "catalog.json"), catalog);
+    await writeLegacy(join(winningSource, "okf-config.json"), winning);
+    if (process.platform === "win32" && winningSource !== legacyUserStateDir(root)) {
+      await writeLegacy(join(winningSource, "state.json"), USER_STATE_MARKER_BYTES);
+    }
 
     // The superseded canonical root — which never shipped, but a tester on this branch may have
     // one — supplies a View authorization and a LOSING copy of the same credential record.
-    const supersededAuthorizations = join(superseded, "view-authorizations");
+    const supersededAuthorizations = join(authorizationSource, "view-authorizations");
     await mkdir(supersededAuthorizations, { recursive: true, mode: 0o700 });
-    await chmod(dirname(superseded), 0o700);
-    await chmod(superseded, 0o700);
+    await chmod(dirname(authorizationSource), 0o700);
+    await chmod(authorizationSource, 0o700);
     await chmod(supersededAuthorizations, 0o700);
-    await writeLegacy(join(superseded, "okf-config.json"), losing);
+    await writeLegacy(join(authorizationSource, "okf-config.json"), losing);
     await writeLegacy(join(supersededAuthorizations, authorizationName), `${authorization}\n`);
+    if (process.platform === "win32" && authorizationSource !== legacyUserStateDir(root)) {
+      await writeLegacy(join(authorizationSource, "state.json"), USER_STATE_MARKER_BYTES);
+    }
 
     const inspection = await inspectUserStateMigration(root);
     assert.equal(inspection.state, "migratable");
@@ -203,12 +220,12 @@ test("migration draws from an ORDERED source list, so every superseded root is c
     // promised total .gitignore lands after the marker and the journal removal, never during the
     // exact-topology staging that would have seen it as foreign stock.
     assert.equal(await readFile(join(canonical, ".gitignore"), "utf8"), "*\n");
-    assert.equal((await stat(join(canonical, ".gitignore"))).mode & 0o777, 0o600);
+    if (POSIX_MODE_AUTHORITY) assert.equal((await stat(join(canonical, ".gitignore"))).mode & 0o777, 0o600);
     assert.equal(await absent(join(canonical, ".migration.json")), true, "the journal is gone");
 
     // Every source is PRESERVED, never moved or deleted.
-    assert.equal(await absent(join(bridge, "catalog.json")), false);
-    assert.equal(await absent(join(superseded, "okf-config.json")), false);
+    assert.equal(await absent(join(winningSource, "catalog.json")), false);
+    assert.equal(await absent(join(authorizationSource, "okf-config.json")), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -276,8 +293,10 @@ test("one-shot migration copies only validated durable records, preserves legacy
     assert.equal(await readFile(join(canonical, "state.json"), "utf8"), USER_STATE_MARKER_BYTES);
     assert.equal(await absent(join(canonical, "sync")), true);
     assert.equal(await absent(join(canonical, "ui-url")), true);
-    assert.equal((await stat(join(canonical, "catalog.json"))).mode & 0o777, 0o600);
-    assert.equal((await stat(join(canonical, "view-authorizations"))).mode & 0o777, 0o700);
+    if (POSIX_MODE_AUTHORITY) {
+      assert.equal((await stat(join(canonical, "catalog.json"))).mode & 0o777, 0o600);
+      assert.equal((await stat(join(canonical, "view-authorizations"))).mode & 0o777, 0o700);
+    }
 
     assert.equal(await readFile(join(legacy, "catalog.json"), "utf8"), before.catalog);
     assert.equal(await readFile(join(legacy, "okf-config.json"), "utf8"), before.credentials);
@@ -399,8 +418,8 @@ test("migration rejects a symlinked CANONICAL root, non-regular legacy records, 
   try {
     const foreign = join(linked, "foreign");
     await mkdir(foreign, { mode: 0o700 });
-    await mkdir(join(linked, ".config"), { mode: 0o700 });
-    await symlink(foreign, canonicalUserStateDir(linked), "dir");
+    await mkdir(dirname(canonicalUserStateDir(linked)), { recursive: true, mode: 0o700 });
+    await symlink(foreign, canonicalUserStateDir(linked), directoryLinkType);
     assert.equal((await inspectUserStateMigration(linked)).state, "blocked");
     await assert.rejects(() => migrateUserState(linked), (error: unknown) => error instanceof CliError && error.code === "CONFLICT");
     assert.equal((await lstat(canonicalUserStateDir(linked))).isSymbolicLink(), true);
@@ -408,9 +427,12 @@ test("migration rejects a symlinked CANONICAL root, non-regular legacy records, 
 
     const fifoLegacy = legacyUserStateDir(fifoHome);
     await mkdir(fifoLegacy, { mode: 0o700 });
-    await new Promise<void>((resolve, reject) => {
-      execFile("mkfifo", [join(fifoLegacy, "catalog.json")], (error) => error ? reject(error) : resolve());
-    });
+    if (process.platform === "win32") await mkdir(join(fifoLegacy, "catalog.json"));
+    else {
+      await new Promise<void>((resolve, reject) => {
+        execFile("mkfifo", [join(fifoLegacy, "catalog.json")], (error) => error ? reject(error) : resolve());
+      });
+    }
     const started = Date.now();
     assert.equal((await inspectUserStateMigration(fifoHome)).state, "blocked");
     assert.ok(Date.now() - started < 1_000, "FIFO inspection is bounded and nonblocking");
@@ -432,13 +454,15 @@ test("migration rejects a symlinked CANONICAL root, non-regular legacy records, 
   }
 });
 
-/** Run one emitted shell remediation EXACTLY as printed, under a throwaway $HOME. */
-async function runEmittedShell(command: string, home: string): Promise<number> {
-  return new Promise((resolveRun) => {
-    execFile("/bin/sh", ["-c", command], { env: { ...process.env, HOME: home } }, (error) => {
-      resolveRun(error ? (error as NodeJS.ErrnoException & { code?: number }).code as number ?? 1 : 0);
-    });
-  });
+/** Execute the one emitted product-owned remediation without a platform shell. */
+async function runEmittedCommand(command: string, home: string): Promise<number> {
+  assert.equal(command, "superbee setup quarantine-state");
+  try {
+    await runBuiltCli(["setup", "quarantine-state", "--json"], { home, cwd: home });
+    return 0;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException & { code?: number }).code as number ?? 1;
+  }
 }
 
 /**
@@ -457,34 +481,39 @@ test("the emitted quarantine command executes and clears the block even against 
       ["pre-existing directory", collidingDir, "dir"],
     ] as const) {
       const canonical = canonicalUserStateDir(root);
-      await mkdir(canonical, { mode: 0o700 });
+      await mkdir(canonical, { recursive: true, mode: 0o700 });
       await writeLegacy(join(canonical, "state.json"), "{\"product\":\"foreign\"}\n");
       const collision = `${canonical}.unrecognized`;
       if (collide === "file") await writeFile(collision, "PRIOR EVIDENCE\n", { mode: 0o600 });
       else await mkdir(collision, { mode: 0o700 });
       assert.equal(await inspectCanonicalUserStateRoot(root), "conflict", label);
 
-      assert.equal(await runEmittedShell(USER_STATE_QUARANTINE_COMMAND, root), 0, label);
+      assert.equal(await runEmittedCommand(USER_STATE_QUARANTINE_COMMAND, root), 0, label);
       assert.equal(await inspectCanonicalUserStateRoot(root), "absent", `${label}: the block is cleared`);
       if (collide === "file") {
         assert.equal(await readFile(collision, "utf8"), "PRIOR EVIDENCE\n", `${label}: prior evidence survives`);
       }
-      const quarantined = (await readdir(root)).filter((entry) => entry.startsWith(".superbee-state.unrecognized."));
+      const canonicalParent = dirname(canonical);
+      const canonicalBase = basename(canonical);
+      const quarantined = (await readdir(canonicalParent)).filter((entry) => entry.startsWith(`${canonicalBase}.unrecognized.`));
       assert.equal(quarantined.length, 1, `${label}: exactly one fresh quarantine destination`);
-      assert.deepEqual(await readdir(join(root, quarantined[0]!)), [".superbee-state"], label);
-      assert.equal((await stat(join(root, quarantined[0]!))).mode & 0o777, 0o700, `${label}: private mode`);
+      assert.deepEqual(await readdir(join(canonicalParent, quarantined[0]!)), [canonicalBase], label);
+      if (POSIX_MODE_AUTHORITY) {
+        assert.equal((await stat(join(canonicalParent, quarantined[0]!))).mode & 0o777, 0o700, `${label}: private mode`);
+      }
     }
 
     // Twice in a row: the second run must not collide with the first run's own output.
     for (const round of ["first", "second"]) {
       const canonical = canonicalUserStateDir(twice);
-      await mkdir(canonical, { mode: 0o700 });
+      await mkdir(canonical, { recursive: true, mode: 0o700 });
       await writeLegacy(join(canonical, "state.json"), `{"round":"${round}"}\n`);
-      assert.equal(await runEmittedShell(USER_STATE_QUARANTINE_COMMAND, twice), 0, round);
+      assert.equal(await runEmittedCommand(USER_STATE_QUARANTINE_COMMAND, twice), 0, round);
       assert.equal(await inspectCanonicalUserStateRoot(twice), "absent", round);
     }
     assert.equal(
-      (await readdir(twice)).filter((entry) => entry.startsWith(".superbee-state.unrecognized.")).length,
+      (await readdir(dirname(canonicalUserStateDir(twice))))
+        .filter((entry) => entry.startsWith(`${basename(canonicalUserStateDir(twice))}.unrecognized.`)).length,
       2,
       "each run gets its own destination — no evidence is overwritten",
     );

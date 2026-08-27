@@ -138,16 +138,22 @@ test("cursor: writing a shape-invalid cursor is a programmer error (throws), nev
 
 // ── atomic write + permissions ────────────────────────────────────────────────
 
-test("permissions: state file 0600; sync dir and canonical state root both 0700; no temp files left behind", async () => {
+test("private state has platform-native containment and no temporary residue", async () => {
   const home = await tempHome();
   try {
     const key = bundleKey({ remoteUrl: "https://github.com/org/repo", subpath: BUNDLE_DIR, checkoutRoot: "/w/clone-a/.agentstate-lite" });
     await writeCursor(key, { tier: "git", token: "a".repeat(40) }, home);
 
     const fileMode = (await stat(syncStatePath(key, home))).mode & 0o777;
-    assert.equal(fileMode, 0o600, "state file is 0600");
-    assert.equal((await stat(syncStateDir(home))).mode & 0o777, 0o700, "sync dir is 0700");
-    assert.equal((await stat(credentialsDir(home))).mode & 0o777, 0o700, "canonical state root is 0700");
+    if (process.platform !== "win32") {
+      assert.equal(fileMode, 0o600, "state file is 0600");
+      assert.equal((await stat(syncStateDir(home))).mode & 0o777, 0o700, "sync dir is 0700");
+      assert.equal((await stat(credentialsDir(home))).mode & 0o777, 0o700, "canonical state root is 0700");
+    } else {
+      assert.equal((await stat(syncStatePath(key, home))).isFile(), true, "state record remains a regular file");
+      assert.equal((await stat(syncStateDir(home))).isDirectory(), true, "sync container remains a directory");
+      assert.equal((await stat(credentialsDir(home))).isDirectory(), true, "state root remains a directory");
+    }
 
     // The O_EXCL temp is renamed over the target — a completed write leaves no `.tmp` strays.
     const entries = await readdir(syncStateDir(home));

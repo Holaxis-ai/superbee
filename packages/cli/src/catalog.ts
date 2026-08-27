@@ -7,7 +7,7 @@ import { resolveLocalBundleTarget } from "./bundle.js";
 import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
-import { ensureUserStateRoot, readUserStateFile, writeUserStateFileAtomic0600 } from "./user-state.js";
+import { ensureUserStateRoot, readUserStateFile, resolveUserStatePolicy, writeUserStateFileAtomic0600 } from "./user-state.js";
 
 export const CATALOG_FILE_NAME = "catalog.json";
 export const CATALOG_LOCK_FILE_NAME = "catalog.lock";
@@ -232,7 +232,7 @@ async function acquireCatalogLock(options: CatalogOptions): Promise<() => Promis
       const handle = await open(lockPath, "wx", LOCK_MODE);
       try {
         await handle.writeFile(JSON.stringify({ pid, created_at_ms: now(), token }) + "\n");
-        await handle.chmod(LOCK_MODE);
+        if (resolveUserStatePolicy(home).containment === "posix-owner-mode") await handle.chmod(LOCK_MODE);
         await handle.sync();
       } catch (err) {
         await handle.close().catch(() => {});

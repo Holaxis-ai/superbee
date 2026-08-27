@@ -25,12 +25,16 @@ import {
   canonicalUserStateDir,
   ensureStateRootGitignore,
   homeRelativeDisplay,
+  hasExactUserStateMarker,
   inspectCanonicalUserStateRoot,
   inspectCanonicalUserStateRootDetail,
   LEGACY_BRIDGE_PACKAGE_NAME,
   legacyUserStateDir,
   readPrivateStateFile,
+  resolveUserStatePolicy,
   supersededUserStateDirs,
+  type UserStateInput,
+  userStatePathDisplay,
   USER_STATE_HARDEN_COMMAND,
   USER_STATE_MARKER_BYTES,
   USER_STATE_MARKER_FILE_NAME,
@@ -116,36 +120,38 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
 }
 
-async function assertPrivateDirectory(directory: string): Promise<void> {
+async function assertPrivateDirectory(directory: string, input: UserStateInput): Promise<void> {
   const status = await lstat(directory);
-  const currentUid = process.getuid?.();
+  const policy = resolveUserStatePolicy(input);
+  const currentUid = policy.containment === "posix-owner-mode" ? process.getuid?.() : undefined;
   if (
     status.isSymbolicLink()
     || !status.isDirectory()
-    || (status.mode & 0o077) !== 0
+    || (policy.containment === "posix-owner-mode" && (status.mode & 0o077) !== 0)
     || (currentUid !== undefined && status.uid !== currentUid)
   ) {
     throw new Error("legacy private state directory is unsafe");
   }
 }
 
-async function assertPrivateRegularFile(file: string): Promise<void> {
+async function assertPrivateRegularFile(file: string, input: UserStateInput): Promise<void> {
   const status = await lstat(file);
-  const currentUid = process.getuid?.();
+  const policy = resolveUserStatePolicy(input);
+  const currentUid = policy.containment === "posix-owner-mode" ? process.getuid?.() : undefined;
   if (
     status.isSymbolicLink()
     || !status.isFile()
-    || (status.mode & 0o077) !== 0
+    || (policy.containment === "posix-owner-mode" && (status.mode & 0o077) !== 0)
     || (currentUid !== undefined && status.uid !== currentUid)
   ) {
     throw new Error("private state file is unsafe");
   }
 }
 
-async function optionalRecord(root: string, relative: string, maxBytes: number, validate: (raw: string) => void): Promise<MigrationRecord | null> {
+async function optionalRecord(root: string, relative: string, maxBytes: number, validate: (raw: string) => void, input: UserStateInput): Promise<MigrationRecord | null> {
   const file = join(root, relative);
   try {
-    const bytes = await readPrivateStateFile(file, maxBytes);
+    const bytes = await readPrivateStateFile(file, maxBytes, undefined, input);
     validate(bytes);
     return { relative, bytes, sha256: digest(bytes) };
   } catch (error) {
@@ -154,15 +160,15 @@ async function optionalRecord(root: string, relative: string, maxBytes: number, 
   }
 }
 
-async function preflightDurableRecords(root: string): Promise<MigrationRecord[]> {
+async function preflightDurableRecords(root: string, input: UserStateInput): Promise<MigrationRecord[]> {
   const records: MigrationRecord[] = [];
   const catalog = await optionalRecord(root, CATALOG_FILE_NAME, MAX_CATALOG_BYTES, (raw) => {
     parseCatalog(raw, "legacy catalog");
-  });
+  }, input);
   if (catalog) {
     records.push(catalog);
   }
-  const credentials = await optionalRecord(root, CRED_FILE_NAME, MAX_CREDENTIAL_BYTES, assertMigratableCredentials);
+  const credentials = await optionalRecord(root, CRED_FILE_NAME, MAX_CREDENTIAL_BYTES, assertMigratableCredentials, input);
   if (credentials) {
     records.push(credentials);
   }
@@ -170,7 +176,7 @@ async function preflightDurableRecords(root: string): Promise<MigrationRecord[]>
   const authorizationDir = join(root, VIEW_AUTHORIZATION_DIR_NAME);
   let entries;
   try {
-    await assertPrivateDirectory(authorizationDir);
+    await assertPrivateDirectory(authorizationDir, input);
     entries = await readdir(authorizationDir, { withFileTypes: true });
   } catch (error) {
     if (errno(error) === "ENOENT") return records;
@@ -180,7 +186,7 @@ async function preflightDurableRecords(root: string): Promise<MigrationRecord[]>
   for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
     if (!entry.isFile() || entry.isSymbolicLink()) throw new Error("legacy View authorization store contains a non-regular entry");
     const relative = `${VIEW_AUTHORIZATION_DIR_NAME}/${entry.name}`;
-    const record = await optionalRecord(root, relative, MAX_AUTHORIZATION_BYTES, (raw) => assertMigratableViewAuthorization(entry.name, raw));
+    const record = await optionalRecord(root, relative, MAX_AUTHORIZATION_BYTES, (raw) => assertMigratableViewAuthorization(entry.name, raw), input);
     if (!record) throw new Error("legacy View authorization changed during inspection");
     records.push(record);
   }
@@ -194,8 +200,11 @@ async function preflightDurableRecords(root: string): Promise<MigrationRecord[]>
  * that supplies a given record wins, so precedence is a property of this list rather than of
  * directory-walk order.
  */
-export function migrationSourceRoots(home: string): string[] {
-  return [...new Set([legacyUserStateDir(home), ...supersededUserStateDirs(home)])];
+export function migrationSourceRoots(input: UserStateInput): string[] {
+  const policy = resolveUserStatePolicy(input);
+  return policy.platform === "win32"
+    ? [...new Set([...supersededUserStateDirs(input), legacyUserStateDir(input)])]
+    : [...new Set([legacyUserStateDir(input), ...supersededUserStateDirs(input)])];
 }
 
 /**
@@ -223,36 +232,55 @@ export class UnsafeMigrationSource extends Error {
  * closed. Returning `[]` here reported a live catalog, credential, and View-approval store as
  * "nothing to migrate".
  */
-async function preflightSourceRoot(root: string, display: string): Promise<MigrationRecord[]> {
+function sourceInspectionCommand(display: string, input: UserStateInput, detailed: boolean): string {
+  return resolveUserStatePolicy(input).platform === "win32"
+    ? "superbee setup"
+    : `ls -l${detailed ? "a" : "d"} ${display}`;
+}
+
+async function preflightSourceRoot(
+  root: string,
+  display: string,
+  input: UserStateInput,
+  requiresMarker: boolean,
+): Promise<MigrationRecord[]> {
   let status;
   try {
     status = await lstat(root);
   } catch (error) {
     if (errno(error) === "ENOENT") return [];
-    throw new UnsafeMigrationSource(display, "cannot be inspected", `ls -ld ${display}`);
+    throw new UnsafeMigrationSource(display, "cannot be inspected", sourceInspectionCommand(display, input, false));
   }
   if (status.isSymbolicLink() || !status.isDirectory()) {
-    throw new UnsafeMigrationSource(display, "exists but is not a real directory", `ls -ld ${display}`);
+    throw new UnsafeMigrationSource(display, "exists but is not a real directory", sourceInspectionCommand(display, input, false));
   }
   try {
-    const records = await preflightDurableRecords(root);
-    if (records.length > 0) await assertPrivateDirectory(root);
+    const records = await preflightDurableRecords(root, input);
+    if (requiresMarker && records.length > 0 && !(await hasExactUserStateMarker(root, input))) {
+      throw new Error("historical Superbee source has no exact ownership marker");
+    }
+    if (records.length > 0) await assertPrivateDirectory(root, input);
     return records;
   } catch (error) {
     if (error instanceof UnsafeMigrationSource) throw error;
     throw new UnsafeMigrationSource(
       display,
       "holds operational state that is not safe to migrate automatically",
-      `ls -la ${display}`,
+      sourceInspectionCommand(display, input, true),
     );
   }
 }
 
-async function preflightLegacy(home: string): Promise<MigrationRecord[]> {
+async function preflightLegacy(input: UserStateInput): Promise<MigrationRecord[]> {
+  const policy = resolveUserStatePolicy(input);
   const merged: MigrationRecord[] = [];
   const claimed = new Set<string>();
-  for (const root of migrationSourceRoots(home)) {
-    for (const record of await preflightSourceRoot(root, homeRelativeDisplay(home, root))) {
+  for (const root of migrationSourceRoots(input)) {
+    const display = policy.platform === "win32"
+      ? userStatePathDisplay(input, root)
+      : homeRelativeDisplay(policy.home, root);
+    const requiresMarker = policy.platform === "win32" && root !== legacyUserStateDir(input);
+    for (const record of await preflightSourceRoot(root, display, input, requiresMarker)) {
       if (claimed.has(record.relative)) continue;
       claimed.add(record.relative);
       merged.push(record);
@@ -268,11 +296,20 @@ function blockedSource(error: unknown): { reason: string; command: string } {
     : { reason: "legacy operational state is not safe to migrate automatically", command: "superbee setup" };
 }
 
-export async function inspectUserStateMigration(home: string = homedir()): Promise<UserStateMigrationInspection> {
+export async function inspectUserStateMigration(input: UserStateInput = homedir()): Promise<UserStateMigrationInspection> {
   if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
     return { state: "ready", reason: "the separately published Aslite bridge retains its legacy state root", records: 0 };
   }
-  const canonical = await inspectCanonicalUserStateRootDetail(home);
+  const policy = resolveUserStatePolicy(input);
+  if (policy.state === "blocked") {
+    return {
+      state: "blocked",
+      reason: policy.reason ?? "the Windows private-state location is unavailable",
+      records: 0,
+      command: "superbee setup",
+    };
+  }
+  const canonical = await inspectCanonicalUserStateRootDetail(input);
   if (canonical.state === "ready") {
     // Recognized and usable. Loose permissions are drift this product repairs on its next write,
     // so the exit node is the repair — never the quarantine a foreign root gets.
@@ -290,11 +327,11 @@ export async function inspectUserStateMigration(home: string = homedir()): Promi
       state: "blocked",
       reason: "the canonical Superbee user-state root is unrecognized",
       records: 0,
-      command: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup`,
+      command: USER_STATE_QUARANTINE_COMMAND,
     };
   }
   try {
-    const records = await preflightLegacy(home);
+    const records = await preflightLegacy(input);
     return records.length === 0
       ? { state: "fresh", reason: "no legacy operational state requires migration", records: 0 }
       : { state: "migratable", reason: "validated legacy operational state is ready to migrate", records: records.length };
@@ -303,15 +340,15 @@ export async function inspectUserStateMigration(home: string = homedir()): Promi
   }
 }
 
-async function ensureMigrationParent(home: string): Promise<void> {
-  const parent = dirname(canonicalUserStateDir(home));
+async function ensureMigrationParent(input: UserStateInput): Promise<void> {
+  const parent = dirname(canonicalUserStateDir(input));
   try {
-    await mkdir(parent, { mode: DIR_MODE });
+    await mkdir(parent, { recursive: true, mode: DIR_MODE });
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;
   }
-  // The canonical root's parent is $HOME itself; a symlinked home directory is the operator's own
-  // configuration. Only the ROOT must be a real, non-symlink directory.
+  // POSIX lands directly under $HOME; Windows lands under its absolute user-local known folder.
+  // Only the canonical leaf must be a real, non-symlink directory.
   if (!(await stat(parent)).isDirectory()) throw new Error("canonical state parent is unsafe");
 }
 
@@ -352,7 +389,8 @@ async function sweepOwnedStagingTemporaries(root: string, records: MigrationReco
   }
 }
 
-async function writeNoReplace(root: string, relative: string, bytes: string): Promise<void> {
+async function writeNoReplace(root: string, relative: string, bytes: string, input: UserStateInput): Promise<void> {
+  const policy = resolveUserStatePolicy(input);
   const destination = join(root, relative);
   const directory = dirname(destination);
   if (directory !== root) {
@@ -361,13 +399,13 @@ async function writeNoReplace(root: string, relative: string, bytes: string): Pr
     } catch (error) {
       if (errno(error) !== "EEXIST") throw error;
     }
-    await assertPrivateDirectory(directory);
+    await assertPrivateDirectory(directory, input);
   }
   const temporary = migrationTemporaryPath(root, relative);
   const handle = await open(temporary, "wx", FILE_MODE);
   try {
     await handle.writeFile(bytes);
-    await handle.chmod(FILE_MODE);
+    if (policy.containment === "posix-owner-mode") await handle.chmod(FILE_MODE);
     await handle.sync();
   } finally {
     await handle.close();
@@ -398,9 +436,9 @@ function journalBytes(records: MigrationRecord[]): string {
  * removes the journal here and the ready path re-ensures the `.gitignore`. Only a file that parses
  * as this module's own journal is touched — anything else at that name is left for inspection.
  */
-async function removeStaleJournal(root: string): Promise<void> {
+async function removeStaleJournal(root: string, input: UserStateInput): Promise<void> {
   const path = join(root, MIGRATION_JOURNAL_FILE_NAME);
-  const raw = await readPrivateStateFile(path, MAX_CATALOG_BYTES).catch(() => null);
+  const raw = await readPrivateStateFile(path, MAX_CATALOG_BYTES, undefined, input).catch(() => null);
   if (raw === null || parseJournal(raw) === null) return;
   await unlink(path).catch(() => {});
 }
@@ -421,18 +459,18 @@ function parseJournal(raw: string): MigrationJournal | null {
   }
 }
 
-async function destinationMatches(root: string, record: MigrationRecord): Promise<boolean> {
+async function destinationMatches(root: string, record: MigrationRecord, input: UserStateInput): Promise<boolean> {
   try {
-    await assertPrivateRegularFile(join(root, record.relative));
-    return digest(await readPrivateStateFile(join(root, record.relative), Buffer.byteLength(record.bytes))) === record.sha256;
+    await assertPrivateRegularFile(join(root, record.relative), input);
+    return digest(await readPrivateStateFile(join(root, record.relative), Buffer.byteLength(record.bytes), undefined, input)) === record.sha256;
   } catch (error) {
     if (errno(error) === "ENOENT") return false;
     throw error;
   }
 }
 
-async function assertExactStagingTopology(root: string, records: MigrationRecord[]): Promise<void> {
-  await assertPrivateDirectory(root);
+async function assertExactStagingTopology(root: string, records: MigrationRecord[], input: UserStateInput): Promise<void> {
+  await assertPrivateDirectory(root, input);
   const rootAllowed = new Set<string>([MIGRATION_JOURNAL_FILE_NAME]);
   if (records.some((record) => record.relative === CATALOG_FILE_NAME)) rootAllowed.add(CATALOG_FILE_NAME);
   if (records.some((record) => record.relative === CRED_FILE_NAME)) rootAllowed.add(CRED_FILE_NAME);
@@ -446,13 +484,13 @@ async function assertExactStagingTopology(root: string, records: MigrationRecord
   if (rootEntries.some((entry) => !rootAllowed.has(entry.name))) {
     throw new Error("canonical migration root contains an unexpected entry");
   }
-  await assertPrivateRegularFile(join(root, MIGRATION_JOURNAL_FILE_NAME));
+  await assertPrivateRegularFile(join(root, MIGRATION_JOURNAL_FILE_NAME), input);
   for (const record of records.filter((candidate) => !candidate.relative.includes("/"))) {
-    await assertPrivateRegularFile(join(root, record.relative));
+    await assertPrivateRegularFile(join(root, record.relative), input);
   }
   if (authorizationNames.size > 0) {
     const directory = join(root, VIEW_AUTHORIZATION_DIR_NAME);
-    await assertPrivateDirectory(directory);
+    await assertPrivateDirectory(directory, input);
     const entries = await readdir(directory, { withFileTypes: true });
     if (
       entries.length !== authorizationNames.size
@@ -460,12 +498,12 @@ async function assertExactStagingTopology(root: string, records: MigrationRecord
     ) {
       throw new Error("canonical View authorization staging contains an unexpected entry");
     }
-    for (const name of authorizationNames) await assertPrivateRegularFile(join(directory, name));
+    for (const name of authorizationNames) await assertPrivateRegularFile(join(directory, name), input);
   }
 }
 
-async function assertSourceUnchanged(home: string, expected: MigrationRecord[]): Promise<void> {
-  const current = await preflightLegacy(home);
+async function assertSourceUnchanged(input: UserStateInput, expected: MigrationRecord[]): Promise<void> {
+  const current = await preflightLegacy(input);
   if (journalBytes(current) !== journalBytes(expected)) throw new Error("legacy operational state changed during migration");
 }
 
@@ -488,24 +526,28 @@ function receipt(status: UserStateMigrationReceipt["status"], changed: boolean, 
 }
 
 export async function migrateUserState(
-  home: string = homedir(),
+  input: UserStateInput = homedir(),
   hooks: UserStateMigrationHooks = {},
 ): Promise<UserStateMigrationReceipt> {
   if (staticBuildIdentity().package.name === LEGACY_BRIDGE_PACKAGE_NAME) {
     throw new CliError("NOT_IMPLEMENTED", "state migration is available only from the Superbee package", { help: "npm install -g superbee" });
   }
-  const canonical = await inspectCanonicalUserStateRoot(home);
-  const root = canonicalUserStateDir(home);
+  const policy = resolveUserStatePolicy(input);
+  if (policy.state === "blocked") {
+    throw new CliError("CONFLICT", policy.reason ?? "the Windows private-state location is unavailable", { help: "superbee setup" });
+  }
+  const canonical = await inspectCanonicalUserStateRoot(input);
+  const root = canonicalUserStateDir(input);
   if (canonical === "ready") {
-    const current = await preflightDurableRecords(root).catch(() => {
+    const current = await preflightDurableRecords(root, input).catch(() => {
       throw new CliError("CONFLICT", "canonical Superbee user state contains an invalid durable record", { help: "superbee setup" });
     });
-    await removeStaleJournal(root);
-    await ensureStateRootGitignore(root);
+    await removeStaleJournal(root, input);
+    await ensureStateRootGitignore(root, input);
     return receipt("already_current", false, current);
   }
 
-  const records = await preflightLegacy(home).catch((error: unknown) => {
+  const records = await preflightLegacy(input).catch((error: unknown) => {
     const blocked = blockedSource(error);
     throw new CliError("CONFLICT", blocked.reason, { help: blocked.command });
   });
@@ -513,8 +555,8 @@ export async function migrateUserState(
   if (canonical === "conflict") {
     let raw: string;
     try {
-      await assertPrivateDirectory(root);
-      raw = await readPrivateStateFile(join(root, MIGRATION_JOURNAL_FILE_NAME), MAX_CATALOG_BYTES);
+      await assertPrivateDirectory(root, input);
+      raw = await readPrivateStateFile(join(root, MIGRATION_JOURNAL_FILE_NAME), MAX_CATALOG_BYTES, undefined, input);
     } catch {
       throw new CliError("CONFLICT", "canonical Superbee user state already exists but is not recognized", { help: "superbee setup" });
     }
@@ -523,14 +565,14 @@ export async function migrateUserState(
       throw new CliError("CONFLICT", "an incomplete or foreign canonical user-state root requires inspection", { help: "superbee setup" });
     }
   } else {
-    await ensureMigrationParent(home);
+    await ensureMigrationParent(input);
     try {
       await hooks.beforeCanonicalClaim?.();
       await mkdir(root, { mode: DIR_MODE });
     } catch (error) {
       throw new CliError("CONFLICT", "canonical Superbee user state appeared during migration", { help: "superbee setup" });
     }
-    await writeNoReplace(root, MIGRATION_JOURNAL_FILE_NAME, journalBytes(records));
+    await writeNoReplace(root, MIGRATION_JOURNAL_FILE_NAME, journalBytes(records), input);
   }
   // Ownership is durable from here: the journal validated as this migration's own staging, or this
   // process exclusively created the root and wrote it. That proof — not the file name — is what
@@ -538,33 +580,33 @@ export async function migrateUserState(
   await sweepOwnedStagingTemporaries(root, records);
 
   for (const record of records) {
-    if (await destinationMatches(root, record)) continue;
+    if (await destinationMatches(root, record, input)) continue;
     try {
       await hooks.beforeRecordPublish?.(record.relative);
-      await writeNoReplace(root, record.relative, record.bytes);
+      await writeNoReplace(root, record.relative, record.bytes, input);
     } catch {
       throw new CliError("CONFLICT", "canonical Superbee user state changed during migration", { help: "superbee setup" });
     }
   }
   try {
     await hooks.beforeMarkerPublish?.();
-    await assertExactStagingTopology(root, records);
-    await assertSourceUnchanged(home, records);
-    await writeNoReplace(root, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES);
+    await assertExactStagingTopology(root, records, input);
+    await assertSourceUnchanged(input, records);
+    await writeNoReplace(root, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES, input);
   } catch {
     // A real exit node, never a bare rerun of the command that just failed: the half-built
     // canonical root is what blocks the retry, and legacy state is preserved either way.
     throw new CliError(
       "CONFLICT",
       "user state changed during migration; legacy state remains preserved",
-      { help: `${USER_STATE_QUARANTINE_COMMAND} && superbee setup migrate-state` },
+      { help: USER_STATE_QUARANTINE_COMMAND },
     );
   }
   await hooks.afterMarkerPublish?.();
   await unlink(join(root, MIGRATION_JOURNAL_FILE_NAME)).catch(() => {});
-  await chmod(root, DIR_MODE);
+  if (policy.containment === "posix-owner-mode") await chmod(root, DIR_MODE);
   // The exact-topology assertions above are over, so the promised `*` .gitignore can finally be
   // published: a migrated root must be as unstageable as one created by `ensureUserStateRoot`.
-  await ensureStateRootGitignore(root);
+  await ensureStateRootGitignore(root, input);
   return receipt("migrated", true, records);
 }

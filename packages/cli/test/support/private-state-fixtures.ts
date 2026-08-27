@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { ensureUserStateRoot } from "../../src/user-state.js";
+import { isolatedUserEnv } from "./user-env.js";
 
 /** The BUILT CLI: every crossing-point row exercises the artifact users actually run. */
 export const BUILT_CLI = fileURLToPath(new URL("../../dist/superbee.mjs", import.meta.url));
@@ -26,15 +27,13 @@ export function runCli(
 ): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [BUILT_CLI, ...argv], {
     cwd: options.cwd,
-    env: {
-      ...process.env,
+    env: isolatedUserEnv(options.home, {
       ASLITE_NO_UPDATE_CHECK: "1",
       SUPERBEE_NO_UPDATE_CHECK: "1",
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
       SUPERBEE_NO_AUTOPULL: "1",
-      HOME: options.home,
       ...options.env,
-    },
+    }),
     encoding: "utf8",
   });
 }
@@ -58,15 +57,13 @@ export function runShell(
 ): SpawnSyncReturns<string> {
   return spawnSync("sh", ["-c", command], {
     cwd: options.cwd,
-    env: {
-      ...process.env,
+    env: isolatedUserEnv(options.home, {
       ASLITE_NO_UPDATE_CHECK: "1",
       SUPERBEE_NO_UPDATE_CHECK: "1",
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
       SUPERBEE_NO_AUTOPULL: "1",
-      HOME: options.home,
       PATH: `${options.bin}${path.delimiter}${process.env.PATH ?? ""}`,
-    },
+    }),
     encoding: "utf8",
   });
 }

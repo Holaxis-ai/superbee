@@ -18,7 +18,7 @@ import { assertPathOutsidePrivateState, relateToPrivateState } from "./private-s
 
 /**
  * THE one exemption, and it is not a hole: sync's CONVERGING conflict mechanic exports "yours" —
- * the local version of a conflicted BUNDLE document — into `~/.superbee-state/sync/exports/…`, and
+ * the local version of a conflicted BUNDLE document — into the private-state export tree, and
  * the CLI itself emits `doc update <id> --body-file <that export>` as the reconcile chain (pinned
  * character-for-character by `sync-conflict.test.ts`). Those bytes came OUT of the bundle; refusing
  * to read them back would refuse the product's own documented exit node. The exemption is

@@ -82,6 +82,23 @@ function deps(write: (text: string) => void): SetupDeps {
       legacy_preserved: true,
       next: { command: "superbee setup" },
     }),
+    hardenState: async () => ({
+      schema_version: 1,
+      operation: "harden-state",
+      status: "hardened",
+      changed: true,
+      root: "~/.superbee-state",
+      next: { command: "superbee setup" },
+    }),
+    quarantineState: async () => ({
+      schema_version: 1,
+      operation: "quarantine-state",
+      status: "quarantined",
+      changed: true,
+      root: "~/.superbee-state",
+      preserved_at: "~/.superbee-state.unrecognized/token/.superbee-state",
+      next: { command: "superbee setup" },
+    }),
   };
 }
 
@@ -413,8 +430,38 @@ test("setup validates exact host, scope, arity, and serves offline help", async 
   await setup(["--help"], { stdout: (text) => { help += text; } });
   assert.match(help, /one safe next command/);
   assert.match(help, /setup migrate-state/);
+  assert.match(help, /setup harden-state/);
+  assert.match(help, /setup quarantine-state/);
   assert.match(help, /catalog entry preserves a workspace for explicit MCP selection/);
   assert.match(help, /never selects that workspace\s+as the current project's context/);
+});
+
+test("setup executes the product-owned state recovery leaves without host inference", async () => {
+  for (const operation of ["harden-state", "quarantine-state"] as const) {
+    let output = "";
+    let called = 0;
+    const injected = deps((text) => { output += text; });
+    if (operation === "harden-state") {
+      injected.hardenState = async (home) => {
+        called += 1;
+        assert.equal(home, "/Users/private");
+        return deps(() => {}).hardenState(home);
+      };
+    } else {
+      injected.quarantineState = async (home) => {
+        called += 1;
+        assert.equal(home, "/Users/private");
+        return deps(() => {}).quarantineState(home);
+      };
+    }
+    await setup([operation, "--json"], injected);
+    assert.equal(called, 1);
+    const receipt = JSON.parse(output) as { state_recovery: { operation: string; changed: boolean } };
+    assert.equal(receipt.state_recovery.operation, operation);
+    assert.equal(receipt.state_recovery.changed, true);
+    await assert.rejects(setup([operation, "--scope", "user"], injected), (error: unknown) =>
+      error instanceof CliError && error.code === "USAGE");
+  }
 });
 
 test("setup projects and executes the one-shot state migration without host inference", async () => {

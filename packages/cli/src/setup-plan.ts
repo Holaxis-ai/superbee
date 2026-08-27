@@ -107,9 +107,11 @@ export function setupStateCapability(state: UserStateMigrationInspection): Setup
 export function setupNextForCapability(capability: SetupCapability): SetupPlan["next"] {
   if (!capability.command) return undefined;
   return {
-    action: capability.state === "blocked"
-      ? "inspect"
-      : capability.command.includes("<")
+    action: capability.command === "superbee setup quarantine-state"
+      ? "run"
+      : capability.state === "blocked"
+        ? "inspect"
+        : capability.command.includes("<")
         ? "choose_value"
         : "run",
     command: capability.command,
