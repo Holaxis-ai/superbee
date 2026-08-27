@@ -18,8 +18,8 @@ answer.
 5. Develop on macOS or Linux with Node.js 20 or newer. Windows is not a supported development or
    runtime host: the private-state layer verifies its containment through POSIX file modes, Node
    cannot verify that invariant on Windows because it reports synthesized mode bits there, the
-   published package declares `"os": ["!win32"]`, and no CI lane runs there. Windows support is
-   tracked work; adding it means holding the same containment property through a per-user
+   published package declares `"os": ["!win32"]`, and no required CI lane runs there. Windows
+   support is tracked work; adding it means holding the same containment property through a per-user
    `%LOCALAPPDATA%` location, which Windows ACLs enforce per user, and adding a windows-latest
    lane - not relaxing the assertion.
 
