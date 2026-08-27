@@ -214,8 +214,9 @@ and preserves existing legacy bundles without rewriting their declared edition.
 - **Windows is not supported.** Superbee's private-state layer keeps per-user operational records
   outside any project bundle and verifies that containment through POSIX file modes. Node cannot
   verify that invariant on Windows: it reports synthesized mode bits there, `0666` for a file
-  created `0600` and for a directory created `0700` alike, so the check can never pass and every
-  private-state read and write fails. The package therefore declares `"os": ["!win32"]`, so
+  created `0600` and for a directory created `0700` alike, so the check can never pass and the
+  private-state layer cannot satisfy its containment contract; normal private-state operations
+  fail. The package therefore declares `"os": ["!win32"]`, so
   `npm install -g superbee` stops with `EBADPLATFORM` instead of installing a package whose
   private-state operations fail. This is a limit of the POSIX-mode check, not of Windows access
   control: the tracked remediation keeps the same containment property through a per-user location
