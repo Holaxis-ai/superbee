@@ -132,7 +132,9 @@ test("plain built CLI leaves legacy migration discoverable until an explicit sta
       setup: { capabilities: Array<{ id: string; state: string }>; next: { command: string[] } };
     };
     assert.equal(plan.setup.capabilities.find((capability) => capability.id === "state")?.state, "needs_action");
-    assert.deepEqual(plan.setup.next.command, ["superbee", "setup", "migrate-state"]);
+    assert.deepEqual(plan.setup.next.command, [
+      "npx", "--no-install", "superbee", "setup", "migrate-state",
+    ]);
     assert.equal(await absent(canonicalUserStateDir(root)), true);
   } finally {
     await rm(root, { recursive: true, force: true });
