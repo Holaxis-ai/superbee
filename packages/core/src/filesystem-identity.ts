@@ -441,6 +441,13 @@ export async function observeExact<T>(
       opened = await port.open(target);
     } catch (err) {
       if (isAbsentPathError(err)) return { state: "absent" };
+      // Win32 can report EPERM when a concurrent delete/replace briefly denies an open. That is
+      // an uncertain generation, not a durable permission verdict; re-run the witnessed walk and
+      // let the existing bound turn persistent contention into ConcurrentReplacementError.
+      if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+        restarts = countRestart(restarts, rel);
+        continue;
+      }
       throw err;
     }
     let value: T | null;

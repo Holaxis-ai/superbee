@@ -33,6 +33,7 @@ import { chmodSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 import { initBundle, writeDoc } from "@superbee/core";
 import {
@@ -66,16 +67,7 @@ import {
 // ── scaffolding (mirrors sync.test.ts / session-start.test.ts) ────────────────
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
-  const prevHome = process.env.HOME;
-  const prevProfile = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  try {
-    return await run();
-  } finally {
-    process.env.HOME = prevHome;
-    process.env.USERPROFILE = prevProfile;
-  }
+  return withIsolatedUserEnv(home, run);
 }
 
 async function withCwd<T>(dir: string, run: () => Promise<T>): Promise<T> {

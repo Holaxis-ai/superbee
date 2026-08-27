@@ -409,6 +409,13 @@ function realOrSame(p: string): string {
   }
 }
 
+/** Compare physical paths without treating Windows case/drive-letter aliases as different roots. */
+function samePhysicalPath(a: string, b: string): boolean {
+  const left = path.resolve(realOrSame(a));
+  const right = path.resolve(realOrSame(b));
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 /** The repo/worktree's git common-dir, realpathed for ownership comparisons. */
 function gitCommonDir(dir: string): string | null {
   const r = runGit(dir, ["rev-parse", "--git-common-dir"]);
@@ -422,7 +429,7 @@ function gitCommonDir(dir: string): string | null {
 function sameGitCommonDir(a: string, b: string): boolean {
   const aCommon = gitCommonDir(a);
   const bCommon = gitCommonDir(b);
-  return aCommon !== null && bCommon !== null && aCommon === bCommon;
+  return aCommon !== null && bCommon !== null && samePhysicalPath(aCommon, bCommon);
 }
 
 /**
@@ -439,7 +446,7 @@ function sameGitCommonDir(a: string, b: string): boolean {
  */
 export function worktreeRootResolves(boardPath: string): boolean {
   const boardTop = repoTopLevel(boardPath);
-  return boardTop !== null && realOrSame(boardTop) === realOrSame(boardPath);
+  return boardTop !== null && samePhysicalPath(boardTop, boardPath);
 }
 
 /**
@@ -585,8 +592,8 @@ function powershellQuote(s: string): string {
 function moveAsideHelp(boardPath: string, note: string): string {
   if (process.platform === "win32") {
     return (
-      `powershell -NoProfile -Command "Move-Item -LiteralPath ${powershellQuote(boardPath)} ` +
-      `-Destination ${powershellQuote(`${boardPath}.bak`)}; # ${note.replaceAll('"', "'")}"`
+      `powershell -NoProfile -Command "Move-Item -Force -ErrorAction Stop ` +
+      `-LiteralPath ${powershellQuote(boardPath)} -Destination ${powershellQuote(`${boardPath}.bak`)}"`
     );
   }
   return `mv ${shellQuote(boardPath)} ${shellQuote(`${boardPath}.bak`)}  # ${note}`;

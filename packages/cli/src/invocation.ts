@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { homedir } from "node:os";
+import { renderGeneratedHookToken } from "./hook-compatibility.js";
 
 /** The npm package coordinate — the token used for the `npx -y <pkg>` fallback. */
 export const PACKAGE_NAME = "superbee";
@@ -36,8 +37,9 @@ export function collapseHomeDirectory(p: string): string {
   return p;
 }
 
-/** Quote one arbitrary value as a single POSIX-shell argument for emitted copy-paste commands. */
+/** Quote one arbitrary value as a single host-shell argument for emitted copy-paste commands. */
 export function shellArg(value: string): string {
+  if (process.platform === "win32") return renderGeneratedHookToken(value, "win32");
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 

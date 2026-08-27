@@ -45,6 +45,13 @@ function realOr(p: string): string {
   }
 }
 
+/** Compare physical path spellings using the host filesystem's path identity rules. */
+function samePhysicalPath(left: string, right: string): boolean {
+  const a = path.resolve(realOr(left));
+  const b = path.resolve(realOr(right));
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 /**
  * Humanize a git remote URL for the chip: a GitHub-shaped URL (https or scp-like ssh) degrades to
  * `org/repo`; anything else degrades to its host, else its path tail.
@@ -93,7 +100,7 @@ export function classifySharing(bundleRoot: string, now: () => Date = () => new 
     const top = repo.top;
     const committed = committedBundleAtHead(top);
     const bundleDir = committed?.bundleDir ?? bundleDirNameForProject(top);
-    if (realOr(path.join(top, bundleDir)) !== root) return { kind: "unscoped", as_of: asOf };
+    if (!samePhysicalPath(path.join(top, bundleDir), root)) return { kind: "unscoped", as_of: asOf };
 
     const evidence = localEvidence(top, committed !== null);
     const branchMode =
@@ -180,7 +187,7 @@ export function createWorkspacesLoader(bundleRoot: string): () => Promise<Worksp
         .map((entry) => ({
           label: entry.label,
           path: entry.locator.path,
-          open: realOr(entry.locator.path) === root,
+          open: samePhysicalPath(entry.locator.path, root),
         }));
     } catch {
       return []; // best-effort block — a malformed catalog never breaks the home

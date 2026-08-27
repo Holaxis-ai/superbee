@@ -24,6 +24,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -134,9 +135,11 @@ test("matrix: stale worktree-side pointer (this repo's registration survives) â†
   try {
     // Break ONLY the worktree-side `.git` file; the registration under `<root>/.git/worktrees/`
     // still names the conventional path â€” the structural "ours, pointers stale" signal.
-    await chmod(path.join(topo.a.board, ".git"), 0o666);
+    const worktreePointer = path.join(topo.a.board, ".git");
+    if (process.platform === "win32") execFileSync("attrib.exe", ["-R", worktreePointer]);
+    else await chmod(worktreePointer, 0o666);
     await writeFile(
-      path.join(topo.a.board, ".git"),
+      worktreePointer,
       `gitdir: ${path.join(topo.dir, "nonexistent", ".git", "worktrees", BUNDLE_DIR)}\n`,
     );
     assertBranch(detectBoardChannel(topo.a.root, { remoteBoardState: probeMustNotRun }));

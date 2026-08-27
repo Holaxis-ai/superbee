@@ -10,10 +10,10 @@ import { FilesystemBackend } from "../src/backend.js";
 // The expect-absent premise must treat that read failure as uncertainty, never as absence:
 // nothing may be replaced, and the error must surface unchanged.
 test("FilesystemBackend expect-absent observation propagates read uncertainty", async (t) => {
-  if (process.getuid?.() === 0) {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
     // Skip, not a diagnostic: as root there is no EACCES to provoke, so nothing here is proven
     // and a pass would say otherwise. A skip counts in the runner's summary.
-    t.skip("running as root: EACCES cannot be provoked; this row is not exercised");
+    t.skip("this host cannot provoke EACCES through POSIX mode bits; this row is not exercised");
     return;
   }
   const root = await mkdtemp(path.join(tmpdir(), "agentstate-lite-expected-version-"));

@@ -46,7 +46,11 @@ export function runCli(
 export function binShim(root: string): string {
   const bin = path.join(root, "bin");
   mkdirSync(bin, { recursive: true });
-  symlinkSync(BUILT_CLI, path.join(bin, "superbee"));
+  if (process.platform === "win32") {
+    writeFileSync(path.join(bin, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${BUILT_CLI}" %*\r\n`);
+  } else {
+    symlinkSync(BUILT_CLI, path.join(bin, "superbee"));
+  }
   return bin;
 }
 
@@ -55,7 +59,10 @@ export function runShell(
   command: string,
   options: { cwd: string; home: string; bin: string },
 ): SpawnSyncReturns<string> {
-  return spawnSync("sh", ["-c", command], {
+  return spawnSync(
+    process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "sh",
+    process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command],
+    {
     cwd: options.cwd,
     env: isolatedUserEnv(options.home, {
       ASLITE_NO_UPDATE_CHECK: "1",
@@ -65,7 +72,8 @@ export function runShell(
       PATH: `${options.bin}${path.delimiter}${process.env.PATH ?? ""}`,
     }),
     encoding: "utf8",
-  });
+    },
+  );
 }
 
 export interface BoundaryFixture {

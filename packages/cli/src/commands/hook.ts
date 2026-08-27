@@ -724,6 +724,11 @@ function generatedConstant(source: string, name: string): unknown {
   }
 }
 
+/** Git may materialize a generated JS fixture with CRLF on Windows; line endings are not authorship. */
+function normalizedGeneratedSource(source: string): string {
+  return source.replaceAll("\r\n", "\n");
+}
+
 /** Exact-source classifier: a marker or familiar substring alone never authorizes mutation. */
 function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCodeHookStatus {
   let entry: ReturnType<typeof lstatSync>;
@@ -750,7 +755,8 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
   } catch {
     return { installed: false, compatibility: { state: "unmanaged", reason: "plugin file is unreadable" } };
   }
-  if (expectedSource !== undefined && source === expectedSource) {
+  const comparableSource = normalizedGeneratedSource(source);
+  if (expectedSource !== undefined && comparableSource === normalizedGeneratedSource(expectedSource)) {
     return {
       installed: true,
       compatibility: { state: "current", reason: "plugin exactly matches this installation's generator" },
@@ -766,7 +772,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
     args.every((arg) => typeof arg === "string") &&
     typeof timeoutMs === "number" &&
     Number.isInteger(timeoutMs) &&
-    source === buildOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
+    comparableSource === buildOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
   ) {
     const compatibility = classifyHookCommand(
       [command, ...(args as string[])].map((token) => renderGeneratedHookToken(token)).join(" "),
@@ -792,13 +798,13 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
     typeof timeoutMs === "number" &&
     Number.isInteger(timeoutMs) &&
     (
-      source === buildLegacyOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
+      comparableSource === buildLegacyOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
       || (
         args.length === 1
         && args[0] === HOOK_SUBCOMMAND
         && timeoutMs === HOOK_TIMEOUT_SECONDS * 1000
         && isPublishedAsliteOpenCodeProgram(command)
-        && source === buildPublishedAsliteOpenCodePluginSource(command)
+        && comparableSource === buildPublishedAsliteOpenCodePluginSource(command)
       )
     )
   ) {
@@ -821,7 +827,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
     args === undefined &&
     typeof timeoutMs === "number" &&
     Number.isInteger(timeoutMs) &&
-    source === buildLegacySdkOpenCodePluginSource(command, timeoutMs / 1000) &&
+    comparableSource === buildLegacySdkOpenCodePluginSource(command, timeoutMs / 1000) &&
     isOwnedHookCompatibility(classifyHookCommand(command))
   ) {
     return {

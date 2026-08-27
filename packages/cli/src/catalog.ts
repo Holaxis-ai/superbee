@@ -3,7 +3,7 @@ import { open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { resolveLocalBundleTarget } from "./bundle.js";
+import { resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
 import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
@@ -324,13 +324,13 @@ export async function addCatalogEntry(
 
   const result = await mutateCatalog(async (current) => {
     const target = await resolveLocalBundleTarget(canonicalPath);
-    if (target.canonicalRoot !== canonicalPath) {
+    if (!samePhysicalPath(target.canonicalRoot, canonicalPath)) {
       throw new CliError("NOT_FOUND", `workspace path is no longer canonical: ${canonicalPath}`, {
         help: `${cliInvocation()} bundle locate --dir ${canonicalPath}`,
       });
     }
     const byLabel = current.entries.find((entry) => entry.label === label);
-    const byPath = current.entries.find((entry) => entry.locator.path === canonicalPath);
+    const byPath = current.entries.find((entry) => samePhysicalPath(entry.locator.path, canonicalPath));
     if (byLabel && byPath && byLabel.id === byPath.id) {
       return { value: byLabel, changed: false };
     }
@@ -363,7 +363,7 @@ export async function addCatalogEntry(
 async function entryAvailable(entry: CatalogEntry): Promise<boolean> {
   try {
     const target = await resolveLocalBundleTarget(entry.locator.path);
-    return target.canonicalRoot === entry.locator.path;
+    return samePhysicalPath(target.canonicalRoot, entry.locator.path);
   } catch {
     return false;
   }

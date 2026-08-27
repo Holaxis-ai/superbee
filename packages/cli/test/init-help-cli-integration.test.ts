@@ -9,7 +9,7 @@ import test, { before } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,7 +30,11 @@ async function tempDir(prefix: string): Promise<string> {
 
 async function makeBinOnPath(): Promise<{ binDir: string; env: NodeJS.ProcessEnv }> {
   const binDir = await tempDir("superbee-init-help-bin-");
-  await symlink(cliBin, path.join(binDir, "superbee"));
+  if (process.platform === "win32") {
+    await writeFile(path.join(binDir, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${cliBin}" %*\r\n`);
+  } else {
+    await symlink(cliBin, path.join(binDir, "superbee"));
+  }
   return {
     binDir,
     env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` },
@@ -46,6 +50,7 @@ function run(
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
+    shell: process.platform === "win32",
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -54,12 +59,16 @@ function runEmitted(
   command: string,
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync("sh", ["-c", command], {
+  const result = spawnSync(
+    process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "sh",
+    process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command],
+    {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
-  });
+    },
+  );
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
 

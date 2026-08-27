@@ -3,7 +3,7 @@
 import { homedir } from "node:os";
 import { parseArgs } from "node:util";
 import { parseSelectorOrUsage } from "../args.js";
-import { resolveLocalBundleTarget, type LocalBundleTarget } from "../bundle.js";
+import { resolveLocalBundleTarget, samePhysicalPath, type LocalBundleTarget } from "../bundle.js";
 import { listCatalogEntries, type CatalogEntryView } from "../catalog.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { CliError } from "../errors.js";
@@ -158,7 +158,7 @@ async function inspectWorkspace(deps: SetupDeps): Promise<SetupWorkspaceState> {
       bundle,
       catalog: available.length > 0 ? "ready" : "empty",
       selected_registered: selected !== undefined
-        && available.some((entry) => entry.locator.path === selected!.canonicalRoot),
+        && available.some((entry) => samePhysicalPath(entry.locator.path, selected!.canonicalRoot)),
     };
   } catch {
     return { bundle, catalog: "unreadable", selected_registered: false };

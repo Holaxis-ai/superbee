@@ -210,12 +210,15 @@ test("status reports duplicate generated entries as stale", () => {
 });
 
 test("npm hook install collapses an exact historical marketplace plus npm hook to one npm hook", () => {
-  const marketplace =
-    "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start";
-  const legacyNpm =
-    "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
-  const canonicalNpm =
-    "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start";
+  const marketplace = process.platform === "win32"
+    ? "C:/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start"
+    : "/Users/u/.claude/plugins/cache/holaxis/agentstate-lite/1.0.147/skills/agentstate-lite/scripts/agentstate-lite.mjs session-start";
+  const legacyNpm = process.platform === "win32"
+    ? "C:/opt/aslite/bin/node.exe C:/opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start"
+    : "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start";
+  const canonicalNpm = process.platform === "win32"
+    ? "C:/opt/superbee/bin/node.exe C:/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start"
+    : "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start";
   const settings = {
     hooks: {
       SessionStart: [
@@ -382,7 +385,7 @@ test("hook status/install/uninstall own the exact published Aslite pre.3 OpenCod
     fixture.replace('const command = "aslite";', 'const command = "agentstate-lite";'),
     fixture.replace(
       'const command = "aslite";',
-      'const command = "/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs";',
+      `const command = ${JSON.stringify(process.platform === "win32" ? "C:/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs" : "/opt/npm/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs")};`,
     ),
   ];
   for (const [sourceIndex, source] of sources.entries()) {

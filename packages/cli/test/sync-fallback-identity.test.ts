@@ -23,6 +23,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 import { sync } from "../src/commands/sync.js";
 import { CLEANUP_BRANCH, ESTABLISH_COMMITTED_DONE } from "../src/commands/sync-establish.js";
@@ -38,18 +39,7 @@ import {
 // ── scaffolding (mirrors sync.test.ts / sync-establish-committed.test.ts) ──────
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
-  const originalHome = process.env.HOME;
-  const originalUserProfile = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  try {
-    return await run();
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = originalUserProfile;
-  }
+  return withIsolatedUserEnv(home, run);
 }
 
 function captureStdout(): { stdout: (s: string) => void; text: () => string } {

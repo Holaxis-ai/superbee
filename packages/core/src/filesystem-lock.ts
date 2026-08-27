@@ -1,6 +1,6 @@
 import { promises as fs, realpathSync } from "node:fs";
 import type { Stats } from "node:fs";
-import { homedir, hostname, tmpdir, userInfo } from "node:os";
+import { homedir, hostname, userInfo } from "node:os";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -86,8 +86,14 @@ function pathContains(root: string, candidate: string): boolean {
 /** Stable per-user runtime namespace outside `portableRoot`; refuses an impossible root bundle. */
 export function filesystemMutationLockRoot(portableRoot?: string): string {
   // POSIX TMPDIR is process/session-scoped (notably shell vs launchd on macOS). Use the
-  // system-wide sticky directory so every same-user writer derives one lock namespace.
-  const tempParent = canonicalExistingPath(process.platform === "win32" ? tmpdir() : "/tmp");
+  // system-wide sticky directory so every same-user writer derives one lock namespace. Windows
+  // temp variables are process-scoped too, so use the per-user LocalAppData known folder instead
+  // of tmpdir(); otherwise two shells can derive different locks for the same portable target.
+  const runtimeParent =
+    process.platform === "win32"
+      ? path.join(homedir(), "AppData", "Local")
+      : "/tmp";
+  const tempParent = canonicalExistingPath(runtimeParent);
   const homeParent = canonicalExistingPath(homedir());
   const ownerKey = runtimeOwnerKey();
   const candidates = [

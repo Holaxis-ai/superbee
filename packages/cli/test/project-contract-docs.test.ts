@@ -15,7 +15,7 @@ function readProjectFile(relativePath: string): string {
     withinRepo === "" || (!withinRepo.startsWith("..") && !isAbsolute(withinRepo)),
     `contract evidence must stay inside the repository: ${relativePath}`,
   );
-  return readFileSync(absolute, "utf8");
+  return readFileSync(absolute, "utf8").replaceAll("\r\n", "\n");
 }
 
 function tableCells(line: string): string[] {

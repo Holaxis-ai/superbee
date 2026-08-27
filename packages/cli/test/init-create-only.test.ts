@@ -735,8 +735,8 @@ test("two real concurrent create-only processes: exactly one winner, loser exits
 });
 
 test("permission failure surfaces as a structured error, not a crash or partial write", async (t) => {
-  if (process.getuid?.() === 0) {
-    t.skip("running as root — permission refusals are not enforceable");
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("POSIX permission-bit refusal requires a non-root POSIX environment");
     return;
   }
   const base = await tempDir();

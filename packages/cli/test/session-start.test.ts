@@ -100,7 +100,11 @@ function preferredBinDir(): Promise<string> {
   preferredBinDirPromise ??= (async () => {
     if (!existsSync(cliBin)) execFileSync("npm", ["run", "build"], { cwd: cliPackageRoot, stdio: "inherit" });
     const dir = await mkdtemp(path.join(tmpdir(), "superbee-preferred-bin-"));
-    await symlink(cliBin, path.join(dir, "superbee"));
+    if (process.platform === "win32") {
+      await writeFile(path.join(dir, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${cliBin}" %*\r\n`);
+    } else {
+      await symlink(cliBin, path.join(dir, "superbee"));
+    }
     return dir;
   })();
   return preferredBinDirPromise;
@@ -121,6 +125,7 @@ async function runCliHook(
     env: { ...baseEnv, PATH: `${binDir}${path.delimiter}${baseEnv.PATH ?? ""}` },
     stdio: ["ignore", "pipe", "pipe"],
     encoding: "utf8",
+    shell: process.platform === "win32",
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -989,10 +994,8 @@ test("hook re-install prompt: a pre-session-start managed hook is detected and s
 
 test("sessionStartHookCommand: bare base passes through; a spaced path is quoted; plugin spawns argv", () => {
   assert.equal(sessionStartHookCommand("aslite"), "aslite session-start");
-  assert.equal(
-    sessionStartHookCommand("/Users/f b/packages/cli/dist/superbee.mjs"),
-    "'/Users/f b/packages/cli/dist/superbee.mjs' session-start",
-  );
+  const spaced = "/Users/f b/packages/cli/dist/superbee.mjs";
+  assert.equal(sessionStartHookCommand(spaced), `${renderGeneratedHookToken(spaced)} session-start`);
   const src = buildOpenCodePluginSource("/opt/bin/agentstate-lite");
   assert.ok(src.includes('const command = "/opt/bin/agentstate-lite"'));
   assert.ok(src.includes('const commandArgs = ["session-start"]'));
@@ -1165,21 +1168,21 @@ test("writer and recognizer round-trip the complete printable alphabet and repre
   for (let code = 0x20; code <= 0x7e; code += 1) {
     const character = String.fromCharCode(code);
     const executable = localDevExecutable(character);
-    const command = sessionStartHookCommand(executable);
-    assert.equal(command, `${renderGeneratedHookToken(executable)} session-start`, JSON.stringify(character));
-    assert.deepEqual(tokenizeGeneratedHookCommand(command), [executable, "session-start"], JSON.stringify(character));
-    assert.equal(isManagedHookCommand(command), true, JSON.stringify(character));
+    const command = sessionStartHookCommand(executable, ["session-start"], "linux");
+    assert.equal(command, `${renderGeneratedHookToken(executable, "linux")} session-start`, JSON.stringify(character));
+    assert.deepEqual(tokenizeGeneratedHookCommand(command, "linux"), [executable, "session-start"], JSON.stringify(character));
+    assert.equal(isManagedHookCommand(command, "linux"), true, JSON.stringify(character));
     assert.equal(command.startsWith("'"), !isSafeUnquotedHookToken(executable), JSON.stringify(character));
   }
   for (const character of ["{a,b}", "${HOME}", "*", "café", "a b", "a'b", String.raw`a\b`]) {
     const [runtime, executable] = stableNodePair(character);
-    const command = sessionStartHookCommand(runtime, [executable, "session-start"]);
-    assert.deepEqual(tokenizeGeneratedHookCommand(command), [runtime, executable, "session-start"], character);
-    assert.equal(isManagedHookCommand(command), true, character);
+    const command = sessionStartHookCommand(runtime, [executable, "session-start"], "linux");
+    assert.deepEqual(tokenizeGeneratedHookCommand(command, "linux"), [runtime, executable, "session-start"], character);
+    assert.equal(isManagedHookCommand(command, "linux"), true, character);
   }
 });
 
-test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for Claude and Codex", async () => {
+test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for Claude and Codex", { skip: process.platform === "win32" ? "POSIX lexical-envelope matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-foreign-"));
   const settings = JSON.stringify(
     {
@@ -1220,7 +1223,7 @@ test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for
   }
 });
 
-test("built uninstall recognizes every canonical lexical envelope", async () => {
+test("built uninstall recognizes every canonical lexical envelope", { skip: process.platform === "win32" ? "POSIX lexical-envelope matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-owned-"));
   const canonicalCommands = [
     "aslite session-start",
@@ -1263,7 +1266,7 @@ test("built uninstall recognizes every canonical lexical envelope", async () => 
   }
 });
 
-test("built uninstall preserves the complete shell-expansion taxonomy byte-for-byte", async () => {
+test("built uninstall preserves the complete shell-expansion taxonomy byte-for-byte", { skip: process.platform === "win32" ? "POSIX shell-expansion matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-shell-foreign-"));
   const settings = JSON.stringify(
     {
@@ -1300,7 +1303,7 @@ test("built uninstall preserves the complete shell-expansion taxonomy byte-for-b
   }
 });
 
-test("built install and uninstall preserve mismatched npm Node/package pairs across all hosts", async () => {
+test("built install and uninstall preserve mismatched npm Node/package pairs across all hosts", { skip: process.platform === "win32" ? "POSIX npm-path matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const control = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-control-"));
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-uninstall-"));
@@ -1390,7 +1393,7 @@ test("built install and uninstall preserve mismatched npm Node/package pairs acr
   }
 });
 
-test("built lifecycle preserves noncanonical managed-path near-matches across all hosts", async () => {
+test("built lifecycle preserves noncanonical managed-path near-matches across all hosts", { skip: process.platform === "win32" ? "POSIX managed-path matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const control = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-control-"));
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-uninstall-"));
@@ -1495,13 +1498,13 @@ test("hookNeedsUpdate: PATH-bound and pre-session-start hooks are flagged; a sta
     assert.equal(hookNeedsUpdate([base]), true);
     await write("aslite"); // pre-session-start shape under the new bin name
     assert.equal(hookNeedsUpdate([base]), true);
-    await write(
-      "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
-    );
+    await write(process.platform === "win32"
+      ? "C:/opt/aslite/bin/node.exe C:/opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start"
+      : "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start");
     assert.equal(hookNeedsUpdate([base]), true);
-    await write(
-      "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start",
-    );
+    await write(process.platform === "win32"
+      ? "C:/opt/superbee/bin/node.exe C:/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start"
+      : "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start");
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {
     await rm(base, { recursive: true, force: true });
@@ -1714,8 +1717,8 @@ test("hook install preserves a 0600 settings.json mode while rewriting a legacy 
 });
 
 test("readSettingsForInstall: an unreadable file is refused as 'unreadable', not 'unparseable JSON'", async (t) => {
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    t.skip("running as root — chmod 000 does not make a file unreadable");
+  if (process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0)) {
+    t.skip("POSIX permission-bit refusal requires a non-root POSIX environment");
     return;
   }
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-hook-unreadable-"));

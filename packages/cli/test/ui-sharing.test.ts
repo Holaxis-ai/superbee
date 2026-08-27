@@ -16,6 +16,7 @@ import path from "node:path";
 import { classifySharing, createSharingLoader, createWorkspacesLoader, humanizeRemote } from "../src/ui/sharing.js";
 import { credentialsDir } from "../src/credentials.js";
 import { ensureUserStateRoot } from "../src/user-state.js";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });
@@ -278,17 +279,13 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
         ],
       }),
     );
-    const savedHome = process.env.HOME;
-    process.env.HOME = home;
-    try {
+    await withIsolatedUserEnv(home, async () => {
       const rows = await createWorkspacesLoader(bundleRoot)();
       assert.deepEqual(rows, [
         { label: "alpha", path: bundleRoot, open: true },
         { label: "zeta", path: "/nowhere/zeta", open: false },
       ]);
-    } finally {
-      process.env.HOME = savedHome;
-    }
+    });
   } finally {
     await rm(home, { recursive: true, force: true });
   }

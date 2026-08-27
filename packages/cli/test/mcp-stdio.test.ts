@@ -175,10 +175,7 @@ test("built bare MCP server resolves documents and Views through the private wor
     "text/html; charset=utf-8",
   );
   await addCatalogEntry("planning", root, { home });
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
-  env.HOME = home;
+  const env = isolatedUserEnv(home);
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [CLI, "mcp"],
@@ -276,11 +273,15 @@ test("literal PATH `aslite mcp` reports the selected CLI release and never rewri
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
     ASLITE_NO_UPDATE_CHECK: "1",
   });
-  const selected = spawn("aslite", ["version", "--json"], {
+  const selected = spawn(
+    process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "aslite",
+    process.platform === "win32" ? ["/d", "/s", "/c", "aslite version --json"] : ["version", "--json"],
+    {
     cwd: root,
     env,
     stdio: ["ignore", "pipe", "pipe"],
-  });
+    },
+  );
   let versionStdout = "";
   let versionStderr = "";
   selected.stdout.setEncoding("utf8");
@@ -295,8 +296,10 @@ test("literal PATH `aslite mcp` reports the selected CLI release and never rewri
   const selectedVersion = JSON.parse(versionStdout).identity.package.version as string;
 
   const transport = new StdioClientTransport({
-    command: "aslite",
-    args: ["mcp", "--dir", root, "--actor", "path/test"],
+    command: process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "aslite",
+    args: process.platform === "win32"
+      ? ["/d", "/s", "/c", `aslite mcp --dir "${root.replaceAll('"', '""')}" --actor path/test`]
+      : ["mcp", "--dir", root, "--actor", "path/test"],
     env,
     stderr: "pipe",
   });
