@@ -7,6 +7,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChangeStream, type ChangeEvent, type EventSourceLike } from "./pageEvents.js";
+import { __resetInterceptorForTests, getInterceptorStatus } from "../query/interceptor.js";
 
 class FakeEventSource implements EventSourceLike {
   onopen: (() => void) | null = null;
@@ -52,6 +53,7 @@ describe("createChangeStream", () => {
   beforeEach(() => {
     sources = [];
     vi.useFakeTimers();
+    __resetInterceptorForTests();
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -109,6 +111,119 @@ describe("createChangeStream", () => {
     s.subscribeToChanges((e) => changes.push(e));
     sources[1]!.emit(CHANGE);
     expect(changes).toEqual([CHANGE]);
+  });
+
+  it("every drop probes the shell session without overlapping probes", async () => {
+    let finishProbe!: () => void;
+    const probeSession = vi.fn(async () => false);
+    probeSession.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finishProbe = () => resolve(false); }));
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, probeSession);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropRetryable();
+    expect(probeSession).toHaveBeenCalledTimes(1);
+
+    sources[0]!.dropRetryable();
+    sources[0]!.dropFatal();
+    expect(probeSession).toHaveBeenCalledTimes(1);
+
+    finishProbe();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    vi.advanceTimersByTime(3_000);
+    expect(sources).toHaveLength(2);
+    sources[1]!.dropFatal();
+    expect(probeSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("a failed session probe never suppresses the reconnect timer", async () => {
+    const probeSession = vi.fn(async () => { throw new Error("server is offline"); });
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, probeSession);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropFatal();
+    await Promise.resolve();
+    vi.advanceTimersByTime(3_000);
+    expect(sources).toHaveLength(2);
+  });
+
+  it("ignores a stale 403 after the stream has recovered under a current session", async () => {
+    let finishProbe!: (expired: boolean) => void;
+    const probeSession = vi.fn(() => new Promise<boolean>((resolve) => { finishProbe = resolve; }));
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, probeSession);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropRetryable();
+    expect(probeSession).toHaveBeenCalledTimes(1);
+
+    // A different tab/current printed URL can install the new cookie while the old probe waits.
+    // Once this stream reopens, that old-cookie response is no longer authoritative.
+    sources[0]!.open();
+    finishProbe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getInterceptorStatus()).toBe("ok");
+  });
+
+  it("probes a new outage generation even while the recovered generation's probe is unresolved", async () => {
+    let finishOldProbe!: (expired: boolean) => void;
+    const probeSession = vi.fn()
+      .mockImplementationOnce((_signal: AbortSignal) => new Promise<boolean>((resolve) => { finishOldProbe = resolve; }))
+      .mockResolvedValueOnce(false);
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, probeSession);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropRetryable();
+    expect(probeSession).toHaveBeenCalledTimes(1);
+    const oldSignal = probeSession.mock.calls[0]![0] as AbortSignal;
+
+    sources[0]!.open();
+    expect(oldSignal.aborted).toBe(true);
+    sources[0]!.dropRetryable();
+    expect(probeSession).toHaveBeenCalledTimes(2);
+
+    finishOldProbe(true);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(getInterceptorStatus()).toBe("ok");
+  });
+
+  it("surfaces a current 403 while the dropped stream is still unrecovered", async () => {
+    const s = createChangeStream((url) => {
+      const es = new FakeEventSource(url);
+      sources.push(es);
+      return es;
+    }, async () => true);
+    s.subscribeToResync(() => {});
+
+    sources[0]!.open();
+    sources[0]!.dropRetryable();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(getInterceptorStatus()).toBe("session_expired");
   });
 
   it("unsubscribing the last listener closes the stream and cancels a pending retry", () => {
