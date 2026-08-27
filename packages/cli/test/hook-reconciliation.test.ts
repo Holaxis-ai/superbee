@@ -263,6 +263,28 @@ test("durable authority composes a stable npm-prefix Node launch", () => {
   });
 });
 
+test("Windows durable authority composes one shell-safe command and argv-safe launch", () => {
+  const authority: PersistentInstallAuthority = {
+    allowed: true,
+    state: "durable_global",
+    reason: "durable Windows npm-global executable",
+    evidence: {
+      npm_prefix: String.raw`C:\Users\Mike\AppData\Roaming\npm`,
+      bin_path: String.raw`C:\Users\Mike\AppData\Roaming\npm\superbee.cmd`,
+      runtime_path: String.raw`C:\Program Files\nodejs\node.exe`,
+      executable_path: String.raw`C:\Users\Mike\AppData\Roaming\npm\node_modules\superbee\dist\superbee.mjs`,
+    },
+  };
+  assert.deepEqual(buildHookLaunchSpec(authority, "win32"), {
+    program: String.raw`C:\Program Files\nodejs\node.exe`,
+    args: [
+      String.raw`C:\Users\Mike\AppData\Roaming\npm\node_modules\superbee\dist\superbee.mjs`,
+      "session-start",
+    ],
+    command: '"C:/Program Files/nodejs/node.exe" C:/Users/Mike/AppData/Roaming/npm/node_modules/superbee/dist/superbee.mjs session-start',
+  });
+});
+
 test("hook install refuses missing persistent authority before creating target files", async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-authority-"));
   try {

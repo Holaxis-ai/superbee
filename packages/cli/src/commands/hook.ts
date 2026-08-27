@@ -40,6 +40,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { homedir } from "node:os";
+import path from "node:path";
 import { isAbsolute, join, normalize, sep } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -103,8 +104,8 @@ export const HOOK_MARKER = "superbee";
 const LEGACY_HOOK_MARKER = "agentstate-lite";
 
 /** Backward-compatible command-only ownership predicate, now backed by the exact token classifier. */
-export function isManagedHookCommand(command: string): boolean {
-  return isOwnedHookCompatibility(classifyHookCommand(command));
+export function isManagedHookCommand(command: string, platform: string = process.platform): boolean {
+  return isOwnedHookCompatibility(classifyHookCommand(command, platform));
 }
 /** SessionStart hook timeout, in seconds (matches the SDK default; session-start budgets under it). */
 export const HOOK_TIMEOUT_SECONDS = 10;
@@ -129,9 +130,10 @@ const LEGACY_OPENCODE_MANAGED_MARKER = `axi-sdk-js managed opencode plugin: ${LE
 export function sessionStartHookCommand(
   base: string = hookCommand(),
   args: string[] = [HOOK_SUBCOMMAND],
+  platform: string = process.platform,
 ): string {
-  const command = [base, ...args].map(renderGeneratedHookToken).join(" ");
-  if (!isManagedHookCommand(command)) {
+  const command = [base, ...args].map((token) => renderGeneratedHookToken(token, platform)).join(" ");
+  if (!isManagedHookCommand(command, platform)) {
     throw new Error(
       `composed hook command ${JSON.stringify(command)} would not be recognized as managed — refusing to install an orphan hook`,
     );
@@ -146,7 +148,10 @@ export interface HookLaunchSpec {
 }
 
 /** Build the one argv-safe launch shared by shell-string hosts and the OpenCode plugin. */
-export function buildHookLaunchSpec(authority: PersistentInstallAuthority): HookLaunchSpec {
+export function buildHookLaunchSpec(
+  authority: PersistentInstallAuthority,
+  platform: string = process.platform,
+): HookLaunchSpec {
   const executable = authority.evidence.executable_path;
   const runtime = authority.evidence.runtime_path;
   if (!authority.allowed || !runtime || !executable) {
@@ -155,7 +160,7 @@ export function buildHookLaunchSpec(authority: PersistentInstallAuthority): Hook
     );
   }
   const args = [executable, HOOK_SUBCOMMAND];
-  const command = sessionStartHookCommand(runtime, args);
+  const command = sessionStartHookCommand(runtime, args, platform);
   return { program: runtime, args, command };
 }
 
@@ -387,27 +392,33 @@ export interface HookTargets {
   legacyOpencodePlugin: string;
 }
 
-function targetsForBase(base: string): HookTargets {
+function targetsForBase(base: string, platform: string = process.platform): HookTargets {
+  const paths = platform === "win32" ? path.win32 : path.posix;
   return {
-    claudeSettings: join(base, ".claude", "settings.json"),
-    codexHooks: join(base, ".codex", "hooks.json"),
-    codexConfig: join(base, ".codex", "config.toml"),
-    opencodePlugin: join(base, ".config", "opencode", "plugins", OPENCODE_PLUGIN_FILENAME),
-    legacyOpencodePlugin: join(base, ".config", "opencode", "plugins", LEGACY_OPENCODE_PLUGIN_FILENAME),
+    claudeSettings: paths.join(base, ".claude", "settings.json"),
+    codexHooks: paths.join(base, ".codex", "hooks.json"),
+    codexConfig: paths.join(base, ".codex", "config.toml"),
+    opencodePlugin: paths.join(base, ".config", "opencode", "plugins", OPENCODE_PLUGIN_FILENAME),
+    legacyOpencodePlugin: paths.join(base, ".config", "opencode", "plugins", LEGACY_OPENCODE_PLUGIN_FILENAME),
   };
 }
 
 /** Resolve global targets exactly where each host reads them. */
-export function globalHookTargets(home: string = homedir(), env: NodeJS.ProcessEnv = process.env): HookTargets {
-  const claudeHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env);
-  const codexHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env);
-  const opencodeHome = resolveOpenCodeConfigRoot(home, env);
+export function globalHookTargets(
+  home: string = homedir(),
+  env: NodeJS.ProcessEnv = process.env,
+  platform: string = process.platform,
+): HookTargets {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const claudeHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env, platform);
+  const codexHome = resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env, platform);
+  const opencodeHome = resolveOpenCodeConfigRoot(home, env, platform);
   return {
-    claudeSettings: join(claudeHome, "settings.json"),
-    codexHooks: join(codexHome, "hooks.json"),
-    codexConfig: join(codexHome, "config.toml"),
-    opencodePlugin: join(opencodeHome, "plugins", OPENCODE_PLUGIN_FILENAME),
-    legacyOpencodePlugin: join(opencodeHome, "plugins", LEGACY_OPENCODE_PLUGIN_FILENAME),
+    claudeSettings: paths.join(claudeHome, "settings.json"),
+    codexHooks: paths.join(codexHome, "hooks.json"),
+    codexConfig: paths.join(codexHome, "config.toml"),
+    opencodePlugin: paths.join(opencodeHome, "plugins", OPENCODE_PLUGIN_FILENAME),
+    legacyOpencodePlugin: paths.join(opencodeHome, "plugins", LEGACY_OPENCODE_PLUGIN_FILENAME),
   };
 }
 
@@ -415,14 +426,16 @@ export interface HookLocationDeps {
   cwd?: string;
   home?: string;
   env?: NodeJS.ProcessEnv;
+  platform?: string;
 }
 
 function targetSets(bases: string[] | undefined, deps: HookLocationDeps): HookTargets[] {
-  if (bases !== undefined) return bases.map(targetsForBase);
+  const platform = deps.platform ?? process.platform;
+  if (bases !== undefined) return bases.map((base) => targetsForBase(base, platform));
   const cwd = deps.cwd ?? process.cwd();
   const home = deps.home ?? homedir();
   const env = deps.env ?? process.env;
-  return [targetsForBase(cwd), globalHookTargets(home, env)];
+  return [targetsForBase(cwd, platform), globalHookTargets(home, env, platform)];
 }
 
 /**
@@ -756,7 +769,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
     source === buildOpenCodePluginSource(command, args as string[], timeoutMs / 1000)
   ) {
     const compatibility = classifyHookCommand(
-      [command, ...(args as string[])].map(renderGeneratedHookToken).join(" "),
+      [command, ...(args as string[])].map((token) => renderGeneratedHookToken(token)).join(" "),
     );
     if (!isOwnedHookCompatibility(compatibility)) return { installed: false, compatibility };
     if (timeoutMs !== HOOK_TIMEOUT_SECONDS * 1000) {
@@ -790,7 +803,7 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
     )
   ) {
     const compatibility = classifyHookCommand(
-      [command, ...(args as string[])].map(renderGeneratedHookToken).join(" "),
+      [command, ...(args as string[])].map((token) => renderGeneratedHookToken(token)).join(" "),
     );
     if (!isOwnedHookCompatibility(compatibility)) return { installed: false, compatibility };
     return {
@@ -995,17 +1008,17 @@ export function inspectHookStatus(
   deps: Partial<HookDeps> = {},
 ): HookStatusInspection {
   const targets = deps.base !== undefined
-    ? targetsForBase(deps.base)
+    ? targetsForBase(deps.base, deps.platform)
     : scope === "user"
-      ? globalHookTargets(deps.home ?? homedir(), deps.env ?? process.env)
-      : targetsForBase(deps.cwd ?? process.cwd());
+      ? globalHookTargets(deps.home ?? homedir(), deps.env ?? process.env, deps.platform)
+      : targetsForBase(deps.cwd ?? process.cwd(), deps.platform);
   let expectedLaunch = deps.launchSpec;
   try {
     if (!expectedLaunch && deps.commandBase !== undefined) {
       expectedLaunch = {
         program: deps.commandBase,
         args: [HOOK_SUBCOMMAND],
-        command: sessionStartHookCommand(deps.commandBase),
+        command: sessionStartHookCommand(deps.commandBase, [HOOK_SUBCOMMAND], deps.platform),
       };
     }
   } catch {
@@ -1142,10 +1155,10 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
   }
 
   const targets = deps.base !== undefined
-    ? targetsForBase(deps.base)
+    ? targetsForBase(deps.base, deps.platform)
     : scope === "user"
-      ? globalHookTargets(deps.home ?? homedir(), deps.env ?? process.env)
-      : targetsForBase(deps.cwd ?? process.cwd());
+      ? globalHookTargets(deps.home ?? homedir(), deps.env ?? process.env, deps.platform)
+      : targetsForBase(deps.cwd ?? process.cwd(), deps.platform);
 
   if (sub === "install") {
     // Every host that was not installed becomes a structured refusal; the command never emits a
@@ -1166,19 +1179,22 @@ export async function hook(argv: string[], deps: Partial<HookDeps> = {}): Promis
         launch = {
           program: deps.commandBase,
           args: [HOOK_SUBCOMMAND],
-          command: sessionStartHookCommand(deps.commandBase),
+          command: sessionStartHookCommand(deps.commandBase, [HOOK_SUBCOMMAND], deps.platform),
         };
       } else {
         authority =
-          deps.installAuthority?.() ?? resolvePersistentInstallAuthority({ env: deps.env ?? process.env });
+          deps.installAuthority?.() ?? resolvePersistentInstallAuthority({
+            env: deps.env ?? process.env,
+            platform: deps.platform,
+          });
         if (!authority.allowed) {
           throw new Error(
             `persistent hook install requires a durable npm-global CLI; authority is ${authority.state}: ${authority.reason}`,
           );
         }
-        launch = buildHookLaunchSpec(authority);
+        launch = buildHookLaunchSpec(authority, deps.platform);
       }
-      if (!isManagedHookCommand(launch.command)) {
+      if (!isManagedHookCommand(launch.command, deps.platform)) {
         throw new Error(
           `composed hook command ${JSON.stringify(launch.command)} would not be recognized as managed — refusing to install an orphan hook`,
         );

@@ -14,6 +14,8 @@ import { dirname } from "node:path";
 
 export interface AtomicWriteFileOptions {
   readonly followFinalSymlink?: boolean;
+  /** Injectable only for platform-policy tests; production uses the running platform. */
+  readonly platform?: NodeJS.Platform | string;
   /**
    * Optional compare-and-swap guard for a previously inspected file. `destination` is the
    * inspected real path, or null when the entry was absent. The write refuses path retargeting or
@@ -35,6 +37,29 @@ export interface PrivateConfigParentSnapshot {
 
 function missing(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
+}
+
+function windowsSharingViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && (error.code === "EPERM" || error.code === "EBUSY");
+}
+
+function waitSync(milliseconds: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+/** Windows antivirus/indexing can briefly retain the replaced file after all product handles close. */
+function renamePrivateConfigSync(source: string, destination: string, platform: string): void {
+  const deadline = Date.now() + 500;
+  while (true) {
+    try {
+      renameSync(source, destination);
+      return;
+    } catch (error) {
+      if (platform !== "win32" || !windowsSharingViolation(error) || Date.now() >= deadline) throw error;
+      waitSync(10);
+    }
+  }
 }
 
 /**
@@ -87,6 +112,7 @@ export function atomicWriteFileSync(
   content: string | Uint8Array,
   options: AtomicWriteFileOptions = {},
 ): void {
+  const platform = options.platform ?? process.platform;
   const destination = resolveWriteDestination(path, options.followFinalSymlink ?? true);
   if (options.expected) {
     if (options.expected.parent) {
@@ -123,10 +149,12 @@ export function atomicWriteFileSync(
   }
   mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
   let mode: number | undefined;
-  try {
-    mode = statSync(destination).mode & 0o7777;
-  } catch (error) {
-    if (!missing(error)) throw error;
+  if (platform !== "win32") {
+    try {
+      mode = statSync(destination).mode & 0o7777;
+    } catch (error) {
+      if (!missing(error)) throw error;
+    }
   }
   const tmp = `${destination}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   try {
@@ -136,7 +164,7 @@ export function atomicWriteFileSync(
       linkSync(tmp, destination);
       rmSync(tmp, { force: true });
     } else {
-      renameSync(tmp, destination);
+      renamePrivateConfigSync(tmp, destination, platform);
     }
   } catch (err) {
     rmSync(tmp, { force: true });

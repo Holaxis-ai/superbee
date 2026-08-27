@@ -27,7 +27,7 @@ function durableFixture(overrides: Record<string, unknown> = {}) {
     env: { PATH: `${prefix}/bin:/usr/bin` },
     platform: "linux",
     npm_prefix_global: () => prefix,
-    realpath: (candidate: string) => realpaths.get(path.normalize(candidate)),
+    realpath: (candidate: string) => realpaths.get(path.posix.normalize(candidate)),
     ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== "prefix" && key !== "packageRoot" && key !== "command")),
   };
 }
@@ -55,7 +55,7 @@ test("durable authority canonicalizes a symlinked npm prefix before comparing it
     platform: "darwin",
     npm_prefix_global: () => lexical,
     realpath: (candidate: string) => {
-      const normalized = path.normalize(candidate);
+      const normalized = path.posix.normalize(candidate);
       if (normalized === lexical) return canonical;
       if (normalized === `${lexical}/bin` || normalized === `${canonical}/bin`) return `${canonical}/bin`;
       if (normalized === `${lexical}/bin/superbee`) return canonicalExecutable;
@@ -98,7 +98,7 @@ test("legacy ASLite package bytes cannot authorize new persistent hook writes", 
     platform: "linux",
     npm_prefix_global: () => prefix,
     realpath: (candidate: string) => {
-      const normalized = path.normalize(candidate);
+      const normalized = path.posix.normalize(candidate);
       if (normalized === prefix) return prefix;
       if (normalized === `${prefix}/bin/aslite`) return executable;
       if (normalized === executable) return executable;
@@ -124,7 +124,7 @@ test("durable npm-package proof fails closed for every missing or transient fact
     },
   });
   const cases = [
-    durableFixture({ platform: "win32" }),
+    durableFixture({ platform: "freebsd" }),
     durableFixture({ npm_prefix_global: () => undefined }),
     durableFixture({ npm_prefix_global: () => "relative/prefix" }),
     durableFixture({ env: { PATH: "/usr/bin" } }),
@@ -134,7 +134,7 @@ test("durable npm-package proof fails closed for every missing or transient fact
     durableFixture({ runtime_path: null }),
     durableFixture({
       realpath: (candidate: string) => {
-        const normalized = path.normalize(candidate);
+        const normalized = path.posix.normalize(candidate);
         if (normalized === "/opt/superbee-npm") return normalized;
         if (normalized === "/opt/superbee-npm/bin/superbee") {
           return "/opt/superbee-npm/lib/node_modules/superbee/dist/superbee.mjs";
@@ -165,7 +165,7 @@ test("a package-only npm prefix is a typed runtime-layout failure, not a generic
   const result = classifyPersistentInstallAuthority({
     ...fixture,
     realpath: (candidate: string) => {
-      const normalized = path.normalize(candidate);
+      const normalized = path.posix.normalize(candidate);
       if (normalized === "/opt/superbee-npm/bin/node") return undefined;
       return fixture.realpath(normalized);
     },
@@ -175,6 +175,69 @@ test("a package-only npm prefix is a typed runtime-layout failure, not a generic
   assert.equal(result.state, "unknown");
   assert.equal(result.failure, "npm_prefix_runtime_unavailable");
   assert.match(result.reason, /npm global prefix.*running Node launcher/);
+});
+
+function windowsDurableFixture(overrides: Record<string, unknown> = {}) {
+  const prefix = (overrides.prefix as string | undefined) ?? String.raw`C:\Users\mike\AppData\Roaming\npm`;
+  const packageRoot = (overrides.packageRoot as string | undefined) ?? "superbee";
+  const command = (overrides.command as string | undefined) ?? "superbee";
+  const executable = path.win32.join(prefix, "node_modules", ...packageRoot.split("/"), "dist", "superbee.mjs");
+  const shim = path.win32.join(prefix, `${command}.cmd`);
+  const runtime = String.raw`C:\Program Files\nodejs\node.exe`;
+  const entries = new Map<string, string>([
+    [path.win32.normalize(prefix).toLowerCase(), path.win32.normalize(prefix)],
+    [path.win32.normalize(shim).toLowerCase(), path.win32.normalize(shim)],
+    [path.win32.normalize(executable).toLowerCase(), path.win32.normalize(executable)],
+    [path.win32.normalize(runtime).toLowerCase(), path.win32.normalize(runtime)],
+  ]);
+  return {
+    artifact_channel: "npm-package" as const,
+    executable_path: executable,
+    runtime_path: runtime,
+    env: { PATH: `${prefix};C:\\Windows\\System32`, PATHEXT: ".COM;.EXE;.BAT;.CMD" },
+    platform: "win32",
+    npm_prefix_global: () => prefix,
+    realpath: (candidate: string) => entries.get(path.win32.normalize(candidate).toLowerCase()),
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) => !["prefix", "packageRoot", "command"].includes(key))),
+  };
+}
+
+test("Windows npm authority proves the prefix shim but launches absolute Node plus package entry", () => {
+  const result = classifyPersistentInstallAuthority(windowsDurableFixture());
+  assert.equal(result.allowed, true);
+  assert.equal(result.state, "durable_global");
+  assert.deepEqual(result.evidence, {
+    npm_prefix: String.raw`C:\Users\mike\AppData\Roaming\npm`,
+    bin_path: String.raw`C:\Users\mike\AppData\Roaming\npm\superbee.cmd`,
+    executable_path: String.raw`C:\Users\mike\AppData\Roaming\npm\node_modules\superbee\dist\superbee.mjs`,
+    runtime_path: String.raw`C:\Program Files\nodejs\node.exe`,
+  });
+});
+
+test("Windows npm authority honors PATHEXT order and refuses an earlier shadowing command", () => {
+  const fixture = windowsDurableFixture();
+  const shadow = String.raw`C:\foreign\superbee.exe`;
+  const result = classifyPersistentInstallAuthority({
+    ...fixture,
+    env: { ...fixture.env, PATH: String.raw`C:\foreign;C:\Users\mike\AppData\Roaming\npm` },
+    realpath: (candidate) => path.win32.normalize(candidate).toLowerCase() === shadow.toLowerCase()
+      ? shadow
+      : fixture.realpath(candidate),
+  });
+  assert.equal(result.allowed, false);
+  assert.match(result.reason, /no managed PATH bin/);
+});
+
+test("Windows npm authority rejects transient and non-shim layouts", () => {
+  const fixture = windowsDurableFixture();
+  const cases = [
+    { ...fixture, env: { ...fixture.env, npm_command: "exec" } },
+    { ...fixture, executable_path: String.raw`C:\Users\mike\AppData\Local\npm-cache\_npx\1\node_modules\superbee\dist\superbee.mjs` },
+    { ...fixture, runtime_path: String.raw`C:\Users\mike\AppData\Local\npm-cache\_npx\1\node.exe` },
+    { ...fixture, npm_prefix_global: () => "relative" },
+    { ...fixture, realpath: (candidate: string) => candidate.toLowerCase().endsWith("superbee.cmd") ? undefined : fixture.realpath(candidate) },
+  ];
+  for (const candidate of cases) assert.equal(classifyPersistentInstallAuthority(candidate).allowed, false);
 });
 
 test("local-dev policy remains explicit while unknown fails closed", () => {
@@ -221,7 +284,7 @@ test("local-dev policy remains explicit while unknown fails closed", () => {
     ...durableFixture(),
     artifact_channel: "local-dev",
     realpath: (candidate: string) => {
-      const normalized = path.normalize(candidate);
+      const normalized = path.posix.normalize(candidate);
       if (normalized === "/opt/superbee-npm/bin/node") return "/opt/other-node/bin/node";
       return durableFixture().realpath(normalized);
     },

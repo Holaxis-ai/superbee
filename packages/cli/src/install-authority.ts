@@ -1,10 +1,10 @@
 // Read-only authority for persistent integration installs.
 //
 // `npm exec`/npx can put a transient cache bin on PATH, so PATH equality alone cannot authorize
-// durable host changes. npm-package bytes must prove the supported POSIX npm-global layout.
+// durable host changes. npm-package bytes must prove one supported platform npm-global layout.
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { delimiter, isAbsolute, join, normalize, sep } from "node:path";
+import path from "node:path";
 import type { ArtifactChannel } from "./build-identity.js";
 import { buildIdentityEnvelope } from "./build-identity.js";
 import { BIN_NAMES } from "./invocation.js";
@@ -84,20 +84,35 @@ function containsNpxCache(candidate: string | null | undefined): boolean {
   return candidate?.split(/[\\/]/).includes("_npx") ?? false;
 }
 
-function isScopedNpmPackageExecutable(candidate: string | null): boolean {
-  if (!candidate || !isAbsolute(candidate)) return false;
+function pathApi(platform: string): typeof path.posix | typeof path.win32 {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function isScopedNpmPackageExecutable(candidate: string | null, platform: string): boolean {
+  const paths = pathApi(platform);
+  if (!candidate || !paths.isAbsolute(candidate)) return false;
   const suffixes = [
-    join("lib", "node_modules", "superbee", "dist", "superbee.mjs"),
-    join("lib", "node_modules", "@holaxis", "aslite", "dist", "superbee.mjs"),
+    paths.join(...(platform === "win32" ? [] : ["lib"]), "node_modules", "superbee", "dist", "superbee.mjs"),
+    paths.join(...(platform === "win32" ? [] : ["lib"]), "node_modules", "@holaxis", "aslite", "dist", "superbee.mjs"),
   ];
-  const normalized = normalize(candidate);
-  return suffixes.some((suffix) => normalized.endsWith(`${sep}${suffix}`));
+  const normalized = paths.normalize(candidate);
+  return suffixes.some((suffix) => normalized.endsWith(`${paths.sep}${suffix}`));
+}
+
+function windowsPathExtensions(env: NodeJS.ProcessEnv): string[] {
+  const raw = env.PATHEXT?.trim() || ".COM;.EXE;.BAT;.CMD";
+  return raw
+    .split(";")
+    .map((extension) => extension.trim())
+    .filter(Boolean)
+    .map((extension) => (extension.startsWith(".") ? extension : `.${extension}`));
 }
 
 /** Classify an already-resolved running distribution. Performs no writes. */
 export function classifyPersistentInstallAuthority(
   input: PersistentInstallAuthorityInput,
 ): PersistentInstallAuthority {
+  const paths = pathApi(input.platform);
   const evidence = {
     npm_prefix: null,
     bin_path: null,
@@ -105,15 +120,16 @@ export function classifyPersistentInstallAuthority(
     runtime_path: input.runtime_path,
   };
   const installedLocalDev =
-    input.artifact_channel === "local-dev" && isScopedNpmPackageExecutable(input.executable_path);
+    input.artifact_channel === "local-dev"
+    && isScopedNpmPackageExecutable(input.executable_path, input.platform);
   if (input.artifact_channel === "local-dev" && !installedLocalDev) {
     return { allowed: true, state: "local_dev", reason: "developer build", evidence };
   }
   if (input.artifact_channel !== "npm-package" && !installedLocalDev) {
     return unknown(input, "running build channel cannot authorize persistent integration changes");
   }
-  if (input.platform !== "darwin" && input.platform !== "linux") {
-    return unknown(input, "durable npm-global layout is supported only on macOS and Linux");
+  if (input.platform !== "darwin" && input.platform !== "linux" && input.platform !== "win32") {
+    return unknown(input, "durable npm-global layout is unsupported on this platform");
   }
   if (input.env.npm_command === "exec" || input.env.npm_lifecycle_event === "npx") {
     return unknown(input, "npm-exec/npx environment cannot authorize a persistent install");
@@ -127,33 +143,49 @@ export function classifyPersistentInstallAuthority(
     return unknown(input, "running executable cannot be resolved as a durable file");
   }
   const prefixRaw = input.npm_prefix_global();
-  if (!prefixRaw || !isAbsolute(prefixRaw)) {
+  if (!prefixRaw || !paths.isAbsolute(prefixRaw)) {
     return unknown(input, "npm prefix --global did not return one absolute prefix");
   }
-  const prefix = input.realpath(normalize(prefixRaw));
-  if (!prefix || !isAbsolute(prefix)) {
+  const prefix = input.realpath(paths.normalize(prefixRaw));
+  if (!prefix || !paths.isAbsolute(prefix)) {
     return unknown(input, "npm global prefix cannot be resolved");
   }
 
   let selectedBin: string | null = null;
-  const prefixBin = normalize(join(prefix, "bin"));
+  const prefixBin = input.platform === "win32" ? paths.normalize(prefix) : paths.normalize(paths.join(prefix, "bin"));
   const resolvedPrefixBin = input.realpath(prefixBin);
   if (!resolvedPrefixBin) {
     return unknown(input, "npm global prefix bin directory cannot be resolved");
   }
-  const pathDirs = (input.env.PATH ?? "").split(delimiter).filter(Boolean);
+  const pathDirs = (input.env.PATH ?? "").split(paths.delimiter).filter(Boolean);
   for (const name of BIN_NAMES) {
     for (const dir of pathDirs) {
-      const candidate = normalize(join(dir, name));
-      const resolved = input.realpath(candidate);
-      if (resolved === undefined) continue;
-      const resolvedDir = input.realpath(normalize(dir));
-      if (resolved === executable && resolvedDir === resolvedPrefixBin) {
-        selectedBin = normalize(join(prefixBin, name));
+      const candidates = input.platform === "win32"
+        ? windowsPathExtensions(input.env).map((extension) => paths.normalize(paths.join(dir, `${name}${extension}`)))
+        : [paths.normalize(paths.join(dir, name))];
+      let found = false;
+      for (const candidate of candidates) {
+        const resolved = input.realpath(candidate);
+        if (resolved === undefined) continue;
+        found = true;
+        const resolvedDir = input.realpath(paths.normalize(dir));
+        if (input.platform === "win32") {
+          const expectedShim = paths.normalize(paths.join(prefixBin, `${name}.cmd`));
+          if (
+            resolvedDir === resolvedPrefixBin
+            && paths.normalize(candidate).toLowerCase() === expectedShim.toLowerCase()
+            && paths.normalize(resolved).toLowerCase() === expectedShim.toLowerCase()
+          ) {
+            selectedBin = expectedShim;
+          }
+        } else if (resolved === executable && resolvedDir === resolvedPrefixBin) {
+          selectedBin = paths.normalize(paths.join(prefixBin, name));
+        }
+        break;
       }
       // Command lookup stops at the first existing entry for an alias. A later matching entry
       // cannot rescue a shadowed one.
-      break;
+      if (found) break;
     }
     if (selectedBin !== null) break;
   }
@@ -161,24 +193,49 @@ export function classifyPersistentInstallAuthority(
     return unknown(input, "no managed PATH bin resolves to the running executable");
   }
 
-  const supportedBins = new Set(BIN_NAMES.map((name) => normalize(join(prefixBin, name))));
-  if (!supportedBins.has(selectedBin)) {
+  const supportedBins = new Set(BIN_NAMES.map((name) => {
+    const candidate = paths.normalize(paths.join(
+      prefixBin,
+      input.platform === "win32" ? `${name}.cmd` : name,
+    ));
+    return input.platform === "win32" ? candidate.toLowerCase() : candidate;
+  }));
+  if (!supportedBins.has(input.platform === "win32" ? selectedBin.toLowerCase() : selectedBin)) {
     return unknown(input, "managed PATH bin is outside the npm global prefix bin directory");
   }
   const packageExecutables = [
-    join(normalize(join(prefix, "lib", "node_modules", "superbee")), "dist", "superbee.mjs"),
-    join(normalize(join(prefix, "lib", "node_modules", "@holaxis", "aslite")), "dist", "superbee.mjs"),
+    paths.join(prefix, ...(input.platform === "win32" ? [] : ["lib"]), "node_modules", "superbee", "dist", "superbee.mjs"),
+    paths.join(prefix, ...(input.platform === "win32" ? [] : ["lib"]), "node_modules", "@holaxis", "aslite", "dist", "superbee.mjs"),
   ];
-  if (!packageExecutables.includes(executable)) {
+  const comparableExecutable = input.platform === "win32" ? paths.normalize(executable).toLowerCase() : paths.normalize(executable);
+  if (!packageExecutables.some((candidate) => (
+    input.platform === "win32" ? paths.normalize(candidate).toLowerCase() : paths.normalize(candidate)
+  ) === comparableExecutable)) {
     return unknown(input, "running executable is outside the supported npm global package layout");
   }
-  if (!input.runtime_path || !isAbsolute(input.runtime_path) || containsNpxCache(input.runtime_path)) {
+  if (!input.runtime_path || !paths.isAbsolute(input.runtime_path) || containsNpxCache(input.runtime_path)) {
     return unknown(input, "running Node executable is missing or transient");
   }
   const runtime = input.realpath(input.runtime_path);
-  const stableRuntimePath = normalize(join(prefixBin, "node"));
+  if (!runtime || containsNpxCache(runtime)) {
+    return unknown(input, "running Node executable cannot be resolved as one durable file");
+  }
+  if (input.platform === "win32") {
+    return {
+      allowed: true,
+      state: installedLocalDev ? "local_dev" : "durable_global",
+      reason: installedLocalDev ? "installed developer build" : "durable Windows npm-global executable",
+      evidence: {
+        npm_prefix: prefix,
+        bin_path: selectedBin,
+        executable_path: executable,
+        runtime_path: runtime,
+      },
+    };
+  }
+  const stableRuntimePath = paths.normalize(paths.join(prefixBin, "node"));
   const stableRuntime = input.realpath(stableRuntimePath);
-  if (!runtime || !stableRuntime || runtime !== stableRuntime) {
+  if (!stableRuntime || runtime !== stableRuntime) {
     return unknown(
       input,
       "npm global prefix does not provide the running Node launcher required for durable host integration",

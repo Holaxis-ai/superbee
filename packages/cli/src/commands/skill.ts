@@ -40,6 +40,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
+import path from "node:path";
 import { dirname, join } from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -196,33 +197,35 @@ export interface SkillTargets {
 function skillTargetsForName(
   dirName: string,
   scope: InstallScope,
-  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
+  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; platform?: string } = {},
 ): SkillTargets {
+  const platform = deps.platform ?? process.platform;
+  const paths = platform === "win32" ? path.win32 : path.posix;
   if (scope === "project") {
     const cwd = deps.cwd ?? process.cwd();
     return {
-      claude: join(cwd, ".claude", "skills", dirName),
-      codex: join(cwd, ".codex", "skills", dirName),
+      claude: paths.join(cwd, ".claude", "skills", dirName),
+      codex: paths.join(cwd, ".codex", "skills", dirName),
     };
   }
   const home = deps.home ?? homedir();
   const env = deps.env ?? process.env;
   return {
-    claude: join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env), "skills", dirName),
-    codex: join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env), "skills", dirName),
+    claude: paths.join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env, platform), "skills", dirName),
+    codex: paths.join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env, platform), "skills", dirName),
   };
 }
 
 export function skillTargets(
   scope: InstallScope,
-  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
+  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; platform?: string } = {},
 ): SkillTargets {
   return skillTargetsForName(SKILL_DIR_NAME, scope, deps);
 }
 
 export function legacySkillTargets(
   scope: InstallScope,
-  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv } = {},
+  deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; platform?: string } = {},
 ): SkillTargets {
   return skillTargetsForName(LEGACY_SKILL_DIR_NAME, scope, deps);
 }
@@ -809,6 +812,7 @@ export interface SkillDeps {
   cwd?: string;
   home?: string;
   env?: NodeJS.ProcessEnv;
+  platform?: string;
   /** Override the running-executable path the asset source derives from (tests). */
   executable?: string;
   /** Override the one pre-write persistent-install authority (tests). */
@@ -951,7 +955,10 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
   if (sub === "install") {
     const assets = resolveSkillAssets(deps.executable);
     const authority =
-      deps.installAuthority?.() ?? resolvePersistentInstallAuthority({ env: deps.env ?? process.env });
+      deps.installAuthority?.() ?? resolvePersistentInstallAuthority({
+        env: deps.env ?? process.env,
+        platform: deps.platform,
+      });
     if (!authority.allowed) {
       throw new CliError(
         "RUNTIME",

@@ -101,6 +101,37 @@ test("host config paths honor relocated roots and remain read-only", () => {
   for (const [, expected] of cases) assert.ok(seen.includes(expected));
 });
 
+test("Windows MCP targets use documented profile roots and AppData only for Claude Desktop", () => {
+  const home = String.raw`C:\Users\Mike`;
+  const environment: McpStatusEnvironment = {
+    home,
+    platform: "win32",
+    env: {
+      HOME: home,
+      USERPROFILE: home,
+      APPDATA: String.raw`C:\Users\Mike\AppData\Roaming`,
+    },
+  };
+  const expected = new Map([
+    ["codex", String.raw`C:\Users\Mike\.codex\config.toml`],
+    ["claude-code", String.raw`C:\Users\Mike\.claude.json`],
+    ["claude-desktop", String.raw`C:\Users\Mike\AppData\Roaming\Claude\claude_desktop_config.json`],
+    ["opencode", String.raw`C:\Users\Mike\.config\opencode\opencode.json`],
+  ]);
+  for (const [id, config] of expected) {
+    const result = inspectMcpHost(target(id), {
+      environment,
+      authority: () => unknown,
+      readFile: (candidate) => {
+        if (candidate === config) return "{}";
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      },
+      execFile: () => "[]",
+    });
+    assert.equal(result.config, config);
+  }
+});
+
 test("OpenCode recognizes the canonical JSONC filename without guessing comment syntax", () => {
   const command = stable.evidence.runtime_path!;
   const args = [stable.evidence.executable_path!, "mcp"];
