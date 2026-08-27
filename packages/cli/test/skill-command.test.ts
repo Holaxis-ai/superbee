@@ -243,8 +243,8 @@ test("old-only owned installs migrate atomically to canonical and status reports
   const before = await runSkill(["status"], { cwd, executable });
   assert.equal(before.skill.hosts.claude_code.canonical.state, "absent");
   assert.equal(before.skill.hosts.claude_code.legacy.state, "installed");
-  assert.match(before.skill.hosts.claude_code.canonical.path, /skills\/superbee$/);
-  assert.match(before.skill.hosts.claude_code.legacy.path, /skills\/aslite$/);
+  assert.match(before.skill.hosts.claude_code.canonical.path, /skills[\\/]superbee$/);
+  assert.match(before.skill.hosts.claude_code.legacy.path, /skills[\\/]aslite$/);
 
   const receipt = await runSkill(["install"], { cwd, executable });
   assert.equal(receipt.skill.hosts.claude_code.migrated, true);

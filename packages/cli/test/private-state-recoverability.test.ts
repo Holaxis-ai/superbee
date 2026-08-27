@@ -115,6 +115,7 @@ interface Fixture extends BoundaryFixture {
 const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
   {
     label: "R1 — the bundle would ENCLOSE a guarded root",
+    skip: process.platform === "win32" ? "POSIX project-creation recovery chain; Windows containment has dedicated coverage" : undefined,
     trigger: (f) => ({ argv: ["init", "--dir", f.home, "--json"], commandLine: `superbee init --dir '${f.home}' --json` }),
     expectStatus: 5,
     help: /mkdir -p ~\/projects\/<name> && cd ~\/projects\/<name> && superbee init --create-only --dir \.superbee/,
@@ -133,6 +134,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
   },
   {
     label: "R2 — the bundle IS a guarded root",
+    skip: process.platform === "win32" ? "POSIX private-root recovery prose; Windows containment has dedicated coverage" : undefined,
     trigger: (f) => ({
       argv: ["init", "--dir", f.stateRoot, "--json"],
       commandLine: `superbee init --dir '${f.stateRoot}' --json`,

@@ -690,8 +690,8 @@ function buildPublishedAsliteOpenCodePluginSource(
 
 function isPublishedAsliteOpenCodeProgram(program: string): boolean {
   if (program === "aslite" || program === "agentstate-lite") return true;
-  if (!isAbsolute(program) || normalize(program) !== program) return false;
-  const portable = program.split(sep).join("/");
+  if (!isAbsolute(program)) return false;
+  const portable = normalize(program).split(sep).join("/");
   return /\/node_modules\/@holaxis\/aslite\/dist\/agentstate-lite\.mjs$/.test(portable);
 }
 

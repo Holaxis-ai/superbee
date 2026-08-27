@@ -250,7 +250,11 @@ test("built bare MCP server resolves documents and Views through the private wor
   );
 });
 
-test("literal PATH `aslite mcp` reports the selected CLI release and never rewrites host config", async (t) => {
+test("literal PATH `aslite mcp` reports the selected CLI release and never rewrites host config", {
+  skip: process.platform === "win32"
+    ? "MCP registrations launch absolute Node plus the package entry; cmd.exe cannot be a transparent stdio transport"
+    : undefined,
+}, async (t) => {
   const base = await mkdtemp(path.join(os.tmpdir(), "aslite-mcp-path-"));
   const root = path.join(base, "bundle");
   const binDir = path.join(base, "bin");

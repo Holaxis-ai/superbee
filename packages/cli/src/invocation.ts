@@ -18,8 +18,8 @@
 // This resolves against the REAL running module (import.meta.url / process.argv[1]) — no committed
 // shim, no `dist/axi`. The former phantom-shim resolver is gone.
 import { fileURLToPath } from "node:url";
-import { realpathSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { delimiter, dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { renderGeneratedHookToken } from "./hook-compatibility.js";
 
@@ -81,19 +81,79 @@ export function currentExecutableRealPath(): string | undefined {
   return argv1 ? realOrUndefined(argv1) : undefined;
 }
 
-/**
- * If a managed bin name (`superbee` or a supported legacy alias) is found on PATH and its realpath matches the
- * running executable, return that bare name (portable). Otherwise undefined. POSIX PATH scan — the
- * target platforms are macOS/Linux; Windows PATHEXT is not handled (the tool ships as an .mjs).
- */
+function windowsPathExtensions(): string[] {
+  const raw = process.env.PATHEXT?.trim() || ".COM;.EXE;.BAT;.CMD";
+  return raw.split(";").map((value) => value.trim()).filter(Boolean)
+    .map((value) => value.startsWith(".") ? value : `.${value}`);
+}
+
+function windowsCmdShimTargetsExecutable(candidate: string, executable: string): boolean {
+  let source: string;
+  try {
+    source = readFileSync(candidate, "utf8");
+  } catch {
+    return false;
+  }
+  const fold = (value: string): string => value.replaceAll("\\", "/").toLowerCase();
+  const lines = source.replaceAll("\r\n", "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  const direct = ["@echo off", `"${process.execPath}" "${executable}" %*`];
+  if (fold(lines.join("\n")) === fold(direct.join("\n"))) return true;
+
+  const relativeEntries = [
+    ["node_modules", "superbee", "dist", "superbee.mjs"],
+    ["node_modules", "@holaxis", "aslite", "dist", "superbee.mjs"],
+  ] as const;
+  return relativeEntries.some((parts) => {
+    const token = `%dp0%\\${parts.join("\\")}`;
+    if (realOrUndefined(join(dirname(candidate), ...parts)) !== executable) return false;
+    const fixedLines = [
+      /^@echo off$/i,
+      /^goto start$/i,
+      /^:find_dp0$/i,
+      /^set dp0=%~dp0$/i,
+      /^exit \/b$/i,
+      /^:start$/i,
+      /^setlocal$/i,
+      /^call :find_dp0$/i,
+      /^if exist "%dp0%\\node\.exe" \($/i,
+      /^set "_prog=%dp0%\\node\.exe"$/i,
+      /^\) else \($/i,
+      /^set "_prog=node"$/i,
+      /^set pathext=%pathext:;\.js;=;%$/i,
+      /^\)$/,
+    ];
+    const final = new RegExp(
+      `^endlocal & goto #_undefined_# 2>nul \\|\\| title %comspec% & "%_prog%"\\s+"${token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}" %\\*$`,
+      "i",
+    );
+    return lines.every((line) => fixedLines.some((pattern) => pattern.test(line)) || final.test(line))
+      && lines.some((line) => final.test(line));
+  });
+}
+
+/** If a managed current or legacy bin on PATH resolves to this executable, return its bare name. */
 export function managedBinNameOnPath(): string | undefined {
   const exe = currentExecutableRealPath();
   if (!exe) return undefined;
   const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
   for (const name of BIN_NAMES) {
     for (const dir of dirs) {
-      const resolved = realOrUndefined(join(dir, name));
-      if (resolved && resolved === exe) return name;
+      const candidates = process.platform === "win32"
+        ? windowsPathExtensions().map((extension) => join(dir, `${name}${extension}`))
+        : [join(dir, name)];
+      let found = false;
+      for (const candidate of candidates) {
+        const resolved = realOrUndefined(candidate);
+        if (!resolved) continue;
+        found = true;
+        if (process.platform === "win32") {
+          if (candidate.toLowerCase().endsWith(".cmd") && windowsCmdShimTargetsExecutable(candidate, exe)) return name;
+        } else if (resolved === exe) {
+          return name;
+        }
+        break;
+      }
+      if (found) break;
     }
   }
   return undefined;

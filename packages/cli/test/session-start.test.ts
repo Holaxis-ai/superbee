@@ -134,7 +134,7 @@ function assertPathIndependentLocalLaunch(command: string): string[] {
   const tokens = tokenizeGeneratedHookCommand(command);
   assert.ok(tokens, `expected generated hook command: ${command}`);
   assert.equal(tokens.length, 3);
-  assert.equal(path.basename(tokens[0]!), "node");
+  assert.equal(path.basename(tokens[0]!).toLowerCase(), process.platform === "win32" ? "node.exe" : "node");
   assert.equal(tokens[1], realpathSync(cliBin));
   assert.equal(tokens[2], "session-start");
   assert.equal(path.isAbsolute(tokens[0]!), true);
@@ -210,7 +210,11 @@ test("bare binding session-start and home retain the private owner state, not th
     assert.ok(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.b.board))), "private board marker was refreshed");
     assert.equal(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.a.board))), null, "public board marker was untouched");
     const rendered = await withHome(homeDir, () => withCwd(topo.a.root, () => runHome(homeDir, [])));
-    assert.ok(rendered.includes(`root: ${topo.b.board}`), "bare home rendered the private bundle");
+    const renderedRoot = /^\s*root: (.+)$/m.exec(rendered)?.[1];
+    assert.ok(renderedRoot, "bare home rendered a bundle root");
+    const [renderedStat, expectedStat] = await Promise.all([stat(renderedRoot!), stat(topo.b.board)]);
+    assert.equal(renderedStat.dev, expectedStat.dev, "bare home rendered the private bundle device");
+    assert.equal(renderedStat.ino, expectedStat.ino, "bare home rendered the private bundle identity");
     assert.ok(await withHome(homeDir, () => readCache(resolveBundleKey(topo.b.board))), "bare home refreshed the private board cache");
     assert.equal(await withHome(homeDir, () => readCache(resolveBundleKey(topo.a.board))), null, "bare home never wrote public board state");
   } finally {

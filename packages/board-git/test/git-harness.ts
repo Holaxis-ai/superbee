@@ -174,7 +174,12 @@ export interface TopologyOptions {
 
 /** Windows can retain short-lived Git/process handles after a fixture exits. Bound cleanup only. */
 function cleanupTopology(dir: string): Promise<void> {
-  return rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  return rm(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === "win32" ? 20 : 5,
+    retryDelay: process.platform === "win32" ? 150 : 100,
+  });
 }
 
 /**

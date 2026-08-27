@@ -16,7 +16,7 @@
 //  - the WRONG-TARGET guard: sharing is claimed ONLY for the repo's conventional board
 //    (`<top>/.superbee` or legacy `<top>/.agentstate-lite`); any other served bundle inside a repo is `unscoped` (no claim).
 import path from "node:path";
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import type { SharingSummary, WorkspaceSummaryEntry } from "@superbee/ui-server";
 import {
   BOARD_BRANCH,
@@ -47,6 +47,13 @@ function realOr(p: string): string {
 
 /** Compare physical path spellings using the host filesystem's path identity rules. */
 function samePhysicalPath(left: string, right: string): boolean {
+  try {
+    const a = statSync(left);
+    const b = statSync(right);
+    if (a.dev === b.dev && a.ino === b.ino) return true;
+  } catch {
+    // Missing paths fall through to the best available lexical/realpath comparison.
+  }
   const a = path.resolve(realOr(left));
   const b = path.resolve(realOr(right));
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;

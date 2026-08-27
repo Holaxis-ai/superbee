@@ -25,6 +25,7 @@ import { commandReference } from "../src/reference.js";
 import { buildHomeView } from "../src/commands/home.js";
 import { applyRecipe } from "../src/recipes.js";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
+import { shellArg } from "../src/invocation.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 
@@ -701,7 +702,7 @@ test("new: missing required field is rejected by VALIDATION, not by machinery (U
         assert.equal(err.code, "USAGE");
         assert.match(err.message, /does not satisfy the 'Context Note' kind/);
         assert.match(err.message, /title/);
-        assert.ok(err.help?.endsWith(`superbee new 'Context Note' --help --dir '${dir}'`));
+        assert.ok(err.help?.endsWith(`superbee new ${shellArg("Context Note")} --help --dir ${shellArg(dir)}`));
         return true;
       },
     );
@@ -1322,7 +1323,7 @@ test("--remote: new + kinds against a served bundle, parity with the same operat
         () => newCommand(["Context Note", "missing", "--remote", url]),
         (err: unknown) => {
           assert.ok(err instanceof CliError);
-          assert.ok(err.help?.endsWith(`superbee new 'Context Note' --help --remote '${url}'`));
+          assert.ok(err.help?.endsWith(`superbee new ${shellArg("Context Note")} --help --remote ${shellArg(url)}`));
           return true;
         },
       );

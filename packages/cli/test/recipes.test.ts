@@ -260,7 +260,7 @@ test("recipes: lists context-notes with applied:false on a bare bundle, applied:
     assert.equal(rowsBefore[0]!.version, "1");
     assert.equal(rowsBefore[0]!.applied, false);
     assert.deepEqual(rowsBefore[0]!.commands, {
-      add_to_bundle: `${cliInvocation()} recipe add context-notes --dir '${dir}'`,
+      add_to_bundle: `${cliInvocation()} recipe add context-notes --dir ${shellArg(dir)}`,
     });
 
     await recipe(["add", "context-notes", "--dir", dir], { stdout: () => {} });
@@ -269,10 +269,10 @@ test("recipes: lists context-notes with applied:false on a bare bundle, applied:
     const rowsAfter = after.recipes as Array<Record<string, unknown>>;
     assert.equal(rowsAfter[0]!.applied, true);
     assert.deepEqual(rowsAfter[0]!.commands, {
-      add_to_bundle: `${cliInvocation()} recipe add context-notes --dir '${dir}'`,
+      add_to_bundle: `${cliInvocation()} recipe add context-notes --dir ${shellArg(dir)}`,
     });
     assert.deepEqual(after.help, [
-      `${cliInvocation()} recipe add <name-or-path> --dir '${dir}'`,
+      `${cliInvocation()} recipe add <name-or-path> --dir ${shellArg(dir)}`,
     ]);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -309,11 +309,11 @@ test("recipes: no-bundle inventory succeeds without opening or creating a bundle
     views: [],
   });
   assert.deepEqual(contextNotes.commands, {
-    create_bundle: `${cliInvocation()} init --create-only --recipe context-notes --dir '.superbee'`,
+    create_bundle: `${cliInvocation()} init --create-only --recipe context-notes --dir ${shellArg(".superbee")}`,
     add_to_bundle: `${cliInvocation()} recipe add context-notes`,
   });
   assert.deepEqual(result.help, [
-    `${cliInvocation()} init --create-only --recipe <name> --dir '.superbee'`,
+    `${cliInvocation()} init --create-only --recipe <name> --dir ${shellArg(".superbee")}`,
     `${cliInvocation()} recipe add <name-or-path>`,
   ]);
 });
@@ -1094,7 +1094,7 @@ test("recipe add <path>: a version bump with changed convention content reports 
     assert.match(String(warnings[0]!.message), /conventions\/widget\.md/);
     assert.match(String(warnings[0]!.message), /recipe evolve/);
     assert.deepEqual(second.commands, {
-      plan_evolution: `${cliInvocation()} recipe evolve '${recipeDir}' --dir '${bundleDir}'`,
+      plan_evolution: `${cliInvocation()} recipe evolve ${shellArg(recipeDir)} --dir ${shellArg(bundleDir)}`,
     });
 
     assert.equal(await readFile(installedPath, "utf8"), installedBefore);
@@ -2160,10 +2160,10 @@ test("--remote: recipe add against a served bundle, idempotent parity with the s
         localRows.map(({ commands: _, ...row }) => row),
       );
       assert.deepEqual(remoteRows[0]!.commands, {
-        add_to_bundle: `${cliInvocation()} recipe add context-notes --remote '${url}'`,
+        add_to_bundle: `${cliInvocation()} recipe add context-notes --remote ${shellArg(url)}`,
       });
       assert.deepEqual(remoteRecipes.help, [
-        `${cliInvocation()} recipe add <name-or-path> --remote '${url}'`,
+        `${cliInvocation()} recipe add <name-or-path> --remote ${shellArg(url)}`,
       ]);
     } finally {
       await handle.close();

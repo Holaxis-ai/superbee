@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@superbee/core";
+import { shellArg } from "../src/invocation.js";
 
 const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 const T = "2026-07-01T00:00:00.000Z";
@@ -140,7 +141,7 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
     assert.match(missingProgress.stdout, /progress_status/);
     assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
-    assert.match(missingProgress.stdout, /new 'Task' --help --dir '/);
+    assert.ok(missingProgress.stdout.includes(`new ${shellArg("Task")} --help --dir ${shellArg(dir)}`));
 
     for (const duplicateFields of [
       ["--progress_status", "todo", "--superbee_progress_status", "done"],

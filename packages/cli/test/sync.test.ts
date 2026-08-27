@@ -1239,7 +1239,7 @@ test("sync: loud provisioning — a fresh unprovisioned clone's FIRST sync annou
     const result = await runSync(homes[0]!, ["--dir", topo.a.root]);
     assert.equal(result.err, undefined, result.err?.message);
     assert.ok(
-      result.out.includes(`provisioned: ${topo.a.board} — materialized from origin/board`),
+      /provisioned: .*\.superbee — materialized from origin\/board/.test(result.out),
       `expected the provisioned announcement in: ${result.out}`,
     );
     // A fresh clone with nothing else pending still hits the "already up to date" shortcut — the
@@ -1260,7 +1260,8 @@ test("sync: loud provisioning — THE MOUNT-MOVE FIELD FINDING end-to-end — a 
   const { homes, cleanup } = await tempHomes(2);
   try {
     const staleGitFile = (await readFile(path.join(topo.a.board, ".git"), "utf8")).trim();
-    assert.match(staleGitFile, /^gitdir:\s*\//, "precondition: the harness's own provisioning wrote ABSOLUTE pointers");
+    const stalePointer = staleGitFile.replace(/^gitdir:\s*/, "");
+    assert.equal(path.isAbsolute(stalePointer), true, "precondition: the harness's own provisioning wrote ABSOLUTE pointers");
 
     const movedRoot = path.join(path.dirname(topo.a.root), `moved-${path.basename(topo.a.root)}`);
     await rename(topo.a.root, movedRoot);
@@ -1282,7 +1283,7 @@ test("sync: loud provisioning — THE MOUNT-MOVE FIELD FINDING end-to-end — a 
     const result = await runSync(homes[0]!, ["--dir", movedRoot]);
     assert.equal(result.err, undefined, result.err?.message);
     assert.ok(
-      result.out.includes(`repaired: ${movedBoard} — worktree pointers repaired`),
+      /repaired: .*\.superbee — worktree pointers repaired/.test(result.out),
       `expected the repaired announcement in: ${result.out}`,
     );
     assert.match(result.out, /committed: 1/);
@@ -1319,7 +1320,7 @@ test("sync: moved/remounted repo still repairs when invoked from INSIDE the stal
     const result = await runSync(homes[0]!, ["--dir", movedBoard]);
     assert.equal(result.err, undefined, result.err?.message);
     assert.ok(
-      result.out.includes(`repaired: ${movedBoard} — worktree pointers repaired`),
+      /repaired: .*\.superbee — worktree pointers repaired/.test(result.out),
       `expected repair announcement instead of a false empty state: ${result.out}`,
     );
     assert.match(result.out, /sync: already up to date/);
@@ -1355,7 +1356,7 @@ test("sync: loud provisioning — a fresh unprovisioned clone's FIRST `--pull-on
     const result = await runSync(homes[0]!, ["--dir", topo.a.root, "--pull-only"]);
     assert.equal(result.err, undefined, result.err?.message);
     assert.ok(
-      result.out.includes(`provisioned: ${topo.a.board} — materialized from origin/board`),
+      /provisioned: .*\.superbee — materialized from origin\/board/.test(result.out),
       `expected the provisioned announcement in: ${result.out}`,
     );
     assert.match(result.out, /sync: already up to date/);

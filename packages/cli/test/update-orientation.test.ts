@@ -111,6 +111,13 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
     "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
 })}\n`;
 
+const PLATFORM_HOME_BASELINE_TOON = process.platform === "win32"
+  ? HOME_BASELINE_TOON.replaceAll("--dir '.superbee'", "--dir .superbee")
+  : HOME_BASELINE_TOON;
+const PLATFORM_HOME_BASELINE_JSON = process.platform === "win32"
+  ? HOME_BASELINE_JSON.replaceAll("--dir '.superbee'", "--dir .superbee")
+  : HOME_BASELINE_JSON;
+
 function successfulCheck(
   status: "current" | "deprecated" | "successor_not_ready" | "upgrade_available" | "rollback_available" =
     "upgrade_available",
@@ -776,8 +783,8 @@ test("home bytes stay exact and notice is one five-field block immediately after
     identity: () => ({ version: "0.1.0-pre.3", channel: "local-dev" as const }),
   };
   const baseline = buildHomeView(deps, null);
-  assert.equal(render(baseline, "default"), HOME_BASELINE_TOON);
-  assert.equal(render(baseline, "json"), HOME_BASELINE_JSON);
+  assert.equal(render(baseline, "default"), PLATFORM_HOME_BASELINE_TOON);
+  assert.equal(render(baseline, "json"), PLATFORM_HOME_BASELINE_JSON);
 
   const notice = projectUpdateNotice(successfulCheck())!;
   const withNotice = buildHomeView(
