@@ -877,15 +877,16 @@ async function runInstalledProof(spec) {
     );
 
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
+    const normalizedInstalledReadme = installedReadme.replaceAll("\r\n", "\n");
     assert.equal(
-      installedReadme.match(/^## License\n\n([^\n]+)$/m)?.[1],
+      normalizedInstalledReadme.match(/^## License\n\n([^\n]+)$/m)?.[1],
       `${manifest.license} \u00a9 2026 Holaxis`,
       "the installed README license notice must agree with the published package metadata",
     );
-    assert.match(installedReadme, /ask your AI agent to run `superbee setup`/);
-    assert.match(installedReadme, /ask your agent for what\s+you need/i);
-    assert.match(installedReadme, /translate your\s+instructions into CLI commands/i);
-    assert.match(installedReadme, /^\s*npm install -g superbee$/m);
+    assert.match(normalizedInstalledReadme, /ask your AI agent to run `superbee setup`/);
+    assert.match(normalizedInstalledReadme, /ask your agent for what\s+you need/i);
+    assert.match(normalizedInstalledReadme, /translate your\s+instructions into CLI commands/i);
+    assert.match(normalizedInstalledReadme, /^\s*npm install -g superbee$/m);
 
     const setupBeforeIntegrations = parseJson(
       (
