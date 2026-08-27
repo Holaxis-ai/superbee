@@ -20,6 +20,12 @@ know invisible to the humans they work for. Superbee fixes all three:
   pages with derived backlinks, a live activity feed, and launchable bundle Views. `superbee
   sync` shares the bundle with teammates on a dedicated `board` branch — pulling their changes
   and pushing yours without touching your code.
+- **Views your agent generates.** Ask for a dashboard and the agent builds one: a self-contained
+  HTML View, registered in the bundle as a typed document, that `superbee ui` launches in a
+  sandboxed iframe. A data View reads live bundle content through a narrow read-only bridge and
+  refreshes as documents change — a roadmap board, a review queue, a project pulse, shaped for the
+  question you actually asked instead of a fixed set of built-in screens. Views are bundle
+  content, so they travel with `sync` and open the same way for a teammate's agent.
 - **Agent-native by design.** The CLI follows the AXI principles for agent-facing tools:
   structured, token-lean output; result counts and truncation with explicit escape hatches;
   idempotent mutations; structured errors with a small, stable exit-code taxonomy. Agents get
@@ -72,6 +78,7 @@ instructions into CLI commands. For example:
 - "Write up what we decided about the auth design as a doc, and link it to the task."
 - "What did the last session leave off on? Check the context notes."
 - "Sync the board so my teammate's agent sees this."
+- "Build me a dashboard of the open tasks by owner, and open it."
 
 Behind those requests, the agent drives a small, predictable CLI: `init` creates a bundle in a
 conventional `.superbee/` folder (discovered automatically, the way git finds `.git`); `new`,
