@@ -16,11 +16,12 @@ answer.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
 5. Develop on macOS or Linux with Node.js 20 or newer. Windows is not a supported development or
-   runtime host: the private-state layer verifies its containment through POSIX file modes that
-   Windows does not distinguish, the published package declares `"os": ["!win32"]`, and no CI lane
-   runs there. Windows support is tracked work; adding it means substituting a per-user
-   `%LOCALAPPDATA%` location for the mode assertion and adding a windows-latest lane, not relaxing
-   the assertion.
+   runtime host: the private-state layer verifies its containment through POSIX file modes, Node
+   cannot verify that invariant on Windows because it reports synthesized mode bits there, the
+   published package declares `"os": ["!win32"]`, and no CI lane runs there. Windows support is
+   tracked work; adding it means holding the same containment property through a per-user
+   `%LOCALAPPDATA%` location, which Windows ACLs enforce per user, and adding a windows-latest
+   lane - not relaxing the assertion.
 
 A fresh clone does not need an installed Agent Skill or a project bundle to build, test, or submit
 code. It does need the maintainer-supplied bundle or an exact scoped handoff to claim project

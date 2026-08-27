@@ -16,8 +16,8 @@ under test. The honest breakdown is below — read it before depending on anythi
 ## Install
 
 **Requirements: macOS or Linux, and Node.js 20 or newer.** Windows is not supported yet, and the
-package refuses to install there rather than failing on first use; see
-[What's early or experimental](#whats-early-or-experimental).
+package refuses to install there rather than installing one whose private-state operations fail;
+see [What's early or experimental](#whats-early-or-experimental).
 
 Install the test-user prerelease from npm. The package puts the stable command `superbee` on
 `PATH`; its optional Agent Skill teaches Claude Code and Codex how to use that command without
@@ -212,14 +212,17 @@ and preserves existing legacy bundles without rewriting their declared edition.
 
 - **Everything is pre-1.0.** The npm package is a prerelease and breaking changes are likely.
 - **Windows is not supported.** Superbee's private-state layer keeps per-user operational records
-  outside any project bundle and verifies that containment through POSIX file modes. Windows does
-  not distinguish those modes - Node reports `0666` there for a file created `0600` and for a
-  directory created `0700` alike - so the check can never pass and every private-state read and
-  write fails. The package therefore declares `"os": ["!win32"]`, and `npm install -g superbee`
-  stops with `EBADPLATFORM` instead of installing something that throws the first time it runs.
-  Substituting a per-user location under `%LOCALAPPDATA%` for the mode assertion, plus a
-  windows-latest CI lane, is tracked work rather than a decision to stay POSIX-only. Under WSL2 npm
-  sees a Linux platform and installs the package; that path is untested and no CI lane covers it.
+  outside any project bundle and verifies that containment through POSIX file modes. Node cannot
+  verify that invariant on Windows: it reports synthesized mode bits there, `0666` for a file
+  created `0600` and for a directory created `0700` alike, so the check can never pass and every
+  private-state read and write fails. The package therefore declares `"os": ["!win32"]`, so
+  `npm install -g superbee` stops with `EBADPLATFORM` instead of installing a package whose
+  private-state operations fail. This is a limit of the POSIX-mode check, not of Windows access
+  control: the tracked remediation keeps the same containment property through a per-user location
+  under `%LOCALAPPDATA%`, which Windows ACLs enforce per user. That work, plus a windows-latest CI
+  lane, is what supporting Windows means; the boundary is not a decision to stay POSIX-only. Under
+  WSL2 npm sees a Linux platform and installs the package; that path is untested and no CI lane
+  covers it.
 - **Recipes as composition** is a thesis under test, not a result. The repository includes
   small first-party definitions-only packages, including a Kind-plus-View reference, but package
   dependencies, upgrades, migrations, and marketplace discovery remain future work. "Cookbooks"
