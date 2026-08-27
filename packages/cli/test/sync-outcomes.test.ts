@@ -214,7 +214,7 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
         assert.notEqual(typeof built, "string", `${f.key}#${f.variant}: expected a CliError`);
         if (process.platform === "win32" && f.key.startsWith("provision.")) {
           const rendered = renderErrorEnvelope(toEnvelope(built as CliError));
-          assert.match(rendered, /Directory\]::Move/, `${f.key}#${f.variant}: Windows move-aside remedy`);
+          assert.match(rendered, /Rename-Item -LiteralPath/, `${f.key}#${f.variant}: Windows move-aside remedy`);
           assert.match(rendered, /\.superbee\.bak/, `${f.key}#${f.variant}: backup destination`);
           continue;
         }

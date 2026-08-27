@@ -848,12 +848,17 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
       fs.readFile(path.join(base, ".config", "opencode", "plugins", "axi-superbee.js"), "utf8"),
     );
     assert.ok(plugin.includes("axi-sdk-js managed opencode plugin: superbee"));
-    assert.ok(plugin.includes(`const command = ${JSON.stringify(launchTokens[0])}`));
-    assert.ok(plugin.includes(`const commandArgs = ${JSON.stringify(launchTokens.slice(1))}`));
+    const pluginCommand = JSON.parse(/^const command = (.+);$/m.exec(plugin)?.[1] ?? "null") as string | null;
+    const pluginArgs = JSON.parse(/^const commandArgs = (.+);$/m.exec(plugin)?.[1] ?? "null") as string[] | null;
+    assert.ok(pluginCommand);
+    assert.ok(pluginArgs);
+    assert.equal(realpathSync(pluginCommand!), realpathSync(launchTokens[0]!));
+    assert.equal(realpathSync(pluginArgs![0]!), realpathSync(launchTokens[1]!));
+    assert.deepEqual(pluginArgs!.slice(1), launchTokens.slice(2));
 
     const minimalPathRun = spawnSync(
       process.platform === "win32" ? "cmd.exe" : "/bin/sh",
-      process.platform === "win32" ? ["/d", "/s", "/c", entry.command] : ["-c", entry.command],
+      process.platform === "win32" ? ["/d", "/s", "/c", `"${entry.command}"`] : ["-c", entry.command],
       {
       cwd: base,
       env: {
@@ -928,7 +933,7 @@ test("user hook operations honor relocated config homes and global remains an al
     await hook(["status", "--scope", "global"], { ...location, stdout: status.stdout });
     assert.match(status.out(), /installed: true/);
     assert.match(status.out(), /scope: user/);
-    assert.match(status.out(), new RegExp(codexHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.ok(status.out().includes(codexHome.replaceAll("\\", "\\\\")));
 
     await assert.rejects(() => readFile(path.join(homeDir, ".claude", "settings.json")));
     await assert.rejects(() => readFile(path.join(homeDir, ".codex", "hooks.json")));

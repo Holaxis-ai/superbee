@@ -63,7 +63,7 @@ function runEmitted(
 ): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(
     process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "sh",
-    process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command],
+    process.platform === "win32" ? ["/d", "/s", "/c", `"${command}"`] : ["-c", command],
     {
     cwd: opts.cwd,
     env: opts.env,

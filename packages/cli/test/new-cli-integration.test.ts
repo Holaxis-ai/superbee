@@ -141,13 +141,18 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
     assert.match(missingProgress.stdout, /progress_status/);
     assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
-    const fixingCommand = /^  help: (.+)$/m.exec(missingProgress.stdout)?.[1];
-    assert.ok(fixingCommand, `missing-field refusal carries a fixing command: ${missingProgress.stdout}`);
+    const renderedFixingCommand = /^  help: (.+)$/m.exec(missingProgress.stdout)?.[1];
+    assert.ok(renderedFixingCommand, `missing-field refusal carries a fixing command: ${missingProgress.stdout}`);
+    // TOON quotes scalars containing a Windows drive/path command; decode that presentation
+    // envelope before checking the command itself.
+    const fixingCommand = renderedFixingCommand!.startsWith('"')
+      ? JSON.parse(renderedFixingCommand!) as string
+      : renderedFixingCommand!;
     const validTargets = [dir, realpathSync(dir)].map((target) =>
       `new ${shellArg("Task")} --help --dir ${shellArg(target)}`
     );
     assert.ok(
-      validTargets.some((tail) => fixingCommand!.endsWith(tail)),
+      validTargets.some((tail) => fixingCommand.endsWith(tail)),
       `fixing command retains the requested physical target: ${fixingCommand}`,
     );
 

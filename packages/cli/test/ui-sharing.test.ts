@@ -15,6 +15,7 @@ import path from "node:path";
 
 import { classifySharing, createSharingLoader, createWorkspacesLoader, humanizeRemote } from "../src/ui/sharing.js";
 import { credentialsDir } from "../src/credentials.js";
+import { loadCatalog } from "../src/catalog.js";
 import { ensureUserStateRoot } from "../src/user-state.js";
 import { withIsolatedUserEnv } from "./support/user-env.js";
 
@@ -280,6 +281,7 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
       }),
     );
     await withIsolatedUserEnv(home, async () => {
+      assert.equal((await loadCatalog(home)).entries.length, 2, "explicit profile catalog is readable");
       const rows = await createWorkspacesLoader(bundleRoot, home)();
       assert.deepEqual(rows, [
         { label: "alpha", path: bundleRoot, open: true },

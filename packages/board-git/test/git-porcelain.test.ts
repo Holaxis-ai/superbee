@@ -500,14 +500,17 @@ test("provisionBoardWorktree: a FOREIGN repo's board worktree at .superbee is re
     assert.match(err.message, new RegExp(topo.a.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.ok(err.help, "carries a fixing command");
     if (process.platform === "win32") {
-      assert.match(err.help, /^powershell\.exe -NoProfile -NonInteractive -Command "\$ErrorActionPreference='Stop'; Move-Item -LiteralPath /);
+      assert.match(err.help, /^powershell\.exe -NoProfile -NonInteractive -Command "\$ErrorActionPreference='Stop'; Rename-Item -LiteralPath /);
     } else {
       assert.ok(err.help.startsWith(`mv '${topo.a.board}' '${topo.a.board}.bak'`));
     }
 
     const command = err.help.split("  # ")[0]!;
     if (process.platform === "win32") {
-      execFileSync("cmd.exe", ["/d", "/s", "/c", command], { cwd: foreignRoot, stdio: "pipe" });
+      // cmd.exe /S requires an outer quote pair around a command that itself contains quotes;
+      // without it, cmd strips the PowerShell -Command delimiter and can return zero without
+      // executing the intended script.
+      execFileSync("cmd.exe", ["/d", "/s", "/c", `"${command}"`], { cwd: foreignRoot, stdio: "pipe" });
     } else {
       execFileSync("/bin/sh", ["-c", command], { cwd: foreignRoot, stdio: "pipe" });
     }
@@ -721,7 +724,7 @@ test("provisionBoardWorktree: a worktree signature repair CANNOT fix refuses wit
       "reworded to name what was actually observed",
     );
     assert.doesNotMatch(err.message, /is not the shared board checkout/i, "distinct from the plain-foreign wording");
-    assert.match(err.help ?? "", process.platform === "win32" ? /Move-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
     assert.ok(existsSync(path.join(topo.a.board, "tasks", "seed-one.md")), "pre-existing bundle CONTENT is untouched");
   } finally {
     await topo.cleanup();
@@ -754,7 +757,7 @@ test("provisionBoardWorktree: a HEALTHY worktree checked out to a DIFFERENT bran
     assert.match(err.message, /not checked out to the '?board'? branch/i, "names the actual observed state");
     assert.doesNotMatch(err.message, /stale pointers/i, "distinct from the unrepairable-pointers wording");
     assert.doesNotMatch(err.message, /is not the shared board checkout/i, "distinct from the plain-foreign wording");
-    assert.match(err.help ?? "", process.platform === "win32" ? /Move-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
 
     // Never silently adopted: the board branch's own tip is untouched, and the checked-out branch
     // (and its content) survives exactly as it was.
@@ -778,7 +781,7 @@ test("provisionBoardWorktree: a HEALTHY worktree on a plain detached HEAD (NOT m
     assert.ok(isBoardGitError(err));
     assert.equal(err.code, "RUNTIME");
     assert.match(err.message, /not checked out to the '?board'? branch/i, "names the actual observed state");
-    assert.match(err.help ?? "", process.platform === "win32" ? /Move-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
     assert.ok(existsSync(path.join(topo.a.board, "tasks", "seed-one.md")), "pre-existing bundle CONTENT is untouched");
   } finally {
     await topo.cleanup();
@@ -832,7 +835,7 @@ test("provisionBoardWorktree: PROBE-E (cold review) — a wedge started from a N
     assert.ok(isBoardGitError(err), "must REFUSE — rebaseWasFromBoardBranch is false here, so repairedWorktreeIsBoard must reject it despite being mid-rebase");
     assert.equal(err.code, "RUNTIME");
     assert.match(err.message, /not checked out to the '?board'? branch/i, "the wrong-branch wording, not a false 'repaired'");
-    assert.match(err.help ?? "", process.platform === "win32" ? /Move-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
   } finally {
     await topo.cleanup();
   }

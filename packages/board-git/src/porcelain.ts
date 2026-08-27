@@ -606,8 +606,8 @@ function moveAsideHelp(boardPath: string, note: string): string {
   if (process.platform === "win32") {
     return (
       `powershell.exe -NoProfile -NonInteractive -Command "` +
-      `$ErrorActionPreference='Stop'; Move-Item -LiteralPath ${powershellQuote(boardPath)} ` +
-      `-Destination ${powershellQuote(`${boardPath}.bak`)}"`
+      `$ErrorActionPreference='Stop'; Rename-Item -LiteralPath ${powershellQuote(boardPath)} ` +
+      `-NewName ${powershellQuote(`${path.basename(boardPath)}.bak`)} -ErrorAction Stop"`
     );
   }
   return `mv ${shellQuote(boardPath)} ${shellQuote(`${boardPath}.bak`)}  # ${note}`;
