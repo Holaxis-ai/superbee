@@ -9,80 +9,62 @@ test("npm-global prefix probing uses the native executable contract", () => {
     command: "npm",
     args: ["prefix", "--global"],
   });
-  const cmd = String.raw`C:\Windows\System32\cmd.exe`;
-  const npm = String.raw`C:\Program Files\nodejs\npm.cmd`;
+  const node = String.raw`C:\Program Files\nodejs\node.exe`;
+  const npm = String.raw`C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js`;
   const resolve = (candidate: string) => {
-    if (path.win32.normalize(candidate).toLowerCase() === cmd.toLowerCase()) return cmd;
+    if (path.win32.normalize(candidate).toLowerCase() === node.toLowerCase()) return node;
     if (path.win32.normalize(candidate).toLowerCase() === npm.toLowerCase()) return npm;
     return undefined;
   };
   assert.deepEqual(npmPrefixInvocation("win32", {
-    ComSpec: cmd,
     PATH: String.raw`C:\Program Files\nodejs;C:\Windows\System32`,
     PATHEXT: ".COM;.EXE;.BAT;.CMD",
-  }, resolve), {
-    command: String.raw`C:\Windows\System32\cmd.exe`,
-    args: ["/d", "/s", "/c", String.raw`"C:\Program Files\nodejs\npm.cmd" prefix --global`],
+  }, resolve, node), {
+    command: node,
+    args: [npm, "prefix", "--global"],
   });
-  assert.equal(npmPrefixInvocation("win32", {}), undefined);
-  assert.equal(npmPrefixInvocation("win32", { ComSpec: "cmd.exe" }), undefined);
+  assert.equal(npmPrefixInvocation("win32", {}, resolve, String.raw`C:\missing\node.exe`), undefined);
 });
 
-test("Windows npm-prefix probing excludes cwd and rejects PATH shadowing", () => {
-  const cmd = String.raw`C:\Windows\System32\cmd.exe`;
-  const managed = String.raw`C:\Program Files\nodejs\npm.cmd`;
-  const checkout = String.raw`C:\checkout\npm.cmd`;
-  const foreign = String.raw`C:\foreign\npm.exe`;
+test("Windows npm-prefix probing binds npm to the running Node installation, not PATH", () => {
+  const node = String.raw`C:\Program Files\nodejs\node.exe`;
+  const npmCli = String.raw`C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js`;
+  const foreign = String.raw`C:\foreign\npm.cmd`;
   const calls: string[] = [];
   const resolve = (candidate: string) => {
     calls.push(candidate);
     const normalized = path.win32.normalize(candidate).toLowerCase();
-    if (normalized === cmd.toLowerCase()) return cmd;
-    if (normalized === managed.toLowerCase()) return managed;
+    if (normalized === node.toLowerCase()) return node;
+    if (normalized === npmCli.toLowerCase()) return npmCli;
     if (normalized === foreign.toLowerCase()) return foreign;
-    // This models the vulnerable relative lookup: the old implementation delegated `npm.cmd`
-    // to cmd.exe, which would select this checkout-local shim before consulting PATH.
-    if (candidate.toLowerCase() === "npm.cmd") return checkout;
     return undefined;
   };
   const safe = npmPrefixInvocation("win32", {
-    ComSpec: cmd,
-    PATH: String.raw`;C:\Program Files\nodejs;C:\Windows\System32`,
-    PATHEXT: ".COM;.EXE;.BAT;.CMD",
-  }, resolve);
-  assert.equal(safe?.args[3], String.raw`"C:\Program Files\nodejs\npm.cmd" prefix --global`);
-  assert.equal(calls.some((candidate) => !path.win32.isAbsolute(candidate)), false, "cwd is never searched");
-
-  assert.equal(npmPrefixInvocation("win32", {
-    ComSpec: cmd,
-    PATH: String.raw`C:\foreign;C:\Program Files\nodejs`,
-    PATHEXT: ".EXE;.CMD",
-  }, resolve), undefined, "an earlier non-cmd npm command shadows the managed npm.cmd");
+    PATH: String.raw`;C:\foreign;C:\Program Files\nodejs`,
+    PATHEXT: ".CMD;.EXE",
+  }, resolve, node);
+  assert.deepEqual(safe, { command: node, args: [npmCli, "prefix", "--global"] });
+  assert.equal(calls.includes(foreign), false, "foreign npm.cmd is never resolved or executed");
+  assert.equal(calls.some((candidate) => candidate.toLowerCase().endsWith("npm.cmd")), false);
 });
 
-test("Windows npm-prefix probing fails closed for missing and unsafe command authority", () => {
-  const cmd = String.raw`C:\Windows\System32\cmd.exe`;
-  const resolve = (candidate: string) => path.win32.normalize(candidate).toLowerCase() === cmd.toLowerCase()
-    ? cmd
+test("Windows npm-prefix probing fails closed for missing or ambiguous runtime layouts", () => {
+  const node = String.raw`C:\Program Files\nodejs\node.exe`;
+  const npmCli = String.raw`C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js`;
+  const foreignNpmCli = String.raw`D:\foreign\npm-cli.js`;
+  const resolveNodeOnly = (candidate: string) => path.win32.normalize(candidate).toLowerCase() === node.toLowerCase()
+    ? node
     : undefined;
-  assert.equal(npmPrefixInvocation("win32", { PATH: String.raw`C:\Program Files\nodejs` }, resolve), undefined);
-  assert.equal(npmPrefixInvocation("win32", { ComSpec: cmd, PATH: String.raw`C:\Program Files\nodejs` }, resolve), undefined);
-  assert.equal(npmPrefixInvocation("win32", {
-    ComSpec: cmd,
-    PATH: String.raw`relative;C:\Program Files\nodejs`,
-  }, resolve), undefined);
-
-  const unsafeNpm = String.raw`C:\tools&run\npm.cmd`;
-  assert.equal(npmPrefixInvocation("win32", {
-    ComSpec: cmd,
-    PATH: String.raw`C:\tools&run`,
-    PATHEXT: ".CMD",
-  }, (candidate) => {
+  assert.equal(npmPrefixInvocation("win32", {}, resolveNodeOnly, node), undefined, "missing npm CLI");
+  assert.equal(npmPrefixInvocation("win32", {}, () => undefined, node), undefined, "missing runtime");
+  assert.equal(npmPrefixInvocation("win32", {}, resolveNodeOnly, "node.exe"), undefined, "relative runtime");
+  assert.equal(npmPrefixInvocation("win32", {}, resolveNodeOnly, String.raw`C:\Program Files\nodejs\node2.exe`), undefined, "unexpected runtime identity");
+  assert.equal(npmPrefixInvocation("win32", {}, (candidate) => {
     const normalized = path.win32.normalize(candidate).toLowerCase();
-    if (normalized === cmd.toLowerCase()) return cmd;
-    if (normalized === unsafeNpm.toLowerCase()) return unsafeNpm;
+    if (normalized === node.toLowerCase()) return node;
+    if (normalized === npmCli.toLowerCase()) return foreignNpmCli;
     return undefined;
-  }), undefined);
+  }, node), undefined, "npm CLI escaping the proven runtime installation");
 });
 
 function durableFixture(overrides: Record<string, unknown> = {}) {
@@ -300,6 +282,19 @@ test("Windows npm authority proves the prefix shim but launches absolute Node pl
     executable_path: String.raw`C:\Users\mike\AppData\Roaming\npm\node_modules\superbee\dist\superbee.mjs`,
     runtime_path: String.raw`C:\Program Files\nodejs\node.exe`,
   });
+});
+
+test("Windows npm authority fails closed on cwd-bearing PATH entries", () => {
+  const fixture = windowsDurableFixture();
+  for (const PATH of [
+    String.raw`;C:\Users\mike\AppData\Roaming\npm`,
+    String.raw`C:\Users\mike\AppData\Roaming\npm;`,
+    String.raw`C:\Users\mike\AppData\Roaming\npm;;C:\Windows\System32`,
+  ]) {
+    const result = classifyPersistentInstallAuthority({ ...fixture, env: { ...fixture.env, PATH } });
+    assert.equal(result.allowed, false, PATH);
+    assert.match(result.reason, /current-directory PATH entry/);
+  }
 });
 
 test("Windows npm authority honors PATHEXT order and refuses an earlier shadowing command", () => {

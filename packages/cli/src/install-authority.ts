@@ -67,22 +67,38 @@ function defaultRealpath(candidate: string): string | undefined {
 
 export function npmPrefixInvocation(
   platform: string = process.platform,
-  env: NodeJS.ProcessEnv = process.env,
+  _env: NodeJS.ProcessEnv = process.env,
   realpath: (path: string) => string | undefined = defaultRealpath,
+  runtimePath: string = process.execPath,
 ): { command: string; args: string[] } | undefined {
   if (platform !== "win32") return { command: "npm", args: ["prefix", "--global"] };
-  const commandRaw = env.ComSpec?.trim() || env.COMSPEC?.trim();
-  if (!commandRaw || !path.win32.isAbsolute(commandRaw)) return undefined;
-  const command = realpath(path.win32.normalize(commandRaw));
-  if (!command || !isSafeWindowsCommandPath(command) || path.win32.basename(command).toLowerCase() !== "cmd.exe") {
-    return undefined;
-  }
+  if (!path.win32.isAbsolute(runtimePath) || containsNpxCache(runtimePath)) return undefined;
+  const runtime = realpath(path.win32.normalize(runtimePath));
+  if (
+    !runtime
+    || !path.win32.isAbsolute(runtime)
+    || containsNpxCache(runtime)
+    || path.win32.basename(runtime).toLowerCase() !== "node.exe"
+  ) return undefined;
 
-  const npm = resolveWindowsPathCommand("npm", env, realpath);
-  if (!npm || path.win32.extname(npm).toLowerCase() !== ".cmd") return undefined;
-  // A bare `npm.cmd` passed to cmd.exe searches cwd before PATH. Bind the probe to the absolute
-  // first PATH/PATHEXT match instead, and reject every character cmd.exe could reinterpret.
-  return { command, args: ["/d", "/s", "/c", `"${npm}" prefix --global`] };
+  const npmCliPath = path.win32.normalize(path.win32.join(
+    path.win32.dirname(runtime),
+    "node_modules",
+    "npm",
+    "bin",
+    "npm-cli.js",
+  ));
+  const npmCli = realpath(npmCliPath);
+  if (
+    !npmCli
+    || !path.win32.isAbsolute(npmCli)
+    || containsNpxCache(npmCli)
+    || path.win32.normalize(npmCli).toLowerCase() !== npmCliPath.toLowerCase()
+  ) return undefined;
+
+  // Execute npm's JS entry with the already-running Node installation. This avoids cmd.exe and
+  // PATH lookup entirely, so neither cwd nor an earlier foreign npm.cmd can supply the prefix.
+  return { command: runtime, args: [npmCli, "prefix", "--global"] };
 }
 
 function defaultNpmPrefixGlobal(): string | undefined {
@@ -158,47 +174,6 @@ function windowsPathExtensions(env: NodeJS.ProcessEnv): string[] {
     .map((extension) => (extension.startsWith(".") ? extension : `.${extension}`));
 }
 
-function isSafeWindowsCommandPath(candidate: string): boolean {
-  return path.win32.isAbsolute(candidate)
-    && !containsNpxCache(candidate)
-    && !/[\u0000-\u001f"%!*&|<>^()]/.test(candidate);
-}
-
-/** Resolve one Windows command without cmd.exe's implicit current-directory search. */
-function resolveWindowsPathCommand(
-  name: string,
-  env: NodeJS.ProcessEnv,
-  realpath: (path: string) => string | undefined,
-): string | undefined {
-  const extensions = windowsPathExtensions(env);
-  if (
-    extensions.length === 0
-    || extensions.some((extension) => !/^\.[a-z0-9]+$/i.test(extension))
-  ) return undefined;
-
-  const rawPath = env.PATH;
-  if (!rawPath) return undefined;
-  for (const rawDir of rawPath.split(path.win32.delimiter)) {
-    const trimmed = rawDir.trim();
-    // Empty segments denote cwd in Windows lookup. Excluding them is what makes this traversal
-    // independent of a checkout-local npm.cmd.
-    if (!trimmed) continue;
-    const quoted = trimmed.startsWith('"') || trimmed.endsWith('"');
-    if (quoted && !(trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length > 2)) {
-      return undefined;
-    }
-    const dir = quoted ? trimmed.slice(1, -1) : trimmed;
-    if (!path.win32.isAbsolute(dir)) return undefined;
-    for (const extension of extensions) {
-      const candidate = path.win32.normalize(path.win32.join(dir, `${name}${extension}`));
-      const resolved = realpath(candidate);
-      if (!resolved) continue;
-      return isSafeWindowsCommandPath(resolved) ? path.win32.normalize(resolved) : undefined;
-    }
-  }
-  return undefined;
-}
-
 /** Classify an already-resolved running distribution. Performs no writes. */
 export function classifyPersistentInstallAuthority(
   input: PersistentInstallAuthorityInput,
@@ -252,7 +227,14 @@ export function classifyPersistentInstallAuthority(
   if (!installRule) {
     return unknown(input, "running executable is outside the supported npm global package layout");
   }
-  const pathDirs = (input.env.PATH ?? "").split(paths.delimiter).filter(Boolean);
+  const rawPath = input.env.PATH;
+  if (!rawPath) {
+    return unknown(input, "PATH is missing, so managed command authority cannot be established");
+  }
+  const pathDirs = rawPath.split(paths.delimiter);
+  if (pathDirs.some((dir) => dir.trim().length === 0)) {
+    return unknown(input, "current-directory PATH entry prevents durable command authority");
+  }
   for (const name of installRule.commands) {
     for (const dir of pathDirs) {
       const candidates = input.platform === "win32"
