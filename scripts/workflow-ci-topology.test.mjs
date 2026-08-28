@@ -3,10 +3,15 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
+const windowsInstalledProof = readFileSync(
+  path.join(root, manifest.lanes.windows.installed_package_proof_script),
+  "utf8",
+);
 
 function extractJobs(text) {
   const lines = text.split("\n");
@@ -63,6 +68,114 @@ function assertSmokeJob(job, lane) {
   assert.deepEqual(surface, [...lane.built_cli_commands].sort(), "floor smoke built-CLI command surface drifted");
 }
 
+function proofProgram(source) {
+  return ts.createSourceFile("windows-installed-package-proof.mjs", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+}
+
+function proofFunction(program, name) {
+  const declaration = program.statements.find((statement) =>
+    ts.isFunctionDeclaration(statement) && statement.name?.text === name
+  );
+  assert.ok(declaration?.body, `installed-package proof must declare ${name}`);
+  return declaration;
+}
+
+function awaitedCall(statement) {
+  let expression;
+  let binding = "";
+  if (ts.isExpressionStatement(statement)) {
+    expression = statement.expression;
+  } else if (ts.isVariableStatement(statement)) {
+    assert.equal(statement.declarationList.declarations.length, 1, "proof await bindings must be singular");
+    const declaration = statement.declarationList.declarations[0];
+    expression = declaration.initializer;
+    binding = declaration.name.getText();
+  }
+  if (!expression || !ts.isAwaitExpression(expression) || !ts.isCallExpression(expression.expression)) return undefined;
+  return {
+    name: expression.expression.expression.getText(),
+    args: expression.expression.arguments.map((argument) => argument.getText()),
+    binding,
+  };
+}
+
+function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof) {
+  const expectedEntrypoint = '$entrypoint = Join-Path $prefix "node_modules\\superbee\\dist\\superbee.mjs"';
+  assert.ok(job.includes(expectedEntrypoint), "Windows runner must derive the exact globally installed entrypoint");
+  assert.ok(
+    job.indexOf("npm install --global $env:SUPERBEE_WINDOWS_TARBALL --prefix $prefix") < job.indexOf(expectedEntrypoint),
+    "Windows runner must install the tarball before binding its global entrypoint",
+  );
+  assert.match(
+    job,
+    /\$env:SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT = \$entrypoint\s+\$env:SUPERBEE_WINDOWS_INSTALLED_PREFIX = \$prefix\s+node scripts\/windows-installed-package-proof\.mjs/,
+    "Windows runner must pass the exact installed entrypoint to the proof it executes",
+  );
+
+  const program = proofProgram(proof);
+  const entrypointDeclaration = program.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((declaration) => declaration.name.getText() === "entrypoint");
+  assert.equal(
+    entrypointDeclaration?.initializer?.getText(),
+    "process.env.SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT",
+    "the proof must consume only the runner-bound installed entrypoint",
+  );
+
+  const cliDeclaration = proofFunction(program, "cli");
+  const cliReturn = cliDeclaration.body.statements.find(ts.isReturnStatement)?.expression;
+  assert.ok(ts.isCallExpression(cliReturn), "installed-package cli helper must return one execution call");
+  assert.equal(cliReturn.expression.getText(), "run", "installed-package cli helper must use the proof runner");
+  assert.equal(
+    cliReturn.arguments[0]?.getText(),
+    "process.execPath",
+    "installed-package lifecycle commands must execute through Node and the bound entrypoint",
+  );
+  assert.ok(ts.isArrayLiteralExpression(cliReturn.arguments[1]), "installed-package cli helper must build an argv array");
+  assert.deepEqual(
+    cliReturn.arguments[1].elements.map((element) => element.getText()),
+    ["entrypoint", "...args"],
+    "installed-package lifecycle commands must execute through Node and the bound entrypoint",
+  );
+
+  const lifecycle = proofFunction(program, "runInstalledPackageProof");
+  assert.deepEqual(
+    lifecycle.body.statements.map(awaitedCall).filter(Boolean),
+    [
+      { name: "proveCatalogLifecycle", args: [], binding: "{ bundle }" },
+      { name: "proveLocalRemoteSync", args: [], binding: "" },
+      { name: "proveUiUrlLifecycle", args: ["bundle"], binding: "" },
+      { name: "proveMcpConfigLifecycle", args: [], binding: "" },
+    ],
+    "the installed-package runner must await every lifecycle with the catalog bundle wired into UI proof",
+  );
+  const entryTry = program.statements.find(ts.isTryStatement);
+  assert.equal(
+    awaitedCall(entryTry?.tryBlock.statements[0] ?? {})?.name,
+    "runInstalledPackageProof",
+    "the native proof entrypoint must execute the complete lifecycle runner before reporting success",
+  );
+  const successWrite = entryTry?.tryBlock.statements[1];
+  assert.ok(
+    ts.isExpressionStatement(successWrite) && ts.isCallExpression(successWrite.expression)
+      && successWrite.expression.expression.getText() === "process.stdout.write",
+    "the native proof must report success only after the complete lifecycle runner",
+  );
+
+  assert.deepEqual(
+    Object.keys(lane.installed_package_scenarios).sort(),
+    ["catalog-lifecycle", "local-remote-sync", "mcp-config-lifecycle", "ui-url-lifecycle"],
+    "Windows installed-package scenario inventory drifted",
+  );
+  for (const [scenario, literals] of Object.entries(lane.installed_package_scenarios)) {
+    assert.ok(Array.isArray(literals) && literals.length > 0, `${scenario} must pin command/evidence literals`);
+    for (const literal of literals) {
+      assert.ok(proof.includes(literal), `${scenario} lost proof literal ${literal}`);
+    }
+  }
+}
+
 function assertWindowsJob(job, lane) {
   assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
   assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2);
@@ -80,18 +193,7 @@ function assertWindowsJob(job, lane) {
     job.includes(`node ${lane.installed_package_proof_script}`),
     "Windows smoke must run the pinned installed-package proof script",
   );
-  const proof = readFileSync(path.join(root, lane.installed_package_proof_script), "utf8");
-  assert.deepEqual(
-    Object.keys(lane.installed_package_scenarios).sort(),
-    ["catalog-lifecycle", "local-remote-sync", "mcp-config-lifecycle", "ui-url-lifecycle"],
-    "Windows installed-package scenario inventory drifted",
-  );
-  for (const [scenario, literals] of Object.entries(lane.installed_package_scenarios)) {
-    assert.ok(Array.isArray(literals) && literals.length > 0, `${scenario} must pin command/evidence literals`);
-    for (const literal of literals) {
-      assert.ok(proof.includes(literal), `${scenario} lost proof literal ${literal}`);
-    }
-  }
+  validateWindowsInstalledProof(job, lane);
   for (const command of lane.built_cli_commands) {
     assert.ok(job.includes(`& $cli ${command}`), `Windows smoke is missing ${command}`);
   }
@@ -209,6 +311,47 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   const incomplete = structuredClone(manifest);
   incomplete.required_jobs.pop();
   assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the complete lane set/);
+});
+
+test("Windows installed-package topology mutations cannot skip lifecycles or weaken artifact binding", () => {
+  const windowsJob = extractJobs(workflow).windows;
+  const lane = manifest.lanes.windows;
+  for (const call of [
+    "const { bundle } = await proveCatalogLifecycle();",
+    "await proveLocalRemoteSync();",
+    "await proveUiUrlLifecycle(bundle);",
+    "await proveMcpConfigLifecycle();",
+  ]) {
+    assert.throws(
+      () => validateWindowsInstalledProof(windowsJob, lane, windowsInstalledProof.replace(call, "")),
+      /must await every lifecycle/,
+    );
+    assert.throws(
+      () => validateWindowsInstalledProof(windowsJob, lane, windowsInstalledProof.replace(call, call.replace("await ", "void "))),
+      /must await every lifecycle/,
+    );
+  }
+  assert.throws(
+    () => validateWindowsInstalledProof(
+      windowsJob.replace(
+        '$entrypoint = Join-Path $prefix "node_modules\\superbee\\dist\\superbee.mjs"',
+        '$entrypoint = Join-Path $prefix "superbee.cmd"',
+      ),
+      lane,
+    ),
+    /exact globally installed entrypoint/,
+  );
+  assert.throws(
+    () => validateWindowsInstalledProof(
+      windowsJob,
+      lane,
+      windowsInstalledProof.replace(
+        "return run(process.execPath, [entrypoint, ...args], options);",
+        'return run("superbee", args, options);',
+      ),
+    ),
+    /bound entrypoint/,
+  );
 });
 
 test("merge-queue posture is current configuration, not a permanent prohibition", () => {
