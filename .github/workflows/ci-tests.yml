@@ -1,11 +1,11 @@
 name: CI tests
 
 # Runtime-sensitive suites run identically on Node 22 and 26, then once more on macOS so that
-# tests whose native branch only executes on a case-aliasing filesystem actually run. A native
-# Windows lane runs the full workspace contract on Node 22, then installs the exact packed artifact
-# and drives its public CLI on the Node 20 engine floor. Distribution, browser/UI, local release
-# policy, and exhaustive target proofs are platform-independent lanes on one supported runtime. The
-# first implementation is deliberately unconditional: path
+# tests whose native branch only executes on a case-aliasing filesystem actually run. Distribution,
+# browser/UI, local release policy, and exhaustive target proofs are platform-independent lanes on
+# one supported runtime. The separate `windows-installed-package.yml` workflow retains the native
+# Windows and Node 20 package proof as an explicit manual release-candidate check. The first
+# implementation is deliberately unconditional: path
 # classification and skip receipts require a separate fail-closed classifier contract.
 #
 # Branch-protection migration is additive. Observe `CI required lanes` on an exact SHA, add its
@@ -73,68 +73,6 @@ jobs:
         run: mkdir -p "$RUNNER_TEMP/host-probe" && touch "$RUNNER_TEMP/host-probe/probe-name" && test -e "$RUNNER_TEMP/host-probe/PROBE-NAME"
       - name: Run the host-class-dependent proofs on a case-aliasing filesystem
         run: npm run ci:aliasing-host
-
-  windows:
-    name: native Windows runtime and installed package
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - name: Run the complete workspace contract natively
-        run: npm run ci:runtime
-      - name: Build, pack, and verify the publishable artifact
-        shell: pwsh
-        run: |
-          npm run build:npm-package -w superbee
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $name = npm pack ./packages/cli --ignore-scripts --pack-destination $env:RUNNER_TEMP | Select-Object -Last 1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $tarball = Join-Path $env:RUNNER_TEMP $name.Trim()
-          npm run verify:npm-package:tarball -- $tarball
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          "SUPERBEE_WINDOWS_TARBALL=$tarball" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Install and drive the packed CLI on the engine floor
-        shell: pwsh
-        run: |
-          if (-not (node --version).StartsWith("v20.")) { throw "Node 20 is not active" }
-          $prefix = Join-Path $env:RUNNER_TEMP "installed-superbee"
-          npm install --global $env:SUPERBEE_WINDOWS_TARBALL --prefix $prefix
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $cli = Join-Path $prefix "superbee.cmd"
-          if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw "npm did not install superbee.cmd" }
-          $entrypoint = Join-Path $prefix "node_modules\superbee\dist\superbee.mjs"
-          if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) { throw "npm did not install the Superbee entrypoint" }
-          $dir = Join-Path $env:RUNNER_TEMP "windows-smoke-bundle"
-          & $cli init --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $cli doc write specs/auth --type Spec --title Auth --body "smoke body" --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $cli doc read specs/auth --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $cli doc write notes/one --type Note --title One --body x --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $cli link add specs/auth notes/one --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $cli link show specs/auth --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $cli list --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & $cli status --dir $dir
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $env:SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT = $entrypoint
-          $env:SUPERBEE_WINDOWS_INSTALLED_PREFIX = $prefix
-          node scripts/windows-installed-package-proof.mjs
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   distribution:
     name: distribution package and installed behavior
@@ -217,7 +155,7 @@ jobs:
 
   required:
     name: CI required lanes
-    needs: [runtime, aliasing-host, windows, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -235,7 +173,7 @@ jobs:
 
   compatibility-gate-node-22:
     name: gate (node 22)
-    needs: [runtime, aliasing-host, windows, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -253,7 +191,7 @@ jobs:
 
   compatibility-gate-node-26:
     name: gate (node 26)
-    needs: [runtime, aliasing-host, windows, smoke-node-20, distribution, browser, scripts]
+    needs: [runtime, aliasing-host, smoke-node-20, distribution, browser, scripts]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

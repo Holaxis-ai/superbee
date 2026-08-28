@@ -27,6 +27,12 @@ const wrapperSources = Object.fromEntries(
     .map((lane) => [lane.wrapper, readFileSync(path.join(root, lane.wrapper), "utf8")]),
 );
 
+function requiredLaneNames(candidate) {
+  return Object.entries(candidate.lanes)
+    .filter(([, lane]) => lane.required !== false)
+    .map(([name]) => name);
+}
+
 function projectionRows(text, name) {
   const start = `<!-- contributing-${name}:start -->`;
   const end = `<!-- contributing-${name}:end -->`;
@@ -54,19 +60,21 @@ function validateContributorAuthority(
   for (const pointer of [
     "scripts/ci-lanes.json",
     ".github/workflows/ci-tests.yml",
+    ".github/workflows/windows-installed-package.yml",
     "conventions/task",
     "conventions/review",
   ]) {
     assert.ok(text.includes(pointer), `missing contributor pointer ${pointer}`);
   }
 
-  const laneRows = candidateManifest.required_jobs.map((name) => {
+  const laneRows = Object.keys(candidateManifest.lanes).map((name) => {
     const lane = candidateManifest.lanes[name];
     assert.ok(lane, `required contributor lane ${name} is missing`);
     if (lane.script) {
       assert.ok(packageJson.scripts[lane.script], `contributor lane ${name} references missing package script`);
     }
-    return [name, lane.script ? `npm run ${lane.script}` : "workflow only", name, lane.nodes.join(", ")];
+    const command = lane.script ? `npm run ${lane.script}` : lane.trigger ? `${lane.trigger} only` : "workflow only";
+    return [name, command, name, lane.nodes.join(", ")];
   });
   assert.deepEqual(
     projectionRows(text, "ci-lanes"),
@@ -111,8 +119,8 @@ function validateLaneManifest(candidate, packageJson = pkg, sources = wrapperSou
   assert.deepEqual(candidate.components.map((row) => row.command), packageJson.scripts.check.split(" && "));
   assert.deepEqual(
     [...candidate.required_jobs].sort(),
-    Object.keys(candidate.lanes).sort(),
-    "required_jobs must equal the complete lane set",
+    requiredLaneNames(candidate).sort(),
+    "required_jobs must equal the automatically run lane set",
   );
 
   const ids = candidate.components.map((row) => row.id);
@@ -122,6 +130,11 @@ function validateLaneManifest(candidate, packageJson = pkg, sources = wrapperSou
   for (const [laneName, lane] of Object.entries(candidate.lanes)) {
     assert.equal(typeof lane.display_name, "string", `${laneName} must pin its workflow display name`);
     assert.ok(lane.display_name.length > 0, `${laneName} display name cannot be blank`);
+    if (lane.required === false) {
+      assert.equal(lane.workflow_only, true, `${laneName} must be workflow-only when not required`);
+      assert.equal(lane.trigger, "workflow_dispatch", `${laneName} must declare an explicit manual trigger`);
+      assert.equal(typeof lane.workflow, "string", `${laneName} must name its manual workflow`);
+    }
     for (const id of lane.components) {
       assert.ok(claimed.has(id), `${laneName} claims unknown component ${id}`);
       claimed.get(id).push(laneName);
@@ -207,7 +220,7 @@ test("lane ownership is pinned to executing scripts", () => {
 
   const incomplete = structuredClone(manifest);
   incomplete.required_jobs.pop();
-  assert.throws(() => validateLaneManifest(incomplete), /required_jobs must equal the complete lane set/);
+  assert.throws(() => validateLaneManifest(incomplete), /required_jobs must equal the automatically run lane set/);
 });
 
 test("runtime-sensitive suites are identical on Node 22 and 26 and platform lanes pin their runtimes", () => {
