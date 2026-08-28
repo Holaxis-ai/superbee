@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -8,10 +10,10 @@ import ts from "typescript";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
-const windowsInstalledProof = readFileSync(
+const windowsInstalledProofBytes = readFileSync(
   path.join(root, manifest.lanes.windows.installed_package_proof_script),
-  "utf8",
 );
+const windowsInstalledProof = windowsInstalledProofBytes.toString("utf8");
 
 function extractJobs(text) {
   const lines = text.split("\n");
@@ -338,7 +340,28 @@ function validateProofTopLevel(program) {
   return entryTry;
 }
 
-function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof) {
+function validateWindowsInstalledProofDigest(lane, proof) {
+  assert.match(
+    lane.installed_package_proof_sha256,
+    /^[a-f0-9]{64}$/,
+    "Windows installed-package proof SHA-256 must be a lowercase hex digest",
+  );
+  assert.equal(
+    createHash("sha256").update(proof).digest("hex"),
+    lane.installed_package_proof_sha256,
+    "Windows installed-package proof bytes must match the reviewed SHA-256 digest",
+  );
+  assert.deepEqual(
+    lane.installed_package_proof_digest_update,
+    {
+      command: "node scripts/windows-installed-package-proof-digest.mjs",
+      instructions: "After an intentional review of the proof bytes, run the command and update installed_package_proof_sha256 in this manifest in the same commit.",
+    },
+    "the reviewed proof digest must have one explicit update workflow",
+  );
+}
+
+function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstalledProof) {
   const expectedEntrypoint = '$entrypoint = Join-Path $prefix "node_modules\\superbee\\dist\\superbee.mjs"';
   assert.ok(job.includes(expectedEntrypoint), "Windows runner must derive the exact globally installed entrypoint");
   assert.ok(
@@ -441,6 +464,15 @@ function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof)
       assert.ok(proof.includes(literal), `${scenario} lost proof literal ${literal}`);
     }
   }
+}
+
+function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProofBytes) {
+  validateWindowsInstalledProofDigest(lane, proof);
+  validateWindowsInstalledProofSemantics(
+    job,
+    lane,
+    Buffer.isBuffer(proof) ? proof.toString("utf8") : proof,
+  );
 }
 
 function assertWindowsJob(job, lane) {
@@ -590,11 +622,11 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     "await proveMcpConfigLifecycle();",
   ]) {
     assert.throws(
-      () => validateWindowsInstalledProof(windowsJob, lane, windowsInstalledProof.replace(call, "")),
+      () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, "")),
       /four awaited lifecycles/,
     );
     assert.throws(
-      () => validateWindowsInstalledProof(windowsJob, lane, windowsInstalledProof.replace(call, call.replace("await ", "void "))),
+      () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, call.replace("await ", "void "))),
       /four awaited lifecycles/,
     );
   }
@@ -606,7 +638,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     "throw new Error('skip');",
   ]) {
     assert.throws(
-      () => validateWindowsInstalledProof(
+      () => validateWindowsInstalledProofSemantics(
         windowsJob,
         lane,
         windowsInstalledProof.replace(runnerStart, `${runnerStart}\n  ${bypass}`),
@@ -615,7 +647,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     );
   }
   assert.throws(
-    () => validateWindowsInstalledProof(
+    () => validateWindowsInstalledProofSemantics(
       windowsJob,
       lane,
       windowsInstalledProof.replace(
@@ -626,7 +658,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     /exactly once/,
   );
   assert.throws(
-    () => validateWindowsInstalledProof(
+    () => validateWindowsInstalledProofSemantics(
       windowsJob,
       lane,
       windowsInstalledProof.replace(
@@ -637,7 +669,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     /gate success on completion/,
   );
   assert.throws(
-    () => validateWindowsInstalledProof(
+    () => validateWindowsInstalledProofSemantics(
       windowsJob.replace(
         '$entrypoint = Join-Path $prefix "node_modules\\superbee\\dist\\superbee.mjs"',
         '$entrypoint = Join-Path $prefix "superbee.cmd"',
@@ -647,7 +679,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     /exact globally installed entrypoint/,
   );
   assert.throws(
-    () => validateWindowsInstalledProof(
+    () => validateWindowsInstalledProofSemantics(
       windowsJob,
       lane,
       windowsInstalledProof.replace(
@@ -667,7 +699,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     "if (true) { await runInstalledPackageProof(); }",
   ]) {
     assert.throws(
-      () => validateWindowsInstalledProof(
+      () => validateWindowsInstalledProofSemantics(
         windowsJob,
         lane,
         windowsInstalledProof.replace(entryStart, `\n${bypass}\n${entryStart}`),
@@ -676,7 +708,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     );
   }
   assert.throws(
-    () => validateWindowsInstalledProof(
+    () => validateWindowsInstalledProofSemantics(
       windowsJob,
       lane,
       windowsInstalledProof.replace(
@@ -698,7 +730,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     ["return installedPackageProofComplete;", /completion-token authority/],
   ]) {
     assert.throws(
-      () => validateWindowsInstalledProof(
+      () => validateWindowsInstalledProofSemantics(
         windowsJob,
         lane,
         windowsInstalledProof.replace(helperStart, `${helperStart}\n  ${authority}`),
@@ -707,13 +739,42 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     );
   }
   assert.throws(
-    () => validateWindowsInstalledProof(
+    () => validateWindowsInstalledProofSemantics(
       windowsJob,
       lane,
       windowsInstalledProof.replace('artifact: "exact installed npm tarball"', 'artifact: "success"'),
     ),
     /terminal success payload/,
   );
+});
+
+test("Windows installed-package proof digest rejects every unreviewed byte mutation", () => {
+  const windowsJob = extractJobs(workflow).windows;
+  const lane = manifest.lanes.windows;
+  const helperStart = "async function proveCatalogLifecycle() {";
+  for (const mutation of [
+    `${helperStart}\n  const proc = process; proc.exit(0);`,
+    `${helperStart}\n  const authority = "exit"; process[authority](0);`,
+    `${windowsInstalledProof}\n`,
+  ]) {
+    const proof = mutation.startsWith(helperStart)
+      ? windowsInstalledProof.replace(helperStart, mutation)
+      : mutation;
+    assert.throws(
+      () => validateWindowsInstalledProof(windowsJob, lane, proof),
+      /reviewed SHA-256 digest/,
+    );
+  }
+});
+
+test("Windows installed-package proof digest update command prints the reviewed value", () => {
+  const lane = manifest.lanes.windows;
+  const output = execFileSync(
+    process.execPath,
+    [path.join(root, "scripts", "windows-installed-package-proof-digest.mjs")],
+    { encoding: "utf8" },
+  );
+  assert.equal(output, `${lane.installed_package_proof_sha256}\n`);
 });
 
 test("merge-queue posture is current configuration, not a permanent prohibition", () => {
