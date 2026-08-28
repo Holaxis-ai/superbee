@@ -17,7 +17,7 @@ const generated = canonicalGeneratedText(await compile(schema, "PublicationSnaps
 }));
 
 if (process.argv.includes("--check")) {
-  const current = await readFile(outputPath, "utf8").catch(() => "");
+  const current = canonicalGeneratedText(await readFile(outputPath, "utf8").catch(() => ""));
   if (current !== generated) {
     console.error("publication snapshot generated types are stale; run npm run generate -w @superbee/publication");
     process.exitCode = 1;
