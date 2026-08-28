@@ -15,7 +15,6 @@
   "required_jobs": [
     "runtime",
     "aliasing-host",
-    "windows",
     "smoke-node-20",
     "distribution",
     "browser",
@@ -94,6 +93,9 @@
     "windows": {
       "display_name": "native Windows runtime and installed package",
       "workflow_only": true,
+      "required": false,
+      "trigger": "workflow_dispatch",
+      "workflow": ".github/workflows/windows-installed-package.yml",
       "components": [],
       "nodes": [
         22,
