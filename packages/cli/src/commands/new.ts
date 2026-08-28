@@ -93,6 +93,9 @@ than writing-with-a-warning.
 (exit 5) instead of silently replacing it — run 'doc update' to patch an existing doc, or 'doc
 write' to overwrite it outright and deliberately.
 
+'superbee doc write <id> --type <Type> ...' creates a generic document whose type has no governing
+Kind, and is also the deliberate full-replacement path for an existing document.
+
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
