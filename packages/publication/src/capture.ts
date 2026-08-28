@@ -56,6 +56,49 @@ interface RawInventory {
   blobs: RawBlob[];
 }
 
+interface PublicationRootIdentity {
+  requested: string;
+  canonical: string;
+  dev: number;
+  ino: number;
+}
+
+async function authorizePublicationRoot(requested: string): Promise<PublicationRootIdentity> {
+  const entry = await lstat(requested);
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must be a real directory");
+  }
+  const canonical = await realpath(requested);
+  if (canonical !== requested) {
+    throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must not be a symlink or aliased path");
+  }
+  const identity = await stat(requested);
+  return { requested, canonical, dev: identity.dev, ino: identity.ino };
+}
+
+async function assertPublicationRoot(identity: PublicationRootIdentity): Promise<void> {
+  let entry;
+  let canonical;
+  let current;
+  try {
+    [entry, canonical, current] = await Promise.all([
+      lstat(identity.requested),
+      realpath(identity.requested),
+      stat(identity.requested),
+    ]);
+  } catch (error) {
+    throw new PublicationError("SOURCE_CHANGED", "the publication source identity became unavailable during capture", { retryable: true, cause: error });
+  }
+  if (entry.isSymbolicLink() || !entry.isDirectory() || !current.isDirectory() || canonical !== identity.canonical ||
+    current.dev !== identity.dev || current.ino !== identity.ino) {
+    throw new PublicationError("SOURCE_CHANGED", "the publication source root changed during capture", {
+      retryable: true,
+      expected: { canonical: identity.canonical, dev: identity.dev, ino: identity.ino },
+      actual: { canonical, dev: current.dev, ino: current.ino, symlink: entry.isSymbolicLink() },
+    });
+  }
+}
+
 async function validatePublicationTree(root: string, relative = ""): Promise<void> {
   const directory = path.join(root, ...relative.split("/").filter(Boolean));
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -414,19 +457,17 @@ export async function capturePublicationSnapshot(
     throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must be absolute");
   }
   const requestedRoot = path.resolve(options.source.root);
-  let root: string;
+  let rootIdentity: PublicationRootIdentity;
   try {
-    root = await realpath(requestedRoot);
-    const rootStat = await stat(root);
-    if (!rootStat.isDirectory()) throw new PublicationError("SOURCE_NOT_FOUND", "the publication source is not a directory");
+    rootIdentity = await authorizePublicationRoot(requestedRoot);
   } catch (error) {
     if (error instanceof PublicationError) throw error;
     throw new PublicationError("SOURCE_NOT_FOUND", "the publication source does not exist", { cause: error });
   }
-  if (root !== requestedRoot) {
-    throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must not be a symlink");
-  }
+  const root = rootIdentity.canonical;
+  await assertPublicationRoot(rootIdentity);
   await validatePublicationTree(root);
+  await assertPublicationRoot(rootIdentity);
 
   const limits = {
     maxObjects: options.limits?.maxObjects ?? DEFAULT_LIMITS.maxObjects,
@@ -444,13 +485,19 @@ export async function capturePublicationSnapshot(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let handle: SnapshotHandle | undefined;
     try {
+      await assertPublicationRoot(rootIdentity);
       await validatePublicationTree(root);
+      await assertPublicationRoot(rootIdentity);
       const first = await readInventory(backend, limits);
+      await assertPublicationRoot(rootIdentity);
       handle = buildSnapshot(first);
       let second: RawInventory;
       try {
+        await assertPublicationRoot(rootIdentity);
         second = await readInventory(backend, limits);
+        await assertPublicationRoot(rootIdentity);
         await validatePublicationTree(root);
+        await assertPublicationRoot(rootIdentity);
       } catch (error) {
         await handle.close();
         handle = undefined;

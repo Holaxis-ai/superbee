@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -144,6 +144,35 @@ test("capture detects a source change between inventory phases", async () => {
   } finally {
     FilesystemBackend.prototype.list = original;
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("capture rejects atomic substitution of the authorized source root", async () => {
+  const { root } = await fixture();
+  const { root: substitute } = await fixture();
+  await writeFile(path.join(substitute, "notes", "alpha.md"), "---\ntype: Note\ntitle: Substituted\n---\n# Substituted\n");
+  const authorized = `${root}-authorized`;
+  const original = FilesystemBackend.prototype.list;
+  let swapped = false;
+  FilesystemBackend.prototype.list = async function (...args) {
+    if (!swapped) {
+      swapped = true;
+      await rename(root, authorized);
+      await rename(substitute, root);
+    }
+    return original.apply(this, args);
+  };
+  try {
+    await assert.rejects(() => capturePublicationSnapshot({
+      schema: PUBLICATION_SNAPSHOT_V1,
+      source: { kind: "filesystem", root },
+      maxAttempts: 1,
+    }), (error) => error instanceof PublicationError && error.code === "SOURCE_CHANGED");
+  } finally {
+    FilesystemBackend.prototype.list = original;
+    await rm(root, { recursive: true, force: true });
+    await rm(authorized, { recursive: true, force: true });
+    await rm(substitute, { recursive: true, force: true });
   }
 });
 
