@@ -29,6 +29,14 @@ Usage:
   superbee doc history <id>                             Show a doc's attributed version chain
   superbee doc delete  <id> [--expected-version <v>]    Hard-delete a doc (idempotent)
 
+Authoring paths:
+  superbee doc write <id> --type <Type> ...             Generic document creation or full replacement
+  superbee new "<Kind>" <id> --<field> <value> ...      Governed, strict, create-only authoring
+
+Examples:
+  superbee doc write notes/idea --type Note --title "Idea" --body "Capture this."
+  superbee new "Task" clarify-authoring --title "Clarify authoring" --progress_status todo
+
 Run 'superbee doc <verb> --help' for a verb's full options.
 
 ${COMMON_OPTIONS}
@@ -65,6 +73,10 @@ Usage:
 
 Idempotent: re-writing a doc with identical frontmatter + body is a no-op (exit 0, no error, no
 duplication — a plain overwrite that converges to the same on-disk state).
+
+If a declared Kind governs the document type, prefer 'superbee new "<Kind>" <id> ...'; its
+authoring is strict and create-only. Use 'doc write' for a generic type or a deliberate full
+replacement.
 
 Options:
   --type <t>           OKF concept type (non-empty)                          [required]

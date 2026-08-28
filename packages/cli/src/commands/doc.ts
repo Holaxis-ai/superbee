@@ -46,6 +46,16 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
     stdout(DOC_USAGE);
     return;
   }
+  if (sub === "create") {
+    const invocation = cliInvocation();
+    throw new CliError(
+      "USAGE",
+      `'doc create' is not a command; use '${invocation} new "<Kind>" <id> ...' for governed, strict, ` +
+        `create-only authoring, or '${invocation} doc write <id> --type <Type> ...' for generic document ` +
+        "creation or full replacement",
+      { help: `${invocation} doc --help` },
+    );
+  }
   throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|read|open|history|delete)`, {
     help: `${cliInvocation()} doc --help`,
   });
