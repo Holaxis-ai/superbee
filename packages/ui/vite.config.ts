@@ -9,25 +9,36 @@
 // a drop-in replacement for `vite`'s own `defineConfig` that also typechecks `test` below.
 import { defineConfig, type Plugin } from "vitest/config";
 import react from "@vitejs/plugin-react";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 /**
- * Ship the self-hosted Cormorant Garamond subset's OFL license text alongside the woff2 in
- * dist/ (embed-ui-assets.mjs gzips whatever lands in dist/ into the npm CLI bundle) — OFL 1.1 §2 requires the copyright and
- * license notice travel with the Font Software, including a subsetted/modified copy, and a
- * sibling file that stays in `src/` (never built) does not satisfy the npm distribution. The
- * font's own name-table IDs 0/13/14 carry a copy too (belt); this is
- * the plain-text suspenders, readable without a font parser.
+ * Ship every self-hosted font's OFL license text alongside its woff2 in dist/
+ * (embed-ui-assets.mjs gzips whatever lands in dist/ into the npm CLI bundle) — OFL 1.1 §2
+ * requires the copyright and license notice travel with the Font Software, including a
+ * subsetted/modified copy, and a sibling file that stays in `src/` (never built) does not
+ * satisfy the npm distribution. Each font's own name-table IDs 0/13/14 carry a copy too
+ * (belt); this is the plain-text suspenders, readable without a font parser.
+ *
+ * DERIVED from the directory, never a hardcoded list: this app self-hosts three faces and will
+ * gain or lose others, and a missing license is a compliance failure that no test would catch.
+ * The empty-directory guard turns a silently unlicensed build into a loud one.
  */
 function shipFontLicense(): Plugin {
+  const dir = new URL("./src/assets/fonts/", import.meta.url);
   return {
     name: "ship-font-license",
     generateBundle() {
-      this.emitFile({
-        type: "asset" as const,
-        fileName: "assets/fonts/CormorantGaramond-OFL.txt",
-        source: readFileSync(new URL("./src/assets/fonts/CormorantGaramond-OFL.txt", import.meta.url)),
-      });
+      const licenses = readdirSync(dir).filter((f) => f.endsWith("-OFL.txt"));
+      if (licenses.length === 0) {
+        this.error("no *-OFL.txt found in src/assets/fonts — refusing to ship unlicensed fonts");
+      }
+      for (const name of licenses) {
+        this.emitFile({
+          type: "asset" as const,
+          fileName: `assets/fonts/${name}`,
+          source: readFileSync(new URL(name, dir)),
+        });
+      }
     },
   };
 }
