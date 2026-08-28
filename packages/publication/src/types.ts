@@ -1,16 +1,22 @@
 import type {
   JsonValue,
   ObjectRef,
-  PublicationSnapshotV1,
+  PublicationSnapshotV1 as GeneratedPublicationSnapshotV1,
 } from "./generated/publication-snapshot-v1.js";
+
+type DeepReadonly<T> =
+  T extends (...args: never[]) => unknown ? T
+    : T extends readonly (infer Item)[] ? readonly DeepReadonly<Item>[]
+      : T extends object ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+        : T;
 
 export const PUBLICATION_SNAPSHOT_V1 =
   "https://getsuperbee.com/schemas/publication-snapshot/v1" as const;
 export const PUBLICATION_BRIDGE_V0 = "v0" as const;
 
-export type PublicationJsonValue = JsonValue;
-export type PublicationObjectRefV1 = ObjectRef;
-export type { PublicationSnapshotV1 };
+export type PublicationJsonValue = DeepReadonly<JsonValue>;
+export type PublicationObjectRefV1 = DeepReadonly<ObjectRef>;
+export type PublicationSnapshotV1 = DeepReadonly<GeneratedPublicationSnapshotV1>;
 
 export interface CapturePublicationSnapshotOptionsV1 {
   schema: typeof PUBLICATION_SNAPSHOT_V1;

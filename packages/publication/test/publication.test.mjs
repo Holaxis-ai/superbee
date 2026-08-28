@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -92,6 +92,26 @@ test("capture is deterministic and preserves exact objects and canonical project
   }
 });
 
+test("captured manifests are deeply immutable and serialization is identity-stable", async () => {
+  const { root } = await fixture();
+  try {
+    const snapshot = await capturePublicationSnapshot({
+      schema: PUBLICATION_SNAPSHOT_V1,
+      source: { kind: "filesystem", root },
+    });
+    const before = snapshot.serializeManifest();
+    assert.equal(Object.isFrozen(snapshot.manifest), true);
+    assert.equal(Object.isFrozen(snapshot.manifest.documents), true);
+    assert.equal(Object.isFrozen(snapshot.manifest.documents[0].frontmatter), true);
+    assert.throws(() => { snapshot.manifest.documents[0].body = "tampered"; }, TypeError);
+    assert.deepEqual(snapshot.serializeManifest(), before);
+    const callerBytes = snapshot.serializeManifest();
+    callerBytes[0] = 0;
+    assert.deepEqual(snapshot.serializeManifest(), before);
+    await snapshot.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("capture detects a source change between inventory phases", async () => {
   const { root } = await fixture();
   const original = FilesystemBackend.prototype.list;
@@ -124,6 +144,27 @@ test("capture detects a source change between inventory phases", async () => {
   } finally {
     FilesystemBackend.prototype.list = original;
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("capture rejects structurally invalid documents and nested symlinks", async () => {
+  for (const mode of ["missing-type", "symlink"]) {
+    const { root } = await fixture();
+    try {
+      if (mode === "missing-type") {
+        await writeFile(path.join(root, "notes", "alpha.md"), "---\ntitle: Untyped\n---\n# Untyped\n");
+      } else {
+        await symlink(path.join(root, "notes", "alpha.md"), path.join(root, "notes", "alias.md"));
+      }
+      await assert.rejects(() => capturePublicationSnapshot({
+        schema: PUBLICATION_SNAPSHOT_V1,
+        source: { kind: "filesystem", root },
+      }), (error) => {
+        assert.ok(error instanceof PublicationError);
+        assert.ok(["MALFORMED_DOCUMENT", "INVALID_BUNDLE"].includes(error.code));
+        return true;
+      });
+    } finally { await rm(root, { recursive: true, force: true }); }
   }
 });
 

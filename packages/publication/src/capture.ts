@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { realpath, stat } from "node:fs/promises";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -54,6 +54,21 @@ interface RawInventory {
   documents: RawDocument[];
   reserved: RawReserved[];
   blobs: RawBlob[];
+}
+
+async function validatePublicationTree(root: string, relative = ""): Promise<void> {
+  const directory = path.join(root, ...relative.split("/").filter(Boolean));
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.name.startsWith(".")) continue;
+    const child = relative ? `${relative}/${entry.name}` : entry.name;
+    const info = await lstat(path.join(root, ...child.split("/")));
+    if (info.isSymbolicLink() || (!info.isFile() && !info.isDirectory())) {
+      throw new PublicationError("INVALID_BUNDLE", "publication bundles may contain only regular files and directories", {
+        subject: child,
+      });
+    }
+    if (info.isDirectory()) await validatePublicationTree(root, child);
+  }
 }
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
@@ -161,22 +176,26 @@ async function readInventory(
 class SnapshotHandle implements PublicationSnapshotHandleV1 {
   private closed = false;
   private readonly refs: Set<string>;
+  private readonly serializedManifest: Uint8Array;
+  readonly manifest: PublicationSnapshotV1;
 
   constructor(
-    readonly manifest: PublicationSnapshotV1,
+    manifest: PublicationSnapshotV1,
     private readonly objects: Map<string, Uint8Array>,
   ) {
+    this.serializedManifest = utf8(canonicalJson(manifest));
+    this.manifest = deepFreeze(JSON.parse(new TextDecoder().decode(this.serializedManifest)) as PublicationSnapshotV1);
     this.refs = new Set<string>();
     const add = (ref: PublicationObjectRefV1): void => {
       this.refs.add(canonicalJson(ref));
     };
-    for (const doc of manifest.documents) {
+    for (const doc of this.manifest.documents) {
       add(doc.source);
       add(doc.rendered.html);
     }
-    for (const row of manifest.reserved) add(row.object);
-    for (const row of manifest.blobs) add(row.object);
-    for (const row of manifest.views) add(row.entryObject);
+    for (const row of this.manifest.reserved) add(row.object);
+    for (const row of this.manifest.blobs) add(row.object);
+    for (const row of this.manifest.views) add(row.entryObject);
   }
 
   async readObject(ref: PublicationObjectRefV1): Promise<Uint8Array> {
@@ -194,13 +213,21 @@ class SnapshotHandle implements PublicationSnapshotHandleV1 {
 
   serializeManifest(): Uint8Array {
     if (this.closed) throw new PublicationError("HANDLE_CLOSED", "the publication snapshot handle is closed");
-    return utf8(canonicalJson(this.manifest));
+    return this.serializedManifest.slice();
   }
 
   async close(): Promise<void> {
     this.closed = true;
     this.objects.clear();
   }
+}
+
+function deepFreeze<T>(value: T): T {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const nested of Object.values(value as Record<string, unknown>)) deepFreeze(nested);
+  }
+  return value;
 }
 
 function mapCaptureError(error: unknown): PublicationError {
@@ -232,8 +259,8 @@ function addObject(
 function buildSnapshot(first: RawInventory): SnapshotHandle {
   const objects = new Map<string, Uint8Array>();
   const parsedDocs = new Map<string, { doc: OkfDocument; version: string }>();
-  const documents: PublicationSnapshotV1["documents"] = [];
-  const relationships: PublicationSnapshotV1["relationships"] = [];
+  const documents: Array<PublicationSnapshotV1["documents"][number]> = [];
+  const relationships: Array<PublicationSnapshotV1["relationships"][number]> = [];
 
   for (const row of first.documents) {
     let parsed: ReturnType<typeof parseMarkdown>;
@@ -244,6 +271,11 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
       throw new PublicationError("MALFORMED_DOCUMENT", "a publication document is malformed", {
         subject: row.id,
         cause: error,
+      });
+    }
+    if (typeof parsed.frontmatter.type !== "string" || !parsed.frontmatter.type.trim()) {
+      throw new PublicationError("MALFORMED_DOCUMENT", "a publication document requires a non-empty type", {
+        subject: row.id,
       });
     }
     const doc: OkfDocument = { id: row.id, frontmatter: parsed.frontmatter, body: parsed.body };
@@ -275,7 +307,7 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
     a.from.localeCompare(b.from) || a.to.localeCompare(b.to) ||
     a.text.localeCompare(b.text) || a.href.localeCompare(b.href));
 
-  const reserved: PublicationSnapshotV1["reserved"] = first.reserved.map((row) => ({
+  const reserved: Array<PublicationSnapshotV1["reserved"][number]> = first.reserved.map((row) => ({
     dir: row.dir,
     name: row.name,
     version: row.version,
@@ -283,7 +315,7 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
   }));
   reserved.sort((a, b) => `${a.dir}/${a.name}`.localeCompare(`${b.dir}/${b.name}`));
 
-  const blobs: PublicationSnapshotV1["blobs"] = first.blobs.map((row) => ({
+  const blobs: Array<PublicationSnapshotV1["blobs"][number]> = first.blobs.map((row) => ({
     key: row.key,
     version: row.version,
     contentType: row.contentType,
@@ -292,7 +324,7 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
   blobs.sort((a, b) => a.key.localeCompare(b.key));
   const blobsByKey = new Map(blobs.map((row) => [row.key, row]));
 
-  const views: PublicationSnapshotV1["views"] = [];
+  const views: Array<PublicationSnapshotV1["views"][number]> = [];
   for (const { doc, version } of parsedDocs.values()) {
     if (doc.frontmatter.type !== "View") continue;
     const registration = parseRegistration(doc.id, doc.frontmatter);
@@ -394,6 +426,7 @@ export async function capturePublicationSnapshot(
   if (root !== requestedRoot) {
     throw new PublicationError("INVALID_OBJECT_IDENTITY", "the filesystem publication root must not be a symlink");
   }
+  await validatePublicationTree(root);
 
   const limits = {
     maxObjects: options.limits?.maxObjects ?? DEFAULT_LIMITS.maxObjects,
@@ -409,12 +442,23 @@ export async function capturePublicationSnapshot(
   const backend = new FilesystemBackend(root);
   let lastError: PublicationError | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let handle: SnapshotHandle | undefined;
     try {
+      await validatePublicationTree(root);
       const first = await readInventory(backend, limits);
-      const handle = buildSnapshot(first);
-      const second = await readInventory(backend, limits);
+      handle = buildSnapshot(first);
+      let second: RawInventory;
+      try {
+        second = await readInventory(backend, limits);
+        await validatePublicationTree(root);
+      } catch (error) {
+        await handle.close();
+        handle = undefined;
+        throw error;
+      }
       if (!compareInventory(first, second)) {
         await handle.close();
+        handle = undefined;
         throw new PublicationError("SOURCE_CHANGED", "the publication source changed during capture", { retryable: true });
       }
       return handle;
