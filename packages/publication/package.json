@@ -1,0 +1,32 @@
+{
+  "name": "@superbee/publication",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stable read-only publication snapshot façade bundled into the public superbee package.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "scripts": {
+    "generate": "node scripts/generate-types.mjs",
+    "check:generated": "node scripts/generate-types.mjs --check",
+    "build": "npm run check:generated && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test ./test/*.test.mjs"
+  },
+  "dependencies": {
+    "@superbee/core": "*",
+    "@superbee/markdown-renderer": "*",
+    "@superbee/view-runtime": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "ajv": "^8.18.0",
+    "json-schema-to-typescript": "15.0.4",
+    "typescript": "^5.4.0"
+  }
+}

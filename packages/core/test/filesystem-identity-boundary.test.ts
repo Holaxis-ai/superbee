@@ -428,7 +428,9 @@ test("N4: every protocol call in backend.ts passes the imported production port"
   // rests on the route rules: this file reaches a module only by static import, and the identity
   // module has exactly one importer in the package, so there is no module that could hand an
   // entry point to the backend under a name this scan never sees.
-  assert.equal(passed.length, 11, `expected the backend's protocol call sites, found ${passed.length}`);
+  // The publication-only exact document and reserved-object reads add two observation calls while
+  // retaining the same production port and without widening the StorageBackend prototype.
+  assert.equal(passed.length, 13, `expected the backend's protocol call sites, found ${passed.length}`);
   assert.deepEqual([...new Set(passed)], [portBinding], "a protocol call takes a port other than the imported production constant");
 });
 

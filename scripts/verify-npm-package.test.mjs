@@ -25,21 +25,20 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 const referenceFiles = ["views/pulse.html", "views/references/view-authoring-v0.md"];
 const receipt = {
-  files: [
-    { path: "package.json" },
-    { path: "dist/superbee.mjs" },
-    { path: "README.md" },
-    { path: "LICENSE" },
-    { path: "NOTICE" },
-    { path: "SKILL.md" },
-    ...referenceFiles.map((relative) => ({ path: `references/${relative}` })),
-  ],
+  files: expectedTarballFiles(referenceFiles).map((path) => ({ path })),
 };
 const manifest = {
   name: "superbee",
   files: ["dist", "SKILL.md", "references", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
+  },
+  exports: {
+    ".": "./dist/superbee.mjs",
+    "./publication": {
+      types: "./dist/publication/index.d.ts",
+      default: "./dist/publication.mjs",
+    },
   },
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
@@ -221,6 +220,17 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "NOTICE",
     "README.md",
     "SKILL.md",
+    "dist/publication.mjs",
+    "dist/publication/bridge.d.ts",
+    "dist/publication/canonical-json.d.ts",
+    "dist/publication/capture.d.ts",
+    "dist/publication/errors.d.ts",
+    "dist/publication/generated/publication-snapshot-v1.d.ts",
+    "dist/publication/index.d.ts",
+    "dist/publication/schema.d.ts",
+    "dist/publication/schema/publication-snapshot-v1.schema.json",
+    "dist/publication/snapshot-backend.d.ts",
+    "dist/publication/types.d.ts",
     "dist/superbee.mjs",
     "package.json",
     "references/a.md",
@@ -283,7 +293,7 @@ test("the npm package contract rejects a second .mjs executable even when the fi
   };
   assert.throws(
     () => assertPackageContract(smuggledReceipt, manifest, smuggled),
-    /exactly one \.mjs executable/,
+    /declared executable.*publication subpath bundle/,
   );
 });
 

@@ -33,6 +33,10 @@
       "types": "./dist/page.d.ts",
       "default": "./dist/page.js"
     },
+    "./publication-filesystem": {
+      "types": "./dist/publication-filesystem.d.ts",
+      "default": "./dist/publication-filesystem.js"
+    },
     "./query-filter": {
       "types": "./dist/query-filter.d.ts",
       "default": "./dist/query-filter.js"

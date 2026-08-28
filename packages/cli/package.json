@@ -24,6 +24,13 @@
   "bin": {
     "superbee": "dist/superbee.mjs"
   },
+  "exports": {
+    ".": "./dist/superbee.mjs",
+    "./publication": {
+      "types": "./dist/publication/index.d.ts",
+      "default": "./dist/publication.mjs"
+    }
+  },
   "files": [
     "dist",
     "SKILL.md",
@@ -54,6 +61,7 @@
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",
     "@superbee/mcp-app": "*",
+    "@superbee/publication": "*",
     "@superbee/server": "*",
     "@superbee/ui-server": "*",
     "@toon-format/toon": "2.3.0",

@@ -27,7 +27,28 @@ const SUCCESSOR_ARTIFACT = SUCCESSOR_TARGET.artifact;
 const SUCCESSOR_BINS = SUCCESSOR_TARGET.bins;
 const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
 
-const baseExpectedFiles = ["LICENSE", "NOTICE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
+const publicationExpectedFiles = [
+  "dist/publication.mjs",
+  "dist/publication/bridge.d.ts",
+  "dist/publication/canonical-json.d.ts",
+  "dist/publication/capture.d.ts",
+  "dist/publication/errors.d.ts",
+  "dist/publication/generated/publication-snapshot-v1.d.ts",
+  "dist/publication/index.d.ts",
+  "dist/publication/schema.d.ts",
+  "dist/publication/schema/publication-snapshot-v1.schema.json",
+  "dist/publication/snapshot-backend.d.ts",
+  "dist/publication/types.d.ts",
+];
+const baseExpectedFiles = [
+  "LICENSE",
+  "NOTICE",
+  "README.md",
+  "SKILL.md",
+  SUCCESSOR_ARTIFACT,
+  "package.json",
+  ...publicationExpectedFiles,
+];
 
 /** Independently project the native shell argument form the installed CLI must advertise. */
 function expectedShellArgument(value) {
@@ -277,14 +298,22 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   );
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
-    [expectedArtifact],
-    "the tarball must carry exactly one .mjs executable (the dist bundle)",
+    expectedArtifact === SUCCESSOR_ARTIFACT
+      ? ["dist/publication.mjs", expectedArtifact].sort()
+      : [expectedArtifact],
+    "the tarball must carry the declared executable and, for Superbee, the publication subpath bundle",
   );
   assert.equal(manifest.name, target.package.name);
   // NOTICE must be listed explicitly: npm ships LICENSE regardless of files[], but NOTICE only
   // when named, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
   assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references", "NOTICE"]);
   assert.deepEqual(manifest.bin, target.bins);
+  if (target.id === "superbee") {
+    assert.deepEqual(manifest.exports?.["./publication"], {
+      types: "./dist/publication/index.d.ts",
+      default: "./dist/publication.mjs",
+    });
+  }
   // Scoped packages default to restricted at publish time — the manifest must pin public.
   assert.deepEqual(manifest.publishConfig, { access: "public" }, "publishConfig.access must be public");
   for (const field of runtimeDependencyFields) {
@@ -436,6 +465,22 @@ async function runInstalledProof(spec) {
       files: (await listFiles(installedRoot)).map((relative) => ({ path: relative.split(path.sep).join("/") })),
     };
     assertPackageContract(contractReceipt, manifest, referenceFiles, target);
+
+    if (target.id === "superbee") {
+      const publicationBundle = path.join(scratch, "publication-bundle");
+      await mkdir(publicationBundle);
+      await writeFile(path.join(publicationBundle, "index.md"), "---\nokf_version: '0.2'\n---\n# Published\n");
+      await writeFile(path.join(publicationBundle, "note.md"), "---\ntype: Note\ntitle: Proof\n---\n# Proof\n");
+      const publication = await import(pathToFileURL(path.join(installedRoot, "dist", "publication.mjs")).href);
+      assert.equal(publication.PUBLICATION_SNAPSHOT_V1, "https://getsuperbee.com/schemas/publication-snapshot/v1");
+      const snapshot = await publication.capturePublicationSnapshot({
+        schema: publication.PUBLICATION_SNAPSHOT_V1,
+        source: { kind: "filesystem", root: publicationBundle },
+      });
+      assert.deepEqual(snapshot.manifest.documents.map((row) => row.id), ["note"]);
+      assert.match(snapshot.manifest.snapshotDigest, /^sha256:[0-9a-f]{64}$/);
+      await snapshot.close();
+    }
 
     // The shipped skill assets are byte-identical to the repo-committed generated ones (which
     // check:skill pins to the renderer + resource manifest).
