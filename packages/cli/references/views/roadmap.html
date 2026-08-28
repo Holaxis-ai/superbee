@@ -5,51 +5,66 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Roadmap</title>
 <style>
+  /* Superbee View theme — mirrors the launcher shell, so a View framed inside it reads as
+     one surface rather than a foreign document.
+
+     TWO accent roles, not three. --structure carries structure AND state: "active" is the
+     same hue at full intensity, never a second colour, because hue should carry kind and
+     intensity should carry state. --signal carries liveness and the revealed answer. There
+     is deliberately no teal. Quiet metadata takes --slate, not an accent.
+
+     Fonts: a View is sandboxed under `font-src data:`, so it CANNOT load the shell's
+     self-hosted woff2 by URL. The brand faces are named first and resolve for anyone who
+     has them installed locally; the stacks behind them are the real fallback. Do not embed
+     a data: font — that is ~100KB in every View for a marginal gain. */
   :root {
-    --paper:#F8F6F2; --white:#fff; --rule:#E0DDD8; --mist:#EDF0F3;
+    --bg:#F3F7FA; --card:#FFFFFF; --alt:#E9EFF4; --rule:#DADEE2;
     --ink:#0F1A24; --slate:#4A5D6E; --ghost:#9AAAB8;
-    --blue:#1B6A9E; --teal:#0A8A7A; --amber:#B8832A;
+    --structure:#0073B0; --signal:#956300; --danger:#B00020;
     --radius:2px;
-    --serif: "Cormorant Garamond", "Iowan Old Style", Georgia, "Times New Roman", serif;
-    --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
-    --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --display:"Space Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --sans:"DM Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono:"JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   }
   @media (prefers-color-scheme: dark) {
-    :root { --paper:#0B1926; --white:#0F2A3F; --rule:#26323d; --mist:#132636;
-      --ink:#F8F6F2; --slate:#9fb2c2; --ghost:#6f8494; --amber:#E0AA40; }
+    :root {
+      --bg:#0B1926; --card:#0F2A3F; --alt:#12314A; --rule:#26323D;
+      --ink:#F8F6F2; --slate:#B7C4D1; --ghost:#7E8FA0;
+      --structure:#3CAEF9; --signal:#E09707; --danger:#F2707A;
+    }
   }
   * { box-sizing:border-box; margin:0; }
-  body { background:var(--paper); color:var(--ink); font:15px/1.55 var(--sans); }
-  header { padding:22px 32px 14px; border-bottom:1px solid var(--rule); background:var(--white); }
-  header h1 { font-family:var(--serif); font-weight:500; font-size:30px; letter-spacing:.01em; display:flex; align-items:baseline; gap:12px; }
-  header h1 .chev { color:var(--blue); font-family:var(--sans); font-weight:700; }
+  body { background:var(--bg); color:var(--ink); font:15px/1.55 var(--sans); }
+  header { padding:22px 32px 14px; border-bottom:1px solid var(--rule); background:var(--card); }
+  header h1 { font-family:var(--display); font-weight:500; font-size:30px; letter-spacing:.01em; display:flex; align-items:baseline; gap:12px; }
+  header h1 .chev { color:var(--structure); font-family:var(--sans); font-weight:700; }
   header .sub { color:var(--slate); font-size:13px; margin-top:2px; }
-  header .live { float:right; font-size:11.5px; color:var(--teal); font-family:var(--mono); }
-  header .live .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--teal); margin-right:5px; animation:pulse 1.4s infinite; }
+  header .live { float:right; font-size:11.5px; color:var(--signal); font-family:var(--mono); }
+  header .live .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--signal); margin-right:5px; animation:pulse 1.4s infinite; }
   @keyframes pulse { 50%{opacity:.3} }
   main { max-width:900px; margin:0 auto; padding:26px 32px 80px; }
   .group { margin-bottom:34px; }
   .group > h2 { font-family:var(--sans); font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.09em; color:var(--slate); display:flex; align-items:center; gap:9px; margin-bottom:4px; }
   .group > h2 .swatch { width:10px; height:10px; border-radius:2px; }
   .group > .note { font-size:12px; color:var(--ghost); margin-bottom:12px; }
-  .item { background:var(--white); border:1px solid var(--rule); border-radius:var(--radius); border-left:3px solid var(--rule); margin-bottom:10px; overflow:hidden; }
-  .item.active { border-left-color:var(--teal); }
-  .item.committed { border-left-color:var(--blue); }
-  .item.candidate { border-left-color:var(--amber); }
+  .item { background:var(--card); border:1px solid var(--rule); border-radius:var(--radius); border-left:3px solid var(--rule); margin-bottom:10px; overflow:hidden; }
+  .item.active { border-left-color:var(--structure); }
+  .item.committed { border-left-color:var(--structure); }
+  .item.candidate { border-left-color:var(--signal); }
   .item .head { display:flex; align-items:center; gap:12px; padding:13px 16px; cursor:pointer; }
-  .item .head:hover { background:var(--mist); }
-  .item .title { font-family:var(--serif); font-size:19px; font-weight:500; flex:1; line-height:1.2; }
+  .item .head:hover { background:var(--alt); }
+  .item .title { font-family:var(--display); font-size:19px; font-weight:500; flex:1; line-height:1.2; }
   .item .caret { color:var(--ghost); font-size:12px; transition:transform .15s; }
   .item.open .caret { transform:rotate(90deg); }
   .badge { font-family:var(--sans); font-size:10.5px; font-weight:600; padding:2px 8px; border-radius:999px; white-space:nowrap; letter-spacing:.02em; }
-  .badge.active { color:var(--teal); background:color-mix(in srgb,var(--teal) 13%,transparent); }
-  .badge.queued { color:var(--slate); background:var(--mist); }
-  .badge.candidate { color:var(--amber); background:color-mix(in srgb,var(--amber) 15%,transparent); }
-  .badge.done { color:var(--slate); background:var(--mist); }
+  .badge.active { color:var(--structure); background:color-mix(in srgb,var(--structure) 13%,transparent); }
+  .badge.queued { color:var(--slate); background:var(--alt); }
+  .badge.candidate { color:var(--signal); background:color-mix(in srgb,var(--signal) 15%,transparent); }
+  .badge.done { color:var(--slate); background:var(--alt); }
   .roll { display:flex; align-items:center; gap:9px; padding:0 16px 12px; }
-  .bar { flex:1; height:5px; background:var(--mist); border-radius:3px; overflow:hidden; display:flex; }
+  .bar { flex:1; height:5px; background:var(--alt); border-radius:3px; overflow:hidden; display:flex; }
   .bar i { height:100%; display:block; }
-  .bar i.done { background:var(--teal); } .bar i.prog { background:var(--amber); } .bar i.open { background:var(--rule); }
+  .bar i.done { background:var(--structure); } .bar i.prog { background:var(--signal); } .bar i.open { background:var(--rule); }
   .roll .count { font-family:var(--mono); font-size:11.5px; color:var(--slate); white-space:nowrap; }
   .roll .none { font-size:11.5px; color:var(--ghost); font-style:italic; }
   .body { display:none; padding:2px 16px 14px; border-top:1px solid var(--rule); }
@@ -57,16 +72,16 @@
   .desc { font-size:13.5px; color:var(--slate); margin:12px 0; max-width:70ch; }
   .tasks { display:flex; flex-direction:column; gap:1px; }
   .task { display:flex; align-items:center; gap:10px; padding:6px 8px; border-radius:2px; }
-  .task:hover { background:var(--mist); }
+  .task:hover { background:var(--alt); }
   .task .tdot { width:7px; height:7px; border-radius:50%; flex:none; }
   .task .ttitle { flex:1; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .task .tid { font-family:var(--mono); font-size:11px; color:var(--ghost); }
-  .st-todo{color:var(--slate)} .st-in_progress{color:var(--amber)} .st-blocked,.st-canceled{color:#c0392b} .st-done{color:var(--teal)}
-  .d-todo{background:var(--ghost)} .d-in_progress{background:var(--amber)} .d-blocked,.d-canceled{background:#c0392b} .d-done{background:var(--teal)}
+  .st-todo{color:var(--slate)} .st-in_progress{color:var(--signal)} .st-blocked,.st-canceled{color:var(--danger)} .st-done{color:var(--structure)}
+  .d-todo{background:var(--ghost)} .d-in_progress{background:var(--signal)} .d-blocked,.d-canceled{background:var(--danger)} .d-done{background:var(--structure)}
   .item.fresh { animation:land 1.8s ease-out; }
-  @keyframes land { 0%{background:color-mix(in srgb,var(--amber) 18%,var(--white))} 100%{background:var(--white)} }
+  @keyframes land { 0%{background:color-mix(in srgb,var(--signal) 18%,var(--card))} 100%{background:var(--card)} }
   footer { text-align:center; color:var(--ghost); font-size:11.5px; padding:20px; font-family:var(--mono); }
-  .empty { color:var(--ghost); text-align:center; margin-top:16vh; font-family:var(--serif); font-size:20px; }
+  .empty { color:var(--ghost); text-align:center; margin-top:16vh; font-family:var(--display); font-size:20px; }
 </style>
 </head>
 <body>
@@ -140,9 +155,9 @@
     return (fm(it).sequence!=null && String(fm(it).sequence).trim()!=="") ? "committed" : "candidate";
   }
   var GROUPS=[
-    {key:"active",   label:"In motion",  swatch:"var(--teal)", note:"actively being worked"},
-    {key:"committed",label:"Committed",  swatch:"var(--blue)", note:"sequenced, not yet started"},
-    {key:"candidate",label:"Candidate",  swatch:"var(--amber)",note:"recognized direction — not yet committed or sequenced (queued + no sequence). Awaiting a founders' decision."},
+    {key:"active",   label:"In motion",  swatch:"var(--structure)", note:"actively being worked"},
+    {key:"committed",label:"Committed",  swatch:"var(--structure)", note:"sequenced, not yet started"},
+    {key:"candidate",label:"Candidate",  swatch:"var(--signal)",note:"recognized direction — not yet committed or sequenced (queued + no sequence). Awaiting a founders' decision."},
     {key:"done",     label:"Done",       swatch:"var(--slate)",note:""}
   ];
 
