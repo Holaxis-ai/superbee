@@ -101,6 +101,116 @@ function awaitedCall(statement) {
   };
 }
 
+function validateProofTopLevel(program) {
+  const expectedImports = [
+    "node:assert/strict",
+    "node:child_process",
+    "node:fs/promises",
+    "node:os",
+    "node:path",
+    "node:util",
+    "node:url",
+  ];
+  const imports = program.statements.filter(ts.isImportDeclaration);
+  assert.deepEqual(
+    imports.map((statement) => statement.moduleSpecifier.text),
+    expectedImports,
+    "the native proof must retain only its reviewed imports",
+  );
+
+  const expectedInitializers = new Map([
+    ["execFileAsync", "promisify(execFile)"],
+    ["entrypoint", "process.env.SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT"],
+    ["prefix", "process.env.SUPERBEE_WINDOWS_INSTALLED_PREFIX"],
+    ["scratch", 'await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "superbee-windows-installed-"))'],
+    ["home", 'path.join(scratch, "home")'],
+    ["localAppData", 'path.join(home, "AppData", "Local")'],
+    ["appData", 'path.join(home, "AppData", "Roaming")'],
+    ["commandEnv", `{
+  ...process.env,
+  HOME: home,
+  USERPROFILE: home,
+  LOCALAPPDATA: localAppData,
+  APPDATA: appData,
+  npm_config_prefix: prefix,
+  PATH: \`\${prefix}\${path.delimiter}\${process.env.PATH ?? ""}\`,
+  AGENTSTATE_LITE_NO_AUTOPULL: "1",
+}`],
+    ["installedPackageProofComplete", 'Symbol("installed-package-proof-complete")'],
+  ]);
+  const expectedFunctions = [
+    "run",
+    "cli",
+    "cliJson",
+    "git",
+    "proveCatalogLifecycle",
+    "configureRepository",
+    "proveLocalRemoteSync",
+    "proveUiUrlLifecycle",
+    "proveMcpConfigLifecycle",
+    "runInstalledPackageProof",
+  ];
+  const expectedSetup = [
+    'assert.equal(process.platform, "win32", "this proof must execute on the native Windows runner");',
+    'assert.ok(entrypoint, "SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT is required");',
+    'assert.ok(prefix, "SUPERBEE_WINDOWS_INSTALLED_PREFIX is required");',
+    "await Promise.all([access(entrypoint), access(prefix)]);",
+  ];
+
+  let importIndex = 0;
+  let functionIndex = 0;
+  let setupIndex = 0;
+  let entryTry;
+  for (const statement of program.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      assert.equal(importIndex < expectedImports.length, true, "the native proof cannot add imports");
+      importIndex += 1;
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      assert.equal(statement.declarationList.declarations.length, 1, "top-level proof declarations must be singular");
+      const declaration = statement.declarationList.declarations[0];
+      const name = declaration.name.getText();
+      assert.ok(expectedInitializers.has(name), `the native proof cannot add or duplicate top-level declaration ${name}`);
+      assert.equal(
+        declaration.initializer?.getText(),
+        expectedInitializers.get(name),
+        `the native proof top-level declaration ${name} must retain its reviewed initializer`,
+      );
+      expectedInitializers.delete(name);
+      continue;
+    }
+    if (ts.isFunctionDeclaration(statement)) {
+      assert.equal(
+        statement.name?.text,
+        expectedFunctions[functionIndex],
+        "the native proof must retain its reviewed helper and runner declarations",
+      );
+      functionIndex += 1;
+      continue;
+    }
+    if (ts.isExpressionStatement(statement) && setupIndex < expectedSetup.length) {
+      assert.equal(
+        statement.getText(),
+        expectedSetup[setupIndex],
+        "the native proof must retain only its reviewed pre-entry setup",
+      );
+      setupIndex += 1;
+      continue;
+    }
+    assert.ok(ts.isTryStatement(statement) && !entryTry, "the native proof permits only one terminal entrypoint");
+    entryTry = statement;
+  }
+
+  assert.equal(importIndex, expectedImports.length, "the native proof import topology is incomplete");
+  assert.equal(expectedInitializers.size, 0, "the native proof declaration topology is incomplete");
+  assert.equal(functionIndex, expectedFunctions.length, "the native proof function topology is incomplete");
+  assert.equal(setupIndex, expectedSetup.length, "the native proof setup topology is incomplete");
+  assert.equal(program.statements.at(-1), entryTry, "the native proof entrypoint must be the final top-level statement");
+  assert.ok(entryTry, "the native proof must declare its terminal entrypoint");
+  return entryTry;
+}
+
 function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof) {
   const expectedEntrypoint = '$entrypoint = Join-Path $prefix "node_modules\\superbee\\dist\\superbee.mjs"';
   assert.ok(job.includes(expectedEntrypoint), "Windows runner must derive the exact globally installed entrypoint");
@@ -160,7 +270,7 @@ function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof)
     ],
     "the installed-package runner must contain only the four awaited lifecycles followed by its completion token",
   );
-  const entryTry = program.statements.find(ts.isTryStatement);
+  const entryTry = validateProofTopLevel(program);
   assert.equal(entryTry?.tryBlock.statements.length, 3, "the native proof entrypoint must gate success on completion");
   const completionBinding = awaitedCall(entryTry?.tryBlock.statements[0] ?? {});
   assert.deepEqual(
@@ -179,6 +289,17 @@ function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof)
     ts.isExpressionStatement(successWrite) && ts.isCallExpression(successWrite.expression)
       && successWrite.expression.expression.getText() === "process.stdout.write",
     "the native proof must report success only after the complete lifecycle runner",
+  );
+  assert.equal(entryTry.catchClause, undefined, "the native proof entrypoint cannot convert failures to success");
+  assert.equal(entryTry.finallyBlock?.statements.length, 1, "the native proof entrypoint must retain one cleanup action");
+  assert.deepEqual(
+    awaitedCall(entryTry.finallyBlock?.statements[0] ?? {}),
+    {
+      name: "rm",
+      args: ["scratch", "{ recursive: true, force: true, maxRetries: 20, retryDelay: 150 }"],
+      binding: "",
+    },
+    "the native proof entrypoint must clean only its scratch directory after completion or failure",
   );
 
   assert.deepEqual(
@@ -407,6 +528,35 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
       ),
     ),
     /bound entrypoint/,
+  );
+  const entryStart = "\ntry {\n  const completion = await runInstalledPackageProof();";
+  for (const bypass of [
+    "if (process.env.CI) process.exit(0);",
+    "process.exit(0);",
+    "const bypass = process.exit(0);",
+    'process.stdout.write("installed package proof passed\\n");',
+    "await runInstalledPackageProof();",
+    "if (true) { await runInstalledPackageProof(); }",
+  ]) {
+    assert.throws(
+      () => validateWindowsInstalledProof(
+        windowsJob,
+        lane,
+        windowsInstalledProof.replace(entryStart, `\n${bypass}\n${entryStart}`),
+      ),
+      /one terminal entrypoint|pre-entry setup|cannot add or duplicate top-level declaration/,
+    );
+  }
+  assert.throws(
+    () => validateWindowsInstalledProof(
+      windowsJob,
+      lane,
+      windowsInstalledProof.replace(
+        "} finally {",
+        '} catch {\n  process.stdout.write("installed package proof passed\\n");\n} finally {',
+      ),
+    ),
+    /cannot convert failures to success/,
   );
 });
 
