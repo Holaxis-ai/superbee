@@ -138,6 +138,7 @@ export async function buildCliBundle(outfile, options) {
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
       "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
+      "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
       "@superbee/core": r("../core/src/index.ts"),
       // The git tier lives in its own workspace package (board-git A1); alias to source so the
       // npm artifact stays ONE self-contained file with no dist pre-build.
@@ -165,6 +166,41 @@ export async function buildCliBundle(outfile, options) {
         // gray-matter (bundled, CJS) can call require() at runtime; ESM has none, so supply one.
         "import { createRequire as ___createRequire } from 'node:module';",
         "const require = ___createRequire(import.meta.url);",
+      ].join("\n"),
+    },
+    logLevel: "info",
+  });
+}
+
+/** Bundle the stable `superbee/publication` subpath with zero runtime dependencies. */
+export async function buildPublicationBundle(outfile, surface = "full") {
+  if (surface !== "full" && surface !== "bridge") throw new Error("unknown publication bundle surface");
+  await build({
+    absWorkingDir: pkgRoot,
+    entryPoints: [r(surface === "bridge" ? "../publication/src/bridge-entry.ts" : "../publication/src/index.ts")],
+    outfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    alias: {
+      "@superbee/core/page": r("../core/src/page.ts"),
+      "@superbee/core/links": r("../core/src/links.ts"),
+      "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
+      "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
+      "@superbee/core/publication-filesystem": r("../core/src/publication-filesystem.ts"),
+      "@superbee/core": r("../core/src/index.ts"),
+      "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
+      "@superbee/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
+      "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
+      "@superbee/view-runtime/bridge": r("../view-runtime/src/bridge.ts"),
+    },
+    banner: {
+      js: [
+        "import { createRequire as ___createRequire } from 'node:module';",
+        surface === "full"
+          ? "const require = ___createRequire(import.meta.url);"
+          : "const require = ___createRequire('file:///superbee-publication-bridge.mjs');",
       ].join("\n"),
     },
     logLevel: "info",

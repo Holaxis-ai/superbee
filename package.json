@@ -9,8 +9,8 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build -w @superbee/core -w @superbee/board-git -w @superbee/server -w @superbee/view-runtime -w @superbee/ui-server -w @superbee/markdown-renderer -w @superbee/mcp-app -w superbee",
-    "typecheck": "npm run build -w @superbee/core -w @superbee/board-git -w @superbee/server -w @superbee/view-runtime -w @superbee/ui-server -w @superbee/markdown-renderer -w @superbee/mcp-app && npm run typecheck --workspaces --if-present",
+    "build": "npm run build -w @superbee/core -w @superbee/board-git -w @superbee/server -w @superbee/view-runtime -w @superbee/ui-server -w @superbee/markdown-renderer -w @superbee/mcp-app -w @superbee/publication -w superbee",
+    "typecheck": "npm run build -w @superbee/core -w @superbee/board-git -w @superbee/server -w @superbee/view-runtime -w @superbee/ui-server -w @superbee/markdown-renderer -w @superbee/mcp-app -w @superbee/publication && npm run typecheck --workspaces --if-present",
     "test": "npm test --workspaces --if-present",
     "test:scripts": "node --test --test-concurrency=1 scripts/package-core-external-proof.test.mjs scripts/package-server-external-proof.test.mjs scripts/oss-hosted-boundary.test.mjs scripts/verify-npm-package.test.mjs scripts/mutation-survivors.test.mjs scripts/migrate-legacy-view-names.test.mjs scripts/first-party-consumers.test.mjs scripts/ci-lanes.test.mjs scripts/aliasing-host-coverage.test.mjs scripts/workflow-ci-topology.test.mjs scripts/workflow-release-topology.test.mjs",
     "e2e": "npm run e2e:gate -w @superbee/ui",

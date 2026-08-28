@@ -25,21 +25,24 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 
 const referenceFiles = ["views/pulse.html", "views/references/view-authoring-v0.md"];
 const receipt = {
-  files: [
-    { path: "package.json" },
-    { path: "dist/superbee.mjs" },
-    { path: "README.md" },
-    { path: "LICENSE" },
-    { path: "NOTICE" },
-    { path: "SKILL.md" },
-    ...referenceFiles.map((relative) => ({ path: `references/${relative}` })),
-  ],
+  files: expectedTarballFiles(referenceFiles).map((path) => ({ path })),
 };
 const manifest = {
   name: "superbee",
   files: ["dist", "SKILL.md", "references", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
+  },
+  exports: {
+    ".": "./dist/superbee.mjs",
+    "./publication": {
+      types: "./dist/publication/index.d.ts",
+      default: "./dist/publication.mjs",
+    },
+    "./publication/bridge": {
+      types: "./dist/publication/bridge-entry.d.ts",
+      default: "./dist/publication-bridge.mjs",
+    },
   },
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
@@ -215,12 +218,37 @@ test("root and npm package license declarations agree", async () => {
   }
 });
 
+test("lockfile workspace metadata preserves the npm package platform contract", async () => {
+  const [npmManifest, lockfile] = await Promise.all([
+    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "package-lock.json"), "utf8").then(JSON.parse),
+  ]);
+  const locked = lockfile.packages?.["packages/cli"];
+  assert.ok(locked, "package-lock must describe the CLI workspace");
+  assert.equal(locked.version, npmManifest.version, "lockfile CLI version must match the publish manifest");
+  assert.deepEqual(locked.os, npmManifest.os, "lockfile must not retain a stale OS restriction");
+  assert.deepEqual(locked.cpu, npmManifest.cpu, "lockfile must not retain a stale CPU restriction");
+});
+
 test("the expected tarball set is the fixed base plus the references tree", () => {
   assert.deepEqual(expectedTarballFiles(["a.md", "b/c.md"]), [
     "LICENSE",
     "NOTICE",
     "README.md",
     "SKILL.md",
+    "dist/publication-bridge.mjs",
+    "dist/publication.mjs",
+    "dist/publication/bridge-entry.d.ts",
+    "dist/publication/bridge.d.ts",
+    "dist/publication/canonical-json.d.ts",
+    "dist/publication/capture.d.ts",
+    "dist/publication/errors.d.ts",
+    "dist/publication/generated/publication-snapshot-v1.d.ts",
+    "dist/publication/index.d.ts",
+    "dist/publication/schema.d.ts",
+    "dist/publication/schema/publication-snapshot-v1.schema.json",
+    "dist/publication/snapshot-backend.d.ts",
+    "dist/publication/types.d.ts",
     "dist/superbee.mjs",
     "package.json",
     "references/a.md",
@@ -276,14 +304,14 @@ test("the npm package contract rejects surface and runtime dependency drift", ()
   );
 });
 
-test("the npm package contract rejects a second .mjs executable even when the file set matches", () => {
+test("the npm package contract rejects an undeclared fourth .mjs artifact even when the file set matches", () => {
   const smuggled = [...referenceFiles, "scripts/helper.mjs"];
   const smuggledReceipt = {
     files: [...receipt.files, { path: "references/scripts/helper.mjs" }],
   };
   assert.throws(
     () => assertPackageContract(smuggledReceipt, manifest, smuggled),
-    /exactly one \.mjs executable/,
+    /declared executable.*publication subpath bundles/,
   );
 });
 

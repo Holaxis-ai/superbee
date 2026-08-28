@@ -62,6 +62,8 @@ import type {
   WriteOptions,
 } from "./types.js";
 
+const publicationRoots = new WeakMap<FilesystemBackend, string>();
+
 /** First trimmed non-empty string among `vals`, else `undefined`. */
 function firstString(...vals: unknown[]): string | undefined {
   for (const v of vals) {
@@ -142,6 +144,7 @@ export class FilesystemBackend implements StorageBackend {
    */
   constructor(root: string) {
     this.#root = path.resolve(root);
+    publicationRoots.set(this, this.#root);
   }
 
   async read(id: ConceptId): Promise<ReadResult> {
@@ -381,4 +384,57 @@ export class FilesystemBackend implements StorageBackend {
       backlinks: false,
     } as const;
   }
+}
+
+function publicationRoot(backend: FilesystemBackend): string {
+  const root = publicationRoots.get(backend);
+  if (!root) throw new InvalidInputError("Unknown filesystem backend publication source.");
+  return root;
+}
+
+/** Internal exact-byte authority for the publication adapter; not part of StorageBackend. */
+export async function readRawFilesystemDocument(
+  backend: FilesystemBackend,
+  id: ConceptId,
+): Promise<{ bytes: Uint8Array; version: Version }> {
+  assertSafeConceptId(id);
+  const root = publicationRoot(backend);
+  const rel = pathFromConceptId(id);
+  const observed = await observeExact(port, root, rel, readBytes);
+  if (observed.state === "absent") throw notFound(root, rel);
+  const raw = new TextDecoder("utf-8", { fatal: true }).decode(observed.value);
+  return { bytes: observed.value.slice(), version: versionOfBytes(raw) };
+}
+
+/** Internal exact-byte authority for reserved publication objects. */
+export async function readRawFilesystemReserved(
+  backend: FilesystemBackend,
+  dir: string,
+  name: ReservedFilename,
+): Promise<{ bytes: Uint8Array; version: Version } | null> {
+  assertSafeReservedDir(dir);
+  const root = publicationRoot(backend);
+  const observed = await observeExact(port, root, reservedPath(dir, name), readBytes);
+  if (observed.state === "absent") return null;
+  return {
+    bytes: observed.value.slice(),
+    version: versionOfBytes(observed.value.toString("utf8")),
+  };
+}
+
+/** Internal canonical inventory of reserved publication objects. */
+export async function listFilesystemReservedObjects(
+  backend: FilesystemBackend,
+): Promise<Array<{ dir: string; name: ReservedFilename }>> {
+  const root = publicationRoot(backend);
+  const files = await walkFiles(root, (name) => name === "index.md" || name === "log.md");
+  return files
+    .map((relative) => {
+      const slash = relative.lastIndexOf("/");
+      const dir = slash === -1 ? "" : relative.slice(0, slash);
+      const name = relative.slice(slash + 1) as ReservedFilename;
+      assertSafeReservedDir(dir);
+      return { dir, name };
+    })
+    .sort((a, b) => reservedPath(a.dir, a.name).localeCompare(reservedPath(b.dir, b.name)));
 }

@@ -16,17 +16,49 @@
 // may call require() at runtime; ESM output has no ambient `require`, so we provide one.
 //
 // This explicitly flavored dev/npm build writes only dist/ plus gitignored generated inputs.
-import { rm, chmod } from "node:fs/promises";
+import { rm, chmod, cp, mkdir, readdir } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { isMainModule } from "../../scripts/is-main-module.mjs";
-import { buildCliBundle } from "./scripts/build-bundle.mjs";
+import { buildCliBundle, buildPublicationBundle } from "./scripts/build-bundle.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
 import { FUNCTIONAL_VERSION_FLOOR } from "./scripts/functional-version-floor.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const r = (p) => resolve(here, p);
 const outfile = r("dist/superbee.mjs");
+const publicationOutfile = r("dist/publication.mjs");
+const publicationBridgeOutfile = r("dist/publication-bridge.mjs");
+const execFileAsync = promisify(execFile);
+
+async function copyDeclarationTree(source, destination) {
+  await mkdir(destination, { recursive: true });
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const from = resolve(source, entry.name);
+    const to = resolve(destination, entry.name);
+    if (entry.isDirectory()) await copyDeclarationTree(from, to);
+    else if (entry.name.endsWith(".d.ts")) await cp(from, to);
+  }
+}
+
+async function buildPublicationTypes() {
+  const repoRoot = r("../..");
+  const tsc = r("../../node_modules/typescript/bin/tsc");
+  for (const workspace of ["core", "markdown-renderer", "view-runtime", "publication"]) {
+    await execFileAsync(process.execPath, [tsc, "--project", r(`../${workspace}/tsconfig.json`)], {
+      cwd: repoRoot,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+  }
+  await copyDeclarationTree(r("../publication/dist"), r("dist/publication"));
+  await mkdir(r("dist/publication/schema"), { recursive: true });
+  await cp(
+    r("../publication/schema/publication-snapshot-v1.schema.json"),
+    r("dist/publication/schema/publication-snapshot-v1.schema.json"),
+  );
+}
 
 /**
  * The ONE dev/npm build entrypoint used by `npm run build`, `verify-npm-package.mjs`, and the
@@ -53,6 +85,11 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
     ...(source === undefined ? {} : { source }),
     ...(packageIdentity === undefined ? {} : { packageIdentity }),
   });
+  await Promise.all([
+    buildPublicationBundle(publicationOutfile),
+    buildPublicationBundle(publicationBridgeOutfile, "bridge"),
+    buildPublicationTypes(),
+  ]);
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
   // in the tarball and for direct `./dist/superbee.mjs` runs).
   await chmod(outfile, 0o755);
