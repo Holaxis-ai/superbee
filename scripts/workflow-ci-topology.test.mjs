@@ -75,6 +75,23 @@ function assertWindowsJob(job, lane) {
   assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
   assert.match(job, /npm install --global \$env:SUPERBEE_WINDOWS_TARBALL --prefix \$prefix/);
   assert.match(job, /Join-Path \$prefix "superbee\.cmd"/);
+  assert.equal(lane.installed_package_proof_script, "scripts/windows-installed-package-proof.mjs");
+  assert.ok(
+    job.includes(`node ${lane.installed_package_proof_script}`),
+    "Windows smoke must run the pinned installed-package proof script",
+  );
+  const proof = readFileSync(path.join(root, lane.installed_package_proof_script), "utf8");
+  assert.deepEqual(
+    Object.keys(lane.installed_package_scenarios).sort(),
+    ["catalog-lifecycle", "local-remote-sync", "mcp-config-lifecycle", "ui-url-lifecycle"],
+    "Windows installed-package scenario inventory drifted",
+  );
+  for (const [scenario, literals] of Object.entries(lane.installed_package_scenarios)) {
+    assert.ok(Array.isArray(literals) && literals.length > 0, `${scenario} must pin command/evidence literals`);
+    for (const literal of literals) {
+      assert.ok(proof.includes(literal), `${scenario} lost proof literal ${literal}`);
+    }
+  }
   for (const command of lane.built_cli_commands) {
     assert.ok(job.includes(`& $cli ${command}`), `Windows smoke is missing ${command}`);
   }

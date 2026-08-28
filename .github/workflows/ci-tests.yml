@@ -112,6 +112,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $cli = Join-Path $prefix "superbee.cmd"
           if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw "npm did not install superbee.cmd" }
+          $entrypoint = Join-Path $prefix "node_modules\superbee\dist\superbee.mjs"
+          if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) { throw "npm did not install the Superbee entrypoint" }
           $dir = Join-Path $env:RUNNER_TEMP "windows-smoke-bundle"
           & $cli init --dir $dir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -128,6 +130,10 @@ jobs:
           & $cli list --dir $dir
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $cli status --dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT = $entrypoint
+          $env:SUPERBEE_WINDOWS_INSTALLED_PREFIX = $prefix
+          node scripts/windows-installed-package-proof.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   distribution:
