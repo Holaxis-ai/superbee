@@ -180,13 +180,15 @@ export function resolveUserStatePolicy(input?: UserStateInput): UserStatePolicy 
     };
   }
   const localAppData = environment.env.LOCALAPPDATA?.trim() ?? "";
-  const localAppDataRoot = paths.parse(paths.normalize(localAppData)).root;
-  // Windows treats `\foo` as absolute even though it is relative to the current drive, and UNC or
-  // device paths can name remote or broader authorities. Private state accepts only the ordinary
-  // drive-qualified local known-folder shape; redirected network profiles need an explicit future
-  // containment design rather than silently broadening this authority.
+  const normalizedLocalAppData = paths.normalize(localAppData);
+  const localAppDataRoot = paths.parse(normalizedLocalAppData).root;
+  // Windows treats `\foo` as absolute even though it is relative to the current drive. A genuine
+  // UNC root is also absolute and remains a valid redirected known folder under D2, but device
+  // namespaces (`\\?\`, `\\.\`, and `\??\`) are separate authorities and stay outside policy.
   const driveQualifiedLocal = /^[A-Za-z]:\\$/u.test(localAppDataRoot);
-  if (localAppData === "" || !paths.isAbsolute(localAppData) || !driveQualifiedLocal) {
+  const deviceNamespace = /^(?:\\\\[?.]\\|\\\?\?\\)/u.test(normalizedLocalAppData);
+  const genuineUnc = !deviceNamespace && /^\\\\[^\\]+\\[^\\]+\\$/u.test(localAppDataRoot);
+  if (localAppData === "" || !paths.isAbsolute(normalizedLocalAppData) || (!driveQualifiedLocal && !genuineUnc)) {
     return {
       platform: environment.platform,
       home,
@@ -195,10 +197,10 @@ export function resolveUserStatePolicy(input?: UserStateInput): UserStatePolicy 
       guardedRoots: [...new Set([legacy, ...superseded])],
       displayRoot: "%LOCALAPPDATA%\\Superbee",
       containment: "windows-user-local",
-      reason: "LOCALAPPDATA must name a drive-qualified absolute local Windows directory; root-relative, UNC, and device paths are not accepted",
+      reason: "LOCALAPPDATA must name an absolute drive-qualified or UNC Windows directory; root-relative, drive-relative, and device paths are not accepted",
     };
   }
-  const canonicalRoot = absoluteStateRoot(paths.join(localAppData, "Superbee"), environment.platform);
+  const canonicalRoot = absoluteStateRoot(paths.join(normalizedLocalAppData, "Superbee"), environment.platform);
   return {
     platform: environment.platform,
     home,
@@ -272,6 +274,7 @@ interface PrivateStateStatus {
   readonly dev: number | bigint;
   readonly ino: number | bigint;
   readonly mode: number;
+  readonly nlink: number;
   readonly uid: number;
   readonly size: number;
   isDirectory(): boolean;
@@ -835,6 +838,7 @@ async function inspectPrivateTree(target: string, directories: PrivateTreeEntry[
     return;
   }
   if (!status.isFile()) throw new Error("private user-state tree contains a non-regular entry");
+  if (status.nlink !== 1) throw new Error("private user-state tree contains a hard-linked regular file");
   files.push({ path: target, kind: "file", identity: status });
 }
 
@@ -849,8 +853,11 @@ async function hardenPrivateTreeEntry(entry: PrivateTreeEntry): Promise<void> {
     const opened = await handle.stat();
     const afterOpen = await lstat(entry.path);
     const expectedShape = entry.kind === "directory" ? opened.isDirectory() : opened.isFile();
+    const fileHasSingleLink = entry.kind === "directory"
+      || (entry.identity.nlink === 1 && opened.nlink === 1 && afterOpen.nlink === 1);
     if (
       !expectedShape
+      || !fileHasSingleLink
       || afterOpen.isSymbolicLink()
       || !sameFileIdentity(entry.identity, opened)
       || !sameFileIdentity(entry.identity, afterOpen)
