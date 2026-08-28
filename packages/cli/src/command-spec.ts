@@ -510,8 +510,10 @@ export const CLI_COMMAND_GROUPS = [
         leaves: [
           publicLeaf("setup", "setup", zero, 28),
           publicLeaf("setupMigrateState", "setup migrate-state", zero),
+          publicLeaf("setupHardenState", "setup harden-state", zero),
+          publicLeaf("setupQuarantineState", "setup quarantine-state", zero),
         ],
-        usage: "setup [migrate-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]",
+        usage: "setup [migrate-state|harden-state|quarantine-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]",
         summary: "Inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command",
       },
     ],

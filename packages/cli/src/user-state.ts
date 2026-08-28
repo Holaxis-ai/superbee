@@ -1,18 +1,16 @@
 // One authority for private, user-scoped CLI state.
 //
-// The Superbee package owns ~/.superbee-state. The separately published Aslite bridge keeps its
-// historical ~/.agentstate root until that bridge is retired. Ordinary Superbee readers never
-// consult a superseded root; only setup's explicit one-shot migration module may inspect them.
-//
-// The location is stored back in $HOME rather than under ~/.config because nothing kept here is
-// user-editable configuration, and a `-config` name signals dotfile/backup tooling to sweep it.
-// ~/.config itself is commonly tracked wholesale; $HOME rarely is.
+// Superbee owns one platform-native private root: ~/.superbee-state on POSIX and
+// %LOCALAPPDATA%\Superbee on Windows. The separately published Aslite bridge keeps its historical
+// ~/.agentstate root until that bridge is retired. Ordinary readers never consult a superseded
+// root; only setup's explicit migration module may inspect them.
 import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   closeSync,
   constants,
   fchmodSync,
+  fstatSync,
   fsyncSync,
   lstatSync,
   mkdirSync,
@@ -29,6 +27,7 @@ import {
   lstat,
   mkdir,
   open,
+  readdir,
   readFile,
   rename,
   rmdir,
@@ -36,14 +35,13 @@ import {
   unlink,
 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import path, { dirname, isAbsolute, join, relative, sep } from "node:path";
 
 import { staticBuildIdentity } from "./build-identity.js";
 
 /**
- * THE ONE definition of Superbee's private user-state location, relative to $HOME. Guarded roots,
- * migration targets, help text, and every fixture derive from it, so relocating the store is a
- * one-line change and no other module encodes the name.
+ * The released POSIX private-root spelling. The platform policy below is the location authority;
+ * Windows deliberately uses its per-user LocalAppData known folder instead.
  */
 export const SUPERBEE_USER_STATE_PATH_SEGMENTS: readonly string[] = Object.freeze([".superbee-state"]);
 
@@ -55,31 +53,16 @@ export const SUPERSEDED_USER_STATE_PATH_SEGMENTS: readonly (readonly string[])[]
   Object.freeze([".config", "superbee"]),
 ]);
 
+const WINDOWS_SUPERSEDED_USER_STATE_PATH_SEGMENTS: readonly (readonly string[])[] = Object.freeze([
+  Object.freeze([".superbee-state"]),
+  ...SUPERSEDED_USER_STATE_PATH_SEGMENTS,
+]);
+
 /** `~/.superbee-state` — the display spelling, derived from the one constant above. */
 export const USER_STATE_DIR_DISPLAY = `~/${SUPERBEE_USER_STATE_PATH_SEGMENTS.join("/")}`;
 
-/**
- * The one exit node out of an unrecognized or half-created canonical root: quarantine by RENAME so
- * the evidence survives inspection. Never a delete, and never a bare rerun of the failing command.
- *
- * The destination is a FRESH `mktemp -d` directory rather than a fixed `.unrecognized` name: a
- * fixed name fails outright against a pre-existing regular file (leaving the block un-cleared, so
- * the command is no exit node at all) and refuses a second run against its own earlier output. A
- * per-run unique 0700 destination is collision-free on repeat, never overwrites prior evidence, and
- * still starts with `mv`.
- */
-export const USER_STATE_QUARANTINE_COMMAND =
-  `superbee_quarantine="$(mktemp -d ${USER_STATE_DIR_DISPLAY}.unrecognized.XXXXXX)" `
-  + `&& mv ${USER_STATE_DIR_DISPLAY} "$superbee_quarantine"/ `
-  + `&& echo "preserved: $superbee_quarantine/${SUPERBEE_USER_STATE_PATH_SEGMENTS.join("/")}"`;
-
-/**
- * The proportionate exit node for a root this product RECOGNIZES but whose filesystem permissions
- * drifted: tighten them. Never a quarantine — quarantine is for a root carrying no evidence that it
- * is ours, and a recognized root may hold the only copy of the catalog, credentials, and View
- * approvals. Recursive because the drift can be on the root, on the marker, or on a record.
- */
-export const USER_STATE_HARDEN_COMMAND = `chmod -R go-rwx ${USER_STATE_DIR_DISPLAY}`;
+export const USER_STATE_QUARANTINE_COMMAND = "superbee setup quarantine-state";
+export const USER_STATE_HARDEN_COMMAND = "superbee setup harden-state";
 
 /**
  * `~`-relative spelling of a path under $HOME. Every refusal names a guarded root through this, so
@@ -103,36 +86,228 @@ const MARKER_MAX_BYTES = 256;
 const STATE_ROOT_GITIGNORE_FILE_NAME = ".gitignore";
 const STATE_ROOT_GITIGNORE_BYTES = "*\n";
 
-function absoluteStateRoot(root: string): string {
-  if (!isAbsolute(root)) {
+function platformPath(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function absoluteStateRoot(root: string, platform: NodeJS.Platform = process.platform): string {
+  if (!platformPath(platform).isAbsolute(root)) {
     throw new Error("private Superbee user-state root must be an absolute path");
   }
   return root;
 }
 
-export function canonicalUserStateDir(home: string = homedir()): string {
-  return absoluteStateRoot(join(home, ...SUPERBEE_USER_STATE_PATH_SEGMENTS));
+export interface UserStateEnvironment {
+  readonly platform: NodeJS.Platform;
+  readonly home: string;
+  readonly env: Readonly<NodeJS.ProcessEnv>;
 }
 
-export function legacyUserStateDir(home: string = homedir()): string {
-  return absoluteStateRoot(join(home, LEGACY_USER_STATE_DIR_NAME));
+export interface UserStatePolicy {
+  readonly platform: NodeJS.Platform;
+  readonly home: string;
+  readonly state: "ready" | "blocked";
+  readonly canonicalRoot: string | null;
+  readonly guardedRoots: readonly string[];
+  readonly displayRoot: string;
+  readonly containment: "posix-owner-mode" | "windows-user-local";
+  readonly reason?: string;
+}
+
+export type UserStateInput = string | UserStateEnvironment;
+
+export class UserStatePolicyUnavailable extends Error {
+  readonly command = "superbee setup";
+  readonly reason: string;
+
+  constructor(reason: string) {
+    super(reason);
+    this.name = "UserStatePolicyUnavailable";
+    this.reason = reason;
+  }
+}
+
+export function userStateEnvironment(input?: UserStateInput): UserStateEnvironment {
+  if (typeof input === "object") return input;
+  const home = input ?? homedir();
+  if (process.platform !== "win32" || input === undefined) {
+    return { platform: process.platform, home, env: process.env };
+  }
+  // `home: string` is the historical injected-profile seam used throughout the test and SDK
+  // adapters. On Windows an explicitly different profile must be self-contained rather than
+  // silently sharing the running account's real LOCALAPPDATA. The real production profile still
+  // consumes process.env exactly, including a redirected known folder. Callers that need to inject
+  // a non-conventional Windows layout use the complete UserStateEnvironment seam above.
+  const paths = path.win32;
+  const injectedProfile = paths.normalize(home).toLocaleLowerCase("en-US")
+    !== paths.normalize(homedir()).toLocaleLowerCase("en-US");
+  if (!injectedProfile) return { platform: process.platform, home, env: process.env };
+  return {
+    platform: process.platform,
+    home,
+    env: {
+      ...process.env,
+      USERPROFILE: home,
+      LOCALAPPDATA: paths.join(home, "AppData", "Local"),
+      APPDATA: paths.join(home, "AppData", "Roaming"),
+    },
+  };
+}
+
+function absoluteHome(environment: UserStateEnvironment): string {
+  return absoluteStateRoot(environment.home, environment.platform);
+}
+
+export function resolveUserStatePolicy(input?: UserStateInput): UserStatePolicy {
+  const environment = userStateEnvironment(input);
+  const home = absoluteHome(environment);
+  const paths = platformPath(environment.platform);
+  const legacy = absoluteStateRoot(paths.join(home, LEGACY_USER_STATE_DIR_NAME), environment.platform);
+  const supersededSegments = environment.platform === "win32"
+    ? WINDOWS_SUPERSEDED_USER_STATE_PATH_SEGMENTS
+    : SUPERSEDED_USER_STATE_PATH_SEGMENTS;
+  const superseded = supersededSegments.map((segments) => absoluteStateRoot(paths.join(home, ...segments), environment.platform));
+  if (environment.platform !== "win32") {
+    const canonicalRoot = absoluteStateRoot(paths.join(home, ...SUPERBEE_USER_STATE_PATH_SEGMENTS), environment.platform);
+    return {
+      platform: environment.platform,
+      home,
+      state: "ready",
+      canonicalRoot,
+      guardedRoots: [...new Set([canonicalRoot, legacy, ...superseded])],
+      displayRoot: USER_STATE_DIR_DISPLAY,
+      containment: "posix-owner-mode",
+    };
+  }
+  const localAppData = environment.env.LOCALAPPDATA?.trim() ?? "";
+  const normalizedLocalAppData = paths.normalize(localAppData);
+  const localAppDataRoot = paths.parse(normalizedLocalAppData).root;
+  // Windows treats `\foo` as absolute even though it is relative to the current drive. A genuine
+  // UNC root is also absolute and remains a valid redirected known folder under D2, but device
+  // namespaces (`\\?\`, `\\.\`, and `\??\`) are separate authorities and stay outside policy.
+  const driveQualifiedLocal = /^[A-Za-z]:\\$/u.test(localAppDataRoot);
+  const deviceNamespace = /^(?:\\\\[?.]\\|\\\?\?\\)/u.test(normalizedLocalAppData);
+  const genuineUnc = !deviceNamespace && /^\\\\[^\\]+\\[^\\]+\\$/u.test(localAppDataRoot);
+  if (localAppData === "" || !paths.isAbsolute(normalizedLocalAppData) || (!driveQualifiedLocal && !genuineUnc)) {
+    return {
+      platform: environment.platform,
+      home,
+      state: "blocked",
+      canonicalRoot: null,
+      guardedRoots: [...new Set([legacy, ...superseded])],
+      displayRoot: "%LOCALAPPDATA%\\Superbee",
+      containment: "windows-user-local",
+      reason: "LOCALAPPDATA must name an absolute drive-qualified or UNC Windows directory; root-relative, drive-relative, and device paths are not accepted",
+    };
+  }
+  const canonicalRoot = absoluteStateRoot(paths.join(normalizedLocalAppData, "Superbee"), environment.platform);
+  return {
+    platform: environment.platform,
+    home,
+    state: "ready",
+    canonicalRoot,
+    guardedRoots: [...new Set([canonicalRoot, ...superseded, legacy])],
+    displayRoot: "%LOCALAPPDATA%\\Superbee",
+    containment: "windows-user-local",
+  };
+}
+
+function requireCanonicalRoot(input?: UserStateInput): { environment: UserStateEnvironment; policy: UserStatePolicy; root: string } {
+  const environment = userStateEnvironment(input);
+  const policy = resolveUserStatePolicy(environment);
+  if (policy.canonicalRoot === null) throw new UserStatePolicyUnavailable(policy.reason ?? "private user-state policy is unavailable");
+  return { environment, policy, root: policy.canonicalRoot };
+}
+
+export function canonicalUserStateDir(input?: UserStateInput): string {
+  return requireCanonicalRoot(input).root;
+}
+
+export function legacyUserStateDir(input?: UserStateInput): string {
+  const environment = userStateEnvironment(input);
+  return absoluteStateRoot(platformPath(environment.platform).join(absoluteHome(environment), LEGACY_USER_STATE_DIR_NAME), environment.platform);
 }
 
 /** Every superseded canonical root, newest first: still a migration source, still guarded. */
-export function supersededUserStateDirs(home: string = homedir()): string[] {
-  return SUPERSEDED_USER_STATE_PATH_SEGMENTS.map((segments) => absoluteStateRoot(join(home, ...segments)));
+export function supersededUserStateDirs(input?: UserStateInput): string[] {
+  const environment = userStateEnvironment(input);
+  const segments = environment.platform === "win32"
+    ? WINDOWS_SUPERSEDED_USER_STATE_PATH_SEGMENTS
+    : SUPERSEDED_USER_STATE_PATH_SEGMENTS;
+  const paths = platformPath(environment.platform);
+  return segments.map((entry) => absoluteStateRoot(paths.join(absoluteHome(environment), ...entry), environment.platform));
 }
 
-export function userStateDirForPackage(home: string, packageName: string): string {
-  return packageName === LEGACY_BRIDGE_PACKAGE_NAME ? legacyUserStateDir(home) : canonicalUserStateDir(home);
+export function userStatePathDisplay(input: UserStateInput, target: string): string {
+  const policy = resolveUserStatePolicy(input);
+  const paths = platformPath(policy.platform);
+  if (policy.canonicalRoot !== null) {
+    const localChild = paths.relative(policy.canonicalRoot, target);
+    if (localChild === "") return policy.displayRoot;
+    if (!localChild.startsWith("..") && !paths.isAbsolute(localChild)) {
+      const suffix = localChild.split(paths.sep).join(policy.platform === "win32" ? "\\" : "/");
+      return `${policy.displayRoot}${policy.platform === "win32" ? "\\" : "/"}${suffix}`;
+    }
+  }
+  const homeChild = paths.relative(policy.home, target);
+  if (homeChild === "") return policy.platform === "win32" ? "%USERPROFILE%" : "~";
+  if (!homeChild.startsWith("..") && !paths.isAbsolute(homeChild)) {
+    const suffix = homeChild.split(paths.sep).join(policy.platform === "win32" ? "\\" : "/");
+    return policy.platform === "win32" ? `%USERPROFILE%\\${suffix}` : `~/${suffix}`;
+  }
+  return target;
 }
 
-export function userStateDir(home: string = homedir()): string {
-  return userStateDirForPackage(home, staticBuildIdentity().package.name);
+export function userStateDirForPackage(input: UserStateInput, packageName: string): string {
+  return packageName === LEGACY_BRIDGE_PACKAGE_NAME ? legacyUserStateDir(input) : canonicalUserStateDir(input);
+}
+
+export function userStateDir(input: UserStateInput = homedir()): string {
+  return userStateDirForPackage(input, staticBuildIdentity().package.name);
 }
 
 function errno(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
+interface PrivateStateStatus {
+  readonly dev: number | bigint;
+  readonly ino: number | bigint;
+  readonly mode: number;
+  readonly nlink: number;
+  readonly uid: number;
+  readonly size: number;
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+}
+
+function sameFileIdentity(left: PrivateStateStatus, right: PrivateStateStatus): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+export function privateStateEntryIsSafe(
+  status: PrivateStateStatus,
+  kind: "directory" | "file",
+  input?: UserStateInput,
+): boolean {
+  const policy = resolveUserStatePolicy(input);
+  if (status.isSymbolicLink() || (kind === "directory" ? !status.isDirectory() : !status.isFile())) return false;
+  if (policy.containment === "windows-user-local") return true;
+  const currentUid = process.getuid?.();
+  return (status.mode & 0o077) === 0 && (currentUid === undefined || status.uid === currentUid);
+}
+
+function privateStateEntryIsOwned(
+  status: PrivateStateStatus,
+  kind: "directory" | "file",
+  input?: UserStateInput,
+): boolean {
+  const policy = resolveUserStatePolicy(input);
+  if (status.isSymbolicLink() || (kind === "directory" ? !status.isDirectory() : !status.isFile())) return false;
+  if (policy.containment === "windows-user-local") return true;
+  const currentUid = process.getuid?.();
+  return currentUid === undefined || status.uid === currentUid;
 }
 
 async function assertRealDirectory(directory: string): Promise<void> {
@@ -159,13 +334,25 @@ async function ensureParentDirectory(directory: string): Promise<void> {
 }
 
 /** Read one bounded private record without following a final symlink or blocking on a FIFO. */
-export async function readPrivateStateFile(file: string, maxBytes: number, signal?: AbortSignal): Promise<string> {
+export async function readPrivateStateFile(
+  file: string,
+  maxBytes: number,
+  signal?: AbortSignal,
+  input?: UserStateInput,
+): Promise<string> {
   if (signal?.aborted) throw signal.reason;
-  const flags = constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0);
+  const policy = resolveUserStatePolicy(input);
+  const before = policy.containment === "windows-user-local" ? await lstat(file) : null;
+  if (before !== null && !privateStateEntryIsSafe(before, "file", input)) {
+    throw new Error("private user-state record is not a regular file");
+  }
+  const flags = constants.O_RDONLY | constants.O_NONBLOCK
+    | (policy.containment === "posix-owner-mode" ? (constants.O_NOFOLLOW ?? 0) : 0);
   const handle = await open(file, flags);
   try {
     const status = await handle.stat();
     if (!status.isFile() || status.size > maxBytes) throw new Error("private user-state record is not a bounded regular file");
+    if (before !== null && !sameFileIdentity(before, status)) throw new Error("private user-state record changed during open");
     const bytes = Buffer.alloc(status.size + 1);
     let offset = 0;
     while (offset < bytes.byteLength) {
@@ -174,6 +361,12 @@ export async function readPrivateStateFile(file: string, maxBytes: number, signa
       offset += bytesRead;
     }
     if (offset > maxBytes) throw new Error("private user-state record exceeds its size limit");
+    if (before !== null) {
+      const after = await lstat(file);
+      if (!privateStateEntryIsSafe(after, "file", input) || !sameFileIdentity(before, after)) {
+        throw new Error("private user-state record changed during read");
+      }
+    }
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, offset));
   } finally {
     await handle.close();
@@ -191,23 +384,25 @@ interface UserStateMarkerInspection {
   readonly hardened: boolean;
 }
 
-async function inspectUserStateMarker(root: string): Promise<UserStateMarkerInspection> {
+async function inspectUserStateMarker(root: string, input?: UserStateInput): Promise<UserStateMarkerInspection> {
   try {
     const marker = join(root, USER_STATE_MARKER_FILE_NAME);
     const status = await lstat(marker);
-    const currentUid = process.getuid?.();
-    const recognized = !status.isSymbolicLink()
-      && status.isFile()
-      && (currentUid === undefined || status.uid === currentUid)
-      && await readPrivateStateFile(marker, MARKER_MAX_BYTES) === USER_STATE_MARKER_BYTES;
-    return { recognized, hardened: recognized && (status.mode & 0o077) === 0 };
+    const recognized = privateStateEntryIsOwned(status, "file", input)
+      && await readPrivateStateFile(marker, MARKER_MAX_BYTES, undefined, input) === USER_STATE_MARKER_BYTES;
+    return {
+      recognized,
+      hardened: recognized && (
+        resolveUserStatePolicy(input).containment === "windows-user-local" || (status.mode & 0o077) === 0
+      ),
+    };
   } catch {
     return { recognized: false, hardened: false };
   }
 }
 
-export async function hasExactUserStateMarker(root: string): Promise<boolean> {
-  return (await inspectUserStateMarker(root)).recognized;
+export async function hasExactUserStateMarker(root: string, input?: UserStateInput): Promise<boolean> {
+  return (await inspectUserStateMarker(root, input)).recognized;
 }
 
 /** Atomic 0600 write inside a caller-validated private directory. */
@@ -216,21 +411,23 @@ export async function writeFileAtomic0600(
   fileName: string,
   content: string,
   options: { beforeCommit?: () => boolean | Promise<boolean> } = {},
+  input?: UserStateInput,
 ): Promise<void> {
+  const policy = resolveUserStatePolicy(input);
   try {
     await mkdir(dir, { recursive: true, mode: DIR_MODE });
   } catch (error) {
     if (errno(error) !== "EEXIST") throw error;
   }
   await assertRealDirectory(dir);
-  await chmod(dir, DIR_MODE);
+  if (policy.containment === "posix-owner-mode") await chmod(dir, DIR_MODE);
 
   const file = join(dir, fileName);
   const temporary = join(dir, `.${fileName}.${randomBytes(8).toString("hex")}.tmp`);
   const handle = await open(temporary, "wx", FILE_MODE);
   try {
     await handle.writeFile(content);
-    await handle.chmod(FILE_MODE);
+    if (policy.containment === "posix-owner-mode") await handle.chmod(FILE_MODE);
     await handle.sync();
   } finally {
     await handle.close();
@@ -254,20 +451,21 @@ export async function writeFileAtomic0600(
  * complete — never during staging, which would see the file as foreign stock.
  * Inert for an ALREADY-TRACKED root, which is why it is hardening rather than the whole answer.
  */
-export async function ensureStateRootGitignore(root: string): Promise<void> {
+export async function ensureStateRootGitignore(root: string, input?: UserStateInput): Promise<void> {
   try {
-    if (await readPrivateStateFile(join(root, STATE_ROOT_GITIGNORE_FILE_NAME), 64) === STATE_ROOT_GITIGNORE_BYTES) return;
+    if (await readPrivateStateFile(join(root, STATE_ROOT_GITIGNORE_FILE_NAME), 64, undefined, input) === STATE_ROOT_GITIGNORE_BYTES) return;
   } catch {
     // Absent, unreadable, or stale — fall through and (re)publish it.
   }
   try {
-    await writeFileAtomic0600(root, STATE_ROOT_GITIGNORE_FILE_NAME, STATE_ROOT_GITIGNORE_BYTES);
+    await writeFileAtomic0600(root, STATE_ROOT_GITIGNORE_FILE_NAME, STATE_ROOT_GITIGNORE_BYTES, {}, input);
   } catch {
     // Best effort only: hardening must never fail an otherwise-valid ensure.
   }
 }
 
-function ensureStateRootGitignoreSync(root: string): void {
+function ensureStateRootGitignoreSync(root: string, input?: UserStateInput): void {
+  const policy = resolveUserStatePolicy(input);
   try {
     if (readFileSync(join(root, STATE_ROOT_GITIGNORE_FILE_NAME), "utf8") === STATE_ROOT_GITIGNORE_BYTES) return;
   } catch {
@@ -278,7 +476,7 @@ function ensureStateRootGitignoreSync(root: string): void {
   try {
     descriptor = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, FILE_MODE);
     writeFileSync(descriptor, STATE_ROOT_GITIGNORE_BYTES, "utf8");
-    fchmodSync(descriptor, FILE_MODE);
+    if (policy.containment === "posix-owner-mode") fchmodSync(descriptor, FILE_MODE);
     closeSync(descriptor);
     descriptor = undefined;
     renameSync(temporary, join(root, STATE_ROOT_GITIGNORE_FILE_NAME));
@@ -294,7 +492,8 @@ function ensureStateRootGitignoreSync(root: string): void {
   }
 }
 
-async function initializeCanonicalRoot(root: string): Promise<void> {
+async function initializeCanonicalRoot(root: string, input?: UserStateInput): Promise<void> {
+  const policy = resolveUserStatePolicy(input);
   const parent = dirname(root);
   await ensureParentDirectory(parent);
   let created = false;
@@ -307,7 +506,7 @@ async function initializeCanonicalRoot(root: string): Promise<void> {
   await assertRealDirectory(root);
   if (created) {
     try {
-      await writeFileAtomic0600(root, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES);
+      await writeFileAtomic0600(root, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES, {}, input);
     } catch (error) {
       await rmdir(root).catch(() => {});
       throw error;
@@ -317,25 +516,28 @@ async function initializeCanonicalRoot(root: string): Promise<void> {
     // A second process may observe the exclusively-created directory before its owner publishes
     // the tiny marker. Bound that ordinary first-write race without adopting a persistent
     // marker-less directory: after ~250 ms it is still a conflict requiring setup inspection.
-    for (let attempt = 0; attempt < 50 && !(await hasExactUserStateMarker(root)); attempt += 1) {
+    for (let attempt = 0; attempt < 50 && !(await hasExactUserStateMarker(root, input)); attempt += 1) {
       await new Promise<void>((resolve) => setTimeout(resolve, 5));
     }
   }
-  const marker = await inspectUserStateMarker(root);
+  const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
     throw new Error("canonical Superbee user-state root is not owned by this product");
   }
   // Ownership is proven, so drifted permissions are repaired rather than refused — the directory
   // first, so the marker is re-tightened inside an already-private root.
-  await chmod(root, DIR_MODE);
-  if (!marker.hardened) await chmod(join(root, USER_STATE_MARKER_FILE_NAME), FILE_MODE);
-  await ensureStateRootGitignore(root);
+  if (policy.containment === "posix-owner-mode") {
+    await chmod(root, DIR_MODE);
+    if (!marker.hardened) await chmod(join(root, USER_STATE_MARKER_FILE_NAME), FILE_MODE);
+  }
+  await ensureStateRootGitignore(root, input);
 }
 
 /** Ensure the running package's one writable state root exists and is safe. */
-export async function ensureUserStateRoot(home: string = homedir()): Promise<string> {
+export async function ensureUserStateRoot(input: UserStateInput = homedir()): Promise<string> {
   const packageName = staticBuildIdentity().package.name;
-  const root = userStateDirForPackage(home, packageName);
+  const policy = resolveUserStatePolicy(input);
+  const root = userStateDirForPackage(input, packageName);
   if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) {
     try {
       await mkdir(root, { mode: DIR_MODE });
@@ -343,11 +545,11 @@ export async function ensureUserStateRoot(home: string = homedir()): Promise<str
       if (errno(error) !== "EEXIST") throw error;
     }
     await assertRealDirectory(root);
-    await chmod(root, DIR_MODE);
-    await ensureStateRootGitignore(root);
+    if (policy.containment === "posix-owner-mode") await chmod(root, DIR_MODE);
+    await ensureStateRootGitignore(root, input);
     return root;
   }
-  await initializeCanonicalRoot(root);
+  await initializeCanonicalRoot(root, input);
   return root;
 }
 
@@ -358,7 +560,8 @@ function ensureRealDirectorySync(directory: string): void {
   }
 }
 
-function writeMarkerExclusiveSync(root: string): void {
+function writeMarkerExclusiveSync(root: string, input?: UserStateInput): void {
+  const policy = resolveUserStatePolicy(input);
   const marker = join(root, USER_STATE_MARKER_FILE_NAME);
   let descriptor: number | undefined;
   try {
@@ -368,7 +571,7 @@ function writeMarkerExclusiveSync(root: string): void {
       FILE_MODE,
     );
     writeFileSync(descriptor, USER_STATE_MARKER_BYTES, "utf8");
-    fchmodSync(descriptor, FILE_MODE);
+    if (policy.containment === "posix-owner-mode") fchmodSync(descriptor, FILE_MODE);
     fsyncSync(descriptor);
   } finally {
     if (descriptor !== undefined) closeSync(descriptor);
@@ -376,9 +579,10 @@ function writeMarkerExclusiveSync(root: string): void {
 }
 
 /** Synchronous twin used only by the synchronous update-cache lease authority. */
-export function ensureUserStateRootSync(home: string = homedir()): string {
+export function ensureUserStateRootSync(input: UserStateInput = homedir()): string {
   const packageName = staticBuildIdentity().package.name;
-  const root = userStateDirForPackage(home, packageName);
+  const policy = resolveUserStatePolicy(input);
+  const root = userStateDirForPackage(input, packageName);
   if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) {
     try {
       mkdirSync(root, { mode: DIR_MODE });
@@ -386,8 +590,8 @@ export function ensureUserStateRootSync(home: string = homedir()): string {
       if (errno(error) !== "EEXIST") throw error;
     }
     ensureRealDirectorySync(root);
-    chmodSync(root, DIR_MODE);
-    ensureStateRootGitignoreSync(root);
+    if (policy.containment === "posix-owner-mode") chmodSync(root, DIR_MODE);
+    ensureStateRootGitignoreSync(root, input);
     return root;
   }
 
@@ -410,7 +614,7 @@ export function ensureUserStateRootSync(home: string = homedir()): string {
   ensureRealDirectorySync(root);
   if (created) {
     try {
-      writeMarkerExclusiveSync(root);
+      writeMarkerExclusiveSync(root, input);
     } catch (error) {
       try {
         rmdirSync(root);
@@ -429,24 +633,26 @@ export function ensureUserStateRootSync(home: string = homedir()): string {
   if (marker !== USER_STATE_MARKER_BYTES) {
     throw new Error("canonical Superbee user-state root is not owned by this product");
   }
-  chmodSync(root, DIR_MODE);
-  if ((lstatSync(join(root, USER_STATE_MARKER_FILE_NAME)).mode & 0o077) !== 0) {
-    chmodSync(join(root, USER_STATE_MARKER_FILE_NAME), FILE_MODE);
+  if (policy.containment === "posix-owner-mode") {
+    chmodSync(root, DIR_MODE);
+    if ((lstatSync(join(root, USER_STATE_MARKER_FILE_NAME)).mode & 0o077) !== 0) {
+      chmodSync(join(root, USER_STATE_MARKER_FILE_NAME), FILE_MODE);
+    }
   }
-  ensureStateRootGitignoreSync(root);
+  ensureStateRootGitignoreSync(root, input);
   return root;
 }
 
 /** One write entry point for every persistent private Superbee record. */
 export async function writeUserStateFileAtomic0600(
-  home: string,
+  input: UserStateInput,
   dir: string,
   fileName: string,
   content: string,
   options: { beforeCommit?: () => boolean | Promise<boolean> } = {},
 ): Promise<void> {
-  await ensureUserStateRoot(home);
-  await writeFileAtomic0600(dir, fileName, content, options);
+  await ensureUserStateRoot(input);
+  await writeFileAtomic0600(dir, fileName, content, options, input);
 }
 
 export type UserStateRootState = "absent" | "ready" | "conflict";
@@ -466,26 +672,31 @@ export interface UserStateRootInspection {
  * independent facts separately so no caller has to re-derive one from the other.
  */
 export async function inspectCanonicalUserStateRootDetail(
-  home: string = homedir(),
+  input: UserStateInput = homedir(),
 ): Promise<UserStateRootInspection> {
-  const root = canonicalUserStateDir(home);
+  const policy = resolveUserStatePolicy(input);
+  if (policy.state === "blocked") return { state: "conflict", hardening: "hardened" };
+  const root = canonicalUserStateDir(input);
   let looseRoot = false;
   try {
     await assertRealDirectory(root);
     const status = await lstat(root);
-    const currentUid = process.getuid?.();
-    if (currentUid !== undefined && status.uid !== currentUid) return { state: "conflict", hardening: "hardened" };
-    looseRoot = (status.mode & 0o077) !== 0;
+    if (status.isSymbolicLink() || !status.isDirectory()) return { state: "conflict", hardening: "hardened" };
+    if (policy.containment === "posix-owner-mode") {
+      const currentUid = process.getuid?.();
+      if (currentUid !== undefined && status.uid !== currentUid) return { state: "conflict", hardening: "hardened" };
+      looseRoot = (status.mode & 0o077) !== 0;
+    }
   } catch (error) {
     return { state: errno(error) === "ENOENT" ? "absent" : "conflict", hardening: "hardened" };
   }
-  const marker = await inspectUserStateMarker(root);
+  const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) return { state: "conflict", hardening: "hardened" };
   return { state: "ready", hardening: looseRoot || !marker.hardened ? "loose" : "hardened" };
 }
 
-export async function inspectCanonicalUserStateRoot(home: string = homedir()): Promise<UserStateRootState> {
-  return (await inspectCanonicalUserStateRootDetail(home)).state;
+export async function inspectCanonicalUserStateRoot(input: UserStateInput = homedir()): Promise<UserStateRootState> {
+  return (await inspectCanonicalUserStateRootDetail(input)).state;
 }
 
 function missingStateError(file: string): NodeJS.ErrnoException {
@@ -500,7 +711,7 @@ function assertInsideRoot(root: string, file: string): void {
 }
 
 /** Every existing directory between the owned root and a private record must stay private. */
-async function assertPrivateDirectoryChain(root: string, file: string): Promise<void> {
+async function assertPrivateDirectoryChain(root: string, file: string, input?: UserStateInput): Promise<void> {
   const parent = dirname(file);
   const child = relative(root, parent);
   if (child === "") return;
@@ -511,13 +722,7 @@ async function assertPrivateDirectoryChain(root: string, file: string): Promise<
   for (const component of child.split(/[\\/]+/u).filter(Boolean)) {
     current = join(current, component);
     const status = await lstat(current);
-    const currentUid = process.getuid?.();
-    if (
-      status.isSymbolicLink()
-      || !status.isDirectory()
-      || (status.mode & 0o077) !== 0
-      || (currentUid !== undefined && status.uid !== currentUid)
-    ) {
+    if (!privateStateEntryIsSafe(status, "directory", input)) {
       throw new Error("private user-state record has an unsafe containing directory");
     }
   }
@@ -525,13 +730,13 @@ async function assertPrivateDirectoryChain(root: string, file: string): Promise<
 
 /** Read one record only after the running package's root proves its exact ownership boundary. */
 export async function readUserStateFile(
-  home: string,
+  input: UserStateInput,
   file: string,
   maxBytes: number,
   signal?: AbortSignal,
 ): Promise<string> {
   const packageName = staticBuildIdentity().package.name;
-  const root = userStateDirForPackage(home, packageName);
+  const root = userStateDirForPackage(input, packageName);
   assertInsideRoot(root, file);
   // An absent record is absent regardless of whether a separate setup pass would diagnose the
   // surrounding root as incomplete. This keeps unrelated read-only operations (for example an
@@ -551,39 +756,49 @@ export async function readUserStateFile(
       throw error;
     }
   } else {
-    const state = await inspectCanonicalUserStateRoot(home);
+    const state = await inspectCanonicalUserStateRoot(input);
     if (state === "absent") throw missingStateError(file);
     if (state === "conflict") throw new Error("canonical Superbee user-state root is not owned by this product");
   }
-  await assertPrivateDirectoryChain(root, file);
-  return readPrivateStateFile(file, maxBytes, signal);
+  await assertPrivateDirectoryChain(root, file, input);
+  return readPrivateStateFile(file, maxBytes, signal, input);
 }
 
-export function inspectUserStateRootSync(home: string = homedir()): UserStateRootState {
+export function inspectUserStateRootSync(input: UserStateInput = homedir()): UserStateRootState {
   const packageName = staticBuildIdentity().package.name;
-  const root = userStateDirForPackage(home, packageName);
+  const policy = resolveUserStatePolicy(input);
+  if (policy.state === "blocked") return "conflict";
+  const root = userStateDirForPackage(input, packageName);
   try {
     ensureRealDirectorySync(root);
     const rootStatus = lstatSync(root);
-    const currentUid = process.getuid?.();
-    if (currentUid !== undefined && rootStatus.uid !== currentUid) return "conflict";
+    if (policy.containment === "posix-owner-mode") {
+      const currentUid = process.getuid?.();
+      if (currentUid !== undefined && rootStatus.uid !== currentUid) return "conflict";
+    }
   } catch (error) {
     return errno(error) === "ENOENT" ? "absent" : "conflict";
   }
   if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) return "ready";
   let descriptor: number | undefined;
   try {
+    const marker = join(root, USER_STATE_MARKER_FILE_NAME);
+    const before = lstatSync(marker);
+    if (before.isSymbolicLink() || !before.isFile() || before.size > MARKER_MAX_BYTES) return "conflict";
     descriptor = openSync(
-      join(root, USER_STATE_MARKER_FILE_NAME),
+      marker,
       constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0),
     );
-    const status = lstatSync(join(root, USER_STATE_MARKER_FILE_NAME));
-    const currentUid = process.getuid?.();
+    const opened = fstatSync(descriptor);
+    const after = lstatSync(marker);
     if (
-      status.isSymbolicLink()
-      || !status.isFile()
-      || status.size > MARKER_MAX_BYTES
-      || (currentUid !== undefined && status.uid !== currentUid)
+      !opened.isFile()
+      || !sameFileIdentity(before, opened)
+      || after.isSymbolicLink()
+      || !sameFileIdentity(before, after)
+      || (policy.containment === "posix-owner-mode"
+        && process.getuid?.() !== undefined
+        && before.uid !== process.getuid?.())
     ) return "conflict";
     return readFileSync(descriptor, "utf8") === USER_STATE_MARKER_BYTES ? "ready" : "conflict";
   } catch {
@@ -593,10 +808,228 @@ export function inspectUserStateRootSync(home: string = homedir()): UserStateRoo
   }
 }
 
-/** Test/migration-only helper: read the exact marker bytes without a broad directory walk. */
-export async function readUserStateMarker(home: string = homedir()): Promise<string | null> {
+export interface UserStateRecoveryReceipt {
+  readonly schema_version: 1;
+  readonly operation: "harden-state" | "quarantine-state";
+  readonly status: "hardened" | "already_hardened" | "absent" | "quarantined";
+  readonly changed: boolean;
+  readonly root: string;
+  readonly preserved_at?: string;
+  readonly next: { readonly command: "superbee setup" };
+}
+
+interface PrivateTreeEntry {
+  readonly path: string;
+  readonly kind: "directory" | "file";
+  readonly identity: PrivateStateStatus;
+}
+
+async function inspectPrivateTree(target: string, directories: PrivateTreeEntry[], files: PrivateTreeEntry[]): Promise<void> {
+  const status = await lstat(target);
+  if (status.isSymbolicLink()) throw new Error("private user-state tree contains a symbolic link");
+  if (status.isDirectory()) {
+    directories.push({ path: target, kind: "directory", identity: status });
+    const entries = await readdir(target, { withFileTypes: true });
+    for (const entry of entries) await inspectPrivateTree(join(target, entry.name), directories, files);
+    const after = await lstat(target);
+    if (after.isSymbolicLink() || !after.isDirectory() || !sameFileIdentity(status, after)) {
+      throw new Error("private user-state tree changed during inspection");
+    }
+    return;
+  }
+  if (!status.isFile()) throw new Error("private user-state tree contains a non-regular entry");
+  if (status.nlink !== 1) throw new Error("private user-state tree contains a hard-linked regular file");
+  files.push({ path: target, kind: "file", identity: status });
+}
+
+function privateDirectoryChain(root: string, target: string): string[] {
+  if (target === root) return [];
+  const child = relative(root, dirname(target));
+  if (child.startsWith("..") || isAbsolute(child)) {
+    throw new Error("private user-state entry changed during hardening");
+  }
+  const directories = [root];
+  let current = root;
+  for (const component of child.split(/[\\/]+/u).filter(Boolean)) {
+    current = join(current, component);
+    directories.push(current);
+  }
+  return directories;
+}
+
+async function hardenPrivateTreeEntry(
+  root: string,
+  entry: PrivateTreeEntry,
+  directoryIdentities: ReadonlyMap<string, PrivateStateStatus>,
+): Promise<void> {
+  const directoryHandles: Array<Awaited<ReturnType<typeof open>>> = [];
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    return await readFile(join(canonicalUserStateDir(home), USER_STATE_MARKER_FILE_NAME), "utf8");
+    // Node has no portable openat-style traversal. Bind every scanned ancestor to both an open
+    // descriptor and its still-canonical pathname before opening the leaf; then recheck the whole
+    // chain in reverse immediately before fchmod. Even if resolving a deeper pathname crossed an
+    // ancestor that was concurrently replaced, that ancestor's own O_NOFOLLOW open or the repeated
+    // pathname identity checks reject the observed substitution before mutation.
+    const directoryChain = privateDirectoryChain(root, entry.path);
+    for (const directory of directoryChain) {
+      const expected = directoryIdentities.get(directory);
+      if (expected === undefined) throw new Error("private user-state entry changed during hardening");
+      const directoryHandle = await open(
+        directory,
+        constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+      );
+      directoryHandles.push(directoryHandle);
+      const opened = await directoryHandle.stat();
+      const named = await lstat(directory);
+      if (
+        !opened.isDirectory()
+        || named.isSymbolicLink()
+        || !named.isDirectory()
+        || !sameFileIdentity(expected, opened)
+        || !sameFileIdentity(expected, named)
+      ) {
+        throw new Error("private user-state entry changed during hardening");
+      }
+    }
+
+    handle = await open(entry.path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+    const opened = await handle.stat();
+    const afterOpen = await lstat(entry.path);
+    const expectedShape = entry.kind === "directory" ? opened.isDirectory() : opened.isFile();
+    const fileHasSingleLink = entry.kind === "directory"
+      || (entry.identity.nlink === 1 && opened.nlink === 1 && afterOpen.nlink === 1);
+    if (
+      !expectedShape
+      || !fileHasSingleLink
+      || afterOpen.isSymbolicLink()
+      || !sameFileIdentity(entry.identity, opened)
+      || !sameFileIdentity(entry.identity, afterOpen)
+    ) {
+      throw new Error("private user-state entry changed during hardening");
+    }
+
+    for (let index = directoryChain.length - 1; index >= 0; index -= 1) {
+      const directory = directoryChain[index]!;
+      const expected = directoryIdentities.get(directory)!;
+      const named = await lstat(directory);
+      const openedDirectory = await directoryHandles[index]!.stat();
+      if (
+        named.isSymbolicLink()
+        || !named.isDirectory()
+        || !openedDirectory.isDirectory()
+        || !sameFileIdentity(expected, named)
+        || !sameFileIdentity(expected, openedDirectory)
+      ) {
+        throw new Error("private user-state entry changed during hardening");
+      }
+    }
+    const immediatelyBefore = await lstat(entry.path);
+    if (
+      immediatelyBefore.isSymbolicLink()
+      || !sameFileIdentity(entry.identity, immediatelyBefore)
+    ) {
+      throw new Error("private user-state entry changed during hardening");
+    }
+    // Keep the last identity observation and the mutation in one event-loop turn; yielding here
+    // would reopen an avoidable in-process substitution window after the complete chain check.
+    fchmodSync(handle.fd, entry.kind === "directory" ? DIR_MODE : FILE_MODE);
+  } catch (error) {
+    if (error instanceof Error && error.message === "private user-state entry changed during hardening") throw error;
+    throw new Error("private user-state entry changed during hardening", { cause: error });
+  } finally {
+    await handle?.close();
+    await Promise.all(directoryHandles.map(async (directoryHandle) => directoryHandle.close()));
+  }
+}
+
+export interface UserStateHardeningHooks {
+  /** Deterministic test barrier after the read-only tree scan and before descriptor hardening. */
+  readonly afterInspect?: () => void | Promise<void>;
+}
+
+/** Explicit POSIX repair leaf for a recognized root. Windows ACL inheritance needs no chmod. */
+export async function hardenUserState(
+  input: UserStateInput = homedir(),
+  hooks: UserStateHardeningHooks = {},
+): Promise<UserStateRecoveryReceipt> {
+  const policy = resolveUserStatePolicy(input);
+  if (policy.canonicalRoot === null) throw new UserStatePolicyUnavailable(policy.reason ?? "private user-state policy is unavailable");
+  const inspection = await inspectCanonicalUserStateRootDetail(input);
+  const root = policy.canonicalRoot;
+  if (inspection.state === "absent") {
+    return { schema_version: 1, operation: "harden-state", status: "absent", changed: false, root: policy.displayRoot, next: { command: "superbee setup" } };
+  }
+  if (inspection.state !== "ready") throw new Error("canonical Superbee user-state root is not recognized; it cannot be hardened");
+  if (policy.containment === "windows-user-local" || inspection.hardening === "hardened") {
+    return { schema_version: 1, operation: "harden-state", status: "already_hardened", changed: false, root: policy.displayRoot, next: { command: "superbee setup" } };
+  }
+  const directories: PrivateTreeEntry[] = [];
+  const files: PrivateTreeEntry[] = [];
+  await inspectPrivateTree(root, directories, files);
+  const directoryIdentities = new Map(directories.map((entry) => [entry.path, entry.identity] as const));
+  await hooks.afterInspect?.();
+  for (const file of files) await hardenPrivateTreeEntry(root, file, directoryIdentities);
+  for (const directory of directories.reverse()) {
+    await hardenPrivateTreeEntry(root, directory, directoryIdentities);
+  }
+  const after = await inspectCanonicalUserStateRootDetail(input);
+  if (after.state !== "ready" || after.hardening !== "hardened") throw new Error("private user-state hardening did not converge");
+  return { schema_version: 1, operation: "harden-state", status: "hardened", changed: true, root: policy.displayRoot, next: { command: "superbee setup" } };
+}
+
+/** Preserve an unrecognized canonical root by moving it into one exclusive same-parent container. */
+export async function quarantineUserState(input: UserStateInput = homedir()): Promise<UserStateRecoveryReceipt> {
+  const policy = resolveUserStatePolicy(input);
+  if (policy.canonicalRoot === null) throw new UserStatePolicyUnavailable(policy.reason ?? "private user-state policy is unavailable");
+  const root = policy.canonicalRoot;
+  let inspection: UserStateRootInspection;
+  try {
+    inspection = await inspectCanonicalUserStateRootDetail(input);
+  } catch (error) {
+    if (errno(error) === "ENOENT") inspection = { state: "absent", hardening: "hardened" };
+    else throw error;
+  }
+  if (inspection.state === "absent") {
+    return { schema_version: 1, operation: "quarantine-state", status: "absent", changed: false, root: policy.displayRoot, next: { command: "superbee setup" } };
+  }
+  if (inspection.state === "ready") throw new Error("recognized Superbee user state cannot be quarantined");
+
+  const parent = dirname(root);
+  const base = path.basename(root);
+  let container: string | undefined;
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const candidate = join(parent, `${base}.unrecognized.${randomBytes(8).toString("hex")}`);
+    try {
+      await mkdir(candidate, { mode: DIR_MODE });
+      container = candidate;
+      break;
+    } catch (error) {
+      if (errno(error) !== "EEXIST") throw error;
+    }
+  }
+  if (container === undefined) throw new Error("could not allocate a collision-safe quarantine destination");
+  const preserved = join(container, base);
+  try {
+    await rename(root, preserved);
+  } catch (error) {
+    await rmdir(container).catch(() => {});
+    throw error;
+  }
+  return {
+    schema_version: 1,
+    operation: "quarantine-state",
+    status: "quarantined",
+    changed: true,
+    root: policy.displayRoot,
+    preserved_at: userStatePathDisplay(input, preserved),
+    next: { command: "superbee setup" },
+  };
+}
+
+/** Test/migration-only helper: read the exact marker bytes without a broad directory walk. */
+export async function readUserStateMarker(input: UserStateInput = homedir()): Promise<string | null> {
+  try {
+    return await readFile(join(canonicalUserStateDir(input), USER_STATE_MARKER_FILE_NAME), "utf8");
   } catch (error) {
     if (errno(error) === "ENOENT") return null;
     throw error;

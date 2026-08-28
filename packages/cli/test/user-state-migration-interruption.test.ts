@@ -169,7 +169,7 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
     // the exactness assertion refuses — a stated, non-lossy exit node, never a silent unlink.
     expectedExitNode: {
       message: /user state changed during migration; legacy state remains preserved/,
-      help: /superbee setup migrate-state/,
+      help: /superbee setup quarantine-state/,
     },
     lossy: false,
     residueSurvives: FOREIGN_TEMPORARY,
@@ -212,7 +212,7 @@ const INTERRUPTIONS: readonly InterruptionRow[] = [
     },
     expectedExitNode: {
       message: /user state changed during migration; legacy state remains preserved/,
-      help: /superbee setup migrate-state/,
+      help: /superbee setup quarantine-state/,
     },
     lossy: false,
     residueSurvives: `${AUTHORIZATION_DIR_NAME}/${FOREIGN_TEMPORARY}`,
@@ -341,7 +341,9 @@ test("migration interruption: one row per kill point, with the exit node a rerun
           assert.equal(await readFile(join(fixture.canonical, USER_STATE_MARKER_FILE_NAME), "utf8"), USER_STATE_MARKER_BYTES);
           assert.equal(await readFile(join(fixture.canonical, "catalog.json"), "utf8"), CATALOG);
           assert.equal(await readFile(join(fixture.canonical, "okf-config.json"), "utf8"), CREDENTIALS);
-          assert.equal((await stat(join(fixture.canonical, "okf-config.json"))).mode & 0o777, 0o600);
+          if (process.platform !== "win32") {
+            assert.equal((await stat(join(fixture.canonical, "okf-config.json"))).mode & 0o777, 0o600);
+          }
           assert.equal(
             await readFile(join(fixture.canonical, AUTHORIZATION_DIR_NAME, AUTHORIZATION_NAME), "utf8"),
             `${AUTHORIZATION}\n`,

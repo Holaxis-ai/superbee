@@ -373,14 +373,14 @@ test("handle-based cache inspection distinguishes safe invalid state from unsafe
   }
 });
 
-test("cache safety is bounded, nonblocking for FIFO, and fail-closed on modes and state directory", () => {
-  const variants: Array<[string, (home: string, cache: string) => void]> = [
-    ["oversized", (_home, cache) => writeFileSync(cache, "x".repeat(UPDATE_CACHE_MAX_BYTES + 1), { mode: 0o600 })],
-    ["loose file", (_home, cache) => writeFileSync(cache, "{}", { mode: 0o644 })],
-    ["directory", (_home, cache) => mkdirSync(cache, { mode: 0o600 })],
-    ["fifo", (_home, cache) => execFileSync("mkfifo", [cache])],
+test("cache safety is bounded, nonblocking, and uses platform-native containment", () => {
+  const variants: Array<[string, (home: string, cache: string) => void, "unsafe" | "refreshable"]> = [
+    ["oversized", (_home, cache) => writeFileSync(cache, "x".repeat(UPDATE_CACHE_MAX_BYTES + 1), { mode: 0o600 }), "unsafe"],
+    ["loose file", (_home, cache) => writeFileSync(cache, "{}", { mode: 0o644 }), process.platform === "win32" ? "refreshable" : "unsafe"],
+    ["directory", (_home, cache) => mkdirSync(cache, { mode: 0o600 }), "unsafe"],
   ];
-  for (const [label, plant] of variants) {
+  if (process.platform !== "win32") variants.push(["fifo", (_home, cache) => execFileSync("mkfifo", [cache]), "unsafe"]);
+  for (const [label, plant, expected] of variants) {
     const home = tempHome();
     try {
       ensureUserStateRootSync(home);
@@ -389,7 +389,7 @@ test("cache safety is bounded, nonblocking for FIFO, and fail-closed on modes an
       const started = Date.now();
       assert.deepEqual(
         inspectUpdateCache({ home, runningVersion: RUNNING, now: NOW }),
-        { state: "unsafe" },
+        { state: expected },
         label,
       );
       assert.ok(Date.now() - started < 1_000, `${label} must not block`);
@@ -400,12 +400,12 @@ test("cache safety is bounded, nonblocking for FIFO, and fail-closed on modes an
 
   const looseHome = tempHome();
   try {
-    mkdirSync(path.dirname(credentialsDir(looseHome)), { recursive: true, mode: 0o700 });
-    mkdirSync(credentialsDir(looseHome), { mode: 0o755 });
+    ensureUserStateRootSync(looseHome);
+    chmodSync(credentialsDir(looseHome), 0o755);
     assert.deepEqual(inspectUpdateCache({ home: looseHome, runningVersion: RUNNING, now: NOW }), {
-      state: "unsafe",
+      state: process.platform === "win32" ? "refreshable" : "unsafe",
     });
-    assert.equal(lstatSync(credentialsDir(looseHome)).mode & 0o777, 0o755);
+    if (process.platform !== "win32") assert.equal(lstatSync(credentialsDir(looseHome)).mode & 0o777, 0o755);
   } finally {
     rmSync(looseHome, { recursive: true, force: true });
   }
@@ -445,8 +445,10 @@ test("hard-link claim, continuous stale conversion, cooldown cleanup, and token-
     const first = claimUpdateLease({ home, now: new Date(CHECKED_AT), token: tokenA });
     assert.equal(first.state, "claimed");
     assert.deepEqual(parseUpdateLeaseText(readFileSync(updateLeasePath(home), "utf8")), activeLease(tokenA));
-    assert.equal(lstatSync(updateLeasePath(home)).mode & 0o777, 0o600);
-    assert.equal(lstatSync(path.dirname(updateLeasePath(home))).mode & 0o777, 0o700);
+    if (process.platform !== "win32") {
+      assert.equal(lstatSync(updateLeasePath(home)).mode & 0o777, 0o600);
+      assert.equal(lstatSync(path.dirname(updateLeasePath(home))).mode & 0o777, 0o700);
+    }
 
     assert.deepEqual(
       claimUpdateLease({ home, now: new Date("2026-08-05T12:00:29.999Z"), token: tokenB }),

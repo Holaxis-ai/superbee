@@ -23,6 +23,11 @@ import {
 import { inspectHookStatus, type HookStatusInspection } from "./hook.js";
 import { inspectSkillStatus, type SkillStatusInspection } from "./skill.js";
 import {
+  hardenUserState,
+  quarantineUserState,
+  type UserStateRecoveryReceipt,
+} from "../user-state.js";
+import {
   inspectUserStateMigration,
   migrateUserState,
   type UserStateMigrationInspection,
@@ -35,6 +40,8 @@ Usage:
   superbee setup [--host codex|claude-code|claude-desktop|opencode]
                  [--scope project|user] [--json]
   superbee setup migrate-state [--json]
+  superbee setup harden-state [--json]
+  superbee setup quarantine-state [--json]
 
 Without --host, the command reports private-state health plus the four bounded supported host
 surfaces. A required state remedy comes first; otherwise it asks the agent to select the exact
@@ -83,6 +90,8 @@ export interface SetupDeps {
   listCatalog: (home: string) => Promise<CatalogEntryView[]>;
   inspectState: (home: string) => Promise<UserStateMigrationInspection>;
   migrateState: (home: string) => Promise<UserStateMigrationReceipt>;
+  hardenState: (home: string) => Promise<UserStateRecoveryReceipt>;
+  quarantineState: (home: string) => Promise<UserStateRecoveryReceipt>;
 }
 
 function setupHost(value: string | undefined): McpInstallTargetId | undefined {
@@ -224,7 +233,7 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
           kind: "selected",
           leaf: CLI_LEAVES.setup,
           data: [],
-          payload: { action: "inspect" as "inspect" | "migrate" },
+          payload: { action: "inspect" as "inspect" | "migrate" | "harden" | "quarantine" },
         };
       }
       const [subcommand, ...data] = positionals;
@@ -233,7 +242,23 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
           kind: "selected",
           leaf: CLI_LEAVES.setupMigrateState,
           data,
-          payload: { action: "migrate" as "inspect" | "migrate" },
+          payload: { action: "migrate" as "inspect" | "migrate" | "harden" | "quarantine" },
+        };
+      }
+      if (subcommand === "harden-state") {
+        return {
+          kind: "selected",
+          leaf: CLI_LEAVES.setupHardenState,
+          data,
+          payload: { action: "harden" as "inspect" | "migrate" | "harden" | "quarantine" },
+        };
+      }
+      if (subcommand === "quarantine-state") {
+        return {
+          kind: "selected",
+          leaf: CLI_LEAVES.setupQuarantineState,
+          data,
+          payload: { action: "quarantine" as "inspect" | "migrate" | "harden" | "quarantine" },
         };
       }
       return { kind: "unknown", token: subcommand };
@@ -274,14 +299,29 @@ export async function setup(argv: string[], injected: Partial<SetupDeps> = {}): 
     listCatalog: injected.listCatalog ?? listCatalogEntries,
     inspectState: injected.inspectState ?? inspectUserStateMigration,
     migrateState: injected.migrateState ?? migrateUserState,
+    hardenState: injected.hardenState ?? hardenUserState,
+    quarantineState: injected.quarantineState ?? quarantineUserState,
   };
-  if (parsed.selection.kind === "selected" && parsed.selection.payload.action === "migrate") {
+  if (parsed.selection.kind === "selected" && parsed.selection.payload.action !== "inspect") {
     if (values.host !== undefined || values.scope !== undefined) {
-      throw new CliError("USAGE", "setup migrate-state does not accept --host or --scope", {
-        help: "superbee setup migrate-state [--json]",
+      throw new CliError("USAGE", `setup ${parsed.selection.payload.action}-state does not accept --host or --scope`, {
+        help: `superbee setup ${parsed.selection.payload.action}-state [--json]`,
       });
     }
-    stdout(render({ migration: await deps.migrateState(deps.home()) }, resolveMode(values)));
+    try {
+      if (parsed.selection.payload.action === "migrate") {
+        stdout(render({ migration: await deps.migrateState(deps.home()) }, resolveMode(values)));
+      } else if (parsed.selection.payload.action === "harden") {
+        stdout(render({ state_recovery: await deps.hardenState(deps.home()) }, resolveMode(values)));
+      } else {
+        stdout(render({ state_recovery: await deps.quarantineState(deps.home()) }, resolveMode(values)));
+      }
+    } catch (error) {
+      if (error instanceof CliError) throw error;
+      throw new CliError("CONFLICT", error instanceof Error ? error.message : "private-state recovery failed", {
+        help: "superbee setup",
+      });
+    }
     return;
   }
   if (requestedHost) {

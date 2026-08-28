@@ -1,11 +1,11 @@
 # Diagnostic, not a gate. Answers one question with evidence instead of estimation: what does
 # Windows actually do to Superbee, and how much of the suite has never run there?
 #
-# `user-state.ts` asserts `(status.mode & 0o077) === 0` at five sites with no `win32` branch, and
-# every required lane runs on ubuntu or macos. libuv synthesizes `st_mode` on Windows as 0o666 for
-# a writable file and 0o777 for a directory, and `chmod` there only toggles the read-only bit. Run
-# 32204601930 confirmed that: the assertion is false everywhere on Windows, so the private-state
-# layer has never worked there and the package now declares `"os": ["!win32"]`.
+# Run 32204601930 established that libuv synthesizes `st_mode` on Windows as 0o666 for a writable
+# file and 0o777 for a directory, while `chmod` there only toggles the read-only bit. Superbee now
+# applies a platform-native private-state policy instead of asking POSIX mode assertions to prove
+# Windows containment. The package still declares `"os": ["!win32"]` until the remaining Windows
+# support slices are complete.
 #
 # That run measured one workspace. It exited at the first private-state throw, which hides
 # everything behind it, and the other workspaces have never executed on a Windows runner at all.
@@ -45,8 +45,8 @@ jobs:
         with:
           node-version: 22
 
-      # The decisive test. POSIX prints "600 700". If Windows prints "666 777" the assertion
-      # `(mode & 0o077) === 0` is false for both, and cannot be satisfied.
+      # Preserve the underlying platform evidence even though the implementation no longer treats
+      # POSIX mode bits as the Windows security authority.
       - name: Probe the mode Node reports for a 0600 file and a 0700 directory
         shell: bash
         run: |
@@ -78,22 +78,6 @@ jobs:
               echo 'CONCLUSION: the assertions CAN pass. The recorded finding no longer holds;'
               echo 'reopen it before trusting anything downstream.'
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # The workspace scripts carry POSIX `VAR=1 command` prefixes, which cmd.exe cannot parse.
-      # Pointing npm at git-bash is a precondition for measuring anything, and is itself a finding:
-      # a supported Windows lane needs those prefixes moved out of the scripts or a declared shell.
-      - name: Point npm script execution at git-bash
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm config set script-shell "C:\\Program Files\\git\\bin\\bash.exe"
-          {
-            echo
-            echo '## Precondition'
-            echo
-            echo 'Workspace test scripts use POSIX env-assignment prefixes that cmd.exe cannot'
-            echo 'parse, so this probe sets npm `script-shell` to git-bash before measuring.'
           } >> "$GITHUB_STEP_SUMMARY"
 
       # `--force` is not optional here. npm enforces a workspace's `os` field during install, so

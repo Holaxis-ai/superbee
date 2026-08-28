@@ -20,6 +20,11 @@ import { inspectUserStateMigration, migrateUserState } from "../src/user-state-m
 
 const CATALOG = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
 const CREDENTIALS = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "carried" } } })}\n`;
+const WINDOWS = process.platform === "win32";
+const directoryLinkType: "dir" | "junction" = WINDOWS ? "junction" : "dir";
+const sourceExit = (display: string, detailed = false): string => WINDOWS
+  ? "superbee setup"
+  : `ls -l${detailed ? "a" : "d"} ${display}`;
 
 interface SourceShapeRow {
   readonly label: string;
@@ -74,25 +79,25 @@ const SOURCE_SHAPES: readonly SourceShapeRow[] = [
     build: async (home) => {
       const real = join(home, "dotfiles", "agentstate");
       await legacyStore(home, real);
-      await symlink(real, legacyUserStateDir(home), "dir");
+      await symlink(real, legacyUserStateDir(home), directoryLinkType);
     },
     expected: "blocked",
-    reason: /legacy operational state at ~\/\.agentstate exists but is not a real directory/,
-    exitNode: "ls -ld ~/.agentstate",
+    reason: /legacy operational state at .*\.agentstate exists but is not a real directory/,
+    exitNode: sourceExit("~/.agentstate"),
   },
   {
     label: "a DANGLING symlink — a declared future identity, still not an absence",
-    build: async (home) => symlink(join(home, "nowhere"), legacyUserStateDir(home), "dir"),
+    build: async (home) => symlink(join(home, "nowhere"), legacyUserStateDir(home), directoryLinkType),
     expected: "blocked",
-    reason: /legacy operational state at ~\/\.agentstate exists but is not a real directory/,
-    exitNode: "ls -ld ~/.agentstate",
+    reason: /legacy operational state at .*\.agentstate exists but is not a real directory/,
+    exitNode: sourceExit("~/.agentstate"),
   },
   {
     label: "a regular FILE where the source root is expected",
     build: async (home) => privateFile(legacyUserStateDir(home), "not a directory\n"),
     expected: "blocked",
-    reason: /legacy operational state at ~\/\.agentstate exists but is not a real directory/,
-    exitNode: "ls -ld ~/.agentstate",
+    reason: /legacy operational state at .*\.agentstate exists but is not a real directory/,
+    exitNode: sourceExit("~/.agentstate"),
   },
   {
     label: "a real source root whose durable record is malformed",
@@ -101,8 +106,8 @@ const SOURCE_SHAPES: readonly SourceShapeRow[] = [
       await privateFile(join(legacyUserStateDir(home), "catalog.json"), "not json\n");
     },
     expected: "blocked",
-    reason: /legacy operational state at ~\/\.agentstate holds operational state that is not safe to migrate automatically/,
-    exitNode: "ls -la ~/.agentstate",
+    reason: /legacy operational state at .*\.agentstate holds operational state that is not safe to migrate automatically/,
+    exitNode: sourceExit("~/.agentstate", true),
   },
   {
     label: "a real source root whose private mode drifted while holding records",
@@ -110,9 +115,11 @@ const SOURCE_SHAPES: readonly SourceShapeRow[] = [
       await legacyStore(home, legacyUserStateDir(home));
       await chmod(legacyUserStateDir(home), 0o755);
     },
-    expected: "blocked",
-    reason: /legacy operational state at ~\/\.agentstate holds operational state that is not safe to migrate automatically/,
-    exitNode: "ls -la ~/.agentstate",
+    expected: WINDOWS ? "migratable" : "blocked",
+    reason: WINDOWS
+      ? /validated legacy operational state is ready to migrate/
+      : /legacy operational state at ~\/\.agentstate holds operational state that is not safe to migrate automatically/,
+    exitNode: WINDOWS ? undefined : sourceExit("~/.agentstate", true),
   },
   {
     // The list is ORDERED and every entry answers to the same rule, so the SUPERSEDED root has to
@@ -123,11 +130,11 @@ const SOURCE_SHAPES: readonly SourceShapeRow[] = [
       const real = join(home, "dotfiles", "superbee");
       await legacyStore(home, real);
       await mkdir(join(home, ".config"), { recursive: true, mode: 0o700 });
-      await symlink(real, superseded, "dir");
+      await symlink(real, superseded, directoryLinkType);
     },
     expected: "blocked",
-    reason: /legacy operational state at ~\/\.config\/superbee exists but is not a real directory/,
-    exitNode: "ls -ld ~/.config/superbee",
+    reason: /legacy operational state at .*(?:\.superbee-state|\.config[\\/]superbee) exists but is not a real directory/,
+    exitNode: WINDOWS ? "superbee setup" : "ls -ld ~/.config/superbee",
   },
 ];
 
@@ -177,7 +184,7 @@ test("a blocked source root is never adopted: nothing claims the canonical root"
   try {
     const real = join(home, "dotfiles", "agentstate");
     await legacyStore(home, real);
-    await symlink(real, legacyUserStateDir(home), "dir");
+    await symlink(real, legacyUserStateDir(home), directoryLinkType);
     await assert.rejects(() => migrateUserState(home), (error: unknown) => error instanceof CliError);
     await assert.rejects(
       () => rm(canonicalUserStateDir(home), { recursive: true }),

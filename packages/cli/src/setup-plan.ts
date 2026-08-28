@@ -107,6 +107,9 @@ export function setupStateCapability(state: UserStateMigrationInspection): Setup
 export function setupNextForCapability(capability: SetupCapability): SetupPlan["next"] {
   if (!capability.command) return undefined;
   return {
+    // Blocked rows describe uncertainty or foreign state. Even when inspection identifies the
+    // product-owned quarantine leaf, setup must not present that destructive preservation move as
+    // directly runnable before the operator inspects the conflict.
     action: capability.state === "blocked"
       ? "inspect"
       : capability.command.includes("<")

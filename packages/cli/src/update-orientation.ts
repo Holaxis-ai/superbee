@@ -7,6 +7,7 @@ import {
   fstatSync,
   fsyncSync,
   linkSync,
+  lstatSync,
   openSync,
   readSync,
   renameSync,
@@ -18,7 +19,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 import { credentialsDir } from "./credentials.js";
-import { inspectUserStateRootSync, writeUserStateFileAtomic0600 } from "./user-state.js";
+import { inspectUserStateRootSync, resolveUserStatePolicy, writeUserStateFileAtomic0600 } from "./user-state.js";
 import { staticBuildIdentity } from "./build-identity.js";
 import { currentExecutableRealPath, PACKAGE_NAME } from "./invocation.js";
 import {
@@ -335,7 +336,8 @@ function errno(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
 }
 
-function privateOwnerAndMode(stats: Stats, mode: number): boolean {
+function privateOwnerAndMode(home: string, stats: Stats, mode: number): boolean {
+  if (resolveUserStatePolicy(home).containment === "windows-user-local") return true;
   if ((stats.mode & 0o777) !== mode) return false;
   const currentUid = process.getuid?.();
   return currentUid === undefined || stats.uid === currentUid;
@@ -355,7 +357,7 @@ function inspectStateDirectory(home: string): "safe" | "missing" | "unsafe" {
   }
   try {
     const stats = fstatSync(descriptor);
-    return stats.isDirectory() && privateOwnerAndMode(stats, 0o700) ? "safe" : "unsafe";
+    return stats.isDirectory() && privateOwnerAndMode(home, stats, 0o700) ? "safe" : "unsafe";
   } catch {
     return "unsafe";
   } finally {
@@ -368,7 +370,14 @@ type PrivateFileRead =
   | { state: "unsafe" }
   | { state: "safe"; text: string | null };
 
-function readPrivateFile(filePath: string, maxBytes: number): PrivateFileRead {
+function readPrivateFile(home: string, filePath: string, maxBytes: number): PrivateFileRead {
+  let before: Stats;
+  try {
+    before = lstatSync(filePath);
+    if (before.isSymbolicLink() || !before.isFile()) return { state: "unsafe" };
+  } catch (error) {
+    return errno(error) === "ENOENT" ? { state: "missing" } : { state: "unsafe" };
+  }
   const flags =
     constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
   let descriptor: number;
@@ -381,7 +390,9 @@ function readPrivateFile(filePath: string, maxBytes: number): PrivateFileRead {
     const stats = fstatSync(descriptor);
     if (
       !stats.isFile() ||
-      !privateOwnerAndMode(stats, 0o600) ||
+      stats.dev !== before.dev ||
+      stats.ino !== before.ino ||
+      !privateOwnerAndMode(home, stats, 0o600) ||
       stats.size > maxBytes
     ) {
       return { state: "unsafe" };
@@ -394,6 +405,10 @@ function readPrivateFile(filePath: string, maxBytes: number): PrivateFileRead {
       offset += count;
     }
     if (offset > maxBytes) return { state: "unsafe" };
+    const after = lstatSync(filePath);
+    if (after.isSymbolicLink() || !after.isFile() || after.dev !== before.dev || after.ino !== before.ino) {
+      return { state: "unsafe" };
+    }
     try {
       return {
         state: "safe",
@@ -422,7 +437,7 @@ export function inspectUpdateCache(input: {
   const directory = inspectStateDirectory(input.home);
   if (directory === "missing") return { state: "refreshable" };
   if (directory === "unsafe") return { state: "unsafe" };
-  const file = readPrivateFile(updateCachePath(input.home), UPDATE_CACHE_MAX_BYTES);
+  const file = readPrivateFile(input.home, updateCachePath(input.home), UPDATE_CACHE_MAX_BYTES);
   if (file.state === "missing") return { state: "refreshable" };
   if (file.state === "unsafe") return { state: "unsafe" };
   const check = file.text === null ? null : parseUpdateCacheText(file.text, input);
@@ -510,7 +525,7 @@ type UpdateLeaseInspection =
   | { state: "valid"; lease: UpdateLeaseRecord };
 
 function inspectUpdateLease(home: string): UpdateLeaseInspection {
-  const file = readPrivateFile(updateLeasePath(home), UPDATE_LEASE_MAX_BYTES);
+  const file = readPrivateFile(home, updateLeasePath(home), UPDATE_LEASE_MAX_BYTES);
   if (file.state !== "safe") return file;
   if (file.text === null) return { state: "foreign" };
   const lease = parseUpdateLeaseText(file.text);
@@ -518,6 +533,7 @@ function inspectUpdateLease(home: string): UpdateLeaseInspection {
 }
 
 function writeCompleteTemp(
+  home: string,
   directory: string,
   baseName: string,
   content: string,
@@ -533,7 +549,7 @@ function writeCompleteTemp(
       0o600,
     );
     writeFileSync(descriptor, content, "utf8");
-    fchmodSync(descriptor, 0o600);
+    if (resolveUserStatePolicy(home).containment === "posix-owner-mode") fchmodSync(descriptor, 0o600);
     fsyncSync(descriptor);
     closeSync(descriptor);
     descriptor = undefined;
@@ -573,6 +589,7 @@ function publishActiveClaim(home: string, lease: ActiveUpdateLease): boolean {
   let temporary: string | undefined;
   try {
     temporary = writeCompleteTemp(
+      home,
       directory,
       UPDATE_LEASE_FILE_NAME,
       serializeUpdateLease(lease),
@@ -613,6 +630,7 @@ function transitionStaleActiveToCooldown(
   let temporary: string | undefined;
   try {
     temporary = writeCompleteTemp(
+      home,
       credentialsDir(home),
       UPDATE_LEASE_FILE_NAME,
       serializeUpdateLease(cooldown),
@@ -671,7 +689,7 @@ function quarantineMatchingLease(
     }
     return false;
   }
-  const captured = readPrivateFile(quarantine, UPDATE_LEASE_MAX_BYTES);
+  const captured = readPrivateFile(home, quarantine, UPDATE_LEASE_MAX_BYTES);
   const lease =
     captured.state === "safe" && captured.text !== null
       ? parseUpdateLeaseText(captured.text)
@@ -792,6 +810,7 @@ function transitionMatchingActiveToCooldown(home: string, token: string, now: Da
   let temporary: string | undefined;
   try {
     temporary = writeCompleteTemp(
+      home,
       credentialsDir(home),
       UPDATE_LEASE_FILE_NAME,
       serializeUpdateLease(cooldown),

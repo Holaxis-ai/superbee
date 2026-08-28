@@ -180,8 +180,14 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
     // `setup` is a read-only conductor: it REPORTS the block and prescribes the exit node.
     expectStatus: 0,
-    // The emitted command travels inside a JSON string, so its quotes arrive backslash-escaped.
-    help: /mv ~\/\.superbee-state \\"\$superbee_quarantine\\"\/ && echo \\"preserved: \$superbee_quarantine\/\.superbee-state\\"/,
+    help: /"command":"superbee setup quarantine-state"/,
+    inspectRefusal: (output) => {
+      assert.equal(
+        (JSON.parse(output) as SetupEnvelope).setup.next.action,
+        "inspect",
+        "quarantine remains an explicit operator decision after inspecting foreign state",
+      );
+    },
     remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
     effect: "changes-state",
     verify: (f, executed) => {
@@ -195,8 +201,8 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
       );
       assert.match(
         executed.stdout,
-        new RegExp(`preserved: .*${quarantined[0]!}/\\.superbee-state`),
-        "the emitted command PRINTS where it preserved the root — otherwise the path to recovery is lost",
+        new RegExp(`preserved_at: .*${quarantined[0]!}/\\.superbee-state`),
+        "the CLI receipt names the preserved root",
       );
       const rerun = runCli(["setup", "migrate-state", "--json"], { cwd: f.project, home: f.home });
       assert.equal(rerun.status, 0, "the rerun the remedy points at must now succeed");
@@ -215,7 +221,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     verify: (_f, executed) => {
       assert.match(executed.stdout, /capabilities\[1\]\{id,requirement,state,reason,command\}/);
       assert.match(executed.stdout, /state,required,blocked,/);
-      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command:/);
+      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command: superbee setup quarantine-state/);
     },
   },
   {
@@ -229,7 +235,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
     // `setup` is a read-only conductor: it REPORTS the drift and prescribes the exit node.
     expectStatus: 0,
-    help: /"command":"chmod -R go-rwx ~\/\.superbee-state"/,
+    help: /"command":"superbee setup harden-state"/,
     inspectRefusal: (output) => {
       const row = stateRow(output);
       assert.equal(row.state, "needs_action", "a recognized, repairable root is not blocked");
@@ -258,7 +264,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     },
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
     expectStatus: 0,
-    help: /"command":"chmod -R go-rwx ~\/\.superbee-state"/,
+    help: /"command":"superbee setup harden-state"/,
     inspectRefusal: (output) => {
       const row = stateRow(output);
       assert.equal(row.state, "needs_action");

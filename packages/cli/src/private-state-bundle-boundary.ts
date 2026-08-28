@@ -12,10 +12,9 @@ import path from "node:path";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import {
-  canonicalUserStateDir,
-  homeRelativeDisplay,
-  legacyUserStateDir,
-  supersededUserStateDirs,
+  resolveUserStatePolicy,
+  userStatePathDisplay,
+  type UserStateInput,
 } from "./user-state.js";
 
 /**
@@ -33,6 +32,7 @@ interface PrivateStateFinding {
   readonly relation: PrivateStateRelation;
   /** `~`-relative spelling of the guarded root that matched. Never the resolved private path. */
   readonly root: string;
+  readonly platform: NodeJS.Platform;
 }
 
 function code(error: unknown): string | undefined {
@@ -214,19 +214,18 @@ export function relateToPrivateState(candidate: string, stateRoot: string): Priv
  * separate question from which roots a bundle may not collide with. The set only grows — a
  * superseded root stays guarded for as long as it remains a migration source.
  */
-export function guardedStateRoots(home: string = homedir()): string[] {
-  return [
-    ...new Set([canonicalUserStateDir(home), legacyUserStateDir(home), ...supersededUserStateDirs(home)]),
-  ];
+export function guardedStateRoots(input: UserStateInput = homedir()): string[] {
+  return [...resolveUserStatePolicy(input).guardedRoots];
 }
 
 /** Classify a target against every guarded root, returning the first collision in root order. */
-function classifyAgainstPrivateState(candidate: string, home: string = homedir()): PrivateStateFinding {
-  for (const root of guardedStateRoots(home)) {
+function classifyAgainstPrivateState(candidate: string, input: UserStateInput = homedir()): PrivateStateFinding {
+  const policy = resolveUserStatePolicy(input);
+  for (const root of guardedStateRoots(input)) {
     const relation = relateToPrivateState(candidate, root);
-    if (relation !== "unrelated") return { relation, root: homeRelativeDisplay(home, root) };
+    if (relation !== "unrelated") return { relation, root: userStatePathDisplay(input, root), platform: policy.platform };
   }
-  return { relation: "unrelated", root: homeRelativeDisplay(home, canonicalUserStateDir(home)) };
+  return { relation: "unrelated", root: policy.displayRoot, platform: policy.platform };
 }
 
 function bundleBoundaryError(finding: PrivateStateFinding): CliError {
@@ -238,10 +237,12 @@ function bundleBoundaryError(finding: PrivateStateFinding): CliError {
       "CONFLICT",
       "an OKF bundle cannot enclose Superbee's private user-state directory",
       {
-        help:
-          `${finding.root} lives inside it — create the bundle in a project directory instead: `
-          + `mkdir -p ~/projects/<name> && cd ~/projects/<name> && ${inv} init --create-only --dir .superbee`
-          + " (move any bundle files that already exist here into that directory first)",
+        help: finding.platform === "win32"
+          ? `${finding.root} lives inside it — choose a project directory outside private state, `
+            + `open it, and run ${inv} init --create-only --dir .superbee`
+          : `${finding.root} lives inside it — create the bundle in a project directory instead: `
+            + `mkdir -p ~/projects/<name> && cd ~/projects/<name> && ${inv} init --create-only --dir .superbee`
+            + " (move any bundle files that already exist here into that directory first)",
       },
     );
   }
@@ -260,8 +261,8 @@ function bundleBoundaryError(finding: PrivateStateFinding): CliError {
 }
 
 /** Bundle-root guard: a bundle may neither BE, CONTAIN, nor live INSIDE any private-state root. */
-export function assertBundleOutsidePrivateState(bundleRoot: string, home: string = homedir()): void {
-  const finding = classifyAgainstPrivateState(path.resolve(bundleRoot), home);
+export function assertBundleOutsidePrivateState(bundleRoot: string, input: UserStateInput = homedir()): void {
+  const finding = classifyAgainstPrivateState(path.resolve(bundleRoot), input);
   if (finding.relation === "unrelated") return;
   throw bundleBoundaryError(finding);
 }
@@ -275,8 +276,8 @@ export function assertBundleOutsidePrivateState(bundleRoot: string, home: string
  * here is the conflict — never its own "nothing found" verdict, and never a next command derived
  * from a private coordinate.
  */
-export function assertSearchDirOutsidePrivateState(dir: string, home: string = homedir()): void {
-  const finding = classifyAgainstPrivateState(path.resolve(dir), home);
+export function assertSearchDirOutsidePrivateState(dir: string, input: UserStateInput = homedir()): void {
+  const finding = classifyAgainstPrivateState(path.resolve(dir), input);
   if (finding.relation !== "identical" && finding.relation !== "bundle-inside-state") return;
   throw bundleBoundaryError(finding);
 }
@@ -288,8 +289,8 @@ export function assertSearchDirOutsidePrivateState(dir: string, home: string = h
  * sharpest of them — `fs.writeFile` lands 0644, so even correct marker bytes written that way fail
  * the mode assertion and brick every later private-state command.
  */
-export function assertPathOutsidePrivateState(target: string, home: string = homedir()): void {
-  const finding = classifyAgainstPrivateState(path.resolve(target), home);
+export function assertPathOutsidePrivateState(target: string, input: UserStateInput = homedir()): void {
+  const finding = classifyAgainstPrivateState(path.resolve(target), input);
   if (finding.relation !== "identical" && finding.relation !== "bundle-inside-state") return;
   throw new CliError(
     "CONFLICT",
