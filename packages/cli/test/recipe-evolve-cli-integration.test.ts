@@ -34,6 +34,10 @@ function commandArg(value: string, platform: NodeJS.Platform = process.platform)
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+function commandArgs(values: string[], platform: NodeJS.Platform = process.platform): string {
+  return values.map((value) => commandArg(value, platform)).join(" ");
+}
+
 function hostShell(
   command: string,
   platform: NodeJS.Platform = process.platform,
@@ -73,6 +77,10 @@ test("exact apply commands use the native host shell contract", () => {
   assert.equal(
     commandArg(String.raw`C:\Program Files\Superbee\recipe`, "win32"),
     '"C:/Program Files/Superbee/recipe"',
+  );
+  assert.equal(
+    commandArgs([String.raw`C:\Program Files\node.exe`, "--import", "file:///C:/loader.mjs"], "win32"),
+    '"C:/Program Files/node.exe" --import file:///C:/loader.mjs',
   );
 });
 
@@ -162,6 +170,6 @@ test("loader-driven source CLI: recipe evolve exact apply command preserves requ
   const sourceLoaderUrl = pathToFileURL(sourceLoader).href;
   await exerciseExactApply(
     ["--import", sourceLoaderUrl, cliSource],
-    [realpathSync(process.execPath), "--import", sourceLoaderUrl, realpathSync(cliSource)].map(commandArg).join(" "),
+    commandArgs([realpathSync(process.execPath), "--import", sourceLoaderUrl, realpathSync(cliSource)]),
   );
 });

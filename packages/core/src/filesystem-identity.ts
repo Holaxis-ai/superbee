@@ -48,6 +48,7 @@ import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
 import { acquireFilesystemIdentityLock } from "./filesystem-lock.js";
@@ -88,6 +89,8 @@ export interface IdentityDescriptor {
  * segment at a time against the parent listing.
  */
 export interface FilesystemIdentityPort {
+  /** Host semantics used by the protocol for narrowly platform-specific filesystem recovery. */
+  readonly platform?: NodeJS.Platform;
   /** `lstat`; `null` when nothing is at the path (ENOENT or ENOTDIR). */
   probe(target: string): Promise<ProbeResult | null>;
   /** Directory listing, names and kinds only; `null` when the directory is absent. */
@@ -108,6 +111,38 @@ export interface FilesystemIdentityPort {
   rename(from: string, to: string): Promise<void>;
   unlink(target: string): Promise<void>;
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
+}
+
+const WINDOWS_REPLACE_RETRY_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const WINDOWS_REPLACE_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320] as const;
+
+/**
+ * Windows can transiently deny replacement while another process is closing a read handle or a
+ * scanner holds the destination. Retry only an already-realized exact leaf and only the errno
+ * values Node uses for Windows sharing/access violations; every other rename failure remains
+ * immediate, and the finite backoff preserves a bounded failure mode.
+ */
+async function replaceExistingLeaf(
+  port: FilesystemIdentityPort,
+  tmp: string,
+  target: string,
+): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await port.rename(tmp, target);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code ?? "";
+      if (
+        (port.platform ?? process.platform) !== "win32" ||
+        !WINDOWS_REPLACE_RETRY_CODES.has(code) ||
+        attempt >= WINDOWS_REPLACE_RETRY_DELAYS_MS.length
+      ) {
+        throw err;
+      }
+      await delay(WINDOWS_REPLACE_RETRY_DELAYS_MS[attempt]);
+    }
+  }
 }
 
 /**
@@ -687,9 +722,13 @@ export async function mutateExact<T>(
           const tmp = path.join(dir, tmpName);
           await port.writeTemp(dir, tmpName, bytes);
           try {
-            if (realized.state === "exact" || linkUnsupportedRoots.has(rootResolved)) {
+            if (realized.state === "exact") {
               // Replace: the target exists under our exact spelling, so any writer of an
               // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
+              await replaceExistingLeaf(port, tmp, target);
+              return;
+            }
+            if (linkUnsupportedRoots.has(rootResolved)) {
               await port.rename(tmp, target);
               return;
             }
@@ -721,6 +760,7 @@ function kindOf(stats: { isSymbolicLink(): boolean; isDirectory(): boolean; isFi
 
 /** The one production binding: `node:fs`, the temp-file convention, and the identity lock. */
 export const nodeFilesystemIdentityPort: FilesystemIdentityPort = Object.freeze({
+  platform: process.platform,
   async probe(target: string): Promise<ProbeResult | null> {
     let lstats: Stats;
     try {

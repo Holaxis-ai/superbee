@@ -596,6 +596,70 @@ test("AC-4: an existing leaf is read for CAS before mkdir/write, replaced by ren
   assert.equal(port.openCount, 0);
 });
 
+test("AC-4: Windows existing-leaf replacement retries only bounded sharing failures", async () => {
+  for (const code of ["EACCES", "EBUSY", "EPERM"]) {
+    const port = new ScriptedPort({ platform: "win32" });
+    port.file(TARGET, "old", 9);
+    let failures = 2;
+    port.override("rename", async (_args, base) => {
+      if (failures-- > 0) throw Object.assign(new Error(code), { code });
+      return base();
+    });
+
+    assert.equal(await mutateExact(port, ROOT, REL, casWrite("old")), "written");
+    assert.equal(port.ops("rename").length, 3, code);
+    assert.equal(port.node(TARGET)?.bytes.toString(), "new");
+  }
+});
+
+test("AC-4: Windows existing-leaf replacement does not retry unrelated rename errors", async () => {
+  for (const code of ["EEXIST", "EIO", "ENOENT"]) {
+    const port = new ScriptedPort({ platform: "win32" });
+    port.file(TARGET, "old", 9);
+    port.override("rename", async () => {
+      throw Object.assign(new Error(code), { code });
+    });
+    await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code });
+    assert.equal(port.ops("rename").length, 1, code);
+  }
+});
+
+test("AC-4: replacement sharing errors are not retried on POSIX hosts", async () => {
+  const port = new ScriptedPort({ platform: "linux" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code: "EBUSY" });
+  assert.equal(port.ops("rename").length, 1);
+});
+
+test("AC-4: Windows first-creation rename fallback is not treated as an existing-leaf replacement", async () => {
+  const root = path.resolve(HOST_ROOT, "windows-nolink");
+  const port = new ScriptedPort({ platform: "win32" });
+  port.mkdirp(path.join(root, "concepts"));
+  port.override("link", async () => "unsupported");
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, root, REL, casWrite(null)), { code: "EBUSY" });
+  assert.equal(port.ops("rename").length, 1);
+});
+
+test("AC-4: Windows existing-leaf replacement exhausts its finite sharing-error retry bound", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code: "EBUSY" });
+  assert.equal(port.ops("rename").length, 7, "one initial attempt plus six bounded retries");
+  assert.equal(port.node(TARGET)?.bytes.toString(), "old");
+});
+
 test("AC-4: ALIASED at the walk is claim, walk, release with no write-class call", async () => {
   const port = new ScriptedPort({ aliasing: true });
   port.file(path.join(ROOT, "concepts/X.md"), "canonical");

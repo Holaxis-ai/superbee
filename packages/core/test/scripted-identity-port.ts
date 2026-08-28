@@ -49,6 +49,7 @@ type Override = (args: string[], base: () => Promise<unknown>) => Promise<unknow
 export class ScriptedPort implements FilesystemIdentityPort {
   readonly trace: string[] = [];
   readonly root: ScriptedNode = { kind: "directory", ino: 1, bytes: Buffer.alloc(0), children: new Map() };
+  readonly platform: NodeJS.Platform;
   aliasing: boolean;
   /** Handles open right now, and the most ever open at once. */
   openCount = 0;
@@ -59,8 +60,9 @@ export class ScriptedPort implements FilesystemIdentityPort {
   readonly #hooks: Array<{ op: string; nth: number; fn: () => void }> = [];
   readonly #overrides = new Map<string, Override>();
 
-  constructor(options: { aliasing?: boolean } = {}) {
+  constructor(options: { aliasing?: boolean; platform?: NodeJS.Platform } = {}) {
     this.aliasing = options.aliasing ?? false;
+    this.platform = options.platform ?? process.platform;
   }
 
   // ── scripting surface ──────────────────────────────────────────────────────
