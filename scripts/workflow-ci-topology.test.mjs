@@ -73,9 +73,11 @@ function proofProgram(source) {
 }
 
 function proofFunction(program, name) {
-  const declaration = program.statements.find((statement) =>
+  const declarations = program.statements.filter((statement) =>
     ts.isFunctionDeclaration(statement) && statement.name?.text === name
   );
+  assert.equal(declarations.length, 1, `installed-package proof must declare ${name} exactly once`);
+  const declaration = declarations[0];
   assert.ok(declaration?.body, `installed-package proof must declare ${name}`);
   return declaration;
 }
@@ -141,22 +143,38 @@ function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof)
 
   const lifecycle = proofFunction(program, "runInstalledPackageProof");
   assert.deepEqual(
-    lifecycle.body.statements.map(awaitedCall).filter(Boolean),
+    lifecycle.body.statements.map((statement) => {
+      const call = awaitedCall(statement);
+      if (call) return { kind: "await", ...call };
+      if (ts.isReturnStatement(statement)) {
+        return { kind: "return", expression: statement.expression?.getText() ?? "" };
+      }
+      return { kind: ts.SyntaxKind[statement.kind] };
+    }),
     [
-      { name: "proveCatalogLifecycle", args: [], binding: "{ bundle }" },
-      { name: "proveLocalRemoteSync", args: [], binding: "" },
-      { name: "proveUiUrlLifecycle", args: ["bundle"], binding: "" },
-      { name: "proveMcpConfigLifecycle", args: [], binding: "" },
+      { kind: "await", name: "proveCatalogLifecycle", args: [], binding: "{ bundle }" },
+      { kind: "await", name: "proveLocalRemoteSync", args: [], binding: "" },
+      { kind: "await", name: "proveUiUrlLifecycle", args: ["bundle"], binding: "" },
+      { kind: "await", name: "proveMcpConfigLifecycle", args: [], binding: "" },
+      { kind: "return", expression: "installedPackageProofComplete" },
     ],
-    "the installed-package runner must await every lifecycle with the catalog bundle wired into UI proof",
+    "the installed-package runner must contain only the four awaited lifecycles followed by its completion token",
   );
   const entryTry = program.statements.find(ts.isTryStatement);
-  assert.equal(
-    awaitedCall(entryTry?.tryBlock.statements[0] ?? {})?.name,
-    "runInstalledPackageProof",
-    "the native proof entrypoint must execute the complete lifecycle runner before reporting success",
+  assert.equal(entryTry?.tryBlock.statements.length, 3, "the native proof entrypoint must gate success on completion");
+  const completionBinding = awaitedCall(entryTry?.tryBlock.statements[0] ?? {});
+  assert.deepEqual(
+    completionBinding,
+    { name: "runInstalledPackageProof", args: [], binding: "completion" },
+    "the native proof entrypoint must capture the complete lifecycle runner's result",
   );
-  const successWrite = entryTry?.tryBlock.statements[1];
+  const completionAssertion = entryTry?.tryBlock.statements[1];
+  assert.equal(
+    completionAssertion?.getText(),
+    'assert.equal(completion, installedPackageProofComplete, "every installed-package lifecycle must complete");',
+    "the native proof entrypoint must reject every incomplete lifecycle run",
+  );
+  const successWrite = entryTry?.tryBlock.statements[2];
   assert.ok(
     ts.isExpressionStatement(successWrite) && ts.isCallExpression(successWrite.expression)
       && successWrite.expression.expression.getText() === "process.stdout.write",
@@ -324,13 +342,51 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
   ]) {
     assert.throws(
       () => validateWindowsInstalledProof(windowsJob, lane, windowsInstalledProof.replace(call, "")),
-      /must await every lifecycle/,
+      /four awaited lifecycles/,
     );
     assert.throws(
       () => validateWindowsInstalledProof(windowsJob, lane, windowsInstalledProof.replace(call, call.replace("await ", "void "))),
-      /must await every lifecycle/,
+      /four awaited lifecycles/,
     );
   }
+  const runnerStart = "async function runInstalledPackageProof() {";
+  for (const bypass of [
+    "return;",
+    "if (true) return;",
+    "if (process.env.CI) return installedPackageProofComplete;",
+    "throw new Error('skip');",
+  ]) {
+    assert.throws(
+      () => validateWindowsInstalledProof(
+        windowsJob,
+        lane,
+        windowsInstalledProof.replace(runnerStart, `${runnerStart}\n  ${bypass}`),
+      ),
+      /four awaited lifecycles/,
+    );
+  }
+  assert.throws(
+    () => validateWindowsInstalledProof(
+      windowsJob,
+      lane,
+      windowsInstalledProof.replace(
+        "async function runInstalledPackageProof() {",
+        "async function runInstalledPackageProof() {}\nasync function runInstalledPackageProof() {",
+      ),
+    ),
+    /exactly once/,
+  );
+  assert.throws(
+    () => validateWindowsInstalledProof(
+      windowsJob,
+      lane,
+      windowsInstalledProof.replace(
+        '  assert.equal(completion, installedPackageProofComplete, "every installed-package lifecycle must complete");\n',
+        "",
+      ),
+    ),
+    /gate success on completion/,
+  );
   assert.throws(
     () => validateWindowsInstalledProof(
       windowsJob.replace(

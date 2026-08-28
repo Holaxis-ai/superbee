@@ -216,15 +216,19 @@ async function proveMcpConfigLifecycle() {
   assert.equal(cleaned.mcpServers?.superbee, undefined);
 }
 
+const installedPackageProofComplete = Symbol("installed-package-proof-complete");
+
 async function runInstalledPackageProof() {
   const { bundle } = await proveCatalogLifecycle();
   await proveLocalRemoteSync();
   await proveUiUrlLifecycle(bundle);
   await proveMcpConfigLifecycle();
+  return installedPackageProofComplete;
 }
 
 try {
-  await runInstalledPackageProof();
+  const completion = await runInstalledPackageProof();
+  assert.equal(completion, installedPackageProofComplete, "every installed-package lifecycle must complete");
   process.stdout.write(`${JSON.stringify({
     platform: process.platform,
     artifact: "exact installed npm tarball",
