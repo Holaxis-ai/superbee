@@ -9,6 +9,10 @@ import ts from "typescript";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
+const windowsWorkflow = readFileSync(
+  path.join(root, ".github", "workflows", "windows-installed-package.yml"),
+  "utf8",
+);
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
 const windowsInstalledProofBytes = readFileSync(
   path.join(root, manifest.lanes.windows.installed_package_proof_script),
@@ -39,6 +43,18 @@ function needsOf(job) {
   if (list) return list[1].split(",").map((name) => name.trim()).filter(Boolean);
   const scalar = /^ {4}needs: ([A-Za-z0-9_-]+)\s*$/m.exec(job);
   return scalar ? [scalar[1]] : [];
+}
+
+function requiredLaneNames(candidate) {
+  return Object.entries(candidate.lanes)
+    .filter(([, lane]) => lane.required !== false)
+    .map(([name]) => name);
+}
+
+function workflowTriggers(text) {
+  const on = /^on:\n((?: {2}[^\n]*\n?)*)/m.exec(text);
+  assert.ok(on, "workflow must declare triggers");
+  return [...on[1].matchAll(/^ {2}([A-Za-z_]+):/gm)].map((match) => match[1]);
 }
 
 function assertAggregator(job, label) {
@@ -526,8 +542,8 @@ function validateCiTopology(text, candidate = manifest) {
   const jobs = extractJobs(text);
   assert.deepEqual(
     [...candidate.required_jobs].sort(),
-    Object.keys(candidate.lanes).sort(),
-    "required_jobs must equal the complete lane set",
+    requiredLaneNames(candidate).sort(),
+    "required_jobs must equal the automatically run lane set",
   );
   assert.doesNotMatch(text, /^\s+continue-on-error:/m, "required CI jobs cannot mask a failing step");
   for (const required of candidate.required_jobs) {
@@ -547,7 +563,6 @@ function validateCiTopology(text, candidate = manifest) {
     assert.match(jobs[job], new RegExp(`run: npm run ${script.replace(":", "\\:")}`));
   }
   assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
-  assertWindowsJob(jobs.windows, candidate.lanes.windows);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
   assert.equal(
     /^ {2}merge_group:/m.test(text),
@@ -559,8 +574,23 @@ function validateCiTopology(text, candidate = manifest) {
   return jobs;
 }
 
-test("CI runs every lane unconditionally with the declared runtime topology", () => {
+function validateWindowsProofWorkflow(text, candidate = manifest) {
+  const lane = candidate.lanes.windows;
+  assert.equal(lane.required, false, "Windows proof must not be part of automatic required CI");
+  assert.equal(lane.trigger, "workflow_dispatch", "Windows proof must declare its explicit trigger");
+  assert.equal(lane.workflow, ".github/workflows/windows-installed-package.yml");
+  assert.match(text, /^name: Windows installed-package proof$/m);
+  assert.deepEqual(workflowTriggers(text), ["workflow_dispatch"], "Windows proof must be manually dispatched only");
+  const jobs = extractJobs(text);
+  assert.deepEqual(Object.keys(jobs), ["windows"], "manual Windows workflow must contain only the proof job");
+  assertWindowsJob(jobs.windows, lane);
+  return jobs;
+}
+
+test("CI runs every automatic lane unconditionally and keeps Windows proof manual", () => {
   validateCiTopology(workflow);
+  validateWindowsProofWorkflow(windowsWorkflow);
+  assert.equal(extractJobs(workflow).windows, undefined, "ordinary CI must not define the Windows proof job");
 });
 
 test("canonical and legacy compatibility contexts are identical fail-closed aggregators", () => {
@@ -609,11 +639,25 @@ test("workflow mutation attacks cannot hide failures or weaken required job iden
   }
   const incomplete = structuredClone(manifest);
   incomplete.required_jobs.pop();
-  assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the complete lane set/);
+  assert.throws(() => validateCiTopology(workflow, incomplete), /required_jobs must equal the automatically run lane set/);
+});
+
+test("Windows proof cannot be reattached to automatic CI or lose its manual trigger", () => {
+  assert.throws(
+    () => validateWindowsProofWorkflow(windowsWorkflow.replace("workflow_dispatch:", "pull_request:")),
+    /manually dispatched only/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(windowsWorkflow.replace("  workflow_dispatch:", "  workflow_dispatch:\n  push:")),
+    /manually dispatched only/,
+  );
+  const required = structuredClone(manifest);
+  required.lanes.windows.required = true;
+  assert.throws(() => validateCiTopology(workflow, required), /automatically run lane set/);
 });
 
 test("Windows installed-package topology mutations cannot skip lifecycles or weaken artifact binding", () => {
-  const windowsJob = extractJobs(workflow).windows;
+  const windowsJob = extractJobs(windowsWorkflow).windows;
   const lane = manifest.lanes.windows;
   for (const call of [
     "const { bundle } = await proveCatalogLifecycle();",
@@ -749,7 +793,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
 });
 
 test("Windows installed-package proof digest rejects every unreviewed byte mutation", () => {
-  const windowsJob = extractJobs(workflow).windows;
+  const windowsJob = extractJobs(windowsWorkflow).windows;
   const lane = manifest.lanes.windows;
   const helperStart = "async function proveCatalogLifecycle() {";
   for (const mutation of [

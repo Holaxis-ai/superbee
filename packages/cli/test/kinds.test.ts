@@ -450,6 +450,11 @@ test('new "<Kind>" --help shows deterministic described field rows, not the gene
     let generic = "";
     await newCommand(["--help"], { stdout: (s) => (generic += s) });
     assert.match(generic, /create a new instance of a bundle-declared kind/);
+    assert.match(
+      generic,
+      /superbee doc write <id> --type <Type>.*generic document whose type has no governing\s+Kind/s,
+      "generic new help routes ungoverned authoring through doc write",
+    );
     assert.doesNotMatch(generic, /create a Described instance/);
   } finally {
     await cleanup();

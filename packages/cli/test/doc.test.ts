@@ -3783,6 +3783,8 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
 
   const writeHelp = await capture(["write", "--help"]);
   assert.match(writeHelp, /doc write —/);
+  assert.match(writeHelp, /superbee new "<Kind>" <id>/, "write help routes governed creation through new");
+  assert.match(writeHelp, /strict and create-only/, "write help explains why governed creation uses new");
   assert.match(writeHelp, /--blank-body/, "write help keeps its own flags");
   assert.match(writeHelp, /--replace-links/, "write help documents the link-drop guard's opt-in");
   assert.doesNotMatch(writeHelp, /doc history —|doc delete —/, "write help does not carry other verbs' manuals");
@@ -3820,4 +3822,32 @@ test("each doc verb's --help is focused on THAT verb, not the whole family manua
   assert.match(familyHelp, /doc open/);
   assert.match(familyHelp, /--body-out/);
   assert.match(familyHelp, /doc <verb> --help/);
+  assert.match(familyHelp, /generic document creation or full replacement/i);
+  assert.match(familyHelp, /governed, strict, create-only authoring/i);
+  assert.match(
+    familyHelp,
+    /superbee doc write notes\/idea --type Note --title "Idea" --body "Capture this\."/,
+    "family help includes one complete generic-authoring example",
+  );
+  assert.match(
+    familyHelp,
+    /superbee new "Task" clarify-authoring --title "Clarify authoring" --progress_status todo/,
+    "family help includes one complete governed Task example",
+  );
+});
+
+test("doc create remains a USAGE error that routes to both valid authoring paths", async () => {
+  await assert.rejects(
+    () => doc(["create", "notes/idea", "--type", "Note"]),
+    (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.equal(err.code, "USAGE");
+      assert.equal(err.exitCode, 2);
+      assert.match(err.message, /doc create.*is not a command/);
+      assert.match(err.message, /superbee new "<Kind>" <id>.*governed, strict, create-only authoring/);
+      assert.match(err.message, /superbee doc write <id> --type <Type>.*generic document creation or full replacement/);
+      assert.equal(err.help, `${cliInvocation()} doc --help`);
+      return true;
+    },
+  );
 });
