@@ -278,9 +278,11 @@ test("npm Skill makes authoritative presentation a first-class delivery step", (
 test("the npm Skill keeps the AXI setup conductor and mutation boundary eager", () => {
   assert.match(renderedNpm, /npm install -g superbee/);
   assert.match(renderedNpm, /followed by `superbee setup`/);
-  assert.match(renderedNpm, /Setup is a read-only conductor/);
-  assert.match(renderedNpm, /ask before running its returned mutating\s+command/);
-  assert.match(renderedNpm, /restart after Skill, Hook, or MCP changes/);
+  assert.match(renderedNpm, /Setup is an agent-driven read-only conductor/);
+  assert.match(renderedNpm, /calling agent selects its exact host, executes\s+the returned argv action/);
+  assert.match(renderedNpm, /approval\.required: true/);
+  assert.match(renderedNpm, /Do not ask the user to copy or run a setup command/);
+  assert.match(renderedNpm, /restarts after Skill, Hook, or MCP changes/);
   assert.match(renderedNpm, /never makes that workspace the current project/);
 });
 
