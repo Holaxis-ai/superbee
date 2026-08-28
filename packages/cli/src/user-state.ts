@@ -842,13 +842,56 @@ async function inspectPrivateTree(target: string, directories: PrivateTreeEntry[
   files.push({ path: target, kind: "file", identity: status });
 }
 
-async function hardenPrivateTreeEntry(entry: PrivateTreeEntry): Promise<void> {
+function privateDirectoryChain(root: string, target: string): string[] {
+  if (target === root) return [];
+  const child = relative(root, dirname(target));
+  if (child.startsWith("..") || isAbsolute(child)) {
+    throw new Error("private user-state entry changed during hardening");
+  }
+  const directories = [root];
+  let current = root;
+  for (const component of child.split(/[\\/]+/u).filter(Boolean)) {
+    current = join(current, component);
+    directories.push(current);
+  }
+  return directories;
+}
+
+async function hardenPrivateTreeEntry(
+  root: string,
+  entry: PrivateTreeEntry,
+  directoryIdentities: ReadonlyMap<string, PrivateStateStatus>,
+): Promise<void> {
+  const directoryHandles: Array<Awaited<ReturnType<typeof open>>> = [];
   let handle: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    // Node has no portable openat-style directory-descriptor traversal. O_NOFOLLOW closes the
-    // final-component link race, while the recorded dev/inode identity detects ancestor or leaf
-    // substitution before fchmod mutates the already-open object. A platform without O_NOFOLLOW
-    // cannot receive this POSIX-only operation because its containment policy bypasses hardening.
+    // Node has no portable openat-style traversal. Bind every scanned ancestor to both an open
+    // descriptor and its still-canonical pathname before opening the leaf; then recheck the whole
+    // chain in reverse immediately before fchmod. Even if resolving a deeper pathname crossed an
+    // ancestor that was concurrently replaced, that ancestor's own O_NOFOLLOW open or the repeated
+    // pathname identity checks reject the observed substitution before mutation.
+    const directoryChain = privateDirectoryChain(root, entry.path);
+    for (const directory of directoryChain) {
+      const expected = directoryIdentities.get(directory);
+      if (expected === undefined) throw new Error("private user-state entry changed during hardening");
+      const directoryHandle = await open(
+        directory,
+        constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+      );
+      directoryHandles.push(directoryHandle);
+      const opened = await directoryHandle.stat();
+      const named = await lstat(directory);
+      if (
+        !opened.isDirectory()
+        || named.isSymbolicLink()
+        || !named.isDirectory()
+        || !sameFileIdentity(expected, opened)
+        || !sameFileIdentity(expected, named)
+      ) {
+        throw new Error("private user-state entry changed during hardening");
+      }
+    }
+
     handle = await open(entry.path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
     const opened = await handle.stat();
     const afterOpen = await lstat(entry.path);
@@ -864,12 +907,38 @@ async function hardenPrivateTreeEntry(entry: PrivateTreeEntry): Promise<void> {
     ) {
       throw new Error("private user-state entry changed during hardening");
     }
-    await handle.chmod(entry.kind === "directory" ? DIR_MODE : FILE_MODE);
+
+    for (let index = directoryChain.length - 1; index >= 0; index -= 1) {
+      const directory = directoryChain[index]!;
+      const expected = directoryIdentities.get(directory)!;
+      const named = await lstat(directory);
+      const openedDirectory = await directoryHandles[index]!.stat();
+      if (
+        named.isSymbolicLink()
+        || !named.isDirectory()
+        || !openedDirectory.isDirectory()
+        || !sameFileIdentity(expected, named)
+        || !sameFileIdentity(expected, openedDirectory)
+      ) {
+        throw new Error("private user-state entry changed during hardening");
+      }
+    }
+    const immediatelyBefore = await lstat(entry.path);
+    if (
+      immediatelyBefore.isSymbolicLink()
+      || !sameFileIdentity(entry.identity, immediatelyBefore)
+    ) {
+      throw new Error("private user-state entry changed during hardening");
+    }
+    // Keep the last identity observation and the mutation in one event-loop turn; yielding here
+    // would reopen an avoidable in-process substitution window after the complete chain check.
+    fchmodSync(handle.fd, entry.kind === "directory" ? DIR_MODE : FILE_MODE);
   } catch (error) {
     if (error instanceof Error && error.message === "private user-state entry changed during hardening") throw error;
     throw new Error("private user-state entry changed during hardening", { cause: error });
   } finally {
     await handle?.close();
+    await Promise.all(directoryHandles.map(async (directoryHandle) => directoryHandle.close()));
   }
 }
 
@@ -897,9 +966,12 @@ export async function hardenUserState(
   const directories: PrivateTreeEntry[] = [];
   const files: PrivateTreeEntry[] = [];
   await inspectPrivateTree(root, directories, files);
+  const directoryIdentities = new Map(directories.map((entry) => [entry.path, entry.identity] as const));
   await hooks.afterInspect?.();
-  for (const file of files) await hardenPrivateTreeEntry(file);
-  for (const directory of directories.reverse()) await hardenPrivateTreeEntry(directory);
+  for (const file of files) await hardenPrivateTreeEntry(root, file, directoryIdentities);
+  for (const directory of directories.reverse()) {
+    await hardenPrivateTreeEntry(root, directory, directoryIdentities);
+  }
   const after = await inspectCanonicalUserStateRootDetail(input);
   if (after.state !== "ready" || after.hardening !== "hardened") throw new Error("private user-state hardening did not converge");
   return { schema_version: 1, operation: "harden-state", status: "hardened", changed: true, root: policy.displayRoot, next: { command: "superbee setup" } };

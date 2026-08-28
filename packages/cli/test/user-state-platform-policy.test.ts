@@ -165,6 +165,32 @@ test("hardening refuses a scanned file replaced by a symlink and does not chmod 
   }
 });
 
+test("hardening refuses an ancestor replaced by a symlink and does not chmod the moved tree", {
+  skip: process.platform === "win32" ? "POSIX descriptor hardening only" : false,
+}, async () => {
+  const home = await mkdtemp(join(tmpdir(), "superbee-harden-ancestor-race-"));
+  const movedRoot = join(home, "moved-state");
+  try {
+    const root = await ensureUserStateRoot(home);
+    const record = join(root, "catalog.json");
+    await writeFile(record, "{}\n", { mode: 0o644 });
+    await chmod(root, 0o755);
+
+    await assert.rejects(
+      hardenUserState(home, {
+        afterInspect: async () => {
+          await rename(root, movedRoot);
+          await symlink(movedRoot, root);
+        },
+      }),
+      /changed during hardening/,
+    );
+    assert.equal((await lstat(join(movedRoot, "catalog.json"))).mode & 0o777, 0o644);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("Windows containment ignores synthetic POSIX modes but still requires exact entry shape", () => {
   const environment = windows();
   assert.equal(privateStateEntryIsSafe(status("directory", 0o666, 99999), "directory", environment), true);
