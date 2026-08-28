@@ -24,7 +24,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -55,8 +56,8 @@ import {
 } from "../src/index.js";
 
 // Hermetic ambient env (detection's porcelain inherits process.env; neutralize host git config).
-process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_SYSTEM = process.platform === "win32" ? "NUL" : "/dev/null";
+process.env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_AUTHOR_NAME = "Channel Suite";
 process.env.GIT_AUTHOR_EMAIL = "channel@example.invalid";
@@ -134,8 +135,18 @@ test("matrix: stale worktree-side pointer (this repo's registration survives) â†
   try {
     // Break ONLY the worktree-side `.git` file; the registration under `<root>/.git/worktrees/`
     // still names the conventional path â€” the structural "ours, pointers stale" signal.
+    const worktreePointer = path.join(topo.a.board, ".git");
+    if (process.platform === "win32") {
+      execFileSync("attrib.exe", ["-R", worktreePointer]);
+      // Git for Windows can retain a deny-write attribute on its linked-worktree pointer even
+      // after `attrib -R`; replacing the file models the same stale pointer without depending on
+      // that host-specific open behavior.
+      await unlink(worktreePointer);
+    } else {
+      await chmod(worktreePointer, 0o666);
+    }
     await writeFile(
-      path.join(topo.a.board, ".git"),
+      worktreePointer,
       `gitdir: ${path.join(topo.dir, "nonexistent", ".git", "worktrees", BUNDLE_DIR)}\n`,
     );
     assertBranch(detectBoardChannel(topo.a.root, { remoteBoardState: probeMustNotRun }));
@@ -402,7 +413,7 @@ test("the injected probe replaces the real one and receives the repo top", async
     });
     // No board exists anywhere in this topology; the injected answer alone drove the JOIN row.
     assertBranch(d);
-    assert.equal(seen, topo.a.root);
+    assert.equal(path.normalize(seen!), path.normalize(topo.a.root));
   } finally {
     await topo.cleanup();
   }

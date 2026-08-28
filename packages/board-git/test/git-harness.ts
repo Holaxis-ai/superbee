@@ -41,8 +41,8 @@ const SCRUBBED_GIT_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"] as cons
 /** Baseline hermetic env applied to every git invocation (per-call overrides win). */
 const GIT_ENV_DEFAULTS: Readonly<Record<string, string>> = {
   // Neutralize host config so ~/.gitconfig can't leak identity/hooks/signing into a fixture.
-  GIT_CONFIG_SYSTEM: "/dev/null",
-  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_SYSTEM: process.platform === "win32" ? "NUL" : "/dev/null",
+  GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
   GIT_CONFIG_NOSYSTEM: "1",
   // No prompts, no interactive auth — matches the U1 spawn wrapper's invariants.
   GIT_TERMINAL_PROMPT: "0",
@@ -73,7 +73,7 @@ function gitEnv(overrides?: Record<string, string>): NodeJS.ProcessEnv {
  * a locked index). {@link git} is the throw-on-failure wrapper for the common case.
  */
 export function gitTry(cwd: string, args: string[], overrides?: Record<string, string>): GitResult {
-  const r = spawnSync("git", ["-C", cwd, ...args], {
+  const r = spawnSync("git", ["-C", cwd, "-c", "core.autocrlf=false", "-c", "core.eol=lf", ...args], {
     env: gitEnv(overrides),
     encoding: "utf8",
     timeout: 30_000,
@@ -129,7 +129,7 @@ export async function withNoGitIdentity<T>(fn: () => Promise<T> | T): Promise<T>
   const keys = [...NO_IDENTITY_ENV_VARS, "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"] as const;
   const saved = new Map<string, string | undefined>(keys.map((k) => [k, process.env[k]]));
   for (const k of NO_IDENTITY_ENV_VARS) delete process.env[k];
-  process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+  process.env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
   process.env.GIT_CONFIG_SYSTEM = noIdentitySystemConfigPath();
   // An ambient GIT_CONFIG_NOSYSTEM=1 makes git skip the system config file entirely — silently
   // defeating the forced useConfigOnly above and letting the OS-account guess back in on a dev
@@ -170,6 +170,16 @@ export interface TwoCloneTopology {
 export interface TopologyOptions {
   /** Provision each clone's board worktree (default true). Pass false to exercise U1's self-heal. */
   provision?: boolean;
+}
+
+/** Windows can retain short-lived Git/process handles after a fixture exits. Bound cleanup only. */
+function cleanupTopology(dir: string): Promise<void> {
+  return rm(dir, {
+    recursive: true,
+    force: true,
+    maxRetries: process.platform === "win32" ? 20 : 5,
+    retryDelay: process.platform === "win32" ? 150 : 100,
+  });
 }
 
 /**
@@ -248,7 +258,7 @@ export async function makeTwoCloneTopology(options: TopologyOptions = {}): Promi
     origin,
     a,
     b,
-    cleanup: () => rm(dir, { recursive: true, force: true }),
+    cleanup: () => cleanupTopology(dir),
   };
 }
 
@@ -288,7 +298,7 @@ export async function makeCommittedFolderTopology(
   git(dir, ["clone", "--no-local", origin, "B"]);
   const a: BoardRepo = { name: "A", root: path.join(dir, "A"), board: path.join(dir, "A", bundleDir) };
   const b: BoardRepo = { name: "B", root: path.join(dir, "B"), board: path.join(dir, "B", bundleDir) };
-  return { dir, origin, a, b, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { dir, origin, a, b, cleanup: () => cleanupTopology(dir) };
 }
 
 /**
@@ -320,7 +330,7 @@ export async function makeGreenfieldTopology(): Promise<TwoCloneTopology> {
   git(dir, ["clone", "--no-local", origin, "B"]);
   const a: BoardRepo = { name: "A", root: path.join(dir, "A"), board: path.join(dir, "A", BUNDLE_DIR) };
   const b: BoardRepo = { name: "B", root: path.join(dir, "B"), board: path.join(dir, "B", BUNDLE_DIR) };
-  return { dir, origin, a, b, cleanup: () => rm(dir, { recursive: true, force: true }) };
+  return { dir, origin, a, b, cleanup: () => cleanupTopology(dir) };
 }
 
 /**

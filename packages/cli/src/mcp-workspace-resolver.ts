@@ -4,7 +4,7 @@ import {
   type McpWorkspaceResolver,
 } from "@superbee/mcp-app";
 
-import { openBundle, resolveLocalBundleTarget } from "./bundle.js";
+import { openBundle, resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
 import { deriveBundleDisplayName } from "./bundle-name.js";
 import {
   listCatalogEntries,
@@ -76,8 +76,8 @@ export function createCatalogMcpWorkspaceResolver(
       const bundle = await open(entry.locator.path);
       const target = await resolveTarget(entry.locator.path);
       if (
-        bundle.root !== entry.locator.path ||
-        target.canonicalRoot !== entry.locator.path
+        !samePhysicalPath(bundle.root, entry.locator.path) ||
+        !samePhysicalPath(target.canonicalRoot, entry.locator.path)
       ) {
         throw new Error("workspace catalog target changed during selection");
       }

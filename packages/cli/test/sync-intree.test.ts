@@ -19,6 +19,7 @@ import { chmodSync, existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 import {
   sync,
@@ -58,18 +59,7 @@ const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 // ── scaffolding (the sync.test.ts house pattern) ──────────────────────────────
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
-  const originalHome = process.env.HOME;
-  const originalUserProfile = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  try {
-    return await run();
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = originalUserProfile;
-  }
+  return withIsolatedUserEnv(home, run);
 }
 
 function captureStdout(): { stdout: (s: string) => void; text: () => string } {

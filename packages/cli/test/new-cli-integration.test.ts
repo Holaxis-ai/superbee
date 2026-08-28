@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@superbee/core";
+import { shellArg } from "../src/invocation.js";
 
 const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 const T = "2026-07-01T00:00:00.000Z";
@@ -140,7 +141,20 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
     assert.match(missingProgress.stdout, /progress_status/);
     assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
-    assert.match(missingProgress.stdout, /new 'Task' --help --dir '/);
+    const renderedFixingCommand = /^  help: (.+)$/m.exec(missingProgress.stdout)?.[1];
+    assert.ok(renderedFixingCommand, `missing-field refusal carries a fixing command: ${missingProgress.stdout}`);
+    // TOON quotes scalars containing a Windows drive/path command; decode that presentation
+    // envelope before checking the command itself.
+    const fixingCommand = renderedFixingCommand!.startsWith('"')
+      ? JSON.parse(renderedFixingCommand!) as string
+      : renderedFixingCommand!;
+    const validTargets = [dir, realpathSync(dir)].map((target) =>
+      `new ${shellArg("Task")} --help --dir ${shellArg(target)}`
+    );
+    assert.ok(
+      validTargets.some((tail) => fixingCommand.endsWith(tail)),
+      `fixing command retains the requested physical target: ${fixingCommand}`,
+    );
 
     for (const duplicateFields of [
       ["--progress_status", "todo", "--superbee_progress_status", "done"],

@@ -5,6 +5,7 @@ import { chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } fro
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 import { fileURLToPath } from "node:url";
 
 import { CONVENTION_TYPE, initBundle, writeDoc } from "@superbee/core";
@@ -20,6 +21,7 @@ import { list } from "../src/commands/list.js";
 import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
 import { sync } from "../src/commands/sync.js";
 import { resolveBundleKey } from "@superbee/board-git";
+import { canonicalUserStateDir } from "../src/user-state.js";
 import { boardHead, git, gitTry, isMidRebase, makeCommittedFolderTopology, makeTwoCloneTopology, wedgeMidRebase } from "../../board-git/test/git-harness.js";
 
 const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
@@ -35,14 +37,7 @@ async function inDir<T>(dir: string, run: () => Promise<T>): Promise<T> {
 }
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
-  const prior = process.env.HOME;
-  process.env.HOME = home;
-  try {
-    return await run();
-  } finally {
-    if (prior === undefined) delete process.env.HOME;
-    else process.env.HOME = prior;
-  }
+  return withIsolatedUserEnv(home, run);
 }
 
 test("bound-owner route table classifies real Git and ordinary binding topologies without basename authority", async () => {
@@ -275,7 +270,7 @@ test("a binding symlink to private state rejects from its canonical target", asy
   const homeDir = path.join(temp, "home");
   try {
     const project = path.join(temp, "project");
-    const privateTarget = path.join(homeDir, ".superbee-state", "opaque");
+    const privateTarget = path.join(canonicalUserStateDir(homeDir), "opaque");
     const alias = path.join(temp, "private-alias");
     await mkdir(project);
     await mkdir(privateTarget, { recursive: true });

@@ -34,7 +34,11 @@ import {
 } from "../src/filesystem-identity.js";
 import { opOf, ScriptedPort } from "./scripted-identity-port.js";
 
-const ROOT = "/root";
+const HOST_ROOT = path.parse(process.cwd()).root;
+const ROOT = path.resolve(HOST_ROOT, "root");
+const BASE = path.resolve(HOST_ROOT, "base");
+const NO_LINK = path.resolve(HOST_ROOT, "nolink");
+const HAS_LINK = path.resolve(HOST_ROOT, "haslink");
 const CONCEPTS = path.join(ROOT, "concepts");
 const REL = "concepts/x.md";
 const TARGET = path.join(ROOT, REL);
@@ -592,6 +596,168 @@ test("AC-4: an existing leaf is read for CAS before mkdir/write, replaced by ren
   assert.equal(port.openCount, 0);
 });
 
+test("AC-4: Windows existing-leaf replacement maps sharing failures to a fresh-attempt conflict", async () => {
+  for (const code of ["EACCES", "EBUSY", "EPERM"]) {
+    const port = new ScriptedPort({ platform: "win32" });
+    port.file(TARGET, "old", 9);
+    port.override("rename", async () => {
+      throw Object.assign(new Error(code), { code });
+    });
+
+    await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+    assert.equal(port.ops("rename").length, 1, code);
+    assert.equal(port.node(TARGET)?.bytes.toString(), "old");
+    assert.equal(port.ops("unlink").length, 1, "the failed attempt removes its own temporary file");
+  }
+});
+
+test("AC-4: Windows sharing failure cannot overwrite through a concurrently respelled parent", async () => {
+  const port = new ScriptedPort({ platform: "win32", aliasing: true });
+  port.file(TARGET, "old", 9);
+  const respelledTarget = path.join(ROOT, "Concepts", "x.md");
+  port.override("rename", async () => {
+    port.respell(CONCEPTS, "Concepts");
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "the current attempt never retries rename");
+  assert.equal(port.node(respelledTarget)?.bytes.toString(), "old");
+  assert.deepEqual(
+    [...port.node(path.dirname(respelledTarget))!.children.keys()],
+    ["x.md"],
+    "the failed attempt cleans its own temp through the host-equated parent spelling",
+  );
+});
+
+test("AC-4: Windows sharing failure cannot overwrite a replacement parent that reuses the leaf witness", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    port.remove(CONCEPTS);
+    port.file(TARGET, "external", 9);
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "a matching leaf inode cannot authorize a retry through a new parent");
+  assert.equal(port.node(TARGET)?.bytes.toString(), "external");
+  assert.deepEqual([...port.node(CONCEPTS)!.children.keys()], ["x.md"], "no temp is left in the replacement parent");
+});
+
+test("AC-4: Windows sharing failure preserves a newer exact-leaf generation", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  let first = true;
+  port.override("rename", async (_args, base) => {
+    if (first) {
+      first = false;
+      port.file(TARGET, "external", 10);
+      throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    }
+    return base();
+  });
+
+  await assert.rejects(
+    () => mutateExact(port, ROOT, REL, casWrite("old")),
+    ConcurrentReplacementError,
+  );
+  assert.equal(port.ops("rename").length, 1, "the changed witness is rejected before a retrying rename");
+  assert.equal(port.node(TARGET)?.ino, 10);
+  assert.equal(port.node(TARGET)?.bytes.toString(), "external");
+  assert.equal(port.ops("unlink").length, 1, "the refused writer removes only its own temporary file");
+});
+
+test("AC-4: Windows sharing failure preserves a leaf changed after the last possible witness validation", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+  port.after("writeTemp", 1, () => port.file(TARGET, "external-after-validation", 10));
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "there is no check-then-rename retry window");
+  assert.equal(port.node(TARGET)?.bytes.toString(), "external-after-validation");
+  assert.equal(port.ops("unlink").length, 1, "the failed attempt removes its own temporary file");
+});
+
+test("AC-4: Windows sharing failure preserves removal of the original witness", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    port.remove(TARGET);
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1);
+  assert.equal(port.node(TARGET), null);
+});
+
+test("AC-4: Windows sharing failure preserves an externally respelled original witness for fresh reclassification", async () => {
+  const port = new ScriptedPort({ platform: "win32", aliasing: true });
+  port.file(TARGET, "old", 9);
+  const alias = path.join(path.dirname(TARGET), "X.md");
+  port.override("rename", async () => {
+    port.respell(TARGET, "X.md");
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1);
+  assert.equal(port.node(alias)?.ino, 9);
+  assert.equal(port.node(alias)?.bytes.toString(), "old");
+});
+
+test("AC-4: Windows existing-leaf replacement does not retry unrelated rename errors", async () => {
+  for (const code of ["EEXIST", "EIO", "ENOENT"]) {
+    const port = new ScriptedPort({ platform: "win32" });
+    port.file(TARGET, "old", 9);
+    port.override("rename", async () => {
+      throw Object.assign(new Error(code), { code });
+    });
+    await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code });
+    assert.equal(port.ops("rename").length, 1, code);
+  }
+});
+
+test("AC-4: replacement sharing errors are not retried on POSIX hosts", async () => {
+  const port = new ScriptedPort({ platform: "linux" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code: "EBUSY" });
+  assert.equal(port.ops("rename").length, 1);
+});
+
+test("AC-4: Windows first-creation rename fallback is not treated as an existing-leaf replacement", async () => {
+  const root = path.resolve(HOST_ROOT, "windows-nolink");
+  const port = new ScriptedPort({ platform: "win32" });
+  port.mkdirp(path.join(root, "concepts"));
+  port.override("link", async () => "unsupported");
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, root, REL, casWrite(null)), { code: "EBUSY" });
+  assert.equal(port.ops("rename").length, 1);
+});
+
+test("AC-4: Windows existing-leaf replacement does not consume a private rename retry budget", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "the owning read/decide/CAS loop owns retry bounds");
+  assert.equal(port.node(TARGET)?.bytes.toString(), "old");
+});
+
 test("AC-4: ALIASED at the walk is claim, walk, release with no write-class call", async () => {
   const port = new ScriptedPort({ aliasing: true });
   port.file(path.join(ROOT, "concepts/X.md"), "canonical");
@@ -687,22 +853,22 @@ test("AC-4: a first creation whose link hits EEXIST with the exact spelling list
 
 test("F1: a filesystem without hard links falls back to rename for first creation, learned once per root, with no probe file", async () => {
   const port = new ScriptedPort();
-  port.mkdirp("/nolink/concepts");
+  port.mkdirp(path.join(NO_LINK, "concepts"));
   port.override("link", async () => "unsupported");
-  assert.equal(await mutateExact(port, "/nolink", REL, casWrite(null)), "written");
+  assert.equal(await mutateExact(port, NO_LINK, REL, casWrite(null)), "written");
   assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "rename"]);
-  assert.equal(port.node("/nolink/concepts/x.md")?.bytes.toString(), "new");
-  assert.deepEqual([...port.node("/nolink/concepts")!.children.keys()], ["x.md"], "no probe or temp file remains");
+  assert.equal(port.node(path.join(NO_LINK, "concepts/x.md"))?.bytes.toString(), "new");
+  assert.deepEqual([...port.node(path.join(NO_LINK, "concepts"))!.children.keys()], ["x.md"], "no probe or temp file remains");
 
   port.trace.length = 0;
-  assert.equal(await mutateExact(port, "/nolink", "concepts/y.md", casWrite(null)), "written");
+  assert.equal(await mutateExact(port, NO_LINK, "concepts/y.md", casWrite(null)), "written");
   assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "rename"], "the root is remembered; no second link attempt");
 
   // Another root is unaffected by the first root's answer.
-  port.mkdirp("/haslink/concepts");
+  port.mkdirp(path.join(HAS_LINK, "concepts"));
   port.override("link", async (args, base) => base());
   port.trace.length = 0;
-  assert.equal(await mutateExact(port, "/haslink", REL, casWrite(null)), "written");
+  assert.equal(await mutateExact(port, HAS_LINK, REL, casWrite(null)), "written");
   assert.deepEqual(port.ops("writeTemp", "link", "rename", "unlink").map(opOf), ["writeTemp", "link", "unlink"]);
 });
 
@@ -782,26 +948,35 @@ test("AC-14 variant: a rel segment that is a regular file at the walk is a typed
 
 test("AC-14 tail variant: a root segment that exists under another spelling is accepted", async () => {
   const port = new ScriptedPort({ aliasing: true });
-  port.mkdirp("/base/mybundle");
+  port.mkdirp(path.join(BASE, "mybundle"));
   let raced = false;
   port.override("probe", async ([target], base) => {
-    if (target === "/base/MyBundle" && !raced) return null;
+    if (target === path.join(BASE, "MyBundle") && !raced) return null;
     return base();
   });
   port.override("mkdir", async ([dir], base) => {
-    if (dir === "/base/MyBundle") raced = true;
+    if (dir === path.join(BASE, "MyBundle")) raced = true;
     return base();
   });
-  assert.equal(await mutateExact(port, "/base/MyBundle", REL, casWrite(null)), "written");
-  assert.deepEqual(port.ops("mkdir"), ["mkdir(/base/MyBundle)", "mkdir(/base/MyBundle/concepts)"]);
-  assert.equal(port.node("/base/mybundle/concepts/x.md")?.bytes.toString(), "new");
+  const requestedRoot = path.join(BASE, "MyBundle");
+  assert.equal(await mutateExact(port, requestedRoot, REL, casWrite(null)), "written");
+  assert.deepEqual(port.ops("mkdir"), [
+    `mkdir(${requestedRoot})`,
+    `mkdir(${path.join(requestedRoot, "concepts")})`,
+  ]);
+  assert.equal(port.node(path.join(BASE, "mybundle/concepts/x.md"))?.bytes.toString(), "new");
 });
 
 test("AC-14 tail variant: an absent multi-level root is created root-first before rel segments", async () => {
   const port = new ScriptedPort();
-  port.mkdirp("/base");
-  assert.equal(await mutateExact(port, "/base/a/b", REL, casWrite(null)), "written");
-  assert.deepEqual(port.ops("mkdir"), ["mkdir(/base/a)", "mkdir(/base/a/b)", "mkdir(/base/a/b/concepts)"]);
+  port.mkdirp(BASE);
+  const nestedRoot = path.join(BASE, "a", "b");
+  assert.equal(await mutateExact(port, nestedRoot, REL, casWrite(null)), "written");
+  assert.deepEqual(port.ops("mkdir"), [
+    `mkdir(${path.join(BASE, "a")})`,
+    `mkdir(${nestedRoot})`,
+    `mkdir(${path.join(nestedRoot, "concepts")})`,
+  ]);
 });
 
 // ── AC-5 key purity and stability ─────────────────────────────────────────────
@@ -949,7 +1124,9 @@ test("AC-5 row 3: every C and F entry of the checked-in Unicode CaseFolding tabl
   assert.deepEqual(failures, []);
 });
 
-test("AC-5: fold digest over the checked-in spelling list is pinned", async () => {
+test("AC-5: fold digest over the checked-in spelling list is pinned", {
+  skip: process.platform === "win32" ? "the historical digest pins POSIX absolute-root spelling" : false,
+}, async () => {
   assert.equal(DIGEST_SPELLINGS.length, 50);
   const digest = createHash("sha256");
   for (const [root, rel] of DIGEST_SPELLINGS) digest.update(`${await identityKey(root, rel)}\n`);

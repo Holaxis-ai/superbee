@@ -30,12 +30,24 @@
  * re-splicing field lists would not prove that the convention still governs the kind being edited.
  */
 
+import { setTimeout as delay } from "node:timers/promises";
+
 import { ConcurrentReplacementError } from "./errors.js";
 import { VersionConflict } from "./versioning.js";
 import type { Version } from "./types.js";
 
 /** Bounded compare-and-swap retry budget for a {@link versionedMutation} call, unless overridden. */
 const CAS_MAX_ATTEMPTS = 5;
+
+/**
+ * Honor a host-provided transient-contention hint between complete attempts. The attempt-indexed
+ * growth restores useful Windows sharing-violation tolerance without ever retrying the unsafe
+ * rename itself; ordinary observation replacement has no delay hint and retries immediately.
+ */
+async function waitForFreshAttempt(error: ConcurrentReplacementError, attempt: number): Promise<void> {
+  if (error.retryAfterMs <= 0) return;
+  await delay(error.retryAfterMs * (4 ** attempt));
+}
 
 /**
  * What {@link VersionedMutationOptions.decide} resolves a single attempt to: either commit
@@ -81,8 +93,9 @@ export interface VersionedMutationOutcome<R> {
  * attempt's own version; (5) a `VersionConflict` retries (fresh read, fresh decide) while
  * budget remains, else the final `VersionConflict` is RETHROWN unchanged — callers map it
  * to their own conflict shape (e.g. `STALE_HEAD`, exit 5); (6) a `ConcurrentReplacementError`
- * from `read` (the filesystem adapter saw the document replaced on every bounded re-read) is the
- * same contention in read-phase clothing and retries on the SAME attempt budget, so
+ * from `read` or `write` (the filesystem adapter could not bind the attempt to one safe entry) is
+ * the same contention in filesystem clothing and retries the COMPLETE fresh read/decide/CAS cycle
+ * on the SAME attempt budget, so
  * `maxAttempts: 1` makes it terminal too; (7) any other thrown error is terminal and propagates
  * unchanged.
  */
@@ -95,7 +108,10 @@ export async function versionedMutation<S, R>(
     try {
       fresh = await opts.read();
     } catch (err) {
-      if (err instanceof ConcurrentReplacementError && attempt < maxAttempts - 1) continue;
+      if (err instanceof ConcurrentReplacementError && attempt < maxAttempts - 1) {
+        await waitForFreshAttempt(err, attempt);
+        continue;
+      }
       throw err;
     }
     const { state, version } = fresh;
@@ -108,6 +124,10 @@ export async function versionedMutation<S, R>(
       return { result: decision.result, version: newVersion, wrote: true };
     } catch (err) {
       if (err instanceof VersionConflict && attempt < maxAttempts - 1) continue;
+      if (err instanceof ConcurrentReplacementError && attempt < maxAttempts - 1) {
+        await waitForFreshAttempt(err, attempt);
+        continue;
+      }
       throw err;
     }
   }

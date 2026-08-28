@@ -1,9 +1,9 @@
 import os from "node:os";
 import path from "node:path";
 
-/** npm-style name-vs-path disambiguation: a separator or leading `~` addresses a path. */
+/** npm-style name-vs-path disambiguation: a native separator or leading `~` addresses a path. */
 export function looksLikeRecipePath(ref: string): boolean {
-  return ref.includes("/") || ref.startsWith("~");
+  return path.isAbsolute(ref) || ref.includes("/") || ref.includes("\\") || ref.startsWith("~");
 }
 
 export function expandRecipePath(ref: string): string {

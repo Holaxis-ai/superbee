@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -10,11 +10,12 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 function readProjectFile(relativePath: string): string {
   const absolute = resolve(repoRoot, relativePath);
+  const withinRepo = relative(repoRoot, absolute);
   assert.ok(
-    absolute === repoRoot || absolute.startsWith(`${repoRoot}/`),
+    withinRepo === "" || (!withinRepo.startsWith("..") && !isAbsolute(withinRepo)),
     `contract evidence must stay inside the repository: ${relativePath}`,
   );
-  return readFileSync(absolute, "utf8");
+  return readFileSync(absolute, "utf8").replaceAll("\r\n", "\n");
 }
 
 function tableCells(line: string): string[] {

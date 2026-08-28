@@ -15,6 +15,7 @@ import { execFileSync, fork, spawnSync, type ChildProcess } from "node:child_pro
 import { EventEmitter } from "node:events";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import {
   UPDATE_CACHE_MAX_BYTES,
@@ -110,6 +111,13 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
     "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
 })}\n`;
 
+const PLATFORM_HOME_BASELINE_TOON = process.platform === "win32"
+  ? HOME_BASELINE_TOON.replaceAll("--dir '.superbee'", "--dir .superbee")
+  : HOME_BASELINE_TOON;
+const PLATFORM_HOME_BASELINE_JSON = process.platform === "win32"
+  ? HOME_BASELINE_JSON.replaceAll("--dir '.superbee'", "--dir .superbee")
+  : HOME_BASELINE_JSON;
+
 function successfulCheck(
   status: "current" | "deprecated" | "successor_not_ready" | "upgrade_available" | "rollback_available" =
     "upgrade_available",
@@ -186,7 +194,7 @@ function startConcurrencyFixture(input: {
   token: string;
 }): ChildProcess {
   return fork(CONCURRENCY_FIXTURE, [], {
-    execArgv: ["--import", TEST_LOADER],
+    execArgv: ["--import", pathToFileURL(TEST_LOADER).href],
     env: {
       ...process.env,
       ASLITE_TEST_HOME: input.home,
@@ -775,8 +783,8 @@ test("home bytes stay exact and notice is one five-field block immediately after
     identity: () => ({ version: "0.1.0-pre.3", channel: "local-dev" as const }),
   };
   const baseline = buildHomeView(deps, null);
-  assert.equal(render(baseline, "default"), HOME_BASELINE_TOON);
-  assert.equal(render(baseline, "json"), HOME_BASELINE_JSON);
+  assert.equal(render(baseline, "default"), PLATFORM_HOME_BASELINE_TOON);
+  assert.equal(render(baseline, "json"), PLATFORM_HOME_BASELINE_JSON);
 
   const notice = projectUpdateNotice(successfulCheck())!;
   const withNotice = buildHomeView(
@@ -910,7 +918,7 @@ test("built JSON and suppressed default routes perform zero update-state work", 
           CI: undefined,
         },
         encoding: "utf8",
-        timeout: 3_000,
+        timeout: process.platform === "win32" ? 10_000 : 3_000,
       });
       assert.equal(result.status, 0, `${argv.join(" ")} stderr=${result.stderr}`);
       assert.equal(result.stderr, "");

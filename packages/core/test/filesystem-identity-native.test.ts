@@ -35,6 +35,23 @@ const hostAliasing = (): Promise<HostAliasing> => (hostAliasingPromise ??= detec
 /** Does this host equate the two spellings this row writes? Never branch on the aggregate class. */
 const aliasesPair = async (first: string, second: string): Promise<boolean> =>
   hostAliasesPair(await hostAliasing(), first, second);
+
+/** Measure an arbitrary native pair directly; Windows does not implement full Unicode folding. */
+async function nativeAliasesPair(first: string, second: string): Promise<boolean> {
+  const root = await tempRoot("pair-probe");
+  const firstPath = path.join(root, `${first}.md`);
+  const secondPath = path.join(root, `${second}.md`);
+  try {
+    await mkdir(path.dirname(firstPath), { recursive: true });
+    await writeFile(firstPath, "probe");
+    return await lstat(secondPath).then(() => true, (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
 const backend = (root: string): FilesystemBackend => new FilesystemBackend(root);
 
 async function tempRoot(prefix: string): Promise<string> {
@@ -343,7 +360,7 @@ test("AC-15b (cond): concurrent first creation of a full-case-folding pair never
   for (const [first, second] of pairs) {
     // Per pair, not per suite: these are case pairs, and a case-sensitive host equates none of
     // them however it treats normalization.
-    const aliasing = await aliasesPair(first, second);
+    const aliasing = await nativeAliasesPair(first, second);
     for (let round = 0; round < AC_15B_ROUNDS; round++) {
       const root = await tempRoot(`fold-race-${round}`);
       try {
@@ -677,7 +694,9 @@ test("I6 (native): a directory replaced under its own spelling after the first v
   }
 });
 
-test("I6 (native, cond): a directory replaced between the read and the post-walk restarts even when the leaf inode survives", async () => {
+test("I6 (native, cond): a directory replaced between the read and the post-walk restarts even when the leaf inode survives", {
+  skip: process.platform === "win32" ? "Win32 cannot rename a directory while its leaf handle is open; the scripted contract covers this interleaving" : false,
+}, async () => {
   const parent = await tempRoot("i6-postread-swap");
   const root = path.join(parent, "bundle");
   const concepts = path.join(root, "concepts");

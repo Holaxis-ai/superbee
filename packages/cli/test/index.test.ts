@@ -13,6 +13,7 @@ import { indexCommand } from "../src/commands/index.js";
 import { SKILL_COMMAND_RESOURCES } from "../src/distribution-resources.js";
 import { CliError } from "../src/errors.js";
 import { COMMAND_GROUPS } from "../src/reference.js";
+import { shellArg } from "../src/invocation.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliBin = path.resolve(here, "../dist/superbee.mjs");
@@ -236,7 +237,7 @@ test("recovery commands shell-quote explicit dirs and preserve force after an ad
     const curated = "---\nokf_version: '0.1'\n---\n# Curated\n";
     await writeFile(path.join(scratch.root, "index.md"), curated);
     const preview = await expectConflict(["generate", "--check", "--force", "--dir", scratch.root]);
-    const quoted = `'${scratch.root.replaceAll("'", "'\\''")}'`;
+    const quoted = shellArg(scratch.root);
     assert.match(preview.help ?? "", /index generate --force --dir /);
     assert.ok(preview.help?.endsWith(quoted), `expected a shell-safe quoted path, got: ${preview.help}`);
     assert.equal(await readFile(path.join(scratch.root, "index.md"), "utf8"), curated, "preview remains read-only");

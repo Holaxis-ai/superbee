@@ -4,7 +4,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { FilesystemBackend } from "../src/backend.js";
 import { identityKey } from "../src/filesystem-identity.js";
@@ -77,12 +77,16 @@ function spawnCasChild(
   body: string,
   tmpdirOverride?: string,
 ): ChildHarness {
-  const child = spawn(process.execPath, ["--import", LOADER, CAS_CHILD, root, expectedVersion, body], {
+  const child = spawn(
+    process.execPath,
+    ["--import", pathToFileURL(LOADER).href, CAS_CHILD, root, expectedVersion, body],
+    {
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     env: tmpdirOverride
       ? { ...process.env, TMPDIR: tmpdirOverride, TMP: tmpdirOverride, TEMP: tmpdirOverride }
       : process.env,
-  });
+    },
+  );
   let resultSeen = false;
   let resolveAttempting!: () => void;
   let resolveResult!: (value: Record<string, unknown>) => void;
@@ -134,9 +138,11 @@ test("filesystem mutation lock uses private external runtime state and removes i
 
     assert.equal(path.dirname(lockPath), filesystemMutationLockRoot());
     assert.ok(path.relative(root, lockPath).startsWith(".."), "runtime lock must be outside the bundle");
-    assert.equal((await fs.stat(filesystemMutationLockRoot())).mode & 0o777, 0o700);
-    assert.equal((await fs.stat(lockPath)).mode & 0o777, 0o700);
-    assert.equal((await fs.stat(path.join(lockPath, "owner.json"))).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal((await fs.stat(filesystemMutationLockRoot())).mode & 0o777, 0o700);
+      assert.equal((await fs.stat(lockPath)).mode & 0o777, 0o700);
+      assert.equal((await fs.stat(path.join(lockPath, "owner.json"))).mode & 0o777, 0o600);
+    }
     const owner = JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")) as {
       pid: number;
       hostname: string;
@@ -618,7 +624,9 @@ test("an explicit lock root isolates runtime state while preserving the portable
     const entries = await fs.readdir(harness.lockRoot);
     assert.equal(entries.length, 1);
     assert.match(entries[0]!, /^[a-f0-9]{64}\.lock$/);
-    assert.equal((await fs.stat(harness.lockRoot)).mode & 0o777, 0o700);
+    if (process.platform !== "win32") {
+      assert.equal((await fs.stat(harness.lockRoot)).mode & 0o777, 0o700);
+    }
     await release();
     assert.deepEqual(await fs.readdir(harness.lockRoot), []);
 

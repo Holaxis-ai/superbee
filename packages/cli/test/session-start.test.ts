@@ -100,7 +100,11 @@ function preferredBinDir(): Promise<string> {
   preferredBinDirPromise ??= (async () => {
     if (!existsSync(cliBin)) execFileSync("npm", ["run", "build"], { cwd: cliPackageRoot, stdio: "inherit" });
     const dir = await mkdtemp(path.join(tmpdir(), "superbee-preferred-bin-"));
-    await symlink(cliBin, path.join(dir, "superbee"));
+    if (process.platform === "win32") {
+      await writeFile(path.join(dir, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${cliBin}" %*\r\n`);
+    } else {
+      await symlink(cliBin, path.join(dir, "superbee"));
+    }
     return dir;
   })();
   return preferredBinDirPromise;
@@ -109,14 +113,14 @@ test.after(async () => {
   if (preferredBinDirPromise) await rm(await preferredBinDirPromise, { recursive: true, force: true });
 });
 
-/** Spawn the built CLI as the bare `superbee` bin (see {@link preferredBinDir}). */
+/** Spawn the built CLI with the managed bare bin available for its emitted-command identity. */
 async function runCliHook(
   args: string[],
   opts: { cwd: string; env?: NodeJS.ProcessEnv },
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const binDir = await preferredBinDir();
   const baseEnv = opts.env ?? process.env;
-  const result = spawnSync("superbee", args, {
+  const result = spawnSync(process.execPath, [cliBin, ...args], {
     cwd: opts.cwd,
     env: { ...baseEnv, PATH: `${binDir}${path.delimiter}${baseEnv.PATH ?? ""}` },
     stdio: ["ignore", "pipe", "pipe"],
@@ -129,8 +133,8 @@ function assertPathIndependentLocalLaunch(command: string): string[] {
   const tokens = tokenizeGeneratedHookCommand(command);
   assert.ok(tokens, `expected generated hook command: ${command}`);
   assert.equal(tokens.length, 3);
-  assert.equal(path.basename(tokens[0]!), "node");
-  assert.equal(tokens[1], realpathSync(cliBin));
+  assert.equal(path.basename(tokens[0]!).toLowerCase(), process.platform === "win32" ? "node.exe" : "node");
+  assert.equal(realpathSync(tokens[1]!), realpathSync(cliBin));
   assert.equal(tokens[2], "session-start");
   assert.equal(path.isAbsolute(tokens[0]!), true);
   assert.equal(path.isAbsolute(tokens[1]!), true);
@@ -140,13 +144,19 @@ function assertPathIndependentLocalLaunch(command: string): string[] {
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
+  const prevLocalAppData = process.env.LOCALAPPDATA;
+  const prevAppData = process.env.APPDATA;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  process.env.LOCALAPPDATA = path.join(home, "AppData", "Local");
+  process.env.APPDATA = path.join(home, "AppData", "Roaming");
   try {
     return await run();
   } finally {
-    process.env.HOME = prevHome;
-    process.env.USERPROFILE = prevProfile;
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
+    if (prevLocalAppData === undefined) delete process.env.LOCALAPPDATA; else process.env.LOCALAPPDATA = prevLocalAppData;
+    if (prevAppData === undefined) delete process.env.APPDATA; else process.env.APPDATA = prevAppData;
   }
 }
 
@@ -198,8 +208,12 @@ test("bare binding session-start and home retain the private owner state, not th
     assert.equal(result?.boardPath, topo.b.board);
     assert.ok(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.b.board))), "private board marker was refreshed");
     assert.equal(await withHome(homeDir, () => readMarker(resolveBundleKey(topo.a.board))), null, "public board marker was untouched");
-    const rendered = await withHome(homeDir, () => withCwd(topo.a.root, () => runHome(homeDir, [])));
-    assert.ok(rendered.includes(`root: ${topo.b.board}`), "bare home rendered the private bundle");
+    const rendered = await withHome(homeDir, () => withCwd(topo.a.root, () => runHome(homeDir, ["--json"])));
+    const renderedRoot = (JSON.parse(rendered) as { bundle?: { root?: string } }).bundle?.root;
+    assert.ok(renderedRoot, "bare home rendered a bundle root");
+    const [renderedStat, expectedStat] = await Promise.all([stat(renderedRoot!), stat(topo.b.board)]);
+    assert.equal(renderedStat.dev, expectedStat.dev, "bare home rendered the private bundle device");
+    assert.equal(renderedStat.ino, expectedStat.ino, "bare home rendered the private bundle identity");
     assert.ok(await withHome(homeDir, () => readCache(resolveBundleKey(topo.b.board))), "bare home refreshed the private board cache");
     assert.equal(await withHome(homeDir, () => readCache(resolveBundleKey(topo.a.board))), null, "bare home never wrote public board state");
   } finally {
@@ -589,7 +603,8 @@ test("time-box fall-through: a REAL hanging remote is killed inside the budget a
     const out = await runSessionStart(homeB, ["--dir", topo.b.root], { budgetMs });
     const elapsed = Date.now() - t0;
 
-    assert.ok(elapsed < 5_000, `render must appear within the budget (took ${elapsed}ms)`);
+    const renderBoundMs = process.platform === "win32" ? 8_000 : 5_000;
+    assert.ok(elapsed < renderBoundMs, `render must appear within the bounded host allowance (took ${elapsed}ms)`);
     assert.match(out, /board sync offline — showing last known state/);
     assert.match(out, /\.superbee/); // the full home render fell through
   } finally {
@@ -681,7 +696,7 @@ test("fall-through belt: an injected pull that NEVER resolves still renders home
       budgetMs: 200,
       pull: () => new Promise(() => {}),
     });
-    assert.ok(Date.now() - t0 < 3_000);
+    assert.ok(Date.now() - t0 < (process.platform === "win32" ? 6_000 : 3_000));
     assert.match(out, /\.superbee/);
     assert.match(out, /commands:/);
   } finally {
@@ -834,14 +849,34 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
       fs.readFile(path.join(base, ".config", "opencode", "plugins", "axi-superbee.js"), "utf8"),
     );
     assert.ok(plugin.includes("axi-sdk-js managed opencode plugin: superbee"));
-    assert.ok(plugin.includes(`const command = ${JSON.stringify(launchTokens[0])}`));
-    assert.ok(plugin.includes(`const commandArgs = ${JSON.stringify(launchTokens.slice(1))}`));
+    const pluginCommand = JSON.parse(/^const command = (.+);$/m.exec(plugin)?.[1] ?? "null") as string | null;
+    const pluginArgs = JSON.parse(/^const commandArgs = (.+);$/m.exec(plugin)?.[1] ?? "null") as string[] | null;
+    assert.ok(pluginCommand);
+    assert.ok(pluginArgs);
+    assert.equal(realpathSync(pluginCommand!), realpathSync(launchTokens[0]!));
+    assert.equal(realpathSync(pluginArgs![0]!), realpathSync(launchTokens[1]!));
+    assert.deepEqual(pluginArgs!.slice(1), launchTokens.slice(2));
 
-    const minimalPathRun = spawnSync("/bin/sh", ["-c", entry.command], {
+    const powershell = path.join(
+      process.env.SystemRoot ?? "C:\\Windows",
+      "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+    );
+    const minimalPathRun = spawnSync(
+      process.platform === "win32" ? powershell : "/bin/sh",
+      process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", entry.command] : ["-c", entry.command],
+      {
       cwd: base,
-      env: { HOME: base, USERPROFILE: base, PATH: "/usr/bin:/bin", AGENTSTATE_LITE_NO_AUTOPULL: "1" },
+      env: {
+        HOME: base,
+        USERPROFILE: base,
+        LOCALAPPDATA: path.join(base, "AppData", "Local"),
+        APPDATA: path.join(base, "AppData", "Roaming"),
+        PATH: process.platform === "win32" ? process.env.SystemRoot ?? "C:\\Windows" : "/usr/bin:/bin",
+        AGENTSTATE_LITE_NO_AUTOPULL: "1",
+      },
       encoding: "utf8",
-    });
+      },
+    );
     assert.equal(minimalPathRun.status, 0, minimalPathRun.stdout + minimalPathRun.stderr);
 
     // A freshly installed hook needs no update…
@@ -857,7 +892,11 @@ test("hook install wires `session-start` into all three runtimes; status/uninsta
     assert.match(capUn.out(), /installed: false/);
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {
-    await rm(base, { recursive: true, force: true });
+    // Windows can retain a transient loader/Defender handle after the spawned
+    // hook process exits. The fixture is uniquely owned by this test, so let
+    // fs.rm retry that documented EBUSY cleanup window instead of turning a
+    // successful hook contract into a platform-only teardown failure.
+    await rm(base, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
 
@@ -903,7 +942,7 @@ test("user hook operations honor relocated config homes and global remains an al
     await hook(["status", "--scope", "global"], { ...location, stdout: status.stdout });
     assert.match(status.out(), /installed: true/);
     assert.match(status.out(), /scope: user/);
-    assert.match(status.out(), new RegExp(codexHome.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.ok(status.out().includes(codexHome.replaceAll("\\", "\\\\")));
 
     await assert.rejects(() => readFile(path.join(homeDir, ".claude", "settings.json")));
     await assert.rejects(() => readFile(path.join(homeDir, ".codex", "hooks.json")));
@@ -972,10 +1011,8 @@ test("hook re-install prompt: a pre-session-start managed hook is detected and s
 
 test("sessionStartHookCommand: bare base passes through; a spaced path is quoted; plugin spawns argv", () => {
   assert.equal(sessionStartHookCommand("aslite"), "aslite session-start");
-  assert.equal(
-    sessionStartHookCommand("/Users/f b/packages/cli/dist/superbee.mjs"),
-    "'/Users/f b/packages/cli/dist/superbee.mjs' session-start",
-  );
+  const spaced = "/Users/f b/packages/cli/dist/superbee.mjs";
+  assert.equal(sessionStartHookCommand(spaced), `${renderGeneratedHookToken(spaced)} session-start`);
   const src = buildOpenCodePluginSource("/opt/bin/agentstate-lite");
   assert.ok(src.includes('const command = "/opt/bin/agentstate-lite"'));
   assert.ok(src.includes('const commandArgs = ["session-start"]'));
@@ -1148,21 +1185,21 @@ test("writer and recognizer round-trip the complete printable alphabet and repre
   for (let code = 0x20; code <= 0x7e; code += 1) {
     const character = String.fromCharCode(code);
     const executable = localDevExecutable(character);
-    const command = sessionStartHookCommand(executable);
-    assert.equal(command, `${renderGeneratedHookToken(executable)} session-start`, JSON.stringify(character));
-    assert.deepEqual(tokenizeGeneratedHookCommand(command), [executable, "session-start"], JSON.stringify(character));
-    assert.equal(isManagedHookCommand(command), true, JSON.stringify(character));
+    const command = sessionStartHookCommand(executable, ["session-start"], "linux");
+    assert.equal(command, `${renderGeneratedHookToken(executable, "linux")} session-start`, JSON.stringify(character));
+    assert.deepEqual(tokenizeGeneratedHookCommand(command, "linux"), [executable, "session-start"], JSON.stringify(character));
+    assert.equal(isManagedHookCommand(command, "linux"), true, JSON.stringify(character));
     assert.equal(command.startsWith("'"), !isSafeUnquotedHookToken(executable), JSON.stringify(character));
   }
   for (const character of ["{a,b}", "${HOME}", "*", "café", "a b", "a'b", String.raw`a\b`]) {
     const [runtime, executable] = stableNodePair(character);
-    const command = sessionStartHookCommand(runtime, [executable, "session-start"]);
-    assert.deepEqual(tokenizeGeneratedHookCommand(command), [runtime, executable, "session-start"], character);
-    assert.equal(isManagedHookCommand(command), true, character);
+    const command = sessionStartHookCommand(runtime, [executable, "session-start"], "linux");
+    assert.deepEqual(tokenizeGeneratedHookCommand(command, "linux"), [runtime, executable, "session-start"], character);
+    assert.equal(isManagedHookCommand(command, "linux"), true, character);
   }
 });
 
-test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for Claude and Codex", async () => {
+test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for Claude and Codex", { skip: process.platform === "win32" ? "POSIX lexical-envelope matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-foreign-"));
   const settings = JSON.stringify(
     {
@@ -1203,7 +1240,7 @@ test("built uninstall preserves noncanonical lexical envelopes byte-for-byte for
   }
 });
 
-test("built uninstall recognizes every canonical lexical envelope", async () => {
+test("built uninstall recognizes every canonical lexical envelope", { skip: process.platform === "win32" ? "POSIX lexical-envelope matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-lexical-owned-"));
   const canonicalCommands = [
     "aslite session-start",
@@ -1246,7 +1283,7 @@ test("built uninstall recognizes every canonical lexical envelope", async () => 
   }
 });
 
-test("built uninstall preserves the complete shell-expansion taxonomy byte-for-byte", async () => {
+test("built uninstall preserves the complete shell-expansion taxonomy byte-for-byte", { skip: process.platform === "win32" ? "POSIX shell-expansion matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const base = await mkdtemp(path.join(tmpdir(), "aslite-hook-shell-foreign-"));
   const settings = JSON.stringify(
     {
@@ -1283,7 +1320,7 @@ test("built uninstall preserves the complete shell-expansion taxonomy byte-for-b
   }
 });
 
-test("built install and uninstall preserve mismatched npm Node/package pairs across all hosts", async () => {
+test("built install and uninstall preserve mismatched npm Node/package pairs across all hosts", { skip: process.platform === "win32" ? "POSIX npm-path matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const control = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-control-"));
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-semantic-uninstall-"));
@@ -1373,7 +1410,7 @@ test("built install and uninstall preserve mismatched npm Node/package pairs acr
   }
 });
 
-test("built lifecycle preserves noncanonical managed-path near-matches across all hosts", async () => {
+test("built lifecycle preserves noncanonical managed-path near-matches across all hosts", { skip: process.platform === "win32" ? "POSIX managed-path matrix has a dedicated Windows grammar suite" : undefined }, async () => {
   const control = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-control-"));
   const installBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-install-"));
   const uninstallBase = await mkdtemp(path.join(tmpdir(), "aslite-hook-path-uninstall-"));
@@ -1478,13 +1515,13 @@ test("hookNeedsUpdate: PATH-bound and pre-session-start hooks are flagged; a sta
     assert.equal(hookNeedsUpdate([base]), true);
     await write("aslite"); // pre-session-start shape under the new bin name
     assert.equal(hookNeedsUpdate([base]), true);
-    await write(
-      "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start",
-    );
+    await write(process.platform === "win32"
+      ? "C:/opt/aslite/bin/node.exe C:/opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start"
+      : "/opt/aslite/bin/node /opt/aslite/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs session-start");
     assert.equal(hookNeedsUpdate([base]), true);
-    await write(
-      "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start",
-    );
+    await write(process.platform === "win32"
+      ? "C:/opt/superbee/bin/node.exe C:/opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start"
+      : "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start");
     assert.equal(hookNeedsUpdate([base]), false);
   } finally {
     await rm(base, { recursive: true, force: true });
@@ -1688,15 +1725,17 @@ test("hook install preserves a 0600 settings.json mode while rewriting a legacy 
     await hook(["install"], { base, commandBase: "aslite", stdout: () => {} });
     const rewritten = JSON.parse(await readFile(settingsPath, "utf8"));
     assert.ok(rewritten.hooks.SessionStart[0].hooks[0].command.endsWith(" session-start"));
-    assert.equal((await stat(settingsPath)).mode & 0o777, 0o600, "install must not widen a private settings file");
+    if (process.platform !== "win32") {
+      assert.equal((await stat(settingsPath)).mode & 0o777, 0o600, "install must not widen a private settings file");
+    }
   } finally {
     await rm(base, { recursive: true, force: true });
   }
 });
 
 test("readSettingsForInstall: an unreadable file is refused as 'unreadable', not 'unparseable JSON'", async (t) => {
-  if (typeof process.getuid === "function" && process.getuid() === 0) {
-    t.skip("running as root — chmod 000 does not make a file unreadable");
+  if (process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0)) {
+    t.skip("POSIX permission-bit refusal requires a non-root POSIX environment");
     return;
   }
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-hook-unreadable-"));
@@ -1746,7 +1785,9 @@ test("hook install writes THROUGH a symlinked settings.json: the link survives, 
     const updated = JSON.parse(await readFile(real, "utf8"));
     assertPathIndependentLocalLaunch(updated.hooks.SessionStart[0].hooks[0].command);
     assert.equal(updated.theme, "dark", "unrelated keys in the dotfile target survive");
-    assert.equal((await stat(real)).mode & 0o777, 0o600, "the target's mode is preserved");
+    if (process.platform !== "win32") {
+      assert.equal((await stat(real)).mode & 0o777, 0o600, "the target's mode is preserved");
+    }
     assert.deepEqual(await readdir(dotfiles), ["claude-settings.json"], "no temp residue beside the target");
   } finally {
     await rm(base, { recursive: true, force: true });

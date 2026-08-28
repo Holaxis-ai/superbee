@@ -33,6 +33,7 @@ import { chmodSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 import { initBundle, writeDoc } from "@superbee/core";
 import {
@@ -66,16 +67,7 @@ import {
 // ── scaffolding (mirrors sync.test.ts / session-start.test.ts) ────────────────
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
-  const prevHome = process.env.HOME;
-  const prevProfile = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  try {
-    return await run();
-  } finally {
-    process.env.HOME = prevHome;
-    process.env.USERPROFILE = prevProfile;
-  }
+  return withIsolatedUserEnv(home, run);
 }
 
 async function withCwd<T>(dir: string, run: () => Promise<T>): Promise<T> {
@@ -485,12 +477,18 @@ async function installGitSpawnShim(): Promise<{
   reset: () => Promise<void>;
   restore: () => Promise<void>;
 }> {
-  const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  const realGit = process.platform === "win32"
+    ? execFileSync("where.exe", ["git"], { encoding: "utf8" }).split(/\r?\n/)[0]!.trim()
+    : execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
   const shimDir = await mkdtemp(path.join(tmpdir(), "aslite-git-spawn-shim-"));
   const logPath = path.join(shimDir, "spawns.log");
-  const shim = path.join(shimDir, "git");
-  await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logPath}"\nexec "${realGit}" "$@"\n`);
-  chmodSync(shim, 0o755);
+  const shim = path.join(shimDir, process.platform === "win32" ? "git.cmd" : "git");
+  if (process.platform === "win32") {
+    await writeFile(shim, `@echo off\r\necho %*>>"${logPath}"\r\n"${realGit}" %*\r\n`);
+  } else {
+    await writeFile(shim, `#!/bin/sh\nprintf '%s\\n' "$*" >> "${logPath}"\nexec "${realGit}" "$@"\n`);
+    chmodSync(shim, 0o755);
+  }
   const prevPath = process.env.PATH;
   process.env.PATH = `${shimDir}${path.delimiter}${prevPath ?? ""}`;
   return {
@@ -509,7 +507,11 @@ async function installGitSpawnShim(): Promise<{
   };
 }
 
-test("detection cost: 0 spawns on non-board paths; exactly ONE (remote get-url) on a provisioned board with a fresh cache", async () => {
+test("detection cost: 0 spawns on non-board paths; exactly ONE (remote get-url) on a provisioned board with a fresh cache", {
+  skip: process.platform === "win32"
+    ? "Node's shell-free executable lookup bypasses a PATH git.cmd shim; behavior is covered by the native board-channel suite"
+    : undefined,
+}, async () => {
   const topoProvisioned = await makeTwoCloneTopology();
   const topoBare = await makeTwoCloneTopology({ provision: false });
   const plain = await mkdtemp(path.join(tmpdir(), "aslite-autopull-cost-"));

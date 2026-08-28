@@ -19,6 +19,7 @@ import {
   assignmentIndex,
   validateBehaviorCoverage,
 } from "./arity-equivalence-matrix.js";
+import { isolatedUserEnv } from "./support/user-env.js";
 
 const CLI = resolve(import.meta.dirname, "../dist/superbee.mjs");
 const SURPLUS = "arity-surplus-sentinel";
@@ -153,7 +154,10 @@ function createFixture(): FixtureContext {
   const artifactFile = join(scratch, "artifact.html");
   mkdirSync(home);
   writeFileSync(artifactFile, "<!doctype html><title>arity</title>\n");
-  const env = { HOME: home, ASLITE_NO_UPDATE_CHECK: "1", AGENTSTATE_LITE_NO_AUTOPULL: "1" };
+  const env = isolatedUserEnv(home, {
+    ASLITE_NO_UPDATE_CHECK: "1",
+    AGENTSTATE_LITE_NO_AUTOPULL: "1",
+  });
   const setupCommands = [
     ["init", "--dir", bundle],
     ["recipe", "add", "work-tracking", "--dir", bundle],

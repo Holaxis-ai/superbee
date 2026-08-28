@@ -15,13 +15,10 @@ answer.
    decision, make it explicit and order it first.
 4. Build from the repository root. Use the root `./superbee` shim when exercising the freshly built
    CLI.
-5. Develop on macOS or Linux with Node.js 20 or newer. Windows is not a supported development or
-   runtime host: the private-state layer verifies its containment through POSIX file modes, Node
-   cannot verify that invariant on Windows because it reports synthesized mode bits there, the
-   published package declares `"os": ["!win32"]`, and no required CI lane runs there. Windows
-   support is tracked work; adding it means holding the same containment property through a per-user
-   `%LOCALAPPDATA%` location, which Windows ACLs enforce per user, and adding a windows-latest
-   lane - not relaxing the assertion.
+5. Develop with Node.js 20 or newer on macOS, Linux, or Windows. Windows private state lives under
+   `%LOCALAPPDATA%` and relies on that per-user known folder's ACL boundary; POSIX hosts additionally
+   verify private file modes. The required `windows-latest` lane runs every workspace test natively
+   and installs the packed CLI on Node 20.
 
 A fresh clone does not need an installed Agent Skill or a project bundle to build, test, or submit
 code. It does need the maintainer-supplied bundle or an exact scoped handoff to claim project
@@ -95,6 +92,7 @@ the same unit.
 | --- | --- | --- | --- |
 | runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
 | aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
+| windows | workflow only | `windows` | 22, 20 |
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
@@ -105,7 +103,7 @@ Minimum iteration lanes by reach:
 
 | Touched surface | Run at minimum |
 | --- | --- |
-| Package source or tests | `npm run ci:runtime` |
+| Package source or tests | `npm run ci:runtime` (native Windows behavior is gated in CI) |
 | `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
 | `packages/ui`, `packages/mcp-app`, or embedded browser code | `npm run ci:browser` |
 | Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts` |
@@ -113,13 +111,14 @@ Minimum iteration lanes by reach:
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
-add path skipping without a separately reviewed fail-closed classifier. CI runs on Linux plus
-the `aliasing-host` lane, which runs `npm run ci:aliasing-host` on macOS with
+add path skipping without a separately reviewed fail-closed classifier. CI runs on Linux, Windows,
+plus the `aliasing-host` lane, which runs `npm run ci:aliasing-host` on macOS with
 `SUPERBEE_TEST_EXPECT_ALIASING_HOST=1` (the Linux runtime jobs set `0`) so tests whose native
 branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. The lane's
 scope is a constraint, not a list: `scripts/aliasing-host-coverage.test.mjs` fails when a
-host-sensitive workspace test is not executed by the lane's script chain. Other
-platform-specific claims still need their own empirical probe.
+host-sensitive workspace test is not executed by the lane's script chain. The Windows lane runs the
+complete workspace contract on Node 22 and then installs and drives the exact packed npm artifact on
+Node 20; a Linux-only green result cannot substitute for it.
 
 ### Running checks
 

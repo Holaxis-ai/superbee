@@ -215,7 +215,9 @@ function adjacentPackageVersion(executablePath: string | null): string | null {
 function sameRealPath(left: string | undefined, right: string | null): boolean {
   if (!left || right === null) return false;
   try {
-    return realpathSync(left) === realpathSync(right);
+    const a = realpathSync(left);
+    const b = realpathSync(right);
+    return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
   } catch {
     return false;
   }

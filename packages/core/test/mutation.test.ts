@@ -220,7 +220,7 @@ test("maxAttempts: 1 makes a conflict TERMINAL — no retry even though a normal
   assert.equal(decides, 1);
 });
 
-// ── AC-19: read-phase ConcurrentReplacementError is the same contention, retried on the same budget ──
+// ── AC-19: ConcurrentReplacementError is the same contention in either I/O phase ──
 
 test("AC-19: a read that throws ConcurrentReplacementError twice then succeeds is retried; the mutation succeeds with two retries recorded", async () => {
   const store = new FakeStore();
@@ -292,4 +292,90 @@ test("AC-19: a read that throws ConcurrentReplacementError beyond the bound prop
       }),
     /disk on fire/,
   );
+});
+
+test("AC-19: a write-phase ConcurrentReplacementError reruns the complete fresh read and decision before converging", async () => {
+  const store = new FakeStore();
+  store.seed("a");
+  const reads: (string | undefined)[] = [];
+  const decisions: (string | undefined)[] = [];
+  let writes = 0;
+
+  const outcome = await versionedMutation<string, string>({
+    read: async () => {
+      const fresh = store.read();
+      reads.push(fresh.state);
+      return fresh;
+    },
+    decide: (state) => {
+      decisions.push(state);
+      return state === "a-mine"
+        ? { action: "done", result: "already-there" }
+        : { action: "write", next: "a-mine", result: "wrote" };
+    },
+    write: async () => {
+      writes++;
+      store.raceWrite("a-mine");
+      throw new ConcurrentReplacementError("concepts/a.md", 1);
+    },
+  });
+
+  assert.deepEqual(reads, ["a", "a-mine"]);
+  assert.deepEqual(decisions, ["a", "a-mine"], "the stale first decision is never reused");
+  assert.equal(writes, 1);
+  assert.equal(outcome.wrote, false);
+  assert.equal(outcome.result, "already-there");
+});
+
+test("AC-19: write-phase replacement contention shares the bounded attempt budget", async () => {
+  const thrown = new ConcurrentReplacementError("concepts/a.md", 1);
+  let reads = 0;
+  let decisions = 0;
+  let writes = 0;
+
+  await assert.rejects(
+    () => versionedMutation<string, void>({
+      read: async () => {
+        reads++;
+        return { state: "a", version: "v1" };
+      },
+      decide: () => {
+        decisions++;
+        return { action: "write", next: "a-mine", result: undefined };
+      },
+      write: async () => {
+        writes++;
+        throw thrown;
+      },
+      maxAttempts: 3,
+    }),
+    (error: unknown) => error === thrown,
+  );
+
+  assert.equal(reads, 3);
+  assert.equal(decisions, 3);
+  assert.equal(writes, 3);
+});
+
+test("AC-19: unrelated write errors remain terminal on the first attempt", async () => {
+  for (const code of ["EIO", "ENOSPC", "EACCES"]) {
+    let reads = 0;
+    let writes = 0;
+    await assert.rejects(
+      () => versionedMutation<string, void>({
+        read: async () => {
+          reads++;
+          return { state: "a", version: "v1" };
+        },
+        decide: () => ({ action: "write", next: "a-mine", result: undefined }),
+        write: async () => {
+          writes++;
+          throw Object.assign(new Error(code), { code });
+        },
+      }),
+      { code },
+    );
+    assert.equal(reads, 1, code);
+    assert.equal(writes, 1, code);
+  }
 });

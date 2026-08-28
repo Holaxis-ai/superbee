@@ -42,15 +42,10 @@ Agent Skill that teaches agents how to use it.
 
 ## Install Steps
 
-**Requirements: macOS or Linux, and Node.js 20 or newer.** Windows is not supported yet: the
-private-state layer that keeps per-user operational records contained verifies that through POSIX
-file modes, and Node cannot verify that invariant on Windows, where it reports synthesized mode bits
-that do not distinguish a `0600` file from a `0700` directory. The package therefore declares
-`"os": ["!win32"]` and npm stops with `EBADPLATFORM` rather than installing a package whose
-private-state operations fail. Windows support is tracked work, not a permanent boundary: the same
-containment property can hold through a per-user location under `%LOCALAPPDATA%`, enforced per user
-by Windows ACLs. Under WSL2 npm sees a Linux platform and installs the package; that
-path is untested and no CI lane covers it.
+**Requirements: Node.js 20 or newer on macOS, Linux, or Windows.** On Windows, Superbee keeps
+per-user operational state under `%LOCALAPPDATA%\Superbee` and uses Windows-native containment and
+path-identity checks instead of relying on synthesized POSIX mode bits. Native Windows behavior and
+the globally installed `superbee.cmd` entrypoint are covered by the required CI contract.
 
 1. Install the CLI globally:
 

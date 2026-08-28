@@ -43,8 +43,10 @@ test("catalog add is durable, private, sorted, and idempotent for the same label
     assert.equal(repeated.entry.id, first.entry.id);
     assert.equal(second.changed, true);
     assert.deepEqual((await loadCatalog(f.home)).entries.map((entry) => entry.label), ["alpha", "zeta"]);
-    assert.equal((await stat(path.dirname(catalogPath(f.home)))).mode & 0o777, 0o700);
-    assert.equal((await stat(catalogPath(f.home))).mode & 0o777, 0o600);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(path.dirname(catalogPath(f.home)))).mode & 0o777, 0o700);
+      assert.equal((await stat(catalogPath(f.home))).mode & 0o777, 0o600);
+    }
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }

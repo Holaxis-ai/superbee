@@ -212,6 +212,12 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
       const built = builders[`${f.key}#${f.variant}`]!();
       if (f.kind === "envelope") {
         assert.notEqual(typeof built, "string", `${f.key}#${f.variant}: expected a CliError`);
+        if (process.platform === "win32" && f.key.startsWith("provision.")) {
+          const rendered = renderErrorEnvelope(toEnvelope(built as CliError));
+          assert.match(rendered, /Rename-Item -LiteralPath/, `${f.key}#${f.variant}: Windows move-aside remedy`);
+          assert.match(rendered, /\.superbee\.bak/, `${f.key}#${f.variant}: backup destination`);
+          continue;
+        }
         assert.equal(
           renderErrorEnvelope(toEnvelope(built as CliError)),
           f.bytes,

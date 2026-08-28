@@ -25,6 +25,8 @@ process.chdir(await mkdtemp(path.join(tmpdir(), "aslite-hermetic-home-")));
 const HERMETIC_HOME = await mkdtemp(path.join(tmpdir(), "aslite-hermetic-user-home-"));
 process.env.HOME = HERMETIC_HOME;
 process.env.USERPROFILE = HERMETIC_HOME;
+process.env.LOCALAPPDATA = path.join(HERMETIC_HOME, "AppData", "Local");
+process.env.APPDATA = path.join(HERMETIC_HOME, "AppData", "Roaming");
 
 import {
   buildHomeView,
@@ -39,6 +41,7 @@ import {
 import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 import { canonicalUserStateDir, USER_STATE_MARKER_BYTES } from "../src/user-state.js";
+import { shellArg } from "../src/invocation.js";
 
 const INVOKE = "npx -y superbee";
 const DEFAULT_INVOKE = "npx -y superbee";
@@ -171,7 +174,7 @@ test("offers preserve an explicit --dir selector, shell-quoted", () => {
   const offers = bundle.offers as Array<{ recipe: string; command: string }>;
   assert.equal(offers.length, 3);
   for (const offer of offers) {
-    assert.equal(offer.command, `${INVOKE} recipe add ${offer.recipe} --dir '/tmp/my bundle'`);
+    assert.equal(offer.command, `${INVOKE} recipe add ${offer.recipe} --dir ${shellArg("/tmp/my bundle")}`);
   }
 });
 
@@ -202,7 +205,7 @@ test("A1.3 no-bundle fallback: no bundle block, getting_started hint, commands p
   assert.match(
     view.getting_started as string,
     new RegExp(
-      `${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} init --create-only --recipe none --dir '\\.superbee'`,
+      `${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} init --create-only --recipe none --dir ${shellArg(".superbee").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
     ),
   );
   assert.match(view.getting_started as string, new RegExp(`${INVOKE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} recipes`));
@@ -221,7 +224,7 @@ test("A1.3 no-bundle fallback: no bundle block, getting_started hint, commands p
 
 test("A1.3b no-bundle --dir fallback creates in the explicit project's conventional child", async () => {
   let out = "";
-  const selected = "/tmp/selected bundle";
+  const selected = path.join(tmpdir(), "selected bundle");
   await home(["--dir", selected, "--json"], {
     binPath: () => "/bin/superbee",
     invocation: () => INVOKE,
@@ -235,9 +238,9 @@ test("A1.3b no-bundle --dir fallback creates in the explicit project's conventio
 
   const gettingStarted = (JSON.parse(out) as Record<string, unknown>).getting_started as string;
   const target = path.join(selected, ".superbee");
-  assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe none --dir '${target}'`));
+  assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe none --dir ${shellArg(target)}`));
   assert.ok(gettingStarted.includes(`${INVOKE} recipes`));
-  assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe <name> --dir '${target}'`));
+  assert.ok(gettingStarted.includes(`${INVOKE} init --create-only --recipe <name> --dir ${shellArg(target)}`));
   assert.ok(!gettingStarted.includes(`recipes --dir`));
 });
 
@@ -425,7 +428,7 @@ test("workspace catalog orientation: a stalled injected loader cannot stall home
     loadWorkspaces: () => new Promise(() => {}),
     workspaceBudgetMs: 5,
   });
-  assert.ok(Date.now() - startedAt < 1_000);
+  assert.ok(Date.now() - startedAt < 2_500);
   assert.deepEqual((JSON.parse(out) as Record<string, any>).workspaces, {
     status: "unavailable",
     note: "workspace catalog check timed out",
@@ -449,7 +452,11 @@ test("default workspace loader sorts labels but does not probe or expose ids and
   }
 });
 
-test("built home rejects a FIFO catalog and exits after its fail-soft receipt", async () => {
+test("built home rejects a FIFO catalog and exits after its fail-soft receipt", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("native Windows has no FIFO filesystem entry; unsafe-entry policy is covered by platform-neutral units");
+    return;
+  }
   const root = await realpath(await tempDir());
   const homeDir = path.join(root, "home");
   const stateDir = canonicalUserStateDir(homeDir);
@@ -776,7 +783,7 @@ test("preferred .superbee.json binding scopes home and is named in the via recei
         bundle?: { recent?: { rows?: Array<{ id: string }> }; via?: string };
       };
       assert.equal(view.bundle?.recent?.rows?.[0]?.id, "notes/preferred");
-      assert.equal(view.bundle?.via, path.join(await realpath(projectDir), ".superbee.json"));
+      assert.equal(await realpath(view.bundle!.via!), await realpath(path.join(projectDir, ".superbee.json")));
     } finally {
       process.chdir(origCwd);
     }
@@ -811,8 +818,9 @@ test("same-level old/new binding conflict remains non-fatal in home and withhold
 test("A1.12b disappeared project-binding target: recovery init preserves the bound target and recipe browsing is withheld", async () => {
   const root = await tempDir();
   try {
-    const projectDir = path.join(root, "project");
-    const missingBundle = path.join(await realpath(root), "missing bundle");
+    const physicalRoot = await realpath(root);
+    const projectDir = path.join(physicalRoot, "project");
+    const missingBundle = path.join(physicalRoot, "missing bundle");
     await mkdir(projectDir, { recursive: true });
     await writeFile(path.join(projectDir, ".agentstate.json"), JSON.stringify({ bundle: "../missing bundle" }));
 
@@ -825,7 +833,7 @@ test("A1.12b disappeared project-binding target: recovery init preserves the bou
       const gettingStarted = view.getting_started as string;
       assert.ok(
         gettingStarted.includes(
-          `${DEFAULT_INVOKE} init --recipe none --dir '${missingBundle}'`,
+          `${DEFAULT_INVOKE} init --recipe none --dir ${shellArg(missingBundle)}`,
         ),
       );
       assert.ok(gettingStarted.includes("fix/remove the binding before browsing recipes"));

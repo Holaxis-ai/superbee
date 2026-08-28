@@ -153,7 +153,7 @@ function removeVerifiedBackup(top: string, backupPath: string, expectedCommit: s
     throw new CliError("CONFLICT", `the establishment backup at ${backupPath} changed; it was not removed`);
   }
   assertBundleBytesMatchCommit(top, backupPath, expectedCommit);
-  rmSync(backupPath, { recursive: true, force: false });
+  rmSync(backupPath, { recursive: true, force: false, maxRetries: 5, retryDelay: 100 });
 }
 
 /** Finish the post-publish local swap, retaining the deterministic backup until every check passes. */

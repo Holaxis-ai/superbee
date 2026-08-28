@@ -15,6 +15,7 @@
   "required_jobs": [
     "runtime",
     "aliasing-host",
+    "windows",
     "smoke-node-20",
     "distribution",
     "browser",
@@ -89,6 +90,55 @@
       "runs_on": "macos-latest",
       "expect_aliasing_host": "1",
       "host_guard": "mkdir -p \"$RUNNER_TEMP/host-probe\" && touch \"$RUNNER_TEMP/host-probe/probe-name\" && test -e \"$RUNNER_TEMP/host-probe/PROBE-NAME\""
+    },
+    "windows": {
+      "display_name": "native Windows runtime and installed package",
+      "workflow_only": true,
+      "components": [],
+      "nodes": [
+        22,
+        20
+      ],
+      "runs_on": "windows-latest",
+      "runtime_node": 22,
+      "installed_package_node": 20,
+      "installed_package_proof_script": "scripts/windows-installed-package-proof.mjs",
+      "installed_package_proof_sha256": "70939827a176775c914934362998aa91c329edef277be3b1ab5203195987aa37",
+      "installed_package_proof_digest_update": {
+        "command": "node scripts/windows-installed-package-proof-digest.mjs",
+        "instructions": "After an intentional review of the proof bytes, run the command and update installed_package_proof_sha256 in this manifest in the same commit."
+      },
+      "installed_package_scenarios": {
+        "catalog-lifecycle": [
+          "catalog add",
+          "catalog list",
+          "catalog resolve"
+        ],
+        "local-remote-sync": [
+          "sync --establish",
+          "sync"
+        ],
+        "ui-url-lifecycle": [
+          "ui --dir",
+          "ui-url observed",
+          "ui-url cleared"
+        ],
+        "mcp-config-lifecycle": [
+          "mcp install",
+          "mcp status",
+          "mcp config read-back",
+          "mcp uninstall"
+        ]
+      },
+      "built_cli_commands": [
+        "init",
+        "doc write",
+        "doc read",
+        "link add",
+        "link show",
+        "list",
+        "status"
+      ]
     },
     "distribution": {
       "display_name": "distribution package and installed behavior",

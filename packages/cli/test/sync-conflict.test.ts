@@ -16,6 +16,7 @@ import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 import { sync, SHOW_INCOMING_AS_OF, SHOW_INCOMING_ABSENT_STATE, SHOW_INCOMING_NO_UPSTREAM } from "../src/commands/sync.js";
 import { doc } from "../src/commands/doc.js";
@@ -42,18 +43,7 @@ import {
 // ── scaffolding (mirrors sync.test.ts; adds stderr + byte capture for --out -) ──
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
-  const originalHome = process.env.HOME;
-  const originalUserProfile = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  try {
-    return await run();
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = originalUserProfile;
-  }
+  return withIsolatedUserEnv(home, run);
 }
 
 interface RunResult {

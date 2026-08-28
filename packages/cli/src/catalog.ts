@@ -3,7 +3,7 @@ import { open, readFile, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 
-import { resolveLocalBundleTarget } from "./bundle.js";
+import { resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
 import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
@@ -15,7 +15,11 @@ export const CATALOG_SCHEMA_VERSION = 1;
 
 const DIR_MODE = 0o700;
 const LOCK_MODE = 0o600;
-const DEFAULT_LOCK_WAIT_MS = 2_000;
+// Several ordinary agent processes can register workspaces together during setup. Windows process
+// startup and antivirus/indexer activity can keep this tiny critical section queued for seconds;
+// treating that as a conflict loses an otherwise valid registration. Keep the wait bounded, but
+// long enough for every writer in that common burst to serialize.
+const DEFAULT_LOCK_WAIT_MS = 10_000;
 const DEFAULT_LOCK_POLL_MS = 25;
 const STALE_LOCK_MIN_AGE_MS = 30_000;
 const LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/;
@@ -324,13 +328,13 @@ export async function addCatalogEntry(
 
   const result = await mutateCatalog(async (current) => {
     const target = await resolveLocalBundleTarget(canonicalPath);
-    if (target.canonicalRoot !== canonicalPath) {
+    if (!samePhysicalPath(target.canonicalRoot, canonicalPath)) {
       throw new CliError("NOT_FOUND", `workspace path is no longer canonical: ${canonicalPath}`, {
         help: `${cliInvocation()} bundle locate --dir ${canonicalPath}`,
       });
     }
     const byLabel = current.entries.find((entry) => entry.label === label);
-    const byPath = current.entries.find((entry) => entry.locator.path === canonicalPath);
+    const byPath = current.entries.find((entry) => samePhysicalPath(entry.locator.path, canonicalPath));
     if (byLabel && byPath && byLabel.id === byPath.id) {
       return { value: byLabel, changed: false };
     }
@@ -363,7 +367,7 @@ export async function addCatalogEntry(
 async function entryAvailable(entry: CatalogEntry): Promise<boolean> {
   try {
     const target = await resolveLocalBundleTarget(entry.locator.path);
-    return target.canonicalRoot === entry.locator.path;
+    return samePhysicalPath(target.canonicalRoot, entry.locator.path);
   } catch {
     return false;
   }

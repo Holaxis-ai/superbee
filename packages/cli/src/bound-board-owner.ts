@@ -65,6 +65,12 @@ function canonicalGitPath(from: string, raw: string): string | null {
   }
 }
 
+function samePhysicalPath(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 /**
  * Validate a binding-selected target into the only capability board-aware code may consume.
  * Every Git call is rooted at the candidate board worktree or its direct private owner; no
@@ -82,19 +88,24 @@ export async function validateBoundBoardOwner(target: LocalBundleTarget): Promis
 
   // A conventional name alone is ordinary bundle selection, not board authority.  It becomes a
   // candidate only when both exact roots are already worktrees sharing one common Git directory.
-  if (repoTopLevel(bundleRoot) !== bundleRoot || repoTopLevel(ownerRoot) !== ownerRoot) return undefined;
+  const bundleTop = repoTopLevel(bundleRoot);
+  const ownerTop = repoTopLevel(ownerRoot);
+  if (!bundleTop || !ownerTop || !samePhysicalPath(bundleTop, bundleRoot) || !samePhysicalPath(ownerTop, ownerRoot)) return undefined;
 
   const candidateGit = runGit(bundleRoot, ["rev-parse", "--git-common-dir"]);
   const ownerGit = runGit(ownerRoot, ["rev-parse", "--git-common-dir"]);
   const commonGitDir = candidateGit.status === 0 ? canonicalGitPath(bundleRoot, candidateGit.stdout.trim()) : null;
   const ownerCommonGitDir = ownerGit.status === 0 ? canonicalGitPath(ownerRoot, ownerGit.stdout.trim()) : null;
-  if (!commonGitDir || !ownerCommonGitDir || commonGitDir !== ownerCommonGitDir) return undefined;
+  if (!commonGitDir || !ownerCommonGitDir || !samePhysicalPath(commonGitDir, ownerCommonGitDir)) return undefined;
 
   const registered = runGit(ownerRoot, ["worktree", "list", "--porcelain"]);
   const listed = registered.status === 0 && registered.stdout
     .split("\n")
     .filter((line) => line.startsWith("worktree "))
-    .some((line) => canonicalGitPath(ownerRoot, line.slice("worktree ".length).trim()) === bundleRoot);
+    .some((line) => {
+      const listedRoot = canonicalGitPath(ownerRoot, line.slice("worktree ".length).trim());
+      return listedRoot !== null && samePhysicalPath(listedRoot, bundleRoot);
+    });
   if (!listed) throw failure(target, "worktree-registration", "the selected worktree is not registered by its owner");
 
   // A board-origin rebase is structural evidence of this exact worktree, but validation itself

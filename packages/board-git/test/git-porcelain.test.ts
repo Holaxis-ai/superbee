@@ -84,8 +84,8 @@ import {
 
 // ── hermetic ambient env (the porcelain inherits process.env; pin identity + neutralize host
 //    config so `stageAndCommit`'s commits work on any machine, gitconfig or not) ──────────────
-process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_SYSTEM = process.platform === "win32" ? "NUL" : "/dev/null";
+process.env.GIT_CONFIG_GLOBAL = process.platform === "win32" ? "NUL" : "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 process.env.GIT_AUTHOR_NAME = "Porcelain Suite";
 process.env.GIT_AUTHOR_EMAIL = "porcelain@example.invalid";
@@ -499,13 +499,24 @@ test("provisionBoardWorktree: a FOREIGN repo's board worktree at .superbee is re
     assert.match(err.message, /belongs to a different git repository/i);
     assert.match(err.message, new RegExp(topo.a.root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.ok(err.help, "carries a fixing command");
-    assert.ok(
-      err.help.startsWith(`mv '${topo.a.board}' '${topo.a.board}.bak'`),
-      "remedy uses absolute paths, so it works from any invocation directory",
-    );
+    if (process.platform === "win32") {
+      assert.match(err.help, /^powershell\.exe -NoProfile -NonInteractive -Command "\$ErrorActionPreference='Stop'; Rename-Item -LiteralPath /);
+    } else {
+      assert.ok(err.help.startsWith(`mv '${topo.a.board}' '${topo.a.board}.bak'`));
+    }
 
     const command = err.help.split("  # ")[0]!;
-    execFileSync("/bin/sh", ["-c", command], { cwd: foreignRoot, stdio: "pipe" });
+    if (process.platform === "win32") {
+      // Feed the emitted characters to Windows PowerShell as a script. This is equivalent to a
+      // paste without Node's execFile -> cmd.exe nested-quote rewriting.
+      const powershell = path.join(
+        process.env.SystemRoot ?? "C:\\Windows",
+        "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+      );
+      execFileSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", command], { cwd: foreignRoot, stdio: "pipe" });
+    } else {
+      execFileSync("/bin/sh", ["-c", command], { cwd: foreignRoot, stdio: "pipe" });
+    }
     assert.equal(existsSync(topo.a.board), false, "verbatim remedy moved the foreign checkout aside");
     assert.equal(existsSync(`${topo.a.board}.bak`), true, "backup path exists for manual recovery");
   } finally {
@@ -654,7 +665,11 @@ test("provisionBoardWorktree: THE MOUNT-MOVE FIELD FINDING — stale ABSOLUTE po
   const topo = await makeTwoCloneTopology();
   try {
     const staleGitFile = (await readFile(path.join(topo.a.board, ".git"), "utf8")).trim();
-    assert.match(staleGitFile, /^gitdir:\s*\//, "precondition: the harness's own provisioning wrote ABSOLUTE pointers");
+    assert.match(
+      staleGitFile,
+      /^gitdir:\s*(?:[A-Za-z]:[\\/]|\/)/,
+      "precondition: the harness's own provisioning wrote ABSOLUTE pointers",
+    );
 
     const movedRoot = path.join(path.dirname(topo.a.root), `moved-${path.basename(topo.a.root)}`);
     await rename(topo.a.root, movedRoot);
@@ -712,7 +727,7 @@ test("provisionBoardWorktree: a worktree signature repair CANNOT fix refuses wit
       "reworded to name what was actually observed",
     );
     assert.doesNotMatch(err.message, /is not the shared board checkout/i, "distinct from the plain-foreign wording");
-    assert.match(err.help ?? "", /^mv /, "still a non-destructive mv, never rm");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
     assert.ok(existsSync(path.join(topo.a.board, "tasks", "seed-one.md")), "pre-existing bundle CONTENT is untouched");
   } finally {
     await topo.cleanup();
@@ -745,7 +760,7 @@ test("provisionBoardWorktree: a HEALTHY worktree checked out to a DIFFERENT bran
     assert.match(err.message, /not checked out to the '?board'? branch/i, "names the actual observed state");
     assert.doesNotMatch(err.message, /stale pointers/i, "distinct from the unrepairable-pointers wording");
     assert.doesNotMatch(err.message, /is not the shared board checkout/i, "distinct from the plain-foreign wording");
-    assert.match(err.help ?? "", /^mv /, "still a non-destructive mv, never rm");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
 
     // Never silently adopted: the board branch's own tip is untouched, and the checked-out branch
     // (and its content) survives exactly as it was.
@@ -769,7 +784,7 @@ test("provisionBoardWorktree: a HEALTHY worktree on a plain detached HEAD (NOT m
     assert.ok(isBoardGitError(err));
     assert.equal(err.code, "RUNTIME");
     assert.match(err.message, /not checked out to the '?board'? branch/i, "names the actual observed state");
-    assert.match(err.help ?? "", /^mv /, "still a non-destructive mv, never rm");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
     assert.ok(existsSync(path.join(topo.a.board, "tasks", "seed-one.md")), "pre-existing bundle CONTENT is untouched");
   } finally {
     await topo.cleanup();
@@ -823,7 +838,7 @@ test("provisionBoardWorktree: PROBE-E (cold review) — a wedge started from a N
     assert.ok(isBoardGitError(err), "must REFUSE — rebaseWasFromBoardBranch is false here, so repairedWorktreeIsBoard must reject it despite being mid-rebase");
     assert.equal(err.code, "RUNTIME");
     assert.match(err.message, /not checked out to the '?board'? branch/i, "the wrong-branch wording, not a false 'repaired'");
-    assert.match(err.help ?? "", /^mv /, "still a non-destructive mv, never rm");
+    assert.match(err.help ?? "", process.platform === "win32" ? /Rename-Item -LiteralPath/ : /^mv /, "still a non-destructive move, never remove");
   } finally {
     await topo.cleanup();
   }
@@ -852,7 +867,9 @@ test("provision: a repo with NO board branch anywhere → no_board", async () =>
   }
 });
 
-test("provision: a timed-out remote check degrades to unknown within the supplied budget", async () => {
+test("provision: a timed-out remote check degrades to unknown within the supplied budget", {
+  skip: process.platform === "win32" ? "fixture uses Git's POSIX-only ext::sleep helper" : false,
+}, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-board-timeout-"));
   try {
     git(dir, ["init", "-b", "main", "."]);
@@ -962,7 +979,9 @@ test("stageAndCommit: non-ASCII doc id crosses the receipt's doc rows and commit
 //    literal quoted-and-escaped string instead of the real path. `-z` framing sidesteps quoting
 //    entirely: raw bytes, one NUL per field.
 
-test("stageAndCommit: -z name-status framing survives a literal TAB byte inside a doc path", async () => {
+test("stageAndCommit: -z name-status framing survives a literal TAB byte inside a doc path", {
+  skip: process.platform === "win32" ? "Win32 filenames cannot contain control bytes" : false,
+}, async () => {
   const topo = await makeTwoCloneTopology();
   try {
     const tabbedId = "tasks/ta\tb";

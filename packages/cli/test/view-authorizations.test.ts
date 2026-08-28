@@ -45,10 +45,10 @@ test("local View approval persists only for the exact bundle, bytes, access, and
     );
 
     const directory = join(credentialsDir(home), "view-authorizations");
-    assert.equal((await stat(directory)).mode & 0o777, 0o700);
+    if (process.platform !== "win32") assert.equal((await stat(directory)).mode & 0o777, 0o700);
     const files = await readdir(directory);
     assert.equal(files.length, 1);
-    assert.equal((await stat(join(directory, files[0]!))).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal((await stat(join(directory, files[0]!))).mode & 0o777, 0o600);
   } finally {
     await rm(home, { recursive: true, force: true });
   }

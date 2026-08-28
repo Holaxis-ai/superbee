@@ -12,6 +12,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
+import { isolatedUserEnv } from "./support/user-env.js";
 
 const CLI = fileURLToPath(new URL("../dist/superbee.mjs", import.meta.url));
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
@@ -174,10 +175,7 @@ test("built bare MCP server resolves documents and Views through the private wor
     "text/html; charset=utf-8",
   );
   await addCatalogEntry("planning", root, { home });
-  const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
-  );
-  env.HOME = home;
+  const env = isolatedUserEnv(home);
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [CLI, "mcp"],
@@ -252,29 +250,42 @@ test("built bare MCP server resolves documents and Views through the private wor
   );
 });
 
-test("literal PATH `aslite mcp` reports the selected CLI release and never rewrites host config", async (t) => {
+test("literal PATH `aslite mcp` reports the selected CLI release and never rewrites host config", {
+  skip: process.platform === "win32"
+    ? "MCP registrations launch absolute Node plus the package entry; cmd.exe cannot be a transparent stdio transport"
+    : undefined,
+}, async (t) => {
   const base = await mkdtemp(path.join(os.tmpdir(), "aslite-mcp-path-"));
   const root = path.join(base, "bundle");
   const binDir = path.join(base, "bin");
   const home = path.join(base, "home");
   await mkdir(binDir, { recursive: true });
   await mkdir(path.join(home, ".claude"), { recursive: true });
-  await symlink(CLI, path.join(binDir, "aslite"));
+  if (process.platform === "win32") {
+    await writeFile(
+      path.join(binDir, "aslite.cmd"),
+      `@echo off\r\n"${process.execPath}" "${CLI}" %*\r\n`,
+    );
+  } else {
+    await symlink(CLI, path.join(binDir, "aslite"));
+  }
   const sentinel = path.join(home, ".claude", "mcp.json");
   const sentinelBytes = '{"command":"/old/plugin/cache/0.1.0/scripts/agentstate-lite.mjs"}\n';
   await writeFile(sentinel, sentinelBytes);
   await initBundle(root);
-  const env = {
-    ...process.env,
+  const env = isolatedUserEnv(home, {
     PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`,
-    HOME: home,
     ASLITE_NO_UPDATE_CHECK: "1",
-  };
-  const selected = spawn("aslite", ["version", "--json"], {
+  });
+  const selected = spawn(
+    process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "aslite",
+    process.platform === "win32" ? ["/d", "/s", "/c", "aslite version --json"] : ["version", "--json"],
+    {
     cwd: root,
     env,
     stdio: ["ignore", "pipe", "pipe"],
-  });
+    },
+  );
   let versionStdout = "";
   let versionStderr = "";
   selected.stdout.setEncoding("utf8");
@@ -289,8 +300,10 @@ test("literal PATH `aslite mcp` reports the selected CLI release and never rewri
   const selectedVersion = JSON.parse(versionStdout).identity.package.version as string;
 
   const transport = new StdioClientTransport({
-    command: "aslite",
-    args: ["mcp", "--dir", root, "--actor", "path/test"],
+    command: process.platform === "win32" ? (process.env.ComSpec ?? "cmd.exe") : "aslite",
+    args: process.platform === "win32"
+      ? ["/d", "/s", "/c", `aslite mcp --dir "${root.replaceAll('"', '""')}" --actor path/test`]
+      : ["mcp", "--dir", root, "--actor", "path/test"],
     env,
     stderr: "pipe",
   });

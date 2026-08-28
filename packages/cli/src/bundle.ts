@@ -622,7 +622,7 @@ function createOnlyUncertainty(
   );
 }
 
-function samePhysicalPath(a: string, b: string): boolean {
+export function samePhysicalPath(a: string, b: string): boolean {
   const left = path.resolve(a);
   const right = path.resolve(b);
   return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
@@ -657,9 +657,11 @@ async function resolveCreateOnlyPhysicalTarget(
   let existingPrefix = logical;
   const missingTail: string[] = [];
   let targetStat: Stats | undefined;
+  let existingPrefixStat: Stats | undefined;
   for (;;) {
     try {
       const info = await io.lstat(existingPrefix);
+      existingPrefixStat = info;
       if (existingPrefix === logical) targetStat = info;
       break;
     } catch (err) {
@@ -679,6 +681,16 @@ async function resolveCreateOnlyPhysicalTarget(
       missingTail.unshift(path.basename(existingPrefix));
       existingPrefix = parent;
     }
+  }
+
+  if (missingTail.length > 0 && existingPrefixStat && !existingPrefixStat.isDirectory() && !existingPrefixStat.isSymbolicLink()) {
+    createOnlyConflict(`create-only target ${logical} runs through an existing file — pass a directory path`, {
+      phase,
+      operation: "lstat",
+      path: existingPrefix,
+      fs_code: "ENOTDIR",
+      residual_created_directories: [...createdDirectories],
+    });
   }
 
   if (missingTail.length === 0 && targetStat) {
@@ -1401,10 +1413,14 @@ async function bindingRouteTraversesSymlink(target: LocalBundleTarget): Promise<
   const lexicalAnchor = path.resolve(path.dirname(target.bindingFile));
   const lexicalAnchors = lexicalBindingAnchors(lexicalAnchor);
   const targetRoot = path.resolve(target.root);
-  const targetParts = targetRoot.split(path.sep).filter(Boolean);
+  const parsedTargetRoot = path.parse(targetRoot).root;
+  // Split only the path below its filesystem root. Splitting an absolute Windows path directly
+  // includes the drive designator ("C:") and would incorrectly probe "C:\\C:" as the first
+  // lexical component.
+  const targetParts = targetRoot.slice(parsedTargetRoot.length).split(path.sep).filter(Boolean);
 
   let traversesBindingSymlink = false;
-  let current = path.parse(targetRoot).root;
+  let current = parsedTargetRoot;
   for (const segment of targetParts) {
     current = path.join(current, segment);
     let info;
@@ -1434,7 +1450,7 @@ async function captureDirectoryIdentity(target: LocalBundleTarget): Promise<Dire
   }
   assertBundleOutsidePrivateState(path.resolve(target.root));
   assertBundleOutsidePrivateState(canonicalRoot);
-  if (canonicalRoot !== target.canonicalRoot) {
+  if (!samePhysicalPath(canonicalRoot, target.canonicalRoot)) {
     throw bindingPathConflict(target, "the selected target changed while its lexical path was validated");
   }
   let stat: Stats;
@@ -1481,7 +1497,7 @@ export async function assertResolvedLocalRouteIdentity(route: ResolvedLocalRoute
   }
   assertBundleOutsidePrivateState(path.resolve(route.target.root));
   assertBundleOutsidePrivateState(canonicalRoot);
-  if (canonicalRoot !== route.identity.canonicalRoot) {
+  if (!samePhysicalPath(canonicalRoot, route.identity.canonicalRoot)) {
     throw bindingPathConflict(route.target, "the selected target changed after classification");
   }
   let stat: Stats;

@@ -36,15 +36,20 @@ export class FilesystemIdentityAliasError extends InvalidInputError {
 }
 
 /**
- * An observation saw the entry it read replaced by another writer on every bounded retry, so no
- * result can be attributed to one stable on-disk version. A retryable runtime condition.
+ * A filesystem operation could not bind its result to one stable on-disk entry: an observation
+ * saw replacement, or a Windows replacement sharing violation made the current write attempt
+ * unsafe to continue. A retryable runtime condition; the owning read/decide/CAS loop must restart
+ * the complete attempt rather than retrying the filesystem operation in place.
  */
 export class ConcurrentReplacementError extends Error {
   readonly rel: string;
+  /** Optional bounded backoff hint for a transient host condition; ordinary observation races use zero. */
+  readonly retryAfterMs: number;
 
-  constructor(rel: string, attempts: number) {
-    super(`Path '${rel}' was replaced concurrently on each of ${attempts} observation attempts; retry.`);
+  constructor(rel: string, attempts: number, retryAfterMs = 0) {
+    super(`Path '${rel}' could not be bound to one stable entry during ${attempts} filesystem attempt(s); retry.`);
     this.name = "ConcurrentReplacementError";
     this.rel = rel;
+    this.retryAfterMs = retryAfterMs;
   }
 }

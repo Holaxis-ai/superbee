@@ -15,7 +15,17 @@ let command;
 let commandArgs;
 if (mode === "node") {
   command = process.execPath;
-  commandArgs = args;
+  // The CLI integration files launch many real Node/Git subprocesses. Running those files in
+  // parallel saturates the small hosted Windows runner so severely that healthy child processes
+  // miss their deliberate 5s anti-hang guards (and killed children then cascade into later Git
+  // and hook cases). Run those files one-at-a-time on Windows while retaining every test and every
+  // product/test timeout; the required native job carries enough wall-clock headroom to finish the
+  // subsequent packed-package proof. POSIX keeps Node's normal concurrency. Put the option
+  // immediately after --test so it cannot be interpreted as a file argument.
+  const testIndex = args.indexOf("--test");
+  commandArgs = process.platform === "win32" && testIndex >= 0 && !args.some((arg) => arg.startsWith("--test-concurrency"))
+    ? [...args.slice(0, testIndex + 1), "--test-concurrency=1", ...args.slice(testIndex + 1)]
+    : args;
 } else if (mode === "npm-exec") {
   const npmExecPath = process.env.npm_execpath;
   if (!npmExecPath) throw new Error("npm_execpath is required for the npm-exec test command");

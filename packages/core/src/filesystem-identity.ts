@@ -88,6 +88,8 @@ export interface IdentityDescriptor {
  * segment at a time against the parent listing.
  */
 export interface FilesystemIdentityPort {
+  /** Host semantics used by the protocol for narrowly platform-specific filesystem recovery. */
+  readonly platform?: NodeJS.Platform;
   /** `lstat`; `null` when nothing is at the path (ENOENT or ENOTDIR). */
   probe(target: string): Promise<ProbeResult | null>;
   /** Directory listing, names and kinds only; `null` when the directory is absent. */
@@ -108,6 +110,33 @@ export interface FilesystemIdentityPort {
   rename(from: string, to: string): Promise<void>;
   unlink(target: string): Promise<void>;
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
+}
+
+const WINDOWS_REPLACE_CONFLICT_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+
+/**
+ * Windows can transiently deny replacement while another process is closing a read handle or a
+ * scanner holds the destination. An in-place rename retry cannot remain bound to the complete
+ * parent-and-leaf observation: either can change after any final check. Abort this attempt instead,
+ * mapping only the errno values Node uses for a Windows replacement sharing violation to the typed
+ * contention signal owned by the higher-level fresh read/decide/CAS loop. Every other platform and
+ * errno remains the original immediate failure.
+ */
+async function replaceExistingLeaf(
+  port: FilesystemIdentityPort,
+  tmp: string,
+  target: string,
+  rel: string,
+): Promise<void> {
+  try {
+    await port.rename(tmp, target);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? "";
+    if ((port.platform ?? process.platform) === "win32" && WINDOWS_REPLACE_CONFLICT_CODES.has(code)) {
+      throw new ConcurrentReplacementError(rel, 1, 10);
+    }
+    throw err;
+  }
 }
 
 /**
@@ -441,6 +470,13 @@ export async function observeExact<T>(
       opened = await port.open(target);
     } catch (err) {
       if (isAbsentPathError(err)) return { state: "absent" };
+      // Win32 can report EPERM when a concurrent delete/replace briefly denies an open. That is
+      // an uncertain generation, not a durable permission verdict; re-run the witnessed walk and
+      // let the existing bound turn persistent contention into ConcurrentReplacementError.
+      if (process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EPERM") {
+        restarts = countRestart(restarts, rel);
+        continue;
+      }
       throw err;
     }
     let value: T | null;
@@ -680,9 +716,13 @@ export async function mutateExact<T>(
           const tmp = path.join(dir, tmpName);
           await port.writeTemp(dir, tmpName, bytes);
           try {
-            if (realized.state === "exact" || linkUnsupportedRoots.has(rootResolved)) {
+            if (realized.state === "exact") {
               // Replace: the target exists under our exact spelling, so any writer of an
               // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
+              await replaceExistingLeaf(port, tmp, target, rel);
+              return;
+            }
+            if (linkUnsupportedRoots.has(rootResolved)) {
               await port.rename(tmp, target);
               return;
             }
@@ -714,6 +754,7 @@ function kindOf(stats: { isSymbolicLink(): boolean; isDirectory(): boolean; isFi
 
 /** The one production binding: `node:fs`, the temp-file convention, and the identity lock. */
 export const nodeFilesystemIdentityPort: FilesystemIdentityPort = Object.freeze({
+  platform: process.platform,
   async probe(target: string): Promise<ProbeResult | null> {
     let lstats: Stats;
     try {

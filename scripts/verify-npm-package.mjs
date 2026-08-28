@@ -29,6 +29,15 @@ const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
 
 const baseExpectedFiles = ["LICENSE", "NOTICE", "README.md", "SKILL.md", SUCCESSOR_ARTIFACT, "package.json"];
 
+/** Independently project the native shell argument form the installed CLI must advertise. */
+function expectedShellArgument(value) {
+  if (process.platform === "win32") {
+    const normalized = value.replaceAll("\\", "/");
+    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(normalized) ? normalized : `"${normalized}"`;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 /** The exact expected tarball file set: the fixed base plus the committed references/ tree. */
 export function expectedTarballFiles(referenceFiles) {
   return [...baseExpectedFiles, ...referenceFiles.map((relative) => `references/${relative}`)].sort();
@@ -40,6 +49,15 @@ const runtimeDependencyFields = [
   "bundledDependencies",
   "bundleDependencies",
 ];
+
+/** Independently project the canonical private-state root used by the installed CLI. */
+export function expectedPrivateStateRoot(home, platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    assert.ok(env.LOCALAPPDATA, "Windows package proof requires an isolated LOCALAPPDATA");
+    return path.win32.join(env.LOCALAPPDATA, "Superbee");
+  }
+  return path.join(home, ".superbee-state");
+}
 
 function npmPrefixShimSource(prefix) {
   return `#!/usr/bin/env node
@@ -464,8 +482,15 @@ async function runInstalledProof(spec) {
       HOME: home,
       USERPROFILE: home,
       XDG_CONFIG_HOME: path.join(home, ".config"),
+      ...(process.platform === "win32"
+        ? {
+            LOCALAPPDATA: path.join(home, "AppData", "Local"),
+            APPDATA: path.join(home, "AppData", "Roaming"),
+          }
+        : {}),
       AGENTSTATE_LITE_NO_AUTOPULL: "1",
     };
+    const canonicalState = expectedPrivateStateRoot(home, process.platform, commandEnv);
     for (const command of target.expected_commands) await assertCommandInBin(command, commandEnv, binDir);
     for (const absent of ["superbee", "aslite", "agentstate-lite"].filter((command) => !target.expected_commands.includes(command))) {
       const resolved = await resolveCommandOnPath(absent, commandEnv);
@@ -540,6 +565,7 @@ async function runInstalledProof(spec) {
     }
 
     const discoverySnapshot = await snapshotTree(quickstartProject);
+    const conventionalDirArgument = expectedShellArgument(".superbee");
     const noBundleHome = parseJson(
       (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
       `${target.preferred_command} home --json outside a bundle`,
@@ -548,9 +574,10 @@ async function runInstalledProof(spec) {
     assert.equal(homeIdentity.version, manifest.version);
     assert.equal(homeIdentity.channel, spec.expectedChannel);
     assert.equal(homeIdentity.bin, installedEntrypointRealPath);
-    assert.match(
-      noBundleHome.getting_started,
-      /init --create-only --recipe none --dir '\.superbee'/,
+    assert.ok(
+      noBundleHome.getting_started.includes(
+        `${target.preferred_command} init --create-only --recipe none --dir ${conventionalDirArgument}`,
+      ),
       "bundle-free home must advertise fail-closed conventional creation",
     );
     assert.match(
@@ -575,13 +602,13 @@ async function runInstalledProof(spec) {
     assert.ok(contextNotes, "the installed recipe inventory must include context-notes");
     assert.equal(contextNotes.applied, null, "bundle-free discovery must not imply an applied state");
     assert.deepEqual(contextNotes.commands, {
-      create_bundle: `${target.preferred_command} init --create-only --recipe context-notes --dir '.superbee'`,
+      create_bundle: `${target.preferred_command} init --create-only --recipe context-notes --dir ${conventionalDirArgument}`,
       add_to_bundle: `${target.preferred_command} recipe add context-notes`,
     });
     const workTracking = discoveredRecipes.recipes.find((recipe) => recipe.name === "work-tracking");
     assert.ok(workTracking, "the installed recipe inventory must include work-tracking");
     assert.deepEqual(workTracking.commands, {
-      create_bundle: `${target.preferred_command} init --create-only --recipe work-tracking --dir '.superbee'`,
+      create_bundle: `${target.preferred_command} init --create-only --recipe work-tracking --dir ${conventionalDirArgument}`,
       add_to_bundle: `${target.preferred_command} recipe add work-tracking`,
     });
     assertSnapshotUnchanged(
@@ -725,7 +752,7 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(
       appliedRecipes.recipes.find((recipe) => recipe.name === "work-tracking")?.commands,
-      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir '${bundle}'` },
+      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir ${expectedShellArgument(bundle)}` },
       "an existing local bundle must expose only the actionable add command",
     );
     parseJson(
@@ -866,15 +893,16 @@ async function runInstalledProof(spec) {
     );
 
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
+    const normalizedInstalledReadme = installedReadme.replaceAll("\r\n", "\n");
     assert.equal(
-      installedReadme.match(/^## License\n\n([^\n]+)$/m)?.[1],
+      normalizedInstalledReadme.match(/^## License\n\n([^\n]+)$/m)?.[1],
       `${manifest.license} \u00a9 2026 Holaxis`,
       "the installed README license notice must agree with the published package metadata",
     );
-    assert.match(installedReadme, /ask your AI agent to run `superbee setup`/);
-    assert.match(installedReadme, /ask your agent for what\s+you need/i);
-    assert.match(installedReadme, /translate your\s+instructions into CLI commands/i);
-    assert.match(installedReadme, /^\s*npm install -g superbee$/m);
+    assert.match(normalizedInstalledReadme, /ask your AI agent to run `superbee setup`/);
+    assert.match(normalizedInstalledReadme, /ask your agent for what\s+you need/i);
+    assert.match(normalizedInstalledReadme, /translate your\s+instructions into CLI commands/i);
+    assert.match(normalizedInstalledReadme, /^\s*npm install -g superbee$/m);
 
     const setupBeforeIntegrations = parseJson(
       (
@@ -1090,11 +1118,11 @@ async function runInstalledProof(spec) {
       assert.match(migrationOutput, /status: migrated/);
       assert.equal(await readFile(path.join(legacyState, "catalog.json"), "utf8"), legacyCatalog);
       assert.equal(
-        await readFile(path.join(home, ".superbee-state", "catalog.json"), "utf8"),
+        await readFile(path.join(canonicalState, "catalog.json"), "utf8"),
         legacyCatalog,
       );
       assert.equal(
-        await readFile(path.join(home, ".superbee-state", "state.json"), "utf8"),
+        await readFile(path.join(canonicalState, "state.json"), "utf8"),
         '{"product":"superbee","schema_version":1}\n',
       );
       const setupAfterMigration = parseJson(

@@ -23,6 +23,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
 
 import { cliVersion, KNOWN_COMMANDS } from "../src/cli.js";
@@ -121,7 +122,7 @@ test("a real loader-driven source launch identifies and hashes src/index.ts, not
   const loader = path.resolve(cliPackageRoot, "test/ts-loader.mjs");
   const result = spawnSync(
     "node",
-    ["--import", loader, sourceEntry, "version", "--json"],
+    ["--import", pathToFileURL(loader).href, sourceEntry, "version", "--json"],
     { cwd: cliPackageRoot, encoding: "utf8" },
   );
   assert.equal(result.status, 0, result.stderr);

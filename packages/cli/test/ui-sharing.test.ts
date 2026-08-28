@@ -15,7 +15,9 @@ import path from "node:path";
 
 import { classifySharing, createSharingLoader, createWorkspacesLoader, humanizeRemote } from "../src/ui/sharing.js";
 import { credentialsDir } from "../src/credentials.js";
+import { loadCatalog } from "../src/catalog.js";
 import { ensureUserStateRoot } from "../src/user-state.js";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync("git", args, { cwd, stdio: "ignore" });
@@ -265,6 +267,7 @@ test("humanizeRemote degrades: GitHub https/ssh → org/repo; host-only and path
 test("workspaces loader projects labels+paths from the catalog with the open entry marked (no probes)", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "aslite-ws-home-"));
   const bundleRoot = path.join(home, "proj", ".agentstate-lite");
+  const missingPath = path.join(path.parse(home).root, "nowhere", "zeta");
   try {
     await ensureUserStateRoot(home);
     await mkdir(bundleRoot, { recursive: true });
@@ -273,22 +276,19 @@ test("workspaces loader projects labels+paths from the catalog with the open ent
       JSON.stringify({
         schema_version: 1,
         entries: [
-          { id: `bnd_${"0".repeat(32)}`, label: "zeta", locator: { kind: "local-path", path: "/nowhere/zeta" } },
+          { id: `bnd_${"0".repeat(32)}`, label: "zeta", locator: { kind: "local-path", path: missingPath } },
           { id: `bnd_${"1".repeat(32)}`, label: "alpha", locator: { kind: "local-path", path: bundleRoot } },
         ],
       }),
     );
-    const savedHome = process.env.HOME;
-    process.env.HOME = home;
-    try {
-      const rows = await createWorkspacesLoader(bundleRoot)();
+    await withIsolatedUserEnv(home, async () => {
+      assert.equal((await loadCatalog(home)).entries.length, 2, "explicit profile catalog is readable");
+      const rows = await createWorkspacesLoader(bundleRoot, home)();
       assert.deepEqual(rows, [
         { label: "alpha", path: bundleRoot, open: true },
-        { label: "zeta", path: "/nowhere/zeta", open: false },
+        { label: "zeta", path: missingPath, open: false },
       ]);
-    } finally {
-      process.env.HOME = savedHome;
-    }
+    });
   } finally {
     await rm(home, { recursive: true, force: true });
   }

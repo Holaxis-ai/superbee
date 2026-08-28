@@ -308,7 +308,9 @@ export function migrationRecoveryContractCases(): readonly MigrationRecoveryCont
           const receipt = await driver.resume();
           assert.ok(receipt.id);
           assert.equal(await pathExists(driver.journalPath), false);
-          assert.equal((await stat(driver.receiptPath)).mode & 0o777, 0o600);
+          if (process.platform !== "win32") {
+            assert.equal((await stat(driver.receiptPath)).mode & 0o777, 0o600);
+          }
           await assertBundleAt(fixture, fixture.destination);
           await assertCanonicalSidecars(fixture);
         }),

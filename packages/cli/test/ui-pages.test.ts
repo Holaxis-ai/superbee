@@ -122,7 +122,7 @@ test("uiUrlFile: writes the URL 0600, and clear removes it ONLY when it still po
     const p = uiUrlFilePath(home);
     assert.equal((await readFile(p, "utf8")).trim(), url);
     // 0600 — owner rw only (mode low 9 bits).
-    assert.equal((await stat(p)).mode & 0o777, 0o600);
+    if (process.platform !== "win32") assert.equal((await stat(p)).mode & 0o777, 0o600);
 
     // A clear for a DIFFERENT url must NOT remove another instance's pointer.
     await clearUiUrlFile("http://127.0.0.1:9/?token=someone-else", home);

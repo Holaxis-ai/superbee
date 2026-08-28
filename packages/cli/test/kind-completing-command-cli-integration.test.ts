@@ -19,7 +19,7 @@
  */
 import test, { before } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, symlink } from "node:fs/promises";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,7 +50,11 @@ async function tempDir(prefix: string): Promise<string> {
  */
 async function makeBinOnPath(): Promise<{ binDir: string; env: NodeJS.ProcessEnv }> {
   const binDir = await tempDir("superbee-kind-complete-bin-");
-  await symlink(cliBin, path.join(binDir, "superbee"));
+  if (process.platform === "win32") {
+    await writeFile(path.join(binDir, "superbee.cmd"), `@echo off\r\n"${process.execPath}" "${cliBin}" %*\r\n`);
+  } else {
+    await symlink(cliBin, path.join(binDir, "superbee"));
+  }
   const env = { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}` };
   return { binDir, env };
 }
@@ -60,7 +64,9 @@ function run(
   args: string[],
   opts: { cwd: string; env: NodeJS.ProcessEnv },
 ): { status: number | null; stdout: string; stderr: string } {
-  const result = spawnSync("superbee", args, {
+  // Preserve argv exactly on Windows; the PATH shim remains present so emitted follow-ups still
+  // resolve to and exercise the bare `superbee` command.
+  const result = spawnSync(process.execPath, [cliBin, ...args], {
     cwd: opts.cwd,
     env: opts.env,
     stdio: ["ignore", "pipe", "pipe"],

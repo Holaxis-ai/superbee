@@ -20,6 +20,8 @@
  *   - Worktree internals via `git rev-parse --git-path` (`.git` is a FILE in a linked worktree).
  *   - Rename detection OFF (`--no-renames`): a doc's identity IS its path; add+delete is the true
  *     story. Explicit (not merely `-M` omitted) so a host `diff.renames=true` config cannot leak in.
+ *   - Git text conversion OFF (`-c core.autocrlf=false -c core.eol=lf`): portable bundle bytes
+ *     are never rewritten by a host's global Windows checkout policy.
  *   - Path quoting OFF (`-c core.quotepath=off`): non-ASCII paths come back as raw UTF-8, never
  *     C-quoted — parsed paths must round-trip back into git as pathspecs (see `runGit`'s header).
  *   - No raw git on stdout: every failure routes through `classifyGitError` (errors.ts)
@@ -256,7 +258,18 @@ export function runGitBytes(dir: string, args: string[], opts: RunOptions = {}):
     ...(opts.gitDir ? [`--git-dir=${opts.gitDir}`] : []),
     ...(opts.workTree ? [`--work-tree=${opts.workTree}`] : []),
   ];
-  const r = spawnSync("git", ["-C", dir, "-c", "core.quotepath=off", ...repositoryArgs, ...args], {
+  const r = spawnSync("git", [
+    "-C",
+    dir,
+    "-c",
+    "core.quotepath=off",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.eol=lf",
+    ...repositoryArgs,
+    ...args,
+  ], {
     env: gitEnv(opts.rebase ?? false, opts.connectTimeoutSeconds, opts.indexFile),
     timeout: opts.timeoutMs ?? LOCAL_TIMEOUT_MS,
     input: opts.input,
@@ -409,6 +422,13 @@ function realOrSame(p: string): string {
   }
 }
 
+/** Compare physical paths without treating Windows case/drive-letter aliases as different roots. */
+function samePhysicalPath(a: string, b: string): boolean {
+  const left = path.resolve(realOrSame(a));
+  const right = path.resolve(realOrSame(b));
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
 /** The repo/worktree's git common-dir, realpathed for ownership comparisons. */
 function gitCommonDir(dir: string): string | null {
   const r = runGit(dir, ["rev-parse", "--git-common-dir"]);
@@ -422,7 +442,7 @@ function gitCommonDir(dir: string): string | null {
 function sameGitCommonDir(a: string, b: string): boolean {
   const aCommon = gitCommonDir(a);
   const bCommon = gitCommonDir(b);
-  return aCommon !== null && bCommon !== null && aCommon === bCommon;
+  return aCommon !== null && bCommon !== null && samePhysicalPath(aCommon, bCommon);
 }
 
 /**
@@ -439,7 +459,7 @@ function sameGitCommonDir(a: string, b: string): boolean {
  */
 export function worktreeRootResolves(boardPath: string): boolean {
   const boardTop = repoTopLevel(boardPath);
-  return boardTop !== null && realOrSame(boardTop) === realOrSame(boardPath);
+  return boardTop !== null && samePhysicalPath(boardTop, boardPath);
 }
 
 /**
@@ -577,7 +597,19 @@ function shellQuote(s: string): string {
   return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
+/** Single-quote escaping inside a PowerShell script literal. */
+function powershellQuote(s: string): string {
+  return `'${s.replaceAll("'", "''")}'`;
+}
+
 function moveAsideHelp(boardPath: string, note: string): string {
+  if (process.platform === "win32") {
+    return (
+      `powershell.exe -NoProfile -NonInteractive -Command "` +
+      `$ErrorActionPreference='Stop'; Rename-Item -LiteralPath ${powershellQuote(boardPath)} ` +
+      `-NewName ${powershellQuote(`${path.basename(boardPath)}.bak`)} -ErrorAction Stop"`
+    );
+  }
   return `mv ${shellQuote(boardPath)} ${shellQuote(`${boardPath}.bak`)}  # ${note}`;
 }
 
@@ -1337,7 +1369,23 @@ export function snapshotBundleCommit(top: string, bundlePath: string): BundleSna
     // not silently drop otherwise-valid bundle files from the first published commit.
     mustGit(
       bundlePath,
-      ["-c", "core.sparseCheckout=false", "-c", "core.sparseCheckoutCone=false", "add", "-f", "-A", "--", "."],
+      [
+        // The snapshot contract is the source's literal bytes. A Windows user's ambient
+        // core.autocrlf setting is a checkout preference, not bundle policy, so neutralize it at
+        // this one plumbing boundary. Explicit attributes and clean filters remain active and are
+        // still caught by assertBundleBytesMatchCommit below.
+        "-c",
+        "core.autocrlf=false",
+        "-c",
+        "core.sparseCheckout=false",
+        "-c",
+        "core.sparseCheckoutCone=false",
+        "add",
+        "-f",
+        "-A",
+        "--",
+        ".",
+      ],
       snapshotOptions,
     );
     const stagedRows = mustGit(bundlePath, ["ls-files", "--stage", "-z"], snapshotOptions)
@@ -1396,7 +1444,7 @@ export function snapshotBundleCommit(top: string, bundlePath: string): BundleSna
     assertBundleBytesMatchCommit(top, bundlePath, sha);
     return { committed: true, sha, tree, subject, docs };
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 

@@ -2,12 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  classifyHookCommand,
-  classifyHookEntry,
+  classifyHookCommand as classifyHookCommandForPlatform,
+  classifyHookEntry as classifyHookEntryForPlatform,
   isSafeUnquotedHookToken,
   isOwnedHookCompatibility,
-  renderGeneratedHookToken,
-  tokenizeGeneratedHookCommand,
+  renderGeneratedHookToken as renderGeneratedHookTokenForPlatform,
+  tokenizeGeneratedHookCommand as tokenizeGeneratedHookCommandForPlatform,
 } from "../src/hook-compatibility.js";
 import {
   LEXICAL_ENVELOPE_FOREIGN_COMMANDS,
@@ -19,6 +19,18 @@ import {
 
 const stable =
   "/opt/superbee/bin/node /opt/superbee/lib/node_modules/superbee/dist/superbee.mjs session-start";
+
+// Most fixtures below pin the persisted POSIX grammar regardless of the host running the suite.
+// Windows-specific fixtures opt into win32 explicitly.
+const classifyHookCommand = (command: string, platform = "linux") =>
+  classifyHookCommandForPlatform(command, platform);
+const tokenizeGeneratedHookCommand = (command: string, platform = "linux") =>
+  tokenizeGeneratedHookCommandForPlatform(command, platform);
+const renderGeneratedHookToken = (token: string, platform = "linux") =>
+  renderGeneratedHookTokenForPlatform(token, platform);
+const classifyHookEntry = (
+  context: Parameters<typeof classifyHookEntryForPlatform>[0],
+) => classifyHookEntryForPlatform({ ...context, platform: context.platform ?? "linux" });
 
 test("generated command tokenizer accepts emitted quoting and rejects shell behavior", () => {
   assert.deepEqual(tokenizeGeneratedHookCommand(stable), [

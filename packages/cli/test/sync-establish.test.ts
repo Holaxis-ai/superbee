@@ -16,8 +16,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, rm, writeFile, mkdir, rename, symlink } from "node:fs/promises";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { withIsolatedUserEnv } from "./support/user-env.js";
 
 import { initBundle } from "@superbee/core";
 import { sync, SYNC_LOCAL_ONLY_MESSAGE, syncLocalOnlyNote } from "../src/commands/sync.js";
@@ -54,18 +56,7 @@ const INV = cliInvocation();
 // ── scaffolding (mirrors sync.test.ts / sync-establish-committed.test.ts) ─────
 
 async function withHome<T>(home: string, run: () => Promise<T>): Promise<T> {
-  const originalHome = process.env.HOME;
-  const originalUserProfile = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  try {
-    return await run();
-  } finally {
-    if (originalHome === undefined) delete process.env.HOME;
-    else process.env.HOME = originalHome;
-    if (originalUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = originalUserProfile;
-  }
+  return withIsolatedUserEnv(home, run);
 }
 
 async function runSync(home: string, argv: string[]): Promise<{ out: string; err?: CliError }> {
@@ -499,6 +490,23 @@ test("Git clean filters cannot rewrite bundle bytes during establishment", async
     assert.notEqual(gitTry(topo.origin, ["show-ref", "--verify", `refs/heads/${BOARD_BRANCH}`]).status, 0);
   } finally {
     await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("ambient core.autocrlf does not rewrite literal bundle bytes during establishment", async () => {
+  const topo = await makeGreenfieldTopology();
+  try {
+    await initPlainBundleDir(topo.a);
+    git(topo.a.root, ["config", "core.autocrlf", "true"]);
+
+    const expected = readFileSync(path.join(topo.a.board, "index.md"));
+    const snapshot = snapshotBundleCommit(topo.a.root, topo.a.board);
+    assert.deepEqual(
+      execFileSync("git", ["-C", topo.a.root, "show", `${snapshot.sha}:index.md`]),
+      expected,
+    );
+  } finally {
     await topo.cleanup();
   }
 });

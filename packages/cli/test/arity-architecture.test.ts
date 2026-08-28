@@ -33,7 +33,8 @@ function scanProduction(): ArchitectureFacts {
     directParseArgs: [], ownedCalls: [], directArityAssertions: [], runAxiCliCalls: [], violations: [],
   };
   for (const path of sourceFiles(SRC)) {
-    const facts = scanArityArchitecture(relative(SRC, path), readFileSync(path, "utf8"));
+    const relativePath = relative(SRC, path).split("\\").join("/");
+    const facts = scanArityArchitecture(relativePath, readFileSync(path, "utf8"));
     combined.directParseArgs.push(...facts.directParseArgs);
     combined.ownedCalls.push(...facts.ownedCalls);
     combined.directArityAssertions.push(...facts.directArityAssertions);
