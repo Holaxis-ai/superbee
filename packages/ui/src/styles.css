@@ -3,42 +3,51 @@
    hatch. */
 
 /*
- * Holaxis visual system (launcher + shared shell chrome ONLY — a sandboxed page's own bytes are
+ * Superbee visual system (launcher + shared shell chrome ONLY — a sandboxed page's own bytes are
  * bundle content and never touched by this file). Light-first tokens below; the
  * `prefers-color-scheme: dark` block overrides them for dark surfaces. Brand color follows a
- * semantic rule, not a decorative one:
- *   --color-structure (Signal Blue)   = identity/structure — the header accent, focus rings, the
- *                                       primary navigational affordances (back button, wordmark).
- *   --color-process   (Ecosystem Teal) = an active/open state — a card you're about to open, the
- *                                        bar of the page you're currently inside.
- *   --color-signal    (Signal Amber)  = a revealed/freshness cue — a card's "when" provenance.
+ * semantic rule, not a decorative one, and Superbee runs TWO roles where Holaxis runs three:
+ *   --color-structure = structure AND state — the header accent, focus rings, navigational
+ *                       affordances, and the active/open cue. State is carried by INTENSITY,
+ *                       not by a second hue: encoding state with its own hue is a UI smell,
+ *                       because hue should carry kind.
+ *   --color-signal    = liveness and the revealed answer — a card's "when" provenance, live data.
+ * There is deliberately no third accent. Superbee withdrew teal (decisions/brand-architecture);
+ * quiet metadata (kinds, relationship verbs, statuses) uses --text-secondary rather than an accent,
+ * which keeps the two accents meaningful instead of decorative.
  */
 :root {
   color-scheme: light dark;
 
-  --surface-bg: #f8f6f2; /* Paper */
+  --surface-bg: #f3f7fa; /* Porcelain — the Superbee application ground */
   --surface-card: #ffffff; /* White */
-  --surface-alt: #edf0f3; /* Mist */
-  --rule: #e0ddd8;
+  --surface-alt: #e9eff4; /* a step down from Porcelain, same cool hue */
+  --rule: #dadee2; /* Rule Cool — a warm rule on a cool ground reads wrong */
 
   --text-primary: #0f1a24; /* Ink */
   --text-secondary: #4a5d6e; /* Slate */
   --text-tertiary: #9aaab8; /* Ghost */
 
-  --color-structure: #1b6a9e; /* Signal Blue */
-  --color-process: #0a8a7a; /* Ecosystem Teal */
-  --color-signal: #b8832a; /* Signal Amber */
+  --color-structure: #0073b0; /* Superbee blue, light surfaces — 4.78:1 on Porcelain */
+  --color-signal: #956300; /* Superbee amber, light surfaces — 4.80:1 on Porcelain */
   --color-danger: #b00020;
+  /* Mark only — brands.superbee.mark. NOT palette entries: the hexagon amber is lighter than
+     --color-signal on purpose, and the chevron flips per ground. Do not use these as UI colours. */
+  --mark-hexagon: #e09707;
+  --mark-chevron: #1b6a9e; /* chevronOnLight */
   --on-accent: #ffffff; /* text over a solid accent fill (both themes keep the accents dark enough) */
 
   --radius: 2px;
 
-  /* Self-hosted (see ./assets/fonts) — the only web font this app loads, a Latin-subset woff2
-     with no external request (offline-first + the strict CSP both rule out a Google Fonts CDN
-     load). Body/mono stay tasteful system stacks evoking DM Sans / JetBrains Mono. */
-  --font-display: "Cormorant Garamond", Georgia, "Iowan Old Style", "Palatino Linotype", serif;
-  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Consolas, monospace;
+  /* All three self-hosted (see ./assets/fonts) as Latin-subset variable woff2, with no external
+     request — offline-first and the strict CSP both rule out a Google Fonts CDN load. These are
+     the same three faces getsuperbee.com ships, so the tool and the site read as one product.
+     Mono means MACHINE-LITERAL here: paths, counts, timestamps, SHAs, uppercase micro-labels.
+     It is never the display face — setting prose in mono asserts the text is a machine value,
+     and this surface renders human-written bundle content. */
+  --font-display: "Space Grotesk", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-body: "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -52,15 +61,35 @@
     --text-secondary: #b7c4d1;
     --text-tertiary: #7e8fa0;
 
-    --color-signal: #e0aa40; /* Gold — amber's dark-surface counterpart */
+    /* The Superbee display set, 7.3:1 on Night. The light values above are hue-held
+       derivations of exactly these, so the two themes are the same colors at two lightnesses. */
+    --color-structure: #3caef9;
+    --color-signal: #e09707;
     --color-danger: #f2707a;
+    --mark-chevron: #3caef9; /* chevronOnDark */
   }
 }
 
 @font-face {
-  font-family: "Cormorant Garamond";
-  src: url("./assets/fonts/cormorant-garamond-500.woff2") format("woff2");
-  font-weight: 500;
+  font-family: "Space Grotesk";
+  src: url("./assets/fonts/space-grotesk-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 300 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "DM Sans";
+  src: url("./assets/fonts/dm-sans-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 100 1000;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono-latin-wght-normal.woff2") format("woff2-variations");
+  font-weight: 100 800;
   font-style: normal;
   font-display: swap;
 }
@@ -85,6 +114,14 @@ body {
 .app-mark {
   flex: none;
   display: block;
+}
+
+.app-mark-hex {
+  fill: var(--mark-hexagon);
+}
+
+.app-mark-chevron {
+  fill: var(--mark-chevron);
 }
 
 .app-title {
@@ -207,9 +244,9 @@ body {
   gap: 0.35rem;
 }
 
-/* Teal — you are about to make this the active/open page. */
+/* The active/open cue is the STRUCTURE colour at full strength, not a second hue. */
 .launcher-card:hover {
-  border-color: var(--color-process);
+  border-color: var(--color-structure);
   transform: translateY(-1px);
 }
 
@@ -600,8 +637,8 @@ body {
   font-size: 0.66rem;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--color-process);
-  border: 1px solid color-mix(in srgb, var(--color-process) 40%, transparent);
+  color: var(--color-structure);
+  border: 1px solid color-mix(in srgb, var(--color-structure) 40%, transparent);
   border-radius: var(--radius);
   padding: 0.05rem 0.4rem;
 }
@@ -653,10 +690,10 @@ body {
   background: currentColor;
 }
 
-/* Teal — reads live data (the active/open accent). */
+/* Live data is a LIVENESS cue, so it takes the signal colour, not the structure one. */
 .badge-read {
-  color: var(--color-process);
-  border-color: color-mix(in srgb, var(--color-process) 40%, transparent);
+  color: var(--color-signal);
+  border-color: color-mix(in srgb, var(--color-signal) 40%, transparent);
 }
 
 /* Blue — may propose confirmed writes (structure/identity: the trusted-shell loop). */
@@ -730,7 +767,7 @@ body {
 }
 
 .feed-status {
-  color: var(--color-process);
+  color: var(--text-secondary);
 }
 
 /* Ownership is the answer to "who is on this" — the question the actor was being misread as. */
@@ -910,7 +947,7 @@ body {
   flex: 0 0 auto;
   font-family: var(--font-mono);
   font-size: 0.72rem;
-  color: var(--color-process);
+  color: var(--text-secondary);
 }
 
 .browse-title {
@@ -1228,7 +1265,7 @@ body {
   font-size: 0.74rem;
   text-transform: none;
   letter-spacing: 0;
-  color: var(--color-process);
+  color: var(--color-structure);
 }
 
 /* "Related" isn't a declared relationship — mute it so the typed verbs read as the real structure. */
@@ -1290,7 +1327,7 @@ body {
   text-align: right;
   font-family: var(--font-mono);
   font-size: 0.76rem;
-  color: var(--color-process);
+  color: var(--color-structure);
 }
 
 .doc-edge-arrow {
@@ -1322,7 +1359,7 @@ body {
   gap: 0.9rem;
   padding: 0.5rem 1rem;
   background: var(--surface-card);
-  border-bottom: 2px solid var(--color-process);
+  border-bottom: 2px solid var(--color-structure);
 }
 
 .page-back {

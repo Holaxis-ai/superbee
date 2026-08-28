@@ -17,8 +17,8 @@ answer.
    CLI.
 5. Develop with Node.js 20 or newer on macOS, Linux, or Windows. Windows private state lives under
    `%LOCALAPPDATA%` and relies on that per-user known folder's ACL boundary; POSIX hosts additionally
-   verify private file modes. The required `windows-latest` lane runs every workspace test natively
-   and installs the packed CLI on Node 20.
+   verify private file modes. The manually dispatched `windows-latest` proof runs every workspace
+   test natively and installs the packed CLI on Node 20 for a release candidate or targeted check.
 
 A fresh clone does not need an installed Agent Skill or a project bundle to build, test, or submit
 code. It does need the maintainer-supplied bundle or an exact scoped handoff to claim project
@@ -92,11 +92,11 @@ the same unit.
 | --- | --- | --- | --- |
 | runtime | `npm run ci:runtime` | `runtime` | 22, 26 |
 | aliasing-host | `npm run ci:aliasing-host` | `aliasing-host` | 26 |
-| windows | workflow only | `windows` | 22, 20 |
-| smoke-node-20 | workflow only | `smoke-node-20` | 20 |
+| windows | workflow_dispatch only | `windows` | 22, 20 |
 | distribution | `npm run ci:distribution` | `distribution` | 26 |
 | browser | `npm run ci:browser` | `browser` | 26 |
 | scripts | `npm run ci:scripts` | `scripts` | 26 |
+| smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 <!-- contributing-ci-lanes:end -->
 
 Minimum iteration lanes by reach:
@@ -111,14 +111,15 @@ Minimum iteration lanes by reach:
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 
 A CI topology change must update `scripts/ci-lanes.json` and this table in the same unit; never
-add path skipping without a separately reviewed fail-closed classifier. CI runs on Linux, Windows,
+add path skipping without a separately reviewed fail-closed classifier. Automatic CI runs on Linux
 plus the `aliasing-host` lane, which runs `npm run ci:aliasing-host` on macOS with
 `SUPERBEE_TEST_EXPECT_ALIASING_HOST=1` (the Linux runtime jobs set `0`) so tests whose native
 branch needs a case-aliasing filesystem execute and fail closed on a mismatched host. The lane's
 scope is a constraint, not a list: `scripts/aliasing-host-coverage.test.mjs` fails when a
-host-sensitive workspace test is not executed by the lane's script chain. The Windows lane runs the
-complete workspace contract on Node 22 and then installs and drives the exact packed npm artifact on
-Node 20; a Linux-only green result cannot substitute for it.
+host-sensitive workspace test is not executed by the lane's script chain. The manually dispatched
+`.github/workflows/windows-installed-package.yml` runs the Windows contract on Node 22 and then
+installs and drives the exact packed npm artifact on Node 20. Run it against a release candidate or
+when Windows behavior changes; a Linux-only green result cannot substitute for that explicit proof.
 
 ### Running checks
 

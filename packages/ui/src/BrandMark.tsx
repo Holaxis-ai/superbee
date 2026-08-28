@@ -1,7 +1,20 @@
 /**
- * The Holaxis chevron mark, inlined (no external image request — the strict CSP and
- * offline-first posture both rule that out). Purely decorative next to the wordmark button in
- * the app header; `aria-hidden` since the header's own text already names the app.
+ * The Superbee mark, inlined (no external image request — the strict CSP and the offline-first
+ * posture both rule that out). Two paths against the Holaxis chevron's nine: an amber hexagon
+ * with a knocked-out centre, and a chevron inside it.
+ *
+ * Geometry is COPIED, never redrawn. It is generated from locked parameters in the brand kit
+ * (`scripts/superbee-mark.js`, geometry locked in plans/superbee-brand-buildout T4: regular
+ * pointy-top hexagon, chevron arms at 45 degrees with horizontal caps) and the committed asset
+ * set is hash-checked there. Any change belongs upstream in the kit, not here — the mark is a
+ * trademark asset (tasks/superbee-trademark-protection).
+ *
+ * The chevron is the only theme-dependent part: `brands.superbee.mark` specifies
+ * `chevronOnDark` #3CAEF9 and `chevronOnLight` #1B6A9E, so it is driven by a token the theme
+ * blocks in styles.css set rather than duplicating a media query here. The hexagon is the same
+ * amber on both grounds.
+ *
+ * `aria-hidden` — the header's own text already names the app.
  */
 export function BrandMark({ size = 22 }: { size?: number }) {
   return (
@@ -9,40 +22,20 @@ export function BrandMark({ size = 22 }: { size?: number }) {
       className="app-mark"
       width={size}
       height={size}
-      viewBox="664.63 10.94 342 342"
+      viewBox="0 0 512 512"
       fill="none"
       aria-hidden="true"
       xmlns="http://www.w3.org/2000/svg"
     >
-      <defs>
-        <linearGradient id="app-mark-g0" x1="730.35" y1="181.94" x2="986.39" y2="181.94" gradientUnits="userSpaceOnUse">
-          <stop offset="0.5" stopColor="#F6CF59" stopOpacity="0" />
-          <stop offset="1" stopColor="#F6CF59" />
-        </linearGradient>
-        <mask id="app-mark-m0" maskUnits="userSpaceOnUse" x="710.35" y="38.39" width="296.04" height="287.1">
-          <path fill="white" d="M858.37 58.39L986.39 181.94L858.37 305.49Z" />
-          <path fill="black" d="M846.94 58.39L974.96 181.94L846.94 305.49L718.92 181.94Z" />
-        </mask>
-        <linearGradient id="app-mark-g2" x1="707.49" y1="181.94" x2="963.53" y2="181.94" gradientUnits="userSpaceOnUse">
-          <stop offset="0.5" stopColor="#24A898" stopOpacity="0" />
-          <stop offset="1" stopColor="#24A898" />
-        </linearGradient>
-        <mask id="app-mark-m2" maskUnits="userSpaceOnUse" x="687.49" y="38.39" width="296.04" height="287.1">
-          <path fill="white" d="M835.51 58.39L963.53 181.94L835.51 305.49Z" />
-          <path fill="black" d="M824.08 58.39L952.1 181.94L824.08 305.49L696.06 181.94Z" />
-        </mask>
-        <linearGradient id="app-mark-g4" x1="684.63" y1="181.94" x2="940.67" y2="181.94" gradientUnits="userSpaceOnUse">
-          <stop offset="0.5" stopColor="#3892CD" stopOpacity="0" />
-          <stop offset="1" stopColor="#3892CD" />
-        </linearGradient>
-        <mask id="app-mark-m4" maskUnits="userSpaceOnUse" x="664.63" y="38.39" width="296.04" height="287.1">
-          <path fill="white" d="M812.65 58.39L940.67 181.94L812.65 305.49Z" />
-          <path fill="black" d="M801.22 58.39L929.24 181.94L801.22 305.49L673.2 181.94Z" />
-        </mask>
-      </defs>
-      <rect x="730.35" y="58.39" width="256.04" height="247.1" fill="url(#app-mark-g0)" mask="url(#app-mark-m0)" />
-      <rect x="707.49" y="58.39" width="256.04" height="247.1" fill="url(#app-mark-g2)" mask="url(#app-mark-m2)" />
-      <rect x="684.63" y="58.39" width="256.04" height="247.1" fill="url(#app-mark-g4)" mask="url(#app-mark-m4)" />
+      <path
+        className="app-mark-hex"
+        fillRule="evenodd"
+        d="M 256.00 19.99 L 51.61 138.00 L 51.61 374.00 L 256.00 492.01 L 460.39 374.00 L 460.39 138.00 Z M 256.00 63.32 L 89.14 159.66 L 89.14 352.34 L 256.00 448.68 L 422.86 352.34 L 422.86 159.66 Z"
+      />
+      <path
+        className="app-mark-chevron"
+        d="M 238.93 143.42 L 351.50 256.00 L 238.93 368.58 L 160.50 368.58 L 273.07 256.00 L 160.50 143.42 Z"
+      />
     </svg>
   );
 }
