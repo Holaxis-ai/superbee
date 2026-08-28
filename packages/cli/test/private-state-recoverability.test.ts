@@ -184,15 +184,14 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
     // `setup` is a read-only conductor: it REPORTS the block and prescribes the exit node.
     expectStatus: 0,
-    help: /"command":"superbee setup quarantine-state"/,
+    help: /"command":\["superbee","setup","quarantine-state"\]/,
     inspectRefusal: (output) => {
-      assert.equal(
-        (JSON.parse(output) as SetupEnvelope).setup.next.action,
-        "inspect",
-        "quarantine remains an explicit operator decision after inspecting foreign state",
-      );
+      const next = (JSON.parse(output) as SetupEnvelope).setup.next;
+      assert.equal(next.action, "inspect");
+      assert.equal(next.mutates, true);
+      assert.equal(next.approval.required, true, "a destructive preservation move requires caller approval");
     },
-    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    remedy: (output) => ({ command: actionCommand((JSON.parse(output) as SetupEnvelope).setup.next.command) }),
     effect: "changes-state",
     verify: (f, executed) => {
       assert.equal(existsSync(f.stateRoot), false, "the blocked root must be moved aside");
@@ -226,7 +225,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     verify: (_f, executed) => {
       assert.match(executed.stdout, /capabilities\[1\]\{id,requirement,state,reason,command\}/);
       assert.match(executed.stdout, /state,required,blocked,/);
-      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command: superbee setup quarantine-state/);
+      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command\[\d+]:/);
     },
   },
   {
@@ -241,14 +240,14 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
     // `setup` is a read-only conductor: it REPORTS the drift and prescribes the exit node.
     expectStatus: 0,
-    help: /"command":"superbee setup harden-state"/,
+    help: /"command":\["superbee","setup","harden-state"\]/,
     inspectRefusal: (output) => {
       const row = stateRow(output);
       assert.equal(row.state, "needs_action", "a recognized, repairable root is not blocked");
       assert.doesNotMatch(row.reason, /unrecognized/, "and it is never described as unrecognized");
       assert.doesNotMatch(row.command ?? "", /\bmv\b/, "proportionality: no quarantine for a root we repair");
     },
-    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    remedy: (output) => ({ command: actionCommand((JSON.parse(output) as SetupEnvelope).setup.next.command) }),
     effect: "changes-state",
     verify: (f) => {
       assert.equal(statSync(f.stateRoot).mode & 0o777, 0o700, "the emitted repair must actually tighten the root");
@@ -271,14 +270,14 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     },
     trigger: () => ({ argv: ["setup", "--host", "codex", "--json"], commandLine: "superbee setup --host codex --json" }),
     expectStatus: 0,
-    help: /"command":"superbee setup harden-state"/,
+    help: /"command":\["superbee","setup","harden-state"\]/,
     inspectRefusal: (output) => {
       const row = stateRow(output);
       assert.equal(row.state, "needs_action");
       assert.doesNotMatch(row.command ?? "", /\bmv\b/, "a quarantine here would destroy the only copy");
       assert.doesNotMatch(row.command ?? "", /\brm\b/);
     },
-    remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
+    remedy: (output) => ({ command: actionCommand((JSON.parse(output) as SetupEnvelope).setup.next.command) }),
     effect: "changes-state",
     verify: (f) => {
       assertDurableRecordsIntact(f);
@@ -337,9 +336,20 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
 
 interface SetupEnvelope {
   readonly setup: {
-    readonly next: { readonly command: string };
+    readonly next: {
+      readonly action: string;
+      readonly command: readonly string[];
+      readonly mutates: boolean;
+      readonly approval: { readonly required: boolean };
+    };
     readonly capabilities: readonly { readonly id: string; readonly state: string; readonly reason: string; readonly command?: string }[];
   };
+}
+
+/** Recover the exact shell program from the explicit agent argv protocol for execution testing. */
+function actionCommand(command: readonly string[]): string {
+  if (command[0] === "sh" && command[1] === "-c" && command.length === 3) return command[2]!;
+  return command.join(" ");
 }
 
 /**

@@ -514,7 +514,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("setupQuarantineState", "setup quarantine-state", zero),
         ],
         usage: "setup [migrate-state|harden-state|quarantine-state] [--host codex|claude-code|claude-desktop|opencode] [--scope project|user] [--json]",
-        summary: "Inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then emit one deterministic safe next command",
+        summary: "Agent-driven setup: inspect npm, private state, Skill, Hook, MCP, bundle, and catalog readiness, then return one deterministic action for the calling agent to execute",
       },
     ],
   },
