@@ -159,6 +159,8 @@ function mutatesCapability(capability: SetupCapability): boolean {
   if (capability.id === "catalog") return command.startsWith("superbee catalog add ");
   if (capability.id === "state") {
     return command.startsWith("superbee setup migrate-state")
+      || command.startsWith("superbee setup harden-state")
+      || command.startsWith("superbee setup quarantine-state")
       || command.startsWith("chmod ")
       || command.includes(" mv ");
   }
@@ -192,6 +194,8 @@ function actionDescription(capability: SetupCapability): string {
   if (command.startsWith("superbee mcp install")) return "Install Superbee's MCP registration for the selected host.";
   if (command.startsWith("superbee hook install")) return "Install Superbee's SessionStart hook for the selected scope.";
   if (command.startsWith("superbee setup migrate-state")) return "Migrate validated legacy private state into Superbee's canonical user-state directory.";
+  if (command.startsWith("superbee setup harden-state")) return "Repair permissions on Superbee's recognized private-state directory.";
+  if (command.startsWith("superbee setup quarantine-state")) return "Preserve unrecognized private state by moving it aside before setup continues.";
   if (command.startsWith("npm install ")) return "Install Superbee into the user's global npm prefix.";
   if (command.startsWith("superbee init ")) return "Create the requested project-local Superbee bundle.";
   return capability.reason;
