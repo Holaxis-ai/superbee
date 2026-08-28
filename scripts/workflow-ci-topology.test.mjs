@@ -101,6 +101,133 @@ function awaitedCall(statement) {
   };
 }
 
+function proofNodes(root, predicate) {
+  const matches = [];
+  function visit(node) {
+    if (predicate(node)) matches.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(root);
+  return matches;
+}
+
+function staticMemberPath(node) {
+  if (ts.isIdentifier(node)) return node.text;
+  if (ts.isPropertyAccessExpression(node)) {
+    const owner = staticMemberPath(node.expression);
+    return owner ? `${owner}.${node.name.text}` : undefined;
+  }
+  if (ts.isElementAccessExpression(node) && node.argumentExpression
+    && (ts.isStringLiteral(node.argumentExpression) || ts.isNoSubstitutionTemplateLiteral(node.argumentExpression))) {
+    const owner = staticMemberPath(node.expression);
+    return owner ? `${owner}.${node.argumentExpression.text}` : undefined;
+  }
+  return undefined;
+}
+
+function validateProofCompletionAuthority(program, lifecycle, completionAssertion, successWrite) {
+  assert.ok(
+    ts.isExpressionStatement(successWrite) && ts.isCallExpression(successWrite.expression),
+    "the native proof must retain one terminal success statement",
+  );
+  const successCall = successWrite.expression;
+  assert.equal(
+    successWrite.getText(),
+    [
+      "process.stdout.write(`${JSON.stringify({",
+      "    platform: process.platform,",
+      '    artifact: "exact installed npm tarball",',
+      '    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "mcp-config-lifecycle"],',
+      "  })}\\n`);",
+    ].join("\n"),
+    "the native proof terminal success payload must retain its reviewed receipt",
+  );
+
+  const calls = proofNodes(program, ts.isCallExpression);
+  const memberAccesses = proofNodes(program, (node) =>
+    ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)
+  );
+  const stdoutAuthorities = memberAccesses.filter((node) => staticMemberPath(node) === "process.stdout.write");
+  assert.equal(stdoutAuthorities.length, 1, "the native proof permits exactly one stdout authority");
+  assert.equal(
+    stdoutAuthorities[0],
+    successCall.expression,
+    "the native proof stdout authority must be the terminal success statement",
+  );
+  const stdoutObjects = memberAccesses.filter((node) => staticMemberPath(node) === "process.stdout");
+  assert.equal(stdoutObjects.length, 1, "the native proof cannot alias its stdout authority");
+  assert.equal(stdoutObjects[0].parent, successCall.expression);
+
+  const exitAuthorities = memberAccesses.filter((node) =>
+    ["process.exit", "process.exitCode", "process.abort"].includes(staticMemberPath(node))
+  );
+  assert.equal(exitAuthorities.length, 0, "the native proof permits no process exit authority");
+
+  const outputAuthorities = memberAccesses.filter((node) =>
+    [
+      "process.stdout.end",
+      "process.stderr.write",
+      "process.stderr.end",
+      "console.log",
+      "console.info",
+      "console.warn",
+      "console.error",
+    ].includes(staticMemberPath(node))
+  );
+  assert.equal(outputAuthorities.length, 0, "the native proof permits no alternate success-shaped output authority");
+
+  const successHandlers = calls.filter((call) => {
+    const callee = staticMemberPath(call.expression);
+    const memberName = ts.isPropertyAccessExpression(call.expression)
+      ? call.expression.name.text
+      : ts.isElementAccessExpression(call.expression)
+        && call.expression.argumentExpression
+        && (ts.isStringLiteral(call.expression.argumentExpression)
+          || ts.isNoSubstitutionTemplateLiteral(call.expression.argumentExpression))
+        ? call.expression.argumentExpression.text
+        : undefined;
+    if (memberName === "then") return true;
+    if (!callee) return false;
+    if (!["process.on", "process.once", "process.addListener", "process.prependListener"].includes(callee)) {
+      return false;
+    }
+    return ['"exit"', "'exit'", '"beforeExit"', "'beforeExit'"].includes(call.arguments[0]?.getText());
+  });
+  assert.equal(successHandlers.length, 0, "the native proof permits no alternate success handler");
+
+  const runnerReferences = proofNodes(program, (node) =>
+    ts.isIdentifier(node) && node.text === "runInstalledPackageProof"
+  );
+  const completionStatement = successWrite.parent.statements[0];
+  assert.ok(ts.isVariableStatement(completionStatement));
+  const completionAwait = completionStatement.declarationList.declarations[0]?.initializer;
+  assert.ok(ts.isAwaitExpression(completionAwait));
+  const runnerCall = completionAwait.expression;
+  assert.ok(ts.isCallExpression(runnerCall), "the native proof terminal entrypoint must call its lifecycle runner");
+  assert.equal(runnerReferences.length, 2, "the native proof permits one lifecycle runner authority");
+  assert.equal(runnerReferences[0], lifecycle.name, "the lifecycle runner authority must begin at its declaration");
+  assert.equal(runnerReferences[1], runnerCall.expression, "the lifecycle runner authority must end at the terminal call");
+
+  const completionReturn = lifecycle.body.statements.at(-1);
+  assert.ok(ts.isReturnStatement(completionReturn), "the lifecycle runner must return its completion token");
+  assert.ok(
+    ts.isExpressionStatement(completionAssertion) && ts.isCallExpression(completionAssertion.expression),
+    "the terminal entrypoint must assert the lifecycle completion token",
+  );
+  const completionAssertionCall = completionAssertion.expression;
+  const completionTokenDeclaration = program.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((declaration) => declaration.name.getText() === "installedPackageProofComplete");
+  const completionTokenReferences = proofNodes(program, (node) =>
+    ts.isIdentifier(node) && node.text === "installedPackageProofComplete"
+  );
+  assert.equal(completionTokenReferences.length, 3, "the native proof permits one completion-token authority path");
+  assert.equal(completionTokenReferences[0], completionTokenDeclaration?.name);
+  assert.equal(completionTokenReferences[1], completionReturn.expression);
+  assert.equal(completionTokenReferences[2], completionAssertionCall.arguments[1]);
+}
+
 function validateProofTopLevel(program) {
   const expectedImports = [
     "node:assert/strict",
@@ -290,6 +417,7 @@ function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProof)
       && successWrite.expression.expression.getText() === "process.stdout.write",
     "the native proof must report success only after the complete lifecycle runner",
   );
+  validateProofCompletionAuthority(program, lifecycle, completionAssertion, successWrite);
   assert.equal(entryTry.catchClause, undefined, "the native proof entrypoint cannot convert failures to success");
   assert.equal(entryTry.finallyBlock?.statements.length, 1, "the native proof entrypoint must retain one cleanup action");
   assert.deepEqual(
@@ -556,7 +684,35 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
         '} catch {\n  process.stdout.write("installed package proof passed\\n");\n} finally {',
       ),
     ),
-    /cannot convert failures to success/,
+    /stdout authority|cannot convert failures to success/,
+  );
+  const helperStart = "async function proveCatalogLifecycle() {";
+  for (const [authority, error] of [
+    ['process.stdout.write("installed package proof passed\\n");', /stdout authority/],
+    ["process.exit(0);", /process exit authority/],
+    ['process["exit"](0);', /process exit authority/],
+    ["process.exitCode = 0;", /process exit authority/],
+    ['console.log("installed package proof passed");', /success-shaped output authority/],
+    ["await runInstalledPackageProof();", /lifecycle runner authority/],
+    ["Promise.resolve().then(() => undefined);", /success handler/],
+    ["return installedPackageProofComplete;", /completion-token authority/],
+  ]) {
+    assert.throws(
+      () => validateWindowsInstalledProof(
+        windowsJob,
+        lane,
+        windowsInstalledProof.replace(helperStart, `${helperStart}\n  ${authority}`),
+      ),
+      error,
+    );
+  }
+  assert.throws(
+    () => validateWindowsInstalledProof(
+      windowsJob,
+      lane,
+      windowsInstalledProof.replace('artifact: "exact installed npm tarball"', 'artifact: "success"'),
+    ),
+    /terminal success payload/,
   );
 });
 
