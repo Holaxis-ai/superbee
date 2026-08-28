@@ -209,14 +209,13 @@ export function setupNextForCapability(
   const mutates = mutatesCapability(capability);
   const approval = approvalFor(capability, mutates);
   return {
-    // A mutating recovery remains executable only through the explicit approval gate. Other
-    // blocked rows are diagnostics and therefore remain inspect actions.
-    action: capability.command.includes("<")
-      ? "choose_value"
-      : mutates
-        ? "run"
-        : capability.state === "blocked"
+    // A blocked row represents uncertainty or foreign state. Keep every such remedy in the
+    // inspect phase: approval metadata describes a later mutation, but never makes an unknown
+    // state directly runnable before the operator has inspected the conflict.
+    action: capability.state === "blocked"
       ? "inspect"
+      : capability.command.includes("<")
+        ? "choose_value"
         : "run",
     ...(capability.command.includes("<")
       ? { command_template: commandForInvocation(capability.command, invocation) }

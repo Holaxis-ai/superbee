@@ -187,7 +187,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     help: /"command":\["superbee","setup","quarantine-state"\]/,
     inspectRefusal: (output) => {
       const next = (JSON.parse(output) as SetupEnvelope).setup.next;
-      assert.equal(next.action, "run");
+      assert.equal(next.action, "inspect");
       assert.equal(next.mutates, true);
       assert.equal(next.approval.required, true, "a destructive preservation move requires caller approval");
     },
@@ -225,7 +225,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     verify: (_f, executed) => {
       assert.match(executed.stdout, /capabilities\[1\]\{id,requirement,state,reason,command\}/);
       assert.match(executed.stdout, /state,required,blocked,/);
-      assert.match(executed.stdout, /next:\n\s+action: run\n\s+command\[\d+\]:/);
+      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command\[\d+]:/);
     },
   },
   {

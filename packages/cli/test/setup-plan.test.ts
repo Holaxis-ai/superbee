@@ -91,7 +91,7 @@ test("fallback invocation rewrites executable heads, not operands or private-sta
     },
   })));
   assert.deepEqual(quarantine.command, ["npx", "--no-install", "superbee", "setup", "quarantine-state"]);
-  assert.equal(quarantine.action, "run");
+  assert.equal(quarantine.action, "inspect");
   assert.equal(quarantine.mutates, true);
   assert.equal(quarantine.approval.required, true);
 
@@ -106,6 +106,9 @@ test("fallback invocation rewrites executable heads, not operands or private-sta
     "sh", "-c",
     'superbee_quarantine="$(mktemp -d ~/.superbee-state.unrecognized.XXXXXX)" && mv ~/.superbee-state "$superbee_quarantine"/ && npx --no-install superbee setup',
   ]);
+  assert.equal(shellRecovery.action, "inspect");
+  assert.equal(shellRecovery.mutates, true);
+  assert.equal(shellRecovery.approval.required, true);
 
   const inspect = next(buildSetupPlan(input({
     state: {
