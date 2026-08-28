@@ -48,7 +48,6 @@ import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
 
 import { ConcurrentReplacementError, FilesystemIdentityAliasError, InvalidInputError } from "./errors.js";
 import { acquireFilesystemIdentityLock } from "./filesystem-lock.js";
@@ -113,48 +112,30 @@ export interface FilesystemIdentityPort {
   claim(key: string, identity: IdentityDescriptor): Promise<() => Promise<void>>;
 }
 
-const WINDOWS_REPLACE_RETRY_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
-const WINDOWS_REPLACE_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320] as const;
+const WINDOWS_REPLACE_CONFLICT_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
 
 /**
  * Windows can transiently deny replacement while another process is closing a read handle or a
- * scanner holds the destination. Retry only an already-realized exact leaf whose spelling and
- * inode still match the original witness after each backoff, and only the errno values Node uses
- * for Windows sharing/access violations; every other rename failure remains immediate, and the
- * finite backoff preserves a bounded failure mode.
+ * scanner holds the destination. An in-place rename retry cannot remain bound to the complete
+ * parent-and-leaf observation: either can change after any final check. Abort this attempt instead,
+ * mapping only the errno values Node uses for a Windows replacement sharing violation to the typed
+ * contention signal owned by the higher-level fresh read/decide/CAS loop. Every other platform and
+ * errno remains the original immediate failure.
  */
 async function replaceExistingLeaf(
   port: FilesystemIdentityPort,
   tmp: string,
   target: string,
   rel: string,
-  leaf: string,
-  realized: EntryWitness,
 ): Promise<void> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      await port.rename(tmp, target);
-      return;
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code ?? "";
-      if (
-        (port.platform ?? process.platform) !== "win32" ||
-        !WINDOWS_REPLACE_RETRY_CODES.has(code) ||
-        attempt >= WINDOWS_REPLACE_RETRY_DELAYS_MS.length
-      ) {
-        throw err;
-      }
-      await delay(WINDOWS_REPLACE_RETRY_DELAYS_MS[attempt]);
-      const listing = await port.entries(path.dirname(target));
-      if (listing === null) throw new ConcurrentReplacementError(rel, attempt + 1);
-      const verdict = classifyLeaf({
-        listed: hasExact(listing, leaf),
-        probe: await probeSegment(port, target, rel, leaf),
-        handle: realized,
-      });
-      if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, leaf);
-      if (verdict !== "exact") throw new ConcurrentReplacementError(rel, attempt + 1);
+  try {
+    await port.rename(tmp, target);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? "";
+    if ((port.platform ?? process.platform) === "win32" && WINDOWS_REPLACE_CONFLICT_CODES.has(code)) {
+      throw new ConcurrentReplacementError(rel, 1, 10);
     }
+    throw err;
   }
 }
 
@@ -738,7 +719,7 @@ export async function mutateExact<T>(
             if (realized.state === "exact") {
               // Replace: the target exists under our exact spelling, so any writer of an
               // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
-              await replaceExistingLeaf(port, tmp, target, rel, leaf, realized.leaf);
+              await replaceExistingLeaf(port, tmp, target, rel);
               return;
             }
             if (linkUnsupportedRoots.has(rootResolved)) {

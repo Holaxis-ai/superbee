@@ -596,23 +596,56 @@ test("AC-4: an existing leaf is read for CAS before mkdir/write, replaced by ren
   assert.equal(port.openCount, 0);
 });
 
-test("AC-4: Windows existing-leaf replacement retries only bounded sharing failures", async () => {
+test("AC-4: Windows existing-leaf replacement maps sharing failures to a fresh-attempt conflict", async () => {
   for (const code of ["EACCES", "EBUSY", "EPERM"]) {
     const port = new ScriptedPort({ platform: "win32" });
     port.file(TARGET, "old", 9);
-    let failures = 2;
-    port.override("rename", async (_args, base) => {
-      if (failures-- > 0) throw Object.assign(new Error(code), { code });
-      return base();
+    port.override("rename", async () => {
+      throw Object.assign(new Error(code), { code });
     });
 
-    assert.equal(await mutateExact(port, ROOT, REL, casWrite("old")), "written");
-    assert.equal(port.ops("rename").length, 3, code);
-    assert.equal(port.node(TARGET)?.bytes.toString(), "new");
+    await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+    assert.equal(port.ops("rename").length, 1, code);
+    assert.equal(port.node(TARGET)?.bytes.toString(), "old");
+    assert.equal(port.ops("unlink").length, 1, "the failed attempt removes its own temporary file");
   }
 });
 
-test("AC-4: Windows replacement retry preserves a newer exact-leaf generation after a transient failure", async () => {
+test("AC-4: Windows sharing failure cannot overwrite through a concurrently respelled parent", async () => {
+  const port = new ScriptedPort({ platform: "win32", aliasing: true });
+  port.file(TARGET, "old", 9);
+  const respelledTarget = path.join(ROOT, "Concepts", "x.md");
+  port.override("rename", async () => {
+    port.respell(CONCEPTS, "Concepts");
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "the current attempt never retries rename");
+  assert.equal(port.node(respelledTarget)?.bytes.toString(), "old");
+  assert.deepEqual(
+    [...port.node(path.dirname(respelledTarget))!.children.keys()],
+    ["x.md"],
+    "the failed attempt cleans its own temp through the host-equated parent spelling",
+  );
+});
+
+test("AC-4: Windows sharing failure cannot overwrite a replacement parent that reuses the leaf witness", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    port.remove(CONCEPTS);
+    port.file(TARGET, "external", 9);
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "a matching leaf inode cannot authorize a retry through a new parent");
+  assert.equal(port.node(TARGET)?.bytes.toString(), "external");
+  assert.deepEqual([...port.node(CONCEPTS)!.children.keys()], ["x.md"], "no temp is left in the replacement parent");
+});
+
+test("AC-4: Windows sharing failure preserves a newer exact-leaf generation", async () => {
   const port = new ScriptedPort({ platform: "win32" });
   port.file(TARGET, "old", 9);
   let first = true;
@@ -635,7 +668,21 @@ test("AC-4: Windows replacement retry preserves a newer exact-leaf generation af
   assert.equal(port.ops("unlink").length, 1, "the refused writer removes only its own temporary file");
 });
 
-test("AC-4: Windows replacement retry refuses a removed original witness", async () => {
+test("AC-4: Windows sharing failure preserves a leaf changed after the last possible witness validation", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+  port.after("writeTemp", 1, () => port.file(TARGET, "external-after-validation", 10));
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "there is no check-then-rename retry window");
+  assert.equal(port.node(TARGET)?.bytes.toString(), "external-after-validation");
+  assert.equal(port.ops("unlink").length, 1, "the failed attempt removes its own temporary file");
+});
+
+test("AC-4: Windows sharing failure preserves removal of the original witness", async () => {
   const port = new ScriptedPort({ platform: "win32" });
   port.file(TARGET, "old", 9);
   port.override("rename", async () => {
@@ -648,7 +695,7 @@ test("AC-4: Windows replacement retry refuses a removed original witness", async
   assert.equal(port.node(TARGET), null);
 });
 
-test("AC-4: Windows replacement retry reports an externally respelled original witness as an alias", async () => {
+test("AC-4: Windows sharing failure preserves an externally respelled original witness for fresh reclassification", async () => {
   const port = new ScriptedPort({ platform: "win32", aliasing: true });
   port.file(TARGET, "old", 9);
   const alias = path.join(path.dirname(TARGET), "X.md");
@@ -657,7 +704,7 @@ test("AC-4: Windows replacement retry reports an externally respelled original w
     throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
   });
 
-  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), FilesystemIdentityAliasError);
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
   assert.equal(port.ops("rename").length, 1);
   assert.equal(port.node(alias)?.ino, 9);
   assert.equal(port.node(alias)?.bytes.toString(), "old");
@@ -699,15 +746,15 @@ test("AC-4: Windows first-creation rename fallback is not treated as an existing
   assert.equal(port.ops("rename").length, 1);
 });
 
-test("AC-4: Windows existing-leaf replacement exhausts its finite sharing-error retry bound", async () => {
+test("AC-4: Windows existing-leaf replacement does not consume a private rename retry budget", async () => {
   const port = new ScriptedPort({ platform: "win32" });
   port.file(TARGET, "old", 9);
   port.override("rename", async () => {
     throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
   });
 
-  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), { code: "EBUSY" });
-  assert.equal(port.ops("rename").length, 7, "one initial attempt plus six bounded retries");
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1, "the owning read/decide/CAS loop owns retry bounds");
   assert.equal(port.node(TARGET)?.bytes.toString(), "old");
 });
 
