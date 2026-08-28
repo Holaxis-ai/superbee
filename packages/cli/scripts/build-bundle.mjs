@@ -195,14 +195,14 @@ export async function buildPublicationBundle(outfile, surface = "full") {
       "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
       "@superbee/view-runtime/bridge": r("../view-runtime/src/bridge.ts"),
     },
-    ...(surface === "full" ? {
-      banner: {
-        js: [
-          "import { createRequire as ___createRequire } from 'node:module';",
-          "const require = ___createRequire(import.meta.url);",
-        ].join("\n"),
-      },
-    } : {}),
+    banner: {
+      js: [
+        "import { createRequire as ___createRequire } from 'node:module';",
+        surface === "full"
+          ? "const require = ___createRequire(import.meta.url);"
+          : "const require = ___createRequire('file:///superbee-publication-bridge.mjs');",
+      ].join("\n"),
+    },
     logLevel: "info",
   });
 }
