@@ -9,6 +9,9 @@
 //     PATH to THIS executable, we emit the bare name (`superbee`, portable across installs);
 //     otherwise we fall back to `npx -y superbee` (the npm-first distribution form).
 //     Never an absolute dist path.
+//   • exactCliInvocation() — the command PREFIX for a transactional continuation that MUST be
+//     executed by the same artifact. It pins the current Node runtime, its execution arguments,
+//     and the registered CLI entry instead of consulting PATH or the npm registry.
 //   • binPath() — the home-collapsed ABSOLUTE path of the running executable, for the home view's
 //     `bin:` identity field (AXI §10: "identify the tool itself before the live data").
 //
@@ -103,6 +106,20 @@ export function cliInvocation(): string {
   const onPath = managedBinNameOnPath();
   if (onPath) return onPath;
   return `npx -y ${PACKAGE_NAME}`;
+}
+
+/**
+ * An artifact-bound command prefix for receipts whose continuation is valid only for the CLI that
+ * produced them. Generic help should keep using {@link cliInvocation}; an absolute entry path is
+ * appropriate only when substituting another installed or registry artifact would break the
+ * command's state/feature contract.
+ */
+export function exactCliInvocation(): string {
+  // Only src/index.ts can establish production command-dispatch identity. Helper-only unit imports
+  // deliberately have no exact executable contract and retain the portable guidance fallback.
+  if (!registeredExecutableEntry) return cliInvocation();
+  const node = realOrUndefined(process.execPath) ?? process.execPath;
+  return [node, ...process.execArgv, registeredExecutableEntry].map(shellArg).join(" ");
 }
 
 /**

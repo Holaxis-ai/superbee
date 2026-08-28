@@ -120,7 +120,12 @@ test("built CLI: a subcommand's own `--help` (e.g. `new --help`) is UNCHANGED by
 });
 
 test("built CLI: a nearby list option typo names the exact correction", () => {
-  const result = spawnSync("node", [cliBin, "list", "--limt", "5"], { encoding: "utf8" });
+  // npm workspace scripts prepend node_modules/.bin, which can expose this exact built artifact as
+  // `superbee`. Establish the off-PATH condition this assertion is specifically meant to cover.
+  const result = spawnSync(process.execPath, [cliBin, "list", "--limt", "5"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: "/usr/bin:/bin" },
+  });
   assert.equal(result.status, 2);
   assert.match(result.stdout, /unknown option '--limt' — did you mean '--limit'\?/);
   assert.match(result.stdout, /help: npx -y superbee list --help/);
