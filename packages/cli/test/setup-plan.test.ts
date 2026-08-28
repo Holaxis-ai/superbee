@@ -63,7 +63,7 @@ test("uncertain canonical user state blocks setup with a real exit node, not a s
     },
   }));
   assert.deepEqual(plan.next, {
-    action: "run",
+    action: "inspect",
     command: USER_STATE_QUARANTINE_COMMAND,
     reason: "the canonical Superbee user-state root is unrecognized",
   });

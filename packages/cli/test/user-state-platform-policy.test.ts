@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -69,8 +69,8 @@ test("Windows policy uses the absolute user-local known folder and guards every 
   );
 });
 
-test("Windows policy blocks missing, blank, and relative LOCALAPPDATA without inventing a cwd root", () => {
-  for (const localAppData of [undefined, "", "relative\\state"]) {
+test("Windows policy accepts only drive-qualified local LOCALAPPDATA authority", () => {
+  for (const localAppData of [undefined, "", "relative\\state", "\\Superbee", "\\\\server\\profiles\\mike"]) {
     const environment = windows({ LOCALAPPDATA: localAppData });
     const policy = resolveUserStatePolicy(environment);
     assert.equal(policy.state, "blocked");
@@ -78,6 +78,33 @@ test("Windows policy blocks missing, blank, and relative LOCALAPPDATA without in
     assert.match(policy.reason ?? "", /LOCALAPPDATA/);
     assert.throws(() => canonicalUserStateDir(environment), /LOCALAPPDATA/);
     assert.equal(policy.guardedRoots.some((root) => root.includes("relative")), false);
+  }
+});
+
+test("hardening refuses a scanned file replaced by a symlink and does not chmod its target", {
+  skip: process.platform === "win32" ? "POSIX descriptor hardening only" : false,
+}, async () => {
+  const home = await mkdtemp(join(tmpdir(), "superbee-harden-race-"));
+  const foreign = join(home, "foreign.txt");
+  try {
+    const root = await ensureUserStateRoot(home);
+    const record = join(root, "catalog.json");
+    await writeFile(record, "{}\n", { mode: 0o644 });
+    await chmod(root, 0o755);
+    await writeFile(foreign, "foreign\n", { mode: 0o644 });
+
+    await assert.rejects(
+      hardenUserState(home, {
+        afterInspect: async () => {
+          await unlink(record);
+          await symlink(foreign, record);
+        },
+      }),
+      /changed during hardening/,
+    );
+    assert.equal((await lstat(foreign)).mode & 0o777, 0o644);
+  } finally {
+    await rm(home, { recursive: true, force: true });
   }
 });
 

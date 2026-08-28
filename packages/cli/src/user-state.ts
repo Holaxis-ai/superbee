@@ -180,7 +180,13 @@ export function resolveUserStatePolicy(input?: UserStateInput): UserStatePolicy 
     };
   }
   const localAppData = environment.env.LOCALAPPDATA?.trim() ?? "";
-  if (localAppData === "" || !paths.isAbsolute(localAppData)) {
+  const localAppDataRoot = paths.parse(paths.normalize(localAppData)).root;
+  // Windows treats `\foo` as absolute even though it is relative to the current drive, and UNC or
+  // device paths can name remote or broader authorities. Private state accepts only the ordinary
+  // drive-qualified local known-folder shape; redirected network profiles need an explicit future
+  // containment design rather than silently broadening this authority.
+  const driveQualifiedLocal = /^[A-Za-z]:\\$/u.test(localAppDataRoot);
+  if (localAppData === "" || !paths.isAbsolute(localAppData) || !driveQualifiedLocal) {
     return {
       platform: environment.platform,
       home,
@@ -189,7 +195,7 @@ export function resolveUserStatePolicy(input?: UserStateInput): UserStatePolicy 
       guardedRoots: [...new Set([legacy, ...superseded])],
       displayRoot: "%LOCALAPPDATA%\\Superbee",
       containment: "windows-user-local",
-      reason: "LOCALAPPDATA must name an absolute Windows user-local directory",
+      reason: "LOCALAPPDATA must name a drive-qualified absolute local Windows directory; root-relative, UNC, and device paths are not accepted",
     };
   }
   const canonicalRoot = absoluteStateRoot(paths.join(localAppData, "Superbee"), environment.platform);
@@ -809,21 +815,67 @@ export interface UserStateRecoveryReceipt {
   readonly next: { readonly command: "superbee setup" };
 }
 
-async function inspectPrivateTree(target: string, directories: string[], files: string[]): Promise<void> {
+interface PrivateTreeEntry {
+  readonly path: string;
+  readonly kind: "directory" | "file";
+  readonly identity: PrivateStateStatus;
+}
+
+async function inspectPrivateTree(target: string, directories: PrivateTreeEntry[], files: PrivateTreeEntry[]): Promise<void> {
   const status = await lstat(target);
   if (status.isSymbolicLink()) throw new Error("private user-state tree contains a symbolic link");
   if (status.isDirectory()) {
-    directories.push(target);
+    directories.push({ path: target, kind: "directory", identity: status });
     const entries = await readdir(target, { withFileTypes: true });
     for (const entry of entries) await inspectPrivateTree(join(target, entry.name), directories, files);
+    const after = await lstat(target);
+    if (after.isSymbolicLink() || !after.isDirectory() || !sameFileIdentity(status, after)) {
+      throw new Error("private user-state tree changed during inspection");
+    }
     return;
   }
   if (!status.isFile()) throw new Error("private user-state tree contains a non-regular entry");
-  files.push(target);
+  files.push({ path: target, kind: "file", identity: status });
+}
+
+async function hardenPrivateTreeEntry(entry: PrivateTreeEntry): Promise<void> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    // Node has no portable openat-style directory-descriptor traversal. O_NOFOLLOW closes the
+    // final-component link race, while the recorded dev/inode identity detects ancestor or leaf
+    // substitution before fchmod mutates the already-open object. A platform without O_NOFOLLOW
+    // cannot receive this POSIX-only operation because its containment policy bypasses hardening.
+    handle = await open(entry.path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
+    const opened = await handle.stat();
+    const afterOpen = await lstat(entry.path);
+    const expectedShape = entry.kind === "directory" ? opened.isDirectory() : opened.isFile();
+    if (
+      !expectedShape
+      || afterOpen.isSymbolicLink()
+      || !sameFileIdentity(entry.identity, opened)
+      || !sameFileIdentity(entry.identity, afterOpen)
+    ) {
+      throw new Error("private user-state entry changed during hardening");
+    }
+    await handle.chmod(entry.kind === "directory" ? DIR_MODE : FILE_MODE);
+  } catch (error) {
+    if (error instanceof Error && error.message === "private user-state entry changed during hardening") throw error;
+    throw new Error("private user-state entry changed during hardening", { cause: error });
+  } finally {
+    await handle?.close();
+  }
+}
+
+export interface UserStateHardeningHooks {
+  /** Deterministic test barrier after the read-only tree scan and before descriptor hardening. */
+  readonly afterInspect?: () => void | Promise<void>;
 }
 
 /** Explicit POSIX repair leaf for a recognized root. Windows ACL inheritance needs no chmod. */
-export async function hardenUserState(input: UserStateInput = homedir()): Promise<UserStateRecoveryReceipt> {
+export async function hardenUserState(
+  input: UserStateInput = homedir(),
+  hooks: UserStateHardeningHooks = {},
+): Promise<UserStateRecoveryReceipt> {
   const policy = resolveUserStatePolicy(input);
   if (policy.canonicalRoot === null) throw new UserStatePolicyUnavailable(policy.reason ?? "private user-state policy is unavailable");
   const inspection = await inspectCanonicalUserStateRootDetail(input);
@@ -835,11 +887,12 @@ export async function hardenUserState(input: UserStateInput = homedir()): Promis
   if (policy.containment === "windows-user-local" || inspection.hardening === "hardened") {
     return { schema_version: 1, operation: "harden-state", status: "already_hardened", changed: false, root: policy.displayRoot, next: { command: "superbee setup" } };
   }
-  const directories: string[] = [];
-  const files: string[] = [];
+  const directories: PrivateTreeEntry[] = [];
+  const files: PrivateTreeEntry[] = [];
   await inspectPrivateTree(root, directories, files);
-  for (const file of files) await chmod(file, FILE_MODE);
-  for (const directory of directories.reverse()) await chmod(directory, DIR_MODE);
+  await hooks.afterInspect?.();
+  for (const file of files) await hardenPrivateTreeEntry(file);
+  for (const directory of directories.reverse()) await hardenPrivateTreeEntry(directory);
   const after = await inspectCanonicalUserStateRootDetail(input);
   if (after.state !== "ready" || after.hardening !== "hardened") throw new Error("private user-state hardening did not converge");
   return { schema_version: 1, operation: "harden-state", status: "hardened", changed: true, root: policy.displayRoot, next: { command: "superbee setup" } };

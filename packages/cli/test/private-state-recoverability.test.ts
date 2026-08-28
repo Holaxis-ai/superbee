@@ -181,6 +181,13 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     // `setup` is a read-only conductor: it REPORTS the block and prescribes the exit node.
     expectStatus: 0,
     help: /"command":"superbee setup quarantine-state"/,
+    inspectRefusal: (output) => {
+      assert.equal(
+        (JSON.parse(output) as SetupEnvelope).setup.next.action,
+        "inspect",
+        "quarantine remains an explicit operator decision after inspecting foreign state",
+      );
+    },
     remedy: (output) => ({ command: (JSON.parse(output) as SetupEnvelope).setup.next.command }),
     effect: "changes-state",
     verify: (f, executed) => {
@@ -214,7 +221,7 @@ const RECOVERABILITY_ROWS: readonly RecoverabilityRow[] = [
     verify: (_f, executed) => {
       assert.match(executed.stdout, /capabilities\[1\]\{id,requirement,state,reason,command\}/);
       assert.match(executed.stdout, /state,required,blocked,/);
-      assert.match(executed.stdout, /next:\n\s+action: run\n\s+command: superbee setup quarantine-state/);
+      assert.match(executed.stdout, /next:\n\s+action: inspect\n\s+command: superbee setup quarantine-state/);
     },
   },
   {
