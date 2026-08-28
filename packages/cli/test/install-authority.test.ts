@@ -67,6 +67,17 @@ test("Windows npm-prefix probing fails closed for missing or ambiguous runtime l
   }, node), undefined, "npm CLI escaping the proven runtime installation");
 });
 
+test("Windows npm-prefix probing rejects npx cache segments case-insensitively", () => {
+  for (const segment of ["_npx", "_NPX", "_NpX"]) {
+    const runtime = path.win32.join(String.raw`C:\Users\mike\AppData\Local\npm-cache`, segment, "1", "node.exe");
+    assert.equal(
+      npmPrefixInvocation("win32", {}, (candidate) => candidate, runtime),
+      undefined,
+      segment,
+    );
+  }
+});
+
 function durableFixture(overrides: Record<string, unknown> = {}) {
   const prefix = (overrides.prefix as string | undefined) ?? "/opt/superbee-npm";
   const packageRoot = (overrides.packageRoot as string | undefined) ?? "superbee";
@@ -339,6 +350,40 @@ test("Windows npm authority rejects transient and non-shim layouts", () => {
     { ...fixture, realpath: (candidate: string) => candidate.toLowerCase().endsWith("superbee.cmd") ? undefined : fixture.realpath(candidate) },
   ];
   for (const candidate of cases) assert.equal(classifyPersistentInstallAuthority(candidate).allowed, false);
+});
+
+test("Windows npm authority rejects npx cache segments case-insensitively", () => {
+  const fixture = windowsDurableFixture();
+  for (const segment of ["_npx", "_NPX", "_NpX"]) {
+    const cache = path.win32.join(String.raw`C:\Users\mike\AppData\Local\npm-cache`, segment, "1");
+    const executableResult = classifyPersistentInstallAuthority({
+      ...fixture,
+      executable_path: path.win32.join(cache, "node_modules", "superbee", "dist", "superbee.mjs"),
+    });
+    assert.equal(executableResult.allowed, false, `executable ${segment}`);
+    assert.match(executableResult.reason, /npx cache/, segment);
+
+    const runtimeResult = classifyPersistentInstallAuthority({
+      ...fixture,
+      runtime_path: path.win32.join(cache, "node.exe"),
+    });
+    assert.equal(runtimeResult.allowed, false, `runtime ${segment}`);
+    assert.match(runtimeResult.reason, /transient/, segment);
+  }
+});
+
+test("POSIX npx cache detection preserves case-sensitive path semantics", () => {
+  assert.equal(
+    classifyPersistentInstallAuthority(durableFixture({ prefix: "/opt/_npx/superbee-npm" })).allowed,
+    false,
+  );
+  for (const segment of ["_NPX", "_NpX"]) {
+    assert.equal(
+      classifyPersistentInstallAuthority(durableFixture({ prefix: `/opt/${segment}/superbee-npm` })).allowed,
+      true,
+      segment,
+    );
+  }
 });
 
 test("local-dev policy remains explicit while unknown fails closed", () => {

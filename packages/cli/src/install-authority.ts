@@ -72,12 +72,12 @@ export function npmPrefixInvocation(
   runtimePath: string = process.execPath,
 ): { command: string; args: string[] } | undefined {
   if (platform !== "win32") return { command: "npm", args: ["prefix", "--global"] };
-  if (!path.win32.isAbsolute(runtimePath) || containsNpxCache(runtimePath)) return undefined;
+  if (!path.win32.isAbsolute(runtimePath) || containsNpxCache(runtimePath, platform)) return undefined;
   const runtime = realpath(path.win32.normalize(runtimePath));
   if (
     !runtime
     || !path.win32.isAbsolute(runtime)
-    || containsNpxCache(runtime)
+    || containsNpxCache(runtime, platform)
     || path.win32.basename(runtime).toLowerCase() !== "node.exe"
   ) return undefined;
 
@@ -92,7 +92,7 @@ export function npmPrefixInvocation(
   if (
     !npmCli
     || !path.win32.isAbsolute(npmCli)
-    || containsNpxCache(npmCli)
+    || containsNpxCache(npmCli, platform)
     || path.win32.normalize(npmCli).toLowerCase() !== npmCliPath.toLowerCase()
   ) return undefined;
 
@@ -117,8 +117,11 @@ function defaultNpmPrefixGlobal(): string | undefined {
   }
 }
 
-function containsNpxCache(candidate: string | null | undefined): boolean {
-  return candidate?.split(/[\\/]/).includes("_npx") ?? false;
+function containsNpxCache(candidate: string | null | undefined, platform: string): boolean {
+  const segments = candidate?.split(/[\\/]/) ?? [];
+  return platform === "win32"
+    ? segments.some((segment) => segment.toLowerCase() === "_npx")
+    : segments.includes("_npx");
 }
 
 function pathApi(platform: string): typeof path.posix | typeof path.win32 {
@@ -200,12 +203,12 @@ export function classifyPersistentInstallAuthority(
   if (input.env.npm_command === "exec" || input.env.npm_lifecycle_event === "npx") {
     return unknown(input, "npm-exec/npx environment cannot authorize a persistent install");
   }
-  if (!input.executable_path || containsNpxCache(input.executable_path)) {
+  if (!input.executable_path || containsNpxCache(input.executable_path, input.platform)) {
     return unknown(input, "running executable is missing or resides in an npm-exec/npx cache");
   }
 
   const executable = input.realpath(input.executable_path);
-  if (!executable || containsNpxCache(executable)) {
+  if (!executable || containsNpxCache(executable, input.platform)) {
     return unknown(input, "running executable cannot be resolved as a durable file");
   }
   const prefixRaw = input.npm_prefix_global();
@@ -266,7 +269,7 @@ export function classifyPersistentInstallAuthority(
     }
     if (selectedBin !== null) break;
   }
-  if (selectedBin === null || containsNpxCache(selectedBin)) {
+  if (selectedBin === null || containsNpxCache(selectedBin, input.platform)) {
     return unknown(input, "no managed PATH bin resolves to the running executable");
   }
 
@@ -280,11 +283,15 @@ export function classifyPersistentInstallAuthority(
   if (!supportedBins.has(input.platform === "win32" ? selectedBin.toLowerCase() : selectedBin)) {
     return unknown(input, "managed PATH bin is outside the npm global prefix bin directory");
   }
-  if (!input.runtime_path || !paths.isAbsolute(input.runtime_path) || containsNpxCache(input.runtime_path)) {
+  if (
+    !input.runtime_path
+    || !paths.isAbsolute(input.runtime_path)
+    || containsNpxCache(input.runtime_path, input.platform)
+  ) {
     return unknown(input, "running Node executable is missing or transient");
   }
   const runtime = input.realpath(input.runtime_path);
-  if (!runtime || containsNpxCache(runtime)) {
+  if (!runtime || containsNpxCache(runtime, input.platform)) {
     return unknown(input, "running Node executable cannot be resolved as one durable file");
   }
   if (input.platform === "win32") {
