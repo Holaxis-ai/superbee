@@ -218,6 +218,18 @@ test("root and npm package license declarations agree", async () => {
   }
 });
 
+test("lockfile workspace metadata preserves the npm package platform contract", async () => {
+  const [npmManifest, lockfile] = await Promise.all([
+    readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8").then(JSON.parse),
+    readFile(path.join(repoRoot, "package-lock.json"), "utf8").then(JSON.parse),
+  ]);
+  const locked = lockfile.packages?.["packages/cli"];
+  assert.ok(locked, "package-lock must describe the CLI workspace");
+  assert.equal(locked.version, npmManifest.version, "lockfile CLI version must match the publish manifest");
+  assert.deepEqual(locked.os, npmManifest.os, "lockfile must not retain a stale OS restriction");
+  assert.deepEqual(locked.cpu, npmManifest.cpu, "lockfile must not retain a stale CPU restriction");
+});
+
 test("the expected tarball set is the fixed base plus the references tree", () => {
   assert.deepEqual(expectedTarballFiles(["a.md", "b/c.md"]), [
     "LICENSE",
