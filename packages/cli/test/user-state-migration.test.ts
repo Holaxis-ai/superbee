@@ -139,7 +139,13 @@ test("plain built CLI leaves legacy migration discoverable until an explicit sta
       setup: { capabilities: Array<{ id: string; state: string }>; next: { command: string[] } };
     };
     assert.equal(plan.setup.capabilities.find((capability) => capability.id === "state")?.state, "needs_action");
-    assert.deepEqual(plan.setup.next.command, ["npx", "--no-install", "superbee", "setup", "migrate-state"]);
+    const launcher = plan.setup.next.command.slice(0, -2);
+    assert.ok(
+      (launcher.length === 1 && launcher[0] === "superbee")
+        || (launcher.length === 3 && launcher.join(" ") === "npx --no-install superbee"),
+      `migration must use a resolved installed launcher or no-download fallback: ${plan.setup.next.command.join(" ")}`,
+    );
+    assert.deepEqual(plan.setup.next.command.slice(-2), ["setup", "migrate-state"]);
     assert.equal(await absent(canonicalUserStateDir(root)), true);
   } finally {
     await rm(root, { recursive: true, force: true });
