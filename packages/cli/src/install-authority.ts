@@ -68,13 +68,21 @@ function defaultRealpath(candidate: string): string | undefined {
 export function npmPrefixInvocation(
   platform: string = process.platform,
   env: NodeJS.ProcessEnv = process.env,
+  realpath: (path: string) => string | undefined = defaultRealpath,
 ): { command: string; args: string[] } | undefined {
   if (platform !== "win32") return { command: "npm", args: ["prefix", "--global"] };
-  const command = env.ComSpec?.trim() || env.COMSPEC?.trim();
-  if (!command || !path.win32.isAbsolute(command)) return undefined;
-  // npm's supported Windows executable is a .cmd shim. Node cannot execFile that shim directly;
-  // invoke the constant, argument-free probe through the absolute system command processor.
-  return { command, args: ["/d", "/s", "/c", "npm.cmd prefix --global"] };
+  const commandRaw = env.ComSpec?.trim() || env.COMSPEC?.trim();
+  if (!commandRaw || !path.win32.isAbsolute(commandRaw)) return undefined;
+  const command = realpath(path.win32.normalize(commandRaw));
+  if (!command || !isSafeWindowsCommandPath(command) || path.win32.basename(command).toLowerCase() !== "cmd.exe") {
+    return undefined;
+  }
+
+  const npm = resolveWindowsPathCommand("npm", env, realpath);
+  if (!npm || path.win32.extname(npm).toLowerCase() !== ".cmd") return undefined;
+  // A bare `npm.cmd` passed to cmd.exe searches cwd before PATH. Bind the probe to the absolute
+  // first PATH/PATHEXT match instead, and reject every character cmd.exe could reinterpret.
+  return { command, args: ["/d", "/s", "/c", `"${npm}" prefix --global`] };
 }
 
 function defaultNpmPrefixGlobal(): string | undefined {
@@ -148,6 +156,47 @@ function windowsPathExtensions(env: NodeJS.ProcessEnv): string[] {
     .map((extension) => extension.trim())
     .filter(Boolean)
     .map((extension) => (extension.startsWith(".") ? extension : `.${extension}`));
+}
+
+function isSafeWindowsCommandPath(candidate: string): boolean {
+  return path.win32.isAbsolute(candidate)
+    && !containsNpxCache(candidate)
+    && !/[\u0000-\u001f"%!*&|<>^()]/.test(candidate);
+}
+
+/** Resolve one Windows command without cmd.exe's implicit current-directory search. */
+function resolveWindowsPathCommand(
+  name: string,
+  env: NodeJS.ProcessEnv,
+  realpath: (path: string) => string | undefined,
+): string | undefined {
+  const extensions = windowsPathExtensions(env);
+  if (
+    extensions.length === 0
+    || extensions.some((extension) => !/^\.[a-z0-9]+$/i.test(extension))
+  ) return undefined;
+
+  const rawPath = env.PATH;
+  if (!rawPath) return undefined;
+  for (const rawDir of rawPath.split(path.win32.delimiter)) {
+    const trimmed = rawDir.trim();
+    // Empty segments denote cwd in Windows lookup. Excluding them is what makes this traversal
+    // independent of a checkout-local npm.cmd.
+    if (!trimmed) continue;
+    const quoted = trimmed.startsWith('"') || trimmed.endsWith('"');
+    if (quoted && !(trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length > 2)) {
+      return undefined;
+    }
+    const dir = quoted ? trimmed.slice(1, -1) : trimmed;
+    if (!path.win32.isAbsolute(dir)) return undefined;
+    for (const extension of extensions) {
+      const candidate = path.win32.normalize(path.win32.join(dir, `${name}${extension}`));
+      const resolved = realpath(candidate);
+      if (!resolved) continue;
+      return isSafeWindowsCommandPath(resolved) ? path.win32.normalize(resolved) : undefined;
+    }
+  }
+  return undefined;
 }
 
 /** Classify an already-resolved running distribution. Performs no writes. */
