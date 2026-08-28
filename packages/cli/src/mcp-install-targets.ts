@@ -3,7 +3,7 @@
 import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import path from "node:path";
 import { getNodeValue, parseTree, type Node as JsoncNode, type ParseError } from "jsonc-parser";
 import {
   HOST_CONFIG_ROOTS,
@@ -198,27 +198,32 @@ export function resolveMcpTargetConfigPath(
   target: McpInstallTargetId,
   input: McpStatusEnvironment,
 ): string | undefined {
+  const paths = input.platform === "win32" ? path.win32 : path.posix;
   switch (target) {
     case "codex":
-      return join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, input.home, input.env), "config.toml");
+      return paths.join(
+        resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, input.home, input.env, input.platform),
+        "config.toml",
+      );
     case "claude-code":
-      return resolveClaudeUserConfigFile(input.home, input.env);
+      return resolveClaudeUserConfigFile(input.home, input.env, input.platform);
     case "claude-desktop":
       if (input.platform === "darwin") {
-        return join(input.home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
+        return paths.join(input.home, "Library", "Application Support", "Claude", "claude_desktop_config.json");
       }
       if (input.platform === "win32" && input.env.APPDATA) {
-        return join(input.env.APPDATA, "Claude", "claude_desktop_config.json");
+        return paths.join(input.env.APPDATA, "Claude", "claude_desktop_config.json");
       }
       return undefined;
     case "opencode":
-      return join(resolveOpenCodeGlobalConfigRoot(input.home, input.env), "opencode.json");
+      return paths.join(resolveOpenCodeGlobalConfigRoot(input.home, input.env, input.platform), "opencode.json");
   }
 }
 
 export function openCodeConfigCandidates(input: McpStatusEnvironment): string[] {
-  const root = resolveOpenCodeGlobalConfigRoot(input.home, input.env);
-  const candidates = [join(root, "opencode.json"), join(root, "opencode.jsonc")];
+  const paths = input.platform === "win32" ? path.win32 : path.posix;
+  const root = resolveOpenCodeGlobalConfigRoot(input.home, input.env, input.platform);
+  const candidates = [paths.join(root, "opencode.json"), paths.join(root, "opencode.jsonc")];
   const additional = input.env.OPENCODE_CONFIG?.trim();
   if (additional && !candidates.includes(additional)) candidates.push(additional);
   return candidates;

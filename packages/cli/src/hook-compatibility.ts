@@ -1,4 +1,4 @@
-import { isAbsolute, normalize, sep } from "node:path";
+import path from "node:path";
 
 /** Compatibility states shared by status, install reconciliation, probes, and uninstall. */
 export type HookCompatibilityState =
@@ -26,6 +26,7 @@ export interface HookEntryContext {
   location: "SessionStart" | "session_start";
   matcher?: unknown;
   timeoutSeconds: number;
+  platform?: string;
 }
 
 const CURRENT_REMEDY = "re-run `superbee hook install` from the durable global npm installation";
@@ -37,7 +38,21 @@ export function isSafeUnquotedHookToken(value: string): boolean {
 }
 
 /** Render one token in the exact lexical envelope emitted by the current hook writer. */
-export function renderGeneratedHookToken(value: string): string {
+export function renderGeneratedHookToken(
+  value: string,
+  platform: string = process.platform,
+): string {
+  if (platform === "win32") {
+    const normalized = value.replaceAll("\\", "/");
+    if ([...normalized].some((character) => {
+      const code = character.charCodeAt(0);
+      return code < 0x20 || code === 0x7f || character === '"' || character === "%"
+        || character === "!" || character === "$" || character === "`";
+    })) {
+      throw new Error("Windows hook token contains characters outside the generated-command grammar");
+    }
+    return isSafeUnquotedHookToken(normalized) ? normalized : `"${normalized}"`;
+  }
   return isSafeUnquotedHookToken(value)
     ? value
     : `'${value.replaceAll("'", "'\\''")}'`;
@@ -106,7 +121,7 @@ interface LexicalHookToken {
  * round-trip to one exact current or historical writer envelope. Shell-equivalent mixed, empty,
  * or partial quote segments are therefore foreign even when quote removal yields familiar argv.
  */
-function lexicalHookTokens(command: string): LexicalHookToken[] | undefined {
+function lexicalPosixHookTokens(command: string): LexicalHookToken[] | undefined {
   if (command.length === 0 || command.startsWith(" ") || command.endsWith(" ")) return undefined;
   const tokens: LexicalHookToken[] = [];
   let i = 0;
@@ -145,7 +160,7 @@ function lexicalHookTokens(command: string): LexicalHookToken[] | undefined {
       return undefined;
     }
     const raw = command.slice(start, i);
-    const current = renderGeneratedHookToken(token);
+    const current = renderGeneratedHookToken(token, "linux");
     const historical = renderHistoricalDoubleQuotedHookToken(token);
     const envelope: HookTokenEnvelope | undefined =
       raw === current ? "current" : raw === historical ? "historical_double" : undefined;
@@ -167,9 +182,58 @@ function lexicalHookTokens(command: string): LexicalHookToken[] | undefined {
   return tokens.length > 0 ? tokens : undefined;
 }
 
+function lexicalWindowsHookTokens(command: string): LexicalHookToken[] | undefined {
+  if (command.length === 0 || command.startsWith(" ") || command.endsWith(" ")) return undefined;
+  const tokens: LexicalHookToken[] = [];
+  let index = 0;
+  while (index < command.length) {
+    const start = index;
+    let value = "";
+    if (command[index] === '"') {
+      const end = command.indexOf('"', index + 1);
+      if (end < 0 || (end + 1 < command.length && command[end + 1] !== " ")) return undefined;
+      value = command.slice(index + 1, end);
+      index = end + 1;
+    } else {
+      while (index < command.length && command[index] !== " ") {
+        const character = command[index]!;
+        if (!isSafeUnquotedHookToken(character)) return undefined;
+        value += character;
+        index += 1;
+      }
+    }
+    const raw = command.slice(start, index);
+    let rendered: string;
+    try {
+      rendered = renderGeneratedHookToken(value, "win32");
+    } catch {
+      return undefined;
+    }
+    if (raw !== rendered) return undefined;
+    tokens.push({ raw, value, envelope: "current" });
+    if (index < command.length) {
+      index += 1;
+      if (index === command.length || command[index] === " ") return undefined;
+    }
+  }
+  return tokens.length > 0 ? tokens : undefined;
+}
+
+function lexicalHookTokens(
+  command: string,
+  platform: string = process.platform,
+): LexicalHookToken[] | undefined {
+  return platform === "win32"
+    ? lexicalWindowsHookTokens(command)
+    : lexicalPosixHookTokens(command);
+}
+
 /** Decode commands only after each raw token proves an exact generated lexical envelope. */
-export function tokenizeGeneratedHookCommand(command: string): string[] | undefined {
-  return lexicalHookTokens(command)?.map(({ value }) => value);
+export function tokenizeGeneratedHookCommand(
+  command: string,
+  platform: string = process.platform,
+): string[] | undefined {
+  return lexicalHookTokens(command, platform)?.map(({ value }) => value);
 }
 
 function bareManagedBinIdentity(value: string): "canonical" | "legacy" | undefined {
@@ -188,13 +252,17 @@ type ManagedExecutableLayout =
   | "legacy_local_dev"
   | "retired_marketplace";
 
-function isCanonicalAbsolutePath(value: string): boolean {
-  return isAbsolute(value) && normalize(value) === value;
+function isCanonicalAbsolutePath(value: string, platform: string): boolean {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  if (!paths.isAbsolute(value)) return false;
+  return platform === "win32"
+    ? paths.normalize(value).replaceAll("\\", "/") === value
+    : paths.normalize(value) === value;
 }
 
-function managedExecutableLayout(value: string): ManagedExecutableLayout | undefined {
-  if (!isCanonicalAbsolutePath(value)) return undefined;
-  const portable = value.split(sep).join("/");
+function managedExecutableLayout(value: string, platform: string): ManagedExecutableLayout | undefined {
+  if (!isCanonicalAbsolutePath(value, platform)) return undefined;
+  const portable = value.replaceAll("\\", "/");
   if (/\/node_modules\/superbee\/dist\/superbee\.mjs$/.test(portable)) {
     return "canonical_npm";
   }
@@ -218,19 +286,30 @@ function managedExecutableLayout(value: string): ManagedExecutableLayout | undef
 function stableNpmRuntimePair(
   program: string,
   executable: string,
+  platform: string,
 ): "canonical" | "legacy" | undefined {
-  if (!isCanonicalAbsolutePath(program) || !isCanonicalAbsolutePath(executable)) return undefined;
-  const runtimeSuffix = `${sep}bin${sep}node`;
+  if (!isCanonicalAbsolutePath(program, platform) || !isCanonicalAbsolutePath(executable, platform)) return undefined;
+  const portableProgram = program.replaceAll("\\", "/");
+  const portableExecutable = executable.replaceAll("\\", "/");
+  if (platform === "win32") {
+    if (!/\/node\.exe$/i.test(portableProgram)) return undefined;
+    if (/\/node_modules\/superbee\/dist\/superbee\.mjs$/i.test(portableExecutable)) return "canonical";
+    if (/\/node_modules\/@holaxis\/aslite\/dist\/(?:superbee|agentstate-lite)\.mjs$/i.test(portableExecutable)) {
+      return "legacy";
+    }
+    return undefined;
+  }
+  const runtimeSuffix = "/bin/node";
   if (!program.endsWith(runtimeSuffix)) return undefined;
   const suffixes: ReadonlyArray<[string, "canonical" | "legacy"]> = [
-    [`${sep}lib${sep}node_modules${sep}superbee${sep}dist${sep}superbee.mjs`, "canonical"],
-    [`${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}superbee.mjs`, "legacy"],
-    [`${sep}lib${sep}node_modules${sep}@holaxis${sep}aslite${sep}dist${sep}agentstate-lite.mjs`, "legacy"],
+    ["/lib/node_modules/superbee/dist/superbee.mjs", "canonical"],
+    ["/lib/node_modules/@holaxis/aslite/dist/superbee.mjs", "legacy"],
+    ["/lib/node_modules/@holaxis/aslite/dist/agentstate-lite.mjs", "legacy"],
   ];
   for (const [executableSuffix, identity] of suffixes) {
     if (
-      executable.endsWith(executableSuffix) &&
-      program.slice(0, -runtimeSuffix.length) === executable.slice(0, -executableSuffix.length)
+      portableExecutable.endsWith(executableSuffix) &&
+      portableProgram.slice(0, -runtimeSuffix.length) === portableExecutable.slice(0, -executableSuffix.length)
     ) {
       return identity;
     }
@@ -239,13 +318,16 @@ function stableNpmRuntimePair(
 }
 
 /** Classify a complete command token sequence; near-matches are always unmanaged. */
-export function classifyHookCommand(command: string): HookCompatibility {
-  const lexical = lexicalHookTokens(command);
+export function classifyHookCommand(
+  command: string,
+  platform: string = process.platform,
+): HookCompatibility {
+  const lexical = lexicalHookTokens(command, platform);
   if (!lexical) return result("unmanaged", "command is outside the generated-command grammar");
   const tokens = lexical.map(({ value }) => value);
 
   const stableIdentity = tokens.length === 3
-    ? stableNpmRuntimePair(tokens[0]!, tokens[1]!)
+    ? stableNpmRuntimePair(tokens[0]!, tokens[1]!, platform)
     : undefined;
   if (stableIdentity && tokens[2] === "session-start") {
     return stableIdentity === "canonical"
@@ -266,7 +348,7 @@ export function classifyHookCommand(command: string): HookCompatibility {
     return result("stale", "recognized pre-session-start generated bare-bin command");
   }
 
-  const directLayout = tokens.length <= 2 ? managedExecutableLayout(tokens[0]!) : undefined;
+  const directLayout = tokens.length <= 2 ? managedExecutableLayout(tokens[0]!, platform) : undefined;
   if (tokens.length === 2 && directLayout && tokens[1] === "session-start") {
     return result(
       directLayout.startsWith("legacy_") ? "legacy_identity" : "legacy_path_bound",
@@ -298,11 +380,11 @@ export function classifyHookCommand(command: string): HookCompatibility {
     return result("stale", "recognized pre-session-start generated npx command");
   }
 
-  const executableLayout = tokens.length === 3 ? managedExecutableLayout(tokens[1]!) : undefined;
+  const executableLayout = tokens.length === 3 ? managedExecutableLayout(tokens[1]!, platform) : undefined;
   if (
     tokens.length === 3 &&
-    isCanonicalAbsolutePath(tokens[0]!) &&
-    tokens[0]!.endsWith(`${sep}bin${sep}node`) &&
+    isCanonicalAbsolutePath(tokens[0]!, platform) &&
+    (platform === "win32" ? /\/node\.exe$/i.test(tokens[0]!) : tokens[0]!.endsWith("/bin/node")) &&
     (executableLayout === "canonical_local_dev" || executableLayout === "legacy_local_dev") &&
     tokens[2] === "session-start"
   ) {
@@ -318,7 +400,7 @@ export function classifyHookCommand(command: string): HookCompatibility {
 export function classifyHookEntry(context: HookEntryContext): HookCompatibility {
   const command = context.entry?.command;
   if (typeof command !== "string") return result("unmanaged", "entry has no generated command string");
-  const commandCompatibility = classifyHookCommand(command);
+  const commandCompatibility = classifyHookCommand(command, context.platform);
   if (commandCompatibility.state === "unmanaged") return commandCompatibility;
   const exactEntryShape =
     context.entry?.type === "command" && context.entry?.timeout === context.timeoutSeconds;

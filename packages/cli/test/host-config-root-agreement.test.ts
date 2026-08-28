@@ -4,7 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dirname, join } from "node:path";
+import path from "node:path";
 
 import { globalHookTargets, type HookTargets } from "../src/commands/hook.js";
 import { skillTargets, type SkillTargets } from "../src/commands/skill.js";
@@ -54,10 +54,10 @@ test("global hook targets and user-scoped skill installation share the host-root
         const override = scenario.override === "relocated" ? relocated : scenario.override;
         const env: NodeJS.ProcessEnv = { HOME: home };
         if (override !== undefined) env[host.env] = override;
-        const expected = override ? relocated : join(home, host.fallbackDirectory);
+        const expected = override ? relocated : path.posix.join(home, host.fallbackDirectory);
 
-        assert.equal(dirname(globalHookTargets(home, env)[host.hookTarget]), expected);
-        assert.equal(dirname(dirname(skillTargets("user", { home, env })[host.skillTarget])), expected);
+        assert.equal(path.posix.dirname(globalHookTargets(home, env, "darwin")[host.hookTarget]), expected);
+        assert.equal(path.posix.dirname(path.posix.dirname(skillTargets("user", { home, env, platform: "darwin" })[host.skillTarget])), expected);
       });
     }
   }
@@ -70,14 +70,36 @@ test("OpenCode resource and global-config roots keep their distinct override aut
     XDG_CONFIG_HOME: "/tmp/xdg",
     OPENCODE_CONFIG_DIR: "/tmp/opencode-profile",
   };
-  assert.equal(dirname(dirname(globalHookTargets(home, env).opencodePlugin)), resolveOpenCodeConfigRoot(home, env));
-  assert.equal(resolveOpenCodeGlobalConfigRoot(home, env), "/tmp/xdg/opencode");
+  assert.equal(
+    path.posix.dirname(path.posix.dirname(globalHookTargets(home, env, "darwin").opencodePlugin)),
+    resolveOpenCodeConfigRoot(home, env, "darwin"),
+  );
+  assert.equal(resolveOpenCodeGlobalConfigRoot(home, env, "darwin"), "/tmp/xdg/opencode");
 });
 
 test("Claude Code user MCP registry honors CLAUDE_CONFIG_DIR without nesting the default", () => {
-  assert.equal(resolveClaudeUserConfigFile("/users/mike", {}), "/users/mike/.claude.json");
+  assert.equal(resolveClaudeUserConfigFile("/users/mike", {}, "darwin"), "/users/mike/.claude.json");
   assert.equal(
-    resolveClaudeUserConfigFile("/users/mike", { CLAUDE_CONFIG_DIR: "/profiles/claude" }),
+    resolveClaudeUserConfigFile("/users/mike", { CLAUDE_CONFIG_DIR: "/profiles/claude" }, "darwin"),
     "/profiles/claude/.claude.json",
   );
+});
+
+test("Windows host roots use the user profile conventions of each host", () => {
+  const home = String.raw`C:\Users\Mike`;
+  const env = {
+    USERPROFILE: home,
+    APPDATA: String.raw`C:\Users\Mike\AppData\Roaming`,
+  };
+  assert.deepEqual(globalHookTargets(home, env, "win32"), {
+    claudeSettings: String.raw`C:\Users\Mike\.claude\settings.json`,
+    codexHooks: String.raw`C:\Users\Mike\.codex\hooks.json`,
+    codexConfig: String.raw`C:\Users\Mike\.codex\config.toml`,
+    opencodePlugin: String.raw`C:\Users\Mike\.config\opencode\plugins\axi-superbee.js`,
+    legacyOpencodePlugin: String.raw`C:\Users\Mike\.config\opencode\plugins\axi-agentstate-lite.js`,
+  });
+  assert.deepEqual(skillTargets("user", { home, env, platform: "win32" }), {
+    claude: String.raw`C:\Users\Mike\.claude\skills\superbee`,
+    codex: String.raw`C:\Users\Mike\.codex\skills\superbee`,
+  });
 });

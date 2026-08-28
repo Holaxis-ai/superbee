@@ -30,8 +30,10 @@ test("atomicWriteFileSync creates and replaces through same-directory rename wit
   try {
     atomicWriteFileSync(target, "first\n");
     assert.equal(await readFile(target, "utf8"), "first\n");
-    assert.equal((await stat(target)).mode & 0o777, 0o600);
-    assert.equal((await stat(path.dirname(target))).mode & 0o777, 0o700);
+    if (process.platform !== "win32") {
+      assert.equal((await stat(target)).mode & 0o777, 0o600);
+      assert.equal((await stat(path.dirname(target))).mode & 0o777, 0o700);
+    }
     atomicWriteFileSync(target, "second\n");
     assert.equal(await readFile(target, "utf8"), "second\n");
     assert.deepEqual(await readdir(path.dirname(target)), ["settings.json"]);
@@ -144,7 +146,9 @@ test("atomicWriteFileSync refuses absent-file creation after its parent is retar
   }
 });
 
-test("atomicWriteFileSync preserves the mode of an existing private file", async () => {
+test("atomicWriteFileSync preserves the mode of an existing private file", {
+  skip: process.platform === "win32" ? "Windows private configuration uses inherited ACLs" : false,
+}, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-mode-"));
   const target = path.join(dir, "settings.json");
   try {
@@ -154,6 +158,48 @@ test("atomicWriteFileSync preserves the mode of an existing private file", async
     assert.equal(await readFile(target, "utf8"), "replaced\n");
     assert.equal((await stat(target)).mode & 0o777, 0o600);
   } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Windows private writes rely on inherited ACLs and never call chmod", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-windows-mode-"));
+  const target = path.join(dir, "settings.json");
+  const originalChmod = mutableFs.chmodSync;
+  try {
+    await writeFile(target, "before\n");
+    mutableFs.chmodSync = (() => {
+      throw new Error("chmod must not run for Windows policy");
+    }) as typeof mutableFs.chmodSync;
+    syncBuiltinESMExports();
+    atomicWriteFileSync(target, "after\n", { platform: "win32" });
+    assert.equal(await readFile(target, "utf8"), "after\n");
+  } finally {
+    mutableFs.chmodSync = originalChmod;
+    syncBuiltinESMExports();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("Windows private replacement retries only bounded sharing violations", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "superbee-atomic-windows-retry-"));
+  const target = path.join(dir, "settings.json");
+  const originalRename = mutableFs.renameSync;
+  try {
+    await writeFile(target, "before\n");
+    let attempts = 0;
+    mutableFs.renameSync = ((source, destination) => {
+      attempts += 1;
+      if (attempts < 3) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+      return originalRename(source, destination);
+    }) as typeof mutableFs.renameSync;
+    syncBuiltinESMExports();
+    atomicWriteFileSync(target, "after\n", { platform: "win32" });
+    assert.equal(attempts, 3);
+    assert.equal(await readFile(target, "utf8"), "after\n");
+  } finally {
+    mutableFs.renameSync = originalRename;
+    syncBuiltinESMExports();
     await rm(dir, { recursive: true, force: true });
   }
 });
