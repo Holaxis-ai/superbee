@@ -83,8 +83,13 @@ test("bundleKey: remote-keyed — equivalent URL/subpath/root spellings key toge
 test("bundleKey: per-CLONE — the SAME origin checked out at two roots on one machine gets two keys (PR#13 review, item 4)", () => {
   const cloneA = bundleKey({ remoteUrl: "https://github.com/org/repo", subpath: "", checkoutRoot: "/w/clone-a/.agentstate-lite" });
   const cloneB = bundleKey({ remoteUrl: "https://github.com/org/repo", subpath: "", checkoutRoot: "/w/clone-b/.agentstate-lite" });
+  const isolatedProfile = path.join(tmpdir(), "superbee-per-clone-state");
   assert.notEqual(cloneA, cloneB, "two clones of one origin must never share a state file");
-  assert.notEqual(syncStatePath(cloneA, "/home/x"), syncStatePath(cloneB, "/home/x"), "distinct state files too");
+  assert.notEqual(
+    syncStatePath(cloneA, isolatedProfile),
+    syncStatePath(cloneB, isolatedProfile),
+    "distinct state files too",
+  );
   // The remote component still matters: a RECYCLED checkout root under a different origin is a
   // different key — stale state from the previous project at this path can never be inherited.
   assert.notEqual(

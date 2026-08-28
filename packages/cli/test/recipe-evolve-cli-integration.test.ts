@@ -11,7 +11,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { initBundle } from "@superbee/core";
 
@@ -38,25 +38,31 @@ function hostShell(
   command: string,
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
-): { file: string; args: string[] } {
+): { file: string; args: string[]; windowsVerbatimArguments: boolean } {
   if (platform === "win32") {
     const file = env.ComSpec ?? env.COMSPEC;
     assert.ok(file && path.win32.isAbsolute(file), "Windows exact command proof requires an absolute ComSpec");
-    return { file, args: ["/d", "/s", "/c", command] };
+    // The final argument is already a complete cmd.exe command line. Node's normal Windows argv
+    // serializer would quote that argument again and escape its embedded quotes, causing those
+    // quotes to reach the CLI literally. Pass the generated characters through unchanged, just
+    // as an interactive paste does.
+    return { file, args: ["/d", "/s", "/c", command], windowsVerbatimArguments: true };
   }
-  return { file: "/bin/sh", args: ["-c", command] };
+  return { file: "/bin/sh", args: ["-c", command], windowsVerbatimArguments: false };
 }
 
 test("exact apply commands use the native host shell contract", () => {
   assert.deepEqual(hostShell("superbee recipe evolve", "linux"), {
     file: "/bin/sh",
     args: ["-c", "superbee recipe evolve"],
+    windowsVerbatimArguments: false,
   });
   assert.deepEqual(
     hostShell("superbee recipe evolve", "win32", { ComSpec: String.raw`C:\Windows\System32\cmd.exe` }),
     {
       file: String.raw`C:\Windows\System32\cmd.exe`,
       args: ["/d", "/s", "/c", "superbee recipe evolve"],
+      windowsVerbatimArguments: true,
     },
   );
   assert.throws(
@@ -122,6 +128,7 @@ async function exerciseExactApply(launcher: string[], expectedPrefix: string): P
     const shell = hostShell(command);
     const applied = spawnSync(shell.file, shell.args, {
       encoding: "utf8",
+      windowsVerbatimArguments: shell.windowsVerbatimArguments,
       env: {
         ...process.env,
         PATH: process.platform === "win32" ? path.dirname(realpathSync(process.execPath)) : "/usr/bin:/bin",
@@ -152,8 +159,9 @@ test("built CLI: recipe evolve exact apply command remains bound to the planning
 });
 
 test("loader-driven source CLI: recipe evolve exact apply command preserves required Node arguments", async () => {
+  const sourceLoaderUrl = pathToFileURL(sourceLoader).href;
   await exerciseExactApply(
-    ["--import", sourceLoader, cliSource],
-    [realpathSync(process.execPath), "--import", sourceLoader, realpathSync(cliSource)].map(commandArg).join(" "),
+    ["--import", sourceLoaderUrl, cliSource],
+    [realpathSync(process.execPath), "--import", sourceLoaderUrl, realpathSync(cliSource)].map(commandArg).join(" "),
   );
 });
