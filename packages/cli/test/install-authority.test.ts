@@ -2,7 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 
-import { classifyPersistentInstallAuthority } from "../src/install-authority.js";
+import { classifyPersistentInstallAuthority, npmPrefixInvocation } from "../src/install-authority.js";
+
+test("npm-global prefix probing uses the native executable contract", () => {
+  assert.deepEqual(npmPrefixInvocation("linux", {}), {
+    command: "npm",
+    args: ["prefix", "--global"],
+  });
+  assert.deepEqual(npmPrefixInvocation("win32", { ComSpec: String.raw`C:\Windows\System32\cmd.exe` }), {
+    command: String.raw`C:\Windows\System32\cmd.exe`,
+    args: ["/d", "/s", "/c", "npm.cmd prefix --global"],
+  });
+  assert.equal(npmPrefixInvocation("win32", {}), undefined);
+  assert.equal(npmPrefixInvocation("win32", { ComSpec: "cmd.exe" }), undefined);
+});
 
 function durableFixture(overrides: Record<string, unknown> = {}) {
   const prefix = (overrides.prefix as string | undefined) ?? "/opt/superbee-npm";
@@ -83,6 +96,13 @@ test("renamed bridge package bytes can authorize legacy-bin persistent hook writ
   assert.equal(result.evidence.bin_path, "/opt/aslite-npm/bin/aslite");
   assert.equal(result.evidence.npm_prefix, "/opt/aslite-npm");
   assert.equal(result.evidence.runtime_path, "/opt/aslite-npm/bin/node");
+});
+
+test("canonical package bytes cannot authorize through a legacy alias", () => {
+  const result = classifyPersistentInstallAuthority(durableFixture({ command: "aslite" }));
+  assert.equal(result.allowed, false);
+  assert.equal(result.state, "unknown");
+  assert.match(result.reason, /no managed PATH bin/);
 });
 
 test("legacy ASLite package bytes cannot authorize new persistent hook writes", () => {
@@ -223,6 +243,24 @@ test("Windows npm authority honors PATHEXT order and refuses an earlier shadowin
     realpath: (candidate) => path.win32.normalize(candidate).toLowerCase() === shadow.toLowerCase()
       ? shadow
       : fixture.realpath(candidate),
+  });
+  assert.equal(result.allowed, false);
+  assert.match(result.reason, /no managed PATH bin/);
+});
+
+test("Windows canonical package authority cannot be rescued by a later stale legacy alias", () => {
+  const fixture = windowsDurableFixture();
+  const shadow = String.raw`C:\foreign\superbee.exe`;
+  const staleAlias = String.raw`C:\Users\mike\AppData\Roaming\npm\aslite.cmd`;
+  const result = classifyPersistentInstallAuthority({
+    ...fixture,
+    env: { ...fixture.env, PATH: String.raw`C:\foreign;C:\Users\mike\AppData\Roaming\npm` },
+    realpath: (candidate) => {
+      const normalized = path.win32.normalize(candidate);
+      if (normalized.toLowerCase() === shadow.toLowerCase()) return shadow;
+      if (normalized.toLowerCase() === staleAlias.toLowerCase()) return staleAlias;
+      return fixture.realpath(candidate);
+    },
   });
   assert.equal(result.allowed, false);
   assert.match(result.reason, /no managed PATH bin/);

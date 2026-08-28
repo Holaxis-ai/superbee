@@ -7,7 +7,6 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import type { ArtifactChannel } from "./build-identity.js";
 import { buildIdentityEnvelope } from "./build-identity.js";
-import { BIN_NAMES } from "./invocation.js";
 
 export type PersistentInstallAuthorityState =
   | "durable_global"
@@ -66,9 +65,23 @@ function defaultRealpath(candidate: string): string | undefined {
   }
 }
 
+export function npmPrefixInvocation(
+  platform: string = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): { command: string; args: string[] } | undefined {
+  if (platform !== "win32") return { command: "npm", args: ["prefix", "--global"] };
+  const command = env.ComSpec?.trim() || env.COMSPEC?.trim();
+  if (!command || !path.win32.isAbsolute(command)) return undefined;
+  // npm's supported Windows executable is a .cmd shim. Node cannot execFile that shim directly;
+  // invoke the constant, argument-free probe through the absolute system command processor.
+  return { command, args: ["/d", "/s", "/c", "npm.cmd prefix --global"] };
+}
+
 function defaultNpmPrefixGlobal(): string | undefined {
   try {
-    const stdout = execFileSync("npm", ["prefix", "--global"], {
+    const invocation = npmPrefixInvocation();
+    if (!invocation) return undefined;
+    const stdout = execFileSync(invocation.command, invocation.args, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 2_000,
@@ -97,6 +110,35 @@ function isScopedNpmPackageExecutable(candidate: string | null, platform: string
   ];
   const normalized = paths.normalize(candidate);
   return suffixes.some((suffix) => normalized.endsWith(`${paths.sep}${suffix}`));
+}
+
+interface NpmInstallRule {
+  executable: string;
+  commands: readonly string[];
+}
+
+/** Bind PATH command authority to the package identity proven by its exact npm-global layout. */
+function npmInstallRule(prefix: string, executable: string, platform: string): NpmInstallRule | undefined {
+  const paths = pathApi(platform);
+  const packageBase = [prefix, ...(platform === "win32" ? [] : ["lib"]), "node_modules"];
+  const rules: NpmInstallRule[] = [
+    {
+      executable: paths.join(...packageBase, "superbee", "dist", "superbee.mjs"),
+      commands: ["superbee"],
+    },
+    {
+      executable: paths.join(...packageBase, "@holaxis", "aslite", "dist", "superbee.mjs"),
+      commands: ["aslite", "agentstate-lite"],
+    },
+  ];
+  const comparableExecutable = platform === "win32"
+    ? paths.normalize(executable).toLowerCase()
+    : paths.normalize(executable);
+  return rules.find((rule) => (
+    platform === "win32"
+      ? paths.normalize(rule.executable).toLowerCase()
+      : paths.normalize(rule.executable)
+  ) === comparableExecutable);
 }
 
 function windowsPathExtensions(env: NodeJS.ProcessEnv): string[] {
@@ -157,8 +199,12 @@ export function classifyPersistentInstallAuthority(
   if (!resolvedPrefixBin) {
     return unknown(input, "npm global prefix bin directory cannot be resolved");
   }
+  const installRule = npmInstallRule(prefix, executable, input.platform);
+  if (!installRule) {
+    return unknown(input, "running executable is outside the supported npm global package layout");
+  }
   const pathDirs = (input.env.PATH ?? "").split(paths.delimiter).filter(Boolean);
-  for (const name of BIN_NAMES) {
+  for (const name of installRule.commands) {
     for (const dir of pathDirs) {
       const candidates = input.platform === "win32"
         ? windowsPathExtensions(input.env).map((extension) => paths.normalize(paths.join(dir, `${name}${extension}`)))
@@ -193,7 +239,7 @@ export function classifyPersistentInstallAuthority(
     return unknown(input, "no managed PATH bin resolves to the running executable");
   }
 
-  const supportedBins = new Set(BIN_NAMES.map((name) => {
+  const supportedBins = new Set(installRule.commands.map((name) => {
     const candidate = paths.normalize(paths.join(
       prefixBin,
       input.platform === "win32" ? `${name}.cmd` : name,
@@ -202,16 +248,6 @@ export function classifyPersistentInstallAuthority(
   }));
   if (!supportedBins.has(input.platform === "win32" ? selectedBin.toLowerCase() : selectedBin)) {
     return unknown(input, "managed PATH bin is outside the npm global prefix bin directory");
-  }
-  const packageExecutables = [
-    paths.join(prefix, ...(input.platform === "win32" ? [] : ["lib"]), "node_modules", "superbee", "dist", "superbee.mjs"),
-    paths.join(prefix, ...(input.platform === "win32" ? [] : ["lib"]), "node_modules", "@holaxis", "aslite", "dist", "superbee.mjs"),
-  ];
-  const comparableExecutable = input.platform === "win32" ? paths.normalize(executable).toLowerCase() : paths.normalize(executable);
-  if (!packageExecutables.some((candidate) => (
-    input.platform === "win32" ? paths.normalize(candidate).toLowerCase() : paths.normalize(candidate)
-  ) === comparableExecutable)) {
-    return unknown(input, "running executable is outside the supported npm global package layout");
   }
   if (!input.runtime_path || !paths.isAbsolute(input.runtime_path) || containsNpxCache(input.runtime_path)) {
     return unknown(input, "running Node executable is missing or transient");
