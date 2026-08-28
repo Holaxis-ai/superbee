@@ -612,6 +612,57 @@ test("AC-4: Windows existing-leaf replacement retries only bounded sharing failu
   }
 });
 
+test("AC-4: Windows replacement retry preserves a newer exact-leaf generation after a transient failure", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  let first = true;
+  port.override("rename", async (_args, base) => {
+    if (first) {
+      first = false;
+      port.file(TARGET, "external", 10);
+      throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+    }
+    return base();
+  });
+
+  await assert.rejects(
+    () => mutateExact(port, ROOT, REL, casWrite("old")),
+    ConcurrentReplacementError,
+  );
+  assert.equal(port.ops("rename").length, 1, "the changed witness is rejected before a retrying rename");
+  assert.equal(port.node(TARGET)?.ino, 10);
+  assert.equal(port.node(TARGET)?.bytes.toString(), "external");
+  assert.equal(port.ops("unlink").length, 1, "the refused writer removes only its own temporary file");
+});
+
+test("AC-4: Windows replacement retry refuses a removed original witness", async () => {
+  const port = new ScriptedPort({ platform: "win32" });
+  port.file(TARGET, "old", 9);
+  port.override("rename", async () => {
+    port.remove(TARGET);
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), ConcurrentReplacementError);
+  assert.equal(port.ops("rename").length, 1);
+  assert.equal(port.node(TARGET), null);
+});
+
+test("AC-4: Windows replacement retry reports an externally respelled original witness as an alias", async () => {
+  const port = new ScriptedPort({ platform: "win32", aliasing: true });
+  port.file(TARGET, "old", 9);
+  const alias = path.join(path.dirname(TARGET), "X.md");
+  port.override("rename", async () => {
+    port.respell(TARGET, "X.md");
+    throw Object.assign(new Error("EBUSY"), { code: "EBUSY" });
+  });
+
+  await assert.rejects(() => mutateExact(port, ROOT, REL, casWrite("old")), FilesystemIdentityAliasError);
+  assert.equal(port.ops("rename").length, 1);
+  assert.equal(port.node(alias)?.ino, 9);
+  assert.equal(port.node(alias)?.bytes.toString(), "old");
+});
+
 test("AC-4: Windows existing-leaf replacement does not retry unrelated rename errors", async () => {
   for (const code of ["EEXIST", "EIO", "ENOENT"]) {
     const port = new ScriptedPort({ platform: "win32" });

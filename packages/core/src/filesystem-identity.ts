@@ -118,14 +118,18 @@ const WINDOWS_REPLACE_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320] as const;
 
 /**
  * Windows can transiently deny replacement while another process is closing a read handle or a
- * scanner holds the destination. Retry only an already-realized exact leaf and only the errno
- * values Node uses for Windows sharing/access violations; every other rename failure remains
- * immediate, and the finite backoff preserves a bounded failure mode.
+ * scanner holds the destination. Retry only an already-realized exact leaf whose spelling and
+ * inode still match the original witness after each backoff, and only the errno values Node uses
+ * for Windows sharing/access violations; every other rename failure remains immediate, and the
+ * finite backoff preserves a bounded failure mode.
  */
 async function replaceExistingLeaf(
   port: FilesystemIdentityPort,
   tmp: string,
   target: string,
+  rel: string,
+  leaf: string,
+  realized: EntryWitness,
 ): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -141,6 +145,15 @@ async function replaceExistingLeaf(
         throw err;
       }
       await delay(WINDOWS_REPLACE_RETRY_DELAYS_MS[attempt]);
+      const listing = await port.entries(path.dirname(target));
+      if (listing === null) throw new ConcurrentReplacementError(rel, attempt + 1);
+      const verdict = classifyLeaf({
+        listed: hasExact(listing, leaf),
+        probe: await probeSegment(port, target, rel, leaf),
+        handle: realized,
+      });
+      if (verdict === "aliased") throw new FilesystemIdentityAliasError(rel, leaf);
+      if (verdict !== "exact") throw new ConcurrentReplacementError(rel, attempt + 1);
     }
   }
 }
@@ -725,7 +738,7 @@ export async function mutateExact<T>(
             if (realized.state === "exact") {
               // Replace: the target exists under our exact spelling, so any writer of an
               // equated spelling is refused at its own M-REALIZE; an atomic rename is safe.
-              await replaceExistingLeaf(port, tmp, target);
+              await replaceExistingLeaf(port, tmp, target, rel, leaf, realized.leaf);
               return;
             }
             if (linkUnsupportedRoots.has(rootResolved)) {
