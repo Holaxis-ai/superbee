@@ -29,6 +29,10 @@
     "./publication": {
       "types": "./dist/publication/index.d.ts",
       "default": "./dist/publication.mjs"
+    },
+    "./publication/bridge": {
+      "types": "./dist/publication/bridge-entry.d.ts",
+      "default": "./dist/publication-bridge.mjs"
     }
   },
   "files": [

@@ -173,10 +173,11 @@ export async function buildCliBundle(outfile, options) {
 }
 
 /** Bundle the stable `superbee/publication` subpath with zero runtime dependencies. */
-export async function buildPublicationBundle(outfile) {
+export async function buildPublicationBundle(outfile, surface = "full") {
+  if (surface !== "full" && surface !== "bridge") throw new Error("unknown publication bundle surface");
   await build({
     absWorkingDir: pkgRoot,
-    entryPoints: [r("../publication/src/index.ts")],
+    entryPoints: [r(surface === "bridge" ? "../publication/src/bridge-entry.ts" : "../publication/src/index.ts")],
     outfile,
     bundle: true,
     platform: "node",
@@ -192,6 +193,7 @@ export async function buildPublicationBundle(outfile) {
       "@superbee/markdown-renderer/static": r("../markdown-renderer/src/static.tsx"),
       "@superbee/markdown-renderer": r("../markdown-renderer/src/index.tsx"),
       "@superbee/view-runtime": r("../view-runtime/src/index.ts"),
+      "@superbee/view-runtime/bridge": r("../view-runtime/src/bridge.ts"),
     },
     banner: {
       js: [

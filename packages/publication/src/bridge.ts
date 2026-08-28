@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { BridgeService, type BridgeLaunchAuthority } from "@superbee/view-runtime";
+import { BridgeService, type BridgeLaunchAuthority } from "@superbee/view-runtime/bridge";
 
 import { PublicationError } from "./errors.js";
 import { PublicationSnapshotBackend } from "./snapshot-backend.js";

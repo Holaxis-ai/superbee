@@ -28,7 +28,9 @@ const SUCCESSOR_BINS = SUCCESSOR_TARGET.bins;
 const SUCCESSOR_BUILD_IDENTITY_SCHEMA = "superbee.build-identity.v1";
 
 const publicationExpectedFiles = [
+  "dist/publication-bridge.mjs",
   "dist/publication.mjs",
+  "dist/publication/bridge-entry.d.ts",
   "dist/publication/bridge.d.ts",
   "dist/publication/canonical-json.d.ts",
   "dist/publication/capture.d.ts",
@@ -299,9 +301,9 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
     expectedArtifact === SUCCESSOR_ARTIFACT
-      ? ["dist/publication.mjs", expectedArtifact].sort()
+      ? ["dist/publication-bridge.mjs", "dist/publication.mjs", expectedArtifact].sort()
       : [expectedArtifact],
-    "the tarball must carry the declared executable and, for Superbee, the publication subpath bundle",
+    "the tarball must carry the declared executable and the two declared publication subpath bundles",
   );
   assert.equal(manifest.name, target.package.name);
   // NOTICE must be listed explicitly: npm ships LICENSE regardless of files[], but NOTICE only
@@ -312,6 +314,10 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
     assert.deepEqual(manifest.exports?.["./publication"], {
       types: "./dist/publication/index.d.ts",
       default: "./dist/publication.mjs",
+    });
+    assert.deepEqual(manifest.exports?.["./publication/bridge"], {
+      types: "./dist/publication/bridge-entry.d.ts",
+      default: "./dist/publication-bridge.mjs",
     });
   }
   // Scoped packages default to restricted at publish time — the manifest must pin public.

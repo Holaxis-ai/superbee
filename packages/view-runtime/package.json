@@ -16,6 +16,10 @@
     "./action-bridge": {
       "types": "./dist/action-bridge.d.ts",
       "default": "./dist/action-bridge.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "default": "./dist/bridge.js"
     }
   },
   "files": [

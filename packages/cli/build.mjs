@@ -30,6 +30,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const r = (p) => resolve(here, p);
 const outfile = r("dist/superbee.mjs");
 const publicationOutfile = r("dist/publication.mjs");
+const publicationBridgeOutfile = r("dist/publication-bridge.mjs");
 const execFileAsync = promisify(execFile);
 
 async function copyDeclarationTree(source, destination) {
@@ -86,6 +87,7 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
   });
   await Promise.all([
     buildPublicationBundle(publicationOutfile),
+    buildPublicationBundle(publicationBridgeOutfile, "bridge"),
     buildPublicationTypes(),
   ]);
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
