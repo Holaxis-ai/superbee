@@ -73,13 +73,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Release-source validation consumes the verdict the push-to-main run already recorded on
-          # this exact commit; it never reruns CI. The newest repository-workflow check run named
-          # after the canonical required context decides. A pending or not-yet-visible verdict is
-          # polled briefly (a full CI run takes ~6 minutes); a failed, missing, or unqueryable
+          # Release-source validation consumes the newest CI verdict already recorded on this exact
+          # commit — ordinarily the push-to-main run; a rerun or manual dispatch of the same
+          # workflow counts equally — and never reruns CI. The newest repository-workflow check run
+          # named after the canonical required context decides. A pending or not-yet-visible verdict
+          # is polled briefly (a full CI run takes ~6 minutes); a failed, missing, or unqueryable
           # verdict refuses fail-closed: never stage bytes whose source CI cannot vouch for.
           for attempt in $(seq 1 16); do
-            VERDICT="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20required%20lanes&filter=latest" \
+            VERDICT="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20required%20lanes&filter=latest&per_page=100" \
               --jq '([.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last) as $r
                 | if $r == null then "missing"
                   elif $r.status != "completed" then "pending"
@@ -88,7 +89,7 @@ jobs:
               || { echo "::error::cannot query check runs for $GITHUB_SHA; refusing to build without the CI verdict"; exit 1; }
             case "$VERDICT" in
               success) break ;;
-              missing|pending) echo "CI required lanes not settled on $GITHUB_SHA yet (attempt $attempt: $VERDICT)"; sleep 30 ;;
+              missing|pending) echo "CI required lanes not settled on $GITHUB_SHA yet (attempt $attempt: $VERDICT)"; if [ "$attempt" -lt 16 ]; then sleep 30; fi ;;
               *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on main before tagging"; exit 1 ;;
             esac
           done

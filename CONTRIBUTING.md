@@ -84,10 +84,11 @@ owns the affected behavior. `npm run check` is the fullest local stand-in only w
 unavailable; the pre-commit smoke is not the full gate.
 
 Two validations exist, and each needs exactly one run. PR validation (`pull_request`) proves the
-proposed change against its base before merge. Release-source validation is the `push` run on the
-merged `main` commit; `release.yml` consumes that recorded verdict fail-closed on the exact tagged
-SHA instead of rerunning CI. Open the PR immediately after the branch push so its run starts the
-pre-merge verdict; dispatch `CI tests` on a branch only when no PR will exist promptly, and never
+proposed change against its base before merge. Release-source validation is the newest recorded
+`CI required lanes` verdict on the exact tagged commit — ordinarily the `push` run on the merged
+`main` commit; `release.yml` consumes that verdict fail-closed instead of rerunning CI. The
+maintainer opens the PR immediately after the branch push so its run starts the pre-merge
+verdict; dispatch `CI tests` on a branch only when no PR will exist promptly, and never
 treat a branch dispatch as a serial prerequisite for opening or progressing the PR — a dispatch and
 a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
 only when the merged SHA equals the validated SHA (fast-forward or a merge queue; the current
