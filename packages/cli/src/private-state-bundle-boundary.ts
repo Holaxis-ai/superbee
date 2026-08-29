@@ -49,16 +49,39 @@ function absentComponent(error: unknown): boolean {
   return c === "ENOENT" || c === "ENOTDIR";
 }
 
+/**
+ * The host refused to LOOK rather than describing a shape: an unreadable `~/.config`, a sandboxed
+ * profile directory, a Windows ACL that denies one hidden known folder. `stat` is denied exactly
+ * when a directory ABOVE the path is unsearchable, so the walk anchors at the deepest ancestor it
+ * can still stat and classifies the denied components below it by name, the same way it classifies
+ * components that do not exist yet.
+ *
+ * This cannot hide an overlap the CLI could act on: every descendant of a guarded root under the
+ * denial is denied through the SAME prefix, so a target the CLI can open is never inside it. The
+ * one thing it gives up is a symlink strictly BELOW the denial relocating a guarded root somewhere
+ * readable — unobservable by any call, `lstat` included, so the alternative is not a stricter
+ * boundary but refusing every explicitly targeted bundle over an unrelated unreadable root.
+ */
+function hostDeniedComponent(error: unknown): boolean {
+  const c = code(error);
+  return c === "EACCES" || c === "EPERM";
+}
+
+/** Components the walk must classify by name because no inode of their own is observable. */
+function unobservableComponent(error: unknown): boolean {
+  return absentComponent(error) || hostDeniedComponent(error);
+}
+
 function runtimeFailure(): CliError {
   return new CliError("RUNTIME", "cannot verify that the target is separate from private Superbee state");
 }
 
 interface PhysicalCoordinate {
-  /** "dev:ino" of the deepest EXISTING ancestor, or null when no usable inode could be observed. */
+  /** "dev:ino" of the deepest OBSERVABLE ancestor, or null when no usable inode could be observed. */
   readonly anchorKey: string | null;
   /** Inode keys of the anchor and every ancestor above it. */
   readonly anchorChain: readonly string[];
-  /** Path components below the anchor that do not exist yet, outermost first. */
+  /** Path components below the anchor with no observable inode of their own, outermost first. */
   readonly missing: readonly string[];
   /** The anchor's path, consulted only when inode identity is undeterminable. */
   readonly anchorPath: string;
@@ -74,15 +97,17 @@ function inodeKey(status: { dev: bigint; ino: bigint }): string | null {
 }
 
 /**
- * A DANGLING symlink is not an existing ancestor, but it still declares where the path will land
- * once its target is created — so a state-root alias cannot quietly become a bundle later.
+ * A symlink whose destination `stat` could not reach — because it is dangling, or because the host
+ * denies the destination — still DECLARES where the path lands, so a state-root alias cannot
+ * quietly become a bundle later. `lstat` needs only the link's own parent, so it keeps answering
+ * after the destination stops being observable.
  */
-function danglingLinkTarget(cursor: string, seenLinks: Set<string>): string | null {
+function declaredLinkTarget(cursor: string, seenLinks: Set<string>): string | null {
   let status;
   try {
     status = lstatSync(cursor);
   } catch (error) {
-    if (!absentComponent(error)) throw runtimeFailure();
+    if (!unobservableComponent(error)) throw runtimeFailure();
     return null;
   }
   if (!status.isSymbolicLink()) return null;
@@ -132,7 +157,7 @@ function anchorAt(
   return { anchorKey: chain[0] ?? null, anchorChain: chain, missing, anchorPath };
 }
 
-/** Anchor a path at its deepest existing ancestor, retaining the components still to be created. */
+/** Anchor a path at its deepest OBSERVABLE ancestor, retaining the components below it. */
 function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set()): PhysicalCoordinate {
   if (!path.isAbsolute(candidate)) {
     throw new CliError("RUNTIME", "private state and bundle identities require absolute filesystem paths");
@@ -144,9 +169,11 @@ function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set(
       return anchorAt(cursor, statSync(cursor, { bigint: true }), [...missing].reverse());
     } catch (error) {
       if (error instanceof CliError) throw error;
-      if (!absentComponent(error)) throw runtimeFailure();
+      // Anything else — ELOOP, EIO, ENAMETOOLONG — is a filesystem answer this relation cannot
+      // interpret. It stays a refusal rather than becoming a name-only classification.
+      if (!unobservableComponent(error)) throw runtimeFailure();
     }
-    const hop = danglingLinkTarget(cursor, seenLinks);
+    const hop = declaredLinkTarget(cursor, seenLinks);
     if (hop !== null) return physicalCoordinate(path.resolve(hop, ...[...missing].reverse()), seenLinks);
     const parent = path.dirname(cursor);
     if (parent === cursor) {
@@ -195,10 +222,10 @@ export function relateToPrivateState(candidate: string, stateRoot: string): Priv
     return relateSegments(bundle.missing.map(fold), state.missing.map(fold));
   }
 
-  // The `missing is empty` guards below are LOAD-BEARING. Without them an absent state root
-  // collapses onto its nearest existing ancestor ($HOME), every project bundle under $HOME reads as
-  // a descendant of private state, and every guarded command refuses on a machine that has never
-  // run superbee.
+  // The `missing is empty` guards below are LOAD-BEARING. Without them a state root with no
+  // observable inode — absent, or below a directory the host denies — collapses onto its nearest
+  // observable ancestor ($HOME, or an unreadable `~/.config`), every project bundle under that
+  // ancestor reads as a descendant of private state, and every guarded command refuses.
   if (bundle.missing.length === 0 && state.anchorChain.includes(bundle.anchorKey)) {
     return "bundle-contains-state";
   }

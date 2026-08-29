@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -30,6 +31,7 @@ import {
 import {
   assertBundleOutsidePrivateState,
   assertPathOutsidePrivateState,
+  assertSearchDirOutsidePrivateState,
   guardedStateRoots,
   relateToPrivateState,
   type PrivateStateRelation,
@@ -244,6 +246,243 @@ test("truth table — relative and non-normalized spellings resolve to the same 
     assert.equal(relateToPrivateState(`${state}${path.sep}.${path.sep}sub${path.sep}..`, state), "identical");
     assert.equal(relateToPrivateState(path.join(state, "a", "..", "b"), state), "bundle-inside-state");
   });
+});
+
+// ── A guarded root the host refuses to let us look at ─────────────────────────
+//
+// The governing boundary: an unreadable and UNRELATED private root must not block explicitly
+// targeted bundle work, while a target whose own relation cannot be established still refuses.
+// `stat` is denied exactly when a directory ABOVE the path is unsearchable, so every row here
+// denies an ANCESTOR of a guarded root — the shape a sandboxed or protected `~/.config` has — and
+// then asserts the complete relation table, not only the row the fix unblocks.
+
+/** Permission bits are the portable way to make one real directory genuinely unsearchable. */
+const HOST_DENIAL_UNAVAILABLE = process.platform === "win32" || process.getuid?.() === 0;
+
+function withDeniedDirectory<T>(directory: string, body: () => T): T {
+  chmodSync(directory, 0o000);
+  try {
+    return body();
+  } finally {
+    chmodSync(directory, 0o700);
+  }
+}
+
+function assertDenied(target: string): void {
+  assert.throws(
+    () => statSync(target),
+    (error: NodeJS.ErrnoException) => error.code === "EACCES" || error.code === "EPERM",
+    `the fixture needs ${target} to be genuinely unobservable`,
+  );
+}
+
+test("truth table — a guarded root below a directory the host refuses to search", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("an unsearchable directory needs a non-root POSIX environment");
+    return;
+  }
+  withHome((home, root) => {
+    const [superseded] = supersededUserStateDirs(home);
+    assert.ok(superseded !== undefined, "this row needs a guarded root nested below a hidden ancestor");
+    const hidden = path.dirname(superseded);
+    assert.notEqual(path.resolve(hidden), path.resolve(home), "the denial must sit BELOW $HOME");
+    mkdirSync(superseded, { recursive: true });
+    const project = path.join(root, "project", ".superbee");
+    mkdirSync(project, { recursive: true });
+
+    withDeniedDirectory(hidden, () => {
+      assertDenied(superseded);
+
+      // THE fix: an explicit target that is nowhere near this root stops depending on reading it.
+      assert.equal(relateToPrivateState(project, superseded), "unrelated");
+      assert.equal(relateToPrivateState(path.join(home, "projects", "demo", ".superbee"), superseded), "unrelated");
+
+      // Everything the denial could otherwise hide is still exact. The deepest observable ancestor
+      // is a real inode anchor, so containment in BOTH directions survives.
+      assert.equal(relateToPrivateState(superseded, superseded), "identical");
+      assert.equal(relateToPrivateState(path.join(superseded, "sub"), superseded), "bundle-inside-state");
+      assert.equal(relateToPrivateState(hidden, superseded), "bundle-contains-state");
+      assert.equal(relateToPrivateState(home, superseded), "bundle-contains-state");
+    });
+  });
+});
+
+test("an unreadable UNRELATED guarded root stops refusing explicit bundle work", async (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("an unsearchable directory needs a non-root POSIX environment");
+    return;
+  }
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const stateRoot = await ensureUserStateRoot(home);
+    const [superseded] = supersededUserStateDirs(home);
+    assert.ok(superseded !== undefined);
+    const hidden = path.dirname(superseded);
+    mkdirSync(superseded, { recursive: true });
+    const bundle = path.join(root, "project", ".superbee");
+    mkdirSync(bundle, { recursive: true });
+
+    withDeniedDirectory(hidden, () => {
+      for (const guard of [assertBundleOutsidePrivateState, assertSearchDirOutsidePrivateState]) {
+        assert.doesNotThrow(() => guard(bundle, home), guard.name);
+      }
+      assert.doesNotThrow(() => assertPathOutsidePrivateState(path.join(bundle, "out.md"), home));
+
+      // The roots that ARE readable keep refusing while one unrelated root is not.
+      assert.throws(() => assertBundleOutsidePrivateState(stateRoot, home), /cannot be used as an OKF bundle/);
+      assert.throws(() => assertPathOutsidePrivateState(path.join(stateRoot, "state.json"), home), /private user-state/);
+      // ... and so does the unreadable root itself.
+      assert.throws(() => assertBundleOutsidePrivateState(superseded, home), /cannot be used as an OKF bundle/);
+      assert.throws(() => assertBundleOutsidePrivateState(path.join(superseded, "sub"), home), /cannot live inside/);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("truth table — a state-root alias whose DESTINATION the host denies still classifies", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("an unsearchable directory needs a non-root POSIX environment");
+    return;
+  }
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const state = canonicalUserStateDir(home);
+    mkdirSync(path.dirname(state), { recursive: true });
+    const enclosure = path.join(root, "enclosure");
+    const aliased = path.join(enclosure, "state");
+    mkdirSync(aliased, { recursive: true });
+    symlinkSync(aliased, state, directoryLinkType);
+    const project = path.join(root, "project", ".superbee");
+    mkdirSync(project, { recursive: true });
+
+    withDeniedDirectory(enclosure, () => {
+      assertDenied(state);
+      // `lstat` needs only the link's own parent, so the alias keeps declaring its destination and
+      // the physical overlap is still refused at the destination's own spelling.
+      assert.equal(relateToPrivateState(aliased, state), "identical");
+      assert.equal(relateToPrivateState(path.join(aliased, "sub"), state), "bundle-inside-state");
+      assert.equal(relateToPrivateState(enclosure, state), "bundle-contains-state");
+      assert.equal(relateToPrivateState(project, state), "unrelated");
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an ambiguity that is NOT a host denial still fails closed", () => {
+  withHome((home, root) => {
+    const state = canonicalUserStateDir(home);
+    const first = path.join(root, "loop-a");
+    const second = path.join(root, "loop-b");
+    symlinkSync(second, first);
+    symlinkSync(first, second);
+    assert.throws(
+      () => statSync(first),
+      (error: NodeJS.ErrnoException) => error.code === "ELOOP",
+      "the fixture needs an answer the relation cannot interpret",
+    );
+
+    // A filesystem answer that is neither a shape nor a denial leaves the target's ancestry
+    // unresolved, and an unresolved TARGET is exactly what must keep refusing.
+    for (const candidate of [first, path.join(first, "bundle")]) {
+      assert.throws(
+        () => relateToPrivateState(candidate, state),
+        /cannot verify that the target is separate from private Superbee state/,
+        candidate,
+      );
+    }
+  });
+});
+
+test("explicit --dir work survives an unreadable unrelated guarded root, through the BUILT CLI", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("an unsearchable directory needs a non-root POSIX environment");
+    return;
+  }
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    const project = path.join(root, "project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(project, { recursive: true });
+    const [superseded] = supersededUserStateDirs(home);
+    assert.ok(superseded !== undefined);
+    mkdirSync(superseded, { recursive: true });
+
+    withDeniedDirectory(path.dirname(superseded), () => {
+      const journey: Array<readonly [string, readonly string[]]> = [
+        ["init", ["init", "--create-only", "--dir", ".superbee", "--json"]],
+        ["create", ["doc", "write", "notes/a", "--type", "Note", "--body", "first", "--dir", ".superbee", "--json"]],
+        ["create target", ["doc", "write", "notes/b", "--type", "Note", "--body", "target", "--dir", ".superbee", "--json"]],
+        ["read", ["doc", "read", "notes/a", "--dir", ".superbee", "--json"]],
+        ["update", ["doc", "write", "notes/a", "--type", "Note", "--body", "second", "--dir", ".superbee", "--json"]],
+        ["list", ["list", "--dir", ".superbee", "--json"]],
+        ["link add", ["link", "add", "notes/a", "notes/b", "--dir", ".superbee", "--json"]],
+        ["link show", ["link", "show", "notes/a", "--dir", ".superbee", "--json"]],
+        ["status", ["status", "--dir", ".superbee", "--json"]],
+      ];
+      for (const [label, argv] of journey) {
+        const result = runCli(argv, { cwd: project, home });
+        assert.equal(result.status, 0, `${label}: ${result.stderr || result.stdout}`);
+        assert.doesNotMatch(`${result.stdout}${result.stderr}`, /separate from private Superbee state/, label);
+      }
+
+      // The same denial must not cost the refusals. Both directions, through the shipped envelope.
+      const inside = runCli(
+        ["doc", "write", "notes/x", "--type", "Note", "--body", "b", "--dir", superseded, "--json"],
+        { cwd: project, home },
+      );
+      assert.equal(inside.status, 5, inside.stderr || inside.stdout);
+      assert.match(inside.stdout, /private user-state directory cannot be used as an OKF bundle/);
+      const enclosing = runCli(["init", "--create-only", "--dir", home, "--json"], { cwd: project, home });
+      assert.equal(enclosing.status, 5, enclosing.stderr || enclosing.stdout);
+      assert.match(enclosing.stdout, /cannot enclose Superbee's private user-state directory/);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a genuinely requested private-state capability is reported as that capability", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("an unsearchable directory needs a non-root POSIX environment");
+    return;
+  }
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    const project = path.join(root, "project");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(project, { recursive: true });
+    const stateRoot = canonicalUserStateDir(home);
+    mkdirSync(stateRoot, { recursive: true });
+
+    withDeniedDirectory(stateRoot, () => {
+      // Explicit bundle work does not request the private-state capability, so it proceeds ...
+      const initialized = runCli(["init", "--create-only", "--dir", ".superbee", "--json"], { cwd: project, home });
+      assert.equal(initialized.status, 0, initialized.stderr || initialized.stdout);
+
+      // ... while the command that DOES request it names that capability instead of reporting the
+      // ordinary bundle as unusable.
+      const setup = runCli(["setup", "--json"], { cwd: project, home });
+      assert.equal(setup.status, 0, setup.stderr || setup.stdout);
+      const payload = JSON.parse(setup.stdout) as {
+        setup: { capabilities: Array<{ id: string; state: string; command?: string }> };
+      };
+      const capability = payload.setup.capabilities.find((entry) => entry.id === "state");
+      assert.ok(capability, "the blocked private-state capability is named");
+      assert.equal(capability.state, "blocked");
+      assert.match(capability.command ?? "", /setup/);
+      assert.doesNotMatch(setup.stdout, /separate from private Superbee state/);
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 // ── The guarded root set ──────────────────────────────────────────────────────
