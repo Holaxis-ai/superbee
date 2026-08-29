@@ -100,6 +100,12 @@ Options:
                        Without it, a body replace that drops a link is refused (exit 2, naming the
                        dropped link(s)); a new body that still contains the same link(s) never needs
                        this flag. SHORT-TERM guard — see 'link add'/'link show' to manage links.
+  --accept-truncated-body
+                       Required to overwrite an EXISTING doc's body with a TRUNCATED 'doc read' body
+                       preview — one still carrying the truncated-preview marker, or one that is
+                       exactly the preview slice of this doc's own longer stored body. Without it
+                       such a write is refused (exit 2) and nothing is written; read the complete
+                       body with 'doc read <id> --body-out <path>' instead.
   --strict             If a kind convention governs --type, reject (exit 2) instead of writing with
                        warnings when the doc does not satisfy it (default: warn-and-write, exit 0 —
                        see 'superbee kinds')
@@ -146,6 +152,13 @@ Options:
                          a new body that still contains the same link(s) — the ordinary read-edit-
                          update cycle — never needs this flag. SHORT-TERM guard — see 'link add'/
                          'link show' to manage links.
+  --accept-truncated-body
+                         Required when a --body/--body-file/stdin replace would write a TRUNCATED
+                         'doc read' body preview — one still carrying the truncated-preview marker,
+                         or one that is exactly the preview slice of this doc's own longer stored
+                         body. Without it such a replace is refused (exit 2) and nothing is written.
+                         A preview is not a body: read the complete one with 'doc read <id>
+                         --body-out <path>', edit that file, then pass it back with --body-file.
   --keep-timestamp       Preserve an existing legacy compatibility timestamp. Current bundles use
                          their standard generated.at clock automatically.
   --strict               If a kind convention governs the resulting type, reject (exit 2) instead of
@@ -183,6 +196,10 @@ Usage:
 
 The default (no byte-channel flag) render shows EVERY frontmatter field — the standard keys plus any
 kind-declared fields like progress_status/priority — and truncates a large body (pointing at --out).
+A truncated body is published as 'body_preview' (never 'body'), with body_truncated:true, the true
+body_chars, and a marker inside the value itself. That value is a PREVIEW, not a body: writing it
+back through 'doc write'/'doc update' is refused (exit 2) unless --accept-truncated-body is passed.
+Use --body-out to get the complete body for an edit cycle.
 
 Options:
   --out <path>         Write the doc's raw markdown bytes to a file (bypasses context).
@@ -290,6 +307,150 @@ Examples:
 
 /** AXI §3 body-preview cap for `doc read` (no --out): beyond this, truncate + point at the byte channel. */
 export const BODY_PREVIEW_LIMIT = 1000;
+
+/**
+ * The token every TRUNCATED body preview carries INSIDE its own value (see {@link attachBodyPreview}).
+ * Fixed and interpolation-free so {@link guardTruncatedBodyPreview} can recognize it by exact
+ * substring no matter which document, command, or render mode produced the preview.
+ */
+export const BODY_PREVIEW_TRUNCATION_MARKER = "[superbee:body-preview-truncated]";
+
+/** The record key a TRUNCATED preview is published under — deliberately not `body`. */
+export const BODY_PREVIEW_KEY = "body_preview";
+
+/**
+ * Every output key {@link attachBodyPreview} may write. Renders that also dump arbitrary frontmatter
+ * spread this into their own reserved-key set, so a pathological frontmatter key can never clobber a
+ * preview field AND a future preview key propagates to both renders without a second edit.
+ */
+export const BODY_PREVIEW_RESERVED_KEYS: readonly string[] = [
+  "body",
+  BODY_PREVIEW_KEY,
+  "body_truncated",
+  "body_chars",
+  "help",
+];
+
+/**
+ * THE one truncation identity for every render with `doc read` body semantics (`doc read`, `sync
+ * --show-incoming`). A body within {@link BODY_PREVIEW_LIMIT} is published unchanged as `body`, so
+ * the compact read is untouched. A body PAST the bound is published under
+ * {@link BODY_PREVIEW_KEY} — not `body` — alongside `body_truncated`, the TRUE `body_chars`, a help
+ * pointer at the complete-body channel, and {@link BODY_PREVIEW_TRUNCATION_MARKER} appended to the
+ * value itself.
+ *
+ * Both the key name and the in-value marker are load-bearing, not decoration. A field called `body`
+ * that holds 1,000 of 4,300 characters reads as the whole body and invites exactly one mistake:
+ * feeding it back into a full-body write (AXI-05 — truncated data must be named, never masquerade as
+ * complete truth). The marker then makes the value self-identifying wherever it travels, which is
+ * what lets {@link guardTruncatedBodyPreview} refuse a preview captured from another document or
+ * from a previous session, where no prefix comparison could.
+ */
+export function attachBodyPreview(
+  rec: Record<string, unknown>,
+  body: string,
+  fullBodyHelp: readonly string[],
+): void {
+  if (body.length <= BODY_PREVIEW_LIMIT) {
+    rec.body = body;
+    return;
+  }
+  const omitted = body.length - BODY_PREVIEW_LIMIT;
+  rec[BODY_PREVIEW_KEY] =
+    `${body.slice(0, BODY_PREVIEW_LIMIT)}\n\n${BODY_PREVIEW_TRUNCATION_MARKER} ${omitted} more ` +
+    `character(s) are NOT shown — this value is a preview, not the document body; use this record's ` +
+    `help to read the complete body before rewriting it.`;
+  rec.body_truncated = true;
+  rec.body_chars = body.length;
+  rec.help = [...fullBodyHelp];
+}
+
+/**
+ * True when `candidate` IS `preview`, ignoring TRAILING WHITESPACE only — a preview copied through a
+ * file or an editor routinely gains or loses a final newline. Whitespace is the entire tolerance:
+ * anything looser (a prefix test, a length test) would start matching a legitimate tail deletion,
+ * which is an ordinary intentional edit. A whitespace-only preview never matches, so a deliberate
+ * blank body cannot be mistaken for one.
+ */
+function matchesPreviewSlice(candidate: string, preview: string): boolean {
+  if (candidate === preview) return true;
+  const trimmed = preview.trimEnd();
+  return trimmed !== "" && candidate.trimEnd() === trimmed;
+}
+
+/**
+ * Truncated-preview guard (P1, data loss): a `doc read` detail render deliberately shows only the
+ * first {@link BODY_PREVIEW_LIMIT} characters of a large body, and a caller that feeds that preview
+ * straight back into a full-body replace DESTROYS everything past the cut with exit 0 and no trace.
+ * (Live incident: a 4.3 KB documentation page rewritten as its own 1,000-character preview.)
+ *
+ * The guard keys on the two identities {@link attachBodyPreview} actually produces — never on a
+ * heuristic about body size or shape, so a legitimately short replacement body cannot trip it:
+ *
+ *  1. MARKER — the candidate still carries {@link BODY_PREVIEW_TRUNCATION_MARKER}. That token is
+ *     never legitimate document content, and it is the only identity that survives travel: it
+ *     catches a preview reused across documents, or captured before the target changed.
+ *  2. STORED PREFIX — the target's own stored body is past the bound and the candidate is exactly
+ *     its preview slice (see {@link matchesPreviewSlice}). Matching means the write truncates the
+ *     document to precisely the preview cut; nothing else produces that body. This clause still
+ *     fires for a preview captured before this marker existed, or hand-copied without it.
+ *
+ * A candidate identical to the stored body returns early: it changes nothing, so it is never data
+ * loss — and that also keeps a document whose stored body legitimately contains the marker (written
+ * once with the override) patchable by every later field-only update.
+ *
+ * Called from inside each verb's `buildCandidate` so, like the link-drop guard, it evaluates against
+ * the version-matched snapshot of EVERY compare-and-swap attempt rather than a stale upfront peek.
+ * `--accept-truncated-body` opts into the write deliberately.
+ */
+export function guardTruncatedBodyPreview(
+  existing: OkfDocument,
+  nextBody: string,
+  acceptTruncatedBody: boolean,
+): void {
+  if (acceptTruncatedBody) return;
+  if (nextBody === existing.body) return;
+
+  const inv = cliInvocation();
+  const help = `${inv} doc read ${existing.id} --body-out <path-outside-bundle>`;
+  const recovery =
+    `Read the COMPLETE body first — '${help} --json' (its receipt carries the version), edit that ` +
+    `file, then '${inv} doc update ${existing.id} --body-file <path-outside-bundle> ` +
+    `--expected-version <version>'. Pass --accept-truncated-body to write this body deliberately.`;
+
+  if (nextBody.includes(BODY_PREVIEW_TRUNCATION_MARKER)) {
+    throw new CliError(
+      "USAGE",
+      `the body given for '${existing.id}' still carries Superbee's truncated-preview marker ` +
+        `'${BODY_PREVIEW_TRUNCATION_MARKER}' — it is a PREVIEW of a document body, not a complete ` +
+        `body, so writing it would persist a truncated document. ${recovery}`,
+      {
+        help,
+        details: { reason: "preview_marker", marker: BODY_PREVIEW_TRUNCATION_MARKER },
+      },
+    );
+  }
+
+  if (existing.body.length <= BODY_PREVIEW_LIMIT) return;
+  if (!matchesPreviewSlice(nextBody, existing.body.slice(0, BODY_PREVIEW_LIMIT))) return;
+  const omitted = existing.body.length - BODY_PREVIEW_LIMIT;
+  throw new CliError(
+    "USAGE",
+    `the body given for '${existing.id}' is exactly the TRUNCATED ${BODY_PREVIEW_LIMIT}-character ` +
+      `preview 'doc read' shows for this document — writing it would DESTROY the ${omitted} ` +
+      `character(s) beyond the cut, leaving ${BODY_PREVIEW_LIMIT} of its ${existing.body.length}-` +
+      `character body. ${recovery}`,
+    {
+      help,
+      details: {
+        reason: "stored_body_preview",
+        preview_limit: BODY_PREVIEW_LIMIT,
+        supplied_body_chars: nextBody.length,
+        stored_body_chars: existing.body.length,
+      },
+    },
+  );
+}
 
 export interface DocCliDeps {
   stdout: (s: string) => void;

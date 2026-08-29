@@ -23,7 +23,13 @@ import { render, resolveMode, renderErrorEnvelope } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { assertPathOutsidePrivateState } from "../../private-state-bundle-boundary.js";
-import { DOC_READ_USAGE, type DocCliDeps, BODY_PREVIEW_LIMIT, readErrorToCliError } from "./common.js";
+import {
+  DOC_READ_USAGE,
+  type DocCliDeps,
+  attachBodyPreview,
+  BODY_PREVIEW_RESERVED_KEYS,
+  readErrorToCliError,
+} from "./common.js";
 import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { effectiveOutputPath, inBundlePollutionWarning } from "../egress.js";
@@ -283,7 +289,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // frontmatter key can never clobber the body preview the branch below writes.
     const rec: Record<string, unknown> = { id: parsed.id };
     const KNOWN_ORDER = ["type", "title", "description", "resource", "tags", "timestamp"];
-    const RESERVED_OUTPUT = new Set(["id", "head_version", "body", "body_truncated", "body_chars", "help"]);
+    const RESERVED_OUTPUT = new Set(["id", "head_version", ...BODY_PREVIEW_RESERVED_KEYS]);
     for (const key of KNOWN_ORDER) {
       if (fm[key] !== undefined && fm[key] !== null) rec[key] = fm[key];
     }
@@ -302,15 +308,14 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     rec.head_version = version;
     // AXI §3: never dump a large body to stdout — truncate the preview and point at the byte channel
     // (`doc read <id> --out <file>`), which streams the full raw markdown without touching context.
-    const body = parsed.body;
-    if (body.length > BODY_PREVIEW_LIMIT) {
-      rec.body = body.slice(0, BODY_PREVIEW_LIMIT);
-      rec.body_truncated = true;
-      rec.body_chars = body.length;
-      rec.help = [`${cliInvocation()} doc read ${parsed.id} --out <file>`];
-    } else {
-      rec.body = body;
-    }
+    // `attachBodyPreview` (common.ts) owns the truncation identity itself — the `body_preview` key
+    // and the in-value marker that make the result unusable as a full body by accident. Both help
+    // lines are complete-body channels: `--out` for the whole document, `--body-out` for the
+    // body-only edit cycle that ends in `doc update --body-file --expected-version`.
+    attachBodyPreview(rec, parsed.body, [
+      `${cliInvocation()} doc read ${parsed.id} --out <file>`,
+      `${cliInvocation()} doc read ${parsed.id} --body-out <path-outside-bundle>`,
+    ]);
     stdout(render(rec, resolveMode(values)));
     return;
   }
