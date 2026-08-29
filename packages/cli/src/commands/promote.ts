@@ -166,6 +166,18 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
       { help: `${cliInvocation()} promote --help` },
     );
   }
+  // The mirror of the guard above, same reason (I9): a route-inapplicable flag is a USAGE error, not
+  // a silent no-op. Blobs are opaque bytes that are never parsed, so they have no body to truncate
+  // and nothing for this override to authorize — accepting it would let a caller believe they had
+  // waived a guard that was never going to run.
+  if (!docRoute && values["accept-truncated-body"] !== undefined) {
+    throw new CliError(
+      "USAGE",
+      `--accept-truncated-body is a doc-route-only option; '${key}' does not end in '.md' and routes ` +
+        `through the blob layer, which stores opaque bytes without a document body to truncate`,
+      { help: `${cliInvocation()} promote --help` },
+    );
+  }
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
   const mode = resolveMode(values);

@@ -2995,6 +2995,42 @@ test("truncated-preview guard: a doc that merely QUOTES the marker token stays f
   }
 });
 
+test("truncated-preview guard: an agent's ordinary copy-editing of the notice does NOT smuggle a preview past it", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+    const head = preview.slice(0, preview.indexOf(BODY_PREVIEW_TRUNCATION_MARKER));
+    const notice = BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(preview)![0];
+
+    // A prose-normalizing agent rewrites text it does not recognize as machine-generated. Each of
+    // these escaped a literal match and truncated the document by ~4 KB; the count, the bracket
+    // token, and the sentence tail all survive the edit, so the tolerant pattern still recognizes
+    // them. The mangles are applied to the NOTICE only — the preview head is untouched, so it is
+    // the notice identity being tested here and not the stored-prefix fallback.
+    const mangles: Array<[string, string]> = [
+      ["character(s) normalized to characters", notice.replace("character(s)", "characters")],
+      ["NOT lowercased to not", notice.replace("NOT", "not")],
+      ["a line break inserted inside the notice", notice.replace(" more ", "\nmore ")],
+    ];
+    for (const [name, mangled] of mangles) {
+      assert.notEqual(mangled, notice, `${name}: the fixture must actually differ from the emitted notice`);
+      await assert.rejects(
+        () => doc(["update", "docs/page", "--body", `${head}${mangled}`, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+        (err: unknown) => {
+          assert.ok(err instanceof CliError, name);
+          assert.equal(err.code, "USAGE", name);
+          assert.equal(err.details?.reason, "preview_marker", name);
+          return true;
+        },
+        name,
+      );
+      assert.equal(await storedBody(dir, "docs/page"), stored, `${name}: nothing was written`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 test("truncated-preview guard: the generated truncation notice IS refused, and doc read's emitted preview always matches the signature it is recognized by", async () => {
   const { dir, cleanup } = await makeBundle();
   try {

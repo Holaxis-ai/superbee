@@ -340,9 +340,18 @@ function previewTruncationNotice(omitted: number): string {
  *
  * Deliberately NOT end-anchored: an agent may append its own text after a pasted preview, and that
  * is still a preview being written as a body.
+ *
+ * TOLERANT on purpose, within that shape. A literal match escaped on ordinary copy-editing of the
+ * sentence — `character(s)` normalized to `characters`, `NOT` lowercased to `not`, a line break
+ * inserted at a space — each of which is exactly what an agent does to text it does not recognize as
+ * machine-generated, and each of which lost ~4 KB in probes. So whitespace runs are elastic (`\s+`,
+ * which spans an inserted newline), the plural parenthetical is optional, and matching is
+ * case-insensitive. The three fixed landmarks stay REQUIRED: the bracket token, a digit count, and
+ * the `more … are NOT shown` tail. Prose that merely quotes the token has no count and no tail, so
+ * the tolerance cannot reopen the false positive this pattern exists to avoid.
  */
 export const BODY_PREVIEW_TRUNCATION_SIGNATURE =
-  /\[superbee:body-preview-truncated\] \d+ more character\(s\) are NOT shown/;
+  /\[superbee:body-preview-truncated\]\s+\d+\s+more\s+characters?\(?s?\)?\s+are\s+NOT\s+shown/i;
 
 /** The record key a TRUNCATED preview is published under — deliberately not `body`. */
 export const BODY_PREVIEW_KEY = "body_preview";

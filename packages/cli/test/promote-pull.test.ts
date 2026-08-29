@@ -330,6 +330,41 @@ test("promote .md: --content-type is a USAGE error (I9) — content-type is blob
   }
 });
 
+test("promote blob: --accept-truncated-body is a USAGE error — the mirror of --content-type's route guard, never a silent no-op", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const work = await tempDir();
+  try {
+    const file = path.join(work, "report.html");
+    await writeFile(file, "<p>hi</p>");
+    await assert.rejects(
+      () =>
+        promote(
+          [file, "--doc-key", "artifacts/report.html", "--accept-truncated-body", "--dir", dir, "--json"],
+          {},
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.match(err.message, /doc-route-only/);
+        return true;
+      },
+    );
+    // The refusal is the whole behavior: nothing was written under the key.
+    await assert.rejects(
+      () => pull(["--doc-key", "artifacts/report.html", "--out", path.join(work, "x"), "--dir", dir, "--json"], {}),
+      (err: unknown) => err instanceof CliError && err.code === "NOT_FOUND",
+    );
+    // Without the inapplicable flag the same blob promote succeeds, so the guard is the flag's
+    // route-applicability and nothing else.
+    const ok = await runPromote([file, "--doc-key", "artifacts/report.html", "--dir", dir]);
+    assert.equal(ok.route, "blob");
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
 test("promote .md: a reserved-filename target is rejected (comes FREE from the engine, I8)", async () => {
   const { dir, cleanup } = await makeBundle();
   const work = await tempDir();
