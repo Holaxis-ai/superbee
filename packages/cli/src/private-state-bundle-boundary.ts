@@ -58,11 +58,18 @@ function absentComponent(error: unknown): boolean {
  * Do NOT read this as "everything under a denial is unreachable". Denial is per-component, not
  * per-subtree: a mode-000 directory does block its whole subtree, but an ACL that denies attribute
  * reads on one directory (macOS `deny readattr`; the ordinary Windows shape, where traverse is
- * granted separately) leaves `stat` answering for its children. The boundary therefore does not
- * rest on this predicate alone — a target whose own canonical identity cannot be established still
- * refuses in {@link realAnchor}, which is what keeps a denial ABOVE a target from reading as
- * separation. What this predicate buys is only the reachable case it is named for: one unreadable
- * and UNRELATED guarded root no longer refuses every explicitly targeted bundle operation.
+ * granted separately) leaves `stat` AND `lstat` answering for its children while `realpath` still
+ * cannot resolve through it.
+ *
+ * DENIED is therefore not the same as UNAVAILABLE, and the two get opposite answers. Denial of
+ * either channel — `stat` here, canonicalization in {@link realAnchor} — is one component the walk
+ * steps over, because refusing on it would let a single protected ancestor of a guarded root veto
+ * every unrelated explicit bundle. An answer the relation cannot interpret (ELOOP, EIO,
+ * ENAMETOOLONG, or no anchor at all) is not a component and still refuses.
+ *
+ * Stepping over stays exact because the anchor is the deepest ancestor this process can both stat
+ * and canonicalize, and {@link declaredLinkTarget} gets first refusal on every component below it,
+ * so an alias the denial did not actually hide is followed instead of name-classified.
  */
 function hostDeniedComponent(error: unknown): boolean {
   const c = code(error);
@@ -108,10 +115,11 @@ function inodeKey(status: { dev: bigint; ino: bigint }): string | null {
  * strictly BELOW a subtree-blocking denial (a mode-000 directory) can relocate a guarded root to a
  * readable place, and that relocation is invisible — `stat` and `lstat` are both refused through
  * the same prefix, so no call can see it and the walk anchors above it. It does NOT extend to a
- * per-component attribute denial, where `lstat` still answers and {@link realAnchor} refuses
- * anyway. It is accepted because the same denial refuses every private-state read and write at
- * that root, `ensureUserStateRoot` included, so nothing can be stored at the relocated location
- * while the denial stands; the collision only becomes live if the denial is later lifted.
+ * per-component attribute denial: there `lstat` still answers, so the hop below follows the alias
+ * and the relocated root is classified exactly. The mode-000 case is accepted because the same
+ * denial refuses every private-state read and write at that root, `ensureUserStateRoot` included,
+ * so nothing can be stored at the relocated location while the denial stands; the collision only
+ * becomes live if the denial is later lifted.
  */
 function declaredLinkTarget(cursor: string, seenLinks: Set<string>): string | null {
   let status;
@@ -130,18 +138,25 @@ function declaredLinkTarget(cursor: string, seenLinks: Set<string>): string | nu
 }
 
 /**
- * Canonicalization is the ONLY channel that makes the fallback path comparison meaningful, so
- * losing it must refuse rather than substitute the lexical spelling. A denial that hides one
- * component from `realpath` while `stat` still answers below it (a macOS `deny readattr` ACL,
- * and the ordinary Windows shape where traverse is granted but attribute reads are not) would
- * otherwise compare an UNRESOLVED target spelling against a canonicalized state root — and one
- * symlinked ancestor, `/tmp` -> `/private/tmp` included, then reads as `unrelated` for a target
- * physically inside private state.
+ * Canonicalization DENIED, as opposed to impossible. The two need opposite answers, and collapsing
+ * them is a bug in both directions: substituting the lexical spelling lets a symlinked ancestor
+ * (`/tmp` -> `/private/tmp` is enough) read a target inside private state as separate, while
+ * refusing outright lets one protected ancestor of a guarded root veto every unrelated bundle.
+ * A denial is a COMPONENT, so the walk steps over it; an uninterpretable answer is not.
+ */
+class CanonicalizationDenied extends Error {}
+
+/**
+ * The anchor must be an ancestor this process can BOTH stat and canonicalize, because `anchorPath`
+ * is what the undeterminable-inode fallback compares. Returning a path `realpath` never confirmed
+ * would put an unresolved spelling on one side of that comparison, so this refuses to guess:
+ * denial hands the walk back a component to step over, and anything else refuses outright.
  */
 function realAnchor(anchorPath: string): string {
   try {
     return realpathSync.native(anchorPath);
-  } catch {
+  } catch (error) {
+    if (hostDeniedComponent(error)) throw new CanonicalizationDenied();
     throw runtimeFailure();
   }
 }
@@ -177,7 +192,13 @@ function anchorAt(
   return { anchorKey: chain[0] ?? null, anchorChain: chain, missing, anchorPath };
 }
 
-/** Anchor a path at its deepest OBSERVABLE ancestor, retaining the components below it. */
+/**
+ * Anchor a path at its deepest ancestor this process can both stat and canonicalize, retaining the
+ * components below it. A component is stepped over when its own inode is unobservable OR when it
+ * blocks canonicalization; either way the components below the eventual anchor are classified by
+ * name, and `declaredLinkTarget` still gets first refusal on each one, so an alias that a denial
+ * has not actually hidden is followed rather than name-classified.
+ */
 function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set()): PhysicalCoordinate {
   if (!path.isAbsolute(candidate)) {
     throw new CliError("RUNTIME", "private state and bundle identities require absolute filesystem paths");
@@ -188,10 +209,12 @@ function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set(
     try {
       return anchorAt(cursor, statSync(cursor, { bigint: true }), [...missing].reverse());
     } catch (error) {
-      if (error instanceof CliError) throw error;
-      // Anything else — ELOOP, EIO, ENAMETOOLONG — is a filesystem answer this relation cannot
-      // interpret. It stays a refusal rather than becoming a name-only classification.
-      if (!unobservableComponent(error)) throw runtimeFailure();
+      if (!(error instanceof CanonicalizationDenied)) {
+        if (error instanceof CliError) throw error;
+        // Anything else — ELOOP, EIO, ENAMETOOLONG — is a filesystem answer this relation cannot
+        // interpret. It stays a refusal rather than becoming a name-only classification.
+        if (!unobservableComponent(error)) throw runtimeFailure();
+      }
     }
     const hop = declaredLinkTarget(cursor, seenLinks);
     if (hop !== null) return physicalCoordinate(path.resolve(hop, ...[...missing].reverse()), seenLinks);

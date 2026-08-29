@@ -11,6 +11,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -421,14 +422,12 @@ test("a per-component denial ABOVE the target refuses instead of reading as sepa
       assertDenied(state);
       assert.doesNotThrow(() => statSync(inside), "the child must still answer through the denial");
 
-      // The target is physically INSIDE private state, and `realpath` cannot canonicalize it. The
-      // fallback comparison would then weigh an unresolved target spelling against a canonicalized
+      // The target is physically INSIDE private state, and `realpath` cannot canonicalize it. A
+      // lexical substitution here would weigh an unresolved target spelling against a canonicalized
       // state root — one symlinked ancestor (macOS `/tmp` and `/var` both are) and that reads as
-      // `unrelated`. Losing canonical identity for the target must refuse instead.
-      assert.throws(
-        () => relateToPrivateState(inside, state),
-        /cannot verify that the target is separate from private Superbee state/,
-      );
+      // `unrelated`. Stepping over the denied component instead keeps the containment EXACT, so
+      // this refuses as the conflict it is rather than as a bare cannot-verify.
+      assert.equal(relateToPrivateState(inside, state), "bundle-inside-state");
       for (const guard of [
         assertBundleOutsidePrivateState,
         assertSearchDirOutsidePrivateState,
@@ -438,13 +437,85 @@ test("a per-component denial ABOVE the target refuses instead of reading as sepa
           () => guard(inside, home),
           (error: unknown) =>
             error instanceof CliError
-            && error.code === "RUNTIME"
-            && /cannot verify that the target is separate/.test(error.message),
+            && error.code === "CONFLICT"
+            && /inside Superbee's private user-state directory/.test(error.message),
           guard.name,
         );
       }
     } finally {
       denial.release();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+/**
+ * The denial sits on a STRICT ANCESTOR of a guarded root, and the guarded root beneath it is
+ * present and traversable. `stat` therefore answers for the root while `realpath` cannot
+ * canonicalize through the denied ancestor — the shape in which treating lost canonicalization as
+ * a refusal let one protected ancestor veto every unrelated explicit bundle.
+ */
+test("a per-component denial on a guarded root's ancestor keeps unrelated work usable", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("a denial fixture needs a non-root POSIX environment");
+    return;
+  }
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const project = path.join(root, "project", ".superbee");
+    mkdirSync(project, { recursive: true });
+    const [superseded] = supersededUserStateDirs(home);
+    assert.ok(superseded !== undefined, "this row needs a guarded root nested below a hidden ancestor");
+    mkdirSync(superseded, { recursive: true });
+    mkdirSync(canonicalUserStateDir(home), { recursive: true });
+
+    /** [label, the ancestor to deny, a guarded root that keeps living beneath it] */
+    const rows = [
+      ["a guarded root's hidden ancestor", path.dirname(superseded), superseded],
+      ["$HOME itself", home, canonicalUserStateDir(home)],
+    ] as const;
+
+    for (const [label, ancestor, guarded] of rows) {
+      const denial = denyAttributeReads(ancestor);
+      if (!denial.applied) {
+        t.skip("per-component attribute denial needs a host whose ACLs express it (macOS)");
+        return;
+      }
+      try {
+        // Pin the shape: the root still stats but no longer canonicalizes. Without both halves the
+        // rows below would be testing the mode-bits case again.
+        assertDenied(ancestor);
+        assert.doesNotThrow(() => statSync(guarded), `${label}: the guarded root must still stat`);
+        assert.throws(() => realpathSync.native(guarded), `${label}: ... and must not canonicalize`);
+
+        // THE regressed row: an unrelated explicit target must not inherit that denial.
+        for (const guard of [assertBundleOutsidePrivateState, assertSearchDirOutsidePrivateState]) {
+          assert.doesNotThrow(() => guard(project, home), `${label} / ${guard.name}`);
+        }
+        assert.doesNotThrow(() => assertPathOutsidePrivateState(path.join(project, "out.md"), home), label);
+
+        // MIRROR: the same allowance must not launder a target that IS private state, or the
+        // canonicalization hole this replaces would simply reopen under a different spelling.
+        const inside = path.join(guarded, "child");
+        for (const guard of [assertBundleOutsidePrivateState, assertSearchDirOutsidePrivateState]) {
+          assert.throws(() => guard(inside, home), /cannot live inside/, `${label} / ${guard.name}`);
+        }
+        assert.throws(
+          () => assertPathOutsidePrivateState(inside, home),
+          /inside Superbee's private user-state directory/,
+          label,
+        );
+        assert.throws(
+          () => assertBundleOutsidePrivateState(guarded, home),
+          /cannot be used as an OKF bundle/,
+          label,
+        );
+      } finally {
+        denial.release();
+      }
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
