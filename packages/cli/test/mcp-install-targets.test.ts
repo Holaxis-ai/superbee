@@ -132,6 +132,55 @@ test("Windows MCP targets use documented profile roots and AppData only for Clau
   }
 });
 
+test("Windows Codex status uses the resolved cmd shim and distinguishes command failures", () => {
+  const home = String.raw`C:\Users\Mike`;
+  const shim = String.raw`C:\Users\Mike\AppData\Roaming\npm\codex.cmd`;
+  const comspec = String.raw`C:\Windows\System32\cmd.exe`;
+  const base = {
+    environment: {
+      home,
+      platform: "win32",
+      env: {
+        USERPROFILE: home,
+        PATH: String.raw`C:\Users\Mike\AppData\Roaming\npm;C:\Windows\System32`,
+        PATHEXT: ".EXE;.CMD",
+        ComSpec: comspec,
+      },
+    },
+    authority: () => stable,
+    resolveCommandPath: (candidate: string) => {
+      if (candidate.toLowerCase() === shim.toLowerCase()) return shim;
+      if (candidate.toLowerCase() === comspec.toLowerCase()) return comspec;
+      return undefined;
+    },
+  };
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const empty = inspectMcpHost(target("codex"), {
+    ...base,
+    execFile: (file, args) => {
+      calls.push({ file, args: [...args] });
+      return "[]";
+    },
+  });
+  assert.equal(empty.state, "absent");
+  assert.deepEqual(calls, [{
+    file: comspec,
+    args: ["/d", "/s", "/c", `""${shim}" "mcp" "list" "--json""`],
+  }]);
+
+  const absent = inspectMcpHost(target("codex"), {
+    ...base,
+    resolveCommandPath: () => undefined,
+  });
+  assert.equal(absent.state, "cli_absent");
+
+  const unreadable = inspectMcpHost(target("codex"), {
+    ...base,
+    execFile: () => { throw Object.assign(new Error("denied"), { code: "EACCES" }); },
+  });
+  assert.equal(unreadable.state, "unreadable");
+});
+
 test("OpenCode recognizes the canonical JSONC filename without guessing comment syntax", () => {
   const command = stable.evidence.runtime_path!;
   const args = [stable.evidence.executable_path!, "mcp"];
