@@ -89,7 +89,9 @@ test("the build consumes the exact-source CI verdict and refuses to build withou
 // to apply the step's OWN embedded --jq program to the fixture and `sleep` is neutered, so the
 // decision under test is the exact shell+jq the workflow will run, not a re-implementation.
 const hasJq = spawnSync("jq", ["--version"]).status === 0;
-test("the committed verdict gate allows only a newest genuine success", { skip: hasJq ? false : "jq unavailable on this host" }, () => {
+// Under CI a missing jq must fail loudly (the string assertions alone are provably evadable);
+// locally it degrades to a visible skip.
+test("the committed verdict gate allows only a newest genuine success", { skip: hasJq || process.env.CI ? false : "jq unavailable on this host" }, () => {
   const start = release.indexOf("- name: Require the CI verdict already recorded on this exact commit");
   assert.notEqual(start, -1, "release.yml declares the verdict gate step");
   const runAt = release.indexOf("run: |", start);
