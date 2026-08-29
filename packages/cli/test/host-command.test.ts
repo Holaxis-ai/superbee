@@ -10,7 +10,7 @@ import {
 test("Windows command resolution honors PATH and PATHEXT and safely launches cmd shims", () => {
   const shim = String.raw`C:\Users\Mike\AppData\Roaming\npm\codex.cmd`;
   const comspec = String.raw`C:\Windows\System32\cmd.exe`;
-  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const calls: Array<{ file: string; args: readonly string[]; windowsVerbatimArguments?: boolean }> = [];
   const input = {
     cwd: String.raw`C:\Users\Mike`,
     platform: "win32",
@@ -27,9 +27,9 @@ test("Windows command resolution honors PATH and PATHEXT and safely launches cmd
       return undefined;
     },
   });
-  const output = runHostCommand(command, ["mcp", "list", "--json"], input, {
-    execFile: (file, args) => {
-      calls.push({ file, args: [...args] });
+  const output = runHostCommand(command, ["mcp", "add", "superbee", "--", String.raw`C:\Program Files\node.exe`], input, {
+    execFile: (file, args, options) => {
+      calls.push({ file, args: [...args], windowsVerbatimArguments: options.windowsVerbatimArguments });
       return "[]";
     },
   });
@@ -38,7 +38,13 @@ test("Windows command resolution honors PATH and PATHEXT and safely launches cmd
   assert.equal(command.display, "codex.cmd");
   assert.deepEqual(calls, [{
     file: comspec,
-    args: ["/d", "/s", "/c", `"${shim}"`, "mcp", "list", "--json"],
+    args: [
+      "/d",
+      "/s",
+      "/c",
+      `""${shim}" "mcp" "add" "superbee" "--" "C:\\Program Files\\node.exe""`,
+    ],
+    windowsVerbatimArguments: true,
   }]);
 });
 
@@ -78,6 +84,25 @@ test("cmd shim execution refuses shell-control bytes before invoking the command
   let executions = 0;
   assert.throws(
     () => runHostCommand(command, ["mcp", "add", "superbee", "--", "node", "entry", "--actor", "mike & whoami"], input, {
+      execFile: () => { executions += 1; return ""; },
+    }),
+    (error: unknown) => error instanceof HostCommandError && error.state === "unreadable",
+  );
+  assert.equal(executions, 0);
+
+  const expandedShim = String.raw`C:\%TEMP%\codex.cmd`;
+  const unsafeCommand = resolveHostCommand("codex", {
+    ...input,
+    env: { ...input.env, PATH: String.raw`C:\%TEMP%` },
+  }, {
+    resolvePath: (candidate) => candidate.toLowerCase() === expandedShim.toLowerCase()
+      ? expandedShim
+      : candidate.toLowerCase() === comspec.toLowerCase()
+        ? comspec
+        : undefined,
+  });
+  assert.throws(
+    () => runHostCommand(unsafeCommand, ["mcp", "list", "--json"], input, {
       execFile: () => { executions += 1; return ""; },
     }),
     (error: unknown) => error instanceof HostCommandError && error.state === "unreadable",

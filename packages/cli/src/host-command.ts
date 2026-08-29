@@ -8,20 +8,23 @@ export interface HostCommandEnvironment {
   readonly platform: NodeJS.Platform | string;
 }
 
+export type HostCommandExecOptions = ExecFileSyncOptionsWithStringEncoding & {
+  readonly windowsVerbatimArguments?: boolean;
+};
+
 export interface HostCommandDeps {
   readonly resolvePath?: (candidate: string) => string | undefined;
   readonly execFile?: (
     file: string,
     args: readonly string[],
-    options: ExecFileSyncOptionsWithStringEncoding,
+    options: HostCommandExecOptions,
   ) => string;
 }
 
 export interface ResolvedHostCommand {
   readonly display: string;
   readonly file: string;
-  readonly prefixArgs: readonly string[];
-  readonly usesCommandShell: boolean;
+  readonly shellWrapper: string | null;
 }
 
 export class HostCommandError extends Error {
@@ -79,14 +82,12 @@ function windowsPathDirectory(value: string): string {
 function resolvedCommand(
   display: string,
   file: string,
-  prefixArgs: readonly string[],
-  usesCommandShell: boolean,
+  shellWrapper: string | null,
 ): ResolvedHostCommand {
   return Object.freeze({
     display,
     file,
-    prefixArgs: Object.freeze([...prefixArgs]),
-    usesCommandShell,
+    shellWrapper,
   });
 }
 
@@ -99,7 +100,7 @@ export function resolveHostCommand(
   if (!/^[a-z0-9._-]+$/i.test(command)) {
     throw new HostCommandError("unreadable", "host command discovery requires one bare command name");
   }
-  if (input.platform !== "win32") return resolvedCommand(command, command, [], false);
+  if (input.platform !== "win32") return resolvedCommand(command, command, null);
 
   const rawPath = input.env.PATH;
   if (!rawPath) throw new HostCommandError("absent", `${command} was not found on PATH`);
@@ -131,7 +132,7 @@ export function resolveHostCommand(
   const extension = path.win32.extname(selected).toLowerCase();
   const display = path.win32.basename(selected).toLowerCase();
   if (extension === ".exe" || extension === ".com") {
-    return resolvedCommand(display, resolved, [], false);
+    return resolvedCommand(display, resolved, null);
   }
   if (extension !== ".cmd" && extension !== ".bat") {
     throw new HostCommandError("unreadable", `${display} is not a supported executable command form`);
@@ -154,13 +155,21 @@ export function resolveHostCommand(
   if (!comspec || !path.win32.isAbsolute(comspec)) {
     throw new HostCommandError("unreadable", "the Windows command processor could not be resolved safely");
   }
-  return resolvedCommand(display, path.win32.normalize(comspec), ["/d", "/s", "/c", `"${resolved}"`], true);
+  return resolvedCommand(display, path.win32.normalize(comspec), resolved);
 }
 
-function assertSafeCommandShellArgs(args: readonly string[]): void {
-  if (args.some((value) => /[&|<>()^%!"\r\n]/.test(value))) {
-    throw new HostCommandError("unreadable", "the host command contains an argument that cannot be relayed safely");
+const WINDOWS_COMMAND_SHELL_UNSAFE_BYTES = /[\u0000-\u001f\u007f&|<>()^%!"]/;
+
+function assertSafeCommandShellTokens(tokens: readonly string[]): void {
+  if (tokens.some((value) => WINDOWS_COMMAND_SHELL_UNSAFE_BYTES.test(value))) {
+    throw new HostCommandError("unreadable", "the host command contains a token that cannot be relayed safely");
   }
+}
+
+function quoteWindowsCommandArgument(value: string): string {
+  // A quoted argument ending in backslashes needs them doubled before the closing quote so the
+  // child program's Windows argv parser retains the exact trailing bytes.
+  return `"${value.replace(/(\\+)$/, "$1$1")}"`;
 }
 
 /** Execute an already-resolved snapshot without repeating command discovery. */
@@ -170,18 +179,28 @@ export function runHostCommand(
   input: HostCommandEnvironment,
   deps: Pick<HostCommandDeps, "execFile"> = {},
 ): string {
-  if (command.usesCommandShell) assertSafeCommandShellArgs(args);
+  let passedArgs = [...args];
+  let windowsVerbatimArguments = false;
+  if (command.shellWrapper !== null) {
+    const tokens = [command.shellWrapper, ...passedArgs];
+    assertSafeCommandShellTokens(tokens);
+    const commandText = tokens.map(quoteWindowsCommandArgument).join(" ");
+    passedArgs = ["/d", "/s", "/c", `"${commandText}"`];
+    windowsVerbatimArguments = true;
+  }
   const run = deps.execFile ?? ((file, passed, options) => execFileSync(file, passed, options));
+  const options: HostCommandExecOptions = {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 10_000,
+    maxBuffer: 1024 * 1024,
+    env: input.env,
+    cwd: input.cwd,
+    windowsHide: true,
+    ...(windowsVerbatimArguments ? { windowsVerbatimArguments: true } : {}),
+  };
   try {
-    return run(command.file, [...command.prefixArgs, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: 10_000,
-      maxBuffer: 1024 * 1024,
-      env: input.env,
-      cwd: input.cwd,
-      windowsHide: true,
-    });
+    return run(command.file, passedArgs, options);
   } catch (error) {
     if (input.platform !== "win32" && missingPath(error)) {
       throw new HostCommandError("absent", `${command.display} was not found on PATH`);

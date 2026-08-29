@@ -165,7 +165,7 @@ test("Windows Codex status uses the resolved cmd shim and distinguishes command 
   assert.equal(empty.state, "absent");
   assert.deepEqual(calls, [{
     file: comspec,
-    args: ["/d", "/s", "/c", `"${shim}"`, "mcp", "list", "--json"],
+    args: ["/d", "/s", "/c", `""${shim}" "mcp" "list" "--json""`],
   }]);
 
   const absent = inspectMcpHost(target("codex"), {

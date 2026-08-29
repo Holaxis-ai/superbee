@@ -123,7 +123,8 @@ test("Codex Windows mutation reuses one resolved cmd shim for inspection, mutati
     },
     execFile: (file, args) => {
       calls.push({ file, args: [...args] });
-      const native = args.slice(4);
+      const native = [...args[3]!.slice(1, -1).matchAll(/"([^"]*)"/g)].map((match) => match[1]!);
+      native.shift();
       if (native.join(" ") === "mcp list --json") {
         return JSON.stringify(entry ? [codexRow(entry)] : []);
       }
@@ -141,7 +142,7 @@ test("Codex Windows mutation reuses one resolved cmd shim for inspection, mutati
   assert.equal(shimLookups, 1);
   assert.ok(calls.length >= 4);
   assert.ok(calls.every((call) => call.file === comspec));
-  assert.ok(calls.every((call) => call.args[3] === `"${shim}"`));
+  assert.ok(calls.every((call) => call.args[3]?.startsWith(`""${shim}" `)));
 });
 
 test("Codex refuses a disabled exact-command entry instead of reporting it current", () => {
