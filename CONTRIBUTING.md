@@ -83,6 +83,16 @@ CI on the pushed SHA is the authoritative gate. During implementation, run the s
 owns the affected behavior. `npm run check` is the fullest local stand-in only when CI is
 unavailable; the pre-commit smoke is not the full gate.
 
+Two validations exist, and each needs exactly one run. PR validation (`pull_request`) proves the
+proposed change against its base before merge. Release-source validation is the `push` run on the
+merged `main` commit; `release.yml` consumes that recorded verdict fail-closed on the exact tagged
+SHA instead of rerunning CI. Open the PR immediately after the branch push so its run starts the
+pre-merge verdict; dispatch `CI tests` on a branch only when no PR will exist promptly, and never
+treat a branch dispatch as a serial prerequisite for opening or progressing the PR — a dispatch and
+a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
+only when the merged SHA equals the validated SHA (fast-forward or a merge queue; the current
+merge-queue posture is recorded in `scripts/ci-lanes.json`).
+
 The finite lane projection below is checked against `scripts/ci-lanes.json`, root package scripts,
 and `.github/workflows/ci-tests.yml`. Change the executable topology first, then update this table in
 the same unit.

@@ -40,7 +40,7 @@ test("release workflows hold no ambient permissions and pin every action by comm
 test("payload code runs only in the credential-free build job; staging runs no payload code", () => {
   const { build, stage } = jobs(release);
   assert.ok(build && stage, "release.yml declares build and stage jobs");
-  assert.match(build, /^ {4}permissions:\n {6}contents: read$/m, "build holds only contents: read");
+  assert.match(build, /^ {4}permissions:\n {6}contents: read\n {6}checks: read$/m, "build holds only contents: read plus checks: read for the CI verdict");
   assert.doesNotMatch(build, /id-token|environment:|secrets\./, "build must not mint OIDC tokens or see environment secrets");
   assert.match(build, /npm ci --ignore-scripts/, "dependency lifecycle scripts stay off in the release build");
   assert.match(build, /compare\/main\.\.\.\$GITHUB_SHA[\s\S]*case "\$REL" in identical\|behind\) ;; \*\)/, "the tag must point at a commit already on main");
@@ -53,6 +53,26 @@ test("payload code runs only in the credential-free build job; staging runs no p
   assert.doesNotMatch(stage, /actions\/checkout|npm ci|npm run build/, "stage must not check out or execute repository code");
   assert.match(stage, /registry-url: "https:\/\/registry.npmjs.org"/, "registry-url is load-bearing for the OIDC exchange");
   assert.match(stage, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --provenance --json/, "stage the literal tarball with its final tag");
+});
+
+test("the build consumes the exact-source CI verdict and refuses to build without it", () => {
+  // One exact-source verdict: the push run on the merged main commit is the release-source
+  // validation. The gate consumes that recorded verdict instead of rerunning CI, so the release
+  // path never pays for a duplicate full run and can never stage bytes whose source CI failed.
+  const { build } = jobs(release);
+  assert.match(
+    build,
+    /commits\/\$GITHUB_SHA\/check-runs\?check_name=CI%20required%20lanes&filter=latest/,
+    "the gate must ask for the canonical required context on the exact tagged commit",
+  );
+  assert.match(build, /select\(\.app\.slug == "github-actions"\)/, "only repository-workflow check runs may vouch for the source");
+  assert.match(build, /refusing to build without the CI verdict/, "an unqueryable verdict must refuse, not fall through");
+  assert.doesNotMatch(build, /check-runs[^\n]*\|\| true/, "the verdict query must fail closed");
+  assert.match(build, /fix CI on main before tagging/, "a non-success conclusion must refuse immediately");
+  const gate = build.indexOf("check-runs?check_name");
+  assert.ok(gate !== -1 && gate < build.indexOf("npm run build:npm-package"), "the verdict gate must precede the package build");
+  assert.ok(build.indexOf("compare/main...$GITHUB_SHA") < gate, "tag-on-main is established before its verdict is consulted");
+  assert.doesNotMatch(release, /workflow_dispatch|ci-tests\.yml/, "release.yml must consume the recorded verdict, never trigger CI itself");
 });
 
 test("finalize holds no npm credential, verifies provider state, and creates the release once", () => {
