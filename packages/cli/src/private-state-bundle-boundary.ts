@@ -103,6 +103,15 @@ function inodeKey(status: { dev: bigint; ino: bigint }): string | null {
  * denies the destination — still DECLARES where the path lands, so a state-root alias cannot
  * quietly become a bundle later. `lstat` needs only the link's own parent, so it keeps answering
  * after the destination stops being observable.
+ *
+ * ACCEPTED RESIDUAL RISK, when `lstat` is denied here rather than the destination: a symlink
+ * strictly BELOW a subtree-blocking denial (a mode-000 directory) can relocate a guarded root to a
+ * readable place, and that relocation is invisible — `stat` and `lstat` are both refused through
+ * the same prefix, so no call can see it and the walk anchors above it. It does NOT extend to a
+ * per-component attribute denial, where `lstat` still answers and {@link realAnchor} refuses
+ * anyway. It is accepted because the same denial refuses every private-state read and write at
+ * that root, `ensureUserStateRoot` included, so nothing can be stored at the relocated location
+ * while the denial stands; the collision only becomes live if the denial is later lifted.
  */
 function declaredLinkTarget(cursor: string, seenLinks: Set<string>): string | null {
   let status;
