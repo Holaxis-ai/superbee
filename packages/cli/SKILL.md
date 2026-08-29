@@ -62,14 +62,10 @@ Set `$REFS` from the skill base directory reported by the host:
 `REFS="<skill-base-dir>/references"`
 
 When the user accepts a domain-modeling offer, read `$REFS/modeling-and-delivery.md`. Inspect
-existing documents, Kinds, recipes, and links before choosing a shape. Treat an approved proposal
-as the delivery manifest: create every record accepted for now; an overview cannot substitute. For
-ordinary modeling work, create the smallest coherent representation, normally with one representative
-example, verify it, remove temporary authoring files, and stop.
-Use `superbee <command> --help` for exact current syntax rather than relying on a copied command manual.
-Use `--body-file` for multiline Markdown.
-The data-only `$REFS/modeling-interview-contract-v1.json` scenario owns deterministic interview
-dogfood receipts; verify it rather than trusting completion prose.
+existing documents, Kinds, recipes, and links before choosing a shape. Create the smallest coherent
+representation, normally with one representative example, verify it, remove temporary authoring
+files, and stop. Use `superbee <command> --help` for exact current syntax rather than relying on a
+copied command manual. Use `--body-file` for multiline Markdown.
 
 Focused shipped material is available under `$REFS/recipes/` for portable examples,
 `$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop.
