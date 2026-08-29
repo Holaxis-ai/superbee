@@ -250,6 +250,7 @@ test("the npm Skill progressively discloses one focused modeling reference", () 
   assert.match(renderedNpm, /normally with one representative\s+example/);
   assert.match(renderedNpm, /remove temporary authoring\s+files/);
   assert.match(renderedNpm, /Use `--body-file` for multiline Markdown/);
+  assert.match(renderedNpm, /`\$REFS\/modeling-interview-contract-v1\.json` scenario owns deterministic interview/);
   assert.match(renderedNpm, /Read only what the accepted work requires/);
 });
 
@@ -262,8 +263,9 @@ test("the focused modeling reference calibrates structure and pins a verified de
   assert.match(reference, /Create a Kind only when the repeated shape is already supported by evidence/);
   assert.match(reference, /For a newly recognized domain with no prior-use evidence, create one clearly labeled representative\s+generic document first/);
   assert.match(reference, /Do not introduce a new Kind until the user has used that record, at least\s+two existing records/);
-  assert.match(reference, /accepted interview\s+has surfaced concrete prior examples that demonstrate the same stable fields, lifecycle, and\s+relationships/);
-  assert.match(reference, /A stated intention that a concept will recur is not enough/);
+  assert.match(reference, /accepted interview\s+has surfaced concrete prior evidence for the structure actually proposed/);
+  assert.match(reference, /its fields and any\s+lifecycle or relationship rules it declares/);
+  assert.match(reference, /A stated intention that a concept will recur is not\s+enough/);
   assert.match(reference, /Recipes contain\s+definitions and guidance, never the user's instance data/);
   assert.match(reference, /underlying documents and relationships remain authoritative/);
   assert.match(reference, /Remove temporary authoring or staging directories/);
@@ -293,11 +295,17 @@ test("the focused modeling reference makes interview proposals and delivery rece
   assert.match(contract, /Every approved record under\s+\*\*Records to create now:\*\* must be created/);
   assert.match(contract, /An\s+overview may orient the workspace, but it cannot substitute for those records/);
   assert.match(contract, /Do not install a Kind merely because the user expects a concept to recur/);
-  assert.match(contract, /\*\*installed\*\* with the prior examples[\s\S]*stable fields, lifecycle, and\s+relationships/);
-  assert.match(contract, /\*\*deferred\*\* with the evidence or use that would make it stable/);
+  assert.match(contract, /\*\*install now\*\* with concrete prior\s+evidence for the structure actually declared/);
+  assert.match(contract, /\*\*defer\*\* with the evidence or use that would\s+make it stable/);
+  assert.match(contract, /delivery\s+receipt must repeat each approved `install now` or `defer` disposition/);
+  assert.match(contract, /receive\s+explicit reapproval before mutation/);
   assert.match(contract, /Do not call an interview-designed workspace complete until/);
   assert.match(contract, /`superbee status` passes\s+without findings caused by the delivery/);
   assert.match(contract, /fresh task\s+or session resolves the workspace and reads the representative records/);
+});
+
+test("the artifact-carried modeling dogfood scenario is in the npm projection", () => {
+  assert.ok(NPM_DESTS.has("modeling-interview-contract-v1.json"));
 });
 
 test("npm Skill makes authoritative presentation a first-class delivery step", () => {

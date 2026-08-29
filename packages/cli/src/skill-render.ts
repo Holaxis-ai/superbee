@@ -87,6 +87,8 @@ export function renderNpm(): string {
   lines.push("example, verify it, remove temporary authoring files, and stop.");
   lines.push("Use `superbee <command> --help` for exact current syntax rather than relying on a copied command manual.");
   lines.push("Use `--body-file` for multiline Markdown.");
+  lines.push("The data-only `$REFS/modeling-interview-contract-v1.json` scenario owns deterministic interview");
+  lines.push("dogfood receipts; verify it rather than trusting completion prose.");
   lines.push("");
   lines.push("Focused shipped material is available under `$REFS/recipes/` for portable examples,");
   lines.push("`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop.");

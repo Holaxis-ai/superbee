@@ -33,10 +33,10 @@ definitions.
 For a newly recognized domain with no prior-use evidence, create one clearly labeled representative
 generic document first. Do not introduce a new Kind until the user has used that record, at least
 two existing records demonstrate the same stable fields or relationships, or an accepted interview
-has surfaced concrete prior examples that demonstrate the same stable fields, lifecycle, and
-relationships. A stated intention that a concept will recur is not enough. When the current bundle
-already contains several examples that establish a stable repeated shape, creating the Kind and one
-valid instance together is appropriate.
+has surfaced concrete prior evidence for the structure actually proposed: its fields and any
+lifecycle or relationship rules it declares. A stated intention that a concept will recur is not
+enough. When the current bundle already contains several examples that establish a stable repeated
+shape, creating the Kind and one valid instance together is appropriate.
 
 ## Interview-designed workspaces
 
@@ -48,7 +48,9 @@ manifest, not merely an overview. Before asking for approval, separate:
 - **Relationships and provenance:** how records relate and which sources support which conclusions.
 - **Records to create now:** the named representative records that will make the accepted workflow
   usable; these may remain generic documents while their shape is uncertain.
-- **Candidate Kinds:** proposed shared structure, separated from the records that do not need it yet.
+- **Candidate Kinds:** each candidate's preapproval disposition—**install now** with concrete prior
+  evidence for the structure actually declared, or **defer** with the evidence or use that would
+  make it stable.
 - **Workflow:** the states, handoffs, or recurring actions the workspace should support.
 - **Unstructured material:** notes or source material that should remain flexible rather than be
   forced into a schema.
@@ -60,11 +62,12 @@ After approval, use that manifest as the acceptance boundary. Every approved rec
 overview may orient the workspace, but it cannot substitute for those records.
 
 Do not install a Kind merely because the user expects a concept to recur. An interview supports
-immediate installation only when concrete prior examples or prior use already demonstrate the
-same stable fields, lifecycle, and relationships. In the delivery receipt, label each candidate
-Kind either **installed** with the prior examples that establish its stable fields, lifecycle, and
-relationships, or **deferred** with the evidence or use that would make it stable. Deferral is a
-valid completed decision; unexplained omission is not.
+immediate installation only when concrete prior examples or prior use already support the actual
+structure proposed: its fields and any lifecycle or relationship rules it declares. The delivery
+receipt must repeat each approved `install now` or `defer` disposition and its evidence or trigger,
+and identify the Kinds actually installed. If delivery would differ, revise the manifest and receive
+explicit reapproval before mutation. Deferral is a valid completed decision; unexplained omission
+or postapproval drift is not.
 
 Do not call an interview-designed workspace complete until its records and relationships match the
 approved manifest, every candidate Kind has an explicit disposition, `superbee status` passes
@@ -72,6 +75,11 @@ without findings caused by the delivery, the created records and links read back
 or session resolves the workspace and reads the representative records. If the host cannot start
 that independent session, report delivery as finished with fresh-session verification pending
 instead of claiming completion.
+
+For deterministic novice and release dogfood, use the artifact-carried data-only
+`modeling-interview-contract-v1.json` with the repository's pure verifier. Its synthetic
+Assignment/Research scenario rejects overview substitution, unsupported Kind installation, and
+postapproval disposition drift.
 
 ## Delivery loop
 

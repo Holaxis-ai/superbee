@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "id": "novice-assignment-research",
+  "proposal": {
+    "schema_version": 1,
+    "approval": {
+      "approved": true,
+      "version": "novice-modeling-proposal-v1"
+    },
+    "categories": {
+      "recurring_concepts": [
+        "Assignment",
+        "Research"
+      ],
+      "relationships_and_provenance": [
+        "Research supports an Assignment decision"
+      ],
+      "records_to_create_now": [
+        {
+          "id": "assignments/sample-pr",
+          "representative": true
+        },
+        {
+          "id": "research/sample-source-review",
+          "representative": true
+        }
+      ],
+      "candidate_kinds": [
+        {
+          "kind": "Assignment",
+          "disposition": "install_now",
+          "declared_structure": [
+            "field:status",
+            "field:source"
+          ],
+          "evidence": {
+            "sources": [
+              {
+                "class": "prior_record",
+                "id": "interview-example:prior-pr-one"
+              },
+              {
+                "class": "prior_record",
+                "id": "interview-example:prior-pr-two"
+              }
+            ],
+            "supports": [
+              "field:status",
+              "field:source"
+            ]
+          }
+        },
+        {
+          "kind": "Research",
+          "disposition": "defer",
+          "stabilizing_trigger": "two representative Research records demonstrate the same useful shape"
+        }
+      ],
+      "workflow": [
+        "capture Assignment",
+        "relate Research",
+        "record decision"
+      ],
+      "unstructured_material": [
+        "raw source notes remain generic"
+      ],
+      "privacy_and_sharing_boundary": "private local workspace; no publication"
+    }
+  },
+  "delivery": {
+    "schema_version": 1,
+    "approved_proposal_version": "novice-modeling-proposal-v1",
+    "claimed_complete": true,
+    "overview_ids": [
+      "docs/workspace-overview"
+    ],
+    "delivered_record_ids": [
+      "assignments/sample-pr",
+      "research/sample-source-review"
+    ],
+    "installed_kind_names": [
+      "Assignment"
+    ],
+    "kind_dispositions": [
+      {
+        "kind": "Assignment",
+        "disposition": "install_now",
+        "declared_structure": [
+          "field:status",
+          "field:source"
+        ],
+        "evidence_sources": [
+          {
+            "class": "prior_record",
+            "id": "interview-example:prior-pr-one"
+          },
+          {
+            "class": "prior_record",
+            "id": "interview-example:prior-pr-two"
+          }
+        ]
+      },
+      {
+        "kind": "Research",
+        "disposition": "defer",
+        "stabilizing_trigger": "two representative Research records demonstrate the same useful shape"
+      }
+    ],
+    "health": {
+      "status_passed": true,
+      "caused_findings": []
+    },
+    "read_back": {
+      "record_ids": [
+        "assignments/sample-pr",
+        "research/sample-source-review"
+      ],
+      "relationships_verified": true
+    },
+    "fresh_session": {
+      "authoring_session_id": "synthetic-session-b",
+      "verification_session_id": "synthetic-session-c",
+      "workspace_resolved": true,
+      "record_ids": [
+        "assignments/sample-pr",
+        "research/sample-source-review"
+      ]
+    }
+  }
+}
