@@ -153,6 +153,33 @@ describe("PageFrame: bridge revocation race (P1)", () => {
     expect(container.textContent).not.toContain("could not confirm that this View finished loading");
   });
 
+  it("skips delivery probing when message readiness arrives before the frame load event", async () => {
+    vi.useFakeTimers();
+    vi.mocked(verifyViewDelivery).mockResolvedValue({ delivered: false });
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+    await act(async () => {
+      root.render(<PageFrame pageId="pages-registry/p" />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    expect(iframe).toBeTruthy();
+    act(() => window.dispatchEvent(new MessageEvent("message", {
+      source: iframe.contentWindow,
+      data: { bridge: "v0", id: "hello-before-load", type: "hello" },
+    })));
+    await act(async () => {
+      iframe.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+    expect(verifyViewDelivery).not.toHaveBeenCalled();
+    expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+  });
+
   it("ignores wrong-source readiness messages and times out without a current-frame proof", async () => {
     vi.useFakeTimers();
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
