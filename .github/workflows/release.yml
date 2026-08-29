@@ -73,8 +73,8 @@ jobs:
         id: pack
         run: |
           set -euo pipefail
-          mkdir -p out   # npm pack does not create --pack-destination
-          npm pack -w superbee --ignore-scripts --pack-destination out --json > pack.json
+          mkdir -p out
+          npm run --silent pack:npm-package -- --pack-destination out > pack.json
           test "$(node -p 'require("./pack.json").length')" = "1"
           test -f "out/${{ steps.meta.outputs.tgz }}" || { echo "::error::expected out/${{ steps.meta.outputs.tgz }}"; ls out; exit 1; }
           npm run verify:npm-package:tarball -- "out/${{ steps.meta.outputs.tgz }}"
