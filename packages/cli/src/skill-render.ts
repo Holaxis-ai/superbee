@@ -81,14 +81,10 @@ export function renderNpm(): string {
   lines.push('`REFS="<skill-base-dir>/references"`');
   lines.push("");
   lines.push("When the user accepts a domain-modeling offer, read `$REFS/modeling-and-delivery.md`. Inspect");
-  lines.push("existing documents, Kinds, recipes, and links before choosing a shape. Treat an approved proposal");
-  lines.push("as the delivery manifest: create every record accepted for now; an overview cannot substitute. For");
-  lines.push("ordinary modeling work, create the smallest coherent representation, normally with one representative");
-  lines.push("example, verify it, remove temporary authoring files, and stop.");
-  lines.push("Use `superbee <command> --help` for exact current syntax rather than relying on a copied command manual.");
-  lines.push("Use `--body-file` for multiline Markdown.");
-  lines.push("The data-only `$REFS/modeling-interview-contract-v1.json` scenario owns deterministic interview");
-  lines.push("dogfood receipts; verify it rather than trusting completion prose.");
+  lines.push("existing documents, Kinds, recipes, and links before choosing a shape. Create the smallest coherent");
+  lines.push("representation, normally with one representative example, verify it, remove temporary authoring");
+  lines.push("files, and stop. Use `superbee <command> --help` for exact current syntax rather than relying on a");
+  lines.push("copied command manual. Use `--body-file` for multiline Markdown.");
   lines.push("");
   lines.push("Focused shipped material is available under `$REFS/recipes/` for portable examples,");
   lines.push("`$REFS/views/` for View authoring and examples, and `$REFS/sample-bundle/` for OKF interop.");
