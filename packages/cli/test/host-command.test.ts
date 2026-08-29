@@ -27,12 +27,17 @@ test("Windows command resolution honors PATH and PATHEXT and safely launches cmd
       return undefined;
     },
   });
-  const output = runHostCommand(command, ["mcp", "add", "superbee", "--", String.raw`C:\Program Files\node.exe`], input, {
-    execFile: (file, args, options) => {
-      calls.push({ file, args: [...args], windowsVerbatimArguments: options.windowsVerbatimArguments });
-      return "[]";
+  const output = runHostCommand(
+    command,
+    ["mcp", "add", "superbee", "--", String.raw`C:\Program Files (x86)\node.exe`, "--actor", "R&D"],
+    input,
+    {
+      execFile: (file, args, options) => {
+        calls.push({ file, args: [...args], windowsVerbatimArguments: options.windowsVerbatimArguments });
+        return "[]";
+      },
     },
-  });
+  );
 
   assert.equal(output, "[]");
   assert.equal(command.display, "codex.cmd");
@@ -42,7 +47,7 @@ test("Windows command resolution honors PATH and PATHEXT and safely launches cmd
       "/d",
       "/s",
       "/c",
-      `""${shim}" "mcp" "add" "superbee" "--" "C:\\Program Files\\node.exe""`,
+      `""${shim}" "mcp" "add" "superbee" "--" "C:\\Program Files (x86)\\node.exe" "--actor" "R&D""`,
     ],
     windowsVerbatimArguments: true,
   }]);
@@ -83,7 +88,7 @@ test("cmd shim execution refuses shell-control bytes before invoking the command
   });
   let executions = 0;
   assert.throws(
-    () => runHostCommand(command, ["mcp", "add", "superbee", "--", "node", "entry", "--actor", "mike & whoami"], input, {
+    () => runHostCommand(command, ["mcp", "add", "superbee", "--", "node", "entry", "--actor", "%USERNAME%"], input, {
       execFile: () => { executions += 1; return ""; },
     }),
     (error: unknown) => error instanceof HostCommandError && error.state === "unreadable",

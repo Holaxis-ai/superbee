@@ -158,7 +158,9 @@ export function resolveHostCommand(
   return resolvedCommand(display, path.win32.normalize(comspec), resolved);
 }
 
-const WINDOWS_COMMAND_SHELL_UNSAFE_BYTES = /[\u0000-\u001f\u007f&|<>()^%!"]/;
+// cmd.exe treats ordinary metacharacters as literal inside each quoted token. Percent expansion,
+// delayed expansion, quotes, and controls remain capable of changing the command text.
+const WINDOWS_COMMAND_SHELL_UNSAFE_BYTES = /[\u0000-\u001f\u007f%!"]/;
 
 function assertSafeCommandShellTokens(tokens: readonly string[]): void {
   if (tokens.some((value) => WINDOWS_COMMAND_SHELL_UNSAFE_BYTES.test(value))) {
