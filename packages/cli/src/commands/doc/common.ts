@@ -341,14 +341,24 @@ function previewTruncationNotice(omitted: number): string {
  * Deliberately NOT end-anchored: an agent may append its own text after a pasted preview, and that
  * is still a preview being written as a body.
  *
- * TOLERANT on purpose, within that shape. A literal match escaped on ordinary copy-editing of the
- * sentence — `character(s)` normalized to `characters`, `NOT` lowercased to `not`, a line break
- * inserted at a space — each of which is exactly what an agent does to text it does not recognize as
- * machine-generated, and each of which lost ~4 KB in probes. So whitespace runs are elastic (`\s+`,
- * which spans an inserted newline), the plural parenthetical is optional, and matching is
- * case-insensitive. The three fixed landmarks stay REQUIRED: the bracket token, a digit count, and
- * the `more … are NOT shown` tail. Prose that merely quotes the token has no count and no tail, so
- * the tolerance cannot reopen the false positive this pattern exists to avoid.
+ * TOLERANT of three specific drifts, and no more: elastic whitespace runs (`\s+`, which spans an
+ * inserted newline), an optional plural parenthetical, and case. Those cover `character(s)` →
+ * `characters`, `NOT` → `not`, and a line break at a space — three shapes that each escaped a
+ * literal match and lost ~4 KB in probes.
+ *
+ * That is a SAMPLE of edits a caller may make to the sentence, not a closure over them. The class is
+ * open-ended and other members are at least as likely: markdown-bolding or backticking the bracketed
+ * token, a thousands separator in the count, spelling the count in words, dropping `more`. None of
+ * those match, and each is a one-edit escape (see {@link guardTruncatedBodyPreview}'s residual
+ * paragraph for the exact condition). Widening further trades directly against the false positive
+ * this pattern exists to avoid, so the three landmarks stay REQUIRED — the bracket token, a digit
+ * count, and the `more … are NOT shown` tail — which is what keeps prose that merely quotes the
+ * token, having neither a count nor a tail, freely editable.
+ *
+ * Read this as an accident-prevention device, not a barrier: it stops a preview from being written
+ * back unchanged, which is the failure that actually happened. Clause 2 of the guard, the
+ * stored-prefix check, is the same-document backstop for a preview whose notice was removed
+ * entirely.
  */
 export const BODY_PREVIEW_TRUNCATION_SIGNATURE =
   /\[superbee:body-preview-truncated\]\s+\d+\s+more\s+characters?\(?s?\)?\s+are\s+NOT\s+shown/i;
@@ -380,9 +390,11 @@ export const BODY_PREVIEW_RESERVED_KEYS: readonly string[] = [
  * Both the key name and the in-value marker are load-bearing, not decoration. A field called `body`
  * that holds 1,000 of 4,300 characters reads as the whole body and invites exactly one mistake:
  * feeding it back into a full-body write (AXI-05 — truncated data must be named, never masquerade as
- * complete truth). The marker then makes the value self-identifying wherever it travels, which is
- * what lets {@link guardTruncatedBodyPreview} refuse a preview captured from another document or
- * from a previous session, where no prefix comparison could.
+ * complete truth). The notice then makes the value self-identifying as long as it travels intact,
+ * which is what lets {@link guardTruncatedBodyPreview} refuse a preview captured from another
+ * document or from a previous session, where no prefix comparison could. A caller who reshapes the
+ * notice defeats that clause — see {@link BODY_PREVIEW_TRUNCATION_SIGNATURE} for how far the match
+ * bends and {@link guardTruncatedBodyPreview} for the exact residual.
  */
 export function attachBodyPreview(
   rec: Record<string, unknown>,
@@ -438,6 +450,16 @@ function matchesPreviewSlice(candidate: string, preview: string): boolean {
  * A candidate identical to the stored body returns early: it changes nothing, so it is never data
  * loss — and that also keeps a document whose stored body legitimately contains the marker (written
  * once with the override) patchable by every later field-only update.
+ *
+ * RESIDUAL, stated exactly. A candidate escapes both clauses iff (a) the tolerant signature does not
+ * match it AND (b) it is not byte-identical — trailing whitespace aside — to the target's stored
+ * preview slice. Nothing further is required. In particular an untolerated perturbation of the
+ * notice is sufficient ON ITS OWN, with the preview head left completely untouched: a pasted preview
+ * carries notice text, so it is never byte-equal to the stored slice, and clause 2 therefore cannot
+ * cover what clause 1 misses. QA demonstrated seven such single-edit escapes — a thousands separator
+ * in the count, markdown-bolding or backticking the token, bolding `NOT`, spelling the count in
+ * words, dropping `more`, re-punctuating — each destroying ~3 KB at exit 0. This guard prevents the
+ * ACCIDENT it was built for; it is not a barrier against a caller who reshapes the notice.
  *
  * Called from inside each verb's `buildCandidate` so, like the link-drop guard, it evaluates against
  * the version-matched snapshot of EVERY compare-and-swap attempt rather than a stale upfront peek.
