@@ -94,6 +94,56 @@ test("Codex native install is exact, actor-aware, idempotent, and exact-owned on
   assert.equal(entry, undefined);
 });
 
+test("Codex Windows mutation reuses one resolved cmd shim for inspection, mutation, and read-back", () => {
+  const home = String.raw`C:\Users\Mike`;
+  const shim = String.raw`C:\Users\Mike\AppData\Roaming\npm\codex.cmd`;
+  const comspec = String.raw`C:\Windows\System32\cmd.exe`;
+  let entry: { command: string; args: string[] } | undefined;
+  let shimLookups = 0;
+  const calls: Array<{ file: string; args: readonly string[] }> = [];
+  const receipt = mutateMcpRegistration("install", target("codex"), {}, {
+    environment: {
+      home,
+      platform: "win32",
+      env: {
+        USERPROFILE: home,
+        PATH: String.raw`C:\Users\Mike\AppData\Roaming\npm;C:\Windows\System32`,
+        PATHEXT: ".CMD;.EXE",
+        ComSpec: comspec,
+      },
+    },
+    authority: () => stable,
+    resolveCommandPath: (candidate) => {
+      if (candidate.toLowerCase() === shim.toLowerCase()) {
+        shimLookups += 1;
+        return shim;
+      }
+      if (candidate.toLowerCase() === comspec.toLowerCase()) return comspec;
+      return undefined;
+    },
+    execFile: (file, args) => {
+      calls.push({ file, args: [...args] });
+      const native = args.slice(4);
+      if (native.join(" ") === "mcp list --json") {
+        return JSON.stringify(entry ? [codexRow(entry)] : []);
+      }
+      if (native[0] === "mcp" && native[1] === "add") {
+        const split = native.indexOf("--");
+        entry = { command: native[split + 1]!, args: [...native.slice(split + 2)] };
+        return "added";
+      }
+      throw new Error(`unexpected ${file} ${args.join(" ")}`);
+    },
+  });
+
+  assert.equal(receipt.changed, true);
+  assert.equal(receipt.after, "owned_current");
+  assert.equal(shimLookups, 1);
+  assert.ok(calls.length >= 4);
+  assert.ok(calls.every((call) => call.file === comspec));
+  assert.ok(calls.every((call) => call.args[3] === `"${shim}"`));
+});
+
 test("Codex refuses a disabled exact-command entry instead of reporting it current", () => {
   let mutations = 0;
   const entry = {
