@@ -218,7 +218,10 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
       // `guardTruncatedBodyPreview`'s own comment for the two identities it keys on.
       // `--accept-truncated-body` opts in. Ordered BEFORE the link-drop guard because a preview body
       // also drops links: diagnosing it as a link problem would send the caller to --replace-links,
-      // which authorizes the truncation it was supposed to catch.
+      // which authorizes the truncation it was supposed to catch. That ordering only helps WHEN THIS
+      // GUARD FIRES — a near-preview body matching neither identity (say, the preview slice plus one
+      // character) is still only the link guard's concern, and --replace-links authorizes its drop
+      // exactly as it always has.
       if (fresh) guardTruncatedBodyPreview(fresh, body, acceptTruncatedBody);
 
       // Link-drop guard (data loss): a full-body replace over an existing doc must not silently drop

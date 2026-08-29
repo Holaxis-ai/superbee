@@ -310,10 +310,39 @@ export const BODY_PREVIEW_LIMIT = 1000;
 
 /**
  * The token every TRUNCATED body preview carries INSIDE its own value (see {@link attachBodyPreview}).
- * Fixed and interpolation-free so {@link guardTruncatedBodyPreview} can recognize it by exact
- * substring no matter which document, command, or render mode produced the preview.
+ * Fixed and interpolation-free so a reader can grep for it. It is NOT by itself the guard's
+ * identity — see {@link BODY_PREVIEW_TRUNCATION_SIGNATURE}.
  */
 export const BODY_PREVIEW_TRUNCATION_MARKER = "[superbee:body-preview-truncated]";
+
+/**
+ * The machine-generated truncation notice — the ONE emitter
+ * {@link BODY_PREVIEW_TRUNCATION_SIGNATURE} must agree with. Kept as a named function so the
+ * emitted sentence and the pattern that recognizes it cannot drift apart silently; `doc.test.ts`
+ * proves the agreement executably rather than leaving it to this comment.
+ */
+function previewTruncationNotice(omitted: number): string {
+  return `${BODY_PREVIEW_TRUNCATION_MARKER} ${omitted} more character(s) are NOT shown`;
+}
+
+/**
+ * The TRAVEL identity of a truncated preview: the exact notice {@link previewTruncationNotice}
+ * generates, never the bare {@link BODY_PREVIEW_TRUNCATION_MARKER} token.
+ *
+ * Matching the token alone would refuse any document that merely QUOTES it — prose explaining this
+ * guard, a pasted help transcript, the project records describing the feature — and such a document
+ * has no way out: the refusal's advertised read/edit/write-back recovery reproduces the same token
+ * every time, so the caller loops until they reach for `--accept-truncated-body`, which is exactly
+ * the reflex an override must never teach. The generated count and the `are NOT shown` clause
+ * cannot appear together by accident in prose that discusses the marker, so the notice is the
+ * narrowest identity that still travels everywhere a preview does (inline `--body`, stdin,
+ * `--body-file`, a TOON scrape, another document's preview).
+ *
+ * Deliberately NOT end-anchored: an agent may append its own text after a pasted preview, and that
+ * is still a preview being written as a body.
+ */
+export const BODY_PREVIEW_TRUNCATION_SIGNATURE =
+  /\[superbee:body-preview-truncated\] \d+ more character\(s\) are NOT shown/;
 
 /** The record key a TRUNCATED preview is published under — deliberately not `body`. */
 export const BODY_PREVIEW_KEY = "body_preview";
@@ -357,9 +386,9 @@ export function attachBodyPreview(
   }
   const omitted = body.length - BODY_PREVIEW_LIMIT;
   rec[BODY_PREVIEW_KEY] =
-    `${body.slice(0, BODY_PREVIEW_LIMIT)}\n\n${BODY_PREVIEW_TRUNCATION_MARKER} ${omitted} more ` +
-    `character(s) are NOT shown — this value is a preview, not the document body; use this record's ` +
-    `help to read the complete body before rewriting it.`;
+    `${body.slice(0, BODY_PREVIEW_LIMIT)}\n\n${previewTruncationNotice(omitted)} — this value is a ` +
+    `preview, not the document body; use this record's help to read the complete body before ` +
+    `rewriting it.`;
   rec.body_truncated = true;
   rec.body_chars = body.length;
   rec.help = [...fullBodyHelp];
@@ -387,9 +416,11 @@ function matchesPreviewSlice(candidate: string, preview: string): boolean {
  * The guard keys on the two identities {@link attachBodyPreview} actually produces — never on a
  * heuristic about body size or shape, so a legitimately short replacement body cannot trip it:
  *
- *  1. MARKER — the candidate still carries {@link BODY_PREVIEW_TRUNCATION_MARKER}. That token is
- *     never legitimate document content, and it is the only identity that survives travel: it
- *     catches a preview reused across documents, or captured before the target changed.
+ *  1. NOTICE — the candidate still carries {@link BODY_PREVIEW_TRUNCATION_SIGNATURE}, the whole
+ *     generated truncation sentence rather than its bare token (see that constant for why the token
+ *     alone would body-lock any document that merely writes ABOUT this feature). It is the only
+ *     identity that survives travel: it catches a preview reused across documents, or captured
+ *     before the target changed.
  *  2. STORED PREFIX — the target's own stored body is past the bound and the candidate is exactly
  *     its preview slice (see {@link matchesPreviewSlice}). Matching means the write truncates the
  *     document to precisely the preview cut; nothing else produces that body. This clause still
@@ -418,15 +449,16 @@ export function guardTruncatedBodyPreview(
     `file, then '${inv} doc update ${existing.id} --body-file <path-outside-bundle> ` +
     `--expected-version <version>'. Pass --accept-truncated-body to write this body deliberately.`;
 
-  if (nextBody.includes(BODY_PREVIEW_TRUNCATION_MARKER)) {
+  const notice = BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(nextBody);
+  if (notice) {
     throw new CliError(
       "USAGE",
-      `the body given for '${existing.id}' still carries Superbee's truncated-preview marker ` +
-        `'${BODY_PREVIEW_TRUNCATION_MARKER}' — it is a PREVIEW of a document body, not a complete ` +
-        `body, so writing it would persist a truncated document. ${recovery}`,
+      `the body given for '${existing.id}' still carries Superbee's generated truncation notice ` +
+        `('${notice[0]}') — it is a PREVIEW of a document body, not a complete body, so writing it ` +
+        `would persist a truncated document. ${recovery}`,
       {
         help,
-        details: { reason: "preview_marker", marker: BODY_PREVIEW_TRUNCATION_MARKER },
+        details: { reason: "preview_marker", marker: BODY_PREVIEW_TRUNCATION_MARKER, notice: notice[0] },
       },
     );
   }

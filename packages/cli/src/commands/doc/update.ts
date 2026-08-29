@@ -371,7 +371,10 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       // `guardTruncatedBodyPreview` for the two identities it keys on and why a field-only patch
       // (nextBody === existing.body) can never fire it. `--accept-truncated-body` opts in. Ordered
       // BEFORE the link-drop guard because a preview body also drops links: diagnosing it as a link
-      // problem would send the caller to --replace-links, authorizing the truncation instead.
+      // problem would send the caller to --replace-links, authorizing the truncation instead. That
+      // ordering only helps WHEN THIS GUARD FIRES — a near-preview body that matches neither
+      // identity (say, the preview slice plus one character) is still only the link guard's concern,
+      // and --replace-links authorizes its drop exactly as it always has.
       guardTruncatedBodyPreview(existing, nextBody, p.acceptTruncatedBody);
 
       // Link-drop guard (data loss): a body replace must not silently drop outbound cross-links the

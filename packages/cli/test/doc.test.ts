@@ -70,7 +70,11 @@ import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 import { doc, type DocCliDeps } from "../src/commands/doc.js";
-import { BODY_PREVIEW_TRUNCATION_MARKER, guardDroppedLinks } from "../src/commands/doc/common.js";
+import {
+  BODY_PREVIEW_TRUNCATION_MARKER,
+  BODY_PREVIEW_TRUNCATION_SIGNATURE,
+  guardDroppedLinks,
+} from "../src/commands/doc/common.js";
 import { mutateDoc } from "../src/mutate.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
@@ -2952,6 +2956,65 @@ test("truncated-preview guard: a preview of ANOTHER doc is refused too (the mark
       },
     );
     assert.equal(await storedBody(dir, "docs/other"), "Short unrelated body.\n");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: a doc that merely QUOTES the marker token stays freely editable — the identity is the generated notice, not the token", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    // Documentation ABOUT this guard — the project's own Task/Review records, a help transcript, a
+    // docs page — legitimately names the token. Under a bare-substring test such a document was
+    // body-locked: every edit refused, and the advertised read -> edit -> --body-file recovery
+    // reproduced the token forever, so the only exit was the override. That trains the reflex the
+    // override exists to prevent, so the token alone must never be the identity.
+    const prose =
+      `# How the truncated-preview guard works\n\nA truncated preview carries ` +
+      `\`${BODY_PREVIEW_TRUNCATION_MARKER}\` inside its own value, so it cannot masquerade as a ` +
+      `whole body.\n`;
+    await writeDoc({ root: dir }, { id: "docs/guide", frontmatter: { type: "Note", title: "Guide", timestamp: T }, body: prose });
+
+    // The exact recovery the refusal used to advertise, driven end to end: it must now LAND.
+    const bodyOut = path.join(dir, "..", `guide-${process.pid}.md`);
+    const exported = await runDoc(["read", "docs/guide", "--body-out", bodyOut, "--dir", dir]);
+    const edited = `${await readFile(bodyOut, "utf8")}\nA second paragraph added by the author.\n`;
+    await writeFile(bodyOut, edited);
+    const patched = await runDoc([
+      "update", "docs/guide", "--body-file", bodyOut, "--expected-version", String(exported.version), "--dir", dir,
+    ]);
+    assert.equal(patched.changed, true, "an ordinary edit of marker-quoting prose must land with NO override");
+    assert.ok((await storedBody(dir, "docs/guide")).includes(BODY_PREVIEW_TRUNCATION_MARKER));
+    await rm(bodyOut, { force: true });
+
+    // Inline replaces that quote the token are equally fine.
+    const inline = await runDoc(["update", "docs/guide", "--body", `See ${BODY_PREVIEW_TRUNCATION_MARKER} for details.`, "--dir", dir]);
+    assert.equal(inline.changed, true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: the generated truncation notice IS refused, and doc read's emitted preview always matches the signature it is recognized by", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+    // Agreement pin: the emitter and the pattern that recognizes it live in one module and must not
+    // drift — a preview `doc read` actually produced always satisfies the guard's travel identity.
+    assert.match(preview, BODY_PREVIEW_TRUNCATION_SIGNATURE);
+
+    // The notice alone, quoted into an otherwise unrelated body, is still a preview being written.
+    const carried = `${BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(preview)![0]}\n\ntrailing text an agent appended`;
+    await assert.rejects(
+      () => doc(["update", "docs/page", "--body", carried, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/page"), stored);
   } finally {
     await cleanup();
   }
