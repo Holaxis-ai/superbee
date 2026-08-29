@@ -499,7 +499,7 @@ function assertWindowsJob(job, lane) {
     [lane.runtime_node, lane.installed_package_node],
   );
   assert.match(job, /run: npm run ci:runtime/);
-  assert.match(job, /npm pack \.\/packages\/cli --ignore-scripts/);
+  assert.match(job, /npm run --silent pack:npm-package -- --pack-destination \$env:RUNNER_TEMP/);
   assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
   assert.match(job, /npm install --global \$env:SUPERBEE_WINDOWS_TARBALL --prefix \$prefix/);
   assert.match(job, /Join-Path \$prefix "superbee\.cmd"/);

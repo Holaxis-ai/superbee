@@ -8,6 +8,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isMainModule } from "./is-main-module.mjs";
+import { packNpmPackage } from "./pack-npm-package.mjs";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -331,6 +332,20 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   assert.equal(hasWorkspaceReference(manifest), false, "the published manifest must not contain workspace: references");
 }
 
+/**
+ * npm's staged tarball publication path derives registry metadata from package.json rather than
+ * reading README.md out of the tarball. Keep the exact README bytes in the packed manifest so the
+ * registry page and the installed artifact cannot diverge.
+ */
+export function assertPackageReadmeMetadata(manifest, readme) {
+  assert.equal(manifest.readmeFilename, "README.md", "the published manifest must name README.md");
+  assert.equal(
+    manifest.readme,
+    readme,
+    "the published manifest must embed the exact README.md bytes used by npm registry metadata",
+  );
+}
+
 async function listFiles(root, relative = "") {
   const files = [];
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
@@ -460,6 +475,8 @@ async function runInstalledProof(spec) {
         ? path.join(prefix, "node_modules", ...target.package.directory)
         : path.join(prefix, "lib", "node_modules", ...target.package.directory);
     const manifest = parseJson(await readFile(path.join(installedRoot, "package.json"), "utf8"), "installed package.json");
+    const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
+    assertPackageReadmeMetadata(manifest, installedReadme);
     const committedSkillRoot = path.join(repoRoot, "packages", "cli");
     const referenceFiles = (await listFiles(path.join(committedSkillRoot, "references"))).map((relative) =>
       relative.split(path.sep).join("/"),
@@ -943,7 +960,6 @@ async function runInstalledProof(spec) {
       "ordinary reopen must preserve legacy recipe definitions",
     );
 
-    const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
     const normalizedInstalledReadme = installedReadme.replaceAll("\r\n", "\n");
     assert.equal(
       normalizedInstalledReadme.match(/^## License\n\n([^\n]+)$/m)?.[1],
@@ -953,7 +969,16 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /ask your AI agent to run `superbee setup`/);
     assert.match(normalizedInstalledReadme, /ask your agent for what\s+you need/i);
     assert.match(normalizedInstalledReadme, /translate your\s+instructions into CLI commands/i);
-    assert.match(normalizedInstalledReadme, /^\s*npm install -g superbee$/m);
+    assert.match(normalizedInstalledReadme, /^## How do I download Superbee on Windows\?$/m);
+    assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS, Linux, or native Windows/);
+    assert.match(normalizedInstalledReadme, /do not need WSL/i);
+    assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
+    if (manifest.version.includes("-")) {
+      assert.match(normalizedInstalledReadme, /^\s*npm install -g superbee@next$/m);
+    } else {
+      assert.match(normalizedInstalledReadme, /^\s*npm install -g superbee$/m);
+      assert.doesNotMatch(normalizedInstalledReadme, /Windows[\s\S]{0,240}superbee@next/i);
+    }
 
     const setupBeforeIntegrations = parseJson(
       (
@@ -1261,13 +1286,12 @@ export async function verifyNpmPackage({ mode }) {
         cwd: repoRoot,
         env: cleanBuildEnv,
       });
-      const packed = await runNpm(
-        ["pack", "--json", "--ignore-scripts", "--pack-destination", packDir],
-        { cwd: path.join(repoRoot, "packages", "cli"), npmUserConfig, npmCache },
-      );
-      const receipts = parseJson(packed.stdout, "npm pack");
-      assert.equal(receipts.length, 1, "npm pack must produce exactly one tarball");
-      const receipt = receipts[0];
+      const receipt = await packNpmPackage({
+        packageRoot: path.join(repoRoot, "packages", "cli"),
+        packDestination: packDir,
+        npmExecPath: cleanBuildEnv.npm_execpath,
+        env: cleanBuildEnv,
+      });
       const tarball = path.join(packDir, receipt.filename);
       return {
         tarball,

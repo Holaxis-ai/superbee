@@ -40,24 +40,32 @@ know invisible to the humans they work for. Superbee fixes all three:
 The npm package ships one self-contained executable with zero runtime dependencies, plus an
 Agent Skill that teaches agents how to use it.
 
-## Install Steps
+## How do I download Superbee on Windows?
 
-**Requirements: Node.js 20 or newer on macOS, Linux, or Windows.** On Windows, Superbee keeps
-per-user operational state under `%LOCALAPPDATA%\Superbee` and uses Windows-native containment and
-path-identity checks instead of relying on synthesized POSIX mode bits. Native Windows behavior and
-the globally installed `superbee.cmd` entrypoint are covered by the required CI contract.
+**Requirements: Node.js 20 or newer on macOS, Linux, or native Windows.** You do not need WSL,
+Ubuntu, or Docker. On Windows, Superbee keeps per-user operational state under
+`%LOCALAPPDATA%\Superbee`; npm installs the command as `superbee.cmd`.
 
-1. Install the CLI globally:
+Superbee currently has two npm release channels:
 
-   ```sh
-   npm install -g superbee
-   ```
+- `latest` is the stable channel selected by bare `superbee`. Its current release predates native
+  Windows support.
+- `next` is the prerelease channel. It contains the current native-Windows build.
 
-2. Once superbee is installed, ask your AI agent to run `superbee setup`. Setup walks the
-   agent through the remaining integration steps (Agent Skill, SessionStart hook, MCP
-   registration) and orients it to the Superbee environment. It is read-only — it inspects
-   your configuration and returns one safe next command at a time, so the agent (with your
-   approval) performs any actual changes.
+Install the current prerelease on Windows:
+
+```powershell
+npm install -g superbee@next
+superbee.cmd setup
+```
+
+On macOS or Linux, the stable channel remains available with `npm install -g superbee`. To test the
+same prerelease as Windows, install `superbee@next` instead.
+
+After installation, ask your AI agent to run `superbee setup` (`superbee.cmd setup` when invoking
+the Windows shim explicitly). Setup walks the agent through Agent Skill, SessionStart hook, and MCP
+registration. It is read-only: it inspects your configuration and returns one safe next command at
+a time, so the agent performs any actual changes with your approval.
 
 Upgrading from the legacy `@holaxis/aslite` package or the retired marketplace plugin? Install
 `superbee` alongside it, have your agent run `superbee setup` to migrate the exact legacy

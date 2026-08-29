@@ -62,6 +62,46 @@ jobs:
           gh attestation verify "out/superbee-$V.tgz" -R "$GITHUB_REPOSITORY" \
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" --source-ref "refs/tags/v$V" \
             || { echo "::error::no build attestation from release.yml at refs/tags/v$V matches the bytes npm serves for superbee@$V (was this version staged by release.yml?)"; exit 1; }
+      - name: Prove npm serves the installed README and platform metadata
+        env:
+          V: ${{ inputs.version }}
+          T: ${{ steps.registry.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          npm view "superbee@$V" version readmeFilename readme engines os --json > out/registry-package.json
+          npm view superbee dist-tags --json > out/registry-tags.json
+          tar -xOf "out/superbee-$V.tgz" package/package.json > out/tarball-package.json
+          tar -xOf "out/superbee-$V.tgz" package/README.md > out/tarball-readme.md
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFile } from "node:fs/promises";
+          const version = process.env.V;
+          const tag = process.env.T;
+          const [registry, tags, manifest, readme] = await Promise.all([
+            readFile("out/registry-package.json", "utf8").then(JSON.parse),
+            readFile("out/registry-tags.json", "utf8").then(JSON.parse),
+            readFile("out/tarball-package.json", "utf8").then(JSON.parse),
+            readFile("out/tarball-readme.md", "utf8"),
+          ]);
+          assert.equal(registry.version, version, "registry metadata version differs from the approved version");
+          assert.equal(tags[tag], version, `registry ${tag} tag differs from the approved version`);
+          assert.equal(registry.readmeFilename, "README.md", "registry metadata does not name README.md");
+          assert.equal(registry.readme, readme, "npm package page README differs from the installed README.md");
+          assert.equal(manifest.readme, readme, "packed manifest does not carry the installed README.md bytes");
+          assert.equal(manifest.readmeFilename, "README.md", "packed manifest does not name README.md");
+          assert.deepEqual(registry.engines, manifest.engines, "registry Node requirements differ from the installed manifest");
+          assert.deepEqual(registry.os, manifest.os, "registry platform metadata differs from the installed manifest");
+          assert.match(readme, /^## How do I download Superbee on Windows\?$/m);
+          assert.match(readme, /Node\.js 20 or newer on macOS, Linux, or native Windows/);
+          assert.match(readme, /ask your AI agent to run `superbee setup`/);
+          assert.match(readme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
+          if (version.includes("-")) {
+            assert.match(readme, /^npm install -g superbee@next$/m);
+          } else {
+            assert.match(readme, /^npm install -g superbee$/m);
+            assert.doesNotMatch(readme, /Windows[\s\S]{0,240}superbee@next/i);
+          }
+          NODE
       - name: Create the GitHub release (published, once) with the npm tarball attached
         env:
           V: ${{ inputs.version }}
