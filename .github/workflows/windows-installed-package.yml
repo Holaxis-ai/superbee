@@ -38,9 +38,10 @@ jobs:
         run: |
           npm run build:npm-package -w superbee
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $name = npm pack ./packages/cli --ignore-scripts --pack-destination $env:RUNNER_TEMP | Select-Object -Last 1
+          $receipt = npm run --silent pack:npm-package -- --pack-destination $env:RUNNER_TEMP | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $tarball = Join-Path $env:RUNNER_TEMP $name.Trim()
+          if ($receipt.Count -ne 1) { throw "npm package packer did not emit exactly one receipt" }
+          $tarball = Join-Path $env:RUNNER_TEMP $receipt[0].filename
           npm run verify:npm-package:tarball -- $tarball
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "SUPERBEE_WINDOWS_TARBALL=$tarball" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

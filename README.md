@@ -15,16 +15,21 @@ under test. The honest breakdown is below — read it before depending on anythi
 
 ## Install
 
-**Requirements: macOS, Linux, or Windows, and Node.js 20 or newer.**
+**Requirements: macOS, Linux, or native Windows, and Node.js 20 or newer.** Windows does not need
+WSL, Ubuntu, or Docker.
 
-Install the test-user prerelease from npm. The package puts the stable command `superbee` on
-`PATH`; its optional Agent Skill teaches Claude Code and Codex how to use that command without
-carrying another copy of the executable:
+The Windows-capable test release is currently on npm's `next` prerelease channel; `latest` still
+points to the older stable package that rejects Windows. Install the prerelease with:
 
 ```sh
-npm install -g superbee
+npm install -g superbee@next
 superbee setup
 ```
+
+On Windows, npm exposes the same command through `superbee.cmd`, which can be invoked explicitly
+when PowerShell blocks its `.ps1` wrapper. On macOS or Linux, `npm install -g superbee` remains the
+stable-channel install. The package's optional Agent Skill teaches Claude Code and Codex how to use
+the installed command without carrying another copy of the executable.
 
 Bare and host-scoped `setup` are read-only and agent-friendly: without flags it reports private-state
 health and lists the four supported hosts; after the agent selects its exact host, it inspects npm,

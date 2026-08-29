@@ -24,6 +24,7 @@
     "verify:npm-package": "node scripts/verify-npm-package.mjs --local",
     "verify:npm-package:release": "node scripts/verify-npm-package.mjs --release",
     "verify:npm-package:tarball": "node scripts/verify-npm-package.mjs --tarball",
+    "pack:npm-package": "node scripts/pack-npm-package.mjs",
     "mutation:core": "npm run mutation -w @superbee/core",
     "mutation:cli": "npm run mutation -w superbee",
     "mutation:board-git": "npm run mutation -w @superbee/board-git",

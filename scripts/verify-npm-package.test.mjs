@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertCommandInBin,
   assertPackageContract,
+  assertPackageReadmeReleaseChannel,
   assertRetiredDistributionAbsent,
   expectedTarballFiles,
   expectedPrivateStateRoot,
@@ -18,6 +19,7 @@ import {
   sanitizedNpmEnvironment,
   verificationPolicy,
 } from "./verify-npm-package.mjs";
+import { publishedManifest } from "./pack-npm-package.mjs";
 import { npmInvocation as uiBuildNpmInvocation } from "../packages/cli/scripts/embed-ui-assets.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -47,6 +49,31 @@ const manifest = {
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
 };
+
+test("the retained tarball manifest carries the exact npm page bytes", () => {
+  const source = { name: "superbee", version: "1.2.3" };
+  const readme = "# Superbee\n\nNative Windows.\n";
+  assert.deepEqual(publishedManifest(source, readme), {
+    ...source,
+    readme,
+    readmeFilename: "README.md",
+  });
+  assert.deepEqual(source, { name: "superbee", version: "1.2.3" }, "the source manifest stays unchanged");
+});
+
+test("stable npm docs reject a relocated prerelease install command anywhere in the README", () => {
+  const relocated = [
+    "# Install",
+    "Windows",
+    "x".repeat(321),
+    "npm install -g superbee",
+    "npm install -g superbee@next",
+  ].join("\n");
+  assert.throws(
+    () => assertPackageReadmeReleaseChannel("1.0.0", relocated),
+    /remove the temporary superbee@next install command/,
+  );
+});
 
 test("the Superbee package installs beside Aslite and survives its removal", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-side-by-side-global-"));
@@ -119,21 +146,17 @@ test("the npm verifier rejects every retired marketplace surface", async () => {
 });
 
 test("root README teaches the literal create-only quickstart; npm README teaches the agent-first journey", async () => {
+  const npmPackage = JSON.parse(await readFile(path.join(repoRoot, "packages", "cli", "package.json"), "utf8"));
+  const prerelease = npmPackage.version.includes("-");
   for (const [label, file] of [
     ["root", path.join(repoRoot, "README.md")],
     ["npm", path.join(repoRoot, "packages", "cli", "README.md")],
   ]) {
     const readme = await readFile(file, "utf8");
-    assert.match(
-      readme,
-      /^\s*npm install -g superbee$/m,
-      `${label} README must install the supported default package without a preview tag`,
-    );
-    assert.doesNotMatch(
-      readme,
-      /^\s*(?:npm install -g|npx -y) superbee@next\b/m,
-      `${label} README must not teach the preview tag as the default journey`,
-    );
+    assertPackageReadmeReleaseChannel(npmPackage.version, readme);
+    if (prerelease) {
+      assert.match(readme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/, `${label} README must explain both npm channels`);
+    }
     assert.match(
       readme,
       /npm uninstall -g @holaxis\/aslite/,
@@ -171,6 +194,11 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   const npmReadme = await readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8");
   assert.match(
     npmReadme,
+    /^## How do I download Superbee on Windows\?$/m,
+    "the published README must answer the novice Windows download question directly",
+  );
+  assert.match(
+    npmReadme,
     /ask your AI agent to run `superbee setup`/,
     "npm README must route setup through the agent",
   );
@@ -186,7 +214,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     npmReadme,
-    /Node\.js 20 or newer on macOS, Linux, or Windows/,
+    /Node\.js 20 or newer on macOS, Linux, or native Windows/,
     "npm README must advertise every supported native platform",
   );
   assert.doesNotMatch(
@@ -194,6 +222,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
     /Windows is not supported|EBADPLATFORM|["']!win32["']/i,
     "npm README must not retain the retired Windows package block",
   );
+  assert.match(npmReadme, /do not need WSL/i, "npm README must not send native Windows users through WSL");
 });
 
 test("root and npm package license declarations agree", async () => {
