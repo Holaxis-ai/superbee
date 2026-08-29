@@ -51,16 +51,18 @@ function absentComponent(error: unknown): boolean {
 
 /**
  * The host refused to LOOK rather than describing a shape: an unreadable `~/.config`, a sandboxed
- * profile directory, a Windows ACL that denies one hidden known folder. `stat` is denied exactly
- * when a directory ABOVE the path is unsearchable, so the walk anchors at the deepest ancestor it
- * can still stat and classifies the denied components below it by name, the same way it classifies
- * components that do not exist yet.
+ * profile directory, a Windows ACL that denies one hidden known folder. The walk anchors at the
+ * deepest ancestor it can still stat and classifies the denied components BELOW that anchor by
+ * name, the same way it classifies components that do not exist yet.
  *
- * This cannot hide an overlap the CLI could act on: every descendant of a guarded root under the
- * denial is denied through the SAME prefix, so a target the CLI can open is never inside it. The
- * one thing it gives up is a symlink strictly BELOW the denial relocating a guarded root somewhere
- * readable — unobservable by any call, `lstat` included, so the alternative is not a stricter
- * boundary but refusing every explicitly targeted bundle over an unrelated unreadable root.
+ * Do NOT read this as "everything under a denial is unreachable". Denial is per-component, not
+ * per-subtree: a mode-000 directory does block its whole subtree, but an ACL that denies attribute
+ * reads on one directory (macOS `deny readattr`; the ordinary Windows shape, where traverse is
+ * granted separately) leaves `stat` answering for its children. The boundary therefore does not
+ * rest on this predicate alone — a target whose own canonical identity cannot be established still
+ * refuses in {@link realAnchor}, which is what keeps a denial ABOVE a target from reading as
+ * separation. What this predicate buys is only the reachable case it is named for: one unreadable
+ * and UNRELATED guarded root no longer refuses every explicitly targeted bundle operation.
  */
 function hostDeniedComponent(error: unknown): boolean {
   const c = code(error);
@@ -118,11 +120,20 @@ function declaredLinkTarget(cursor: string, seenLinks: Set<string>): string | nu
   return path.resolve(path.dirname(cursor), readlinkSync(cursor));
 }
 
+/**
+ * Canonicalization is the ONLY channel that makes the fallback path comparison meaningful, so
+ * losing it must refuse rather than substitute the lexical spelling. A denial that hides one
+ * component from `realpath` while `stat` still answers below it (a macOS `deny readattr` ACL,
+ * and the ordinary Windows shape where traverse is granted but attribute reads are not) would
+ * otherwise compare an UNRESOLVED target spelling against a canonicalized state root — and one
+ * symlinked ancestor, `/tmp` -> `/private/tmp` included, then reads as `unrelated` for a target
+ * physically inside private state.
+ */
 function realAnchor(anchorPath: string): string {
   try {
     return realpathSync.native(anchorPath);
   } catch {
-    return anchorPath;
+    throw runtimeFailure();
   }
 }
 

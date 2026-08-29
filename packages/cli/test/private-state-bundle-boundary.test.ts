@@ -36,6 +36,7 @@ import {
   relateToPrivateState,
   type PrivateStateRelation,
 } from "../src/private-state-bundle-boundary.js";
+import { CliError } from "../src/errors.js";
 import { boundaryFixture, runCli, type BoundaryFixture } from "./support/private-state-fixtures.js";
 import { isolatedUserEnv } from "./support/user-env.js";
 import { syncExportsRoot } from "../src/cursor.js";
@@ -369,6 +370,82 @@ test("truth table — a state-root alias whose DESTINATION the host denies still
       assert.equal(relateToPrivateState(enclosure, state), "bundle-contains-state");
       assert.equal(relateToPrivateState(project, state), "unrelated");
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+interface AttributeDenial {
+  /** False when this host's ACLs cannot express the shape, so the row skips instead of passing. */
+  readonly applied: boolean;
+  release(): void;
+}
+
+/**
+ * Deny ATTRIBUTE reads on one directory without denying traverse below it. That separation is what
+ * makes denial per-component rather than per-subtree: `stat` fails here while children still
+ * answer, and `realpath` cannot canonicalize through it. macOS spells it with an ACL; on Windows it
+ * is the DEFAULT arrangement, because Bypass Traverse Checking is granted independently.
+ */
+function denyAttributeReads(directory: string): AttributeDenial {
+  const inert: AttributeDenial = { applied: false, release: () => {} };
+  if (process.platform !== "darwin") return inert;
+  const owner = spawnSync("id", ["-un"], { encoding: "utf8" });
+  if (owner.status !== 0) return inert;
+  const rule = `${owner.stdout.trim()} deny readattr,readextattr,readsecurity`;
+  if (spawnSync("chmod", ["+a", rule, directory], { encoding: "utf8" }).status !== 0) return inert;
+  return { applied: true, release: () => void spawnSync("chmod", ["-N", directory], { encoding: "utf8" }) };
+}
+
+test("a per-component denial ABOVE the target refuses instead of reading as separation", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("a denial fixture needs a non-root POSIX environment");
+    return;
+  }
+  const root = scratch();
+  try {
+    const home = path.join(root, "home");
+    mkdirSync(home, { recursive: true });
+    const state = canonicalUserStateDir(home);
+    const inside = path.join(state, "child");
+    mkdirSync(inside, { recursive: true });
+
+    const denial = denyAttributeReads(state);
+    if (!denial.applied) {
+      t.skip("per-component attribute denial needs a host whose ACLs express it (macOS)");
+      return;
+    }
+    try {
+      // Prove the fixture is the per-component shape and not the mode-bits one, or this row would
+      // pass for the wrong reason.
+      assertDenied(state);
+      assert.doesNotThrow(() => statSync(inside), "the child must still answer through the denial");
+
+      // The target is physically INSIDE private state, and `realpath` cannot canonicalize it. The
+      // fallback comparison would then weigh an unresolved target spelling against a canonicalized
+      // state root — one symlinked ancestor (macOS `/tmp` and `/var` both are) and that reads as
+      // `unrelated`. Losing canonical identity for the target must refuse instead.
+      assert.throws(
+        () => relateToPrivateState(inside, state),
+        /cannot verify that the target is separate from private Superbee state/,
+      );
+      for (const guard of [
+        assertBundleOutsidePrivateState,
+        assertSearchDirOutsidePrivateState,
+        assertPathOutsidePrivateState,
+      ]) {
+        assert.throws(
+          () => guard(inside, home),
+          (error: unknown) =>
+            error instanceof CliError
+            && error.code === "RUNTIME"
+            && /cannot verify that the target is separate/.test(error.message),
+          guard.name,
+        );
+      }
+    } finally {
+      denial.release();
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
