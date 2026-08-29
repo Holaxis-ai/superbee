@@ -346,6 +346,22 @@ export function assertPackageReadmeMetadata(manifest, readme) {
   );
 }
 
+export function assertPackageReadmeReleaseChannel(version, readme) {
+  const stableInstall = /^[ \t]*npm install -g superbee[ \t]*$/m;
+  const prereleaseInstall = /^[ \t]*npm install -g superbee@next[ \t]*$/m;
+  const stalePrereleaseInstall = /npm install -g superbee@next/;
+  if (version.includes("-")) {
+    assert.match(readme, prereleaseInstall, "prerelease README must install through the next channel");
+    return;
+  }
+  assert.match(readme, stableInstall, "stable README must install the stable package by default");
+  assert.doesNotMatch(
+    readme,
+    stalePrereleaseInstall,
+    "stable README must remove the temporary superbee@next install command",
+  );
+}
+
 async function listFiles(root, relative = "") {
   const files = [];
   for (const entry of await readdir(path.join(root, relative), { withFileTypes: true })) {
@@ -973,12 +989,7 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS, Linux, or native Windows/);
     assert.match(normalizedInstalledReadme, /do not need WSL/i);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
-    if (manifest.version.includes("-")) {
-      assert.match(normalizedInstalledReadme, /^\s*npm install -g superbee@next$/m);
-    } else {
-      assert.match(normalizedInstalledReadme, /^\s*npm install -g superbee$/m);
-      assert.doesNotMatch(normalizedInstalledReadme, /Windows[\s\S]{0,240}superbee@next/i);
-    }
+    assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);
 
     const setupBeforeIntegrations = parseJson(
       (

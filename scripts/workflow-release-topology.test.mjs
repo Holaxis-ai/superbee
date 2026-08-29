@@ -66,6 +66,11 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /registry\.engines, manifest\.engines/, "finalize proves npm exposes the installed Node requirement");
   assert.match(job, /registry\.os, manifest\.os/, "finalize proves npm exposes the installed platform metadata");
   assert.match(job, /How do I download Superbee on Windows/, "finalize dogfoods the novice Windows question");
+  assert.doesNotMatch(job, /Windows\[\\s\\S\]\{0,240\}/, "stable documentation cannot use a bounded proximity guard");
+  const relocatedStaleCommand = `Windows\n${"x".repeat(321)}\nnpm install -g superbee@next\n`;
+  const stableNextGuard = /npm install -g superbee@next/;
+  assert.match(relocatedStaleCommand, stableNextGuard, "the finalizer's whole-document guard catches the QA relocation mutant");
+  assert.match(job, /assert\.doesNotMatch\(readme, \/npm install -g superbee@next\/\)/, "finalizer must apply the whole-document stale-next guard");
   assert.match(job, /gh attestation verify "out\/superbee-\$V\.tgz"[\s\S]*--source-ref "refs\/tags\/v\$V"/, "published bytes are bound to the build attestation and the tag ref");
   assert.match(job, /gh release view "\$TAG"[\s\S]*gh release create "\$TAG"/, "look before create so re-runs are idempotent");
   assert.match(job, /--verify-tag/, "the release must be created against the existing tag");

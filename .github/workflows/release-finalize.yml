@@ -96,10 +96,10 @@ jobs:
           assert.match(readme, /ask your AI agent to run `superbee setup`/);
           assert.match(readme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
           if (version.includes("-")) {
-            assert.match(readme, /^npm install -g superbee@next$/m);
+            assert.match(readme, /^[ \t]*npm install -g superbee@next[ \t]*$/m);
           } else {
-            assert.match(readme, /^npm install -g superbee$/m);
-            assert.doesNotMatch(readme, /Windows[\s\S]{0,240}superbee@next/i);
+            assert.match(readme, /^[ \t]*npm install -g superbee[ \t]*$/m);
+            assert.doesNotMatch(readme, /npm install -g superbee@next/);
           }
           NODE
       - name: Create the GitHub release (published, once) with the npm tarball attached

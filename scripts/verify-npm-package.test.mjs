@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertCommandInBin,
   assertPackageContract,
+  assertPackageReadmeReleaseChannel,
   assertRetiredDistributionAbsent,
   expectedTarballFiles,
   expectedPrivateStateRoot,
@@ -58,6 +59,20 @@ test("the retained tarball manifest carries the exact npm page bytes", () => {
     readmeFilename: "README.md",
   });
   assert.deepEqual(source, { name: "superbee", version: "1.2.3" }, "the source manifest stays unchanged");
+});
+
+test("stable npm docs reject a relocated prerelease install command anywhere in the README", () => {
+  const relocated = [
+    "# Install",
+    "Windows",
+    "x".repeat(321),
+    "npm install -g superbee",
+    "npm install -g superbee@next",
+  ].join("\n");
+  assert.throws(
+    () => assertPackageReadmeReleaseChannel("1.0.0", relocated),
+    /remove the temporary superbee@next install command/,
+  );
 });
 
 test("the Superbee package installs beside Aslite and survives its removal", async () => {
@@ -138,12 +153,9 @@ test("root README teaches the literal create-only quickstart; npm README teaches
     ["npm", path.join(repoRoot, "packages", "cli", "README.md")],
   ]) {
     const readme = await readFile(file, "utf8");
+    assertPackageReadmeReleaseChannel(npmPackage.version, readme);
     if (prerelease) {
-      assert.match(readme, /^\s*npm install -g superbee@next$/m, `${label} README must install the prerelease through next`);
       assert.match(readme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/, `${label} README must explain both npm channels`);
-    } else {
-      assert.match(readme, /^\s*npm install -g superbee$/m, `${label} README must install the stable package by default`);
-      assert.doesNotMatch(readme, /Windows[\s\S]{0,240}superbee@next/i, `${label} README must remove temporary Windows prerelease routing after stable support`);
     }
     assert.match(
       readme,
