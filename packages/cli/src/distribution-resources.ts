@@ -35,6 +35,7 @@ function npmResources(role: ResourceRole, entries: readonly SourceDestination[])
 export const DISTRIBUTION_RESOURCES: DistributionResource[] = [
   ...npmResources("operating-reference", [
     ["examples/references/modeling-and-delivery.md", "modeling-and-delivery.md"],
+    ["examples/references/modeling-interview-contract-v1.json", "modeling-interview-contract-v1.json"],
     ["examples/views/references/view-authoring-v0.md", "views/references/view-authoring-v0.md"],
   ]),
 
