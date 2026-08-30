@@ -106,7 +106,7 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
     [
       "bundleLocate", "catalogAdd", "catalogList", "catalogResolve", "hookInstall", "hookStatus",
       "hookUninstall", "indexGenerate", "kindFieldAdd", "kindFieldRemove", "setup",
-      "setupHardenState", "setupMigrateState", "setupQuarantineState", "skillInstall", "skillStatus", "skillUninstall", "viewList",
+      "setupHardenState", "setupMigrateState", "setupQuarantineState", "skillInstall", "skillPath", "skillStatus", "skillUninstall", "viewList",
     ],
   );
   assert.deepEqual(

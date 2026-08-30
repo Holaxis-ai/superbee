@@ -59,6 +59,25 @@ the globally installed `superbee.cmd` entrypoint are covered by the required CI 
    your configuration and returns one safe next command at a time, so the agent (with your
    approval) performs any actual changes.
 
+### Install the Agent Skill
+
+The CLI ships both the source Skill (`SKILL.md` plus `references/`) and a portable ZIP archive.
+Skill installation is separate from MCP registration and the SessionStart hook: installing it
+teaches an agent how to use Superbee, but it neither grants bundle access nor authorizes writes or
+sharing.
+
+- **Claude Code and Codex:** run `superbee skill install --scope user`, restart the host, then run
+  `superbee skill status --scope user`.
+- **OpenCode:** its current Skill discovery includes Claude-compatible `~/.claude/skills/` folders,
+  so the same explicit `superbee skill install --scope user` path installs the package-owned Skill
+  where OpenCode can discover it. Restart OpenCode after installation.
+- **Claude Desktop or another host with a user-directed import flow:** run
+  `superbee skill path --json` and import the reported `superbee.skill.zip` file through that host.
+  Inspect the archive before enabling it, then follow the host's own restart and verification steps.
+
+`superbee skill path` is read-only. It reports a package-contained archive with a single
+`superbee/` Skill directory root, so users do not have to infer an npm global-install path.
+
 Upgrading from the legacy `@holaxis/aslite` package or the retired marketplace plugin? Install
 `superbee` alongside it, have your agent run `superbee setup` to migrate the exact legacy
 integrations, then remove the old package with `npm uninstall -g @holaxis/aslite`. Existing

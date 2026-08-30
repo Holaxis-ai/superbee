@@ -138,6 +138,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
   selector("skillInstall", "leading-required", 0),
   selector("skillStatus", "leading-required", 0),
   selector("skillUninstall", "leading-required", 0),
+  selector("skillPath", "leading-required", 0),
   selector("setup", "leading-navigation", 0),
   selector("setupMigrateState", "leading-navigation", 0),
   selector("setupHardenState", "leading-navigation", 0),

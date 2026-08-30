@@ -27,6 +27,7 @@ import {
   isSafeManifestEntry,
   legacySkillTargets,
   resolveSkillAssets,
+  resolveSkillArchive,
   skill,
   skillRefreshScopes,
   skillStatusForDir,
@@ -54,6 +55,7 @@ function makeDistribution(root: string, version = "9.9.9", files: Record<string,
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, content);
   }
+  writeFileSync(path.join(root, "superbee.skill.zip"), "portable archive\n");
   return path.join(root, "dist", "superbee.mjs");
 }
 
@@ -160,6 +162,25 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   assert.equal(again.skill.hosts.claude_code.changed, false);
   assert.equal(again.skill.hosts.codex.changed, false);
   assertSameTree(before, treeSnapshot(path.join(cwd, ".claude")));
+});
+
+test("skill path reports the package-contained portable archive without changing host folders", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  mkdirSync(cwd, { recursive: true });
+
+  const archive = resolveSkillArchive(executable);
+  assert.equal(archive.path, path.join(base, "pkg", "superbee.skill.zip"));
+  assert.equal(archive.format, "zip");
+  assert.equal(archive.root, "superbee");
+  assert.match(archive.sha256, /^sha256:[0-9a-f]{64}$/);
+
+  const receipt = await runSkill(["path"], { cwd, executable });
+  assert.equal(receipt.skill.action, "path");
+  assert.equal(receipt.skill.archive, archive.path);
+  assert.equal(receipt.skill.archive_sha256, archive.sha256);
+  assert.equal(existsSync(path.join(cwd, ".claude")), false);
+  assert.equal(existsSync(path.join(cwd, ".codex")), false);
 });
 
 test("skill refresh scopes reuse managed-byte classification and self-clear after reinstall", async () => {

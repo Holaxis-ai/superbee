@@ -171,12 +171,13 @@ function distributionCapability(input: SetupPlanInput): SetupCapability {
 }
 
 function skillCapability(input: SetupPlanInput): SetupCapability {
-  if (input.host === "claude-desktop" || input.host === "opencode") {
+  if (input.host === "claude-desktop") {
     return {
       id: "skill",
       requirement: "not_applicable",
       state: "not_applicable",
-      reason: `${input.host} has no supported Agent Skill install surface`,
+      reason: "Claude Desktop imports Skills through its own user-directed flow; run `superbee skill path` to locate this package's portable archive",
+      command: "superbee skill path",
     };
   }
   if (!input.skill) {

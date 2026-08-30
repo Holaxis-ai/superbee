@@ -35,7 +35,7 @@ test("setup plan agreement: every supported host can reach a complete host-nativ
     assert.equal(plan.capabilities.length, 7, host);
     const skill = plan.capabilities.find((row) => row.id === "skill")!;
     const hook = plan.capabilities.find((row) => row.id === "hook")!;
-    assert.equal(skill.state, host === "claude-desktop" || host === "opencode" ? "not_applicable" : "ready", host);
+    assert.equal(skill.state, host === "claude-desktop" ? "not_applicable" : "ready", host);
     assert.equal(hook.state, host === "claude-desktop" ? "not_applicable" : "ready", host);
   }
 });
@@ -125,6 +125,13 @@ test("setup plan emits exactly one deterministic next command in dependency orde
     mcp: { state: "absent", reason: "absent" },
   }));
   assert.equal(skill.next?.command, "superbee skill install --scope user");
+
+  const openCodeSkill = buildSetupPlan(input({
+    host: "opencode",
+    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+    mcp: { state: "absent", reason: "absent" },
+  }));
+  assert.equal(openCodeSkill.next?.command, "superbee skill install --scope user");
 
   const desktop = buildSetupPlan(input({ host: "claude-desktop", mcp: { state: "absent", reason: "absent" } }));
   assert.equal(desktop.next?.command, "superbee mcp install --host claude-desktop");

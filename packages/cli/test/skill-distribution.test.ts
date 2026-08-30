@@ -42,6 +42,30 @@ const ALL_COMMAND_NAMES = [
 ];
 const NPM_DESTS = new Set(NPM_RESOURCES.map((r) => r.dest));
 
+function readStoredZipEntries(bytes: Buffer): Map<string, Buffer> {
+  const endOffset = bytes.length - 22;
+  assert.equal(bytes.readUInt32LE(endOffset), 0x06054b50, "portable Skill archive must end with ZIP EOCD");
+  const count = bytes.readUInt16LE(endOffset + 10);
+  let cursor = bytes.readUInt32LE(endOffset + 16);
+  const entries = new Map<string, Buffer>();
+  for (let index = 0; index < count; index += 1) {
+    assert.equal(bytes.readUInt32LE(cursor), 0x02014b50, "portable Skill archive central entry signature");
+    assert.equal(bytes.readUInt16LE(cursor + 10), 0, "portable Skill archive entries must be STORE-only");
+    const size = bytes.readUInt32LE(cursor + 24);
+    const nameLength = bytes.readUInt16LE(cursor + 28);
+    const extraLength = bytes.readUInt16LE(cursor + 30);
+    const commentLength = bytes.readUInt16LE(cursor + 32);
+    const localOffset = bytes.readUInt32LE(cursor + 42);
+    const name = bytes.subarray(cursor + 46, cursor + 46 + nameLength).toString("utf8");
+    assert.equal(bytes.readUInt32LE(localOffset), 0x04034b50, `${name}: portable Skill archive local entry signature`);
+    const localNameLength = bytes.readUInt16LE(localOffset + 26);
+    const localExtraLength = bytes.readUInt16LE(localOffset + 28);
+    entries.set(name, bytes.subarray(localOffset + 30 + localNameLength + localExtraLength, localOffset + 30 + localNameLength + localExtraLength + size));
+    cursor += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Inventory ownership — resources are repo-owned and classified before any channel projects them.
 // ---------------------------------------------------------------------------------------------
@@ -69,11 +93,28 @@ test("the npm projection has unique destinations backed by real repo sources", (
   }
 });
 
-test("the npm tarball allowlist ships the generated skill, references, and the Apache NOTICE", () => {
+test("the npm tarball allowlist ships the generated source Skill, portable archive, references, and the Apache NOTICE", () => {
   const packageJson = JSON.parse(readFileSync(path.join(REPO_ROOT, "packages/cli/package.json"), "utf8"));
   // NOTICE must be listed explicitly. npm always ships LICENSE regardless of files[], but never
   // NOTICE, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
-  assert.deepEqual(packageJson.files, ["dist", "SKILL.md", "references", "NOTICE"]);
+  assert.deepEqual(packageJson.files, ["dist", "SKILL.md", "references", "superbee.skill.zip", "NOTICE"]);
+});
+
+test("the portable Skill archive has one importable root and byte-identical generated assets", () => {
+  const archive = readStoredZipEntries(readFileSync(path.join(REPO_ROOT, "packages/cli/superbee.skill.zip")));
+  assert.ok(archive.has("superbee/"), "portable Skill archive must have the skill directory as its root");
+  assert.deepEqual(
+    [...archive.keys()].filter((name) => name !== "superbee/").sort(),
+    ["superbee/SKILL.md", ...[...NPM_DESTS].sort().map((dest) => `superbee/references/${dest}`)],
+  );
+  assert.deepEqual(archive.get("superbee/SKILL.md"), Buffer.from(renderedNpm));
+  for (const { src, dest } of NPM_RESOURCES) {
+    assert.deepEqual(
+      archive.get(`superbee/references/${dest}`),
+      readFileSync(path.join(REPO_ROOT, src)),
+      `${dest} must be byte-identical in the portable Skill archive`,
+    );
+  }
 });
 
 // ---------------------------------------------------------------------------------------------

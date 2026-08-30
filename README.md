@@ -18,8 +18,8 @@ under test. The honest breakdown is below — read it before depending on anythi
 **Requirements: macOS, Linux, or Windows, and Node.js 20 or newer.**
 
 Install the test-user prerelease from npm. The package puts the stable command `superbee` on
-`PATH`; its optional Agent Skill teaches Claude Code and Codex how to use that command without
-carrying another copy of the executable:
+`PATH`; its optional Agent Skill teaches supported hosts how to use that command without carrying
+another copy of the executable:
 
 ```sh
 npm install -g superbee
@@ -46,6 +46,8 @@ anything, run `npx -y superbee`; persistent integrations still require the globa
 
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
+For a host that imports Skills itself, `superbee skill path --json` reports the package-contained
+portable Skill archive instead of requiring users to find an npm installation directory.
 The new package installs only `superbee`, so it can coexist with a global `@holaxis/aslite` long
 enough for `superbee setup` to inspect and migrate exact legacy integrations. Once setup is
 complete, remove the old package with `npm uninstall -g @holaxis/aslite`; the successor does not

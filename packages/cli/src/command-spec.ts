@@ -501,9 +501,10 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("skillInstall", "skill install", zero, 24),
           publicLeaf("skillStatus", "skill status", zero),
           publicLeaf("skillUninstall", "skill uninstall", zero),
+          publicLeaf("skillPath", "skill path", zero),
         ],
-        usage: "skill install|status|uninstall [--scope project|user]",
-        summary: "Install this package's Agent Skill (SKILL.md + references/) into Claude Code and Codex skill folders (OpenCode has no skill surface — its integration is `hook install`); manifest-tracked, idempotent, refuses folders it does not manage",
+        usage: "skill install|status|uninstall [--scope project|user] | skill path",
+        summary: "Install this package's Agent Skill (SKILL.md + references/) into managed Claude Code and Codex folders, or locate its portable ZIP archive for manual host import; manifest-tracked, idempotent, refuses folders it does not manage",
       },
       {
         id: "setup",
