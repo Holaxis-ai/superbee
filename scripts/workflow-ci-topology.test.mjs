@@ -155,7 +155,7 @@ function validateProofCompletionAuthority(program, lifecycle, completionAssertio
       "process.stdout.write(`${JSON.stringify({",
       "    platform: process.platform,",
       '    artifact: "exact installed npm tarball",',
-      '    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "mcp-config-lifecycle"],',
+      '    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "mcp-config-lifecycle", "codex-cmd-lifecycle", "private-state-path-matrix"],',
       "  })}\\n`);",
     ].join("\n"),
     "the native proof terminal success payload must retain its reviewed receipt",
@@ -293,6 +293,9 @@ function validateProofTopLevel(program) {
     "proveLocalRemoteSync",
     "proveUiUrlLifecycle",
     "proveMcpConfigLifecycle",
+    "proveCodexCmdLifecycle",
+    "proveExplicitBundleJourney",
+    "provePrivateStatePathMatrix",
     "runInstalledPackageProof",
   ];
   const expectedSetup = [
@@ -432,9 +435,11 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
       { kind: "await", name: "proveLocalRemoteSync", args: [], binding: "" },
       { kind: "await", name: "proveUiUrlLifecycle", args: ["bundle"], binding: "" },
       { kind: "await", name: "proveMcpConfigLifecycle", args: [], binding: "" },
+      { kind: "await", name: "proveCodexCmdLifecycle", args: [], binding: "" },
+      { kind: "await", name: "provePrivateStatePathMatrix", args: [], binding: "" },
       { kind: "return", expression: "installedPackageProofComplete" },
     ],
-    "the installed-package runner must contain only the four awaited lifecycles followed by its completion token",
+    "the installed-package runner must contain only the six awaited lifecycles followed by its completion token",
   );
   const entryTry = validateProofTopLevel(program);
   assert.equal(entryTry?.tryBlock.statements.length, 3, "the native proof entrypoint must gate success on completion");
@@ -471,7 +476,7 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
 
   assert.deepEqual(
     Object.keys(lane.installed_package_scenarios).sort(),
-    ["catalog-lifecycle", "local-remote-sync", "mcp-config-lifecycle", "ui-url-lifecycle"],
+    ["catalog-lifecycle", "codex-cmd-lifecycle", "local-remote-sync", "mcp-config-lifecycle", "private-state-path-matrix", "ui-url-lifecycle"],
     "Windows installed-package scenario inventory drifted",
   );
   for (const [scenario, literals] of Object.entries(lane.installed_package_scenarios)) {
@@ -501,6 +506,8 @@ function assertWindowsJob(job, lane) {
   assert.match(job, /run: npm run ci:runtime/);
   assert.match(job, /npm run --silent pack:npm-package -- --pack-destination \$env:RUNNER_TEMP/);
   assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
+  assert.match(job, /\$sourceSha -ne \$env:GITHUB_SHA/);
+  assert.match(job, /Get-FileHash -Algorithm SHA256 -LiteralPath \$tarball/);
   assert.match(job, /npm install --global \$env:SUPERBEE_WINDOWS_TARBALL --prefix \$prefix/);
   assert.match(job, /Join-Path \$prefix "superbee\.cmd"/);
   assert.equal(lane.installed_package_proof_script, "scripts/windows-installed-package-proof.mjs");
@@ -508,6 +515,16 @@ function assertWindowsJob(job, lane) {
     job.includes(`node ${lane.installed_package_proof_script}`),
     "Windows smoke must run the pinned installed-package proof script",
   );
+  for (const identity of [
+    "SUPERBEE_WINDOWS_SOURCE_SHA",
+    "SUPERBEE_WINDOWS_TARBALL_FILE",
+    "SUPERBEE_WINDOWS_TARBALL_VERSION",
+    "SUPERBEE_WINDOWS_TARBALL_SHA256",
+    "SUPERBEE_WINDOWS_TARBALL_INTEGRITY",
+  ]) {
+    assert.ok(job.includes(identity), `Windows smoke must record ${identity}`);
+  }
+  assert.ok(job.includes("GITHUB_STEP_SUMMARY"), "Windows smoke must publish the proven artifact identity");
   validateWindowsInstalledProof(job, lane);
   for (const command of lane.built_cli_commands) {
     assert.ok(job.includes(`& $cli ${command}`), `Windows smoke is missing ${command}`);
@@ -664,14 +681,16 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     "await proveLocalRemoteSync();",
     "await proveUiUrlLifecycle(bundle);",
     "await proveMcpConfigLifecycle();",
+    "await proveCodexCmdLifecycle();",
+    "await provePrivateStatePathMatrix();",
   ]) {
     assert.throws(
       () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, "")),
-      /four awaited lifecycles/,
+      /six awaited lifecycles/,
     );
     assert.throws(
       () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, call.replace("await ", "void "))),
-      /four awaited lifecycles/,
+      /six awaited lifecycles/,
     );
   }
   const runnerStart = "async function runInstalledPackageProof() {";
@@ -687,7 +706,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
         lane,
         windowsInstalledProof.replace(runnerStart, `${runnerStart}\n  ${bypass}`),
       ),
-      /four awaited lifecycles/,
+      /six awaited lifecycles/,
     );
   }
   assert.throws(

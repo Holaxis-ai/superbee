@@ -42,9 +42,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($receipt.Count -ne 1) { throw "npm package packer did not emit exactly one receipt" }
           $tarball = Join-Path $env:RUNNER_TEMP $receipt[0].filename
+          $sourceSha = (git rev-parse HEAD).Trim()
+          if ($sourceSha -ne $env:GITHUB_SHA) { throw "checked-out source does not match GITHUB_SHA" }
+          $tarballSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $tarball).Hash.ToLowerInvariant()
           npm run verify:npm-package:tarball -- $tarball
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           "SUPERBEE_WINDOWS_TARBALL=$tarball" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SUPERBEE_WINDOWS_SOURCE_SHA=$sourceSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SUPERBEE_WINDOWS_TARBALL_FILE=$($receipt[0].filename)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SUPERBEE_WINDOWS_TARBALL_VERSION=$($receipt[0].version)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SUPERBEE_WINDOWS_TARBALL_SHA256=$tarballSha256" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "SUPERBEE_WINDOWS_TARBALL_INTEGRITY=$($receipt[0].integrity)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -80,3 +88,10 @@ jobs:
           $env:SUPERBEE_WINDOWS_INSTALLED_PREFIX = $prefix
           node scripts/windows-installed-package-proof.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          @"
+          ## Proven Windows package identity
+
+          | source SHA | package | version | tarball SHA-256 | npm integrity |
+          | --- | --- | --- | --- | --- |
+          | $env:SUPERBEE_WINDOWS_SOURCE_SHA | $env:SUPERBEE_WINDOWS_TARBALL_FILE | $env:SUPERBEE_WINDOWS_TARBALL_VERSION | $env:SUPERBEE_WINDOWS_TARBALL_SHA256 | $env:SUPERBEE_WINDOWS_TARBALL_INTEGRITY |
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

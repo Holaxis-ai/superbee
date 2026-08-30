@@ -105,7 +105,7 @@
       "runtime_node": 22,
       "installed_package_node": 20,
       "installed_package_proof_script": "scripts/windows-installed-package-proof.mjs",
-      "installed_package_proof_sha256": "70939827a176775c914934362998aa91c329edef277be3b1ab5203195987aa37",
+      "installed_package_proof_sha256": "3398d8327f69eee5666d77e3bea42375d7ee6a06122fef5f06a87a60f36b6c05",
       "installed_package_proof_digest_update": {
         "command": "node scripts/windows-installed-package-proof-digest.mjs",
         "instructions": "After an intentional review of the proof bytes, run the command and update installed_package_proof_sha256 in this manifest in the same commit."
@@ -130,6 +130,19 @@
           "mcp status",
           "mcp config read-back",
           "mcp uninstall"
+        ],
+        "codex-cmd-lifecycle": [
+          "codex.cmd",
+          "PATHEXT",
+          "setup --host codex",
+          "unreadable",
+          "owned_current"
+        ],
+        "private-state-path-matrix": [
+          "New-SmbShare",
+          "subst.exe",
+          "LOCALAPPDATA",
+          "icacls.exe"
         ]
       },
       "built_cli_commands": [
