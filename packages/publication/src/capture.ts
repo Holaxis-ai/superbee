@@ -298,8 +298,7 @@ async function classifyCaptureError(
   try {
     await assertPublicationRoot(rootIdentity);
   } catch (rootError) {
-    if (rootError instanceof PublicationError &&
-      rootError.code === "SOURCE_CHANGED" && rootError.actual !== undefined) return rootError;
+    if (rootError instanceof PublicationError && rootError.code === "SOURCE_CHANGED") return rootError;
   }
   return mapped;
 }
