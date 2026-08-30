@@ -13,6 +13,10 @@
 // probes stdin, because an agent harness may hold a genuine pipe open indefinitely. Stdin remains
 // available as the sole patch source when no field flags were supplied.
 //
+// A `doc read` detail render publishes a truncated body as `body_preview`, marked inside the value
+// itself. Writing that preview back through `doc write`/`doc update` is refused unless
+// `--accept-truncated-body` opts in, so a preview cannot silently become a document's whole body.
+//
 // `doc read --out` preserves raw bytes; `--body-out` pairs the body with the same read's version for
 // a guarded follow-up update; `--rendered-out` emits inert HTML through the canonical bounded
 // renderer. Raw stdout keeps receipts on stderr. A local output path inside the open bundle is

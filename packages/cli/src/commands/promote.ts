@@ -22,6 +22,12 @@
 // token is a CONFLICT (exit 5) whose envelope carries the CURRENT version, so the losing editor can
 // re-`pull` -> re-apply -> re-`promote` without a second discovery round trip.
 //
+// The doc route is a WHOLE-BODY replace, so it carries `doc write`/`doc update`'s truncated-preview
+// guard: promoting a file whose bytes are a `doc read` body preview over an EXISTING doc is refused
+// unless `--accept-truncated-body` opts in. It deliberately does NOT carry the link-drop guard —
+// that guard needs its own `--replace-links` opt-in and a decision about the pull/edit/promote loop,
+// which is a separate claim; a promote that drops outbound links still does so silently.
+//
 // A6/A9 context: for a LOCAL `--dir` bundle this is a convenience only — the files ARE the store
 // (local-first) — but routing a `.md` file through the engine still doubles as IMPORT+NORMALIZE
 // (frontmatter key order, edition-aware metadata policy, kind validation),
@@ -47,6 +53,7 @@ import { cliInvocation } from "../invocation.js";
 import { readExternalFileBytes, readExternalTextFile } from "../external-file.js";
 import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
+import { guardTruncatedBodyPreview } from "./doc/common.js";
 
 export const PROMOTE_USAGE = `superbee promote — move a local file's bytes into the store (the reverse of 'doc read --out')
 
@@ -87,6 +94,13 @@ Options:
                             absent create; see CAS above)
   --strict                 Doc route only: reject (exit 2) instead of writing-with-warnings when a
                             kind convention governs the doc's type and it does not satisfy it
+  --accept-truncated-body  Doc route only: required to replace an EXISTING doc's body with a
+                            TRUNCATED 'doc read' body preview — one still carrying the generated
+                            truncation notice, or one that is exactly the preview slice of that
+                            doc's own longer stored body. Without it such a promote is refused
+                            (exit 2) and nothing is written; 'pull --doc-key <key> --out <path>'
+                            gets the complete document to edit. The expect-absent CREATE route has
+                            no stored body to lose and is never guarded.
   --dir <path>              Bundle directory (default: discovered from the cwd)
   --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
                             exclusive with --dir; remote access is always explicit)
@@ -114,6 +128,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
           "doc-key": { type: "string" },
           "content-type": { type: "string" },
           "expected-version": { type: "string" },
+          "accept-truncated-body": { type: "boolean" },
           strict: { type: "boolean" },
           dir: { type: "string" },
           remote: { type: "string" },
@@ -151,6 +166,18 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
       { help: `${cliInvocation()} promote --help` },
     );
   }
+  // The mirror of the guard above, same reason (I9): a route-inapplicable flag is a USAGE error, not
+  // a silent no-op. Blobs are opaque bytes that are never parsed, so they have no body to truncate
+  // and nothing for this override to authorize — accepting it would let a caller believe they had
+  // waived a guard that was never going to run.
+  if (!docRoute && values["accept-truncated-body"] !== undefined) {
+    throw new CliError(
+      "USAGE",
+      `--accept-truncated-body is a doc-route-only option; '${key}' does not end in '.md' and routes ` +
+        `through the blob layer, which stores opaque bytes without a document body to truncate`,
+      { help: `${cliInvocation()} promote --help` },
+    );
+  }
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
   const mode = resolveMode(values);
@@ -159,7 +186,19 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
   const expectedVersion = values["expected-version"] ?? null;
 
   if (docRoute) {
-    await promoteDoc(file, key, bundle, { expectedVersion, strict: Boolean(values.strict) }, stdout, mode, values.remote);
+    await promoteDoc(
+      file,
+      key,
+      bundle,
+      {
+        expectedVersion,
+        strict: Boolean(values.strict),
+        acceptTruncatedBody: Boolean(values["accept-truncated-body"]),
+      },
+      stdout,
+      mode,
+      values.remote,
+    );
     return;
   }
   await promoteBlob(file, key, bundle, { expectedVersion, contentType: values["content-type"] }, stdout, mode, values.remote);
@@ -169,7 +208,7 @@ async function promoteDoc(
   file: string,
   key: string,
   bundle: Bundle,
-  opts: { expectedVersion: string | null; strict: boolean },
+  opts: { expectedVersion: string | null; strict: boolean; acceptTruncatedBody: boolean },
   stdout: (s: string) => void,
   mode: OutputMode,
   remoteUrl?: string,
@@ -215,7 +254,15 @@ async function promoteDoc(
       strict: opts.strict,
       helpOnKindReject: `${cliInvocation()} kinds`,
       expectedVersion: opts.expectedVersion ?? undefined,
-      buildCandidate: () => ({ frontmatter, body }),
+      // Truncated-preview guard (data loss): the doc route is a WHOLE-BODY replace, so a promoted
+      // file whose bytes are a `doc read` body preview truncates the target exactly as `doc update
+      // --body-file` would. The guard is keyed on `existing`, not on the CAS mode, so it covers the
+      // patch route over a present doc and leaves the expect-absent CREATE route (nothing to lose)
+      // untouched. Inside `buildCandidate`, so it re-evaluates per compare-and-swap attempt.
+      buildCandidate: (existing) => {
+        if (existing) guardTruncatedBodyPreview(existing, body, opts.acceptTruncatedBody);
+        return { frontmatter, body };
+      },
       errors: {
         alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
         staleHead: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),

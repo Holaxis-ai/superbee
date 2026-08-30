@@ -22,6 +22,8 @@ import { initBundle, readDoc, readBlob } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
 
 import { promote, type PromoteCliDeps } from "../src/commands/promote.js";
+import { doc as docCommand } from "../src/commands/doc.js";
+import { BODY_PREVIEW_TRUNCATION_MARKER } from "../src/commands/doc/common.js";
 import { pull, type PullCliDeps } from "../src/commands/pull.js";
 import { CliError } from "../src/errors.js";
 import { KNOWN_COMMANDS } from "../src/cli.js";
@@ -328,6 +330,41 @@ test("promote .md: --content-type is a USAGE error (I9) — content-type is blob
   }
 });
 
+test("promote blob: --accept-truncated-body is a USAGE error — the mirror of --content-type's route guard, never a silent no-op", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const work = await tempDir();
+  try {
+    const file = path.join(work, "report.html");
+    await writeFile(file, "<p>hi</p>");
+    await assert.rejects(
+      () =>
+        promote(
+          [file, "--doc-key", "artifacts/report.html", "--accept-truncated-body", "--dir", dir, "--json"],
+          {},
+        ),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.match(err.message, /doc-route-only/);
+        return true;
+      },
+    );
+    // The refusal is the whole behavior: nothing was written under the key.
+    await assert.rejects(
+      () => pull(["--doc-key", "artifacts/report.html", "--out", path.join(work, "x"), "--dir", dir, "--json"], {}),
+      (err: unknown) => err instanceof CliError && err.code === "NOT_FOUND",
+    );
+    // Without the inapplicable flag the same blob promote succeeds, so the guard is the flag's
+    // route-applicability and nothing else.
+    const ok = await runPromote([file, "--doc-key", "artifacts/report.html", "--dir", dir]);
+    assert.equal(ok.route, "blob");
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
 test("promote .md: a reserved-filename target is rejected (comes FREE from the engine, I8)", async () => {
   const { dir, cleanup } = await makeBundle();
   const work = await tempDir();
@@ -461,6 +498,106 @@ test("pull .md: delivers the CANONICAL re-serialization, reports the store's ver
         return true;
       },
     );
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+// ── truncated-preview guard on the doc route (whole-body replace, same class as doc update) ─────
+//
+// `promote --doc-key <k>.md --expected-version <v>` replaces an existing document's whole body from
+// a file, so a file whose bytes are a `doc read` body preview truncates the target exactly as
+// `doc update --body-file` would. Review probe: promoting the marker-bearing preview over a 5.2 KB
+// doc landed exit 0 at 1.2 KB with the notice persisted and no override typed.
+
+/** Seed a long-bodied doc via `promote` (create route) and return its preview + CAS token. */
+async function seedLongPromotedDoc(
+  dir: string,
+  work: string,
+): Promise<{ preview: string; version: string; stored: string }> {
+  const body = `# Promoted\n\n${"Every paragraph of this promoted page matters. ".repeat(80)}\n\n## Tail\n\nTAIL_MUST_SURVIVE.\n`;
+  const seed = path.join(work, "seed.md");
+  await writeFile(seed, `---\ntype: Note\ntitle: Promoted\n---\n${body}`);
+  await runPromote([seed, "--doc-key", "docs/prom.md", "--dir", dir]);
+
+  let readOut = "";
+  await docCommand(["read", "docs/prom", "--dir", dir, "--json"], {
+    stdout: (s) => (readOut += s),
+    readStdin: async () => undefined,
+  });
+  const rec = JSON.parse(readOut) as Record<string, unknown>;
+  assert.equal(rec.body_truncated, true, "fixture must exceed the preview bound");
+  return {
+    preview: String(rec.body_preview),
+    version: String(rec.head_version),
+    stored: (await readDoc({ root: dir }, "docs/prom")).body,
+  };
+}
+
+test("promote .md: REFUSES a file whose body is a truncated doc-read preview over an EXISTING doc, and leaves the stored body byte-identical", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const work = await tempDir();
+  try {
+    const { preview, version, stored } = await seedLongPromotedDoc(dir, work);
+    const file = path.join(work, "prom.md");
+    await writeFile(file, `---\ntype: Note\ntitle: Promoted\n---\n${preview}\n`);
+
+    await assert.rejects(
+      () => promote([file, "--doc-key", "docs/prom.md", "--expected-version", version, "--dir", dir, "--json"], {}),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.equal(err.details?.reason, "preview_marker");
+        assert.match(err.message, /--accept-truncated-body/);
+        return true;
+      },
+    );
+
+    assert.equal((await readDoc({ root: dir }, "docs/prom")).body, stored, "the refusal wrote nothing");
+    assert.ok(!stored.includes(BODY_PREVIEW_TRUNCATION_MARKER), "no truncation notice reached the bundle");
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test("promote .md --accept-truncated-body: the explicit override writes the preview deliberately", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const work = await tempDir();
+  try {
+    const { preview, version, stored } = await seedLongPromotedDoc(dir, work);
+    const file = path.join(work, "prom.md");
+    await writeFile(file, `---\ntype: Note\ntitle: Promoted\n---\n${preview}\n`);
+
+    const receipt = await runPromote([
+      file, "--doc-key", "docs/prom.md", "--expected-version", version, "--accept-truncated-body", "--dir", dir,
+    ]);
+    assert.equal(receipt.route, "doc");
+    const after = (await readDoc({ root: dir }, "docs/prom")).body;
+    assert.notEqual(after, stored);
+    assert.ok(after.length < stored.length, "the override truncated deliberately");
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test("promote .md: the expect-absent CREATE route is NOT guarded — it has no stored body to lose", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const work = await tempDir();
+  try {
+    const { preview } = await seedLongPromotedDoc(dir, work);
+    // The same preview bytes, promoted to a key that does not yet exist: nothing can be destroyed,
+    // so the create route stays open with no override.
+    const file = path.join(work, "fresh.md");
+    await writeFile(file, `---\ntype: Note\ntitle: Fresh\n---\n${preview}\n`);
+
+    const receipt = await runPromote([file, "--doc-key", "docs/fresh.md", "--dir", dir]);
+    assert.equal(receipt.route, "doc");
+    assert.equal(receipt.id, "docs/fresh");
+    assert.ok((await readDoc({ root: dir }, "docs/fresh")).body.includes(BODY_PREVIEW_TRUNCATION_MARKER));
   } finally {
     await cleanup();
     await rm(work, { recursive: true, force: true });

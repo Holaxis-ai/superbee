@@ -27,6 +27,7 @@ import {
   type DocCliDeps,
   defaultReadStdin,
   guardDroppedLinks,
+  guardTruncatedBodyPreview,
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
@@ -47,7 +48,13 @@ const DOC_UPDATE_VALUE_FLAGS = new Set([
   "actor",
 ]);
 /** `doc update` standard boolean flags — no value; `--flag=value` on one of these is a USAGE error. */
-const DOC_UPDATE_BOOLEAN_FLAGS = new Set(["keep-timestamp", "strict", "json", "replace-links"]);
+const DOC_UPDATE_BOOLEAN_FLAGS = new Set([
+  "keep-timestamp",
+  "strict",
+  "json",
+  "replace-links",
+  "accept-truncated-body",
+]);
 
 interface ParsedDocUpdateArgs {
   help: boolean;
@@ -57,6 +64,7 @@ interface ParsedDocUpdateArgs {
   keepTimestamp: boolean;
   strict: boolean;
   replaceLinks: boolean;
+  acceptTruncatedBody: boolean;
   title?: string;
   description?: string;
   tags?: string[];
@@ -116,6 +124,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
           "keep-timestamp": { type: "boolean" },
           strict: { type: "boolean" },
           "replace-links": { type: "boolean" },
+          "accept-truncated-body": { type: "boolean" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -202,6 +211,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
     keepTimestamp: Boolean(rawValues["keep-timestamp"]),
     strict: Boolean(rawValues.strict),
     replaceLinks: Boolean(rawValues["replace-links"]),
+    acceptTruncatedBody: Boolean(rawValues["accept-truncated-body"]),
     title: std.title,
     description: std.description,
     tags: tags.length > 0 ? tags : undefined,
@@ -354,6 +364,18 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       if (p.body !== undefined) nextBody = p.body;
       else if (p.bodyFile) nextBody = await readExternalTextFile(p.bodyFile);
       else if (stdinBody !== undefined) nextBody = stdinBody;
+
+      // Truncated-preview guard (data loss): the body replace must not persist a `doc read` body
+      // PREVIEW as though it were the whole body — the incident this guard exists for is exactly an
+      // agent piping `doc read --json`'s truncated preview into this verb. See
+      // `guardTruncatedBodyPreview` for the two identities it keys on and why a field-only patch
+      // (nextBody === existing.body) can never fire it. `--accept-truncated-body` opts in. Ordered
+      // BEFORE the link-drop guard because a preview body also drops links: diagnosing it as a link
+      // problem would send the caller to --replace-links, authorizing the truncation instead. That
+      // ordering only helps WHEN THIS GUARD FIRES — a near-preview body that matches neither
+      // identity (say, the preview slice plus one character) is still only the link guard's concern,
+      // and --replace-links authorizes its drop exactly as it always has.
+      guardTruncatedBodyPreview(existing, nextBody, p.acceptTruncatedBody);
 
       // Link-drop guard (data loss): a body replace must not silently drop outbound cross-links the
       // existing body carried — see `guardDroppedLinks`'s own comment for the exact match rule and

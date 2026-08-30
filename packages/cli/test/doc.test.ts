@@ -70,7 +70,11 @@ import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 import { doc, type DocCliDeps } from "../src/commands/doc.js";
-import { guardDroppedLinks } from "../src/commands/doc/common.js";
+import {
+  BODY_PREVIEW_TRUNCATION_MARKER,
+  BODY_PREVIEW_TRUNCATION_SIGNATURE,
+  guardDroppedLinks,
+} from "../src/commands/doc/common.js";
 import { mutateDoc } from "../src/mutate.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
@@ -2727,7 +2731,10 @@ test("doc read: body truncation + --out byte-channel pointer is preserved when k
     const result = await runDoc(["read", "tasks/x", "--dir", dir]);
     assert.equal(result.body_truncated, true);
     assert.equal(result.body_chars, bigBody.length + 1); // stringifyDoc appends a trailing newline
-    assert.deepEqual(result.help, [`${cliInvocation()} doc read tasks/x --out <file>`]);
+    assert.deepEqual(result.help, [
+      `${cliInvocation()} doc read tasks/x --out <file>`,
+      `${cliInvocation()} doc read tasks/x --body-out <path-outside-bundle>`,
+    ]);
     assert.equal(result.status, "blocked");
   } finally {
     await cleanup();
@@ -2767,6 +2774,311 @@ test("doc read: a domain `version` frontmatter field is NOT shadowed by the CAS 
     // `list --fields version` on what "version" means for this doc.
     assert.equal(result.version, "1.2.0");
     assert.match(String(result.head_version), /^sha256:/);
+  } finally {
+    await cleanup();
+  }
+});
+
+// ── Truncated-preview guard: a `doc read` preview must not become a document's whole body ───────
+//
+// The live incident (`tasks/guard-truncated-doc-read-rewrites`): `doc read --json` returned a
+// flagged 1,000-character preview of a 4.3 KB documentation page and an agent fed that preview
+// straight back into `doc update`, truncating the page. These tests drive the exact loop — read the
+// preview out of the receipt, write it back — rather than hand-constructing the string, so the
+// guard is proven against what `doc read` ACTUALLY emits.
+
+/** A body comfortably past BODY_PREVIEW_LIMIT (1000), shaped like a real doc page. */
+const LONG_PAGE_BODY = `# Guardrails\n\n${"Every paragraph of this page matters. ".repeat(120)}\n\n## Tail section\n\nThis final sentence lives past the preview cut.\n`;
+
+/** The stored body after a write — `stringifyDoc` normalizes a body to a single trailing newline. */
+async function storedBody(dir: string, id: string): Promise<string> {
+  return (await readDoc({ root: dir }, id)).body;
+}
+
+/** Seed one long-bodied doc and return the truncated preview `doc read` publishes for it. */
+async function seedLongDoc(dir: string, id = "docs/page"): Promise<{ preview: string; stored: string }> {
+  await writeDoc({ root: dir }, { id, frontmatter: { type: "Note", title: "Guardrails", timestamp: T }, body: LONG_PAGE_BODY });
+  const read = await runDoc(["read", id, "--dir", dir]);
+  assert.equal(read.body_truncated, true, "fixture must exceed the preview bound");
+  assert.equal(read.body, undefined, "a truncated body must NOT be published under `body`");
+  return { preview: String(read.body_preview), stored: await storedBody(dir, id) };
+}
+
+test("doc read: a truncated body is named body_preview, carries the truncation marker, and points at both complete-body channels", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+    const result = await runDoc(["read", "docs/page", "--dir", dir]);
+
+    // Explicit truncation identity: the key is not `body`, the value says so itself, and the
+    // reported character count is the TRUE stored length rather than the preview's.
+    assert.equal(result.body, undefined);
+    assert.equal(result.body_truncated, true);
+    assert.equal(result.body_chars, stored.length);
+    assert.ok(preview.includes(BODY_PREVIEW_TRUNCATION_MARKER), "the preview value marks itself truncated");
+    assert.ok(preview.startsWith(stored.slice(0, 200)), "the preview is still the head of the real body");
+    assert.ok(!preview.includes("This final sentence lives past the preview cut."), "the tail is genuinely absent");
+    // Agent-facing recovery: both runnable complete-body channels, `--body-out` being the one that
+    // feeds the read -> edit -> `doc update --body-file --expected-version` cycle.
+    assert.deepEqual(result.help, [
+      `${cliInvocation()} doc read docs/page --out <file>`,
+      `${cliInvocation()} doc read docs/page --body-out <path-outside-bundle>`,
+    ]);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc update: REFUSES the doc read preview as a full body (the original truncation incident) and leaves the stored body byte-identical", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+
+    await assert.rejects(
+      () => doc(["update", "docs/page", "--body", preview, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.match(err.message, /preview/i);
+        // The refusal must name the recovery AND the override, not just say no.
+        assert.match(err.message, /--body-out/);
+        assert.match(err.message, /--expected-version/);
+        assert.match(err.message, /--accept-truncated-body/);
+        assert.equal(err.help, `${cliInvocation()} doc read docs/page --body-out <path-outside-bundle>`);
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+
+    assert.equal(await storedBody(dir, "docs/page"), stored, "the refusal wrote nothing");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc update: refuses a preview arriving on the STDIN body path, and refuses the bare preview slice after the marker line is stripped", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+
+    // Path 1: `superbee doc read <id> --json | jq -r .body_preview | superbee doc update <id>` —
+    // stdin is the body source, and the guard lives in the mutation path, not in a flag handler.
+    await assert.rejects(
+      () => doc(["update", "docs/page", "--dir", dir, "--json"], { readStdin: async () => preview }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+
+    // Path 2: the marker removed (an agent that copied only the visible prefix, or a preview
+    // captured before the marker existed). The stored-prefix identity still recognizes it.
+    const bare = preview.slice(0, preview.indexOf(BODY_PREVIEW_TRUNCATION_MARKER)).trimEnd();
+    await assert.rejects(
+      () => doc(["update", "docs/page", "--body", bare, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.details?.reason, "stored_body_preview");
+        assert.equal(err.details?.stored_body_chars, stored.length);
+        assert.equal(err.details?.preview_limit, 1000);
+        assert.match(err.message, /--accept-truncated-body/);
+        return true;
+      },
+    );
+
+    assert.equal(await storedBody(dir, "docs/page"), stored, "neither refusal wrote anything");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc update --accept-truncated-body: the explicit override writes the preview deliberately", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview } = await seedLongDoc(dir);
+
+    const receipt = await runDoc(["update", "docs/page", "--body", preview, "--accept-truncated-body", "--dir", dir]);
+    assert.equal(receipt.changed, true);
+    assert.equal(await storedBody(dir, "docs/page"), `${preview}\n`);
+
+    // A doc whose stored body now legitimately contains the marker must stay patchable: a field-only
+    // patch never touches the body, so the guard cannot lock the document out of later updates.
+    const patched = await runDoc(["update", "docs/page", "--title", "Guardrails v2", "--dir", dir]);
+    assert.equal(patched.changed, true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("doc write: refuses the preview as a full-body overwrite, and --accept-truncated-body overrides", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+
+    await assert.rejects(
+      () => doc(["write", "docs/page", "--type", "Note", "--title", "Guardrails", "--body", preview, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/page"), stored);
+
+    const receipt = await runDoc(["write", "docs/page", "--type", "Note", "--title", "Guardrails", "--body", preview, "--accept-truncated-body", "--dir", dir]);
+    assert.equal(receipt.changed, true);
+    assert.equal(await storedBody(dir, "docs/page"), `${preview}\n`);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: a preview of ANOTHER doc is refused too (the marker travels; a prefix comparison could not catch it)", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview } = await seedLongDoc(dir, "docs/page");
+    await writeDoc({ root: dir }, { id: "docs/other", frontmatter: { type: "Note", title: "Other", timestamp: T }, body: "Short unrelated body." });
+
+    await assert.rejects(
+      () => doc(["update", "docs/other", "--body", preview, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.details?.reason, "preview_marker");
+        assert.match(err.message, /docs\/other/);
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/other"), "Short unrelated body.\n");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: a doc that merely QUOTES the marker token stays freely editable — the identity is the generated notice, not the token", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    // Documentation ABOUT this guard — the project's own Task/Review records, a help transcript, a
+    // docs page — legitimately names the token. Under a bare-substring test such a document was
+    // body-locked: every edit refused, and the advertised read -> edit -> --body-file recovery
+    // reproduced the token forever, so the only exit was the override. That trains the reflex the
+    // override exists to prevent, so the token alone must never be the identity.
+    const prose =
+      `# How the truncated-preview guard works\n\nA truncated preview carries ` +
+      `\`${BODY_PREVIEW_TRUNCATION_MARKER}\` inside its own value, so it cannot masquerade as a ` +
+      `whole body.\n`;
+    await writeDoc({ root: dir }, { id: "docs/guide", frontmatter: { type: "Note", title: "Guide", timestamp: T }, body: prose });
+
+    // The exact recovery the refusal used to advertise, driven end to end: it must now LAND.
+    const bodyOut = path.join(dir, "..", `guide-${process.pid}.md`);
+    const exported = await runDoc(["read", "docs/guide", "--body-out", bodyOut, "--dir", dir]);
+    const edited = `${await readFile(bodyOut, "utf8")}\nA second paragraph added by the author.\n`;
+    await writeFile(bodyOut, edited);
+    const patched = await runDoc([
+      "update", "docs/guide", "--body-file", bodyOut, "--expected-version", String(exported.version), "--dir", dir,
+    ]);
+    assert.equal(patched.changed, true, "an ordinary edit of marker-quoting prose must land with NO override");
+    assert.ok((await storedBody(dir, "docs/guide")).includes(BODY_PREVIEW_TRUNCATION_MARKER));
+    await rm(bodyOut, { force: true });
+
+    // Inline replaces that quote the token are equally fine.
+    const inline = await runDoc(["update", "docs/guide", "--body", `See ${BODY_PREVIEW_TRUNCATION_MARKER} for details.`, "--dir", dir]);
+    assert.equal(inline.changed, true);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: an agent's ordinary copy-editing of the notice does NOT smuggle a preview past it", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+    const head = preview.slice(0, preview.indexOf(BODY_PREVIEW_TRUNCATION_MARKER));
+    const notice = BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(preview)![0];
+
+    // A prose-normalizing agent rewrites text it does not recognize as machine-generated. Each of
+    // these escaped a literal match and truncated the document by ~4 KB; the count, the bracket
+    // token, and the sentence tail all survive the edit, so the tolerant pattern still recognizes
+    // them. The mangles are applied to the NOTICE only — the preview head is untouched, so it is
+    // the notice identity being tested here and not the stored-prefix fallback.
+    const mangles: Array<[string, string]> = [
+      ["character(s) normalized to characters", notice.replace("character(s)", "characters")],
+      ["NOT lowercased to not", notice.replace("NOT", "not")],
+      ["a line break inserted inside the notice", notice.replace(" more ", "\nmore ")],
+    ];
+    for (const [name, mangled] of mangles) {
+      assert.notEqual(mangled, notice, `${name}: the fixture must actually differ from the emitted notice`);
+      await assert.rejects(
+        () => doc(["update", "docs/page", "--body", `${head}${mangled}`, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+        (err: unknown) => {
+          assert.ok(err instanceof CliError, name);
+          assert.equal(err.code, "USAGE", name);
+          assert.equal(err.details?.reason, "preview_marker", name);
+          return true;
+        },
+        name,
+      );
+      assert.equal(await storedBody(dir, "docs/page"), stored, `${name}: nothing was written`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: the generated truncation notice IS refused, and doc read's emitted preview always matches the signature it is recognized by", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview, stored } = await seedLongDoc(dir);
+    // Agreement pin: the emitter and the pattern that recognizes it live in one module and must not
+    // drift — a preview `doc read` actually produced always satisfies the guard's travel identity.
+    assert.match(preview, BODY_PREVIEW_TRUNCATION_SIGNATURE);
+
+    // The notice alone, quoted into an otherwise unrelated body, is still a preview being written.
+    const carried = `${BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(preview)![0]}\n\ntrailing text an agent appended`;
+    await assert.rejects(
+      () => doc(["update", "docs/page", "--body", carried, "--dir", dir, "--json"], { readStdin: async () => undefined }),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/page"), stored);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: does NOT fire on legitimate edits — a short rewrite, a deliberate tail deletion, or an unchanged long body", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { stored } = await seedLongDoc(dir);
+
+    // A short replacement body: the common legitimate case the guard must never touch.
+    const short = await runDoc(["update", "docs/page", "--body", "Rewritten from scratch.", "--dir", dir]);
+    assert.equal(short.changed, true);
+    assert.equal(await storedBody(dir, "docs/page"), "Rewritten from scratch.\n");
+
+    // A deliberate tail deletion IS a prefix of the stored body — the guard must not confuse an
+    // ordinary edit with a preview, so it anchors on the exact preview cut, never on prefix-ness.
+    await writeDoc({ root: dir }, { id: "docs/page2", frontmatter: { type: "Note", title: "P2", timestamp: T }, body: LONG_PAGE_BODY });
+    const kept = LONG_PAGE_BODY.slice(0, 1400);
+    assert.notEqual(kept.length, 1000);
+    const trimmed = await runDoc(["update", "docs/page2", "--body", kept, "--dir", dir]);
+    assert.equal(trimmed.changed, true);
+    assert.equal(await storedBody(dir, "docs/page2"), `${kept}\n`);
+
+    // Re-supplying the doc's own full body changes nothing and must stay an ordinary no-op.
+    await writeDoc({ root: dir }, { id: "docs/page3", frontmatter: { type: "Note", title: "P3", timestamp: T }, body: LONG_PAGE_BODY });
+    const same = await runDoc(["update", "docs/page3", "--body", stored, "--keep-timestamp", "--dir", dir]);
+    assert.equal(same.changed, false);
   } finally {
     await cleanup();
   }

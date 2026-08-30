@@ -19,6 +19,7 @@ import {
   type DocCliDeps,
   defaultReadStdin,
   guardDroppedLinks,
+  guardTruncatedBodyPreview,
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
@@ -42,6 +43,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           "body-file": { type: "string" },
           "blank-body": { type: "boolean" },
           "replace-links": { type: "boolean" },
+          "accept-truncated-body": { type: "boolean" },
           strict: { type: "boolean" },
           actor: { type: "string" },
           dir: { type: "string" },
@@ -133,6 +135,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   // is UNCONDITIONALLY coupled now; see mutate.ts). A full unconditional write is no longer a posture
   // this verb has access to.
   const replaceLinks = Boolean(values["replace-links"]);
+  const acceptTruncatedBody = Boolean(values["accept-truncated-body"]);
 
   // If a kind convention governs `type`, validate against it — WARN-by-default (attach `warnings[]`
   // to the receipt, still write, exit 0); `--strict` upgrades a non-empty warning set to a USAGE
@@ -209,6 +212,17 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           },
         );
       }
+
+      // Truncated-preview guard (data loss): a full-body replace over an existing doc must not
+      // persist a `doc read` body PREVIEW as though it were the whole body — see
+      // `guardTruncatedBodyPreview`'s own comment for the two identities it keys on.
+      // `--accept-truncated-body` opts in. Ordered BEFORE the link-drop guard because a preview body
+      // also drops links: diagnosing it as a link problem would send the caller to --replace-links,
+      // which authorizes the truncation it was supposed to catch. That ordering only helps WHEN THIS
+      // GUARD FIRES — a near-preview body matching neither identity (say, the preview slice plus one
+      // character) is still only the link guard's concern, and --replace-links authorizes its drop
+      // exactly as it always has.
+      if (fresh) guardTruncatedBodyPreview(fresh, body, acceptTruncatedBody);
 
       // Link-drop guard (data loss): a full-body replace over an existing doc must not silently drop
       // outbound cross-links the old body carried — see `guardDroppedLinks`'s own comment for the

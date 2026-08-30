@@ -31,7 +31,7 @@ import {
   assertPathOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
-import { BODY_PREVIEW_LIMIT } from "../doc/common.js";
+import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../doc/common.js";
 import { inBundlePollutionWarning } from "../egress.js";
 import type { ResolvedLocalRoute } from "../../bundle.js";
 // `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches
@@ -49,18 +49,6 @@ export const SHOW_INCOMING_ABSENT_STATE =
 /** The in-tree viewer's refusal when the branch has no usable upstream to read a version from. */
 export function showIncomingInTreeNoBasis(inv: string, reason: InTreeNoBasisReason, ref?: string): CliError {
   return syncOutcomeError("in-tree.show-incoming.no-basis", { inv, reason, ref });
-}
-
-/** Attach the doc-read body semantics to a render record: truncate large bodies, point at the byte hatch. */
-function attachBodyPreview(rec: Record<string, unknown>, body: string, byteHatch: string): void {
-  if (body.length > BODY_PREVIEW_LIMIT) {
-    rec.body = body.slice(0, BODY_PREVIEW_LIMIT);
-    rec.body_truncated = true;
-    rec.body_chars = body.length;
-    rec.help = [byteHatch];
-  } else {
-    rec.body = body;
-  }
 }
 
 /**
@@ -238,7 +226,7 @@ export async function showIncoming(
       // the derived `log.md`, not the input echo.
       rec.path = hit.probe.relPath;
       rec.as_of = SHOW_INCOMING_AS_OF;
-      attachBodyPreview(rec, content, byteHatch);
+      attachBodyPreview(rec, content, [byteHatch]);
     } else {
       let parsed: { frontmatter: Record<string, unknown>; body: string } | null = null;
       try {
@@ -250,7 +238,7 @@ export async function showIncoming(
       rec.id = hit.probe.conceptId;
       if (parsed) {
         const KNOWN_ORDER = ["type", "title", "description", "resource", "tags", "timestamp"];
-        const RESERVED_OUTPUT = new Set(["id", "as_of", "body", "body_truncated", "body_chars", "help"]);
+        const RESERVED_OUTPUT = new Set(["id", "as_of", ...BODY_PREVIEW_RESERVED_KEYS]);
         for (const key of KNOWN_ORDER) {
           if (parsed.frontmatter[key] !== undefined && parsed.frontmatter[key] !== null) rec[key] = parsed.frontmatter[key];
         }
@@ -261,7 +249,7 @@ export async function showIncoming(
         }
       }
       rec.as_of = SHOW_INCOMING_AS_OF;
-      attachBodyPreview(rec, parsed ? parsed.body : content, byteHatch);
+      attachBodyPreview(rec, parsed ? parsed.body : content, [byteHatch]);
     }
     stdout(render(rec, mode));
   };
