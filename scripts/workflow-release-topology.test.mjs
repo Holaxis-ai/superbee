@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -40,7 +42,7 @@ test("release workflows hold no ambient permissions and pin every action by comm
 test("payload code runs only in the credential-free build job; staging runs no payload code", () => {
   const { build, stage } = jobs(release);
   assert.ok(build && stage, "release.yml declares build and stage jobs");
-  assert.match(build, /^ {4}permissions:\n {6}contents: read$/m, "build holds only contents: read");
+  assert.match(build, /^ {4}permissions:\n {6}contents: read\n {6}checks: read$/m, "build holds only contents: read plus checks: read for the CI verdict");
   assert.doesNotMatch(build, /id-token|environment:|secrets\./, "build must not mint OIDC tokens or see environment secrets");
   assert.match(build, /npm ci --ignore-scripts/, "dependency lifecycle scripts stay off in the release build");
   assert.match(build, /compare\/main\.\.\.\$GITHUB_SHA[\s\S]*case "\$REL" in identical\|behind\) ;; \*\)/, "the tag must point at a commit already on main");
@@ -53,6 +55,84 @@ test("payload code runs only in the credential-free build job; staging runs no p
   assert.doesNotMatch(stage, /actions\/checkout|npm ci|npm run build/, "stage must not check out or execute repository code");
   assert.match(stage, /registry-url: "https:\/\/registry.npmjs.org"/, "registry-url is load-bearing for the OIDC exchange");
   assert.match(stage, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --provenance --json/, "stage the literal tarball with its final tag");
+});
+
+test("the build consumes the exact-source CI verdict and refuses to build without it", () => {
+  // The newest recorded 'CI required lanes' verdict on the exact tagged commit is the
+  // release-source validation. The gate consumes it instead of rerunning CI, so the release path
+  // never pays for a duplicate full run and can never stage bytes whose source CI failed. These
+  // assertions pin the decision mechanics, not just the step's spelling; the fixture test below
+  // executes the committed step verbatim.
+  const { build } = jobs(release);
+  assert.match(
+    build,
+    /commits\/\$GITHUB_SHA\/check-runs\?check_name=CI%20required%20lanes&filter=latest&per_page=100/,
+    "the gate must ask for the canonical required context on the exact tagged commit, unpaginated",
+  );
+  assert.match(build, /select\(\.app\.slug == "github-actions"\)/, "only repository-workflow check runs may vouch for the source");
+  assert.match(build, /sort_by\(\.started_at\) \| last/, "the newest run decides; an older success must never outvote a newer failure");
+  assert.match(build, /\$r\.conclusion == "success" then "success"/, "only a success conclusion may allow; cancelled/skipped/neutral are refusals");
+  assert.match(build, /refusing to build without the CI verdict"; exit 1; \}/, "an unqueryable verdict must refuse with exit 1, not warn");
+  assert.match(build, /fix CI on main before tagging"; exit 1 ;;/, "a non-success conclusion must refuse with exit 1 immediately");
+  assert.match(
+    build,
+    /test "\$VERDICT" = "success" \|\| \{ [^\n]*exit 1; \}/,
+    "the post-loop backstop must require success with exit 1 — without it a poll exhaustion falls through to the build",
+  );
+  const gate = build.indexOf("check-runs?check_name");
+  assert.ok(gate !== -1 && gate < build.indexOf("npm run build:npm-package"), "the verdict gate must precede the package build");
+  assert.ok(build.indexOf("compare/main...$GITHUB_SHA") < gate, "tag-on-main is established before its verdict is consulted");
+  assert.doesNotMatch(release, /workflow_dispatch|ci-tests\.yml/, "release.yml must consume the recorded verdict, never trigger CI itself");
+});
+
+// Execute the committed gate step verbatim against synthetic check-run fixtures: `gh` is stubbed
+// to apply the step's OWN embedded --jq program to the fixture and `sleep` is neutered, so the
+// decision under test is the exact shell+jq the workflow will run, not a re-implementation.
+const hasJq = spawnSync("jq", ["--version"]).status === 0;
+// Under CI a missing jq must fail loudly (the string assertions alone are provably evadable);
+// locally it degrades to a visible skip.
+test("the committed verdict gate allows only a newest genuine success", { skip: hasJq || process.env.CI ? false : "jq unavailable on this host" }, () => {
+  const start = release.indexOf("- name: Require the CI verdict already recorded on this exact commit");
+  assert.notEqual(start, -1, "release.yml declares the verdict gate step");
+  const runAt = release.indexOf("run: |", start);
+  assert.notEqual(runAt, -1, "the verdict gate step has a run block");
+  const body = [];
+  for (const line of release.slice(release.indexOf("\n", runAt) + 1).split("\n")) {
+    if (line !== "" && !line.startsWith("          ")) break;
+    body.push(line.slice(10));
+  }
+  const dir = mkdtempSync(path.join(os.tmpdir(), "release-gate-"));
+  const stepPath = path.join(dir, "gate-step.sh");
+  writeFileSync(stepPath, body.join("\n"));
+  const run = (slug, status, conclusion, started_at) => ({ app: { slug }, status, conclusion, started_at });
+  const ga = (status, conclusion, started_at) => run("github-actions", status, conclusion, started_at);
+  const fixtures = {
+    "success": { allow: true, body: { check_runs: [ga("completed", "success", "2026-08-29T10:00:00Z")] } },
+    "old-failure-new-success": { allow: true, body: { check_runs: [ga("completed", "failure", "2026-08-29T09:00:00Z"), ga("completed", "success", "2026-08-29T10:00:00Z")] } },
+    "old-success-new-failure": { allow: false, body: { check_runs: [ga("completed", "success", "2026-08-29T09:00:00Z"), ga("completed", "failure", "2026-08-29T10:00:00Z")] } },
+    "empty": { allow: false, body: { check_runs: [] } },
+    "pending-exhausts-poll": { allow: false, body: { check_runs: [ga("in_progress", null, "2026-08-29T10:00:00Z")] } },
+    "failure": { allow: false, body: { check_runs: [ga("completed", "failure", "2026-08-29T10:00:00Z")] } },
+    "cancelled": { allow: false, body: { check_runs: [ga("completed", "cancelled", "2026-08-29T10:00:00Z")] } },
+    "third-party-success-only": { allow: false, body: { check_runs: [run("name-squatting-app", "completed", "success", "2026-08-29T10:00:00Z")] } },
+    "api-unqueryable": { allow: false, body: null },
+  };
+  const wrapper = [
+    "gh() { if [ -z \"${GATE_FIXTURE:-}\" ]; then return 1; fi; jq -r \"${@: -1}\" \"$GATE_FIXTURE\"; }",
+    "sleep() { :; }",
+    "source \"$GATE_STEP\"",
+  ].join("\n");
+  for (const [name, { allow, body: fixtureBody }] of Object.entries(fixtures)) {
+    const env = { ...process.env, GITHUB_REPOSITORY: "example/repo", GITHUB_SHA: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", GATE_STEP: stepPath };
+    if (fixtureBody !== null) {
+      const fixturePath = path.join(dir, `${name}.json`);
+      writeFileSync(fixturePath, JSON.stringify(fixtureBody));
+      env.GATE_FIXTURE = fixturePath;
+    }
+    const result = spawnSync("bash", ["-c", wrapper], { env, encoding: "utf8" });
+    const decision = result.status === 0 ? "allow" : "refuse";
+    assert.equal(decision, allow ? "allow" : "refuse", `${name}: gate decided ${decision} (output: ${(result.stderr + result.stdout).trim().split("\n").at(-1)})`);
+  }
 });
 
 test("finalize holds no npm credential, verifies provider state, and creates the release once", () => {
