@@ -17,7 +17,6 @@ import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 import { persistMutationActor, SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import {
   defaultTimestampAndValidateAgainstRegistry,
-  freshnessHorizonMs,
   validateAgainstKind,
 } from "./kinds.js";
 import { versionedMutation } from "./mutation.js";
@@ -120,6 +119,12 @@ export interface MutateDocumentOptions {
   preconditions?: readonly FieldPrecondition[];
   /** Test seam for edition-specific clocks; production defaults to the current ISO instant. */
   now?: () => string;
+  /**
+   * Seed the v0.2 generation clock (`generated: {by, at}`) on creates that carry no usable
+   * time value (default true). Definition installers (recipe application) pass false so the
+   * installed definition's bytes stay comparable to the recipe source across reinstalls.
+   */
+  seedGenerationClock?: boolean;
 }
 
 export interface DocumentMutationResult {
@@ -262,6 +267,7 @@ function withV02Metadata(
   okfVersion: string,
   registry: KindRegistry,
   now: () => string,
+  seedGenerationClock: boolean,
 ): DocumentMutationCandidate {
   if (okfVersion !== "0.2") return candidate;
   const kind = registry.kinds.get(String(candidate.frontmatter.type));
@@ -269,10 +275,14 @@ function withV02Metadata(
     existing,
     candidate,
     meaningfulChangeAt: now(),
+    // Every v0.2 create gets one standard clock unless a usable time already exists (an explicit
+    // legacy `timestamp`, a declared `generated.at`) or its kind requires `timestamp` (that one
+    // clock is defaulted instead). Ungoverned types are the point: accumulation evidence for
+    // per-bundle modeling (designs/agent-proposed-kind-conventions-v1) must not depend on a kind
+    // already existing. Callers installing definitions opt out via `seedGenerationClock: false`.
     requireGenerationClock: existing === undefined
-      && kind !== undefined
-      && freshnessHorizonMs(kind) !== undefined
-      && !kind.fields.required.includes("timestamp")
+      && seedGenerationClock
+      && !(kind?.fields.required.includes("timestamp") ?? false)
       && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter)) === null,
   });
 }
@@ -303,6 +313,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const onAbsent = opts.onAbsent ?? "fail";
   const compareTimestamp = opts.compareTimestamp ?? false;
   const persistActor = opts.persistActor ?? false;
+  const seedClock = opts.seedGenerationClock ?? true;
   const okfVersion = await readBundleOkfVersion(opts.bundle) ?? "0.1";
   if (okfVersion !== "0.1" && okfVersion !== "0.2") {
     throw new InvalidInputError(
@@ -330,7 +341,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       okfVersion,
       opts.registry,
     );
-    const candidate = withV02Metadata(attributed, undefined, okfVersion, opts.registry, decisionNow);
+    const candidate = withV02Metadata(attributed, undefined, okfVersion, opts.registry, decisionNow, seedClock);
     const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, decisionNow);
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
@@ -373,7 +384,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           okfVersion,
           opts.registry,
         );
-        const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow);
+        const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, seedClock);
         const validated = validateCandidate(
           opts.id,
           candidate,
@@ -454,6 +465,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         okfVersion,
         opts.registry,
         decisionNow,
+        seedClock,
       );
       if (existing && isNoopMutation(existing, candidateForComparison, compareTimestamp, okfVersion)) {
         return { action: "done", result: { doc: existing, warnings: [] } };
@@ -466,7 +478,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         okfVersion,
         opts.registry,
       );
-      const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow);
+      const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, seedClock);
       const { warnings } = validateCandidate(
         opts.id,
         candidate,

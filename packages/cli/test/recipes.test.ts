@@ -191,6 +191,26 @@ test("default init teaches the current workflow field in the in-bundle authoring
   }
 });
 
+test("v0.2 recipe re-add reports NO source drift — installed definitions never carry an engine-seeded clock", async () => {
+  // Adversarial probe for the generation-clock widening: if recipe installs seeded
+  // `generated: {by: process:superbee}` (sameInstalledDoc strips only `at`), every re-add on a
+  // v0.2 bundle would report a spurious RECIPE_SOURCE_DIFFERS against an untouched install.
+  const dir = await tempDir();
+  try {
+    await initBundle(dir); // default authoring edition: v0.2
+    await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    const installed = await readFile(path.join(dir, "conventions", "context-note.md"), "utf8");
+    assert.doesNotMatch(installed, /generated:/, "installed definition bytes must carry no engine clock");
+    const second = await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    assert.equal(second.changed, false);
+    assert.deepEqual(second.warnings ?? [], [], "a clean re-add must report no drift warnings");
+    const counts = second.counts as Record<string, number>;
+    assert.equal(counts.source_differs ?? 0, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("recipe add context-notes: idempotent — second add is changed:false, on-disk bytes unchanged", async () => {
   const dir = await tempDir();
   try {

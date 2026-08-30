@@ -220,7 +220,7 @@ test("semantic patch no-op ignores the filesystem serializer's trailing body new
   assert.equal(result.version, initial.version);
 });
 
-test("v0.2 mutation persists portable mutation attribution without inventing generated, timestamp, or legacy actor metadata", async () => {
+test("v0.2 mutation persists portable mutation attribution and seeds the standard clock on ungoverned creates", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const result = await mutateDocument({
@@ -239,8 +239,74 @@ test("v0.2 mutation persists portable mutation attribution without inventing gen
     type: "Note",
     title: "A",
     superbee_updated_by: "openai/codex",
+    generated: { by: "process:superbee", at: "2026-08-14T12:00:00Z" },
   });
+  assert.equal(result.doc.frontmatter.timestamp, undefined);
   assert.equal((await backend.versions("notes/a"))[0]!.actor, "openai/codex");
+});
+
+test("v0.2 ungoverned create with an explicit usable timestamp does not invent a generation clock", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/stamped",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Note", title: "Stamped", timestamp: "2026-07-01T00:00:00.000Z" },
+      body: "body",
+    }),
+  });
+
+  assert.equal(result.doc.frontmatter.timestamp, "2026-07-01T00:00:00.000Z");
+  assert.equal(result.doc.frontmatter.generated, undefined);
+});
+
+test("v0.2 create with seedGenerationClock: false installs definition bytes without a clock", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "conventions/note",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    seedGenerationClock: false,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Convention", title: "Note", governs: "Note" },
+      body: "definition",
+    }),
+  });
+
+  assert.equal(result.doc.frontmatter.generated, undefined);
+  assert.equal(result.doc.frontmatter.timestamp, undefined);
+});
+
+test("v0.2 ungoverned clock-seeded create rewrites as a no-op instead of churning versions", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const write = () =>
+    mutateDocument({
+      bundle,
+      id: "notes/idempotent",
+      mode: "overwrite",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      actor: "openai/codex",
+      persistActor: true,
+      now: () => new Date().toISOString(),
+      buildCandidate: () => ({ frontmatter: { type: "Note", title: "Same" }, body: "same" }),
+    });
+  const first = await write();
+  const second = await write();
+  assert.equal(first.changed, true);
+  assert.equal(second.changed, false);
+  assert.equal(second.version, first.version);
+  assert.deepEqual(second.doc.frontmatter.generated, first.doc.frontmatter.generated);
 });
 
 test("v0.2 creation gives every freshness-governed kind one standard meaningful-change clock", async () => {
