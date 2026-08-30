@@ -69,6 +69,19 @@ class CountingBackend extends MemoryBackend {
   }
 }
 
+/** Serves a self-referential frontmatter value, the shape a YAML alias pointing at its own anchor produces. */
+class CyclicReadBackend extends MemoryBackend {
+  override async read(id: ConceptId): Promise<ReadResult> {
+    const result = await super.read(id);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    return {
+      ...result,
+      doc: { ...result.doc, frontmatter: { ...result.doc.frontmatter, [OWNER]: cyclic } },
+    };
+  }
+}
+
 /** Lets exactly one competing write land ahead of the next mutation write, on that write's own CAS basis. */
 class RaceOnceBackend extends MemoryBackend {
   private race?: { id: ConceptId; doc: OkfDocument };
@@ -412,4 +425,145 @@ test("preconditions are ANDed and refuse on the first unsatisfied member in call
   });
   assert.equal(passing.changed, true);
   assert.equal(passing.doc.body.trimEnd(), "changed");
+});
+
+test("a non-array oneOf is refused as invalid input, never evaluated as a substring match", async () => {
+  const backend = new CountingBackend();
+  const bundle = await bundleOf(backend);
+  // "tod" is a strict substring of "todo": under `String.prototype.includes` this precondition
+  // PASSED and the claim was written. The only expectation shape that could fail open.
+  const claimed = await writeDocVersioned(bundle, { id: TASK, ...taskDoc({ [OWNER]: "tod" }) });
+  backend.resetCounts();
+
+  await assert.rejects(
+    () => mutateDocument({
+      bundle,
+      id: TASK,
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      preconditions: [{ field: OWNER, expect: { oneOf: "todo" } }] as unknown as FieldPrecondition[],
+      buildCandidate: (existing) => ({
+        frontmatter: { ...existing!.frontmatter, [OWNER]: "claimant-b" },
+        body: existing!.body,
+      }),
+    }),
+    (error: unknown) => error instanceof InvalidInputError && !(error instanceof PreconditionFailed),
+  );
+
+  assert.equal(backend.writes, 0);
+  assert.equal((await backend.versions(TASK)).length, 1);
+  assert.equal((await readDocVersioned(bundle, TASK)).version, claimed.version);
+});
+
+test("an unrecognized expectation shape is rejected typed rather than interpreted", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await bundleOf(backend);
+  await writeDocVersioned(bundle, { id: TASK, ...taskDoc({ [OWNER]: "claimant-a" }) });
+
+  const malformed: unknown[] = [
+    {},
+    null,
+    "present",
+    "Absent",
+    [],
+    ["claimant-a"],
+    { equals: 5 },
+    { oneOf: ["claimant-a", 5] },
+    { equals: "claimant-a", oneOf: ["claimant-a"] },
+  ];
+  for (const expect of malformed) {
+    await assert.rejects(
+      () => mutateDocument({
+        bundle,
+        id: TASK,
+        mode: "patch",
+        registry: EMPTY_REGISTRY,
+        strict: false,
+        preconditions: [{ field: OWNER, expect }] as unknown as FieldPrecondition[],
+        buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "changed" }),
+      }),
+      (error: unknown) => error instanceof InvalidInputError && !(error instanceof PreconditionFailed),
+      `expect ${JSON.stringify(expect)} must be refused as invalid input`,
+    );
+  }
+
+  assert.equal((await backend.versions(TASK)).length, 1);
+});
+
+test("a well-formed oneOf is exact set membership, never substring containment", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await bundleOf(backend);
+  await writeDocVersioned(bundle, { id: TASK, ...taskDoc({ [OWNER]: "tod" }) });
+
+  await assert.rejects(
+    () => mutateDocument({
+      bundle,
+      id: TASK,
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      preconditions: [{ field: OWNER, expect: { oneOf: ["todo"] } }],
+      buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "changed" }),
+    }),
+    (error: unknown) => error instanceof PreconditionFailed && error.actual === "tod",
+  );
+
+  const exact = await mutateDocument({
+    bundle,
+    id: TASK,
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    preconditions: [{ field: OWNER, expect: { oneOf: ["claimant-a", "tod"] } }],
+    buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "changed" }),
+  });
+  assert.equal(exact.changed, true);
+});
+
+test("a malformed expectation is refused even when an earlier precondition would fail first", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await bundleOf(backend);
+  await writeDocVersioned(bundle, { id: TASK, ...taskDoc({ [OWNER]: "claimant-a" }) });
+
+  await assert.rejects(
+    () => mutateDocument({
+      bundle,
+      id: TASK,
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      preconditions: [
+        { field: OWNER, expect: "absent" },
+        { field: "superbee_progress_status", expect: { oneOf: "todo" } },
+      ] as unknown as FieldPrecondition[],
+      buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "changed" }),
+    }),
+    (error: unknown) => error instanceof InvalidInputError && !(error instanceof PreconditionFailed),
+  );
+});
+
+test("a self-referential frontmatter value still refuses with a typed PreconditionFailed and writes nothing", async () => {
+  const backend = new CyclicReadBackend();
+  const bundle = await bundleOf(backend);
+  const seeded = await writeDocVersioned(bundle, { id: TASK, ...taskDoc() });
+
+  const failure = await mutateDocument({
+    bundle,
+    id: TASK,
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    preconditions: OWNER_ABSENT,
+    buildCandidate: (existing) => ({
+      frontmatter: { ...existing!.frontmatter, [OWNER]: "claimant-b" },
+      body: existing!.body,
+    }),
+  }).then(() => undefined, (error: unknown) => error);
+
+  assert.ok(failure instanceof PreconditionFailed, `expected PreconditionFailed, got ${String(failure)}`);
+  assert.equal(failure.field, OWNER);
+  assert.equal(failure.observedVersion, seeded.version);
+  assert.match(failure.message, /unrenderable object value/);
+  assert.equal((await backend.versions(TASK)).length, 1);
 });

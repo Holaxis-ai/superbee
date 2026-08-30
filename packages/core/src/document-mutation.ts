@@ -116,7 +116,7 @@ export interface MutateDocumentOptions {
    * a terminal {@link PreconditionFailed} — never a retry — so the guard and the CAS write commit
    * or refuse together.
    */
-  preconditions?: FieldPrecondition[];
+  preconditions?: readonly FieldPrecondition[];
   /** Test seam for edition-specific clocks; production defaults to the current ISO instant. */
   now?: () => string;
 }
