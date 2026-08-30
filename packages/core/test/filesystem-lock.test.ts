@@ -920,6 +920,42 @@ test("owner-record failure preserves exclusive-create flags and rolls back the c
   }
 });
 
+test("owner-record Windows sharing failures never re-enter claim contention", async () => {
+  const harness = await isolatedLockPaths();
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(platform);
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  const originalWriteFile = fs.writeFile;
+  const originalRm = fs.rm;
+  const writeFailure = Object.assign(new Error("owner write denied"), { code: "EPERM" });
+  const rollbackFailure = Object.assign(new Error("rollback denied"), { code: "EPERM" });
+  let restoreWriteFile = () => {};
+  let restoreRm = () => {};
+  try {
+    restoreWriteFile = replaceFsMethod("writeFile", (...args) => {
+      if (path.basename(String(args[0])) === "owner.json") return Promise.reject(writeFailure);
+      return Reflect.apply(originalWriteFile, fs, args);
+    });
+    restoreRm = replaceFsMethod("rm", (...args) => {
+      if (String(args[0]).endsWith(".lock")) return Promise.reject(rollbackFailure);
+      return Reflect.apply(originalRm, fs, args);
+    });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, {
+        lockRoot: harness.lockRoot,
+        waitMs: 0,
+        pollMs: 0,
+      }),
+      (error: unknown) => error === writeFailure,
+    );
+  } finally {
+    restoreRm();
+    restoreWriteFile();
+    Object.defineProperty(process, "platform", platform);
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("release reports removal failures with complete typed details", async () => {
   const harness = await isolatedLockPaths();
   try {

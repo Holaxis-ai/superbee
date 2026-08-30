@@ -353,35 +353,6 @@ async function claimLockPath(
   while (true) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
-      try {
-        await fs.writeFile(path.join(lockPath, OWNER_FILE), `${JSON.stringify(owner)}\n`, {
-          encoding: "utf8",
-          flag: "wx",
-          mode: 0o600,
-        });
-      } catch (err) {
-        await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
-        throw err;
-      }
-
-      return async () => {
-        const current = await readOwner(lockPath);
-        if (current?.token !== owner.token) {
-          throw new FilesystemMutationLockError(
-            `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
-            { lockPath, owner: current, stale: false, malformed: current === null },
-          );
-        }
-        try {
-          await fs.rm(lockPath, { recursive: true, force: false });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          throw new FilesystemMutationLockError(
-            `mutation completed but filesystem lock '${lockPath}' could not be removed (${message}); inspect the lock before retrying.`,
-            { lockPath, owner: current, stale: false, malformed: false },
-          );
-        }
-      };
     } catch (err) {
       const failure = await classifyLockClaimFailure(err, lockPath);
       if (failure === "terminal") throw err;
@@ -394,10 +365,43 @@ async function claimLockPath(
       } else {
         unwitnessedWindowsRetryUsed = false;
       }
+
+      if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);
+      await delay(pollMs);
+      continue;
     }
 
-    if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);
-    await delay(pollMs);
+    // The claim is ours now. Owner initialization and rollback failures are not claim
+    // contention—even when Windows reports a sharing-shaped errno—and must propagate unchanged.
+    try {
+      await fs.writeFile(path.join(lockPath, OWNER_FILE), `${JSON.stringify(owner)}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (err) {
+      await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
+
+    return async () => {
+      const current = await readOwner(lockPath);
+      if (current?.token !== owner.token) {
+        throw new FilesystemMutationLockError(
+          `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
+          { lockPath, owner: current, stale: false, malformed: current === null },
+        );
+      }
+      try {
+        await fs.rm(lockPath, { recursive: true, force: false });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new FilesystemMutationLockError(
+          `mutation completed but filesystem lock '${lockPath}' could not be removed (${message}); inspect the lock before retrying.`,
+          { lockPath, owner: current, stale: false, malformed: false },
+        );
+      }
+    };
   }
 }
 
