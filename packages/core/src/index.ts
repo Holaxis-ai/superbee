@@ -146,6 +146,12 @@ export type {
   MutateDocumentOptions,
 } from "./document-mutation.js";
 
+// Field preconditions: the domain-invariant guard `mutateDocument` evaluates against each
+// attempt's fresh read, inside the same decision the CAS write is paired with. `PreconditionFailed`
+// is terminal — consumers branch on the type and map it to their own conflict shape.
+export { PreconditionFailed, assertFieldPreconditions } from "./document-precondition.js";
+export type { FieldExpectation, FieldPrecondition } from "./document-precondition.js";
+
 // ── Extensions (additive; do not break the contract) ──────────────────────────
 
 // `list` is an alias of `query` (the `list/query` API surface).
