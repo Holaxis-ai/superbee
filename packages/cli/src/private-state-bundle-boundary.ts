@@ -5,6 +5,12 @@
 // Identity is decided by (device, inode) rather than by names: one primitive that is exact across
 // case folding, Unicode normalization form, symlinks, macOS firmlinks, and /tmp vs /private/tmp,
 // while still distinguishing APFS clones. `dev` is mandatory — multiple volumes report ino 2.
+//
+// A guarded private-state root that the host refuses to reveal is the one practical exception: its
+// unobservable suffix is classified by name from the deepest observable ancestor. The caller's
+// selected target receives no such exception and must remain observable. This keeps unrelated
+// explicit local bundles usable without claiming confinement against an actively hostile
+// same-user process that replaces filesystem entries during an operation.
 import { lstatSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -49,6 +55,11 @@ function absentComponent(error: unknown): boolean {
   return c === "ENOENT" || c === "ENOTDIR";
 }
 
+function hostDeniedComponent(error: unknown): boolean {
+  const c = code(error);
+  return c === "EACCES" || c === "EPERM";
+}
+
 function runtimeFailure(): CliError {
   return new CliError("RUNTIME", "cannot verify that the target is separate from private Superbee state");
 }
@@ -77,12 +88,18 @@ function inodeKey(status: { dev: bigint; ino: bigint }): string | null {
  * A DANGLING symlink is not an existing ancestor, but it still declares where the path will land
  * once its target is created — so a state-root alias cannot quietly become a bundle later.
  */
-function danglingLinkTarget(cursor: string, seenLinks: Set<string>): string | null {
+function danglingLinkTarget(
+  cursor: string,
+  seenLinks: Set<string>,
+  allowHostDenied: boolean,
+): string | null {
   let status;
   try {
     status = lstatSync(cursor);
   } catch (error) {
-    if (!absentComponent(error)) throw runtimeFailure();
+    if (!absentComponent(error) && !(allowHostDenied && hostDeniedComponent(error))) {
+      throw runtimeFailure();
+    }
     return null;
   }
   if (!status.isSymbolicLink()) return null;
@@ -93,10 +110,16 @@ function danglingLinkTarget(cursor: string, seenLinks: Set<string>): string | nu
   return path.resolve(path.dirname(cursor), readlinkSync(cursor));
 }
 
-function realAnchor(anchorPath: string): string {
+class CanonicalizationDenied extends Error {}
+
+function realAnchor(anchorPath: string, allowHostDenied: boolean): string {
   try {
     return realpathSync.native(anchorPath);
-  } catch {
+  } catch (error) {
+    if (hostDeniedComponent(error)) {
+      if (allowHostDenied) throw new CanonicalizationDenied();
+      throw runtimeFailure();
+    }
     return anchorPath;
   }
 }
@@ -109,8 +132,9 @@ function anchorAt(
   lexicalAnchorPath: string,
   anchorStatus: { dev: bigint; ino: bigint },
   missing: string[],
+  allowHostDenied: boolean,
 ): PhysicalCoordinate {
-  const anchorPath = realAnchor(lexicalAnchorPath);
+  const anchorPath = realAnchor(lexicalAnchorPath, allowHostDenied);
   const chain: string[] = [];
   let current = anchorPath;
   let status = anchorStatus;
@@ -132,8 +156,15 @@ function anchorAt(
   return { anchorKey: chain[0] ?? null, anchorChain: chain, missing, anchorPath };
 }
 
-/** Anchor a path at its deepest existing ancestor, retaining the components still to be created. */
-function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set()): PhysicalCoordinate {
+/**
+ * Anchor a path at its deepest observable ancestor. Only a guarded private-state coordinate may
+ * step over a host-denied component; a denied caller target remains an unresolved refusal.
+ */
+function physicalCoordinate(
+  candidate: string,
+  seenLinks: Set<string> = new Set(),
+  allowHostDenied = false,
+): PhysicalCoordinate {
   if (!path.isAbsolute(candidate)) {
     throw new CliError("RUNTIME", "private state and bundle identities require absolute filesystem paths");
   }
@@ -141,13 +172,31 @@ function physicalCoordinate(candidate: string, seenLinks: Set<string> = new Set(
   const missing: string[] = [];
   for (;;) {
     try {
-      return anchorAt(cursor, statSync(cursor, { bigint: true }), [...missing].reverse());
+      return anchorAt(
+        cursor,
+        statSync(cursor, { bigint: true }),
+        [...missing].reverse(),
+        allowHostDenied,
+      );
     } catch (error) {
-      if (error instanceof CliError) throw error;
-      if (!absentComponent(error)) throw runtimeFailure();
+      if (error instanceof CanonicalizationDenied) {
+        // The guarded-root walk treats this path component like an absent component and anchors
+        // above it. The selected target never reaches this branch.
+      } else {
+        if (error instanceof CliError) throw error;
+        if (!absentComponent(error) && !(allowHostDenied && hostDeniedComponent(error))) {
+          throw runtimeFailure();
+        }
+      }
     }
-    const hop = danglingLinkTarget(cursor, seenLinks);
-    if (hop !== null) return physicalCoordinate(path.resolve(hop, ...[...missing].reverse()), seenLinks);
+    const hop = danglingLinkTarget(cursor, seenLinks, allowHostDenied);
+    if (hop !== null) {
+      return physicalCoordinate(
+        path.resolve(hop, ...[...missing].reverse()),
+        seenLinks,
+        allowHostDenied,
+      );
+    }
     const parent = path.dirname(cursor);
     if (parent === cursor) {
       throw new CliError("RUNTIME", "cannot resolve the private-state filesystem boundary");
@@ -183,7 +232,7 @@ function relateSegments(bundle: readonly string[], state: readonly string[]): Pr
 /** THE domain relation. Every private-state guard in the CLI answers to this one function. */
 export function relateToPrivateState(candidate: string, stateRoot: string): PrivateStateRelation {
   const bundle = physicalCoordinate(path.resolve(candidate));
-  const state = physicalCoordinate(path.resolve(stateRoot));
+  const state = physicalCoordinate(path.resolve(stateRoot), new Set(), true);
 
   // Undeterminable inode on EITHER side: compare normalized paths instead, and never conclude
   // `identical` from an inode collapse.
