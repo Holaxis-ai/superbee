@@ -54,6 +54,26 @@ export interface KindFields {
   descriptions: Record<string, string>;
 }
 
+/**
+ * A kind's DECLARED claim vocabulary (`claim:` on the convention doc): which field records who
+ * owns an instance, and which field records its claim state. Declared by the BUNDLE so no
+ * consumer has to spell a workflow word ("assignee", "in_progress") into product code.
+ *
+ * The names here are as authored — LOGICAL. Resolve them onto the edition's real frontmatter keys
+ * with {@link claimCoordinates}; never read frontmatter by the declared name directly.
+ *
+ * Only the two coordinates are represented: the first consumer (sync's ownership report) needs
+ * exactly them. The block's value vocabulary (`claimed`/`unclaimed`/`released`) is deliberately
+ * not parsed yet, and an unrecognized key inside `claim:` is IGNORED rather than warned about —
+ * warning on it would be wrong the moment the rest of the block lands.
+ */
+export interface KindClaimPolicy {
+  /** Declared field recording who owns an instance (`claim.owner_field`). */
+  ownerField?: string;
+  /** Declared field recording an instance's claim state (`claim.state_field`). */
+  stateField?: string;
+}
+
 /** A parsed kind convention: the governed `type` plus its declared shape. */
 export interface KindConvention {
   /** Concept id of the convention doc itself (e.g. `conventions/roadmap-item`). */
@@ -96,6 +116,12 @@ export interface KindConvention {
    * privileges a kind by name; display-only, no engine behavior. Set from `browse_collapsed: true`.
    */
   browseCollapsed?: boolean;
+  /**
+   * The bundle-declared claim vocabulary, when this kind declares one. Absent for every kind that
+   * does not — a bundle with no `claim:` declaration behaves exactly as it did before the key
+   * existed.
+   */
+  claim?: KindClaimPolicy;
 }
 
 /** The result of {@link loadKinds}: the built registry plus any non-fatal warnings collected along the way. */
@@ -219,6 +245,42 @@ export function resolveKindFieldCoordinate(
   const progress = progressStatusCoordinate(okfVersion, kind);
   if (field === PROGRESS_STATUS_FIELD && progress) return progress;
   return undefined;
+}
+
+/** A kind's claim vocabulary resolved onto the frontmatter keys that actually store it. */
+export interface KindClaimCoordinates {
+  /** Storage key recording the owner, when declared AND resolvable on this kind. */
+  ownerField?: string;
+  /** Storage key recording the claim state, when declared AND resolvable on this kind. */
+  stateField?: string;
+  /** Every resolved coordinate, de-duplicated — the set a consumer compares two versions over. */
+  fields: string[];
+}
+
+/**
+ * Resolve a Kind's declared claim vocabulary onto this bundle edition's storage coordinates
+ * through the ONE field resolver ({@link resolveKindFieldCoordinate}), so a logical declaration
+ * (`state_field: progress_status`) lands on the edition's real key. A declared name the Kind does
+ * not actually carry resolves to NOTHING and is dropped: a consumer then compares no coordinate
+ * at all rather than a key that can never match. Undefined when the Kind declares no `claim:`
+ * block, or when nothing in it resolves.
+ */
+export function claimCoordinates(
+  okfVersion: string | undefined,
+  kind: KindConvention,
+): KindClaimCoordinates | undefined {
+  if (!kind.claim) return undefined;
+  const resolve = (field: string | undefined): string | undefined =>
+    field === undefined ? undefined : resolveKindFieldCoordinate(okfVersion, kind, field)?.storageField;
+  const ownerField = resolve(kind.claim.ownerField);
+  const stateField = resolve(kind.claim.stateField);
+  const fields = [...new Set([ownerField, stateField].filter((f): f is string => f !== undefined))];
+  if (fields.length === 0) return undefined;
+  return {
+    ...(ownerField !== undefined ? { ownerField } : {}),
+    ...(stateField !== undefined ? { stateField } : {}),
+    fields,
+  };
 }
 
 /** Declared authoring names plus the logical progress alias, when this Kind proves one exists. */
@@ -428,6 +490,12 @@ const VALID_FIELDS_KEYS = new Set([
  * everywhere else.
  */
 const MISPLACED_TOP_LEVEL_KEYS = new Set(["enum", "enums", "values", "constraints"]);
+
+/** The `claim:` keys this parse consumes, paired with their {@link KindClaimPolicy} property. */
+const CLAIM_COORDINATE_KEYS = [
+  ["owner_field", "ownerField"],
+  ["state_field", "stateField"],
+] as const satisfies ReadonlyArray<readonly [string, keyof KindClaimPolicy]>;
 
 // Level-1 headings only: `# Foo` (not `## Foo`). The ONE heading splitter, reused by
 // validateAgainstKind's section lint below and re-exported as public API from index.ts.
@@ -800,6 +868,41 @@ export function parseConventionDoc(
     }
   }
 
+  // `claim:` — the bundle-DECLARED claim vocabulary (see the KindClaimPolicy doc comment). Same
+  // lenient posture as `links`/`expects_inbound`: absent is normal (no warning), a non-map shape
+  // warns and is ignored, a malformed member warns and is skipped — never thrown. Unrecognized
+  // keys inside the block are IGNORED without a warning: this parse deliberately consumes only
+  // the two coordinates, so warning on the block's value vocabulary would be wrong.
+  const claimSource = fm.claim;
+  let claim: KindClaimPolicy | undefined;
+  if (claimSource !== undefined) {
+    if (!isPlainObject(claimSource)) {
+      warnings.push({
+        code: "KIND_CONVENTION_BAD_SHAPE",
+        message: `kind convention '${doc.id}' has a non-map 'claim' key (${describeShape(claimSource)}; expected a map declaring 'owner_field' and/or 'state_field'); ignoring it.`,
+        field: "claim",
+        severity: "warning",
+      });
+    } else {
+      const parsed: KindClaimPolicy = {};
+      for (const [key, target] of CLAIM_COORDINATE_KEYS) {
+        const declared = claimSource[key];
+        if (declared === undefined) continue;
+        if (!isScalar(declared) || String(declared).trim() === "") {
+          warnings.push({
+            code: "KIND_CONVENTION_BAD_MEMBER",
+            message: `kind convention '${doc.id}' has a malformed 'claim.${key}' (${describeShape(declared)}; expected a declared field name); skipping it.`,
+            field: `claim.${key}`,
+            severity: "warning",
+          });
+          continue;
+        }
+        parsed[target] = String(declared).trim();
+      }
+      if (parsed.ownerField !== undefined || parsed.stateField !== undefined) claim = parsed;
+    }
+  }
+
   const sections = Array.isArray(fm.sections)
     ? fm.sections.filter((s): s is string => typeof s === "string" && s.trim() !== "")
     : undefined;
@@ -840,6 +943,7 @@ export function parseConventionDoc(
   if (sections && sections.length > 0) kind.sections = sections;
   if (freshnessHorizon !== undefined) kind.freshnessHorizon = freshnessHorizon;
   if (browseCollapsed !== undefined) kind.browseCollapsed = browseCollapsed;
+  if (claim !== undefined) kind.claim = claim;
   return {
     ok: true,
     kind,
@@ -1063,6 +1167,14 @@ export function kindConventionDoc(kind: KindConvention, prose: string, timestamp
   if (Object.keys(linkDescriptions).length > 0) frontmatter.link_descriptions = linkDescriptions;
   if (kind.expectsInbound && Object.keys(kind.expectsInbound).length > 0) {
     frontmatter.expects_inbound = kind.expectsInbound;
+  }
+  // Round-trip the claim declaration: a serializer that dropped it would silently un-declare
+  // ownership the first time a convention passed back through this writer.
+  if (kind.claim && (kind.claim.ownerField !== undefined || kind.claim.stateField !== undefined)) {
+    const claim: Record<string, string> = {};
+    if (kind.claim.ownerField !== undefined) claim.owner_field = kind.claim.ownerField;
+    if (kind.claim.stateField !== undefined) claim.state_field = kind.claim.stateField;
+    frontmatter.claim = claim;
   }
   frontmatter.fields = fields;
   if (kind.sections && kind.sections.length > 0) frontmatter.sections = kind.sections;

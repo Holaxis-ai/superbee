@@ -539,7 +539,7 @@ async function pullPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     throw await fail(withUpstreamHelp(toCliError(rawErr, "rebase"), run.inv));
   }
   if (rebaseOutcome.status === "resolved") {
-    throw await fail(buildConvergeError(boardPath, rebaseOutcome.conflicts, run.inv, run.limit));
+    throw await fail(await buildConvergeError(boardPath, rebaseOutcome.conflicts, run.inv, run.limit));
   }
   if (rebaseOutcome.status === "no_upstream") {
     // First publication is ALWAYS explicit. A local branch name or an index.md file is evidence
