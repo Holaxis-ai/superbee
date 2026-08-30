@@ -253,6 +253,7 @@ export {
   projectKindForAuthoring,
   projectKindValidationWarnings,
   validateAgainstKind,
+  isPresent,
   defaultTimestampAndValidateAgainstRegistry,
   freshnessHorizonMs,
   kindConventionDoc,

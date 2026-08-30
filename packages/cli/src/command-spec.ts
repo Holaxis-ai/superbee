@@ -409,6 +409,20 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
       },
       {
+        id: "kindDraft",
+        leaves: [publicLeaf("kindDraft", "kind draft", one, undefined, DIR_SURFACE)],
+        usage: 'kind draft "<Type>" [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        summary:
+          "Draft a Kind for a recurring ungoverned type from its existing instances — read-only until --apply: measures the post-apply warning count, prices promotions, and emits one token-bound apply command",
+      },
+      {
+        id: "kindDismiss",
+        leaves: [publicLeaf("kindDismiss", "kind dismiss", one, undefined, DIR_SURFACE)],
+        usage: 'kind dismiss "<Type>" [--reason <text>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        summary:
+          "Record a deliberate decline of a Kind for an ungoverned type (a declaration-free convention) so no future session re-proposes it; reopen later with 'kind draft'",
+      },
+      {
         id: "recipes",
         leaves: [publicLeaf("recipes", "recipes", zero, 16, DIR_SURFACE)],
         usage: "recipes [--dir <path>] [--remote <url>]",

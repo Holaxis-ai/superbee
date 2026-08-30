@@ -23,7 +23,9 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, shellArg } from "../invocation.js";
-import { appliedDocIds, isRecipeApplied } from "../recipes.js";
+import type { OkfDocument, ConceptId } from "@superbee/core";
+import { readBundleOkfVersion } from "@superbee/core";
+import { appliedConventionDocs, isRecipeApplied, recipeDrifts } from "../recipes.js";
 import { builtinNames, resolveRecipe, type LoadedRecipe } from "../recipe-source.js";
 
 export const RECIPES_USAGE = `superbee recipes — browse built-in recipes before or after init
@@ -77,6 +79,7 @@ export function recipeInventoryRow(
   applied: boolean | null,
   inv: string,
   target: RecipeCommandTarget = {},
+  drift = false,
 ): Record<string, unknown> {
   const targetSuffix = commandTargetSuffix(target);
   const commands: Record<string, string> = {};
@@ -92,6 +95,9 @@ export function recipeInventoryRow(
     name: recipe.id,
     version: recipe.version,
     applied,
+    // Omitted-when-false: only a bundle whose installed docs differ from the recipe source
+    // changes shape (the status omitted-when-empty idiom). Descriptive only — see recipeDrifts.
+    ...(drift ? { drift: true } : {}),
     summary: recipe.summary,
     docs: recipe.docs.map((d) => d.id),
     assets: {
@@ -160,21 +166,31 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
   }
 
   const bundle = await optionalBundle(values, resolvedDeps);
-  const appliedIds = bundle ? await appliedDocIds(bundle) : undefined;
+  const installed: Map<ConceptId, OkfDocument> | undefined = bundle ? await appliedConventionDocs(bundle) : undefined;
+  const appliedIds = installed === undefined ? undefined : new Set(installed.keys());
+  const okfVersion = bundle ? (await readBundleOkfVersion(bundle)) ?? "0.1" : undefined;
+  const now = new Date().toISOString();
   const inv = cliInvocation();
 
   const rows: Record<string, unknown>[] = [];
+  let anyDrift = false;
   for (const name of builtinNames()) {
     const loaded = await resolveRecipe(name);
     // Every built-in name resolves by construction (parseRecipeFiles ran once already at module
     // load to build CONTEXT_NOTES_RECIPE) — but stay defensive rather than assume.
     if (!loaded.ok) continue;
+    const drift =
+      installed !== undefined && okfVersion !== undefined
+        ? recipeDrifts(loaded.recipe, installed, okfVersion, now)
+        : false;
+    anyDrift ||= drift;
     rows.push(
       recipeInventoryRow(
         loaded.recipe,
         appliedIds === undefined ? null : isRecipeApplied(loaded.recipe, appliedIds),
         inv,
         { dir: values.dir, remote: values.remote },
+        drift,
       ),
     );
   }
@@ -196,6 +212,12 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
       {
         count: rows.length,
         recipes: rows,
+        // Descriptive, deliberately command-free (design appendix O2): the flag also covers a
+        // dismissal record at the canonical id and a legitimately evolved kind, and a "fix"
+        // pointer here would re-propose exactly what a decline recorded.
+        ...(anyDrift
+          ? { drift_help: "drift can be deliberate — read the installed convention before treating it as a defect" }
+          : {}),
         help,
       },
       resolveMode(values),

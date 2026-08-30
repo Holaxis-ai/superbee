@@ -119,6 +119,8 @@ export const BEHAVIOR_ASSIGNMENTS = [
   ordinary("kinds", 0),
   selector("kindFieldAdd", "interposed-action", 2),
   selector("kindFieldRemove", "interposed-action", 2),
+  selector("kindDraft", "leading-required", 1),
+  selector("kindDismiss", "leading-required", 1),
   ordinary("recipes", 0),
   ordinary("recipeAdd", 1),
   ordinary("recipeEvolve", 1),
@@ -157,6 +159,7 @@ export const BUILT_KEY_REPRESENTATIVE_IDS = [
   "linkAdd",
   "new",
   "kindFieldAdd",
+  "kindDraft",
   "hookInstall",
   "mcp",
 ] as const satisfies readonly PublicLeafId[];

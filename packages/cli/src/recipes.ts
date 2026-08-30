@@ -861,13 +861,36 @@ function recipeAssetConflict(recipeId: string, key: string): CliError {
 }
 
 /**
- * The set of convention-doc ids currently present under `conventions/` — ONE round-trip
+ * The convention docs currently present under `conventions/`, by id — ONE round-trip
  * (backend-agnostic, works over `--remote`), used by `recipes` to report whether a built-in is
- * already applied to `bundle` (every one of its docs' ids present).
+ * already applied to `bundle` (every one of its docs' ids present) AND whether any installed
+ * doc's content differs from the recipe source (the listing's `drift` bit). The query was always
+ * a full read; returning the docs instead of discarding their content costs zero added I/O.
  */
-export async function appliedDocIds(bundle: Bundle): Promise<Set<ConceptId>> {
+export async function appliedConventionDocs(bundle: Bundle): Promise<Map<ConceptId, OkfDocument>> {
   const docs = await query(bundle, { prefix: CONVENTIONS_PREFIX });
-  return new Set(docs.map((d) => d.id));
+  return new Map(docs.map((d) => [d.id, d]));
+}
+
+/**
+ * True when at least one of `recipe`'s installed docs differs in content from the recipe source
+ * (the same `sameInstalledDoc` comparison `recipe add` makes; timestamp-insensitive). Honest at
+ * the literal level only: drift can be DELIBERATE — a dismissal record occupying the canonical
+ * id, or a kind legitimately evolved via `kind field add` / `recipe evolve`. The listing pairs
+ * the bit with descriptive help and NO fixing command (design appendix O2): a proactive "fix"
+ * pointer here would re-propose exactly what a `kind dismiss` recorded declining.
+ */
+export function recipeDrifts(
+  recipe: LoadedRecipe,
+  installed: Map<ConceptId, OkfDocument>,
+  okfVersion: string,
+  now: string,
+): boolean {
+  const materialized = materializeRecipeForEdition(recipe, okfVersion);
+  return materialized.docs.some((doc) => {
+    const existing = installed.get(doc.id);
+    return existing !== undefined && !sameInstalledDoc(existing, recipeDocumentForApply(doc, okfVersion, now), okfVersion);
+  });
 }
 
 /** True when every convention doc `recipe` installs is already present in `appliedIds`. */

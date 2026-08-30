@@ -24,31 +24,48 @@ import {
 } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { parseSelectorOrUsage } from "../args.js";
+import { parseSelectorOrUsage, type SelectorResolution } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
+import { kindDismissCommand, kindDraftCommand } from "./kind-draft.js";
 
 /** The core parser owns the one authoritative set of field names reserved by mutation surfaces. */
 const RESERVED_FIELD_NAMES = new Set<string>(RESERVED_KIND_FIELD_NAMES);
 
-export const KIND_USAGE = `superbee kind — edit a bundle's kind conventions (a kind's schema)
+export const KIND_USAGE = `superbee kind — edit, draft, or dismiss a bundle's kind conventions
 
 Usage:
   superbee kind field "<Kind>" add <name> [--required] [--values <a,b,c>] [options]
   superbee kind field "<Kind>" remove <name> [options]
+  superbee kind draft "<Type>" [--apply <plan-token>] [options]
+  superbee kind dismiss "<Type>" [--reason <text>] [options]
 
-Adds or removes a DECLARED field on the '<Kind>' kind's governing convention doc. The plural
-'kinds' command LISTS what a bundle declares; this singular 'kind' command EDITS one (mirroring
-'recipes'/'recipe'). A field added without --required is OPTIONAL; --values restricts it to an
-enumerated set. Idempotent: adding an already-declared field (or removing an absent one) is a
-no-op that exits 0. Preserves everything else on the convention (governs/path/sections/body, and
-any fields.* sibling key this command does not own — e.g. a declared 'terminal' set).
+'kind field' adds or removes a DECLARED field on the '<Kind>' kind's governing convention doc.
+The plural 'kinds' command LISTS what a bundle declares; this singular 'kind' command MUTATES one
+(mirroring 'recipes'/'recipe'). A field added without --required is OPTIONAL; --values restricts
+it to an enumerated set. Idempotent: adding an already-declared field (or removing an absent one)
+is a no-op that exits 0. Preserves everything else on the convention (governs/path/sections/body,
+and any fields.* sibling key this command does not own — e.g. a declared 'terminal' set).
+
+'kind draft' proposes a Kind for a recurring UNGOVERNED type. Without --apply it is READ-ONLY:
+it infers a candidate convention from the type's existing instances (required = fields present on
+every instance; H1 sections at 100% only; a builtin recipe's definition is adopted verbatim when
+one governs the type), MEASURES the post-apply warning count by validating every instance, prices
+each optional-field/section promotion, and prints one exact apply command bound to a plan token.
+Applying requires that token; any instance write, edition change, or schema change in between
+refuses with STALE_HEAD and the fresh-draft command. Apply only after the human accepts.
+
+'kind dismiss' records a deliberate human decline as a declaration-free convention (governs only,
+zero validation obligations) so no future session re-proposes a Kind for that type — on any
+machine, once the bundle syncs. Reopen later with 'kind draft' (a dismissal is redraftable).
 
 Options:
-  --required            Add the field as REQUIRED (default: optional). Ignored by 'remove'.
-  --values <a,b,c>      Restrict the field to this comma-separated enum ('add' only)
+  --required            Add the field as REQUIRED (default: optional; 'field add' only)
+  --values <a,b,c>      Restrict the field to this comma-separated enum ('field add' only)
+  --apply <plan-token>  Apply the exact previously inspected draft plan ('draft' only)
+  --reason <text>       Record why the Kind was declined ('dismiss' only)
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
   --actor <name>        Attribute this write
@@ -90,6 +107,12 @@ function deleteOwn(record: Record<string, unknown>, key: string): boolean {
   return hasOwn(record, key) && delete record[key];
 }
 
+/** The three `kind` sub-verbs' selector payloads, discriminated on `mode`. */
+type KindSelectorPayload =
+  | { mode: "draft"; kindName: string | undefined }
+  | { mode: "dismiss"; kindName: string | undefined }
+  | { mode: "field"; kindName: string | undefined; action: "add" | "remove"; fieldName: string | undefined };
+
 export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
 
@@ -101,6 +124,8 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
         options: {
           required: { type: "boolean" },
           values: { type: "string" },
+          apply: { type: "string" },
+          reason: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
           actor: { type: "string" },
@@ -109,8 +134,19 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
         },
       }),
     "kind",
-    (positionals) => {
-      if (positionals[0]?.trim() !== "field") return { kind: "unknown", token: positionals[0], reason: "subresource" } as const;
+    (positionals): SelectorResolution<KindSelectorPayload> => {
+      const sub = positionals[0]?.trim();
+      if (sub === "draft" || sub === "dismiss") {
+        const kindName = positionals[1];
+        const data = [kindName, ...positionals.slice(2)].filter((value): value is string => value !== undefined);
+        return {
+          kind: "selected",
+          leaf: sub === "draft" ? CLI_LEAVES.kindDraft : CLI_LEAVES.kindDismiss,
+          data,
+          payload: { mode: sub, kindName },
+        } as const;
+      }
+      if (sub !== "field") return { kind: "unknown", token: positionals[0], reason: "subresource" } as const;
       const action = positionals[2]?.trim();
       if (action !== "add" && action !== "remove") return { kind: "unknown", token: action, reason: "action" } as const;
       const kindName = positionals[1];
@@ -120,7 +156,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
         kind: "selected",
         leaf: action === "add" ? CLI_LEAVES.kindFieldAdd : CLI_LEAVES.kindFieldRemove,
         data,
-        payload: { kindName, action, fieldName },
+        payload: { mode: "field", kindName, action, fieldName },
       } as const;
     },
   );
@@ -133,16 +169,53 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
   if (selection.kind === "unknown") {
     const message = selection.reason === "action"
       ? `kind field <Kind> <action>: action must be 'add' or 'remove', got '${selection.token ?? ""}'`
-      : `kind: unknown or missing sub-resource '${selection.token ?? ""}' — only 'field' is supported (edit a kind's declared fields)`;
+      : `kind: unknown or missing sub-resource '${selection.token ?? ""}' — supported: 'field' (edit a kind's declared fields), 'draft' (propose a Kind for an ungoverned type), 'dismiss' (record a decline)`;
     throw new CliError(
       "USAGE",
       message,
       { help: helpHint },
     );
   }
-  const kindName = selection.payload!.kindName?.trim();
-  const action = selection.payload!.action;
-  const requestedFieldName = selection.payload!.fieldName?.trim();
+  const payload = selection.payload!;
+  if (payload.mode === "draft" || payload.mode === "dismiss") {
+    const typeName = payload.kindName?.trim();
+    if (!typeName) {
+      throw new CliError("USAGE", `kind ${payload.mode} requires a "<Type>"`, {
+        help: `${cliInvocation()} kind ${payload.mode} "<Type>"`,
+      });
+    }
+    if (values.required || values.values !== undefined) {
+      throw new CliError("USAGE", "--required/--values apply to 'kind field add', not 'kind draft'/'kind dismiss'", {
+        help: helpHint,
+      });
+    }
+    if (payload.mode === "dismiss" && values.apply !== undefined) {
+      throw new CliError("USAGE", "--apply applies to 'kind draft', not 'kind dismiss'", {
+        help: `${cliInvocation()} kind draft "<Type>" --apply <plan-token>`,
+      });
+    }
+    if (payload.mode === "draft" && values.reason !== undefined) {
+      throw new CliError("USAGE", "--reason applies to 'kind dismiss', not 'kind draft'", {
+        help: `${cliInvocation()} kind dismiss "<Type>" --reason <text>`,
+      });
+    }
+    if (values.actor !== undefined && values.actor.trim() === "") {
+      throw new CliError("USAGE", "--actor was given an empty value — pass an actor identity or omit the flag.", {
+        help: helpHint,
+      });
+    }
+    if (payload.mode === "draft") await kindDraftCommand(typeName, values, stdout);
+    else await kindDismissCommand(typeName, values, stdout);
+    return;
+  }
+  const kindName = payload.kindName?.trim();
+  const action = payload.action;
+  const requestedFieldName = payload.fieldName?.trim();
+  if (values.apply !== undefined || values.reason !== undefined) {
+    throw new CliError("USAGE", "--apply/--reason apply to 'kind draft'/'kind dismiss', not 'kind field'", {
+      help: helpHint,
+    });
+  }
   if (!kindName) {
     throw new CliError("USAGE", 'kind field requires a "<Kind>"', { help: helpHint });
   }

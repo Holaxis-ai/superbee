@@ -44,6 +44,17 @@ export function shellArg(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/**
+ * Render a bundle-controlled TYPE NAME as one shell-safe token inside an emitted copy-paste
+ * command. Type names have no charset validation in core, and on a shared board any writer
+ * controls them — raw interpolation inside double quotes would make the suggestion channel a
+ * command-injection vector. EVERY runnable command string that carries a type name goes through
+ * this one helper (never per-site quoting), exactly as paths go through {@link shellArg}.
+ */
+export function typeArg(type: string): string {
+  return shellArg(type);
+}
+
 /** realpath a path, or undefined if it does not exist / is not resolvable. */
 function realOrUndefined(p: string): string | undefined {
   try {

@@ -69,6 +69,7 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation, shellArg } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
+import { kindDeclaresAnything } from "../kind-draft.js";
 import { isKnownShippedLegacyPageConvention, isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
@@ -408,13 +409,25 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     loadKinds(bundle),
     readBundleOkfVersion(bundle),
   ]);
-  const kind = registry.kinds.get(kindName);
+  // DELIBERATE exclusion: a declaration-free kind — a `kind dismiss` decline record, or a
+  // hand-authored governs-only convention that has not yet grown its first declaration — is
+  // invisible to `new`'s EXECUTION path. Without this guard, `new` would resolve a schema-less
+  // kind whose phase-2 strict parse then rejects EVERY domain flag as "unknown field(s)";
+  // excluding it keeps a real `new <Type> ...` invocation's failure byte-identical before and
+  // after a dismissal (design appendix O6). `--help` still resolves it: kind help is read-only
+  // and a declaration-free kind can carry renderable INBOUND-link guidance declared by OTHER
+  // kinds (pinned in kinds.test.ts). The `doc write` path is unaffected either way.
+  const resolvedKind = registry.kinds.get(kindName);
+  const kind = resolvedKind && (pre.values.help || kindDeclaresAnything(resolvedKind)) ? resolvedKind : undefined;
   if (!kind) {
     if (pre.values.help) {
       stdout(NEW_USAGE); // named kind isn't declared here — the generic help is the most we can show
       return;
     }
-    const known = [...registry.kinds.keys()].sort();
+    const known = [...registry.kinds.entries()]
+      .filter(([, candidate]) => kindDeclaresAnything(candidate))
+      .map(([name]) => name)
+      .sort();
     throw new CliError(
       "USAGE",
       known.length > 0
