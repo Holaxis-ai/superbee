@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -243,6 +244,76 @@ test("truth table — relative and non-normalized spellings resolve to the same 
     const state = canonicalUserStateDir(home);
     assert.equal(relateToPrivateState(`${state}${path.sep}.${path.sep}sub${path.sep}..`, state), "identical");
     assert.equal(relateToPrivateState(path.join(state, "a", "..", "b"), state), "bundle-inside-state");
+  });
+});
+
+// The practical denied-state contract is deliberately narrower than a capability sandbox. An
+// unrelated explicit bundle must not depend on reading every historical private-state root, while
+// a target that is itself hidden by the host still refuses because its relation is unresolved.
+const HOST_DENIAL_UNAVAILABLE = process.platform === "win32" || process.getuid?.() === 0;
+
+function withDeniedDirectory<T>(directory: string, body: () => T): T {
+  chmodSync(directory, 0o000);
+  try {
+    return body();
+  } finally {
+    chmodSync(directory, 0o700);
+  }
+}
+
+test("an unreadable unrelated historical state root does not veto an explicit bundle", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("an unsearchable directory needs a non-root POSIX environment");
+    return;
+  }
+  withHome((home, root) => {
+    const [historical] = supersededUserStateDirs(home);
+    assert.ok(historical, "this row needs a guarded root nested below a hidden ancestor");
+    const hidden = path.dirname(historical);
+    const bundle = path.join(root, "project", ".superbee");
+    mkdirSync(historical, { recursive: true });
+    mkdirSync(bundle, { recursive: true });
+
+    withDeniedDirectory(hidden, () => {
+      assert.throws(
+        () => statSync(historical),
+        (error: NodeJS.ErrnoException) => error.code === "EACCES" || error.code === "EPERM",
+      );
+      assert.doesNotThrow(() => assertBundleOutsidePrivateState(bundle, home));
+      assert.throws(
+        () => assertBundleOutsidePrivateState(historical, home),
+        /cannot verify that the target is separate from private Superbee state/,
+        "a host-denied target remains unresolved and refuses",
+      );
+    });
+  });
+});
+
+test("explicit local init/write/read/status survives an unreadable unrelated historical state root", (t) => {
+  if (HOST_DENIAL_UNAVAILABLE) {
+    t.skip("an unsearchable directory needs a non-root POSIX environment");
+    return;
+  }
+  withHome((home, root) => {
+    const [historical] = supersededUserStateDirs(home);
+    assert.ok(historical);
+    const project = path.join(root, "project");
+    mkdirSync(historical, { recursive: true });
+    mkdirSync(project, { recursive: true });
+
+    withDeniedDirectory(path.dirname(historical), () => {
+      const journey: ReadonlyArray<readonly [string, readonly string[]]> = [
+        ["init", ["init", "--create-only", "--recipe", "none", "--dir", ".superbee", "--json"]],
+        ["write", ["doc", "write", "notes/a", "--type", "Note", "--body", "hello", "--dir", ".superbee", "--json"]],
+        ["read", ["doc", "read", "notes/a", "--dir", ".superbee", "--json"]],
+        ["status", ["status", "--dir", ".superbee", "--json"]],
+      ];
+      for (const [label, argv] of journey) {
+        const result = runCli(argv, { cwd: project, home });
+        assert.equal(result.status, 0, `${label}: ${result.stderr || result.stdout}`);
+        assert.doesNotMatch(`${result.stdout}${result.stderr}`, /separate from private Superbee state/, label);
+      }
+    });
   });
 });
 

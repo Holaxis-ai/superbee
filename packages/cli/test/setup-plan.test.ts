@@ -166,6 +166,20 @@ test("foreign integrations fail closed onto unapproved read-only inspection", ()
   assert.deepEqual(skill.approval, { required: false, reason: null });
 });
 
+test("an absent Codex CLI blocks setup on the same truthful MCP state", () => {
+  const plan = buildSetupPlan(input({
+    mcp: { state: "cli_absent", reason: "codex was not found on PATH" },
+  }));
+  assert.equal(plan.status, "blocked");
+  assert.deepEqual(next(plan), {
+    action: "inspect",
+    command: ["superbee", "mcp", "status", "--host", "codex"],
+    description: "codex was not found on PATH",
+    mutates: false,
+    approval: { required: false, reason: null },
+  });
+});
+
 test("bundle creation and catalog templates remain distinguishable to the agent", () => {
   const missingBundle = next(buildSetupPlan(input({
     workspace: { bundle: "absent", catalog: "empty", selected_registered: false },

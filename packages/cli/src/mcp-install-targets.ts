@@ -1,6 +1,6 @@
 // Pure host catalog, bounded read-only inspection, and conservative registration classification
 // for `superbee mcp status`. This module deliberately contains no configuration writer.
-import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
+import type { ExecFileSyncOptionsWithStringEncoding } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -16,6 +16,12 @@ import {
   type PersistentInstallAuthority,
 } from "./install-authority.js";
 import { collapseHomeDirectory } from "./invocation.js";
+import {
+  HostCommandError,
+  resolveHostCommand,
+  runHostCommand,
+  type ResolvedHostCommand,
+} from "./host-command.js";
 
 export type McpInstallTargetId = "codex" | "claude-code" | "claude-desktop" | "opencode";
 
@@ -70,6 +76,7 @@ export function resolveMcpInstallTarget(value: string): McpInstallTarget | undef
 }
 
 export type McpRegistrationState =
+  | "cli_absent"
   | "absent"
   | "owned_current"
   | "owned_stale"
@@ -111,6 +118,7 @@ export interface McpStatusDeps {
     args: readonly string[],
     options: ExecFileSyncOptionsWithStringEncoding,
   ) => string;
+  readonly resolveCommandPath?: (candidate: string) => string | undefined;
 }
 
 export const CURRENT_MCP_REGISTRATION = "superbee";
@@ -350,6 +358,37 @@ export function parseCodexMcpEntries(text: string): McpRegistrationEntry[] {
   return result;
 }
 
+function hostCommandInput(input: McpStatusEnvironment) {
+  return { cwd: input.home, env: input.env, platform: input.platform };
+}
+
+export function resolveCodexCommand(
+  input: McpStatusEnvironment,
+  deps: McpStatusDeps = {},
+): ResolvedHostCommand {
+  return resolveHostCommand("codex", hostCommandInput(input), {
+    resolvePath: deps.resolveCommandPath,
+  });
+}
+
+export function inspectCodexMcp(
+  command: ResolvedHostCommand,
+  input: McpStatusEnvironment,
+  deps: McpStatusDeps = {},
+): McpRegistrationEntry[] {
+  try {
+    return parseCodexMcpEntries(runHostCommand(
+      command,
+      ["mcp", "list", "--json"],
+      hostCommandInput(input),
+      { execFile: deps.execFile },
+    ));
+  } catch (error) {
+    if (error instanceof HostCommandError) throw error;
+    throw new HostCommandError("unreadable", "Codex CLI returned unreadable MCP registrations");
+  }
+}
+
 export function selectMcpRegistration(
   entries: readonly McpRegistrationEntry[],
 ): McpRegistrationEntry | undefined {
@@ -380,15 +419,8 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
   try {
     let entries: McpRegistrationEntry[];
     if (target.id === "codex") {
-      const run = deps.execFile ?? ((file, args, options) => execFileSync(file, args, options));
-      entries = parseCodexMcpEntries(run("codex", ["mcp", "list", "--json"], {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 2_000,
-        maxBuffer: 1024 * 1024,
-        env: input.env,
-        cwd: input.home,
-      }));
+      const command = resolveCodexCommand(input, deps);
+      entries = inspectCodexMcp(command, input, deps);
     } else {
       const read = deps.readFile ?? ((candidate) => readFileSync(candidate, "utf8"));
       const candidates = target.id === "opencode" ? openCodeConfigCandidates(input) : [path];
@@ -442,6 +474,16 @@ export function inspectMcpHost(target: McpInstallTarget, deps: McpStatusDeps = {
       docs_url: target.docs_url,
     };
   } catch (error) {
+    if (target.id === "codex" && error instanceof HostCommandError) {
+      return {
+        host: target.id,
+        label: target.label,
+        state: error.state === "absent" ? "cli_absent" : "unreadable",
+        config: collapseHomeDirectory(reportedPath),
+        reason: error.message,
+        docs_url: target.docs_url,
+      };
+    }
     return {
       host: target.id,
       label: target.label,
