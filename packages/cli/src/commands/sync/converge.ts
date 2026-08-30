@@ -270,16 +270,16 @@ function keptDocMeta(frontmatter: Record<string, unknown>): { kind?: string; tit
  *    `doc update --<owner field>` is exactly the command that takes the task back from the winner,
  *    and the product must not print it.
  *
- * The trigger is the OWNER field specifically, and only when this side actually recorded an owner.
- * A state-only divergence (two versions of a workflow status, nobody's ownership contested) and a
- * side that never wrote an owner at all are ordinary conflicts, reported in full: asserting a lost
- * claim there would be a false statement AND a loss of correct guidance.
+ * The trigger is the OWNER field specifically. A state-only divergence — two versions of a workflow
+ * status with nobody's ownership contested — is an ordinary conflict, reported in full: asserting a
+ * lost claim there would be a false statement AND a loss of correct guidance.
  *
- * Suppression is UNCONDITIONAL on attributability — the steal instruction is withdrawn whether or
- * not an owner can be named. Attribution is separate and reads the ARBITER ITSELF (`origin/board`),
- * so the emitted provenance is true by construction; when that read fails, the fields stay
- * withdrawn and no owner is asserted. Absent/malformed content degrades to no fields, the
- * codebase's omit-when-empty convention.
+ * Suppression is UNCONDITIONAL on attributability and on which ownership transition this side
+ * attempted — the steal instruction is withdrawn whether or not an owner can be named, and whether
+ * this side claimed, released, or reassigned. Attribution is a strictly narrower, separate gate
+ * that reads the ARBITER ITSELF (`origin/board`), so the emitted provenance is true by
+ * construction. Absent/malformed content degrades to no fields, the codebase's omit-when-empty
+ * convention.
  */
 function analyzeConflict(boardPath: string, c: LandedConflict, policy: ClaimPolicy): ConflictAnalysis {
   if (!c.isDoc) return EMPTY_ANALYSIS;
@@ -307,26 +307,31 @@ function analyzeConflict(boardPath: string, c: LandedConflict, policy: ClaimPoli
     const ordinary: ConflictAnalysis = { meta, frontmatterDiffers: differs };
     const coordinates = policy.forType(keptFm.type);
     const ownerField = coordinates?.ownerField;
-    // An owner this side never wrote cannot be an owner this side lost. Both halves of the guard
-    // are load-bearing: `differs.includes` rejects the state-only case, `recordedOwner` rejects a
-    // side that merely predates someone else's claim.
-    const ownerLost =
-      coordinates !== undefined &&
-      ownerField !== undefined &&
-      differs.includes(ownerField) &&
-      recordedOwner(localFm, ownerField) !== undefined;
-    if (!ownerLost) return ordinary;
+    // SUPPRESSION gate: a declared policy and a diverging OWNER field, and nothing else. It says
+    // nothing about WHICH transition this side attempted — a release is an ownership write too,
+    // and so is a reassignment. Conditioning the withdrawal on the local value would reopen the
+    // steal route for every transition that does not happen to end in an actor string.
+    const ownerDiverged =
+      coordinates !== undefined && ownerField !== undefined && differs.includes(ownerField);
+    if (!ownerDiverged) return ordinary;
 
     const claimFields = differs.filter((k) => coordinates.fields.includes(k));
     const substantive = differs.filter((k) => !claimFields.includes(k) && !ENGINE_STAMPED_FIELDS.has(k));
     const only = substantive.length === 0 && local.body === kept.body;
 
-    // Attribution reads `origin/board` itself, never the local HEAD: on a multi-stop rebase HEAD
-    // can carry a later local commit replayed over the kept version, and the arbiter's own copy is
-    // the only text that makes `origin/board@<sha>` a true statement.
+    // ATTRIBUTION gate: the suppression gate PLUS an owner this side actually recorded. "your
+    // claim was not arbitrated" is a sentence about the READER, and a side holding no owner never
+    // made that claim — it released one, or it simply predates someone else's. Those two are
+    // indistinguishable here (the merge base is not in hand), so no wording could be true for
+    // both; the honest move is to withdraw the fields and assert nothing. The bare ownership FACT
+    // for those sides belongs to the diagnostics follow-up that owns structured sibling keys.
+    //
+    // The owner itself is read from `origin/board`, never the local HEAD: on a multi-stop rebase
+    // HEAD can carry a later local commit replayed over the kept version, and the arbiter's own
+    // copy is the only text that makes `origin/board@<sha>` a true statement.
     const upstream = policy.upstreamFrontmatter(c.relPath);
     const statement =
-      upstream !== undefined && policy.provenance !== undefined
+      recordedOwner(localFm, ownerField) !== undefined && upstream !== undefined && policy.provenance !== undefined
         ? claimLostStatement(recordedOwner(upstream, ownerField), policy.provenance)
         : undefined;
 

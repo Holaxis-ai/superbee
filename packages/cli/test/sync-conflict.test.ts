@@ -1273,7 +1273,112 @@ test("claim converge: a MULTI-STOP rebase still withdraws the steal advice and a
   }
 });
 
-test("claim converge: a side that never recorded an owner is not told it lost a claim it never made", async () => {
+/**
+ * Rewrite the contended task WITHOUT an owner — a release. `modifyBoardDoc` merges, so it can
+ * never remove a key; the release has to author the whole frontmatter.
+ */
+async function releaseTask(repo: TwoCloneTopology["a"], owner: string, assignee?: unknown): Promise<void> {
+  await writeBoardDoc(repo, "tasks/seed-one", {
+    frontmatter: {
+      type: "Task",
+      title: "Seed one",
+      actor: "mike",
+      superbee_progress_status: "todo",
+      superbee_updated_by: owner,
+      ...(assignee !== undefined ? { assignee } : {}),
+    },
+    body: "# Seed one\n\nseed body\n",
+  });
+}
+
+/** Land `owner`'s claim on the shared board so a takeover has something to take over. */
+async function establishOwner(
+  topo: TwoCloneTopology,
+  homeA: string,
+  homeB: string,
+  owner: string,
+): Promise<void> {
+  await claimTask(topo.a, owner);
+  const claimed = await runSync(homeA, ["--dir", topo.a.root]);
+  assert.equal(claimed.err, undefined, claimed.err?.message);
+  const pulled = await runSync(homeB, ["--dir", topo.b.root, "--pull-only"]);
+  assert.equal(pulled.err, undefined, pulled.err?.message);
+}
+
+test("claim converge A1: a RELEASE that loses to a takeover still withdraws the steal advice, and is never told it lost a claim (review N-1)", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedClaimableTask(topo, homeA!, homeB!, true);
+    await establishOwner(topo, homeA!, homeB!, OWNER_B);
+
+    // A takes the task over upstream; B, from the same base, RELEASES its own claim locally.
+    // A release is an ownership write like any other — the steal route must close for it too.
+    await claimTask(topo.a, OWNER_A);
+    const takeover = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(takeover.err, undefined, takeover.err?.message);
+    await releaseTask(topo.b, OWNER_B);
+
+    const conflicted = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.ok(conflicted.err, "expected the CONFLICT(5) terminal envelope");
+    assert.equal(conflicted.err!.code, "CONFLICT");
+
+    // SUPPRESSION applies — it does not depend on what this side's owner value happens to be.
+    const guidance = emittedGuidance(conflicted.err!);
+    assert.ok(!guidance.includes("assignee"), `the steal route is closed for a release too: ${guidance}`);
+    const row = conflictRows(conflicted.err!).find((r) => r.id === "tasks/seed-one");
+    assert.ok(row);
+    assert.ok(
+      !(row!.frontmatter_differs as string[] | undefined)?.includes("assignee"),
+      `the owner field is never offered for re-application: ${JSON.stringify(row)}`,
+    );
+
+    // ATTRIBUTION does not — the releaser gave its claim up deliberately and must not be told it
+    // lost one. The choice pinned here is SILENCE, not a reworded sentence: a release and a side
+    // that merely predates someone else's claim are indistinguishable without the merge base.
+    assert.equal(row!.claim_lost, undefined, "no claim-loss sentence for a side that holds no claim");
+    assert.ok(!conflicted.err!.message.includes("claim_lost"));
+    assert.ok(!guidance.includes("your claim was not arbitrated"));
+
+    // Arbitration still held: A owns it upstream.
+    assert.match(git(topo.b.board, ["show", "HEAD:tasks/seed-one.md"]), new RegExp(`assignee: ${OWNER_A}`));
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("claim converge A2: a NON-SCALAR local owner withdraws the steal advice without crashing or naming a claim (review N-1)", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedClaimableTask(topo, homeA!, homeB!, true);
+    await establishOwner(topo, homeA!, homeB!, OWNER_B);
+
+    await claimTask(topo.a, OWNER_A);
+    const takeover = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(takeover.err, undefined, takeover.err?.message);
+    // A list is not an actor string. It must not read as an owner, and it must not throw.
+    await releaseTask(topo.b, OWNER_B, [OWNER_B, "someone-else"]);
+
+    const conflicted = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.ok(conflicted.err, "expected the CONFLICT(5) terminal envelope — not a crash");
+    assert.equal(conflicted.err!.code, "CONFLICT");
+
+    const guidance = emittedGuidance(conflicted.err!);
+    assert.ok(!guidance.includes("assignee"), `the steal route is closed: ${guidance}`);
+    const row = conflictRows(conflicted.err!).find((r) => r.id === "tasks/seed-one");
+    assert.ok(row);
+    assert.equal(row!.claim_lost, undefined, "a non-scalar is not an actor string, so no claim is named");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("claim converge: a side that never recorded an owner has the advice withdrawn but is told nothing about a claim (review N-1)", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
   const [homeA, homeB] = homes;
@@ -1281,8 +1386,8 @@ test("claim converge: a side that never recorded an owner is not told it lost a 
     await seedClaimableTask(topo, homeA!, homeB!, true);
 
     // A claims an unowned task. B, still on the pre-claim base, only moves the workflow state —
-    // it never writes an owner. The owner field DOES diverge (absent vs A), but B has no claim to
-    // have lost, so asserting one would be a false statement.
+    // it never writes an owner. The owner field DOES diverge (absent vs A), so the advice goes;
+    // B has no claim to have lost, so no sentence is asserted about one.
     await claimTask(topo.a, OWNER_A);
     const aClaim = await runSync(homeA!, ["--dir", topo.a.root]);
     assert.equal(aClaim.err, undefined, aClaim.err?.message);
@@ -1292,18 +1397,26 @@ test("claim converge: a side that never recorded an owner is not told it lost a 
     assert.ok(conflicted.err, "expected the CONFLICT(5) terminal envelope");
     const row = conflictRows(conflicted.err!).find((r) => r.id === "tasks/seed-one");
     assert.ok(row);
-    assert.equal(row!.claim_lost, undefined, "B made no claim, so B lost none");
+
+    const guidance = emittedGuidance(conflicted.err!);
+    assert.ok(!guidance.includes("assignee"), `the steal route is closed: ${guidance}`);
+    assert.equal(row!.claim_lost, undefined, "B made no claim, so B is told of none");
     assert.ok(!conflicted.err!.message.includes("claim_lost"));
-    // The pre-claim report is kept in full — including the owner field, exactly as before this
-    // unit. Withdrawing guidance here would remove correct information without removing a steal.
-    assert.ok(
-      (row!.frontmatter_differs as string[]).includes("assignee"),
-      `the ordinary report is unchanged: ${JSON.stringify(row)}`,
-    );
+
+    // The suppressed-and-unattributed line: kept upstream, your bytes saved, and no fixing verb —
+    // the chain is not offered for a conflict whose only divergence is withdrawn.
     assert.equal(
       conflicted.err!.help,
-      convergeHelp(cliInvocation(), "tasks/seed-one", exportPathFor(topo, homeB!, "tasks/seed-one.body.md")),
+      undefined,
+      "no reconcile chain is offered when every remaining divergence is a withdrawn claim field",
     );
+    assert.ok(
+      conflicted.err!.message.includes(
+        `doc tasks/seed-one — teammate's version kept; yours saved at ${exportPathFor(topo, homeB!, "tasks/seed-one.md")}`,
+      ),
+      `the line states the disposition without a verb: ${conflicted.err!.message}`,
+    );
+    assert.ok(!conflicted.err!.message.includes("reconcile with doc update"));
   } finally {
     await cleanup();
     await topo.cleanup();
