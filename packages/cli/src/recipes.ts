@@ -199,6 +199,11 @@ export const TASK_KIND: KindConvention = {
   // `kinds` teaches the vocabulary to any agent that orients — discovery shipped; validation
   // is a future consumer.
   links: { "depends on": TASK_TYPE },
+  // The claim coordinates (research/atomic-shared-task-claim-design): declaring them is what
+  // lets sync's converge report a lost claim as ownership and withdraw the re-apply route,
+  // instead of presenting the race as an ordinary content conflict. Logical names; the
+  // edition's coordinate policy resolves them onto storage keys.
+  claim: { ownerField: "assignee", stateField: "progress_status" },
   fields: {
     required: ["title", PROGRESS_STATUS_FIELD],
     optional: ["priority", "assignee", "description"],

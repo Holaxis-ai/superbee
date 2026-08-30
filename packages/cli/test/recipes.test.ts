@@ -413,6 +413,7 @@ test("recipe add work-tracking: applies the current built-in Task convention wit
       description: "A concrete unit of work that can be claimed, prioritized, assigned, and completed.",
       path: "tasks/",
       links: { "depends on": "Task" },
+      claim: { owner_field: "assignee", state_field: "progress_status" },
       fields: {
         required: ["title", "superbee_progress_status"],
         optional: ["priority", "assignee", "description"],
