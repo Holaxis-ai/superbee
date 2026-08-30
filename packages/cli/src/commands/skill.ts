@@ -9,7 +9,9 @@
 // semantics `hook install --scope user` uses). OpenCode reuses the Claude-compatible project path
 // and the documented global ~/.claude path. Those are one physical target unless Claude Code has
 // been explicitly relocated, in which case each host needs its own managed copy. New installs use
-// skills/superbee; skills/aslite is inspected only for migration, status, and uninstall.
+// skills/superbee; skills/aslite is inspected only for migration, status, and uninstall. The
+// package also ships a portable archive for hosts whose import is user-directed rather than
+// manifest-managed here.
 //
 // DESTRUCTIVE-WRITE DISCIPLINE (same boundary as hook.ts): install writes a manifest
 // (`.aslite-skill.json`: file list + package version + installed-by) inside the canonical folder
@@ -84,11 +86,15 @@ Usage:
   superbee skill install   [--scope project|user]
   superbee skill status    [--scope project|user]
   superbee skill uninstall [--scope project|user]
+  superbee skill path
 
 Installs (or removes) the generated Agent Skill shipped with this npm package — SKILL.md plus its
 references/ folder — for Claude Code, Codex, and OpenCode. OpenCode shares the Claude-compatible
 target unless Claude Code uses a relocated config root, so duplicate bytes are not written in the
 normal case. Its separate SessionStart integration is the plugin written by \`hook install\`.
+\`path\` reports the complete portable ZIP archive shipped with this package for a host that asks
+the user to import a Skill manually. It does not install anything or grant an agent MCP access,
+bundle selection, or authority to write or share.
 
 Install writes a manifest (${"`"}.aslite-skill.json${"`"}) inside the canonical superbee folder.
 An owned old-only aslite folder migrates atomically; an unmanaged legacy folder coexists untouched;
@@ -128,6 +134,13 @@ export interface SkillAssets {
   /** Sorted, POSIX-relative to `root`: `SKILL.md` plus every file under `references/`. */
   files: string[];
   fileSha256: Record<string, string>;
+}
+
+export interface SkillArchive {
+  path: string;
+  sha256: string;
+  format: "zip";
+  root: string;
 }
 
 export type SkillManifest = OwnedSkillManifest;
@@ -188,6 +201,25 @@ export function resolveSkillAssets(executable?: string): SkillAssets {
     },
     files,
     fileSha256,
+  };
+}
+
+/** Resolve the portable Skill archive that is shipped beside the source Skill assets. */
+export function resolveSkillArchive(executable?: string): SkillArchive {
+  const assets = resolveSkillAssets(executable);
+  const archive = join(assets.root, "superbee.skill.zip");
+  if (!existsSync(archive)) {
+    throw new CliError(
+      "RUNTIME",
+      `the running distribution carries no portable Skill archive (expected ${collapseHomeDirectory(archive)})`,
+      { help: "reinstall the released superbee package, then run `superbee skill path`" },
+    );
+  }
+  return {
+    path: archive,
+    sha256: `sha256:${createHash("sha256").update(readFileSync(archive)).digest("hex")}`,
+    format: "zip",
+    root: "superbee",
   };
 }
 
@@ -909,7 +941,7 @@ export function skillRefreshScopes(
 }
 
 /**
- * CLI entry: dispatch the positional subcommand (install|status|uninstall). Output is TOON. An
+ * CLI entry: dispatch the positional subcommand (install|status|uninstall|path). Output is TOON. An
  * unknown/missing subcommand, or an unsupported --scope, is a USAGE error; a refused folder is a
  * structured RUNTIME failure with nothing written or deleted at the refusing target.
  */
@@ -931,14 +963,16 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     (positionals) => {
       const [sub, ...data] = positionals;
       if (sub === undefined) return { kind: "unknown" } as const;
-      if (sub !== "install" && sub !== "status" && sub !== "uninstall") return { kind: "unknown", token: sub } as const;
+      if (sub !== "install" && sub !== "status" && sub !== "uninstall" && sub !== "path") return { kind: "unknown", token: sub } as const;
       return {
         kind: "selected",
         leaf: sub === "install"
           ? CLI_LEAVES.skillInstall
           : sub === "status"
             ? CLI_LEAVES.skillStatus
-            : CLI_LEAVES.skillUninstall,
+            : sub === "uninstall"
+              ? CLI_LEAVES.skillUninstall
+              : CLI_LEAVES.skillPath,
         data,
         payload: sub,
       } as const;
@@ -953,22 +987,41 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     throw new CliError(
       "USAGE",
       selection.token === undefined
-        ? "skill requires a subcommand (install|status|uninstall)"
-        : `unknown skill subcommand: ${selection.token} (expected install|status|uninstall)`,
-      { help: `${cliInvocation()} skill install|status|uninstall [--scope project|user]` },
+        ? "skill requires a subcommand (install|status|uninstall|path)"
+        : `unknown skill subcommand: ${selection.token} (expected install|status|uninstall|path)`,
+      { help: `${cliInvocation()} skill install|status|uninstall [--scope project|user], or skill path` },
     );
   }
   const sub = selection.payload;
 
   const requestedScope = values.scope as string | undefined;
+  const mode = resolveMode(values);
+
+  if (sub === "path") {
+    if (requestedScope !== undefined) {
+      throw new CliError("USAGE", "skill path does not accept --scope", {
+        help: `${cliInvocation()} skill path [--json]`,
+      });
+    }
+    const archive = resolveSkillArchive(deps.executable);
+    stdout(render({
+      skill: {
+        action: "path",
+        archive: archive.path,
+        archive_sha256: archive.sha256,
+        format: archive.format,
+        root: archive.root,
+      },
+    }, mode));
+    return;
+  }
+
   const scope = normalizeInstallScope(requestedScope);
   if (scope === undefined) {
     throw new CliError("USAGE", `unsupported skill scope: ${requestedScope} (expected project|user)`, {
       help: `${cliInvocation()} skill ${sub} --scope project|user`,
     });
   }
-
-  const mode = resolveMode(values);
 
   if (sub === "status") {
     const inspection = inspectSkillStatus(scope, deps);

@@ -508,9 +508,10 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("skillInstall", "skill install", zero, 24),
           publicLeaf("skillStatus", "skill status", zero),
           publicLeaf("skillUninstall", "skill uninstall", zero),
+          publicLeaf("skillPath", "skill path", zero),
         ],
-        usage: "skill install|status|uninstall [--scope project|user]",
-        summary: "Install this package's Agent Skill (SKILL.md + references/) into Claude Code, Codex, and OpenCode-compatible skill folders; shared paths are written once, while SessionStart remains `hook install`; manifest-tracked, idempotent, refuses folders it does not manage",
+        usage: "skill install|status|uninstall [--scope project|user] | skill path",
+        summary: "Install this package's Agent Skill (SKILL.md + references/) into Claude Code, Codex, and OpenCode-compatible folders, or locate its portable ZIP for manual host import; shared paths are written once, manifest-tracked, idempotent, and refuse unmanaged folders",
       },
       {
         id: "setup",

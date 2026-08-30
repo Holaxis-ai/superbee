@@ -31,7 +31,7 @@ const receipt = {
 };
 const manifest = {
   name: "superbee",
-  files: ["dist", "SKILL.md", "references", "NOTICE"],
+  files: ["dist", "SKILL.md", "references", "superbee.skill.zip", "NOTICE"],
   bin: {
     superbee: "dist/superbee.mjs",
   },
@@ -282,6 +282,7 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "package.json",
     "references/a.md",
     "references/b/c.md",
+    "superbee.skill.zip",
   ]);
 });
 
