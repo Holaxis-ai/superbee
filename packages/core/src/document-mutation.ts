@@ -10,6 +10,7 @@
 
 import { InvalidInputError } from "./errors.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
+import { assertFieldPreconditions } from "./document-precondition.js";
 import { parseTimestamp } from "./freshness.js";
 import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 import { persistMutationActor, SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
@@ -25,6 +26,7 @@ import {
   readDocVersioned,
   writeDocVersionedForEdition,
 } from "./bundle.js";
+import type { FieldPrecondition } from "./document-precondition.js";
 import type { KindRegistry, RegistryValidationResult } from "./kinds.js";
 import type { ValidationWarning } from "./content-type.js";
 import type {
@@ -108,6 +110,13 @@ export interface MutateDocumentOptions {
   persistActor?: boolean;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
   expectedVersion?: Version;
+  /**
+   * Read-based modes only: asserted facts about the observed document, ANDed and re-evaluated
+   * against EVERY attempt's fresh read before any candidate is built. An unsatisfied assertion is
+   * a terminal {@link PreconditionFailed} — never a retry — so the guard and the CAS write commit
+   * or refuse together.
+   */
+  preconditions?: FieldPrecondition[];
   /** Test seam for edition-specific clocks; production defaults to the current ISO instant. */
   now?: () => string;
 }
@@ -301,6 +310,15 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   const context: DocumentMutationContext = { okfVersion };
 
   if (opts.mode === "create-only") {
+    // Fail closed: create-only issues NO read — its CAS basis is expect-absent — so there is no
+    // observed state to evaluate an assertion against. Accepting the option and silently not
+    // enforcing it would leave a caller believing an unenforced guard is enforced.
+    if (opts.preconditions !== undefined && opts.preconditions.length > 0) {
+      throw new InvalidInputError(
+        "field preconditions require an observed document; 'create-only' performs no read "
+          + "(use mode 'patch' with onAbsent: 'create')",
+      );
+    }
     const decisionNow = onceNow(now);
     const attributed = attributeCandidate(
       await opts.buildCandidate(undefined, context),
@@ -318,12 +336,21 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     return { doc, changed: true, version, warnings };
   }
 
+  // The version of the read the CURRENT attempt is deciding over. `versionedMutation` withholds
+  // version tokens from `decide` so a decision can never be paired with a different read's token;
+  // this records it for the one attempt in flight, and it is only ever REPORTED (the hard-CAS
+  // comparison and a precondition refusal's `observedVersion`) — never used to build a candidate.
+  let lastReadVersion: Version | null = null;
   const readExisting = async (): Promise<{ state: OkfDocument | undefined; version: Version | null }> => {
     try {
       const { doc, version } = await readDocVersioned(opts.bundle, opts.id);
+      lastReadVersion = version;
       return { state: doc, version };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { state: undefined, version: null };
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+        lastReadVersion = null;
+        return { state: undefined, version: null };
+      }
       throw error;
     }
   };
@@ -335,6 +362,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       read: readExisting,
       decide: async (existing) => {
         const decisionNow = onceNow(now);
+        assertFieldPreconditions(opts.id, existing?.frontmatter, opts.preconditions, lastReadVersion);
         const attributed = attributeCandidate(
           await opts.buildCandidate(existing, context),
           opts.actor,
@@ -398,18 +426,21 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings };
   }
 
-  let lastReadVersion: Version | null = null;
   let savedDoc: OkfDocument | undefined;
   const hardCas = opts.expectedVersion !== undefined;
   const outcome = await versionedMutation<OkfDocument, { doc?: OkfDocument; warnings: ValidationWarning[] }>({
     read: async () => {
       const read = await readExisting();
-      lastReadVersion = read.version;
       if (read.state === undefined && onAbsent === "fail") throw new DocumentNotFoundError(opts.id);
       return read;
     },
     decide: async (existing) => {
       const decisionNow = onceNow(now);
+      // Ahead of the version comparison on purpose: when both an asserted fact and the caller's
+      // version token are stale, the domain answer is the true one and the terminal one. Reporting
+      // a conflict instead would tell a refused caller its premise merely moved, and invite the
+      // re-read-and-retry that overwrites whoever changed the field.
+      assertFieldPreconditions(opts.id, existing?.frontmatter, opts.preconditions, lastReadVersion);
       if (hardCas && lastReadVersion !== opts.expectedVersion) {
         throw new VersionConflict(opts.id, opts.expectedVersion!, lastReadVersion);
       }

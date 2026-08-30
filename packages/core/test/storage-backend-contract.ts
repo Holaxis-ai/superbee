@@ -3,11 +3,17 @@
  * guarantees are registered explicitly so a new backend cannot pass through hidden
  * capability skips. Engine validation, wire mechanics, and adapter internals stay in
  * their dedicated suites.
+ *
+ * One row is deliberately an ENGINE-over-adapter row rather than a seam row:
+ * {@link registerClaimPreconditionContract} drives `mutateDocument`'s field precondition, whose
+ * whole claim is that it needs no backend participation. Stating it once per adapter is what
+ * proves the guard behaves identically on all three; a seam-only row could not observe it at all.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 
 import type {
+  Bundle,
   HeadResult,
   OkfDocument,
   QueryFilter,
@@ -16,6 +22,10 @@ import type {
 } from "../src/types.js";
 import { blobVersion, contentVersion, VersionConflict } from "../src/versioning.js";
 import { FilesystemIdentityAliasError, InvalidInputError } from "../src/errors.js";
+import { mutateDocument } from "../src/document-mutation.js";
+import { PreconditionFailed } from "../src/document-precondition.js";
+import type { DocumentMutationResult } from "../src/document-mutation.js";
+import type { KindRegistry } from "../src/kinds.js";
 import type { HostAliasing } from "./host-class.js";
 
 export interface BackendFixture {
@@ -43,6 +53,7 @@ export interface AtomicBackendContractOptions {
 
 const TIMESTAMP = "2026-07-01T00:00:00.000Z";
 const enc = (value: string) => new TextEncoder().encode(value);
+const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
 async function withFixture(
   create: BackendContractOptions["create"],
@@ -451,6 +462,76 @@ export function registerStorageBackendAtomicCasContract(
         assert.equal(result.reason.expected, initial);
       }
       assert.equal((await fixture.backend.read(id)).version, fulfilled[0]!.value);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+}
+
+/**
+ * One-winner agreement for the claim shape `mutateDocument`'s field precondition exists to serve:
+ * N claimants race to set an owner field that each of them asserts is still unset. The precondition
+ * is evaluated inside the same decision whose read version the CAS write is conditional on, so the
+ * losers are refused terminally rather than retrying into a later win — and because no adapter
+ * participates in the check, the row must read the same for every backend registered here.
+ */
+export function registerClaimPreconditionContract(options: AtomicBackendContractOptions): void {
+  const { name, createPeers } = options;
+  const OWNER = "assignee";
+
+  test(`${name} claim precondition contract: concurrent claimants produce one winner and terminal refusals`, async () => {
+    const fixture = await createPeers();
+    try {
+      assert.ok(fixture.peers.length > 0);
+      const id = "tasks/contended";
+      await fixture.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Contract\n");
+      const unclaimed = await fixture.backend.write(id, doc(id, "claimable"));
+      const claimants = Array.from({ length: 8 }, (_, index) => `claimant-${index}`);
+
+      const results = await Promise.allSettled(
+        claimants.map((claimant, index) => {
+          const bundle: Bundle = { root: "unused://claim", backend: fixture.peers[index % fixture.peers.length]! };
+          return mutateDocument({
+            bundle,
+            id,
+            mode: "patch",
+            registry: EMPTY_REGISTRY,
+            strict: false,
+            preconditions: [{ field: OWNER, expect: "absent" }],
+            buildCandidate: (existing) => ({
+              frontmatter: { ...existing!.frontmatter, [OWNER]: claimant },
+              body: existing!.body,
+            }),
+          });
+        }),
+      );
+
+      const fulfilled = results.filter(
+        (result): result is PromiseFulfilledResult<DocumentMutationResult> => result.status === "fulfilled",
+      );
+      const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      assert.equal(fulfilled.length, 1);
+      assert.equal(rejected.length, results.length - 1);
+
+      const winner = fulfilled[0]!.value;
+      const owner = winner.doc.frontmatter[OWNER];
+      assert.equal(winner.changed, true);
+      assert.equal(claimants.includes(String(owner)), true);
+      assert.notEqual(winner.version, unclaimed);
+
+      for (const result of rejected) {
+        assert.ok(result.reason instanceof PreconditionFailed, `expected PreconditionFailed, got ${String(result.reason)}`);
+        assert.equal(result.reason.id, id);
+        assert.equal(result.reason.field, OWNER);
+        assert.equal(result.reason.expected, "absent");
+        // Every refusal names the ONE winner: a loser is never told about another loser's write,
+        // because no losing write ever reaches storage.
+        assert.equal(result.reason.actual, owner);
+      }
+
+      const final = await fixture.backend.read(id);
+      assert.equal(final.doc.frontmatter[OWNER], owner);
+      assert.equal(final.version, winner.version);
     } finally {
       await fixture.cleanup();
     }
