@@ -87,7 +87,11 @@ async function assertPublicationRoot(identity: PublicationRootIdentity): Promise
       stat(identity.requested),
     ]);
   } catch (error) {
-    throw new PublicationError("SOURCE_CHANGED", "the publication source identity became unavailable during capture", { retryable: true, cause: error });
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new PublicationError("SOURCE_CHANGED", "the publication source identity became unavailable during capture", { retryable: true, cause: error });
+    }
+    throw new PublicationError("IO_ERROR", "the publication source identity could not be read during capture", { cause: error });
   }
   if (entry.isSymbolicLink() || !entry.isDirectory() || !current.isDirectory() || canonical !== identity.canonical ||
     current.dev !== identity.dev || current.ino !== identity.ino) {

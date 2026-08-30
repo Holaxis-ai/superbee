@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -230,6 +230,44 @@ test("permission-shaped inventory failures are reclassified only after proven ro
       await rm(authorized, { recursive: true, force: true });
       if (replacement) await rm(replacement.root, { recursive: true, force: true });
     }
+  }
+});
+
+test("an unchanged authorized root that becomes inaccessible remains an IO_ERROR", {
+  skip: process.platform === "win32" ? "POSIX directory modes are required for this probe" : false,
+}, async () => {
+  const { root: fixtureRoot } = await fixture();
+  const container = `${fixtureRoot}-permission-gate`;
+  const root = path.join(container, "bundle");
+  await mkdir(container);
+  await rename(fixtureRoot, root);
+  const original = FilesystemBackend.prototype.list;
+  let injected = false;
+  FilesystemBackend.prototype.list = async function (...args) {
+    if (!injected) {
+      injected = true;
+      await chmod(container, 0o000);
+      const error = new Error("simulated inventory denial after the authorized root became inaccessible");
+      error.code = "EACCES";
+      throw error;
+    }
+    return original.apply(this, args);
+  };
+  try {
+    await assert.rejects(() => capturePublicationSnapshot({
+      schema: PUBLICATION_SNAPSHOT_V1,
+      source: { kind: "filesystem", root },
+      maxAttempts: 1,
+    }), (error) => {
+      assert.ok(error instanceof PublicationError);
+      assert.equal(error.code, "IO_ERROR");
+      assert.equal(error.retryable, false);
+      return true;
+    });
+  } finally {
+    FilesystemBackend.prototype.list = original;
+    await chmod(container, 0o700).catch(() => {});
+    await rm(container, { recursive: true, force: true });
   }
 });
 

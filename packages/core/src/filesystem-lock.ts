@@ -315,20 +315,25 @@ async function selectLockRoot(options: FilesystemMutationLockOptions): Promise<s
 
 const WINDOWS_CLAIM_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
 
-async function isLockClaimContention(error: unknown, lockPath: string): Promise<boolean> {
+type LockClaimFailure = "contention" | "unwitnessed-windows-sharing-error" | "terminal";
+
+async function classifyLockClaimFailure(error: unknown, lockPath: string): Promise<LockClaimFailure> {
   const code = (error as NodeJS.ErrnoException).code;
-  if (code === "EEXIST") return true;
-  if (process.platform !== "win32" || !WINDOWS_CLAIM_CONTENTION_CODES.has(code ?? "")) return false;
+  if (code === "EEXIST") return "contention";
+  if (process.platform !== "win32" || !WINDOWS_CLAIM_CONTENTION_CODES.has(code ?? "")) return "terminal";
 
   // Win32 may report a sharing-shaped error while another claimer creates or removes this exact
-  // directory. Retry only when a fresh probe can still classify the path; a denied probe keeps
-  // the original permission failure terminal.
+  // directory. A witnessed path is contention. An absent path is ambiguous: permit one bounded
+  // retry in case the competing directory operation just completed, but never turn a durable
+  // create denial into a malformed-lock timeout. A denied probe remains terminal immediately.
   try {
     await fs.lstat(lockPath);
-    return true;
+    return "contention";
   } catch (probeError) {
     const probeCode = (probeError as NodeJS.ErrnoException).code;
-    return probeCode === "ENOENT" || probeCode === "ENOTDIR";
+    return probeCode === "ENOENT" || probeCode === "ENOTDIR"
+      ? "unwitnessed-windows-sharing-error"
+      : "terminal";
   }
 }
 
@@ -344,6 +349,7 @@ async function claimLockPath(
   pollMs: number,
 ): Promise<() => Promise<void>> {
   const started = owner.created_at_ms;
+  let unwitnessedWindowsRetryUsed = false;
   while (true) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
@@ -377,7 +383,14 @@ async function claimLockPath(
         }
       };
     } catch (err) {
-      if (!(await isLockClaimContention(err, lockPath))) throw err;
+      const failure = await classifyLockClaimFailure(err, lockPath);
+      if (failure === "terminal") throw err;
+      if (failure === "unwitnessed-windows-sharing-error") {
+        if (unwitnessedWindowsRetryUsed) throw err;
+        unwitnessedWindowsRetryUsed = true;
+      } else {
+        unwitnessedWindowsRetryUsed = false;
+      }
     }
 
     if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);

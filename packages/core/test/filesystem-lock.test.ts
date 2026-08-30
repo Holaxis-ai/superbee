@@ -827,7 +827,7 @@ test("lock-root creation and lock claims propagate non-contention filesystem fai
   }
 });
 
-test("Windows lock claims retry only an observable transient EPERM", async () => {
+test("Windows lock claims bound an unwitnessed sharing-error retry and propagate durable denial", async () => {
   const harness = await isolatedLockPaths();
   const platform = Object.getOwnPropertyDescriptor(process, "platform");
   assert.ok(platform);
@@ -850,6 +850,27 @@ test("Windows lock claims retry only an observable transient EPERM", async () =>
     });
     assert.equal(claimAttempts, 2);
     await release();
+    restoreMkdir();
+    restoreMkdir = () => {};
+
+    const absentDenial = Object.assign(new Error("durable create denial on an absent path"), { code: "EPERM" });
+    let absentDenialAttempts = 0;
+    restoreMkdir = replaceFsMethod("mkdir", (...args) => {
+      if (String(args[0]).endsWith(".lock")) {
+        absentDenialAttempts += 1;
+        return Promise.reject(absentDenial);
+      }
+      return Reflect.apply(originalMkdir, fs, args);
+    });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, {
+        lockRoot: harness.lockRoot,
+        waitMs: 100,
+        pollMs: 0,
+      }),
+      (error: unknown) => error === absentDenial,
+    );
+    assert.equal(absentDenialAttempts, 2);
     restoreMkdir();
     restoreMkdir = () => {};
 
