@@ -865,7 +865,7 @@ test("Windows lock claims bound an unwitnessed sharing-error retry and propagate
     await assert.rejects(
       () => acquireFilesystemMutationLock(harness.target, {
         lockRoot: harness.lockRoot,
-        waitMs: 100,
+        waitMs: 0,
         pollMs: 0,
       }),
       (error: unknown) => error === absentDenial,

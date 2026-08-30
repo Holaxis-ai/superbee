@@ -388,6 +388,9 @@ async function claimLockPath(
       if (failure === "unwitnessed-windows-sharing-error") {
         if (unwitnessedWindowsRetryUsed) throw err;
         unwitnessedWindowsRetryUsed = true;
+        // This is one immediate re-attempt, not a wait. It is permitted even with waitMs: 0 so
+        // the next result can distinguish a one-shot sharing race from a durable create denial.
+        continue;
       } else {
         unwitnessedWindowsRetryUsed = false;
       }

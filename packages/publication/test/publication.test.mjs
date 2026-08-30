@@ -271,6 +271,42 @@ test("an unchanged authorized root that becomes inaccessible remains an IO_ERROR
   }
 });
 
+test("entry-level symlink substitution remains SOURCE_CHANGED when realpath would fail", {
+  skip: process.platform === "win32" ? "this probe requires unprivileged symlink creation" : false,
+}, async () => {
+  const { root } = await fixture();
+  const authorized = `${root}-authorized`;
+  const original = FilesystemBackend.prototype.list;
+  let injected = false;
+  FilesystemBackend.prototype.list = async function (...args) {
+    if (!injected) {
+      injected = true;
+      await rename(root, authorized);
+      await symlink(root, root);
+      const error = new Error("simulated inventory failure after symlink-loop substitution");
+      error.code = "EPERM";
+      throw error;
+    }
+    return original.apply(this, args);
+  };
+  try {
+    await assert.rejects(() => capturePublicationSnapshot({
+      schema: PUBLICATION_SNAPSHOT_V1,
+      source: { kind: "filesystem", root },
+      maxAttempts: 1,
+    }), (error) => {
+      assert.ok(error instanceof PublicationError);
+      assert.equal(error.code, "SOURCE_CHANGED");
+      assert.equal(error.retryable, true);
+      return true;
+    });
+  } finally {
+    FilesystemBackend.prototype.list = original;
+    await rm(root, { recursive: true, force: true });
+    await rm(authorized, { recursive: true, force: true });
+  }
+});
+
 test("capture rejects structurally invalid documents and nested symlinks", async () => {
   for (const mode of ["missing-type", "symlink"]) {
     const { root } = await fixture();

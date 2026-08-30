@@ -78,11 +78,29 @@ async function authorizePublicationRoot(requested: string): Promise<PublicationR
 
 async function assertPublicationRoot(identity: PublicationRootIdentity): Promise<void> {
   let entry;
+  try {
+    entry = await lstat(identity.requested);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") {
+      throw new PublicationError("SOURCE_CHANGED", "the publication source identity became unavailable during capture", { retryable: true, cause: error });
+    }
+    throw new PublicationError("IO_ERROR", "the publication source identity could not be read during capture", { cause: error });
+  }
+  // Preserve positive entry-level substitution evidence before realpath/stat can fail on the
+  // replacement itself (for example a newly installed symlink loop yielding ELOOP).
+  if (entry.isSymbolicLink() || !entry.isDirectory()) {
+    throw new PublicationError("SOURCE_CHANGED", "the publication source root changed during capture", {
+      retryable: true,
+      expected: { canonical: identity.canonical, dev: identity.dev, ino: identity.ino },
+      actual: { symlink: entry.isSymbolicLink(), directory: entry.isDirectory() },
+    });
+  }
+
   let canonical;
   let current;
   try {
-    [entry, canonical, current] = await Promise.all([
-      lstat(identity.requested),
+    [canonical, current] = await Promise.all([
       realpath(identity.requested),
       stat(identity.requested),
     ]);
@@ -93,7 +111,7 @@ async function assertPublicationRoot(identity: PublicationRootIdentity): Promise
     }
     throw new PublicationError("IO_ERROR", "the publication source identity could not be read during capture", { cause: error });
   }
-  if (entry.isSymbolicLink() || !entry.isDirectory() || !current.isDirectory() || canonical !== identity.canonical ||
+  if (!current.isDirectory() || canonical !== identity.canonical ||
     current.dev !== identity.dev || current.ino !== identity.ino) {
     throw new PublicationError("SOURCE_CHANGED", "the publication source root changed during capture", {
       retryable: true,
