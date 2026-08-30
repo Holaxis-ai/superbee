@@ -1176,6 +1176,140 @@ test("claim converge: a MIXED conflict keeps the body reconcile chain while the 
   }
 });
 
+test("claim converge: a STATE-ONLY divergence is not a lost claim — the ordinary report is kept in full (review F-1)", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedClaimableTask(topo, homeA!, homeB!, true);
+
+    // One owner, agreed by both sides. Only the workflow STATE diverges — nobody's ownership is
+    // contested, so this is an ordinary content conflict and must be reported as one.
+    await claimTask(topo.a, OWNER_A);
+    const claimed = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(claimed.err, undefined, claimed.err?.message);
+    const synced = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
+    assert.equal(synced.err, undefined, synced.err?.message);
+
+    await modifyBoardDoc(topo.a, "tasks/seed-one", { frontmatter: { superbee_progress_status: "done" } });
+    const advanced = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(advanced.err, undefined, advanced.err?.message);
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { frontmatter: { superbee_progress_status: "canceled" } });
+
+    const conflicted = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.ok(conflicted.err, "expected the CONFLICT(5) terminal envelope");
+    const row = conflictRows(conflicted.err!).find((r) => r.id === "tasks/seed-one");
+    assert.ok(row);
+
+    assert.equal(row!.claim_lost, undefined, "no claim was made, so none was lost");
+    assert.ok(!conflicted.err!.message.includes("claim_lost"), "and none is asserted in the message");
+    assert.ok(
+      (row!.frontmatter_differs as string[]).includes("superbee_progress_status"),
+      `the diverging state field keeps its ordinary guidance: ${JSON.stringify(row)}`,
+    );
+    assert.equal(row!.yours_body, exportPathFor(topo, homeB!, "tasks/seed-one.body.md"));
+    assert.equal(
+      conflicted.err!.help,
+      convergeHelp(cliInvocation(), "tasks/seed-one", exportPathFor(topo, homeB!, "tasks/seed-one.body.md")),
+      "the reconcile chain is still offered — there is a real divergence to reconcile",
+    );
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("claim converge: a MULTI-STOP rebase still withdraws the steal advice and attributes to origin/board (review F-2)", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedClaimableTask(topo, homeA!, homeB!, true);
+    await claimTask(topo.a, OWNER_A);
+    const aClaim = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(aClaim.err, undefined, aClaim.err?.message);
+    const arbitratedAt = originBoardHead(topo);
+
+    // B stacks TWO commits: the losing claim, then a clean body append far from the frontmatter.
+    // The second replays cleanly ON TOP of the kept-upstream version, so the board's HEAD blob is
+    // no longer origin/board's — the case where the report used to degrade and re-advertise the steal.
+    await claimTask(topo.b, OWNER_B);
+    commitBoard(topo.b, "board: bob claims seed-one", { author: { name: "bob", email: "bob@example.invalid" } });
+    await modifyBoardDoc(topo.b, "tasks/seed-one", {
+      body: "# Seed one\n\nseed body\n\nA later paragraph, far from the frontmatter.\n",
+    });
+    commitBoard(topo.b, "board: bob appends to seed-one", { author: { name: "bob", email: "bob@example.invalid" } });
+
+    const lost = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.ok(lost.err, "expected the CONFLICT(5) terminal envelope");
+    assert.equal(lost.err!.code, "CONFLICT");
+
+    // The board's HEAD really did move past origin/board for this path — the topology under test.
+    assert.notEqual(
+      git(topo.b.board, ["rev-parse", "HEAD:tasks/seed-one.md"]).trim(),
+      git(topo.b.board, ["rev-parse", "refs/remotes/origin/board:tasks/seed-one.md"]).trim(),
+      "the later local commit replayed on top — the kept blob is not origin/board's",
+    );
+
+    const guidance = emittedGuidance(lost.err!);
+    assert.ok(
+      !guidance.includes("assignee"),
+      `suppression does not depend on attributability: ${guidance}`,
+    );
+    const row = conflictRows(lost.err!).find((r) => r.id === "tasks/seed-one");
+    assert.ok(row);
+    assert.ok(
+      !(row!.frontmatter_differs as string[] | undefined)?.includes("assignee"),
+      `the owner field is never offered for re-application: ${JSON.stringify(row)}`,
+    );
+    // Attribution survives too, because it is read from the arbiter itself rather than from HEAD.
+    assert.equal(
+      row!.claim_lost,
+      `owner is ${OWNER_A} as of origin/board@${arbitratedAt}; your claim was not arbitrated`,
+    );
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("claim converge: a side that never recorded an owner is not told it lost a claim it never made", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const [homeA, homeB] = homes;
+  try {
+    await seedClaimableTask(topo, homeA!, homeB!, true);
+
+    // A claims an unowned task. B, still on the pre-claim base, only moves the workflow state —
+    // it never writes an owner. The owner field DOES diverge (absent vs A), but B has no claim to
+    // have lost, so asserting one would be a false statement.
+    await claimTask(topo.a, OWNER_A);
+    const aClaim = await runSync(homeA!, ["--dir", topo.a.root]);
+    assert.equal(aClaim.err, undefined, aClaim.err?.message);
+    await modifyBoardDoc(topo.b, "tasks/seed-one", { frontmatter: { superbee_progress_status: "blocked" } });
+
+    const conflicted = await runSync(homeB!, ["--dir", topo.b.root]);
+    assert.ok(conflicted.err, "expected the CONFLICT(5) terminal envelope");
+    const row = conflictRows(conflicted.err!).find((r) => r.id === "tasks/seed-one");
+    assert.ok(row);
+    assert.equal(row!.claim_lost, undefined, "B made no claim, so B lost none");
+    assert.ok(!conflicted.err!.message.includes("claim_lost"));
+    // The pre-claim report is kept in full — including the owner field, exactly as before this
+    // unit. Withdrawing guidance here would remove correct information without removing a steal.
+    assert.ok(
+      (row!.frontmatter_differs as string[]).includes("assignee"),
+      `the ordinary report is unchanged: ${JSON.stringify(row)}`,
+    );
+    assert.equal(
+      conflicted.err!.help,
+      convergeHelp(cliInvocation(), "tasks/seed-one", exportPathFor(topo, homeB!, "tasks/seed-one.body.md")),
+    );
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("claim converge REGRESSION LOCK: a kind with NO claim declaration reports exactly as it did before", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);

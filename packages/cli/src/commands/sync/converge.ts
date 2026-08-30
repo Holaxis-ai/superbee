@@ -131,35 +131,43 @@ export function entryLabel(c: Pick<ResolvedConflict, "entry" | "isDoc">): string
  * divergence. When it is the ONLY divergence the line reports ownership and stops: the
  * kept/exported/reconcile narration exists to merge two versions of a BODY, and there are not two
  * bodies here. When real content diverged too, the ordinary line stands and the ownership
- * statement is appended to it.
+ * statement is appended to it. An unattributed claim (the arbiter's own copy was unreadable) still
+ * withdraws the fixing verb — the steal advice goes whether or not an owner can be named — and
+ * simply says nothing about ownership.
  */
 export function convergeDocLine(
   c: Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">,
   claim?: ClaimDivergence,
 ): string {
-  if (claim?.only) return `${CLAIM_LOST_KEY}: ${c.entry} — ${claim.statement}`;
+  if (claim?.only && claim.statement !== undefined) return `${CLAIM_LOST_KEY}: ${c.entry} — ${claim.statement}`;
   const label = entryLabel(c);
+  // The fixing-verb suffix is keyed on the BODY export's existence, not on isDoc alone — a doc
+  // with no .body.md (unparseable/non-utf8 local blob) must not tell the user to `doc update`
+  // with the FULL export (nesting YAML into the body). A claim-only conflict drops it for the
+  // same reason: no artifact the verb could honestly consume.
+  const fixingVerb = c.isDoc && c.bodyExportPath !== null && claim?.only !== true;
   const line = ((): string => {
     if (c.exportPath === null) {
       return `${label} — teammate's version kept (your side deleted it; nothing to save)`;
     }
-    // The fixing-verb suffix is keyed on the BODY export's existence, not on isDoc alone — a doc
-    // with no .body.md (unparseable/non-utf8 local blob) must not tell the user to `doc update`
-    // with the FULL export (nesting YAML into the body). Like the deletion case: no artifact, no verb.
     if (!c.landed) {
-      const recreate = c.isDoc && c.bodyExportPath !== null ? " — re-create with doc write" : "";
+      const recreate = fixingVerb ? " — re-create with doc write" : "";
       return `${label} — teammate's deletion kept; yours saved at ${c.exportPath}${recreate}`;
     }
-    const reconcile = c.isDoc && c.bodyExportPath !== null ? " — reconcile with doc update" : "";
+    const reconcile = fixingVerb ? " — reconcile with doc update" : "";
     return `${label} — teammate's version kept; yours saved at ${c.exportPath}${reconcile}`;
   })();
-  return claim ? `${line}; ${CLAIM_LOST_KEY}: ${claim.statement}` : line;
+  return claim?.statement !== undefined ? `${line}; ${CLAIM_LOST_KEY}: ${claim.statement}` : line;
 }
 
-/** The CONFLICT(5) envelope message: one converge line per conflicted entry, "; "-joined. */
+/**
+ * The CONFLICT(5) envelope message: one converge line per conflicted entry, "; "-joined.
+ * `analyses` is REQUIRED and index-aligned: a caller that forgot it would silently re-advertise
+ * the withdrawn steal advice, so omission fails at the type level rather than at runtime.
+ */
 export function buildConvergeMessage(
   conflicts: Array<Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">>,
-  analyses: readonly ConflictAnalysis[] = [],
+  analyses: readonly ConflictAnalysis[],
 ): string {
   return conflicts.map((c, i) => convergeDocLine(c, analyses[i]?.claim)).join("; ");
 }
@@ -189,11 +197,13 @@ export function recreateHelp(inv: string, id: string, bodyExportPath: string): s
  *
  * A doc whose ONLY divergence is a lost claim is skipped too: there is no body to merge, and
  * offering a merge chain for it would be the product asking the loser to publish over the winner.
+ * `analyses` is REQUIRED and index-aligned for that reason — an omitted argument would restore the
+ * chain silently, so omission fails at the type level.
  */
 export function pickHelp(
   inv: string,
   conflicts: LandedConflict[],
-  analyses: readonly ConflictAnalysis[] = [],
+  analyses: readonly ConflictAnalysis[],
 ): string | undefined {
   const usable = (c: LandedConflict, i: number): boolean =>
     c.isDoc && c.bodyExportPath !== null && analyses[i]?.claim?.only !== true;
@@ -204,10 +214,19 @@ export function pickHelp(
   return undefined;
 }
 
-/** A DECLARED claim coordinate that lost its arbitration on one conflicted doc. */
+/**
+ * A DECLARED owner field that diverged on one conflicted doc — the caller's write of it did not
+ * land. SUPPRESSION (this record existing at all) and ATTRIBUTION (`statement`) are deliberately
+ * separate: withdrawing the steal instruction needs only the declaration, while naming an owner
+ * needs the arbiter itself to be readable.
+ */
 export interface ClaimDivergence {
-  /** The pinned ownership statement (owner + the ref it was arbitrated at). */
-  statement: string;
+  /**
+   * The pinned ownership statement (owner + the ref it was arbitrated at), present only when
+   * `origin/board`'s own copy could be read. Absent means: the claim fields are still withdrawn,
+   * but no owner is asserted — silence beats an unfounded name.
+   */
+  statement?: string;
   /** The claim is the ONLY substantive divergence — no body-merge chain applies to this doc. */
   only: boolean;
 }
@@ -246,14 +265,20 @@ function keptDocMeta(frontmatter: Record<string, unknown>): { kind?: string; tit
  *    change (a status flip, a retitle) would otherwise vanish without a trace. Surface the
  *    top-level keys whose values differ, `timestamp` excluded (the engine refreshes it on every
  *    write — it ALWAYS differs, pure noise).
- * 2. No product-guided arbitration reversal: when a key that DIFFERS is one the kind declares as
- *    a claim coordinate, the loss of that claim is reported as ownership and the key is dropped
- *    from the re-apply list — `doc update --<owner field>` is exactly the command that takes the
- *    task back from the winner, and the product must not print it.
+ * 2. No product-guided arbitration reversal: when the DECLARED OWNER field is one of the keys that
+ *    differs, every declared claim coordinate is dropped from the re-apply list —
+ *    `doc update --<owner field>` is exactly the command that takes the task back from the winner,
+ *    and the product must not print it.
  *
- * Ownership is only ever attributed to content this run can name a true provenance for; every
- * other case (no declared claim, no upstream ref, kept bytes that are not `origin/board`'s)
- * degrades to the pre-claim report. Absent/malformed content degrades to no fields, the
+ * The trigger is the OWNER field specifically, and only when this side actually recorded an owner.
+ * A state-only divergence (two versions of a workflow status, nobody's ownership contested) and a
+ * side that never wrote an owner at all are ordinary conflicts, reported in full: asserting a lost
+ * claim there would be a false statement AND a loss of correct guidance.
+ *
+ * Suppression is UNCONDITIONAL on attributability — the steal instruction is withdrawn whether or
+ * not an owner can be named. Attribution is separate and reads the ARBITER ITSELF (`origin/board`),
+ * so the emitted provenance is true by construction; when that read fails, the fields stay
+ * withdrawn and no owner is asserted. Absent/malformed content degrades to no fields, the
  * codebase's omit-when-empty convention.
  */
 function analyzeConflict(boardPath: string, c: LandedConflict, policy: ClaimPolicy): ConflictAnalysis {
@@ -279,25 +304,39 @@ function analyzeConflict(boardPath: string, c: LandedConflict, policy: ClaimPoli
     keys.delete("timestamp");
     const differs = [...keys].filter((k) => JSON.stringify(localFm[k]) !== JSON.stringify(keptFm[k])).sort();
 
+    const ordinary: ConflictAnalysis = { meta, frontmatterDiffers: differs };
     const coordinates = policy.forType(keptFm.type);
-    if (!coordinates || policy.provenance === undefined) return { meta, frontmatterDiffers: differs };
-    const claimFields = differs.filter((k) => coordinates.fields.includes(k));
-    if (claimFields.length === 0 || !policy.keptFromUpstream(c.relPath)) {
-      return { meta, frontmatterDiffers: differs };
-    }
+    const ownerField = coordinates?.ownerField;
+    // An owner this side never wrote cannot be an owner this side lost. Both halves of the guard
+    // are load-bearing: `differs.includes` rejects the state-only case, `recordedOwner` rejects a
+    // side that merely predates someone else's claim.
+    const ownerLost =
+      coordinates !== undefined &&
+      ownerField !== undefined &&
+      differs.includes(ownerField) &&
+      recordedOwner(localFm, ownerField) !== undefined;
+    if (!ownerLost) return ordinary;
 
+    const claimFields = differs.filter((k) => coordinates.fields.includes(k));
     const substantive = differs.filter((k) => !claimFields.includes(k) && !ENGINE_STAMPED_FIELDS.has(k));
     const only = substantive.length === 0 && local.body === kept.body;
+
+    // Attribution reads `origin/board` itself, never the local HEAD: on a multi-stop rebase HEAD
+    // can carry a later local commit replayed over the kept version, and the arbiter's own copy is
+    // the only text that makes `origin/board@<sha>` a true statement.
+    const upstream = policy.upstreamFrontmatter(c.relPath);
+    const statement =
+      upstream !== undefined && policy.provenance !== undefined
+        ? claimLostStatement(recordedOwner(upstream, ownerField), policy.provenance)
+        : undefined;
+
     return {
       meta,
       // The re-apply list loses the CLAIM fields only; ordinary fields keep today's guidance. When
       // the claim is the only substantive divergence, nothing is left to re-apply — every
       // remaining key is engine-stamped — so the list is omitted rather than rendered as noise.
       frontmatterDiffers: only ? [] : differs.filter((k) => !claimFields.includes(k)),
-      claim: {
-        statement: claimLostStatement(recordedOwner(keptFm, coordinates.ownerField), policy.provenance),
-        only,
-      },
+      claim: { ...(statement !== undefined ? { statement } : {}), only },
     };
   } catch {
     return keptOnly;

@@ -16,6 +16,7 @@ import {
   SUPERBEE_UPDATED_BY_FIELD,
   claimCoordinates,
   loadKinds,
+  parseMarkdown,
   readBundleOkfVersion,
   type KindClaimCoordinates,
 } from "@superbee/core";
@@ -50,23 +51,27 @@ export interface ClaimPolicy {
   /**
    * Resolved claim coordinates for a doc whose kept `type` is `type`, or undefined when the
    * bundle declares none for it — the whole ownership report is then skipped for that doc.
+   *
+   * This probe drives SUPPRESSION, which is independent of {@link ClaimPolicy.upstreamFrontmatter}
+   * and {@link ClaimPolicy.provenance}: withdrawing the steal instruction needs only a declared
+   * claim field, never a nameable arbiter.
    */
   forType(type: unknown): KindClaimCoordinates | undefined;
   /**
-   * True when `relPath`'s kept bytes are EXACTLY `origin/board`'s. Ownership is only ever
-   * attributed to a ref whose content it actually names, so a doc whose landed version came from
-   * somewhere else (a later local commit replayed on top) degrades to the ordinary conflict
-   * report rather than claiming a provenance that is not true.
+   * The doc's frontmatter as recorded on `origin/board` — the ARBITER ITSELF — or undefined when
+   * that ref carries no readable copy of it. Reading the owner here rather than from the local
+   * HEAD keeps the `origin/board@<sha>` provenance true by construction, including on a
+   * multi-stop rebase where a later local commit replayed on top of the kept version.
    */
-  keptFromUpstream(relPath: string): boolean;
-  /** `origin/board@<sha>`, or undefined when the ref does not resolve (no report is possible). */
+  upstreamFrontmatter(relPath: string): Record<string, unknown> | undefined;
+  /** `origin/board@<sha>`, or undefined when the ref does not resolve (nothing to attribute to). */
   readonly provenance: string | undefined;
 }
 
 /** The inert policy: every probe answers "no claim declared", so converge reports as it always did. */
 const INACTIVE_POLICY: ClaimPolicy = {
   forType: () => undefined,
-  keptFromUpstream: () => false,
+  upstreamFrontmatter: () => undefined,
   provenance: undefined,
 };
 
@@ -97,10 +102,14 @@ export async function loadClaimPolicy(boardPath: string): Promise<ClaimPolicy> {
         }
         return resolved.get(name);
       },
-      keptFromUpstream(relPath: string): boolean {
-        const kept = runGit(boardPath, ["rev-parse", `HEAD:${relPath}`]);
-        const upstream = runGit(boardPath, ["rev-parse", `${BOARD_UPSTREAM_REF}:${relPath}`]);
-        return kept.status === 0 && upstream.status === 0 && kept.stdout.trim() === upstream.stdout.trim();
+      upstreamFrontmatter(relPath: string): Record<string, unknown> | undefined {
+        const shown = runGit(boardPath, ["show", `${BOARD_UPSTREAM_REF}:${relPath}`]);
+        if (shown.status !== 0) return undefined;
+        try {
+          return parseMarkdown(shown.stdout, relPath).frontmatter as Record<string, unknown>;
+        } catch {
+          return undefined;
+        }
       },
     };
   } catch {
