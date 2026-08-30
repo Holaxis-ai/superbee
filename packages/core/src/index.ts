@@ -240,6 +240,7 @@ export {
   progressStatusStorageField,
   progressStatusCoordinate,
   resolveKindFieldCoordinate,
+  claimCoordinates,
   kindInputFieldNames,
   readKindField,
   projectLogicalKindFields,
@@ -256,6 +257,8 @@ export {
 } from "./kinds.js";
 export { loadKinds } from "./kinds-load.js";
 export type {
+  KindClaimCoordinates,
+  KindClaimPolicy,
   KindConvention,
   KindFieldCoordinate,
   KindFields,

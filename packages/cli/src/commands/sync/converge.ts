@@ -22,6 +22,14 @@ import {
 import { defaultSyncStore } from "../../cursor.js";
 import { upstreamHelp } from "../../sync-outcomes.js";
 import { CliError, cliErrorFromBoardGit } from "../../errors.js";
+import {
+  CLAIM_LOST_KEY,
+  ENGINE_STAMPED_FIELDS,
+  claimLostStatement,
+  loadClaimPolicy,
+  recordedOwner,
+  type ClaimPolicy,
+} from "./claim-conflict.js";
 
 /** A capped row list — the repo's standard `{shown, total, rows}` convention (see `status.ts`). */
 export interface Capped {
@@ -118,26 +126,42 @@ export function entryLabel(c: Pick<ResolvedConflict, "entry" | "isDoc">): string
  * honestly instead of naming a file that doesn't exist; a doc DELETED UPSTREAM says "teammate's
  * deletion kept" and points at `doc write` — `doc update` on a doc whose file is gone fails
  * NOT_FOUND.
+ *
+ * A lost CLAIM ({@link ConflictAnalysis.claim}) is an ownership outcome, not a content
+ * divergence. When it is the ONLY divergence the line reports ownership and stops: the
+ * kept/exported/reconcile narration exists to merge two versions of a BODY, and there are not two
+ * bodies here. When real content diverged too, the ordinary line stands and the ownership
+ * statement is appended to it.
  */
-export function convergeDocLine(c: Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">): string {
+export function convergeDocLine(
+  c: Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">,
+  claim?: ClaimDivergence,
+): string {
+  if (claim?.only) return `${CLAIM_LOST_KEY}: ${c.entry} — ${claim.statement}`;
   const label = entryLabel(c);
-  if (c.exportPath === null) {
-    return `${label} — teammate's version kept (your side deleted it; nothing to save)`;
-  }
-  // The fixing-verb suffix is keyed on the BODY export's existence, not on isDoc alone — a doc
-  // with no .body.md (unparseable/non-utf8 local blob) must not tell the user to `doc update`
-  // with the FULL export (nesting YAML into the body). Like the deletion case: no artifact, no verb.
-  if (!c.landed) {
-    const recreate = c.isDoc && c.bodyExportPath !== null ? " — re-create with doc write" : "";
-    return `${label} — teammate's deletion kept; yours saved at ${c.exportPath}${recreate}`;
-  }
-  const reconcile = c.isDoc && c.bodyExportPath !== null ? " — reconcile with doc update" : "";
-  return `${label} — teammate's version kept; yours saved at ${c.exportPath}${reconcile}`;
+  const line = ((): string => {
+    if (c.exportPath === null) {
+      return `${label} — teammate's version kept (your side deleted it; nothing to save)`;
+    }
+    // The fixing-verb suffix is keyed on the BODY export's existence, not on isDoc alone — a doc
+    // with no .body.md (unparseable/non-utf8 local blob) must not tell the user to `doc update`
+    // with the FULL export (nesting YAML into the body). Like the deletion case: no artifact, no verb.
+    if (!c.landed) {
+      const recreate = c.isDoc && c.bodyExportPath !== null ? " — re-create with doc write" : "";
+      return `${label} — teammate's deletion kept; yours saved at ${c.exportPath}${recreate}`;
+    }
+    const reconcile = c.isDoc && c.bodyExportPath !== null ? " — reconcile with doc update" : "";
+    return `${label} — teammate's version kept; yours saved at ${c.exportPath}${reconcile}`;
+  })();
+  return claim ? `${line}; ${CLAIM_LOST_KEY}: ${claim.statement}` : line;
 }
 
 /** The CONFLICT(5) envelope message: one converge line per conflicted entry, "; "-joined. */
-export function buildConvergeMessage(conflicts: Array<Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">>): string {
-  return conflicts.map(convergeDocLine).join("; ");
+export function buildConvergeMessage(
+  conflicts: Array<Pick<LandedConflict, "entry" | "isDoc" | "exportPath" | "bodyExportPath" | "landed">>,
+  analyses: readonly ConflictAnalysis[] = [],
+): string {
+  return conflicts.map((c, i) => convergeDocLine(c, analyses[i]?.claim)).join("; ");
 }
 
 /**
@@ -162,34 +186,50 @@ export function recreateHelp(inv: string, id: string, bodyExportPath: string): s
  * reconcile chain is directly runnable for it); when every conflicted doc was deleted upstream,
  * fall back to the re-create chain. Both need the BODY-ONLY export; a doc with none (unparseable
  * local blob) is skipped. No usable doc → no help (the message lines carry the disposition).
+ *
+ * A doc whose ONLY divergence is a lost claim is skipped too: there is no body to merge, and
+ * offering a merge chain for it would be the product asking the loser to publish over the winner.
  */
-export function pickHelp(inv: string, conflicts: LandedConflict[]): string | undefined {
-  const reconcilable = conflicts.find((c) => c.isDoc && c.bodyExportPath !== null && c.landed);
+export function pickHelp(
+  inv: string,
+  conflicts: LandedConflict[],
+  analyses: readonly ConflictAnalysis[] = [],
+): string | undefined {
+  const usable = (c: LandedConflict, i: number): boolean =>
+    c.isDoc && c.bodyExportPath !== null && analyses[i]?.claim?.only !== true;
+  const reconcilable = conflicts.find((c, i) => usable(c, i) && c.landed);
   if (reconcilable) return convergeHelp(inv, reconcilable.entry, reconcilable.bodyExportPath!);
-  const recreatable = conflicts.find((c) => c.isDoc && c.bodyExportPath !== null);
+  const recreatable = conflicts.find(usable);
   if (recreatable) return recreateHelp(inv, recreatable.entry, recreatable.bodyExportPath!);
   return undefined;
 }
 
-/** The frontmatter of one path's content as LANDED at the board's HEAD; null when unreadable. */
-function keptFrontmatter(boardPath: string, relPath: string): Record<string, unknown> | null {
-  const shown = runGit(boardPath, ["show", `HEAD:${relPath}`]);
-  if (shown.status !== 0) return null;
-  try {
-    return parseMarkdown(shown.stdout, relPath).frontmatter as Record<string, unknown>;
-  } catch {
-    return null;
-  }
+/** A DECLARED claim coordinate that lost its arbitration on one conflicted doc. */
+export interface ClaimDivergence {
+  /** The pinned ownership statement (owner + the ref it was arbitrated at). */
+  statement: string;
+  /** The claim is the ONLY substantive divergence — no body-merge chain applies to this doc. */
+  only: boolean;
 }
 
 /**
- * Enrich one kept-upstream conflicted doc's {kind, title} from the content that LANDED on the
- * board (HEAD after the completed rebase). Absent/malformed content degrades to no fields, the
- * codebase's omit-when-empty convention.
+ * What one conflicted entry's two sides say, derived from ONE read of each: the kept doc's
+ * display meta, the local frontmatter keys the body-merge chain would NOT carry over, and — when
+ * the doc's kind DECLARES claim coordinates that disagree — the ownership statement that replaces
+ * the re-apply guidance for exactly those fields.
  */
-function keptDocMeta(boardPath: string, relPath: string): { kind?: string; title?: string } {
-  const frontmatter = keptFrontmatter(boardPath, relPath);
-  if (!frontmatter) return {};
+export interface ConflictAnalysis {
+  /** `{kind, title}` from the kept (HEAD) content; empty when absent or malformed. */
+  meta: { kind?: string; title?: string };
+  /** Non-claim local frontmatter keys that differ from the kept version's, sorted. */
+  frontmatterDiffers: string[];
+  claim?: ClaimDivergence;
+}
+
+const EMPTY_ANALYSIS: ConflictAnalysis = { meta: {}, frontmatterDiffers: [] };
+
+/** `{kind, title}` from a kept frontmatter, omitting whatever it does not usefully carry. */
+function keptDocMeta(frontmatter: Record<string, unknown>): { kind?: string; title?: string } {
   const kind = fmValue(frontmatter.type);
   const title = fmValue(frontmatter.title);
   return {
@@ -199,55 +239,118 @@ function keptDocMeta(boardPath: string, relPath: string): { kind?: string; title
 }
 
 /**
- * No silent local-data loss: the reconcile chain writes a merged BODY, so a LOCAL frontmatter
- * change (a status flip, a retitle) would otherwise vanish without a trace. Surface the top-level
- * keys whose values differ between the exported local version and the kept (HEAD) version,
- * `timestamp` excluded (the engine refreshes it on every write — it ALWAYS differs, pure noise).
- * Empty on any parse/read failure and for deleted-upstream docs.
+ * Analyze one conflicted entry against the content that LANDED on the board (HEAD after the
+ * completed rebase). Two jobs, one pair of reads:
+ *
+ * 1. No silent local-data loss: the reconcile chain writes a merged BODY, so a LOCAL frontmatter
+ *    change (a status flip, a retitle) would otherwise vanish without a trace. Surface the
+ *    top-level keys whose values differ, `timestamp` excluded (the engine refreshes it on every
+ *    write — it ALWAYS differs, pure noise).
+ * 2. No product-guided arbitration reversal: when a key that DIFFERS is one the kind declares as
+ *    a claim coordinate, the loss of that claim is reported as ownership and the key is dropped
+ *    from the re-apply list — `doc update --<owner field>` is exactly the command that takes the
+ *    task back from the winner, and the product must not print it.
+ *
+ * Ownership is only ever attributed to content this run can name a true provenance for; every
+ * other case (no declared claim, no upstream ref, kept bytes that are not `origin/board`'s)
+ * degrades to the pre-claim report. Absent/malformed content degrades to no fields, the
+ * codebase's omit-when-empty convention.
  */
-function frontmatterDiffKeys(boardPath: string, c: LandedConflict): string[] {
-  if (!c.isDoc || c.exportPath === null || !c.landed) return [];
+function analyzeConflict(boardPath: string, c: LandedConflict, policy: ClaimPolicy): ConflictAnalysis {
+  if (!c.isDoc) return EMPTY_ANALYSIS;
+  const shown = runGit(boardPath, ["show", `HEAD:${c.relPath}`]);
+  if (shown.status !== 0) return EMPTY_ANALYSIS;
+  let kept: ReturnType<typeof parseMarkdown>;
   try {
-    const local = parseMarkdown(readFileSync(c.exportPath, "utf8"), c.relPath).frontmatter as Record<string, unknown>;
-    const kept = keptFrontmatter(boardPath, c.relPath);
-    if (!kept) return [];
-    const keys = new Set([...Object.keys(local), ...Object.keys(kept)]);
-    keys.delete("timestamp");
-    return [...keys].filter((k) => JSON.stringify(local[k]) !== JSON.stringify(kept[k])).sort();
+    kept = parseMarkdown(shown.stdout, c.relPath);
   } catch {
-    return [];
+    return EMPTY_ANALYSIS;
+  }
+  const keptFm = kept.frontmatter as Record<string, unknown>;
+  const meta = keptDocMeta(keptFm);
+  // The kept side's display meta survives a local-side read failure: a doc whose EXPORT is
+  // unreadable still has a kind and a title worth reporting.
+  const keptOnly: ConflictAnalysis = { meta, frontmatterDiffers: [] };
+  if (c.exportPath === null || !c.landed) return keptOnly;
+  try {
+    const local = parseMarkdown(readFileSync(c.exportPath, "utf8"), c.relPath);
+    const localFm = local.frontmatter as Record<string, unknown>;
+    const keys = new Set([...Object.keys(localFm), ...Object.keys(keptFm)]);
+    keys.delete("timestamp");
+    const differs = [...keys].filter((k) => JSON.stringify(localFm[k]) !== JSON.stringify(keptFm[k])).sort();
+
+    const coordinates = policy.forType(keptFm.type);
+    if (!coordinates || policy.provenance === undefined) return { meta, frontmatterDiffers: differs };
+    const claimFields = differs.filter((k) => coordinates.fields.includes(k));
+    if (claimFields.length === 0 || !policy.keptFromUpstream(c.relPath)) {
+      return { meta, frontmatterDiffers: differs };
+    }
+
+    const substantive = differs.filter((k) => !claimFields.includes(k) && !ENGINE_STAMPED_FIELDS.has(k));
+    const only = substantive.length === 0 && local.body === kept.body;
+    return {
+      meta,
+      // The re-apply list loses the CLAIM fields only; ordinary fields keep today's guidance. When
+      // the claim is the only substantive divergence, nothing is left to re-apply — every
+      // remaining key is engine-stamped — so the list is omitted rather than rendered as noise.
+      frontmatterDiffers: only ? [] : differs.filter((k) => !claimFields.includes(k)),
+      claim: {
+        statement: claimLostStatement(recordedOwner(keptFm, coordinates.ownerField), policy.provenance),
+        only,
+      },
+    };
+  } catch {
+    return keptOnly;
   }
 }
 
 /**
- * Project the resolved conflicts into the envelope's row shape: `yours` = the full-fidelity
- * export's path (recoverable byte-for-byte), `yours_body` = the BODY-ONLY export the reconcile
- * chain consumes literally, `theirs` = the teammate's version's disposition ("kept", or "kept
- * (deleted upstream)" when keeping it meant removing the file), `frontmatter_differs` = the local
- * frontmatter fields the body-merge chain would NOT carry over — re-apply via `doc update` flags.
+ * Project the resolved conflicts into the envelope's row shape: `claim_lost` = who owns the
+ * arbitrated version and the ref it was arbitrated at (present only for a lost declared claim),
+ * `yours` = the full-fidelity export's path (recoverable byte-for-byte), `yours_body` = the
+ * BODY-ONLY export the reconcile chain consumes literally, `theirs` = the teammate's version's
+ * disposition ("kept", or "kept (deleted upstream)" when keeping it meant removing the file),
+ * `frontmatter_differs` = the local frontmatter fields the body-merge chain would NOT carry over —
+ * re-apply via `doc update` flags. A DECLARED claim field never appears in that list: a lost claim
+ * is not re-applied, it is reported.
  */
-export function toConflictRows(boardPath: string, conflicts: LandedConflict[]): Record<string, unknown>[] {
-  return conflicts.map((c) => {
+export function toConflictRows(
+  conflicts: LandedConflict[],
+  analyses: readonly ConflictAnalysis[],
+): Record<string, unknown>[] {
+  return conflicts.map((c, i) => {
+    const analysis = analyses[i] ?? EMPTY_ANALYSIS;
     const row: Record<string, unknown> = c.isDoc ? { id: c.entry } : { path: c.entry };
-    if (c.isDoc) Object.assign(row, keptDocMeta(boardPath, c.relPath));
+    if (c.isDoc) Object.assign(row, analysis.meta);
+    if (analysis.claim) row[CLAIM_LOST_KEY] = analysis.claim.statement;
     row.yours = c.exportPath !== null ? c.exportPath : "deleted locally — nothing to save";
-    if (c.bodyExportPath !== null) row.yours_body = c.bodyExportPath;
-    const diff = frontmatterDiffKeys(boardPath, c);
-    if (diff.length > 0) row.frontmatter_differs = diff;
+    // The body export exists to feed the reconcile chain. A claim-only conflict is not offered
+    // that chain, so naming its input would be an invitation with no destination.
+    if (c.bodyExportPath !== null && analysis.claim?.only !== true) row.yours_body = c.bodyExportPath;
+    if (analysis.frontmatterDiffers.length > 0) row.frontmatter_differs = analysis.frontmatterDiffers;
     row.theirs = c.landed ? "kept" : "kept (deleted upstream)";
     return row;
   });
 }
 
 /**
- * The CONFLICT(5) terminal's envelope for a CONVERGED rebase. ONE landed probe per conflict feeds
- * the message lines, the rows, AND the help-chain pick.
+ * The CONFLICT(5) terminal's envelope for a CONVERGED rebase. ONE landed probe and ONE analysis
+ * per conflict feed the message lines, the rows, AND the help-chain pick. The bundle's own kind
+ * conventions are read ONCE per run for the claim vocabulary — a bundle that declares none pays a
+ * cheap list-of-nothing and gets byte-for-byte the pre-claim report.
  */
-export function buildConvergeError(boardPath: string, resolved: ResolvedConflict[], inv: string, limit: number): CliError {
+export async function buildConvergeError(
+  boardPath: string,
+  resolved: ResolvedConflict[],
+  inv: string,
+  limit: number,
+): Promise<CliError> {
   const conflicts = annotateLanded(boardPath, resolved);
-  const rows = toConflictRows(boardPath, conflicts);
-  const help = pickHelp(inv, conflicts);
-  return new CliError("CONFLICT", buildConvergeMessage(conflicts), {
+  const policy = await loadClaimPolicy(boardPath);
+  const analyses = conflicts.map((c) => analyzeConflict(boardPath, c, policy));
+  const rows = toConflictRows(conflicts, analyses);
+  const help = pickHelp(inv, conflicts, analyses);
+  return new CliError("CONFLICT", buildConvergeMessage(conflicts, analyses), {
     details: { conflicts: cap(rows, limit) },
     ...(help ? { help } : {}),
   });
