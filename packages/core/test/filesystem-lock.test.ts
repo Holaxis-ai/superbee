@@ -808,7 +808,10 @@ test("lock-root creation and lock claims propagate non-contention filesystem fai
   }
 
   await fs.mkdir(harness.lockRoot, { mode: 0o700 });
-  const claimFailure = Object.assign(new Error("claim denied"), { code: "EACCES" });
+  // Sharing-shaped Windows errors are covered below: when the exact claim path remains
+  // observable they are contention, not terminal permission failures. Use an error class that
+  // can never mean directory contention here so this row remains host-independent.
+  const claimFailure = Object.assign(new Error("claim I/O failure"), { code: "EIO" });
   restore = replaceFsMethod("mkdir", (...args) => {
     if (String(args[0]).endsWith(".lock")) return Promise.reject(claimFailure);
     return Reflect.apply(originalMkdir, fs, args);
