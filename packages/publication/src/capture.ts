@@ -288,6 +288,22 @@ function mapCaptureError(error: unknown): PublicationError {
   return new PublicationError("INVALID_BUNDLE", error instanceof Error ? error.message : "the bundle is invalid", { cause: error });
 }
 
+async function classifyCaptureError(
+  error: unknown,
+  rootIdentity: PublicationRootIdentity,
+): Promise<PublicationError> {
+  const mapped = mapCaptureError(error);
+  if (mapped.code !== "IO_ERROR") return mapped;
+
+  try {
+    await assertPublicationRoot(rootIdentity);
+  } catch (rootError) {
+    if (rootError instanceof PublicationError &&
+      rootError.code === "SOURCE_CHANGED" && rootError.actual !== undefined) return rootError;
+  }
+  return mapped;
+}
+
 function addObject(
   objects: Map<string, Uint8Array>,
   bytes: Uint8Array,
@@ -510,7 +526,7 @@ export async function capturePublicationSnapshot(
       }
       return handle;
     } catch (error) {
-      lastError = mapCaptureError(error);
+      lastError = await classifyCaptureError(error, rootIdentity);
       if (!lastError.retryable || attempt === maxAttempts) throw lastError;
     }
   }

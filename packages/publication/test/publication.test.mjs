@@ -176,6 +176,48 @@ test("capture rejects atomic substitution of the authorized source root", async 
   }
 });
 
+test("permission-shaped inventory failures are reclassified only after proven root substitution", async () => {
+  for (const row of [
+    { name: "unchanged root", substituteRoot: false, expectedCode: "IO_ERROR" },
+    { name: "substituted root", substituteRoot: true, expectedCode: "SOURCE_CHANGED" },
+  ]) {
+    const { root } = await fixture();
+    const replacement = row.substituteRoot ? await fixture() : undefined;
+    const authorized = `${root}-authorized`;
+    const original = FilesystemBackend.prototype.list;
+    let injected = false;
+    FilesystemBackend.prototype.list = async function (...args) {
+      if (!injected) {
+        injected = true;
+        if (replacement) {
+          await rename(root, authorized);
+          await rename(replacement.root, root);
+        }
+        const error = new Error(`simulated permission failure for ${row.name}`);
+        error.code = "EPERM";
+        throw error;
+      }
+      return original.apply(this, args);
+    };
+    try {
+      await assert.rejects(() => capturePublicationSnapshot({
+        schema: PUBLICATION_SNAPSHOT_V1,
+        source: { kind: "filesystem", root },
+        maxAttempts: 1,
+      }), (error) => {
+        assert.ok(error instanceof PublicationError);
+        assert.equal(error.code, row.expectedCode, row.name);
+        return true;
+      });
+    } finally {
+      FilesystemBackend.prototype.list = original;
+      await rm(root, { recursive: true, force: true });
+      await rm(authorized, { recursive: true, force: true });
+      if (replacement) await rm(replacement.root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("capture rejects structurally invalid documents and nested symlinks", async () => {
   for (const mode of ["missing-type", "symlink"]) {
     const { root } = await fixture();
