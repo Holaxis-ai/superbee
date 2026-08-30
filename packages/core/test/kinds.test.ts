@@ -25,7 +25,10 @@ import { RemoteBackend } from "../src/remote-backend.js";
 import {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
+  PROGRESS_STATUS_FIELD,
+  SUPERBEE_PROGRESS_STATUS_FIELD,
   buildKindRegistry,
+  claimCoordinates,
   freshnessHorizonMs,
   isTerminal,
   kindConventionDoc,
@@ -1636,4 +1639,133 @@ test("pin: defaultTimestampAndValidateAgainstRegistry preserves a valid timestam
   defaultTimestampAndValidateAgainstRegistry(blank, empty);
   assert.notEqual(blank.frontmatter.timestamp, "   ");
   assert.ok(!Number.isNaN(Date.parse(String(blank.frontmatter.timestamp))));
+});
+
+// ── the bundle-declared `claim:` vocabulary ────────────────────────────────────
+//
+// Ownership is DECLARED by the bundle, never spelled into a consumer. This unit parses only the
+// two COORDINATES (research/atomic-shared-task-claim-design); the block's value vocabulary
+// (`claimed`/`unclaimed`/`released`) is deliberately not consumed yet, which is why an
+// unrecognized key inside `claim:` is ignored rather than warned about.
+
+/** A Task-shaped kind that declares its claim coordinates the way a bundle convention does. */
+function claimingKindDoc(claim: unknown): OkfDocument {
+  return {
+    id: "conventions/task",
+    frontmatter: {
+      type: CONVENTION_TYPE,
+      title: "Task",
+      governs: "Task",
+      claim,
+      fields: { required: ["title", SUPERBEE_PROGRESS_STATUS_FIELD], optional: ["assignee"] },
+    } as Frontmatter,
+    body: "# Task\n",
+  };
+}
+
+test("parseConventionDoc: a 'claim' declaration parses its two coordinates and warns about nothing", () => {
+  const parsed = parseConventionDoc(
+    claimingKindDoc({ owner_field: "assignee", state_field: PROGRESS_STATUS_FIELD }),
+  );
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.kind.claim, { ownerField: "assignee", stateField: PROGRESS_STATUS_FIELD });
+  assert.deepEqual(parsed.warnings, []);
+});
+
+test("parseConventionDoc: 'claim' is lenient — a non-map shape and a malformed member warn and are skipped, never thrown", () => {
+  const badShape = parseConventionDoc(claimingKindDoc("assignee"));
+  assert.ok(badShape.ok);
+  assert.equal(badShape.kind.claim, undefined);
+  assert.deepEqual(
+    badShape.warnings.map((w) => [w.code, w.field]),
+    [["KIND_CONVENTION_BAD_SHAPE", "claim"]],
+  );
+
+  const badMember = parseConventionDoc(claimingKindDoc({ owner_field: ["assignee"], state_field: "  " }));
+  assert.ok(badMember.ok);
+  assert.equal(badMember.kind.claim, undefined, "nothing usable parsed, so no claim block is attached");
+  assert.deepEqual(
+    badMember.warnings.map((w) => [w.code, w.field]),
+    [
+      ["KIND_CONVENTION_BAD_MEMBER", "claim.owner_field"],
+      ["KIND_CONVENTION_BAD_MEMBER", "claim.state_field"],
+    ],
+  );
+
+  // One good coordinate beside one bad one still yields the good half.
+  const partial = parseConventionDoc(claimingKindDoc({ owner_field: "assignee", state_field: { nested: true } }));
+  assert.ok(partial.ok);
+  assert.deepEqual(partial.kind.claim, { ownerField: "assignee" });
+  assert.deepEqual(
+    partial.warnings.map((w) => w.field),
+    ["claim.state_field"],
+  );
+});
+
+test("parseConventionDoc: a 'claim' key this unit does not consume is IGNORED, not warned about", () => {
+  const parsed = parseConventionDoc(
+    claimingKindDoc({ owner_field: "assignee", claimed: "in_progress", unclaimed: ["todo"], released: "todo" }),
+  );
+  assert.ok(parsed.ok);
+  assert.deepEqual(parsed.kind.claim, { ownerField: "assignee" });
+  assert.deepEqual(parsed.warnings, [], "the block's value vocabulary belongs to a later unit, not to a warning");
+});
+
+test("claimCoordinates: resolves declared names onto the EDITION's storage keys, and drops what a kind does not carry", () => {
+  const taskLike: KindConvention = {
+    id: "conventions/task",
+    title: "Task",
+    governs: "Task",
+    fields: {
+      required: ["title", SUPERBEE_PROGRESS_STATUS_FIELD],
+      optional: ["assignee"],
+      values: {},
+      valueDescriptions: {},
+      terminal: {},
+      descriptions: {},
+    },
+    claim: { ownerField: "assignee", stateField: PROGRESS_STATUS_FIELD },
+  };
+
+  // v0.2: the LOGICAL `progress_status` resolves through the one field resolver to the concrete key.
+  assert.deepEqual(claimCoordinates("0.2", taskLike), {
+    ownerField: "assignee",
+    stateField: SUPERBEE_PROGRESS_STATUS_FIELD,
+    fields: ["assignee", SUPERBEE_PROGRESS_STATUS_FIELD],
+  });
+
+  // v0.1 stores progress in `status`, which THIS kind does not declare — the coordinate resolves to
+  // nothing and is dropped rather than becoming a key that could never match.
+  assert.deepEqual(claimCoordinates("0.1", taskLike), { ownerField: "assignee", fields: ["assignee"] });
+
+  // No declaration, and a declaration naming only fields the kind lacks, both yield nothing.
+  assert.equal(claimCoordinates("0.2", { ...taskLike, claim: undefined }), undefined);
+  assert.equal(claimCoordinates("0.2", { ...taskLike, claim: { ownerField: "owner" } }), undefined);
+});
+
+test("kindConventionDoc: a 'claim' declaration round-trips through write/loadKinds", async () => {
+  await withMemBundle(async (bundle) => {
+    const kind: KindConvention = {
+      id: "conventions/claimable",
+      title: "Claimable",
+      governs: "Claimable",
+      fields: {
+        required: ["title", "stage"],
+        optional: ["owner"],
+        values: { stage: ["open", "held"] },
+        terminal: {},
+        descriptions: {},
+      },
+      claim: { ownerField: "owner", stateField: "stage" },
+    };
+    await writeDoc(bundle, kindConventionDoc(kind, "prose.", T));
+    const registry = await loadKinds(bundle);
+    assert.deepEqual(registry.kinds.get("Claimable")!.claim, { ownerField: "owner", stateField: "stage" });
+    assert.equal(registry.warnings.length, 0);
+    assert.deepEqual(claimCoordinates("0.2", registry.kinds.get("Claimable")!), {
+      ownerField: "owner",
+      stateField: "stage",
+      fields: ["owner", "stage"],
+    });
+  });
 });

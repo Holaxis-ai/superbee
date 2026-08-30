@@ -262,10 +262,13 @@ test("convergeDocLine: NO body export (unparseable/non-roundtrippable local blob
 });
 
 test("buildConvergeMessage: multiple entries join with '; ', and the DROPPED phrase stays dropped (amended pack c)", () => {
-  const msg = buildConvergeMessage([
-    { entry: "tasks/seed-one", isDoc: true, exportPath: "/x/tasks/seed-one.md", bodyExportPath: "/x/tasks/seed-one.body.md", landed: true },
-    { entry: "log.md", isDoc: false, exportPath: "/x/log.md", bodyExportPath: null, landed: true },
-  ]);
+  const msg = buildConvergeMessage(
+    [
+      { entry: "tasks/seed-one", isDoc: true, exportPath: "/x/tasks/seed-one.md", bodyExportPath: "/x/tasks/seed-one.body.md", landed: true },
+      { entry: "log.md", isDoc: false, exportPath: "/x/log.md", bodyExportPath: null, landed: true },
+    ],
+    [],
+  );
   assert.equal(
     msg,
     "doc tasks/seed-one — teammate's version kept; yours saved at /x/tasks/seed-one.md — reconcile with doc update; " +
@@ -302,17 +305,37 @@ test("pickHelp: prefers a LANDED doc; falls back to the doc-write re-create chai
   // A deleted-upstream doc listed FIRST must not win over a landed one — and the chain names the
   // BODY-ONLY export (round-2 REQUIRED 3: `--body-file` input, literally executable).
   assert.equal(
-    pickHelp("aslite", [deletedUpstream, landed]),
+    pickHelp("aslite", [deletedUpstream, landed], []),
     "aslite sync --show-incoming tasks/a → aslite doc update tasks/a --body-file /x/tasks/a.body.md → aslite sync",
   );
   // Every conflicted doc deleted upstream → the doc-write re-create chain (body export again).
   assert.equal(
-    pickHelp("aslite", [deletedUpstream]),
+    pickHelp("aslite", [deletedUpstream], []),
     "aslite doc write tasks/b --type <Type> --body-file /x/tasks/b.body.md → aslite sync",
   );
   // Nothing usable at all (no export, or no BODY export to feed --body-file) → no help.
-  assert.equal(pickHelp("aslite", [localDeletion]), undefined);
-  assert.equal(pickHelp("aslite", [unparseable]), undefined);
+  assert.equal(pickHelp("aslite", [localDeletion], []), undefined);
+  assert.equal(pickHelp("aslite", [unparseable], []), undefined);
+});
+
+test("pickHelp: a claim-only conflict is never the chain's subject — the loser is not routed into publishing over the winner", () => {
+  const claimOnly = {
+    relPath: "tasks/a.md", entry: "tasks/a", isDoc: true,
+    exportPath: "/x/tasks/a.md", bodyExportPath: "/x/tasks/a.body.md", landed: true,
+  };
+  const bodyDiverged = {
+    relPath: "tasks/b.md", entry: "tasks/b", isDoc: true,
+    exportPath: "/x/tasks/b.md", bodyExportPath: "/x/tasks/b.body.md", landed: true,
+  };
+  const claimAnalysis = { meta: {}, frontmatterDiffers: [], claim: { statement: "owner is a", only: true } };
+  const plainAnalysis = { meta: {}, frontmatterDiffers: ["title"] };
+
+  assert.equal(pickHelp("aslite", [claimOnly], [claimAnalysis]), undefined, "no chain at all for a claim-only run");
+  // A claim-only doc listed FIRST must not win the pick over a doc that really needs merging.
+  assert.equal(
+    pickHelp("aslite", [claimOnly, bodyDiverged], [claimAnalysis, plainAnalysis]),
+    "aslite sync --show-incoming tasks/b → aslite doc update tasks/b --body-file /x/tasks/b.body.md → aslite sync",
+  );
 });
 
 test("ffSwallowToError: git-missing / no-upstream reuse the EXACT test-pinned wording (message pack f)", () => {

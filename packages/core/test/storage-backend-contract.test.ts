@@ -10,12 +10,14 @@ import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
 import {
+  registerClaimPreconditionContract,
   registerStorageBackendAtomicCasContract,
   registerStorageBackendBaseContract,
   registerStorageBackendBlobContract,
   registerStorageBackendHistoryContract,
   registerStorageBackendIdentityContract,
   registerStorageBackendQueryHeadsContract,
+  type AtomicBackendContractOptions,
   type BackendFixture,
 } from "./storage-backend-contract.js";
 import { assertHostClassExpectation, detectHostAliasingIn } from "./host-class.js";
@@ -70,49 +72,56 @@ for (const contract of CONTRACTS) {
   registerStorageBackendHistoryContract(contract);
 }
 
-registerStorageBackendAtomicCasContract({
-  name: "FilesystemBackend",
-  async createPeers() {
-    const root = await mkdtemp(path.join(tmpdir(), "aslite-storage-cas-contract-"));
-    const peers = [new FilesystemBackend(root), new FilesystemBackend(root)];
-    return {
-      backend: peers[0]!,
-      peers,
-      cleanup: () => rm(root, { recursive: true, force: true }),
-    };
+// One set of peer fixtures serves every contract whose subject is concurrency, so the seam's
+// one-winner row and the engine's claim row are always scored against the same topology.
+const PEER_CONTRACTS: AtomicBackendContractOptions[] = [
+  {
+    name: "FilesystemBackend",
+    async createPeers() {
+      const root = await mkdtemp(path.join(tmpdir(), "aslite-storage-cas-contract-"));
+      const peers = [new FilesystemBackend(root), new FilesystemBackend(root)];
+      return {
+        backend: peers[0]!,
+        peers,
+        cleanup: () => rm(root, { recursive: true, force: true }),
+      };
+    },
   },
-});
+  {
+    name: "MemoryBackend",
+    createPeers() {
+      const backend = new MemoryBackend();
+      return { backend, peers: [backend], cleanup: async () => undefined };
+    },
+  },
+  {
+    name: "RemoteBackend",
+    createPeers() {
+      const serverBackend = new ServerMemoryBackend();
+      const router = createRouter({ root: "mem://storage-cas-contract", backend: serverBackend });
+      const peers: StorageBackend[] = [
+        new RemoteBackend({
+          baseUrl: "http://wire.local",
+          bundle: "contract",
+          fetchImpl: router,
+          maxRetries: 0,
+        }),
+        new RemoteBackend({
+          baseUrl: "http://wire.local",
+          bundle: "contract",
+          fetchImpl: router,
+          maxRetries: 0,
+        }),
+      ];
+      return { backend: peers[0]!, peers, cleanup: async () => undefined };
+    },
+  },
+];
 
-registerStorageBackendAtomicCasContract({
-  name: "MemoryBackend",
-  createPeers() {
-    const backend = new MemoryBackend();
-    return { backend, peers: [backend], cleanup: async () => undefined };
-  },
-});
-
-registerStorageBackendAtomicCasContract({
-  name: "RemoteBackend",
-  createPeers() {
-    const serverBackend = new ServerMemoryBackend();
-    const router = createRouter({ root: "mem://storage-cas-contract", backend: serverBackend });
-    const peers: StorageBackend[] = [
-      new RemoteBackend({
-        baseUrl: "http://wire.local",
-        bundle: "contract",
-        fetchImpl: router,
-        maxRetries: 0,
-      }),
-      new RemoteBackend({
-        baseUrl: "http://wire.local",
-        bundle: "contract",
-        fetchImpl: router,
-        maxRetries: 0,
-      }),
-    ];
-    return { backend: peers[0]!, peers, cleanup: async () => undefined };
-  },
-});
+for (const contract of PEER_CONTRACTS) {
+  registerStorageBackendAtomicCasContract(contract);
+  registerClaimPreconditionContract(contract);
+}
 
 registerStorageBackendQueryHeadsContract({
   name: "RemoteBackend",

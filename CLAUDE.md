@@ -48,8 +48,11 @@ Before substantive work:
 1. Read `docs/core` or the workspace's highest-level goal.
 2. State and record one proximate goal and how it serves that ultimate goal.
 3. Inspect relevant current tasks and context notes before creating new work.
-4. Claim implementation work by changing its Task to `in_progress` with `--actor`; the
-   compare-and-swap write is the claim.
+4. Claim implementation work with one guarded write: `doc update <task> --progress_status
+   in_progress --assignee <actor> --actor <actor> --expected-version <head_version>`. The
+   compare-and-swap is the claim; without `--expected-version` there is no compare-and-swap.
+   Exit 5 means someone else owns it — pick other work; do not re-read and retry. A claim is
+   provisional until `sync` confirms it.
 
 Bundle records and code commits are separate. The orchestrator owns synchronization of bundle
 writes. A bundle document belongs in a code commit only when that document is the reviewed
