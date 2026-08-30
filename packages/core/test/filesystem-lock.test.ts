@@ -808,7 +808,10 @@ test("lock-root creation and lock claims propagate non-contention filesystem fai
   }
 
   await fs.mkdir(harness.lockRoot, { mode: 0o700 });
-  const claimFailure = Object.assign(new Error("claim denied"), { code: "EACCES" });
+  // Sharing-shaped Windows errors are covered below: when the exact claim path remains
+  // observable they are contention, not terminal permission failures. Use an error class that
+  // can never mean directory contention here so this row remains host-independent.
+  const claimFailure = Object.assign(new Error("claim I/O failure"), { code: "EIO" });
   restore = replaceFsMethod("mkdir", (...args) => {
     if (String(args[0]).endsWith(".lock")) return Promise.reject(claimFailure);
     return Reflect.apply(originalMkdir, fs, args);
@@ -820,6 +823,74 @@ test("lock-root creation and lock claims propagate non-contention filesystem fai
     );
   } finally {
     restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("Windows lock claims bound an unwitnessed sharing-error retry and propagate durable denial", async () => {
+  const harness = await isolatedLockPaths();
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(platform);
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  const originalMkdir = fs.mkdir;
+  const originalLstat = fs.lstat;
+  let restoreMkdir = () => {};
+  let restoreLstat = () => {};
+  try {
+    const transient = Object.assign(new Error("transient claim collision"), { code: "EPERM" });
+    let claimAttempts = 0;
+    restoreMkdir = replaceFsMethod("mkdir", (...args) => {
+      if (String(args[0]).endsWith(".lock") && claimAttempts++ === 0) return Promise.reject(transient);
+      return Reflect.apply(originalMkdir, fs, args);
+    });
+    const release = await acquireFilesystemMutationLock(harness.target, {
+      lockRoot: harness.lockRoot,
+      waitMs: 100,
+      pollMs: 0,
+    });
+    assert.equal(claimAttempts, 2);
+    await release();
+    restoreMkdir();
+    restoreMkdir = () => {};
+
+    const absentDenial = Object.assign(new Error("durable create denial on an absent path"), { code: "EPERM" });
+    let absentDenialAttempts = 0;
+    restoreMkdir = replaceFsMethod("mkdir", (...args) => {
+      if (String(args[0]).endsWith(".lock")) {
+        absentDenialAttempts += 1;
+        return Promise.reject(absentDenial);
+      }
+      return Reflect.apply(originalMkdir, fs, args);
+    });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, {
+        lockRoot: harness.lockRoot,
+        waitMs: 0,
+        pollMs: 0,
+      }),
+      (error: unknown) => error === absentDenial,
+    );
+    assert.equal(absentDenialAttempts, 2);
+    restoreMkdir();
+    restoreMkdir = () => {};
+
+    const durable = Object.assign(new Error("claim path denied"), { code: "EPERM" });
+    restoreMkdir = replaceFsMethod("mkdir", (...args) => {
+      if (String(args[0]).endsWith(".lock")) return Promise.reject(durable);
+      return Reflect.apply(originalMkdir, fs, args);
+    });
+    restoreLstat = replaceFsMethod("lstat", (...args) => {
+      if (String(args[0]).endsWith(".lock")) return Promise.reject(durable);
+      return Reflect.apply(originalLstat, fs, args);
+    });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot }),
+      (error: unknown) => error === durable,
+    );
+  } finally {
+    restoreLstat();
+    restoreMkdir();
+    Object.defineProperty(process, "platform", platform);
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });
@@ -845,6 +916,42 @@ test("owner-record failure preserves exclusive-create flags and rolls back the c
     assert.deepEqual(await fs.readdir(harness.lockRoot), []);
   } finally {
     restore();
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("owner-record Windows sharing failures never re-enter claim contention", async () => {
+  const harness = await isolatedLockPaths();
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(platform);
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  const originalWriteFile = fs.writeFile;
+  const originalRm = fs.rm;
+  const writeFailure = Object.assign(new Error("owner write denied"), { code: "EPERM" });
+  const rollbackFailure = Object.assign(new Error("rollback denied"), { code: "EPERM" });
+  let restoreWriteFile = () => {};
+  let restoreRm = () => {};
+  try {
+    restoreWriteFile = replaceFsMethod("writeFile", (...args) => {
+      if (path.basename(String(args[0])) === "owner.json") return Promise.reject(writeFailure);
+      return Reflect.apply(originalWriteFile, fs, args);
+    });
+    restoreRm = replaceFsMethod("rm", (...args) => {
+      if (String(args[0]).endsWith(".lock")) return Promise.reject(rollbackFailure);
+      return Reflect.apply(originalRm, fs, args);
+    });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, {
+        lockRoot: harness.lockRoot,
+        waitMs: 0,
+        pollMs: 0,
+      }),
+      (error: unknown) => error === writeFailure,
+    );
+  } finally {
+    restoreRm();
+    restoreWriteFile();
+    Object.defineProperty(process, "platform", platform);
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });

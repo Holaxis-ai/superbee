@@ -313,6 +313,30 @@ async function selectLockRoot(options: FilesystemMutationLockOptions): Promise<s
   return lockRoot;
 }
 
+const WINDOWS_CLAIM_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+
+type LockClaimFailure = "contention" | "unwitnessed-windows-sharing-error" | "terminal";
+
+async function classifyLockClaimFailure(error: unknown, lockPath: string): Promise<LockClaimFailure> {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "EEXIST") return "contention";
+  if (process.platform !== "win32" || !WINDOWS_CLAIM_CONTENTION_CODES.has(code ?? "")) return "terminal";
+
+  // Win32 may report a sharing-shaped error while another claimer creates or removes this exact
+  // directory. A witnessed path is contention. An absent path is ambiguous: permit one bounded
+  // retry in case the competing directory operation just completed, but never turn a durable
+  // create denial into a malformed-lock timeout. A denied probe remains terminal immediately.
+  try {
+    await fs.lstat(lockPath);
+    return "contention";
+  } catch (probeError) {
+    const probeCode = (probeError as NodeJS.ErrnoException).code;
+    return probeCode === "ENOENT" || probeCode === "ENOTDIR"
+      ? "unwitnessed-windows-sharing-error"
+      : "terminal";
+  }
+}
+
 /**
  * The claim itself, shared by every entry point: `mkdir(lockPath)` is the atomic claim, the
  * owner record makes a crash leftover diagnosable, and release is token-checked so a caller can
@@ -325,44 +349,59 @@ async function claimLockPath(
   pollMs: number,
 ): Promise<() => Promise<void>> {
   const started = owner.created_at_ms;
+  let unwitnessedWindowsRetryUsed = false;
   while (true) {
     try {
       await fs.mkdir(lockPath, { mode: 0o700 });
-      try {
-        await fs.writeFile(path.join(lockPath, OWNER_FILE), `${JSON.stringify(owner)}\n`, {
-          encoding: "utf8",
-          flag: "wx",
-          mode: 0o600,
-        });
-      } catch (err) {
-        await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
-        throw err;
+    } catch (err) {
+      const failure = await classifyLockClaimFailure(err, lockPath);
+      if (failure === "terminal") throw err;
+      if (failure === "unwitnessed-windows-sharing-error") {
+        if (unwitnessedWindowsRetryUsed) throw err;
+        unwitnessedWindowsRetryUsed = true;
+        // This is one immediate re-attempt, not a wait. It is permitted even with waitMs: 0 so
+        // the next result can distinguish a one-shot sharing race from a durable create denial.
+        continue;
+      } else {
+        unwitnessedWindowsRetryUsed = false;
       }
 
-      return async () => {
-        const current = await readOwner(lockPath);
-        if (current?.token !== owner.token) {
-          throw new FilesystemMutationLockError(
-            `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
-            { lockPath, owner: current, stale: false, malformed: current === null },
-          );
-        }
-        try {
-          await fs.rm(lockPath, { recursive: true, force: false });
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          throw new FilesystemMutationLockError(
-            `mutation completed but filesystem lock '${lockPath}' could not be removed (${message}); inspect the lock before retrying.`,
-            { lockPath, owner: current, stale: false, malformed: false },
-          );
-        }
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);
+      await delay(pollMs);
+      continue;
     }
 
-    if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);
-    await delay(pollMs);
+    // The claim is ours now. Owner initialization and rollback failures are not claim
+    // contention—even when Windows reports a sharing-shaped errno—and must propagate unchanged.
+    try {
+      await fs.writeFile(path.join(lockPath, OWNER_FILE), `${JSON.stringify(owner)}\n`, {
+        encoding: "utf8",
+        flag: "wx",
+        mode: 0o600,
+      });
+    } catch (err) {
+      await fs.rm(lockPath, { recursive: true, force: true }).catch(() => {});
+      throw err;
+    }
+
+    return async () => {
+      const current = await readOwner(lockPath);
+      if (current?.token !== owner.token) {
+        throw new FilesystemMutationLockError(
+          `refusing to release filesystem mutation lock '${lockPath}' because its owner token changed; the mutation may have completed, inspect the lock before retrying.`,
+          { lockPath, owner: current, stale: false, malformed: current === null },
+        );
+      }
+      try {
+        await fs.rm(lockPath, { recursive: true, force: false });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        throw new FilesystemMutationLockError(
+          `mutation completed but filesystem lock '${lockPath}' could not be removed (${message}); inspect the lock before retrying.`,
+          { lockPath, owner: current, stale: false, malformed: false },
+        );
+      }
+    };
   }
 }
 

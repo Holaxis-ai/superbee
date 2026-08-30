@@ -31,6 +31,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Run Windows-sensitive filesystem regressions first
+        shell: pwsh
+        run: |
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test -w @superbee/core -- --test-name-pattern="AC-10"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm test -w @superbee/publication
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Run the complete workspace contract natively
         run: npm run ci:runtime
       - name: Build, pack, and verify the publishable artifact

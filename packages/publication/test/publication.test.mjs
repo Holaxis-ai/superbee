@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { FilesystemBackend } from "@superbee/core";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -45,6 +46,20 @@ async function fixture() {
     "utf8",
   );
   return { root, viewDigest: hash(viewBytes) };
+}
+
+async function renameSubstitutionFixture(from, to) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      const code = error?.code;
+      const transient = process.platform === "win32" && ["EACCES", "EBUSY", "EPERM"].includes(code);
+      if (!transient || attempt === 40) throw error;
+      await delay(25);
+    }
+  }
 }
 
 test("capture is deterministic and preserves exact objects and canonical projections", async () => {
@@ -156,9 +171,9 @@ test("capture rejects atomic substitution of the authorized source root", async 
   let swapped = false;
   FilesystemBackend.prototype.list = async function (...args) {
     if (!swapped) {
+      await renameSubstitutionFixture(root, authorized);
+      await renameSubstitutionFixture(substitute, root);
       swapped = true;
-      await rename(root, authorized);
-      await rename(substitute, root);
     }
     return original.apply(this, args);
   };
@@ -173,6 +188,122 @@ test("capture rejects atomic substitution of the authorized source root", async 
     await rm(root, { recursive: true, force: true });
     await rm(authorized, { recursive: true, force: true });
     await rm(substitute, { recursive: true, force: true });
+  }
+});
+
+test("permission-shaped inventory failures are reclassified only after proven root substitution", async () => {
+  for (const row of [
+    { name: "unchanged root", substituteRoot: false, expectedCode: "IO_ERROR" },
+    { name: "substituted root", substituteRoot: true, expectedCode: "SOURCE_CHANGED" },
+  ]) {
+    const { root } = await fixture();
+    const replacement = row.substituteRoot ? await fixture() : undefined;
+    const authorized = `${root}-authorized`;
+    const original = FilesystemBackend.prototype.list;
+    let injected = false;
+    FilesystemBackend.prototype.list = async function (...args) {
+      if (!injected) {
+        injected = true;
+        if (replacement) {
+          await renameSubstitutionFixture(root, authorized);
+          await renameSubstitutionFixture(replacement.root, root);
+        }
+        const error = new Error(`simulated permission failure for ${row.name}`);
+        error.code = "EPERM";
+        throw error;
+      }
+      return original.apply(this, args);
+    };
+    try {
+      await assert.rejects(() => capturePublicationSnapshot({
+        schema: PUBLICATION_SNAPSHOT_V1,
+        source: { kind: "filesystem", root },
+        maxAttempts: 1,
+      }), (error) => {
+        assert.ok(error instanceof PublicationError);
+        assert.equal(error.code, row.expectedCode, row.name);
+        return true;
+      });
+    } finally {
+      FilesystemBackend.prototype.list = original;
+      await rm(root, { recursive: true, force: true });
+      await rm(authorized, { recursive: true, force: true });
+      if (replacement) await rm(replacement.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an unchanged authorized root that becomes inaccessible remains an IO_ERROR", {
+  skip: process.platform === "win32" ? "POSIX directory modes are required for this probe" : false,
+}, async () => {
+  const { root: fixtureRoot } = await fixture();
+  const container = `${fixtureRoot}-permission-gate`;
+  const root = path.join(container, "bundle");
+  await mkdir(container);
+  await rename(fixtureRoot, root);
+  const original = FilesystemBackend.prototype.list;
+  let injected = false;
+  FilesystemBackend.prototype.list = async function (...args) {
+    if (!injected) {
+      injected = true;
+      await chmod(container, 0o000);
+      const error = new Error("simulated inventory denial after the authorized root became inaccessible");
+      error.code = "EACCES";
+      throw error;
+    }
+    return original.apply(this, args);
+  };
+  try {
+    await assert.rejects(() => capturePublicationSnapshot({
+      schema: PUBLICATION_SNAPSHOT_V1,
+      source: { kind: "filesystem", root },
+      maxAttempts: 1,
+    }), (error) => {
+      assert.ok(error instanceof PublicationError);
+      assert.equal(error.code, "IO_ERROR");
+      assert.equal(error.retryable, false);
+      return true;
+    });
+  } finally {
+    FilesystemBackend.prototype.list = original;
+    await chmod(container, 0o700).catch(() => {});
+    await rm(container, { recursive: true, force: true });
+  }
+});
+
+test("entry-level symlink substitution remains SOURCE_CHANGED when realpath would fail", {
+  skip: process.platform === "win32" ? "this probe requires unprivileged symlink creation" : false,
+}, async () => {
+  const { root } = await fixture();
+  const authorized = `${root}-authorized`;
+  const original = FilesystemBackend.prototype.list;
+  let injected = false;
+  FilesystemBackend.prototype.list = async function (...args) {
+    if (!injected) {
+      injected = true;
+      await rename(root, authorized);
+      await symlink(root, root);
+      const error = new Error("simulated inventory failure after symlink-loop substitution");
+      error.code = "EPERM";
+      throw error;
+    }
+    return original.apply(this, args);
+  };
+  try {
+    await assert.rejects(() => capturePublicationSnapshot({
+      schema: PUBLICATION_SNAPSHOT_V1,
+      source: { kind: "filesystem", root },
+      maxAttempts: 1,
+    }), (error) => {
+      assert.ok(error instanceof PublicationError);
+      assert.equal(error.code, "SOURCE_CHANGED");
+      assert.equal(error.retryable, true);
+      return true;
+    });
+  } finally {
+    FilesystemBackend.prototype.list = original;
+    await rm(root, { recursive: true, force: true });
+    await rm(authorized, { recursive: true, force: true });
   }
 });
 
