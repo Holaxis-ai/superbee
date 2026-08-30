@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { FilesystemBackend } from "@superbee/core";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -45,6 +46,20 @@ async function fixture() {
     "utf8",
   );
   return { root, viewDigest: hash(viewBytes) };
+}
+
+async function renameSubstitutionFixture(from, to) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await rename(from, to);
+      return;
+    } catch (error) {
+      const code = error?.code;
+      const transient = process.platform === "win32" && ["EACCES", "EBUSY", "EPERM"].includes(code);
+      if (!transient || attempt === 40) throw error;
+      await delay(25);
+    }
+  }
 }
 
 test("capture is deterministic and preserves exact objects and canonical projections", async () => {
@@ -156,9 +171,9 @@ test("capture rejects atomic substitution of the authorized source root", async 
   let swapped = false;
   FilesystemBackend.prototype.list = async function (...args) {
     if (!swapped) {
+      await renameSubstitutionFixture(root, authorized);
+      await renameSubstitutionFixture(substitute, root);
       swapped = true;
-      await rename(root, authorized);
-      await rename(substitute, root);
     }
     return original.apply(this, args);
   };
@@ -190,8 +205,8 @@ test("permission-shaped inventory failures are reclassified only after proven ro
       if (!injected) {
         injected = true;
         if (replacement) {
-          await rename(root, authorized);
-          await rename(replacement.root, root);
+          await renameSubstitutionFixture(root, authorized);
+          await renameSubstitutionFixture(replacement.root, root);
         }
         const error = new Error(`simulated permission failure for ${row.name}`);
         error.code = "EPERM";

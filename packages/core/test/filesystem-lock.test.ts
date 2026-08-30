@@ -824,6 +824,53 @@ test("lock-root creation and lock claims propagate non-contention filesystem fai
   }
 });
 
+test("Windows lock claims retry only an observable transient EPERM", async () => {
+  const harness = await isolatedLockPaths();
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(platform);
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  const originalMkdir = fs.mkdir;
+  const originalLstat = fs.lstat;
+  let restoreMkdir = () => {};
+  let restoreLstat = () => {};
+  try {
+    const transient = Object.assign(new Error("transient claim collision"), { code: "EPERM" });
+    let claimAttempts = 0;
+    restoreMkdir = replaceFsMethod("mkdir", (...args) => {
+      if (String(args[0]).endsWith(".lock") && claimAttempts++ === 0) return Promise.reject(transient);
+      return Reflect.apply(originalMkdir, fs, args);
+    });
+    const release = await acquireFilesystemMutationLock(harness.target, {
+      lockRoot: harness.lockRoot,
+      waitMs: 100,
+      pollMs: 0,
+    });
+    assert.equal(claimAttempts, 2);
+    await release();
+    restoreMkdir();
+    restoreMkdir = () => {};
+
+    const durable = Object.assign(new Error("claim path denied"), { code: "EPERM" });
+    restoreMkdir = replaceFsMethod("mkdir", (...args) => {
+      if (String(args[0]).endsWith(".lock")) return Promise.reject(durable);
+      return Reflect.apply(originalMkdir, fs, args);
+    });
+    restoreLstat = replaceFsMethod("lstat", (...args) => {
+      if (String(args[0]).endsWith(".lock")) return Promise.reject(durable);
+      return Reflect.apply(originalLstat, fs, args);
+    });
+    await assert.rejects(
+      () => acquireFilesystemMutationLock(harness.target, { lockRoot: harness.lockRoot }),
+      (error: unknown) => error === durable,
+    );
+  } finally {
+    restoreLstat();
+    restoreMkdir();
+    Object.defineProperty(process, "platform", platform);
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("owner-record failure preserves exclusive-create flags and rolls back the claimed directory", async () => {
   const harness = await isolatedLockPaths();
   const originalWriteFile = fs.writeFile;

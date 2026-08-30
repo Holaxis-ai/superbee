@@ -313,6 +313,25 @@ async function selectLockRoot(options: FilesystemMutationLockOptions): Promise<s
   return lockRoot;
 }
 
+const WINDOWS_CLAIM_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+
+async function isLockClaimContention(error: unknown, lockPath: string): Promise<boolean> {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "EEXIST") return true;
+  if (process.platform !== "win32" || !WINDOWS_CLAIM_CONTENTION_CODES.has(code ?? "")) return false;
+
+  // Win32 may report a sharing-shaped error while another claimer creates or removes this exact
+  // directory. Retry only when a fresh probe can still classify the path; a denied probe keeps
+  // the original permission failure terminal.
+  try {
+    await fs.lstat(lockPath);
+    return true;
+  } catch (probeError) {
+    const probeCode = (probeError as NodeJS.ErrnoException).code;
+    return probeCode === "ENOENT" || probeCode === "ENOTDIR";
+  }
+}
+
 /**
  * The claim itself, shared by every entry point: `mkdir(lockPath)` is the atomic claim, the
  * owner record makes a crash leftover diagnosable, and release is token-checked so a caller can
@@ -358,7 +377,7 @@ async function claimLockPath(
         }
       };
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      if (!(await isLockClaimContention(err, lockPath))) throw err;
     }
 
     if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);

@@ -498,6 +498,13 @@ function assertWindowsJob(job, lane) {
     [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])),
     [lane.runtime_node, lane.installed_package_node],
   );
+  assert.match(job, /name: Run Windows-sensitive filesystem regressions first/);
+  assert.match(job, /npm test -w @superbee\/core -- --test-name-pattern="AC-10"/);
+  assert.match(job, /npm test -w @superbee\/publication/);
+  assert.ok(
+    job.indexOf("npm test -w @superbee/publication") < job.indexOf("run: npm run ci:runtime"),
+    "Windows-sensitive filesystem regressions must fail before the complete workspace contract",
+  );
   assert.match(job, /run: npm run ci:runtime/);
   assert.match(job, /npm run --silent pack:npm-package -- --pack-destination \$env:RUNNER_TEMP/);
   assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
