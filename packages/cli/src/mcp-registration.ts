@@ -10,20 +10,23 @@ import {
 import {
   classifyMcpRegistration,
   CURRENT_MCP_REGISTRATION,
+  inspectCodexMcp,
   LEGACY_MCP_REGISTRATIONS,
   openCodeConfigCandidates,
   parseMcpConfigRoot,
   parseClaudeMcpEntries,
-  parseCodexMcpEntries,
   parseOpenCodeMcpEntries,
+  resolveCodexCommand,
   resolveMcpTargetConfigPath,
   selectMcpRegistration,
   type McpHostStatus,
   type McpInstallTarget,
   type McpRegistrationEntry,
   type McpRegistrationState,
+  type McpStatusDeps,
   type McpStatusEnvironment,
 } from "./mcp-install-targets.js";
+import { HostCommandError, runHostCommand, type ResolvedHostCommand } from "./host-command.js";
 import {
   resolvePersistentInstallAuthority,
   type PersistentInstallAuthority,
@@ -44,17 +47,9 @@ export interface McpRegistrationReceipt {
   readonly help: readonly string[];
 }
 
-export interface McpRegistrationDeps {
-  readonly environment?: McpStatusEnvironment;
-  readonly authority?: () => PersistentInstallAuthority;
-  readonly readFile?: (path: string) => string;
+export interface McpRegistrationDeps extends McpStatusDeps {
   readonly writeFile?: (path: string, content: string) => void;
   readonly realpath?: (path: string) => string | undefined;
-  readonly execFile?: (
-    file: string,
-    args: readonly string[],
-    options: ExecFileSyncOptionsWithStringEncoding,
-  ) => string;
 }
 
 export class McpRegistrationError extends Error {
@@ -192,6 +187,7 @@ function selectedSources<T extends { path: string; text: string; entries: readon
 function inspectTarget(
   target: McpInstallTarget,
   deps: McpRegistrationDeps,
+  codexCommand?: ResolvedHostCommand,
 ): RegistrationObservation {
   const input = deps.environment ?? defaultEnvironment();
   const path = resolveMcpTargetConfigPath(target.id, input);
@@ -202,16 +198,21 @@ function inspectTarget(
   }
   const read = deps.readFile ?? ((candidate) => readFileSync(candidate, "utf8"));
   if (target.id === "codex") {
-    const run = deps.execFile ?? ((file, args, options) => execFileSync(file, args, options));
-    let entries: McpRegistrationEntry[];
-    try {
-      entries = parseCodexMcpEntries(run("codex", ["mcp", "list", "--json"], nativeOptions(input)));
-    } catch (error) {
-      throw new McpRegistrationError("Codex MCP registration is unavailable", {
-      host: target.id,
-      }, [target.docs_url], "runtime");
+    if (!codexCommand) {
+      throw new McpRegistrationError("Codex MCP command was not resolved", { host: target.id }, [], "runtime");
     }
-    return { entries, selected: selectMcpRegistration(entries), config: collapseHomeDirectory(path) };
+    try {
+      const entries = inspectCodexMcp(codexCommand, input, deps);
+      return { entries, selected: selectMcpRegistration(entries), config: collapseHomeDirectory(path) };
+    } catch (error) {
+      const state = error instanceof HostCommandError && error.state === "absent" ? "cli_absent" : "unreadable";
+      throw new McpRegistrationError(
+        state === "cli_absent" ? "Codex CLI command was not found on PATH" : "Codex MCP registration is unavailable",
+        { host: target.id, state },
+        [target.docs_url],
+        state === "cli_absent" ? "usage" : "runtime",
+      );
+    }
   }
   if (target.id !== "opencode") {
     const text = readOptional(path, read);
@@ -340,9 +341,10 @@ function inspectTarget(
 function inspectForMutation(
   target: McpInstallTarget,
   deps: McpRegistrationDeps,
+  codexCommand?: ResolvedHostCommand,
 ): RegistrationObservation {
   try {
-    return inspectTarget(target, deps);
+    return inspectTarget(target, deps, codexCommand);
   } catch (error) {
     if (error instanceof McpRegistrationError) throw error;
     throw new McpRegistrationError(`${target.label} MCP configuration is unavailable`, {
@@ -391,10 +393,17 @@ function applyTarget(
   desired: McpRegistrationEntry,
   before: RegistrationObservation,
   deps: McpRegistrationDeps,
+  codexCommand?: ResolvedHostCommand,
 ): void {
   const input = deps.environment ?? defaultEnvironment();
   if (target.id === "codex") {
-    nativeRun(deps, input, "codex", operation === "install" ? nativeAddArgs(target, desired) : nativeRemoveArgs(target));
+    if (!codexCommand) throw new McpRegistrationError("Codex MCP command was not resolved", {}, [], "runtime");
+    runHostCommand(
+      codexCommand,
+      operation === "install" ? nativeAddArgs(target, desired) : nativeRemoveArgs(target),
+      { cwd: input.home, env: input.env, platform: input.platform },
+      { execFile: deps.execFile },
+    );
     return;
   }
   if (target.id === "claude-code") {
@@ -499,7 +508,21 @@ export function mutateMcpRegistration(
   const authority = deps.authority?.()
     ?? resolvePersistentInstallAuthority({ env: input.env, platform: input.platform });
   const desired = desiredRegistration(authority, options.actor);
-  const before = inspectForMutation(target, deps);
+  let codexCommand: ResolvedHostCommand | undefined;
+  if (target.id === "codex") {
+    try {
+      codexCommand = resolveCodexCommand(input, deps);
+    } catch (error) {
+      const state = error instanceof HostCommandError && error.state === "absent" ? "cli_absent" : "unreadable";
+      throw new McpRegistrationError(
+        state === "cli_absent" ? "Codex CLI command was not found on PATH" : "Codex CLI command discovery is unavailable",
+        { host: target.id, state },
+        [target.docs_url],
+        state === "cli_absent" ? "usage" : "runtime",
+      );
+    }
+  }
+  const before = inspectForMutation(target, deps, codexCommand);
   const beforeClass = classify(before, authority, desired);
 
   if (beforeClass.state === "foreign" || beforeClass.state === "unverified") {
@@ -542,7 +565,7 @@ export function mutateMcpRegistration(
   // Re-read immediately before mutation. Native host CLIs do not expose CAS, but this prevents an
   // already-observable ownership change from turning a safe plan into a name-based overwrite or
   // removal. File-backed adapters also base their JSONC edit on these freshest foreign bytes.
-  const current = inspectForMutation(target, deps);
+  const current = inspectForMutation(target, deps, codexCommand);
   const currentClass = classify(current, authority, desired);
   const selectionUnchanged = current.selected === undefined
     ? before.selected === undefined
@@ -556,7 +579,7 @@ export function mutateMcpRegistration(
   }
 
   try {
-    applyTarget(target, operation, desired, current, deps);
+    applyTarget(target, operation, desired, current, deps, codexCommand);
   } catch (error) {
     if (error instanceof McpRegistrationError) throw error;
     throw new McpRegistrationError(`${target.label} MCP ${operation} failed`, {
@@ -564,7 +587,7 @@ export function mutateMcpRegistration(
     }, [target.docs_url], "runtime");
   }
 
-  const after = inspectForMutation(target, deps);
+  const after = inspectForMutation(target, deps, codexCommand);
   const afterClass = classify(after, authority, desired);
   const verified = operation === "install"
     ? afterClass.state === "owned_current" && exactEntry(after.selected, desired)
