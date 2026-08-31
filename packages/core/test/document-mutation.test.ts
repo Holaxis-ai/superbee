@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 
+import { FilesystemBackend } from "../src/backend.js";
 import { readDocVersioned, writeDocVersioned } from "../src/bundle.js";
 import {
   DocumentNotFoundError,
@@ -191,6 +195,29 @@ test("semantic patch no-op ignores an auto-refreshed timestamp and returns the u
   assert.equal(result.version, initial.version);
   assert.equal(result.doc.frontmatter.actor, undefined);
   assert.equal((await backend.versions("notes/a")).length, 1);
+});
+
+test("semantic patch no-op ignores the filesystem serializer's trailing body newline", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-document-mutation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bundle: Bundle = { root, backend: new FilesystemBackend(root) };
+  const initial = await writeDocVersioned(bundle, { id: "notes/a", ...candidate("A", "same") });
+  assert.equal((await readDocVersioned(bundle, "notes/a")).doc.body, "same\n");
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    buildCandidate: (existing) => ({
+      frontmatter: { ...existing!.frontmatter },
+      body: "same",
+    }),
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.version, initial.version);
 });
 
 test("v0.2 mutation persists portable mutation attribution without inventing generated, timestamp, or legacy actor metadata", async () => {

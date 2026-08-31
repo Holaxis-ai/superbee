@@ -11,6 +11,7 @@
 import { InvalidInputError } from "./errors.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
 import { assertFieldPreconditions } from "./document-precondition.js";
+import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
 import { parseTimestamp } from "./freshness.js";
 import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 import { persistMutationActor, SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
@@ -176,11 +177,13 @@ function isNoopMutation(
   okfVersion: "0.1" | "0.2",
   ignoreAutomaticActor = false,
   kindRequiresActor = false,
-  normalizeStorageBody = false,
 ): boolean {
-  const comparedBody = (body: string): string =>
-    normalizeStorageBody && !body.endsWith("\n") ? `${body}\n` : body;
-  if (comparedBody(candidate.body) !== comparedBody(existing.body)) return false;
+  if (
+    normalizeDocumentBodyForStorage(candidate.body)
+    !== normalizeDocumentBodyForStorage(existing.body)
+  ) {
+    return false;
+  }
   const existingFrontmatterWithActorPolicy = ignoreAutomaticActor
     ? withoutAutomaticMutationActor(existing.frontmatter, okfVersion, kindRequiresActor)
     : existing.frontmatter;
@@ -403,7 +406,6 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
             okfVersion,
             persistActor && opts.actor !== undefined,
             validated.kind?.fields.required.includes("actor") ?? false,
-            true,
           )
         ) {
           return { action: "done", result: { doc: existing } };

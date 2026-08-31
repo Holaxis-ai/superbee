@@ -126,6 +126,11 @@ export function parseMarkdown(
   return { frontmatter, body: parsed.content };
 }
 
+/** Match the exact body shape emitted by the document serializer. */
+export function normalizeDocumentBodyForStorage(body: string): string {
+  return body.endsWith("\n") ? body : `${body}\n`;
+}
+
 /** Serialize an arbitrary YAML-mapping + body to OKF markdown (used for reserved files). */
 export function stringifyWithData(data: Record<string, unknown>, body: string): string {
   const engines = (matter as typeof matter & {
@@ -134,8 +139,8 @@ export function stringifyWithData(data: Record<string, unknown>, body: string): 
   const yaml = engines.yaml.stringify(data).trim();
   const content = body ?? "";
   const newline = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
-  if (yaml === "{}") return newline(content);
-  return `---\n${newline(yaml)}---\n${newline(content)}`;
+  if (yaml === "{}") return normalizeDocumentBodyForStorage(content);
+  return `---\n${newline(yaml)}---\n${normalizeDocumentBodyForStorage(content)}`;
 }
 
 /** Serialize a concept document's frontmatter + body to OKF-conformant markdown. */
