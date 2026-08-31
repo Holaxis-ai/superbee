@@ -23,6 +23,7 @@ import {
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
+import { commandToken } from "../../command-text.js";
 
 export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
@@ -70,10 +71,10 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   const type = values.type?.trim();
   if (!type) {
     throw new CliError("USAGE", "--type <t> is required (OKF concepts must carry a non-empty type)", {
-      help: `${cliInvocation()} doc write ${id} --type <t>`,
+      help: `${cliInvocation()} doc write ${commandToken(id)} --type <t>`,
     });
   }
-  const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc write ${id} --actor <name>` });
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc write ${commandToken(id)} --actor <name>` });
 
   // Body source: --body wins, then --body-file, then piped stdin. `bodySourceGiven` tracks whether
   // the caller supplied a body source at all: --body (even --body "") and --body-file always count,
@@ -116,8 +117,8 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     if (Number.isNaN(Date.parse(ts))) {
       throw new CliError(
         "USAGE",
-        `--timestamp ${JSON.stringify(ts)} is not a valid date/time (expected ISO-8601, e.g. 2026-07-03T12:00:00Z)`,
-        { help: `${cliInvocation()} doc write ${id} --timestamp <iso>` },
+        `--timestamp ${commandToken(ts)} is not a valid date/time (expected ISO-8601, e.g. 2026-07-03T12:00:00Z)`,
+        { help: `${cliInvocation()} doc write ${commandToken(id)} --timestamp <iso>` },
       );
     }
     frontmatter.timestamp = ts;
@@ -191,8 +192,8 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           `refusing to overwrite kind convention '${id}' with 'doc write' — it replaces the whole document and ` +
             `would drop the convention's schema (governs/fields/path), un-declaring the '${governs}' kind. To change ` +
             `its title/body, use 'doc update' (it preserves the schema). To change the schema fields, use ` +
-            `'${cliInvocation()} kind field "${governs}" add/remove <name>' (or edit the convention's markdown frontmatter directly).`,
-          { help: `${cliInvocation()} doc update ${id} --title <t>` },
+            `'${cliInvocation()} kind field ${commandToken(governs)} add/remove <name>' (or edit the convention's markdown frontmatter directly).`,
+          { help: `${cliInvocation()} doc update ${commandToken(id)} --title <t>` },
         );
       }
 
@@ -204,10 +205,10 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           "USAGE",
           `'${id}' already has a non-empty body and no body source was given (--body, --body-file, or ` +
             `piped stdin) — refusing to silently blank it. Pass a body source, run ` +
-            `'${cliInvocation()} doc update ${id}' to patch other fields while preserving the body, or ` +
+            `'${cliInvocation()} doc update ${commandToken(id)}' to patch other fields while preserving the body, or ` +
             `pass --blank-body to blank it deliberately.`,
           {
-            help: `${cliInvocation()} doc update ${id}`,
+            help: `${cliInvocation()} doc update ${commandToken(id)}`,
             details: { existing_body_chars: fresh.body.length },
           },
         );
@@ -254,7 +255,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           "STALE_HEAD",
           `'${id}' changed concurrently while re-checking outbound links (moved since ${err.expected ?? "absent"}; ` +
             `now ${err.actual ?? "absent"}) — retries exhausted; re-run the write.`,
-          { help: `${cliInvocation()} doc read ${id}` },
+          { help: `${cliInvocation()} doc read ${commandToken(id)}` },
         ),
     },
   });
@@ -275,7 +276,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     receipt.note =
       `'doc write' is a FULL replace and dropped ${droppedFields.length} frontmatter field(s) not re-supplied: ` +
       `${droppedFields.join(", ")}. To change fields while preserving the rest (e.g. a status set by 'doc update' ` +
-      `or 'new'), use '${cliInvocation()} doc update ${id}' instead.`;
+      `or 'new'), use '${cliInvocation()} doc update ${commandToken(id)}' instead.`;
   }
   // ONLY on the silent-timeout path (never for /dev/null-shaped stdin, an explicit --body, or a
   // delivered pipe): the write proceeded with an empty body after fd 0 — a real open pipe — stayed
@@ -286,7 +287,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   if (result.warnings.length > 0) receipt.warnings = result.warnings;
   // Legacy-naming nudge (legacy-page.ts): authoring-moment only — never blocks, never on reads.
   if (isLegacyPageDoc(saved.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
-  receipt.help = [`${cliInvocation()} doc read ${saved.id}`];
+  receipt.help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`];
 
   stdout(render(receipt, resolveMode(values)));
 }

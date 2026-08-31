@@ -14,6 +14,7 @@ import {
 } from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
+import { commandLiteral, commandToken, joinCommandTokens, type CommandText } from "./command-text.js";
 
 /**
  * Build a literal, ready-to-run `doc update <id>` argv that addresses every FIELD-level violation
@@ -36,18 +37,20 @@ function buildCompletingUpdateCommand(
   if (!kind) return undefined;
   const declaredFields = new Set([...kind.fields.required, ...kind.fields.optional]);
   const seen = new Set<string>();
-  const flags: string[] = [];
+  const flags: CommandText[] = [];
   for (const violation of violations) {
     const field = violation.field;
     if (!field || seen.has(field) || !declaredFields.has(field)) continue;
     seen.add(field);
     const allowed = kind.fields.values[field];
-    const placeholder = allowed && allowed.length > 0 ? `<${allowed.join("|")}>` : "<value>";
+    const placeholder = allowed && allowed.length > 0
+      ? commandToken(`<${allowed.join("|")}>`)
+      : commandLiteral("<value>");
     const authoringField = field === progressStatusStorageField(okfVersion) ? "progress_status" : field;
-    flags.push(`--${authoringField} ${placeholder}`);
+    flags.push(joinCommandTokens([commandToken(`--${authoringField}`), placeholder]));
   }
   if (flags.length === 0) return undefined;
-  return `${cliInvocation()} doc update ${id} ${flags.join(" ")}`;
+  return `${cliInvocation()} doc update ${commandToken(id)} ${joinCommandTokens(flags)}`;
 }
 
 /**

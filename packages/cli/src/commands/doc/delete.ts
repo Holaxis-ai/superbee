@@ -9,6 +9,7 @@ import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { DOC_DELETE_USAGE, type DocCliDeps } from "./common.js";
+import { commandToken } from "../../command-text.js";
 
 export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
@@ -62,7 +63,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
     throw new CliError(
       "USAGE",
       "--expected-version was given an empty value — pass a real version token (from a prior read/write receipt) or omit the flag for an unconditional delete.",
-      { help: `${cliInvocation()} doc delete ${id} --expected-version <v>` },
+      { help: `${cliInvocation()} doc delete ${commandToken(id)} --expected-version <v>` },
     );
   }
 
@@ -87,10 +88,10 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
     if (err instanceof VersionConflict) {
       throw new CliError(
         "STALE_HEAD",
-        `'${id}' has moved since --expected-version ${err.expected} was read (current: ` +
+        `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +
           `${err.actual ?? "absent"}) — re-read and retry with the current version.`,
         {
-          help: `${cliInvocation()} doc read ${id}`,
+          help: `${cliInvocation()} doc read ${commandToken(id)}`,
           details: { expected: err.expected, actual: err.actual },
         },
       );

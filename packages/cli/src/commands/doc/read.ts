@@ -32,6 +32,7 @@ import {
 import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
+import { commandLiteral, commandToken, type CommandText } from "../../command-text.js";
 
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
@@ -98,31 +99,31 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
   // wins?), not a silent pick-one. PRESENCE selects a channel whatever its value: `--out "$VAR"`
   // with an unset $VAR is a scripting slip that must fail loudly, matching the blank guards below.
   // The error names only the flags actually passed, so the help never points at an unasked channel.
-  const selected: { flag: string; usage: string }[] = [];
-  if (outPresent) selected.push({ flag: "--out", usage: "--out (<path> | -)" });
-  if (bodyOutPresent) selected.push({ flag: "--body-out", usage: "--body-out (<path> | -)" });
-  if (renderedOutPresent) selected.push({ flag: "--rendered-out", usage: "--rendered-out (<path> | -)" });
-  if (fieldPresent) selected.push({ flag: "--field", usage: "--field <name>" });
+  const selected: { flag: string; usage: CommandText }[] = [];
+  if (outPresent) selected.push({ flag: "--out", usage: commandLiteral("--out (<path> | -)") });
+  if (bodyOutPresent) selected.push({ flag: "--body-out", usage: commandLiteral("--body-out (<path> | -)") });
+  if (renderedOutPresent) selected.push({ flag: "--rendered-out", usage: commandLiteral("--rendered-out (<path> | -)") });
+  if (fieldPresent) selected.push({ flag: "--field", usage: commandLiteral("--field <name>") });
   if (selected.length > 1) {
     throw new CliError(
       "USAGE",
       `${selected.map((c) => c.flag).join(", ")} cannot be combined — each selects a different read ` +
         "channel, and each reserves stdout for a single payload.",
-      { help: `${cliInvocation()} doc read ${id} ${selected[0]!.usage}` },
+      { help: `${cliInvocation()} doc read ${commandToken(id)} ${selected[0]!.usage}` },
     );
   }
   if (bodyOutPresent && bodyOutValue.trim() === "") {
     throw new CliError(
       "USAGE",
       "--body-out was given an empty value — pass a file path or '-' for stdout.",
-      { help: `${cliInvocation()} doc read ${id} --body-out (<path> | -)` },
+      { help: `${cliInvocation()} doc read ${commandToken(id)} --body-out (<path> | -)` },
     );
   }
   if (renderedOutPresent && renderedOutValue.trim() === "") {
     throw new CliError(
       "USAGE",
       "--rendered-out was given an empty value — pass a file path or '-' for stdout.",
-      { help: `${cliInvocation()} doc read ${id} --rendered-out (<path> | -)` },
+      { help: `${cliInvocation()} doc read ${commandToken(id)} --rendered-out (<path> | -)` },
     );
   }
 
@@ -134,7 +135,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     throw new CliError(
       "USAGE",
       "--field was given an empty value — pass a frontmatter field name (or id/type/head_version).",
-      { help: `${cliInvocation()} doc read ${id} --field <name>` },
+      { help: `${cliInvocation()} doc read ${commandToken(id)} --field <name>` },
     );
   }
   const field = values.field?.trim();
@@ -162,7 +163,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
         "--body-out",
         bodyOut,
         "body-only markdown",
-        `${cliInvocation()} doc read ${id} --body-out <path-outside-bundle>`,
+        `${cliInvocation()} doc read ${commandToken(id)} --body-out <path-outside-bundle>`,
       );
     }
     const runToTarget = async (): Promise<void> => {
@@ -213,7 +214,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
         "--rendered-out",
         renderedOut,
         "rendered HTML",
-        `${cliInvocation()} doc read ${id} --rendered-out <path-outside-bundle>`,
+        `${cliInvocation()} doc read ${commandToken(id)} --rendered-out <path-outside-bundle>`,
       );
     }
     let parsed: OkfDocument;
@@ -245,7 +246,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
         `The rendered HTML is TRUNCATED: this document exceeds the shared renderer's bounds ` +
         `(${MAX_BODY_CHARS} body characters / ${MAX_NODES} nodes), so ` +
         `the tail of the body is NOT present in the output. Use --out for the complete raw markdown.`;
-      result.help = [`${cliInvocation()} doc read ${id} --out <file>`];
+      result.help = [`${cliInvocation()} doc read ${commandToken(id)} --out <file>`];
     }
     if (streamMode) {
       writeStdoutBytes(bytes);
@@ -324,8 +325,8 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     // lines are complete-body channels: `--out` for the whole document, `--body-out` for the
     // body-only edit cycle that ends in `doc update --body-file --expected-version`.
     attachBodyPreview(rec, parsed.body, [
-      `${cliInvocation()} doc read ${parsed.id} --out <file>`,
-      `${cliInvocation()} doc read ${parsed.id} --body-out <path-outside-bundle>`,
+      `${cliInvocation()} doc read ${commandToken(parsed.id)} --out <file>`,
+      `${cliInvocation()} doc read ${commandToken(parsed.id)} --body-out <path-outside-bundle>`,
     ]);
     stdout(render(rec, resolveMode(values)));
     return;
@@ -425,7 +426,7 @@ function resolveField(parsed: OkfDocument, version: Version, field: string, id: 
     ...Object.keys(fm).filter((key) => fm[key] !== undefined && fm[key] !== null),
   ];
   throw new CliError("NOT_FOUND", `'${id}' has no field '${field}' — fields present: ${available.join(", ")}`, {
-    help: `${cliInvocation()} doc read ${id}`,
+    help: `${cliInvocation()} doc read ${commandToken(id)}`,
     details: { field, available },
   });
 }

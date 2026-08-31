@@ -8,8 +8,9 @@ import assert from "node:assert/strict";
 
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../src/offers.js";
 import { parseRecipeFiles } from "../src/recipe-parser.js";
+import { testFragment, testInvocation } from "./support/command-prefix.js";
 
-const INVOKE = "npx --no-install superbee";
+const INVOKE = testInvocation("npx --no-install superbee");
 
 const CONTEXT_NOTES: OfferRow = {
   recipe: "context-notes",
@@ -100,7 +101,7 @@ for (const rowCase of ROWS) {
 }
 
 test("deriveOffers appends the caller's --dir suffix verbatim to every command", () => {
-  const offers = deriveOffers({}, [], INVOKE, " --dir '/tmp/my bundle'");
+  const offers = deriveOffers({}, [], INVOKE, testFragment(" --dir '/tmp/my bundle'"));
   assert.equal(offers.length, 3);
   for (const row of offers) {
     assert.equal(row.command, `${INVOKE} recipe add ${row.recipe} --dir '/tmp/my bundle'`);

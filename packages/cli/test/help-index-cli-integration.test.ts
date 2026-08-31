@@ -16,6 +16,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { extractSerializedField } from "./support/rendered-command.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
@@ -134,6 +135,11 @@ test("built CLI: a nearby list option typo names the exact correction", () => {
   });
   assert.equal(result.status, 2);
   assert.match(result.stdout, /unknown option '--limt' — did you mean '--limit'\?/);
-  assert.match(result.stdout, /help: (?:superbee|npx --no-install superbee) list --help/);
+  // Latent instance of the same class: this command carries no rendered token today, so the raw
+  // regex happens to work. Decode the envelope so it keeps working if one is ever added.
+  assert.match(
+    extractSerializedField(result.stdout, "help") ?? "",
+    /^(?:superbee|npx --no-install superbee) list --help$/,
+  );
   assert.equal(result.stderr, "");
 });

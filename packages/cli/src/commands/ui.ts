@@ -29,6 +29,7 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { resolveActor } from "../actor.js";
 import { DOC_OPEN_USAGE, readErrorToCliError } from "./doc/common.js";
+import { commandWords } from "../command-text.js";
 
 export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
 
@@ -117,7 +118,7 @@ function mapBootError(err: unknown, port: number, commandPath = "ui"): CliError 
   if (err instanceof CliError) return err;
   if ((err as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
     return new CliError("RUNTIME", `port ${port} is already in use — something else is listening there`, {
-      help: `${cliInvocation()} ${commandPath} --port 0 (ephemeral port), or pass a different --port`,
+      help: `${cliInvocation()} ${commandWords(commandPath)} --port 0 (ephemeral port), or pass a different --port`,
     });
   }
   const message = err instanceof Error ? err.message : String(err);
@@ -191,14 +192,14 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     const raw = values.port.trim();
     if (!/^\d+$/.test(raw) || Number(raw) > 65535) {
       throw new CliError("USAGE", "--port must be an integer between 0 and 65535", {
-        help: `${cliInvocation()} ${commandPath} --port <p>`,
+        help: `${cliInvocation()} ${commandWords(commandPath)} --port <p>`,
       });
     }
     port = Number(raw);
   }
 
   const remoteFlag = await resolveRemoteFlag(values.remote, values.dir);
-  const actor = resolveActor(values.actor, { help: `${cliInvocation()} ${commandPath} --actor <name>` });
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} ${commandWords(commandPath)} --actor <name>` });
   let options: UiServerOptions;
   let rootLabel: string;
   let bundle: Bundle;
@@ -206,7 +207,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
   if (remoteFlag) {
     if (values.dir) {
       throw new CliError("USAGE", "--remote and --dir are mutually exclusive", {
-        help: `${cliInvocation()} ${commandPath} --remote <url>`,
+        help: `${cliInvocation()} ${commandWords(commandPath)} --remote <url>`,
       });
     }
     let base: string;
@@ -217,7 +218,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
       origin = resolved.resource;
     } catch (err) {
       throw new CliError("USAGE", err instanceof Error ? err.message : String(err), {
-        help: `${cliInvocation()} ${commandPath} --remote http://127.0.0.1:4818`,
+        help: `${cliInvocation()} ${commandWords(commandPath)} --remote http://127.0.0.1:4818`,
       });
     }
     const envKey = resolveApiKeyEnv();

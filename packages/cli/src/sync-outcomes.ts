@@ -24,11 +24,12 @@ import {
   type StatusRow,
 } from "@superbee/board-git";
 import { CliError, type CliErrorCode } from "./errors.js";
+import { commandQuoted, commandToken, type CommandPrefix } from "./command-text.js";
 
 // ── shared string templates (bound into rows below; command modules re-export them) ──
 
 /** Route a missing upstream to either the existing shared repo or explicit first publication. */
-export function upstreamHelp(inv: string): string {
+export function upstreamHelp(inv: CommandPrefix): string {
   return (
     `if a teammate already shares this project's board, make sure your \`origin\` remote points at ` +
     `the SAME repository they pushed the \`board\` branch to; if nobody has started sharing this ` +
@@ -43,7 +44,7 @@ export function upstreamHelp(inv: string): string {
  * pointing at `sync --establish`, which would just refuse again with nothing else to try.
  */
 export function syncInTreeRefusalMessage(
-  inv: string,
+  inv: CommandPrefix,
   hasOrigin: boolean = true,
   bundleDir: string = BUNDLE_DIR,
 ): string {
@@ -70,7 +71,7 @@ export const SHOW_INCOMING_NO_UPSTREAM =
  * rebase-phase decision) reported the SAME state with different copy; this is the winning variant
  * (it explains WHY bare sync won't auto-create the branch, the more actionable of the two).
  */
-export function boardNotPublishedMessage(inv: string): string {
+export function boardNotPublishedMessage(inv: CommandPrefix): string {
   return (
     `the local board has not been published — bare sync never creates origin/${BOARD_BRANCH}; ` +
     `run '${inv} sync --establish' to publish it explicitly`
@@ -122,7 +123,7 @@ export const BOARD_UP_TO_DATE = "up to date";
 export const BOARD_OFFLINE_NOTE = "board sync offline — showing last known state";
 
 /** The probe-gated first-contact line — NEVER "run init" (the divergent-second-bundle footgun). */
-export function boardFirstContactLine(inv: string): string {
+export function boardFirstContactLine(inv: CommandPrefix): string {
   return `not yet provisioned — run \`${inv} sync\` to set it up`;
 }
 
@@ -183,7 +184,7 @@ const line = <P>(message: (p: P) => string): SyncOutcomeLineRow<P> => ({ message
 
 /** `git fetch --unshallow origin` — shared by the shallow note and the shallow refusal's help. */
 function unshallowCmd(): string {
-  return `git fetch --unshallow ${BOARD_REMOTE}`;
+  return `git fetch --unshallow ${commandToken(BOARD_REMOTE)}`;
 }
 
 // ── the error-outcome rows ────────────────────────────────────────────────────
@@ -196,12 +197,12 @@ export const SYNC_OUTCOMES = {
     message: () => "sync needs git, which isn't installed on this machine",
     help: () => "install git (https://git-scm.com/downloads), then re-run the command",
   }),
-  "ff.no-upstream.unpublished": row<{ inv: string }>({
+  "ff.no-upstream.unpublished": row<{ inv: CommandPrefix }>({
     code: "NO_UPSTREAM",
     message: (p) => boardNotPublishedMessage(p.inv),
     help: (p) => `${p.inv} sync --establish`,
   }),
-  "ff.no-upstream.unlinked": row<{ inv: string }>({
+  "ff.no-upstream.unlinked": row<{ inv: CommandPrefix }>({
     code: "NO_UPSTREAM",
     message: () =>
       "the board branch isn't linked to a remote — there is nothing to pull from or push to " +
@@ -223,13 +224,13 @@ export const SYNC_OUTCOMES = {
     message: () => "another git process is using this repository — retry once it finishes",
     details: () => ({ retryable: true }),
   }),
-  "ff.diverged": row<{ inv: string }>({
+  "ff.diverged": row<{ inv: CommandPrefix }>({
     code: "CONFLICT",
     message: (p) =>
       `the board has local commits not yet pushed, and origin has moved too — \`sync --pull-only\` ` +
       `only fast-forwards; run \`${p.inv} sync\` (without --pull-only) to reconcile`,
   }),
-  "ff.conflict": row<{ inv: string }>({
+  "ff.conflict": row<{ inv: CommandPrefix }>({
     code: "CONFLICT",
     message: (p) =>
       `the board checkout has unresolved conflicts — run \`${p.inv} sync\` (without --pull-only) to reconcile`,
@@ -255,7 +256,7 @@ export const SYNC_OUTCOMES = {
   }),
 
   // Provisioning's local_board outcomes (bare sync never adopts or publishes a local branch).
-  "sync.local-board.remote-exists": row<{ inv: string }>({
+  "sync.local-board.remote-exists": row<{ inv: CommandPrefix }>({
     code: "CONFLICT",
     message: () =>
       `both a local '${BOARD_BRANCH}' branch and origin/${BOARD_BRANCH} exist, but the local branch ` +
@@ -264,7 +265,7 @@ export const SYNC_OUTCOMES = {
       `preserve or rename the local branch (for example: git branch -m ${BOARD_BRANCH} ` +
       `${BOARD_BRANCH}-local-backup), then re-run '${p.inv} sync' to join origin/${BOARD_BRANCH}`,
   }),
-  "sync.local-board.unpublished": row<{ inv: string }>({
+  "sync.local-board.unpublished": row<{ inv: CommandPrefix }>({
     code: "NO_UPSTREAM",
     message: () =>
       `a local '${BOARD_BRANCH}' branch exists but has not been explicitly adopted or published — ` +
@@ -273,20 +274,20 @@ export const SYNC_OUTCOMES = {
   }),
   // Full sync's own no_upstream arm (the rebase step's decision table) — same state as
   // `ff.no-upstream.unpublished` (`--pull-only`'s translation), so it uses the same copy.
-  "sync.full.no-upstream": row<{ inv: string }>({
+  "sync.full.no-upstream": row<{ inv: CommandPrefix }>({
     code: "NO_UPSTREAM",
     message: (p) => boardNotPublishedMessage(p.inv),
     help: (p) => `${p.inv} sync --establish`,
   }),
 
   // The in-tree board's write refusal + the viewer's no-comparison-basis refusal.
-  "in-tree.sync-refusal": row<{ inv: string; boardPath: string; hasOrigin: boolean }>({
+  "in-tree.sync-refusal": row<{ inv: CommandPrefix; boardPath: string; hasOrigin: boolean }>({
     code: "USAGE",
     message: (p) => syncInTreeRefusalMessage(p.inv, p.hasOrigin, path.basename(p.boardPath)),
     details: (p) => ({ path: p.boardPath, state: "in-tree" }),
     help: (p) => (p.hasOrigin ? `${p.inv} sync --establish` : `git remote add ${BOARD_REMOTE} <url>`),
   }),
-  "in-tree.show-incoming.no-basis": row<{ inv: string; reason: InTreeNoBasisReason; ref?: string }>({
+  "in-tree.show-incoming.no-basis": row<{ inv: CommandPrefix; reason: InTreeNoBasisReason; ref?: string }>({
     code: "NO_UPSTREAM",
     message: (p) => `this board rides the current branch, and ${inTreeNoBasisNote(p.reason, p.ref)}`,
     details: () => ({ state: "in-tree" }),
@@ -295,7 +296,7 @@ export const SYNC_OUTCOMES = {
   }),
   // The branch-mode viewer's own no-comparison-basis refusal: nothing has been fetched at all yet
   // (the in-tree row above covers the read-side-mode twin).
-  "show-incoming.no-upstream": row<{ inv: string }>({
+  "show-incoming.no-upstream": row<{ inv: CommandPrefix }>({
     code: "NO_UPSTREAM",
     message: () => SHOW_INCOMING_NO_UPSTREAM,
     help: (p) => `on a shared board, run ${p.inv} sync --pull-only once to fetch origin/board, then re-run --show-incoming`,
@@ -310,7 +311,7 @@ export const SYNC_OUTCOMES = {
       `the current branch is '${BOARD_BRANCH}' — run establish from the branch that carries the ` +
       `committed folder ('${BOARD_BRANCH}' is the branch establishment creates)`,
   }),
-  "establish.behind-origin": row<{ inv: string; branch: string; behind: string[] }>({
+  "establish.behind-origin": row<{ inv: CommandPrefix; branch: string; behind: string[] }>({
     code: "RUNTIME",
     message: (p) =>
       `establish refused: '${p.branch}' is behind ${BOARD_REMOTE}/${p.branch} with board changes — ` +
@@ -319,7 +320,7 @@ export const SYNC_OUTCOMES = {
     details: (p) => ({ behind_board_commits: p.behind.length, commits: p.behind.slice(0, 20) }),
     help: (p) => `git pull, then re-run ${p.inv} sync --establish --yes`,
   }),
-  "establish.committed-dirty": row<{ inv: string; bundleDir: string; rows: StatusRow[]; total: number }>({
+  "establish.committed-dirty": row<{ inv: CommandPrefix; bundleDir: string; rows: StatusRow[]; total: number }>({
     code: "RUNTIME",
     message: (p) =>
       `establish refused: ${p.bundleDir}/ has uncommitted changes — commit (or discard) them ` +
@@ -336,13 +337,13 @@ export const SYNC_OUTCOMES = {
   }),
   // The greenfield guard matches the committed-case copy and carries actionable help (greenfield
   // publication never needs --yes, so its remedy omits the flag the committed-case one carries).
-  "establish.namespace-conflict.greenfield": row<{ inv: string; conflicts: string[] }>({
+  "establish.namespace-conflict.greenfield": row<{ inv: CommandPrefix; conflicts: string[] }>({
     code: "RUNTIME",
     message: (p) => namespaceConflictMessage(p.conflicts),
     details: (p) => ({ conflicting_branches: p.conflicts }),
     help: (p) => `delete or rename these branches, then re-run ${p.inv} sync --establish`,
   }),
-  "establish.namespace-conflict.committed": row<{ inv: string; conflicts: string[] }>({
+  "establish.namespace-conflict.committed": row<{ inv: CommandPrefix; conflicts: string[] }>({
     code: "RUNTIME",
     message: (p) => namespaceConflictMessage(p.conflicts),
     details: (p) => ({ conflicting_branches: p.conflicts }),
@@ -366,7 +367,7 @@ export const SYNC_OUTCOMES = {
       `the repository is on a detached HEAD — check out the branch that carries the committed ` +
       `${p.bundleDir}/ folder, then re-run`,
   }),
-  "establish.detached-head.marker": row<{ inv: string; bundleDir: string }>({
+  "establish.detached-head.marker": row<{ inv: CommandPrefix; bundleDir: string }>({
     code: "RUNTIME",
     message: (p) =>
       `the repository is on a detached HEAD — check out the branch that carries the committed ` +
@@ -374,7 +375,7 @@ export const SYNC_OUTCOMES = {
   }),
 
   // The committed-case marker (crash/lost-race provenance) refusal arms.
-  "marker.shallow.refusal": row<{ inv: string; marker: string }>({
+  "marker.shallow.refusal": row<{ inv: CommandPrefix; marker: string }>({
     code: "RUNTIME",
     message: () =>
       `establish refused: this clone's git history is shallow (truncated), so the interrupted ` +
@@ -382,7 +383,7 @@ export const SYNC_OUTCOMES = {
     details: (p) => ({ snapshot_commit: p.marker }),
     help: (p) => `${unshallowCmd()}  # then re-run ${p.inv} sync --establish`,
   }),
-  "marker.lost-race.conflict": row<{ inv: string; marker: string; markerValid: boolean }>({
+  "marker.lost-race.conflict": row<{ inv: CommandPrefix; marker: string; markerValid: boolean }>({
     code: "CONFLICT",
     message: (p) =>
       p.markerValid
@@ -409,7 +410,7 @@ export const SYNC_OUTCOMES = {
     details: () => ({ retryable: true }),
   }),
   "marker.tree-changed.conflict": row<{
-    inv: string; branch: string; bundleDir: string; snapshotTree: string; currentTree: string;
+    inv: CommandPrefix; branch: string; bundleDir: string; snapshotTree: string; currentTree: string;
   }>({
     code: "CONFLICT",
     message: (p) =>
@@ -512,13 +513,13 @@ export const SYNC_OUTCOME_LINES = {
   ),
   // establish's window notes for a clone with no local establishment work left (pull-first;
   // probed per state at the site — the remnant state renders the package factory's message).
-  "line.window-note.landed": line<{ inv: string; branch: string; bundleDir: string }>(
+  "line.window-note.landed": line<{ inv: CommandPrefix; branch: string; bundleDir: string }>(
     (p) =>
       `this clone still carries the committed ${p.bundleDir}/ folder and the folder-removal has ` +
       `already landed on '${p.branch}' — run 'git pull' (the folder vanishes), then '${p.inv} sync' ` +
       `(it returns as the live board)`,
   ),
-  "line.window-note.pending": line<{ inv: string; bundleDir: string }>(
+  "line.window-note.pending": line<{ inv: CommandPrefix; bundleDir: string }>(
     (p) =>
       `this clone still carries the committed ${p.bundleDir}/ folder — once the folder-removal ` +
       `lands on the default branch: 'git pull' (the folder vanishes), then '${p.inv} sync' ` +
@@ -547,25 +548,25 @@ export const SYNC_OUTCOME_LINES = {
   "line.marker.lost-race.note": line<{ story: string }>(
     (p) => `${p.story} — this clone's earlier '--establish --yes' did not win; nothing has been changed by this run`,
   ),
-  "line.marker.lost-race.discard": line<{ inv: string }>(
+  "line.marker.lost-race.discard": line<{ inv: CommandPrefix }>(
     (p) =>
       `git branch -D ${BOARD_BRANCH}, then re-run '${p.inv} sync --establish' — the stale ` +
       `marker is cleared automatically once the branch is gone`,
   ),
-  "line.marker.shallow.note": line<{ inv: string }>(
+  "line.marker.shallow.note": line<{ inv: CommandPrefix }>(
     (p) =>
       `an earlier establishment on this clone was interrupted, but this clone's git history ` +
       `is shallow (truncated), so establish cannot verify whether that attempt's snapshot was ` +
       `published — deepen the history (${unshallowCmd()}), then re-run '${p.inv} sync --establish' ` +
       `(nothing has been changed by this run)`,
   ),
-  "line.marker.interrupted-offer.note": line<{ inv: string; cleanupBranch: string }>(
+  "line.marker.interrupted-offer.note": line<{ inv: CommandPrefix; cleanupBranch: string }>(
     (p) =>
       `an interrupted establishment left the board branch pushed but no folder-removal commit — ` +
-      `re-run '${p.inv} sync --establish --yes' to re-create it on '${p.cleanupBranch}' ` +
+      `re-run '${p.inv} sync --establish --yes' to re-create it on ${commandQuoted(p.cleanupBranch)} ` +
       `(nothing has been changed by this run)`,
   ),
-  "line.marker.offline.note": line<{ inv: string }>(
+  "line.marker.offline.note": line<{ inv: CommandPrefix }>(
     (p) =>
       `an earlier establishment on this clone was interrupted, but '${BOARD_REMOTE}' cannot ` +
       `be reached to verify what was published — get online, then re-run ` +
@@ -577,7 +578,7 @@ export const SYNC_OUTCOME_LINES = {
       `open its PR`,
   ),
   // home's board-block lines (bound to the shared templates above).
-  "line.home.first-contact": line<{ inv: string }>((p) => boardFirstContactLine(p.inv)),
+  "line.home.first-contact": line<{ inv: CommandPrefix }>((p) => boardFirstContactLine(p.inv)),
   "line.home.up-to-date": line<Record<string, never>>(() => BOARD_UP_TO_DATE),
   "line.home.offline-note": line<Record<string, never>>(() => BOARD_OFFLINE_NOTE),
   "line.home.in-tree": line<Record<string, never>>(() => BOARD_IN_TREE_LINE),
@@ -587,10 +588,10 @@ export const SYNC_OUTCOME_LINES = {
   "line.home.in-tree.uncommitted": line<{ n: number }>((p) => inTreeUncommittedLine(p.n)),
   "line.home.in-tree.pull-hint": line<{ n: number }>((p) => inTreePullHintLine(p.n)),
   // session-start's pull-skip notes (board-block `note` field entries — exit 0, fail-soft).
-  "line.session-start.fetch-skipped": line<{ code: string; inv: string }>(
+  "line.session-start.fetch-skipped": line<{ code: string; inv: CommandPrefix }>(
     (p) => `board fetch skipped (${p.code}) — run \`${p.inv} sync --pull-only\` for the full story`,
   ),
-  "line.session-start.pull-skipped": line<{ reason: string; inv: string }>(
+  "line.session-start.pull-skipped": line<{ reason: string; inv: CommandPrefix }>(
     (p) => `board pull skipped (${p.reason}) — run \`${p.inv} sync\` to reconcile`,
   ),
 } as const;
@@ -608,7 +609,7 @@ export function syncOutcomeLine<K extends SyncOutcomeLineKey>(key: K, params: Li
  * Map a fail-soft pull reason to the capped CliError taxonomy. `boardPath` distinguishes a local
  * unpublished board from a project with no shared board configured.
  */
-export function ffSwallowToError(reason: string, inv: string, boardPath?: string): CliError {
+export function ffSwallowToError(reason: string, inv: CommandPrefix, boardPath?: string): CliError {
   switch (reason) {
     case "git-missing":
       return syncOutcomeError("ff.git-missing", {});

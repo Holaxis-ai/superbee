@@ -52,6 +52,7 @@ import { DESCRIPTION, helpIndexText } from "./reference.js";
 import { cliInvocation } from "./invocation.js";
 import { PUBLIC_COMMAND_NAMES, type PublicCommandName } from "./command-spec.js";
 import { parseArgs } from "node:util";
+import { commandWords } from "./command-text.js";
 export { cliVersion } from "./build-identity.js";
 
 export const KNOWN_COMMANDS = PUBLIC_COMMAND_NAMES;
@@ -267,7 +268,7 @@ export async function main(argv: string[]): Promise<void> {
     const envelope = toEnvelope(
       new CliError(
         "USAGE",
-        `options must follow the command (e.g. '${cliInvocation()} ${command} …').`,
+        `options must follow the command (e.g. '${cliInvocation()} ${commandWords(command)} …').`,
         {
           help: `${cliInvocation()} --help`,
         },

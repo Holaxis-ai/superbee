@@ -52,6 +52,7 @@ import { CliError } from "../../errors.js";
 import { render, type OutputMode } from "../../output.js";
 import { syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
 import type { EstablishOutcome } from "./establish.js";
+import type { CommandPrefix } from "../../command-text.js";
 
 /** The local branch the folder-removal commit is prepared on — the human pushes it and opens the PR. */
 export const CLEANUP_BRANCH = "board-cleanup";
@@ -84,7 +85,7 @@ export function bothWorldsLine(branch: string): string {
  * The rollout-note copy to forward to teammates BEFORE the cleanup PR merges (emitted in the
  * preview AND the receipt). The `git clean -fdx` line is COPY ONLY — nothing here executes it.
  */
-export function rolloutNote(inv: string, branch: string, bundleDir: string = BUNDLE_DIR): string[] {
+export function rolloutNote(inv: CommandPrefix, branch: string, bundleDir: string = BUNDLE_DIR): string[] {
   return [
     `after your next 'git pull', ${bundleDir}/ disappears from '${branch}' — nothing is lost: ` +
       `the next '${inv} sync' re-creates it from the shared board branch`,
@@ -97,7 +98,7 @@ export function rolloutNote(inv: string, branch: string, bundleDir: string = BUN
 }
 
 /** The preview record — a genuinely useful dry run: what branch, what commits, what leaves where. */
-export function committedPreviewRecord(inv: string, branch: string, bundleDir: string = BUNDLE_DIR): Record<string, unknown> {
+export function committedPreviewRecord(inv: CommandPrefix, branch: string, bundleDir: string = BUNDLE_DIR): Record<string, unknown> {
   return {
     establish: ESTABLISH_COMMITTED_PREVIEW,
     create:
@@ -129,7 +130,7 @@ export function committedPreviewRecord(inv: string, branch: string, bundleDir: s
 }
 
 /** The receipt/recovery next-steps chain (one source — the crash-recovery path re-emits it). */
-export function committedNextSteps(inv: string, branch: string, bundleDir: string = BUNDLE_DIR): string[] {
+export function committedNextSteps(inv: CommandPrefix, branch: string, bundleDir: string = BUNDLE_DIR): string[] {
   return [
     `push the cleanup branch: git push -u ${BOARD_REMOTE} ${CLEANUP_BRANCH}`,
     `open a PR from '${CLEANUP_BRANCH}' into '${branch}' and merge it`,
@@ -139,7 +140,7 @@ export function committedNextSteps(inv: string, branch: string, bundleDir: strin
 }
 
 /** Throw the behind-origin refusal when {@link behindBoardCommits} found any. */
-function assertNotBehindOnBoard(top: string, inv: string, branch: string, bundleDir: BundleDirName): void {
+function assertNotBehindOnBoard(top: string, inv: CommandPrefix, branch: string, bundleDir: BundleDirName): void {
   const behind = behindBoardCommits(top, branch, bundleDir);
   if (behind !== null && behind.length > 0) {
     throw syncOutcomeError("establish.behind-origin", { inv, branch, behind });
@@ -147,7 +148,7 @@ function assertNotBehindOnBoard(top: string, inv: string, branch: string, bundle
 }
 
 /** The removal commit's message (rides the human-opened cleanup PR). */
-function removalCommitMessage(inv: string, branch: string, bundleDir: string): string {
+function removalCommitMessage(inv: CommandPrefix, branch: string, bundleDir: string): string {
   return (
     `board: move ${bundleDir}/ to the '${BOARD_BRANCH}' branch\n\n` +
     `The board now lives on its own '${BOARD_BRANCH}' branch (pushed to ${BOARD_REMOTE}) and is ` +
@@ -202,7 +203,7 @@ interface CommittedPlan { branch: string; bundleDir: BundleDirName; reuseBoardSh
  * synced their board changes — is documented comms in the preview.
  */
 function guardCommittedPreconditions(
-  top: string, inv: string, treeSha: string, bundleDir: BundleDirName,
+  top: string, inv: CommandPrefix, treeSha: string, bundleDir: BundleDirName,
 ): CommittedPlan {
   const branch = currentBranch(top);
   if (branch === "HEAD") {
@@ -251,7 +252,7 @@ function guardCommittedPreconditions(
  * merely checked out the board branch during the window must never be offered the recovery).
  */
 function executeCommittedEstablishment(
-  top: string, inv: string, plan: CommittedPlan, treeSha: string, mode: OutputMode, stdout: (s: string) => void,
+  top: string, inv: CommandPrefix, plan: CommittedPlan, treeSha: string, mode: OutputMode, stdout: (s: string) => void,
 ): EstablishOutcome {
   const { branch, bundleDir } = plan;
   const boardSha = plan.reuseBoardSha ?? createBoardRootCommit(top, treeSha, branch);
@@ -277,7 +278,7 @@ function executeCommittedEstablishment(
 
 /** The committed-folder establishment: idempotence probe → offline refusal → guards → preview/execute. */
 export async function establishCommitted(
-  top: string, inv: string, mode: OutputMode, yes: boolean, committed: CommittedBundleAtHead,
+  top: string, inv: CommandPrefix, mode: OutputMode, yes: boolean, committed: CommittedBundleAtHead,
   stdout: (s: string) => void,
 ): Promise<EstablishOutcome> {
   const { tree: treeSha, bundleDir } = committed;
@@ -329,7 +330,7 @@ export async function establishCommitted(
  * structurally, so leftover local crumbs cannot produce stale guidance there.
  */
 async function alreadyShared(
-  top: string, inv: string, mode: OutputMode, yes: boolean, fetchOk: boolean,
+  top: string, inv: CommandPrefix, mode: OutputMode, yes: boolean, fetchOk: boolean,
   bundleDir: BundleDirName, stdout: (s: string) => void,
 ): Promise<void> {
   const rec: Record<string, unknown> = { establish: ESTABLISH_COMMITTED_ALREADY };
@@ -436,7 +437,7 @@ async function alreadyShared(
  * or may not exist. A tracked REMNANT (removal landed AND pulled, straggler paths still tracked)
  * gets the ONE factory's untrack-escape line instead: "run 'git pull'" is a dead end there.
  */
-function windowNote(top: string, inv: string, branch: string, bundleDir: BundleDirName): string {
+function windowNote(top: string, inv: CommandPrefix, branch: string, bundleDir: BundleDirName): string {
   const guidance = boardWindowGuidance(top, true, bundleDir);
   if (guidance.state === "window-remnant") return guidance.message;
   const landedUpstream = pathLandedAbsentOnRemoteBranch(top, branch, bundleDir);

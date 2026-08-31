@@ -24,6 +24,7 @@ import {
 } from "../src/bundle.js";
 import { CliError } from "../src/errors.js";
 import { list } from "../src/commands/list.js";
+import { rendered } from "./support/rendered-command.js";
 
 // Realpath'd (not just mkdtemp'd): on macOS, `os.tmpdir()` lands under `/var/folders/...`, a
 // symlink to `/private/var/folders/...` — `process.chdir()` + `process.cwd()` resolve THROUGH it,
@@ -623,7 +624,7 @@ test("openBundle: explicit nonexistent and non-directory targets remain NOT_FOUN
           assert.ok(err instanceof CliError);
           assert.equal(err.code, "NOT_FOUND");
           assert.match(err.message, /no local bundle directory/);
-          assert.ok(err.help?.includes(`--dir ${root}`));
+          assert.ok(err.help?.includes(`--dir ${rendered(root)}`), err.help);
           assert.doesNotMatch(err.help ?? "", / init /);
           return true;
         },

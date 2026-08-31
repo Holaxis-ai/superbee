@@ -21,6 +21,7 @@ import { deleteCommand, type DeleteCliDeps } from "../src/commands/delete.js";
 import { CliError } from "../src/errors.js";
 import { KNOWN_COMMANDS } from "../src/cli.js";
 import { commandReference } from "../src/reference.js";
+import { testInvocation } from "./support/command-prefix.js";
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
@@ -244,7 +245,7 @@ test("delete --doc-key --remote: round-trip parity with the same operation run l
 
 test("delete is registered in KNOWN_COMMANDS and the command reference", () => {
   assert.ok(KNOWN_COMMANDS.includes("delete"));
-  const ref = commandReference("agentstate-lite");
+  const ref = commandReference(testInvocation("agentstate-lite"));
   const artifacts = ref.commands["Artifacts"] ?? [];
   assert.ok(artifacts.some((l) => l.startsWith("delete ")));
 });

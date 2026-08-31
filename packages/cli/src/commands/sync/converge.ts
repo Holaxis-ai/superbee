@@ -30,6 +30,7 @@ import {
   recordedOwner,
   type ClaimPolicy,
 } from "./claim-conflict.js";
+import { commandToken, type CommandPrefix } from "../../command-text.js";
 
 /** A capped row list — the repo's standard `{shown, total, rows}` convention (see `status.ts`). */
 export interface Capped {
@@ -64,7 +65,7 @@ export function pushFailureMessage(err: CliError): string {
  * Attach {@link upstreamHelp} to a NO_UPSTREAM CliError (idempotent — never doubles up); anything
  * else passes through UNCHANGED. Non-throwing so it composes before the final throw.
  */
-export function withUpstreamHelp(err: CliError, inv: string): CliError {
+export function withUpstreamHelp(err: CliError, inv: CommandPrefix): CliError {
   if (err.code === "NO_UPSTREAM" && err.help === undefined) {
     return new CliError("NO_UPSTREAM", err.message, { details: err.details, help: upstreamHelp(inv) });
   }
@@ -178,15 +179,15 @@ export function buildConvergeMessage(
  * and ALWAYS over the BODY-ONLY export: `doc update --body-file` treats its input as a body, so
  * the full-fidelity export would nest YAML into it — the chain must be literally executable.
  */
-export function convergeHelp(inv: string, id: string, bodyExportPath: string): string {
+export function convergeHelp(inv: CommandPrefix, id: string, bodyExportPath: string): string {
   return (
-    `${inv} sync --show-incoming ${id} → ${inv} doc update ${id} --body-file ${bodyExportPath} → ${inv} sync`
+    `${inv} sync --show-incoming ${commandToken(id)} → ${inv} doc update ${commandToken(id)} --body-file ${commandToken(bodyExportPath)} → ${inv} sync`
   );
 }
 
 /** The re-create chain for a doc DELETED upstream: `doc write` (a fresh doc), then sync. */
-export function recreateHelp(inv: string, id: string, bodyExportPath: string): string {
-  return `${inv} doc write ${id} --type <Type> --body-file ${bodyExportPath} → ${inv} sync`;
+export function recreateHelp(inv: CommandPrefix, id: string, bodyExportPath: string): string {
+  return `${inv} doc write ${commandToken(id)} --type <Type> --body-file ${commandToken(bodyExportPath)} → ${inv} sync`;
 }
 
 /**
@@ -201,7 +202,7 @@ export function recreateHelp(inv: string, id: string, bodyExportPath: string): s
  * chain silently, so omission fails at the type level.
  */
 export function pickHelp(
-  inv: string,
+  inv: CommandPrefix,
   conflicts: LandedConflict[],
   analyses: readonly ConflictAnalysis[],
 ): string | undefined {
@@ -386,7 +387,7 @@ export function toConflictRows(
 export async function buildConvergeError(
   boardPath: string,
   resolved: ResolvedConflict[],
-  inv: string,
+  inv: CommandPrefix,
   limit: number,
 ): Promise<CliError> {
   const conflicts = annotateLanded(boardPath, resolved);

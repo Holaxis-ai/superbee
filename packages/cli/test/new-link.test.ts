@@ -36,6 +36,7 @@ import { serve, type ServerHandle } from "@superbee/server";
 
 import { newCommand } from "../src/commands/new.js";
 import { CliError } from "../src/errors.js";
+import { renderedPattern } from "./support/rendered-command.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 
@@ -592,11 +593,11 @@ test("new --link: an already-satisfied outbound type is dropped from the receipt
     ]);
     const hints = result.help as string[];
     assert.ok(
-      !hints.some((h) => /--text "depends on"/.test(h)),
+      !hints.some((h) => new RegExp(`--text ${renderedPattern("depends on")}`).test(h)),
       `the 'depends on' hint should be dropped since --link already satisfied it, got: ${JSON.stringify(hints)}`,
     );
     assert.ok(
-      hints.some((h) => /--text "blocks"/.test(h)),
+      hints.some((h) => new RegExp(`--text ${renderedPattern("blocks")}`).test(h)),
       `the UNSATISFIED 'blocks' hint should still be offered, got: ${JSON.stringify(hints)}`,
     );
   } finally {

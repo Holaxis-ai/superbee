@@ -22,9 +22,10 @@ import {
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { cliInvocation, shellArg } from "../invocation.js";
+import { cliInvocation } from "../invocation.js";
 import { appliedDocIds, isRecipeApplied } from "../recipes.js";
 import { builtinNames, resolveRecipe, type LoadedRecipe } from "../recipe-source.js";
+import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandPrefix, type CommandText } from "../command-text.js";
 
 export const RECIPES_USAGE = `superbee recipes — browse built-in recipes before or after init
 
@@ -65,17 +66,17 @@ interface RecipeCommandTarget {
   remote?: string;
 }
 
-function commandTargetSuffix(target: RecipeCommandTarget): string {
-  if (target.dir !== undefined) return ` --dir ${shellArg(target.dir)}`;
-  if (target.remote !== undefined) return ` --remote ${shellArg(target.remote)}`;
-  return "";
+function commandTargetSuffix(target: RecipeCommandTarget): CommandText {
+  if (target.dir !== undefined) return commandFragment` --dir ${commandQuoted(target.dir)}`;
+  if (target.remote !== undefined) return commandFragment` --remote ${commandQuoted(target.remote)}`;
+  return commandLiteral("");
 }
 
 /** Project one LoadedRecipe (+ whether it's applied) into the flat row shape `recipes` renders. */
 export function recipeInventoryRow(
   recipe: LoadedRecipe,
   applied: boolean | null,
-  inv: string,
+  inv: CommandPrefix,
   target: RecipeCommandTarget = {},
 ): Record<string, unknown> {
   const targetSuffix = commandTargetSuffix(target);
@@ -84,9 +85,9 @@ export function recipeInventoryRow(
   // local init command disguised as an action on the selected remote. An existing local bundle is
   // likewise add-only: create-only against that same target is guaranteed to refuse.
   if (target.remote === undefined && applied === null) {
-    commands.create_bundle = `${inv} init --create-only --recipe ${recipe.id}${commandTargetSuffix({ dir: CONVENTIONAL_BUNDLE_DIR_NAME })}`;
+    commands.create_bundle = `${inv} init --create-only --recipe ${commandToken(recipe.id)}${commandTargetSuffix({ dir: CONVENTIONAL_BUNDLE_DIR_NAME })}`;
   }
-  commands.add_to_bundle = `${inv} recipe add ${recipe.id}${targetSuffix}`;
+  commands.add_to_bundle = `${inv} recipe add ${commandToken(recipe.id)}${targetSuffix}`;
 
   return {
     name: recipe.id,

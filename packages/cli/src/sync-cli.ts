@@ -7,6 +7,7 @@
 // git/channel orchestration, so neither belongs in `@superbee/board-git`.
 import { defaultSyncStore } from "./cursor.js";
 import { hookInstalled } from "./commands/hook.js";
+import type { CommandPrefix } from "./command-text.js";
 
 export interface SyncCliDeps {
   stdout: (s: string) => void;
@@ -32,7 +33,7 @@ export interface SyncCliDeps {
  */
 export async function hookInstallHintOnce(
   key: string,
-  inv: string,
+  inv: CommandPrefix,
   installed: () => boolean = hookInstalled,
 ): Promise<string | undefined> {
   try {
