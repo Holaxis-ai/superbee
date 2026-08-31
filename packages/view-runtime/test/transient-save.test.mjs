@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import {
+  FilesystemBackend,
   MemoryBackend,
   docVersions,
   readBlob,
@@ -21,8 +25,8 @@ import {
 
 const HTML = "<!doctype html><title>Saved</title><script>parent.postMessage({bridge:'v0',type:'hello',id:'h'}, '*')</script>";
 
-function fixture(backend = new MemoryBackend()) {
-  const bundle = { root: "mem://transient-save", backend };
+function fixture(backend = new MemoryBackend(), root = "mem://transient-save") {
+  const bundle = { root, backend };
   const launches = new PageLaunchRegistry();
   const authorizations = new SessionViewAuthorizationStore();
   const launch = mintTransientViewLaunch(bundle, launches, {
@@ -110,6 +114,35 @@ test("save persists exact transient bytes and creates a separately authorized du
   assert.equal(repeated.entryCreated, false);
   assert.equal(repeated.registryCreated, false);
   assert.equal(repeated.sourceVersion, repeated.entryVersion);
+  assert.equal(repeated.registryVersion, saved.registryVersion);
+});
+
+test("filesystem save reconciles the serializer's trailing body newline and remains retryable", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-transient-save-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const f = fixture(new FilesystemBackend(root), root);
+  await approve(f);
+
+  const saved = await saveTransientView(
+    f.bundle,
+    f.launches,
+    f.authorizations,
+    { launchId: f.launch.launchId, viewId: "views-registry/filesystem-proof" },
+    { actor: "openai/codex", now: "2026-08-30T21:30:00.000Z" },
+  );
+  assert.equal(saved.entryCreated, true);
+  assert.equal(saved.registryCreated, true);
+  assert.equal((await readDocVersioned(f.bundle, saved.viewId)).doc.body, "\n");
+
+  const repeated = await saveTransientView(
+    f.bundle,
+    f.launches,
+    f.authorizations,
+    { launchId: f.launch.launchId, viewId: "views-registry/filesystem-proof" },
+  );
+  assert.equal(repeated.entryCreated, false);
+  assert.equal(repeated.registryCreated, false);
+  assert.equal(repeated.entryVersion, saved.entryVersion);
   assert.equal(repeated.registryVersion, saved.registryVersion);
 });
 
