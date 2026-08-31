@@ -404,8 +404,14 @@ async function claimLockPath(
         unwitnessedWindowsRetryUsed = false;
       }
 
-      const existingOwner = await readOwner(lockPath);
-      if (existingOwner !== null && await quarantineStaleLock(lockPath, existingOwner)) continue;
+      let existingOwner = await readOwner(lockPath);
+      if (existingOwner !== null) {
+        if (await quarantineStaleLock(lockPath, existingOwner)) continue;
+        // A failed quarantine attempt is non-progress: another reclaimer may have moved the stale
+        // lock and installed a live replacement while this caller was delayed in rename. Diagnose
+        // the owner that exists now, never the dead-owner snapshot that authorized the attempt.
+        existingOwner = await readOwner(lockPath);
+      }
 
       if (Date.now() - started >= waitMs) throw timeoutError(lockPath, existingOwner, owner.target);
       await delay(pollMs);

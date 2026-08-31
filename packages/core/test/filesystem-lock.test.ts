@@ -439,6 +439,78 @@ test("the retained token quarantine fences a delayed reclaimer away from the liv
   }
 });
 
+test("a zero-wait delayed reclaimer diagnoses the live replacement, not its stale snapshot", async () => {
+  const harness = await isolatedLockPaths();
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  await fs.writeFile(
+    path.join(lockPath, "owner.json"),
+    JSON.stringify({
+      pid: 999_999,
+      hostname: hostname(),
+      created_at_ms: Date.now() - 60_000,
+      token: "zero-wait-stale-snapshot",
+      target: harness.target,
+    }),
+  );
+
+  const originalRename = fs.rename;
+  let renameCalls = 0;
+  let enterFirstRename!: () => void;
+  let unblockFirstRename!: () => void;
+  const firstRenameEntered = new Promise<void>((resolve) => (enterFirstRename = resolve));
+  const firstRenameGate = new Promise<void>((resolve) => (unblockFirstRename = resolve));
+  const restoreRename = replaceFsMethod("rename", async (...args) => {
+    renameCalls += 1;
+    if (renameCalls === 1) {
+      enterFirstRename();
+      await firstRenameGate;
+    }
+    return originalRename(...(args as Parameters<typeof fs.rename>));
+  });
+  let firstRenameUnblocked = false;
+  let releaseReplacement: (() => Promise<void>) | undefined;
+
+  try {
+    const delayedClaim = acquireFilesystemMutationLock(harness.target, {
+      portableRoot: harness.portableRoot,
+      lockRoot: harness.lockRoot,
+      waitMs: 0,
+      pollMs: 2,
+    });
+    void delayedClaim.catch(() => {});
+    await eventually(firstRenameEntered);
+
+    releaseReplacement = await acquireFilesystemMutationLock(harness.target, {
+      portableRoot: harness.portableRoot,
+      lockRoot: harness.lockRoot,
+      waitMs: 2_000,
+      pollMs: 2,
+    });
+    const replacementOwner = parseFilesystemMutationLockOwner(
+      JSON.parse(await fs.readFile(path.join(lockPath, "owner.json"), "utf8")),
+    );
+    assert.ok(replacementOwner);
+
+    unblockFirstRename();
+    firstRenameUnblocked = true;
+    await assert.rejects(delayedClaim, (err: unknown) => {
+      assert.ok(err instanceof FilesystemMutationLockError);
+      assert.equal(err.stale, false);
+      assert.equal(err.malformed, false);
+      assert.equal(err.owner?.token, replacementOwner.token);
+      assert.doesNotMatch(err.message, /stale filesystem mutation lock|Inspect and remove/);
+      return true;
+    });
+  } finally {
+    if (!firstRenameUnblocked) unblockFirstRename();
+    restoreRename();
+    await releaseReplacement?.().catch(() => {});
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
 test("competing stale-lock reclaimers serialize without stealing one another's live claim", async () => {
   const harness = await isolatedLockPaths();
   await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
