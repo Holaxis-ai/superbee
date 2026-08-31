@@ -22,6 +22,7 @@ import {
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const LOADER = path.join(HERE, "ts-loader.mjs");
 const CAS_CHILD = path.join(HERE, "fixtures", "filesystem-cas-child.ts");
+const LOCK_HOLDER_CHILD = path.join(HERE, "fixtures", "filesystem-lock-holder-child.ts");
 
 async function tempDir(): Promise<string> {
   return fs.mkdtemp(path.join(tmpdir(), "aslite-fs-lock-"));
@@ -48,6 +49,11 @@ function replaceFsMethod(
   const original = mutable[name];
   Object.defineProperty(mutable, name, { configurable: true, writable: true, value: replacement });
   return () => Object.defineProperty(mutable, name, { configurable: true, writable: true, value: original });
+}
+
+async function lockPathInRoot(target: string, lockRoot: string): Promise<string> {
+  const canonicalTarget = path.join(await fs.realpath(path.dirname(target)), path.basename(target));
+  return path.join(lockRoot, path.basename(filesystemMutationLockPath(canonicalTarget)));
 }
 
 async function eventually<T>(promise: Promise<T>, timeoutMs = 3_000): Promise<T> {
@@ -253,18 +259,203 @@ test("filesystem mutation lock uses the real directory-entry spelling on insensi
   }
 });
 
-test("filesystem mutation lock diagnoses stale and malformed leftovers without removing them", async (t) => {
+test("filesystem mutation lock quarantines a valid same-host dead owner and preserves its evidence", async () => {
+  const harness = await isolatedLockPaths();
+  try {
+    const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+    const staleOwner = {
+      pid: 999_999,
+      hostname: hostname(),
+      created_at_ms: Date.now() - 60_000,
+      token: "dead-owner",
+      target: harness.target,
+    };
+    await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+    await fs.mkdir(lockPath, { mode: 0o700 });
+    await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(staleOwner));
+
+    const release = await acquireFilesystemMutationLock(harness.target, {
+      portableRoot: harness.portableRoot,
+      lockRoot: harness.lockRoot,
+      waitMs: 100,
+      pollMs: 5,
+    });
+    const duringClaim = await fs.readdir(harness.lockRoot);
+    const quarantineName = duringClaim.find((entry) => entry.startsWith(`${path.basename(lockPath)}.stale-`));
+    assert.ok(quarantineName);
+    assert.equal(duringClaim.includes(path.basename(lockPath)), true);
+    assert.deepEqual(
+      JSON.parse(await fs.readFile(path.join(harness.lockRoot, quarantineName, "owner.json"), "utf8")),
+      staleOwner,
+    );
+
+    await release();
+    assert.deepEqual(await fs.readdir(harness.lockRoot), [quarantineName]);
+
+    const releaseAgain = await acquireFilesystemMutationLock(harness.target, {
+      portableRoot: harness.portableRoot,
+      lockRoot: harness.lockRoot,
+      waitMs: 100,
+      pollMs: 5,
+    });
+    await releaseAgain();
+    assert.deepEqual(await fs.readdir(harness.lockRoot), [quarantineName]);
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("a process killed while holding a lock does not wedge the next cross-process mutation", async () => {
+  const harness = await isolatedLockPaths();
+  const child = spawn(
+    process.execPath,
+    [
+      "--import",
+      pathToFileURL(LOADER).href,
+      LOCK_HOLDER_CHILD,
+      harness.target,
+      harness.portableRoot,
+      harness.lockRoot,
+    ],
+    { stdio: ["ignore", "pipe", "pipe", "ipc"] },
+  );
+  let stderr = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => (stderr += chunk));
+  try {
+    const locked = eventually(
+      new Promise<number>((resolve, reject) => {
+        child.on("message", (message: unknown) => {
+          if (!message || typeof message !== "object") return;
+          const value = message as Record<string, unknown>;
+          if (value.type === "locked" && typeof value.pid === "number") resolve(value.pid);
+        });
+        child.once("error", reject);
+        child.once("exit", (code, signal) => {
+          reject(new Error(`lock holder exited before readiness (${String(code)}/${String(signal)}): ${stderr}`));
+        });
+      }),
+    );
+    const deadPid = await locked;
+    assert.equal(child.kill("SIGKILL"), true);
+    await eventually(new Promise<void>((resolve) => child.once("exit", () => resolve())));
+
+    const release = await acquireFilesystemMutationLock(harness.target, {
+      portableRoot: harness.portableRoot,
+      lockRoot: harness.lockRoot,
+      waitMs: 1_000,
+      pollMs: 10,
+    });
+    const entries = await fs.readdir(harness.lockRoot);
+    const quarantineName = entries.find((entry) => entry.includes(".lock.stale-"));
+    assert.ok(quarantineName);
+    const staleOwner = JSON.parse(
+      await fs.readFile(path.join(harness.lockRoot, quarantineName, "owner.json"), "utf8"),
+    ) as { pid?: number };
+    assert.equal(staleOwner.pid, deadPid);
+    await release();
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("the retained token quarantine fences a delayed reclaimer away from the live replacement", async () => {
+  const harness = await isolatedLockPaths();
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  const staleOwner = {
+    pid: 999_999,
+    hostname: hostname(),
+    created_at_ms: Date.now() - 60_000,
+    token: "shared-stale-snapshot",
+    target: harness.target,
+  };
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(staleOwner));
+
+  try {
+    const release = await acquireFilesystemMutationLock(harness.target, {
+      portableRoot: harness.portableRoot,
+      lockRoot: harness.lockRoot,
+      waitMs: 1_000,
+      pollMs: 5,
+    });
+    const entries = await fs.readdir(harness.lockRoot);
+    const quarantineName = entries.find((entry) => entry.includes(".lock.stale-"));
+    assert.ok(quarantineName);
+    const liveOwnerBefore = await fs.readFile(path.join(lockPath, "owner.json"), "utf8");
+
+    await assert.rejects(
+      () => fs.rename(lockPath, path.join(harness.lockRoot, quarantineName)),
+      (err: unknown) => {
+        assert.ok(["EEXIST", "ENOTEMPTY", "EPERM"].includes((err as NodeJS.ErrnoException).code ?? ""));
+        return true;
+      },
+    );
+    assert.equal(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"), liveOwnerBefore);
+    assert.deepEqual(
+      JSON.parse(await fs.readFile(path.join(harness.lockRoot, quarantineName, "owner.json"), "utf8")),
+      staleOwner,
+    );
+    await release();
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("competing stale-lock reclaimers serialize without stealing one another's live claim", async () => {
+  const harness = await isolatedLockPaths();
+  await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+  const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+  await fs.mkdir(lockPath, { mode: 0o700 });
+  await fs.writeFile(
+    path.join(lockPath, "owner.json"),
+    JSON.stringify({
+      pid: 999_999,
+      hostname: hostname(),
+      created_at_ms: Date.now() - 60_000,
+      token: "contended-stale-owner",
+      target: harness.target,
+    }),
+  );
+
+  try {
+    const acquired: number[] = [];
+    await Promise.all(
+      Array.from({ length: 8 }, async (_, index) => {
+        const release = await acquireFilesystemMutationLock(harness.target, {
+          portableRoot: harness.portableRoot,
+          lockRoot: harness.lockRoot,
+          waitMs: 3_000,
+          pollMs: 2,
+        });
+        acquired.push(index);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await release();
+      }),
+    );
+    assert.equal(acquired.length, 8);
+    const entries = await fs.readdir(harness.lockRoot);
+    assert.equal(entries.length, 1);
+    assert.match(entries[0]!, /\.lock\.stale-[a-f0-9]{64}$/);
+  } finally {
+    await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("filesystem mutation lock keeps malformed and foreign-host leftovers fail-closed", async (t) => {
   const cases = [
     {
-      name: "stale",
+      name: "foreign-host",
       owner: {
         pid: 999_999,
-        hostname: hostname(),
+        hostname: "other-host",
         created_at_ms: Date.now() - 60_000,
-        token: "dead-owner",
+        token: "foreign-owner",
         target: "unused",
       },
-      stale: true,
+      stale: false,
       malformed: false,
     },
     { name: "malformed", owner: null, stale: false, malformed: true },
@@ -292,10 +483,8 @@ test("filesystem mutation lock diagnoses stale and malformed leftovers without r
             return true;
           },
         );
-        assert.equal((await fs.stat(lockPath)).isDirectory(), true, "timeout must not steal the lock");
+        assert.equal((await fs.stat(lockPath)).isDirectory(), true, "timeout must not move the lock");
 
-        // Recovery is deliberately explicit: after the caller verifies the diagnosis, removing
-        // the leftover makes the next claim succeed. The lock primitive never does this itself.
         await fs.rm(lockPath, { recursive: true });
         const release = await acquireFilesystemMutationLock(target, { waitMs: 20, pollMs: 5 });
         await release();
@@ -549,7 +738,7 @@ test("pin: a live-but-unsignalable owner (PID 1, EPERM) is diagnosed HELD, never
 // kills: filesystem-lock.ts:218:7 StringLiteral #1160
 // kills: filesystem-lock.ts:219:10 BlockStatement #1161
 // kills: filesystem-lock.ts:221:7 StringLiteral #1162
-test("pin: timeout diagnosis distinguishes held vs stale vs foreign-host vs malformed in flags AND operator guidance", async () => {
+test("pin: timeout diagnosis distinguishes held vs foreign-host vs malformed in flags AND operator guidance", async () => {
   // (a) live same-process owner → HELD message, stale flag false.
   {
     const root = await tempDir();
@@ -595,19 +784,12 @@ test("pin: timeout diagnosis distinguishes held vs stale vs foreign-host vs malf
     }
   };
 
-  // (b) same-host ABSENT pid → stale message with the exact operator guidance.
-  const stale = await diagnose({ pid: 999_999, hostname: hostname(), created_at_ms: Date.now() - 60_000, token: "dead", target: "unused" });
-  assert.equal(stale.stale, true);
-  assert.match(stale.message, /stale filesystem mutation lock/);
-  assert.match(stale.message, /absent PID 999999/);
-  assert.match(stale.message, /Inspect and remove the lock, then retry\./);
-
-  // (c) FOREIGN-host absent pid → NOT stale (we cannot probe another host's pids).
+  // (b) FOREIGN-host absent pid → NOT stale (we cannot probe another host's pids).
   const foreign = await diagnose({ pid: 999_999, hostname: "some-other-host", created_at_ms: Date.now() - 60_000, token: "far", target: "unused" });
   assert.equal(foreign.stale, false);
   assert.doesNotMatch(foreign.message, /stale filesystem mutation lock/);
 
-  // (d) malformed owner metadata → malformed message with the confirm-first guidance.
+  // (c) malformed owner metadata → malformed message with the confirm-first guidance.
   const malformed = await diagnose(null);
   assert.equal(malformed.malformed, true);
   assert.match(malformed.message, /owner metadata is missing or malformed/);
