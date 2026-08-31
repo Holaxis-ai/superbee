@@ -116,6 +116,18 @@ export function parseMarkdown(
   raw: string,
   context?: string,
 ): { frontmatter: Frontmatter; body: string } {
+  // An exact opening delimiter asserts that the document has YAML frontmatter. gray-matter accepts
+  // a missing closing delimiter when the remaining bytes happen to be valid YAML (Markdown heading
+  // lines are YAML comments), then returns an empty body. That is lossy ambiguity, not a successful
+  // parse: every caller must see the same attributed malformed-document result before it can read,
+  // export, or rewrite a body that silently disappeared.
+  if (/^---(?:\r?\n|$)/.test(raw)) {
+    const firstLineEnd = raw.indexOf("\n");
+    const afterOpening = firstLineEnd === -1 ? "" : raw.slice(firstLineEnd + 1);
+    if (!/^---\r?$/m.test(afterOpening)) {
+      throw new MalformedDocumentError(context, new Error("unterminated YAML frontmatter delimiter"));
+    }
+  }
   let parsed;
   try {
     parsed = matter(raw, { engines: { yaml: yamlEngine } });

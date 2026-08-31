@@ -62,10 +62,10 @@ import {
 } from "./converge.js";
 import { showIncoming } from "./show-incoming.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
-import { CliError, asHandled, cliErrorFromBoardGit } from "../../errors.js";
+import { CliError, asHandled, cliErrorFromBoardGit, toExit } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
-import { render, resolveMode, type OutputMode } from "../../output.js";
+import { render, renderErrorEnvelope, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import {
   assertBundleOutsidePrivateState,
@@ -80,7 +80,7 @@ export const SYNC_USAGE = `superbee sync — share the board branch with a remot
 Usage:
   superbee sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
   superbee sync --establish [--yes] [--dir <path>] [--json]
-  superbee sync --show-incoming <id> [--out <file>] [--dir <path>] [--json]
+  superbee sync --show-incoming <id> [--out <file> | --body-out <file>] [--dir <path>] [--json]
 
 Shares this repo's board (\`.superbee\`, or an existing legacy \`.agentstate-lite\`, kept on its own \`board\` branch) with your
 teammates: ordinary sync commits pending local doc changes, pulls theirs, and pushes yours without
@@ -125,9 +125,10 @@ top, then \`sync\` again to share it.
 
 \`sync --show-incoming <id>\` prints the board's incoming (upstream) version of one doc — the
 state of \`origin/board\` as of the last fetch (it never fetches). Full doc-read semantics: large
-bodies truncate and point at \`--out <file>\` (raw bytes to disk); \`--out -\` streams the raw
-bytes to stdout with the receipt (or any error envelope) on stderr. A doc absent upstream renders
-as an expected state, not an error.
+parsed bodies truncate and point at \`--body-out <file>\` (body-only Markdown, directly safe for
+\`doc update --body-file\`); \`--out <file>\` remains the exact whole-blob channel for documents
+and arbitrary paths. A \`-\` destination streams only payload bytes to stdout with the receipt (or
+any error envelope) on stderr. A doc absent upstream renders as an expected state, not an error.
 
 If the push fails after a local commit already landed (offline, revoked/expired credentials, or a
 locked repository), the receipt still reports what committed/pulled successfully — your work is
@@ -184,6 +185,7 @@ Options:
                        a preview and changes nothing; the uncommitted case never needs it)
   --show-incoming <id> Print the upstream (origin/board) version of one doc, as of the last fetch
   --out <file>         With --show-incoming: write the raw bytes to <file> ('-' = raw to stdout)
+  --body-out <file>    With --show-incoming: write only a parsed doc body ('-' = body to stdout)
   --dir <path>         Directory to run sync from (default: the cwd) — must be inside a git repo
   --limit <n>          Cap the incoming-delta row list to <n> rows (default: 20; 0 = unlimited)
   --json               Emit compact JSON instead of TOON
@@ -252,7 +254,7 @@ interface SyncRun {
 /** The arg-parse phase's dispatch decision. */
 type SyncDispatch =
   | { kind: "help" }
-  | { kind: "show-incoming"; id: string; values: { out?: string; dir?: string; json?: boolean }; route?: ResolvedLocalRoute }
+  | { kind: "show-incoming"; id: string; values: { out?: string; "body-out"?: string; dir?: string; json?: boolean }; route?: ResolvedLocalRoute }
   | { kind: "run"; options: Pick<SyncRun, "dir" | "mode" | "limit" | "pullOnly" | "owner" | "route">; establish: boolean; yes: boolean };
 
 /** The provision phase's result: the board checkout this run operates on. */
@@ -316,11 +318,40 @@ async function syncInTree(run: SyncRun): Promise<void> {
  * wrapper, tests) always observe `CliError` with the exact envelope/exit the tier produced.
  */
 export async function sync(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
-  try {
-    await syncCommand(argv, deps);
-  } catch (err) {
-    throw isBoardGitError(err) ? cliErrorFromBoardGit(err) : err;
+  const run = async (): Promise<void> => {
+    try {
+      await syncCommand(argv, deps);
+    } catch (err) {
+      throw isBoardGitError(err) ? cliErrorFromBoardGit(err) : err;
+    }
+  };
+  if (!requestsShowIncomingStdoutByteChannel(argv)) {
+    await run();
+    return;
   }
+
+  // Reserve stdout from RAW argv, before parsing, bundle resolution, or Git. Otherwise an early
+  // usage failure can put an error envelope where the caller expects only document/body bytes.
+  // Deeper show-incoming errors already carry `handled`; honoring it here prevents double emission.
+  const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
+  try {
+    await run();
+  } catch (err) {
+    const { envelope, handled } = toExit(err);
+    if (!handled) stderr(renderErrorEnvelope(envelope));
+    throw handled ? err : asHandled(err);
+  }
+}
+
+/** True when raw sync argv reserves stdout for show-incoming bytes (split and --flag=- forms). */
+function requestsShowIncomingStdoutByteChannel(argv: string[]): boolean {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if ((arg === "--out" || arg === "--body-out") && argv[i + 1]?.trim() === "-") return true;
+    if (arg?.startsWith("--out=") && arg.slice("--out=".length).trim() === "-") return true;
+    if (arg?.startsWith("--body-out=") && arg.slice("--body-out=".length).trim() === "-") return true;
+  }
+  return false;
 }
 
 /** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
@@ -336,6 +367,7 @@ async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDis
           migrate: { type: "boolean" },
           yes: { type: "boolean" },
           out: { type: "string" },
+          "body-out": { type: "string" },
           dir: { type: "string" },
           limit: { type: "string" },
           json: { type: "boolean" },
@@ -378,6 +410,31 @@ async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDis
     if (values.establish) {
       throw new CliError("USAGE", "--show-incoming and --establish cannot be combined");
     }
+    const outValue = values.out;
+    const bodyOutValue = values["body-out"];
+    const outPresent = outValue !== undefined;
+    const bodyOutPresent = bodyOutValue !== undefined;
+    if (outPresent && bodyOutPresent) {
+      throw new CliError(
+        "USAGE",
+        "--out and --body-out cannot be combined — each reserves one output channel",
+        { help: `${inv} sync --show-incoming ${id} --body-out (<path> | -)` },
+      );
+    }
+    if (outValue !== undefined && outValue.trim() === "") {
+      throw new CliError(
+        "USAGE",
+        "--out was given an empty value — pass a file path or '-' for stdout.",
+        { help: `${inv} sync --show-incoming ${id} --out (<path> | -)` },
+      );
+    }
+    if (bodyOutValue !== undefined && bodyOutValue.trim() === "") {
+      throw new CliError(
+        "USAGE",
+        "--body-out was given an empty value — pass a file path or '-' for stdout.",
+        { help: `${inv} sync --show-incoming ${id} --body-out (<path> | -)` },
+      );
+    }
     let route: ResolvedLocalRoute | undefined;
     if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
       route = await resolveLocalBundleRoute(undefined);
@@ -387,6 +444,11 @@ async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDis
   if (values.out !== undefined) {
     throw new CliError("USAGE", "--out only applies to sync --show-incoming <id>", {
       help: `${inv} sync --show-incoming <id> --out <file>`,
+    });
+  }
+  if (values["body-out"] !== undefined) {
+    throw new CliError("USAGE", "--body-out only applies to sync --show-incoming <id>", {
+      help: `${inv} sync --show-incoming <id> --body-out <file>`,
     });
   }
   if (values.establish && values["pull-only"]) {

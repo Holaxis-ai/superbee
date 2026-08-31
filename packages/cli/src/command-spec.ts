@@ -128,6 +128,13 @@ const DIR_BODY_FILE_DYNAMIC_SURFACE: LeafPathSurface = Object.freeze({
 const DIR_OUT_SURFACE: LeafPathSurface = Object.freeze({
   flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "out", role: "egress" }),
 });
+const DIR_SYNC_SURFACE: LeafPathSurface = Object.freeze({
+  flags: pathFlags(
+    { flag: "dir", role: "bundle-root" },
+    { flag: "out", role: "egress" },
+    { flag: "body-out", role: "egress" },
+  ),
+});
 const DIR_DOC_READ_SURFACE: LeafPathSurface = Object.freeze({
   flags: pathFlags(
     { flag: "dir", role: "bundle-root" },
@@ -463,8 +470,8 @@ export const CLI_COMMAND_GROUPS = [
       },
       {
         id: "sync",
-        leaves: [publicLeaf("sync", "sync", zero, 22, DIR_OUT_SURFACE)],
-        usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file>]] [--dir <path>] [--limit <n>]",
+        leaves: [publicLeaf("sync", "sync", zero, 22, DIR_SYNC_SURFACE)],
+        usage: "sync [--establish [--yes] | --pull-only | --show-incoming <id> [--out <file> | --body-out <file>]] [--dir <path>] [--limit <n>]",
         summary:
           "Share the board branch with a remote — commits, pulls, and pushes (git tier; --pull-only skips commit+push). `init` makes a LOCAL bundle; --establish is the separate, explicit act that starts sharing it (creates the board branch, pushes; never automatic). A bundle folder already committed on the code branch is the same flag's hard case: preview first, --yes executes, and the folder's removal from the code branch rides a prepared side-branch commit you push and open as a PR. A bundle committed with code and NO board branch anywhere is the IN-TREE mode (read-side): full sync refuses (sharing rides your normal commit/push), --pull-only fetches the branch's tracking upstream and reports incoming board docs ('git pull' delivers them), and --establish converts to a dedicated board branch. A doc changed on both sides converges: teammate's version kept, yours exported; --show-incoming <id> (exclusive with --pull-only) prints the incoming version as of the last fetch. Board-reading commands (list/doc read/status/home/link show) auto-run the ff-only pull when board state is >~5m stale — silent, bounded (~2s), never a push; SUPERBEE_NO_AUTOPULL=<any value, even 0> disables it",
       },

@@ -17,6 +17,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withIsolatedUserEnv } from "./support/user-env.js";
+import { parseMarkdown, versionOfBytes } from "@superbee/core";
 
 import { sync, SHOW_INCOMING_AS_OF, SHOW_INCOMING_ABSENT_STATE, SHOW_INCOMING_NO_UPSTREAM } from "../src/commands/sync.js";
 import { convergeHelp } from "../src/commands/sync/converge.js";
@@ -670,6 +671,100 @@ test("show-incoming: --out <file> writes the raw upstream bytes; --out - streams
   }
 });
 
+test("show-incoming: --body-out writes ONLY the parsed upstream body; '-' keeps stdout body-only", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  const [homeB] = homes;
+  const outDir = await mkdtemp(path.join(tmpdir(), "superbee-show-incoming-body-out-"));
+  try {
+    const upstream = git(topo.b.board, ["show", "refs/remotes/origin/board:tasks/seed-one.md"]);
+    const expectedBody = parseMarkdown(upstream, "tasks/seed-one.md").body;
+    const expectedVersion = versionOfBytes(upstream);
+
+    const outFile = path.join(outDir, "incoming-body.md");
+    const toFile = await runSync(homeB!, [
+      "--show-incoming", "tasks/seed-one", "--body-out", outFile, "--dir", topo.b.root,
+    ]);
+    assert.equal(toFile.err, undefined, toFile.err?.message);
+    assert.equal(await readFile(outFile, "utf8"), expectedBody, "file contains the complete parsed body only");
+    assert.doesNotMatch(await readFile(outFile, "utf8"), /^---$/m, "frontmatter is never embedded in the edit body");
+    assert.match(toFile.out, /body_out:/);
+    assert.match(toFile.out, /content_type: text\/markdown; charset=utf-8/);
+    assert.ok(toFile.out.includes(expectedVersion), "receipt carries the incoming document's exact version");
+
+    const toStdout = await runSync(homeB!, [
+      "--show-incoming", "tasks/seed-one", "--body-out", "-", "--dir", topo.b.root,
+    ]);
+    assert.equal(toStdout.err, undefined, toStdout.err?.message);
+    assert.equal(toStdout.bytes.toString("utf8"), expectedBody, "stdout byte channel contains only the parsed body");
+    assert.equal(toStdout.out, "", "text stdout stays empty");
+    assert.match(toStdout.errOut, /body_out: "-"/);
+    assert.ok(toStdout.errOut.includes(expectedVersion));
+  } finally {
+    await cleanup();
+    await rm(outDir, { recursive: true, force: true });
+    await topo.cleanup();
+  }
+});
+
+test("show-incoming: --body-out refuses raw and malformed incoming blobs and points at exact --out", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  const [homeB] = homes;
+  const outDir = await mkdtemp(path.join(tmpdir(), "superbee-show-incoming-body-refusal-"));
+  try {
+    const raw = "- 2026-08-30T00:00:00.000Z mike wrote tasks/seed-one\n";
+    const malformed = "---\ntype: [unclosed\n---\nbody that has no trustworthy boundary\n";
+    const unterminated = "---\ntype: Note\ntitle: Missing close\n# Body that must not disappear\n";
+    await writeFile(path.join(topo.a.board, "log.md"), raw);
+    await writeFile(path.join(topo.a.board, "notes", "malformed.md"), malformed);
+    await writeFile(path.join(topo.a.board, "notes", "unterminated.md"), unterminated);
+    commitBoard(topo.a, "board: add raw and malformed show-incoming fixtures");
+    pushBoard(topo.a);
+    fetchBoard(topo.b);
+
+    for (const [id, code, targetName] of [
+      ["log.md", "USAGE", "raw-body.md"],
+      ["notes/malformed", "RUNTIME", "malformed-body.md"],
+      ["notes/unterminated", "RUNTIME", "unterminated-body.md"],
+    ] as const) {
+      const target = path.join(outDir, targetName);
+      const result = await runSync(homeB!, ["--show-incoming", id, "--body-out", target, "--dir", topo.b.root]);
+      assert.equal(result.err?.code, code);
+      assert.match(result.err?.help ?? "", /--out <file>/, "refusal points at the exact-byte recovery channel");
+      assert.equal(existsSync(target), false, "an unavailable body channel writes nothing");
+    }
+
+    const rawTarget = path.join(outDir, "malformed-raw.md");
+    const rawResult = await runSync(homeB!, [
+      "--show-incoming", "notes/malformed", "--out", rawTarget, "--dir", topo.b.root,
+    ]);
+    assert.equal(rawResult.err, undefined, rawResult.err?.message);
+    assert.equal(await readFile(rawTarget, "utf8"), malformed, "--out remains exact for malformed documents");
+  } finally {
+    await cleanup();
+    await rm(outDir, { recursive: true, force: true });
+    await topo.cleanup();
+  }
+});
+
+test("show-incoming: --body-out - reserves stdout before sync argument validation", async () => {
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    const result = await runSync(homes[0]!, [
+      "--show-incoming", "tasks/seed-one", "--body-out", "-", "--pull-only", "--dir", "/does/not/matter",
+    ]);
+    assert.equal(result.err?.code, "USAGE");
+    assert.equal(result.err?.handled, true, "outer sync boundary already emitted the envelope");
+    assert.equal(result.out, "", "text stdout stays reserved for body bytes even on an early error");
+    assert.equal(result.bytes.byteLength, 0);
+    assert.match(result.errOut, /code: USAGE/);
+    assert.match(result.errOut, /--show-incoming and --pull-only cannot be combined/);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("show-incoming: no fetched origin/board ref returns the viewer-specific NO_UPSTREAM", async () => {
   const { homes, cleanup } = await tempHomes(1);
   const lone = await mkdtemp(path.join(tmpdir(), "agentstate-lite-u3b-localonly-"));
@@ -705,7 +800,7 @@ test("show-incoming: --out - routes an ERROR envelope to STDERR (stdout stays pu
   }
 });
 
-test("show-incoming: a large upstream body TRUNCATES on the default render and points at the --out byte hatch", async () => {
+test("show-incoming: a large upstream body TRUNCATES and points at the safe --body-out edit channel", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
   const [homeA, homeB] = homes;
@@ -723,14 +818,14 @@ test("show-incoming: a large upstream body TRUNCATES on the default render and p
     assert.equal(result.err, undefined, result.err?.message);
     assert.match(result.out, /body_truncated/);
     assert.ok(!result.out.includes("x".repeat(2000)), "the full body never hits stdout");
-    assert.match(result.out, /--out/);
+    assert.match(result.out, /--body-out <path-outside-bundle>/);
   } finally {
     await cleanup();
     await topo.cleanup();
   }
 });
 
-test("show-incoming: usage guards — empty id, --pull-only combination, --out without --show-incoming, no repo", async () => {
+test("show-incoming: usage guards — empty id, combinations, egress without --show-incoming, no repo", async () => {
   const { homes, cleanup } = await tempHomes(1);
   const plain = await mkdtemp(path.join(tmpdir(), "agentstate-lite-u3b-plain-"));
   try {
@@ -742,6 +837,17 @@ test("show-incoming: usage guards — empty id, --pull-only combination, --out w
 
     const strayOut = await runSync(homes[0]!, ["--out", "somewhere.md", "--dir", plain]);
     assert.equal(strayOut.err?.code, "USAGE");
+
+    const strayBodyOut = await runSync(homes[0]!, ["--body-out", "somewhere.md", "--dir", plain]);
+    assert.equal(strayBodyOut.err?.code, "USAGE");
+
+    const channels = await runSync(homes[0]!, [
+      "--show-incoming", "tasks/x", "--out", "whole.md", "--body-out", "body.md", "--dir", plain,
+    ]);
+    assert.equal(channels.err?.code, "USAGE");
+
+    const blankBodyOut = await runSync(homes[0]!, ["--show-incoming", "tasks/x", "--body-out", "", "--dir", plain]);
+    assert.equal(blankBodyOut.err?.code, "USAGE");
 
     const noRepo = await runSync(homes[0]!, ["--show-incoming", "tasks/x", "--dir", plain]);
     assert.equal(noRepo.err?.code, "RUNTIME");
@@ -810,7 +916,7 @@ test("U3b round-3 LOW 1+2: a doc that PARSES but does not utf8-round-trip gets N
     // Valid OKF frontmatter, but the BODY carries a raw invalid-UTF-8 byte: the blob PARSES after
     // a lossy decode (the bad byte becomes U+FFFD), yet its bytes do not round-trip — writing a
     // .body.md from the decode would silently corrupt the body the chain then applies.
-    const fm = "---\ntype: Task\ntitle: Weird bytes\n---\n# Weird\n\n";
+    const fm = `---\ntype: Task\ntitle: Weird bytes\n---\n# Weird\n\n${"x".repeat(5000)}\n`;
     const blobA = Buffer.concat([Buffer.from(fm, "utf8"), Buffer.from([0x41, 0x20, 0xff, 0x0a])]);
     const blobB = Buffer.concat([Buffer.from(fm, "utf8"), Buffer.from([0x42, 0x20, 0xfe, 0x0a])]);
     assert.notEqual(Buffer.from(blobB.toString("utf8"), "utf8").compare(blobB), 0, "sanity: parses-but-non-roundtrippable");
@@ -838,6 +944,20 @@ test("U3b round-3 LOW 1+2: a doc that PARSES but does not utf8-round-trip gets N
     assert.equal(rows[0]!.yours_body, undefined, "no body companion on the row");
     assert.equal(isMidRebase(topo.b), false);
     assertPristine(topo.b, "B after non-roundtrippable converge");
+
+    // The sibling viewer makes the same safety decision: no lossy decoded body channel, and its
+    // default preview points at the byte-exact hatch instead of advertising --body-out.
+    const bodyOut = await runSync(homeB!, ["--show-incoming", "tasks/weird", "--body-out", "-", "--dir", topo.b.root]);
+    assert.equal(bodyOut.err?.code, "RUNTIME");
+    assert.equal(bodyOut.out, "");
+    assert.equal(bodyOut.bytes.byteLength, 0);
+    assert.match(bodyOut.errOut, /not valid UTF-8/);
+    assert.match(bodyOut.err?.help ?? "", /--out <file>/);
+
+    const preview = await runSync(homeB!, ["--show-incoming", "tasks/weird", "--dir", topo.b.root]);
+    assert.equal(preview.err, undefined, preview.err?.message);
+    assert.match(preview.out, /--out <file>/);
+    assert.doesNotMatch(preview.out, /--body-out/);
   } finally {
     await cleanup();
     await topo.cleanup();

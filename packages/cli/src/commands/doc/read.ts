@@ -10,7 +10,6 @@ import {
   assertSafeConceptId,
   inferContentTypeFromDocKey,
   stringifyDoc,
-  type Bundle,
   type OkfDocument,
   type Version,
 } from "@superbee/core";
@@ -32,7 +31,7 @@ import {
 } from "./common.js";
 import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
-import { effectiveOutputPath, inBundlePollutionWarning } from "../egress.js";
+import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 
 export async function docRead(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
@@ -158,7 +157,13 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     if (!streamMode) {
       // A destination inside private state would land 0644 over an operational record.
       assertPathOutsidePrivateState(path.resolve(bodyOut));
-      await assertSafeNonDocumentOutTarget(bundle, "--body-out", bodyOut, id, "body-only markdown");
+      await assertSafeNonDocumentOutTarget(
+        bundle,
+        "--body-out",
+        bodyOut,
+        "body-only markdown",
+        `${cliInvocation()} doc read ${id} --body-out <path-outside-bundle>`,
+      );
     }
     const runToTarget = async (): Promise<void> => {
       let parsed: OkfDocument;
@@ -203,7 +208,13 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     if (!streamMode) {
       // A destination inside private state would land 0644 over an operational record.
       assertPathOutsidePrivateState(path.resolve(renderedOut));
-      await assertSafeNonDocumentOutTarget(bundle, "--rendered-out", renderedOut, id, "rendered HTML");
+      await assertSafeNonDocumentOutTarget(
+        bundle,
+        "--rendered-out",
+        renderedOut,
+        "rendered HTML",
+        `${cliInvocation()} doc read ${id} --rendered-out <path-outside-bundle>`,
+      );
     }
     let parsed: OkfDocument;
     let version: Version;
@@ -392,39 +403,6 @@ function requestsStdoutByteChannel(argv: string[]): boolean {
     if (arg?.startsWith("--rendered-out=") && arg.slice("--rendered-out=".length).trim() === "-") return true;
   }
   return false;
-}
-
-/**
- * Neither a body-only markdown export nor a rendered-HTML export is an OKF concept document. Refuse
- * a local in-bundle `.md` target before writing, including the source doc itself and reserved
- * index/log files: allowing it would either clobber valid content or make the next bundle walk fail
- * on missing frontmatter. ONE authority for every non-document egress channel on this leaf — a
- * third channel with its own copy of this reasoning is how the classes diverge.
- */
-async function assertSafeNonDocumentOutTarget(
-  bundle: Bundle,
-  flag: "--body-out" | "--rendered-out",
-  outValue: string,
-  id: string,
-  payload: string,
-): Promise<void> {
-  if (bundle.backend) return;
-  const lexicalTarget = path.resolve(outValue);
-  const rootReal = await fs.realpath(path.resolve(bundle.root)).catch(() => path.resolve(bundle.root));
-  // Resolve the final path when it exists (including a symlink whose own name has no extension).
-  // For a not-yet-created target, anchor its full missing suffix under the nearest existing real
-  // ancestor so symlinked parent directories cannot hide where fs.writeFile would actually land.
-  const effectiveTarget = await effectiveOutputPath(lexicalTarget);
-  const inside = (candidate: string, base: string): boolean =>
-    candidate === base || candidate.startsWith(base + path.sep);
-  const unsafeEffective = inside(effectiveTarget, rootReal) && effectiveTarget.endsWith(".md");
-  if (!unsafeEffective) return;
-  throw new CliError(
-    "USAGE",
-    `${flag} ${outValue} targets ${effectiveTarget}, a .md path INSIDE this bundle (${rootReal}); ` +
-      `${payload} has no OKF frontmatter and cannot be written into the bundle.`,
-    { help: `${cliInvocation()} doc read ${id} ${flag} <path-outside-bundle>` },
-  );
 }
 
 /**
