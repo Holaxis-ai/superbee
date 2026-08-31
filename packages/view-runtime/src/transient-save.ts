@@ -3,6 +3,7 @@ import {
   SUPERBEE_UPDATED_BY_FIELD,
   loadKinds,
   mutateDocument,
+  normalizeDocumentBodyForStorage,
   readBlob,
   readDocVersioned,
   writeBlob,
@@ -100,7 +101,8 @@ function sameSavedRegistration(existing: OkfDocument, desired: OkfDocument): boo
     existingKeys.every(
       (key, index) => key === desiredKeys[index] && existingFields[key] === desiredFields[key],
     ) &&
-    existing.body === desired.body
+    normalizeDocumentBodyForStorage(existing.body)
+      === normalizeDocumentBodyForStorage(desired.body)
   );
 }
 
