@@ -213,8 +213,10 @@ async function quarantineStaleLock(
     await fs.rename(lockPath, quarantinePath);
     return true;
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return false;
     if (await pathExists(quarantinePath)) return false;
+    if (process.platform === "win32" && WINDOWS_DIRECTORY_CONTENTION_CODES.has(code ?? "")) return false;
     throw err;
   }
 }
@@ -349,14 +351,14 @@ async function selectLockRoot(options: FilesystemMutationLockOptions): Promise<s
   return lockRoot;
 }
 
-const WINDOWS_CLAIM_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const WINDOWS_DIRECTORY_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
 
 type LockClaimFailure = "contention" | "unwitnessed-windows-sharing-error" | "terminal";
 
 async function classifyLockClaimFailure(error: unknown, lockPath: string): Promise<LockClaimFailure> {
   const code = (error as NodeJS.ErrnoException).code;
   if (code === "EEXIST") return "contention";
-  if (process.platform !== "win32" || !WINDOWS_CLAIM_CONTENTION_CODES.has(code ?? "")) return "terminal";
+  if (process.platform !== "win32" || !WINDOWS_DIRECTORY_CONTENTION_CODES.has(code ?? "")) return "terminal";
 
   // Win32 may report a sharing-shaped error while another claimer creates or removes this exact
   // directory. A witnessed path is contention. An absent path is ambiguous: permit one bounded

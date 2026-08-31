@@ -42,7 +42,7 @@ async function isolatedLockPaths(): Promise<{
 }
 
 function replaceFsMethod(
-  name: "lstat" | "mkdir" | "rm" | "writeFile",
+  name: "lstat" | "mkdir" | "rename" | "rm" | "writeFile",
   replacement: (...args: unknown[]) => unknown,
 ): () => void {
   const mutable = fs as unknown as Record<string, unknown>;
@@ -1074,6 +1074,96 @@ test("Windows lock claims bound an unwitnessed sharing-error retry and propagate
     restoreMkdir();
     Object.defineProperty(process, "platform", platform);
     await fs.rm(harness.root, { recursive: true, force: true });
+  }
+});
+
+test("Windows stale-lock quarantine retries transient sharing errors and leaves durable denial fail-closed", async (t) => {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  assert.ok(platform);
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  const originalRename = fs.rename;
+  try {
+    await t.test("transient", async () => {
+      const harness = await isolatedLockPaths();
+      const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+      await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+      await fs.mkdir(lockPath, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockPath, "owner.json"),
+        JSON.stringify({
+          pid: 999_999,
+          hostname: hostname(),
+          created_at_ms: Date.now() - 60_000,
+          token: "windows-transient",
+          target: harness.target,
+        }),
+      );
+      let renameAttempts = 0;
+      const sharingError = Object.assign(new Error("transient rename contention"), { code: "EPERM" });
+      const restore = replaceFsMethod("rename", (...args) => {
+        if (path.resolve(String(args[0])) === path.resolve(lockPath) && renameAttempts++ === 0) {
+          return Promise.reject(sharingError);
+        }
+        return Reflect.apply(originalRename, fs, args);
+      });
+      try {
+        const release = await acquireFilesystemMutationLock(harness.target, {
+          portableRoot: harness.portableRoot,
+          lockRoot: harness.lockRoot,
+          waitMs: 100,
+          pollMs: 0,
+        });
+        assert.equal(renameAttempts, 2);
+        await release();
+      } finally {
+        restore();
+        await fs.rm(harness.root, { recursive: true, force: true });
+      }
+    });
+
+    await t.test("durable", async () => {
+      const harness = await isolatedLockPaths();
+      const lockPath = await lockPathInRoot(harness.target, harness.lockRoot);
+      await fs.mkdir(harness.lockRoot, { recursive: true, mode: 0o700 });
+      await fs.mkdir(lockPath, { mode: 0o700 });
+      await fs.writeFile(
+        path.join(lockPath, "owner.json"),
+        JSON.stringify({
+          pid: 999_999,
+          hostname: hostname(),
+          created_at_ms: Date.now() - 60_000,
+          token: "windows-durable",
+          target: harness.target,
+        }),
+      );
+      const sharingError = Object.assign(new Error("durable rename denial"), { code: "EPERM" });
+      const restore = replaceFsMethod("rename", (...args) => {
+        if (path.resolve(String(args[0])) === path.resolve(lockPath)) return Promise.reject(sharingError);
+        return Reflect.apply(originalRename, fs, args);
+      });
+      try {
+        await assert.rejects(
+          () => acquireFilesystemMutationLock(harness.target, {
+            portableRoot: harness.portableRoot,
+            lockRoot: harness.lockRoot,
+            waitMs: 0,
+            pollMs: 0,
+          }),
+          (err: unknown) => {
+            assert.ok(err instanceof FilesystemMutationLockError);
+            assert.equal(err.stale, true);
+            assert.equal(err.owner?.token, "windows-durable");
+            return true;
+          },
+        );
+        assert.equal((await fs.stat(lockPath)).isDirectory(), true);
+      } finally {
+        restore();
+        await fs.rm(harness.root, { recursive: true, force: true });
+      }
+    });
+  } finally {
+    Object.defineProperty(process, "platform", platform);
   }
 });
 
