@@ -40,7 +40,7 @@
 // an empty one converges/uninstalls (rmdir); a non-empty one is a structured refusal — this tool
 // never recursive-deletes content no manifest names.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { dirname, join } from "node:path";
@@ -236,6 +236,32 @@ export function legacySkillTargets(
   deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; platform?: string } = {},
 ): SkillTargets {
   return skillTargetsForName(LEGACY_SKILL_DIR_NAME, scope, deps);
+}
+
+/** Resolve a possibly absent target through its nearest existing ancestor for write deduplication. */
+function skillTargetIdentity(candidate: string, platform: string = process.platform): string {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const original = paths.resolve(candidate);
+  let cursor = original;
+  const missingTail: string[] = [];
+  while (true) {
+    try {
+      const resolved = paths.resolve(realpathSync.native(cursor), ...missingTail);
+      return platform === "win32" ? resolved.toLowerCase() : resolved;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const parent = paths.dirname(cursor);
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === cursor) {
+        return platform === "win32" ? original.toLowerCase() : original;
+      }
+      missingTail.unshift(paths.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function skillTargetPairIdentity(canonicalDir: string, legacyDir: string, platform: string = process.platform): string {
+  return `${skillTargetIdentity(canonicalDir, platform)}\u0000${skillTargetIdentity(legacyDir, platform)}`;
 }
 
 /**
@@ -835,7 +861,7 @@ export interface SkillDeps {
  * stale installs surface only when the exact scope command passes every host's install preflight.
  */
 export function skillRefreshScopes(
-  deps: Pick<SkillDeps, "cwd" | "home" | "env" | "executable"> = {},
+  deps: Pick<SkillDeps, "cwd" | "home" | "env" | "platform" | "executable"> = {},
 ): InstallScope[] {
   let assets: SkillAssets;
   try {
@@ -854,11 +880,16 @@ export function skillRefreshScopes(
         [targets.codex, legacyTargets.codex],
         [targets.opencode, legacyTargets.opencode],
       ] as const;
-      const distinctHosts = hosts.filter((row, index, rows) =>
-        rows.findIndex((candidate) => candidate[0] === row[0] && candidate[1] === row[1]) === index);
+      const hostRows = hosts.map(([canonicalDir, legacyDir]) => ({
+        canonicalDir,
+        legacyDir,
+        identity: skillTargetPairIdentity(canonicalDir, legacyDir, deps.platform),
+      }));
+      const distinctHosts = hostRows.filter((row, index, rows) =>
+        rows.findIndex((candidate) => candidate.identity === row.identity) === index);
       let actionableStale = false;
       let installable = true;
-      for (const [canonicalDir, legacyDir] of distinctHosts) {
+      for (const { canonicalDir, legacyDir } of distinctHosts) {
         const inspected = inspectHostInstall(canonicalDir, legacyDir, assets, remedy);
         if (!inspected.ok) {
           installable = false;
@@ -960,15 +991,21 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
 
   const targets = skillTargets(scope, deps);
   const legacyTargets = legacySkillTargets(scope, deps);
-  const hostDirs: [key: IntegrationHost, canonicalDir: string, legacyDir: string][] = [
+  const hostDirs = ([
     ["claude_code", targets.claude, legacyTargets.claude],
     ["codex", targets.codex, legacyTargets.codex],
     ["opencode", targets.opencode, legacyTargets.opencode],
-  ];
+  ] satisfies [key: IntegrationHost, canonicalDir: string, legacyDir: string][]).map(
+    ([key, canonicalDir, legacyDir]) => ({
+      key,
+      canonicalDir,
+      legacyDir,
+      identity: skillTargetPairIdentity(canonicalDir, legacyDir, deps.platform),
+    }),
+  );
   const distinctHostDirs = hostDirs.filter((row, index, rows) =>
-    rows.findIndex((candidate) => candidate[1] === row[1] && candidate[2] === row[2]) === index);
-  const aliasesFor = (canonicalDir: string, legacyDir: string) =>
-    hostDirs.filter((row) => row[1] === canonicalDir && row[2] === legacyDir);
+    rows.findIndex((candidate) => candidate.identity === row.identity) === index);
+  const aliasesFor = (identity: string) => hostDirs.filter((row) => row.identity === identity);
 
   if (sub === "install") {
     const assets = resolveSkillAssets(deps.executable);
@@ -990,7 +1027,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     const refusals: string[] = [];
     const hosts: Record<string, unknown> = {};
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
-    for (const [, canonicalDir, legacyDir] of distinctHostDirs) {
+    for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
       // Any unexpected fs throw on one host becomes a structured refusal so the sibling host
       // still processes (same aggregation shape as hook install).
       let result: HostInstallResult;
@@ -1008,7 +1045,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         refusals.push(`${collapseHomeDirectory(canonicalDir)}: ${result.reason}`);
         continue;
       }
-      for (const [key] of aliasesFor(canonicalDir, legacyDir)) {
+      for (const { key } of aliasesFor(identity)) {
         changedByHost[key] = result.changed;
         hosts[key] = {
           path: collapseHomeDirectory(canonicalDir),
@@ -1052,7 +1089,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
   const refusals: string[] = [];
   const hosts: Record<string, unknown> = {};
   let changed = false;
-  for (const [, canonicalDir, legacyDir] of distinctHostDirs) {
+  for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
     const paths = [
       ["canonical", canonicalDir],
       ["legacy", legacyDir],
@@ -1096,7 +1133,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
       pathResults[entry.label] = { path: collapseHomeDirectory(entry.dir), changed: result.changed };
     }
     changed = changed || hostChanged;
-    for (const [key] of aliasesFor(canonicalDir, legacyDir)) {
+    for (const { key } of aliasesFor(identity)) {
       hosts[key] = { changed: hostChanged, ...pathResults };
     }
   }

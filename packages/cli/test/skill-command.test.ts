@@ -726,6 +726,27 @@ test("--scope user honors host relocation and --scope global remains an alias", 
   assert.equal(targets.opencode, path.join(home, ".claude", "skills", "superbee"));
 });
 
+test("a symlinked Claude relocation that resolves to OpenCode's path is mutated once and reported for both hosts", async () => {
+  const { base, executable } = scratch();
+  const home = path.join(base, "home");
+  const project = path.join(base, "project");
+  const relocated = path.join(base, "relocated-claude");
+  mkdirSync(path.join(home, ".claude"), { recursive: true });
+  mkdirSync(project, { recursive: true });
+  symlinkSync(path.join(home, ".claude"), relocated, "dir");
+  const env = { CLAUDE_CONFIG_DIR: relocated };
+
+  const installed = await runSkill(["install", "--scope", "user"], { home, cwd: project, env, executable });
+  assert.equal(installed.skill.hosts.claude_code.changed, true);
+  assert.equal(installed.skill.hosts.opencode.changed, true);
+  assert.deepEqual(installed.skill.affected_hosts, ["claude_code", "codex", "opencode"]);
+
+  const removed = await runSkill(["uninstall", "--scope", "user"], { home, cwd: project, env, executable });
+  assert.equal(removed.skill.hosts.claude_code.changed, true);
+  assert.equal(removed.skill.hosts.opencode.changed, true);
+  assert.equal(existsSync(path.join(home, ".claude", "skills", "superbee")), false);
+});
+
 test("a distribution without shipped skill assets is a loud runtime error, not a partial install", async () => {
   const base = mkdtempSync(path.join(tmpdir(), "aslite-skill-noassets-"));
   const root = path.join(base, "bare-pkg");
