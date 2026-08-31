@@ -1,6 +1,6 @@
 /**
- * Agreement contract for the two consumers of Claude/Codex config roots: global hook targeting
- * and user-scoped Agent Skill installation. OpenCode's root is shared separately with MCP status.
+ * Agreement contract for global hook targeting and user-scoped Agent Skill installation. OpenCode
+ * deliberately shares the default Claude-compatible Skill root but not Claude's relocation knob.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -77,6 +77,17 @@ test("OpenCode resource and global-config roots keep their distinct override aut
   assert.equal(resolveOpenCodeGlobalConfigRoot(home, env, "darwin"), "/tmp/xdg/opencode");
 });
 
+test("OpenCode skill discovery stays on the documented Claude-compatible path when Claude is relocated", () => {
+  const home = "/tmp/aslite-host-root-home";
+  const targets = skillTargets("user", {
+    home,
+    env: { CLAUDE_CONFIG_DIR: "/tmp/relocated-claude" },
+    platform: "darwin",
+  });
+  assert.equal(targets.claude, "/tmp/relocated-claude/skills/superbee");
+  assert.equal(targets.opencode, "/tmp/aslite-host-root-home/.claude/skills/superbee");
+});
+
 test("Claude Code user MCP registry honors CLAUDE_CONFIG_DIR without nesting the default", () => {
   assert.equal(resolveClaudeUserConfigFile("/users/mike", {}, "darwin"), "/users/mike/.claude.json");
   assert.equal(
@@ -101,5 +112,6 @@ test("Windows host roots use the user profile conventions of each host", () => {
   assert.deepEqual(skillTargets("user", { home, env, platform: "win32" }), {
     claude: String.raw`C:\Users\Mike\.claude\skills\superbee`,
     codex: String.raw`C:\Users\Mike\.codex\skills\superbee`,
+    opencode: String.raw`C:\Users\Mike\.claude\skills\superbee`,
   });
 });

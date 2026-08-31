@@ -112,6 +112,7 @@ function skillForHost(
   if (!inspection) return undefined;
   if (host === "codex") return inspection.hosts.codex;
   if (host === "claude-code") return inspection.hosts.claude_code;
+  if (host === "opencode") return inspection.hosts.opencode;
   return undefined;
 }
 
@@ -187,7 +188,7 @@ async function inspectAll(
   let hook: HookStatusInspection | undefined;
   let projectHook: HookStatusInspection | undefined;
   let projectHookUnavailable = false;
-  if (targets.some((target) => target.id === "codex" || target.id === "claude-code")) {
+  if (targets.some((target) => target.id === "codex" || target.id === "claude-code" || target.id === "opencode")) {
     try {
       skill = deps.inspectSkill(scope);
     } catch {
