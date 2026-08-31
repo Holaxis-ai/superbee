@@ -130,6 +130,23 @@ const EGRESS_ROWS: readonly EgressRow[] = [
     },
     fixture: "board",
   },
+  {
+    leaf: "sync",
+    flag: "--body-out",
+    argv: (t) => ["sync", "--show-incoming", "tasks/seed-one", "--body-out", t, "--dir", ".", "--json"],
+    // The parsed incoming body has no OKF frontmatter, so it owes the same refusal as doc read's
+    // body channel rather than the whole-document raw channel's warning.
+    expect: {
+      "in-bundle-doc-md": "refuse",
+      "in-bundle-reserved-md": "refuse",
+      "in-bundle-inert": "silent-ok",
+      "outside-alias-into-bundle-doc": "refuse",
+      "outside-dangling-alias-into-bundle-doc": "refuse",
+      "in-bundle-alias-outside-doc": "silent-ok",
+      "outside-bundle": "silent-ok",
+    },
+    fixture: "board",
+  },
 ];
 
 /** Every declared egress surface must appear above — the guard against a silent new crossing point. */
