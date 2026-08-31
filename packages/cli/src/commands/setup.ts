@@ -111,9 +111,8 @@ function skillForHost(
 ): SetupSkillHostState | undefined {
   if (!inspection) return undefined;
   if (host === "codex") return inspection.hosts.codex;
-  // OpenCode deliberately reuses the managed Claude-compatible Skill target it discovers
-  // natively. A third copied target would create duplicate-ID precedence and ownership drift.
-  if (host === "claude-code" || host === "opencode") return inspection.hosts.claude_code;
+  if (host === "claude-code") return inspection.hosts.claude_code;
+  if (host === "opencode") return inspection.hosts.opencode;
   return undefined;
 }
 

@@ -115,7 +115,7 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   assert.equal(receipt.skill.action, "install");
   assert.equal(receipt.skill.changed, true);
   assert.equal(receipt.skill.restart_required, true);
-  assert.deepEqual(receipt.skill.affected_hosts, ["claude_code", "codex"]);
+  assert.deepEqual(receipt.skill.affected_hosts, ["claude_code", "codex", "opencode"]);
   assert.equal(receipt.skill.version, RUNNING_VERSION);
 
   for (const host of [".claude", ".codex"]) {
@@ -186,6 +186,13 @@ test("skill refresh scopes reuse managed-byte classification and self-clear afte
 
   await runSkill(["install"], { cwd, home, executable });
   assert.deepEqual(skillRefreshScopes({ cwd, home, env: {}, executable }), []);
+
+  const relocatedEnv = { CLAUDE_CONFIG_DIR: path.join(base, "relocated-claude") };
+  await runSkill(["install", "--scope", "user"], { cwd, home, env: relocatedEnv, executable });
+  writeFileSync(path.join(home, ".claude", "skills", "superbee", "SKILL.md"), "stale OpenCode skill\n");
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: relocatedEnv, executable }), ["user"]);
+  await runSkill(["install", "--scope", "user"], { cwd, home, env: relocatedEnv, executable });
+  assert.deepEqual(skillRefreshScopes({ cwd, home, env: relocatedEnv, executable }), []);
 
   const unmanaged = path.join(home, ".codex", "skills", "superbee");
   mkdirSync(unmanaged, { recursive: true });
@@ -389,7 +396,7 @@ test("hand-edited managed files: status reports stale, reinstall converges back 
   assert.equal(receipt.skill.hosts.claude_code.changed, true);
   assert.equal(receipt.skill.hosts.codex.changed, false);
   assert.equal(receipt.skill.restart_required, true);
-  assert.deepEqual(receipt.skill.affected_hosts, ["claude_code"]);
+  assert.deepEqual(receipt.skill.affected_hosts, ["claude_code", "opencode"]);
   assert.equal(readFileSync(edited, "utf8"), ASSET_FILES["SKILL.md"]);
   const after = await runSkill(["status"], { cwd, executable });
   assert.equal(after.skill.hosts.claude_code.state, "installed");
@@ -698,22 +705,25 @@ test("--scope user honors host relocation and --scope global remains an alias", 
   assert.equal(receipt.skill.scope, "user");
   assert.ok(existsSync(path.join(claudeHome, "skills", "superbee", "SKILL.md")));
   assert.ok(existsSync(path.join(codexHome, "skills", "superbee", "SKILL.md")));
-  assert.equal(existsSync(path.join(home, ".claude")), false);
+  assert.ok(existsSync(path.join(home, ".claude", "skills", "superbee", "SKILL.md")));
   assert.equal(existsSync(path.join(home, ".codex")), false);
 
   const aliasStatus = await runSkill(["status", "--scope", "global"], { home, env, executable });
   assert.equal(aliasStatus.skill.scope, "user");
   assert.equal(aliasStatus.skill.hosts.claude_code.canonical.state, "installed");
   assert.equal(aliasStatus.skill.hosts.claude_code.legacy.state, "absent");
+  assert.equal(aliasStatus.skill.hosts.opencode.canonical.state, "installed");
 
   await runSkill(["uninstall", "--scope", "global"], { home, env, executable });
   assert.equal(existsSync(path.join(claudeHome, "skills", "superbee")), false);
   assert.equal(existsSync(path.join(codexHome, "skills", "superbee")), false);
+  assert.equal(existsSync(path.join(home, ".claude", "skills", "superbee")), false);
 
   // An EMPTY env value falls back to <home>/.<host> — the shell ${VAR:-default} rule.
   const targets = skillTargets("user", { home, env: { CLAUDE_CONFIG_DIR: "", CODEX_HOME: "" } });
   assert.equal(targets.claude, path.join(home, ".claude", "skills", "superbee"));
   assert.equal(targets.codex, path.join(home, ".codex", "skills", "superbee"));
+  assert.equal(targets.opencode, path.join(home, ".claude", "skills", "superbee"));
 });
 
 test("a distribution without shipped skill assets is a loud runtime error, not a partial install", async () => {

@@ -19,11 +19,12 @@ function deps(write: (text: string) => void): SetupDeps {
     }),
     inspectSkill: () => ({
       version: "1.0.0",
-      targets: { claude: "/Users/private/.claude/skills/superbee", codex: "/Users/private/.codex/skills/superbee" },
-      legacyTargets: { claude: "/Users/private/.claude/skills/aslite", codex: "/Users/private/.codex/skills/aslite" },
+      targets: { claude: "/Users/private/.claude/skills/superbee", codex: "/Users/private/.codex/skills/superbee", opencode: "/Users/private/.claude/skills/superbee" },
+      legacyTargets: { claude: "/Users/private/.claude/skills/aslite", codex: "/Users/private/.codex/skills/aslite", opencode: "/Users/private/.claude/skills/aslite" },
       hosts: {
         claude_code: { canonical: { state: "installed", compatibility: { state: "current", reason: "current" } }, legacy: { state: "absent", compatibility: { state: "absent", reason: "absent" } } },
         codex: { canonical: { state: "installed", compatibility: { state: "current", reason: "current" } }, legacy: { state: "absent", compatibility: { state: "absent", reason: "absent" } } },
+        opencode: { canonical: { state: "installed", compatibility: { state: "current", reason: "current" } }, legacy: { state: "absent", compatibility: { state: "absent", reason: "absent" } } },
       },
     }),
     inspectHook: () => ({
@@ -161,7 +162,7 @@ test("OpenCode setup inspects and reuses the managed Claude-compatible Skill", a
       ...status,
       hosts: {
         ...status.hosts,
-        claude_code: {
+        opencode: {
           canonical: { state: "absent", compatibility: { state: "absent", reason: "absent" } },
           legacy: { state: "absent", compatibility: { state: "absent", reason: "absent" } },
         },

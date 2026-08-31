@@ -68,8 +68,8 @@ registration. It is read-only: it inspects your configuration and returns one sa
 a time, so the agent performs any actual changes with your approval.
 
 The managed Agent Skill works in Claude Code, Codex, and OpenCode. OpenCode discovers Superbee from
-its documented Claude-compatible Skill path, so the installer does not create a second OpenCode-only
-copy that could drift or override the same Skill ID.
+its documented Claude-compatible Skill path. It shares Claude Code's Skill bytes by default; if
+Claude Code is explicitly relocated, the installer manages the two documented host paths separately.
 
 Upgrading from the legacy `@holaxis/aslite` package or the retired marketplace plugin? Install
 `superbee` alongside it, have your agent run `superbee setup` to migrate the exact legacy

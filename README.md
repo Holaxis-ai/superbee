@@ -30,8 +30,8 @@ On Windows, npm exposes the same command through `superbee.cmd`, which can be in
 when PowerShell blocks its `.ps1` wrapper. On macOS or Linux, `npm install -g superbee` remains the
 stable-channel install. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
 how to use the installed command without carrying another copy of the executable. OpenCode uses
-its documented Claude-compatible Skill discovery, so Superbee manages one shared Skill copy rather
-than installing duplicate host-specific bytes.
+its documented Claude-compatible Skill discovery, so it shares Claude Code's Skill bytes unless a
+custom Claude config root requires separate documented host paths.
 
 Bare and host-scoped `setup` are read-only and agent-friendly: without flags it reports private-state
 health and lists the four supported hosts; after the agent selects its exact host, it inspects npm,
