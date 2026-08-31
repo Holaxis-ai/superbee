@@ -715,8 +715,10 @@ test("show-incoming: --body-out refuses raw and malformed incoming blobs and poi
   try {
     const raw = "- 2026-08-30T00:00:00.000Z mike wrote tasks/seed-one\n";
     const malformed = "---\ntype: [unclosed\n---\nbody that has no trustworthy boundary\n";
+    const unterminated = "---\ntype: Note\ntitle: Missing close\n# Body that must not disappear\n";
     await writeFile(path.join(topo.a.board, "log.md"), raw);
     await writeFile(path.join(topo.a.board, "notes", "malformed.md"), malformed);
+    await writeFile(path.join(topo.a.board, "notes", "unterminated.md"), unterminated);
     commitBoard(topo.a, "board: add raw and malformed show-incoming fixtures");
     pushBoard(topo.a);
     fetchBoard(topo.b);
@@ -724,6 +726,7 @@ test("show-incoming: --body-out refuses raw and malformed incoming blobs and poi
     for (const [id, code, targetName] of [
       ["log.md", "USAGE", "raw-body.md"],
       ["notes/malformed", "RUNTIME", "malformed-body.md"],
+      ["notes/unterminated", "RUNTIME", "unterminated-body.md"],
     ] as const) {
       const target = path.join(outDir, targetName);
       const result = await runSync(homeB!, ["--show-incoming", id, "--body-out", target, "--dir", topo.b.root]);
@@ -742,6 +745,23 @@ test("show-incoming: --body-out refuses raw and malformed incoming blobs and poi
     await cleanup();
     await rm(outDir, { recursive: true, force: true });
     await topo.cleanup();
+  }
+});
+
+test("show-incoming: --body-out - reserves stdout before sync argument validation", async () => {
+  const { homes, cleanup } = await tempHomes(1);
+  try {
+    const result = await runSync(homes[0]!, [
+      "--show-incoming", "tasks/seed-one", "--body-out", "-", "--pull-only", "--dir", "/does/not/matter",
+    ]);
+    assert.equal(result.err?.code, "USAGE");
+    assert.equal(result.err?.handled, true, "outer sync boundary already emitted the envelope");
+    assert.equal(result.out, "", "text stdout stays reserved for body bytes even on an early error");
+    assert.equal(result.bytes.byteLength, 0);
+    assert.match(result.errOut, /code: USAGE/);
+    assert.match(result.errOut, /--show-incoming and --pull-only cannot be combined/);
+  } finally {
+    await cleanup();
   }
 });
 

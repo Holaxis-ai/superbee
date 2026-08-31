@@ -62,10 +62,10 @@ import {
 } from "./converge.js";
 import { showIncoming } from "./show-incoming.js";
 import { ffSwallowToError, syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
-import { CliError, asHandled, cliErrorFromBoardGit } from "../../errors.js";
+import { CliError, asHandled, cliErrorFromBoardGit, toExit } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
-import { render, resolveMode, type OutputMode } from "../../output.js";
+import { render, renderErrorEnvelope, resolveMode, type OutputMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import {
   assertBundleOutsidePrivateState,
@@ -318,11 +318,40 @@ async function syncInTree(run: SyncRun): Promise<void> {
  * wrapper, tests) always observe `CliError` with the exact envelope/exit the tier produced.
  */
 export async function sync(argv: string[], deps: Partial<SyncCliDeps> = {}): Promise<void> {
-  try {
-    await syncCommand(argv, deps);
-  } catch (err) {
-    throw isBoardGitError(err) ? cliErrorFromBoardGit(err) : err;
+  const run = async (): Promise<void> => {
+    try {
+      await syncCommand(argv, deps);
+    } catch (err) {
+      throw isBoardGitError(err) ? cliErrorFromBoardGit(err) : err;
+    }
+  };
+  if (!requestsShowIncomingStdoutByteChannel(argv)) {
+    await run();
+    return;
   }
+
+  // Reserve stdout from RAW argv, before parsing, bundle resolution, or Git. Otherwise an early
+  // usage failure can put an error envelope where the caller expects only document/body bytes.
+  // Deeper show-incoming errors already carry `handled`; honoring it here prevents double emission.
+  const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
+  try {
+    await run();
+  } catch (err) {
+    const { envelope, handled } = toExit(err);
+    if (!handled) stderr(renderErrorEnvelope(envelope));
+    throw handled ? err : asHandled(err);
+  }
+}
+
+/** True when raw sync argv reserves stdout for show-incoming bytes (split and --flag=- forms). */
+function requestsShowIncomingStdoutByteChannel(argv: string[]): boolean {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if ((arg === "--out" || arg === "--body-out") && argv[i + 1]?.trim() === "-") return true;
+    if (arg?.startsWith("--out=") && arg.slice("--out=".length).trim() === "-") return true;
+    if (arg?.startsWith("--body-out=") && arg.slice("--body-out=".length).trim() === "-") return true;
+  }
+  return false;
 }
 
 /** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
