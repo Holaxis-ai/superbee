@@ -135,6 +135,44 @@ test("host-scoped setup is ready only when the protocol needs no action", async 
   assert.deepEqual(parsed.setup.verify.command, ["superbee", "setup", "--host", "claude-desktop", "--scope", "user", "--json"]);
 });
 
+test("OpenCode setup inspects and reuses the managed Claude-compatible Skill", async () => {
+  let output = "";
+  let skillInspections = 0;
+  const injected = deps((text) => { output += text; });
+  const inspectSkill = injected.inspectSkill;
+  injected.inspectSkill = (scope) => {
+    skillInspections += 1;
+    return inspectSkill(scope);
+  };
+  await setup(["--host", "opencode", "--json"], injected);
+  const current = JSON.parse(output) as { setup: { capabilities: Array<{ id: string; state: string; reason: string }> } };
+  assert.equal(skillInspections, 1);
+  assert.deepEqual(current.setup.capabilities.find((capability) => capability.id === "skill"), {
+    id: "skill",
+    requirement: "required",
+    state: "ready",
+    reason: "the current Superbee Agent Skill is installed in OpenCode's Claude-compatible discovery path",
+  });
+
+  output = "";
+  injected.inspectSkill = () => {
+    const status = inspectSkill("user");
+    return {
+      ...status,
+      hosts: {
+        ...status.hosts,
+        claude_code: {
+          canonical: { state: "absent", compatibility: { state: "absent", reason: "absent" } },
+          legacy: { state: "absent", compatibility: { state: "absent", reason: "absent" } },
+        },
+      },
+    };
+  };
+  await setup(["--host", "opencode", "--json"], injected);
+  const absent = JSON.parse(output) as { setup: { next: { command: string[] } } };
+  assert.deepEqual(absent.setup.next.command, ["superbee", "skill", "install", "--scope", "user"]);
+});
+
 test("setup defaults to TOON rather than JSON", async () => {
   let output = "";
   await setup(["--host", "claude-desktop"], deps((text) => { output += text; }));

@@ -7,7 +7,8 @@
 //
 // TARGETS: Claude Code + Codex only, via the ONE HOST_CONFIG_ROOTS authority (the same env-var
 // semantics `hook install --scope user` uses). New installs use skills/superbee; skills/aslite is
-// inspected only for migration, status, and uninstall. OpenCode is deliberately excluded.
+// inspected only for migration, status, and uninstall. OpenCode intentionally reuses the Claude
+// target through its documented Claude-compatible Skill discovery instead of owning a third copy.
 //
 // DESTRUCTIVE-WRITE DISCIPLINE (same boundary as hook.ts): install writes a manifest
 // (`.aslite-skill.json`: file list + package version + installed-by) inside the canonical folder
@@ -84,8 +85,10 @@ Usage:
   superbee skill uninstall [--scope project|user]
 
 Installs (or removes) the generated Agent Skill shipped with this npm package — SKILL.md plus its
-references/ folder — for Claude Code and Codex. OpenCode is deliberately not a target: it has no
-skill surface; its SessionStart integration is the plugin written by \`hook install\`.
+references/ folder — for Claude Code and Codex. OpenCode discovers the managed Claude Code target
+through its Claude-compatible Skill search path, so this command intentionally does not write a
+duplicate OpenCode copy. Its separate SessionStart integration is the plugin written by
+\`hook install\`.
 
 Install writes a manifest (${"`"}.aslite-skill.json${"`"}) inside the canonical superbee folder.
 An owned old-only aslite folder migrates atomically; an unmanaged legacy folder coexists untouched;

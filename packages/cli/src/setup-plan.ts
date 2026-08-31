@@ -276,7 +276,7 @@ function distributionCapability(input: SetupPlanInput): SetupCapability {
 }
 
 function skillCapability(input: SetupPlanInput): SetupCapability {
-  if (input.host === "claude-desktop" || input.host === "opencode") {
+  if (input.host === "claude-desktop") {
     return {
       id: "skill",
       requirement: "not_applicable",
@@ -321,7 +321,9 @@ function skillCapability(input: SetupPlanInput): SetupCapability {
       id: "skill",
       requirement: "required",
       state: "ready",
-      reason: "the current Superbee Agent Skill is installed",
+      reason: input.host === "opencode"
+        ? "the current Superbee Agent Skill is installed in OpenCode's Claude-compatible discovery path"
+        : "the current Superbee Agent Skill is installed",
     };
   }
   if (input.skill.canonical.state === "unmanaged") {
@@ -341,7 +343,9 @@ function skillCapability(input: SetupPlanInput): SetupCapability {
       ? "a managed legacy Agent Skill is ready to migrate"
       : input.skill.canonical.state === "stale"
         ? "the managed Agent Skill does not match this CLI"
-        : "the Superbee Agent Skill is absent",
+        : input.host === "opencode"
+          ? "the Superbee Agent Skill is absent from OpenCode's Claude-compatible discovery path"
+          : "the Superbee Agent Skill is absent",
     command: `superbee skill install --scope ${input.scope}`,
   };
 }

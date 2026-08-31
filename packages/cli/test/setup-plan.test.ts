@@ -39,6 +39,27 @@ test("setup plan agreement: every supported host has a ready agent protocol", ()
   }
 });
 
+test("OpenCode treats the managed Claude-compatible Skill as a required host capability", () => {
+  const current = buildSetupPlan(input({ host: "opencode" }));
+  assert.deepEqual(
+    current.capabilities.find((capability) => capability.id === "skill"),
+    {
+      id: "skill",
+      requirement: "required",
+      state: "ready",
+      reason: "the current Superbee Agent Skill is installed in OpenCode's Claude-compatible discovery path",
+    },
+  );
+
+  const absent = buildSetupPlan(input({
+    host: "opencode",
+    skill: { canonical: { state: "absent" }, legacy: { state: "absent" } },
+  }));
+  assert.deepEqual(next(absent).command, ["superbee", "skill", "install", "--scope", "user"]);
+  assert.equal(absent.capabilities.find((capability) => capability.id === "skill")?.reason,
+    "the Superbee Agent Skill is absent from OpenCode's Claude-compatible discovery path");
+});
+
 test("mutating setup actions are argv-based and declare their approval scope", () => {
   const migration = next(buildSetupPlan(input({
     state: { state: "migratable", reason: "validated legacy operational state is ready to migrate", records: 2 },
