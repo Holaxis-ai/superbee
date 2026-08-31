@@ -183,6 +183,44 @@ function processExists(pid: number): boolean {
   }
 }
 
+function staleLockQuarantinePath(lockPath: string, owner: FilesystemMutationLockOwner): string {
+  const tokenHash = createHash("sha256").update(owner.token).digest("hex");
+  return `${lockPath}.stale-${tokenHash}`;
+}
+
+async function pathExists(candidate: string): Promise<boolean> {
+  try {
+    await fs.lstat(candidate);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
+}
+
+/**
+ * Move one demonstrably dead same-host lock aside without deleting its evidence. The destination
+ * is stable for the dead owner's token and remains non-empty, so a delayed competing reclaimer
+ * cannot rename a replacement live lock over it on either POSIX or Windows.
+ */
+async function quarantineStaleLock(
+  lockPath: string,
+  owner: FilesystemMutationLockOwner,
+): Promise<boolean> {
+  if (owner.hostname !== hostname() || processExists(owner.pid)) return false;
+  const quarantinePath = staleLockQuarantinePath(lockPath, owner);
+  try {
+    await fs.rename(lockPath, quarantinePath);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return false;
+    if (await pathExists(quarantinePath)) return false;
+    if (process.platform === "win32" && WINDOWS_DIRECTORY_CONTENTION_CODES.has(code ?? "")) return false;
+    throw err;
+  }
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -313,14 +351,14 @@ async function selectLockRoot(options: FilesystemMutationLockOptions): Promise<s
   return lockRoot;
 }
 
-const WINDOWS_CLAIM_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const WINDOWS_DIRECTORY_CONTENTION_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
 
 type LockClaimFailure = "contention" | "unwitnessed-windows-sharing-error" | "terminal";
 
 async function classifyLockClaimFailure(error: unknown, lockPath: string): Promise<LockClaimFailure> {
   const code = (error as NodeJS.ErrnoException).code;
   if (code === "EEXIST") return "contention";
-  if (process.platform !== "win32" || !WINDOWS_CLAIM_CONTENTION_CODES.has(code ?? "")) return "terminal";
+  if (process.platform !== "win32" || !WINDOWS_DIRECTORY_CONTENTION_CODES.has(code ?? "")) return "terminal";
 
   // Win32 may report a sharing-shaped error while another claimer creates or removes this exact
   // directory. A witnessed path is contention. An absent path is ambiguous: permit one bounded
@@ -366,7 +404,16 @@ async function claimLockPath(
         unwitnessedWindowsRetryUsed = false;
       }
 
-      if (Date.now() - started >= waitMs) throw timeoutError(lockPath, await readOwner(lockPath), owner.target);
+      let existingOwner = await readOwner(lockPath);
+      if (existingOwner !== null) {
+        if (await quarantineStaleLock(lockPath, existingOwner)) continue;
+        // A failed quarantine attempt is non-progress: another reclaimer may have moved the stale
+        // lock and installed a live replacement while this caller was delayed in rename. Diagnose
+        // the owner that exists now, never the dead-owner snapshot that authorized the attempt.
+        existingOwner = await readOwner(lockPath);
+      }
+
+      if (Date.now() - started >= waitMs) throw timeoutError(lockPath, existingOwner, owner.target);
       await delay(pollMs);
       continue;
     }
@@ -420,8 +467,9 @@ function newOwner(target: string): FilesystemMutationLockOwner {
  *
  * `mkdir` is the atomic claim. Locks live in a private per-user runtime namespace keyed by the
  * canonical target path, never inside the portable bundle: Git staging, establishment snapshots,
- * copying, and packaging cannot capture them. The owner record makes a crash leftover diagnosable,
- * but this primitive never steals one automatically.
+ * copying, and packaging cannot capture them. A valid same-host lock whose PID is absent is moved
+ * to a token-fenced quarantine and retried; malformed, foreign-host, and live locks remain
+ * fail-closed.
  */
 export async function acquireFilesystemMutationLock(
   target: string,
