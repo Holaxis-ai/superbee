@@ -374,32 +374,67 @@ test("the retained token quarantine fences a delayed reclaimer away from the liv
   await fs.mkdir(lockPath, { mode: 0o700 });
   await fs.writeFile(path.join(lockPath, "owner.json"), JSON.stringify(staleOwner));
 
+  const originalRename = fs.rename;
+  let renameCalls = 0;
+  let enterFirstRename!: () => void;
+  let unblockFirstRename!: () => void;
+  let finishFirstRename!: () => void;
+  const firstRenameEntered = new Promise<void>((resolve) => (enterFirstRename = resolve));
+  const firstRenameGate = new Promise<void>((resolve) => (unblockFirstRename = resolve));
+  const firstRenameFinished = new Promise<void>((resolve) => (finishFirstRename = resolve));
+  const restoreRename = replaceFsMethod("rename", async (...args) => {
+    renameCalls += 1;
+    if (renameCalls === 1) {
+      enterFirstRename();
+      await firstRenameGate;
+      try {
+        return await originalRename(...(args as Parameters<typeof fs.rename>));
+      } finally {
+        finishFirstRename();
+      }
+    }
+    return originalRename(...(args as Parameters<typeof fs.rename>));
+  });
+  let firstRenameUnblocked = false;
+  let delayedClaim: Promise<() => Promise<void>> | undefined;
+  let releaseReplacement: (() => Promise<void>) | undefined;
+
   try {
-    const release = await acquireFilesystemMutationLock(harness.target, {
+    const options = {
       portableRoot: harness.portableRoot,
       lockRoot: harness.lockRoot,
-      waitMs: 1_000,
-      pollMs: 5,
-    });
-    const entries = await fs.readdir(harness.lockRoot);
-    const quarantineName = entries.find((entry) => entry.includes(".lock.stale-"));
-    assert.ok(quarantineName);
-    const liveOwnerBefore = await fs.readFile(path.join(lockPath, "owner.json"), "utf8");
+      waitMs: 2_000,
+      pollMs: 2,
+    };
 
-    await assert.rejects(
-      () => fs.rename(lockPath, path.join(harness.lockRoot, quarantineName)),
-      (err: unknown) => {
-        assert.ok(["EEXIST", "ENOTEMPTY", "EPERM"].includes((err as NodeJS.ErrnoException).code ?? ""));
-        return true;
-      },
+    delayedClaim = acquireFilesystemMutationLock(harness.target, options);
+    await eventually(firstRenameEntered);
+
+    releaseReplacement = await acquireFilesystemMutationLock(harness.target, options);
+    const replacementOwner = await fs.readFile(path.join(lockPath, "owner.json"), "utf8");
+
+    unblockFirstRename();
+    firstRenameUnblocked = true;
+    await eventually(firstRenameFinished);
+
+    assert.equal(
+      await fs.readFile(path.join(lockPath, "owner.json"), "utf8"),
+      replacementOwner,
+      "the delayed reclaimer must not move the replacement owner's live lock",
     );
-    assert.equal(await fs.readFile(path.join(lockPath, "owner.json"), "utf8"), liveOwnerBefore);
-    assert.deepEqual(
-      JSON.parse(await fs.readFile(path.join(harness.lockRoot, quarantineName, "owner.json"), "utf8")),
-      staleOwner,
-    );
-    await release();
+
+    await releaseReplacement();
+    releaseReplacement = undefined;
+    const releaseDelayed = await eventually(delayedClaim);
+    await releaseDelayed();
   } finally {
+    if (!firstRenameUnblocked) unblockFirstRename();
+    restoreRename();
+    await releaseReplacement?.().catch(() => {});
+    if (delayedClaim) {
+      const releaseDelayed = await delayedClaim.catch(() => undefined);
+      await releaseDelayed?.().catch(() => {});
+    }
     await fs.rm(harness.root, { recursive: true, force: true });
   }
 });
