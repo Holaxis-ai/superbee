@@ -683,6 +683,14 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
     // fails for a git reason (RUNTIME) — which is all the control owes F6: parsing got that far.
     controlExit: 1,
   },
+  {
+    leaf: "sync",
+    surface: "--body-out",
+    argv: (t) => ["sync", "--show-incoming", "notes/a", "--body-out", t, "--dir", ".superbee", "--json"],
+    // As with raw --out above, the benign fixture is not a git work tree; reaching that RUNTIME
+    // proves parsing accepted the complete invocation while the guarded target was stopped first.
+    controlExit: 1,
+  },
 
   // ── Recipe roots: deliberately NOT routed through the ingress guard. ────────
   {

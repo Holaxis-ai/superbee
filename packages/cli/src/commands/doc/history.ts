@@ -9,6 +9,7 @@ import { render, resolveMode } from "../../output.js";
 import { cliInvocation } from "../../invocation.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { DOC_HISTORY_USAGE, type DocCliDeps, readErrorToCliError } from "./common.js";
+import { commandToken } from "../../command-text.js";
 
 /**
  * AXI unbounded-output guard (same class as `list`/`status`/`blobs`'s row cap): a history-keeping
@@ -57,7 +58,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     const raw = values.limit.trim();
     if (!/^\d+$/.test(raw)) {
       throw new CliError("USAGE", "--limit must be a non-negative integer (0 = unlimited)", {
-        help: `${cliInvocation()} doc history ${id} --limit 20`,
+        help: `${cliInvocation()} doc history ${commandToken(id)} --limit 20`,
       });
     }
     limit = Number(raw);
@@ -114,10 +115,10 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
   const help: string[] = [];
   if (truncated) {
     help.push(
-      `showing ${shown.length} of ${total} — run \`${cliInvocation()} doc history ${id} --limit 0\` (or a higher --limit) for all`,
+      `showing ${shown.length} of ${total} — run \`${cliInvocation()} doc history ${commandToken(id)} --limit 0\` (or a higher --limit) for all`,
     );
   }
-  help.push(`${cliInvocation()} doc update ${id} --expected-version ${versions[0]!.version}`);
+  help.push(`${cliInvocation()} doc update ${commandToken(id)} --expected-version ${commandToken(versions[0]!.version)}`);
   out.help = help;
 
   stdout(render(out, resolveMode(values)));

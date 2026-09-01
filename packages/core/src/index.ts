@@ -222,6 +222,7 @@ export {
   parseMarkdown,
   stringifyDoc,
   stringifyWithData,
+  normalizeDocumentBodyForStorage,
   isUsableTimestamp,
   MalformedDocumentError,
 } from "./frontmatter.js";

@@ -5,9 +5,11 @@
 // references/) — the npm layout (`<pkg>/dist/superbee.mjs`) and a dev/repo build
 // (`packages/cli/dist/…`) both resolve naturally.
 //
-// TARGETS: Claude Code + Codex only, via the ONE HOST_CONFIG_ROOTS authority (the same env-var
-// semantics `hook install --scope user` uses). New installs use skills/superbee; skills/aslite is
-// inspected only for migration, status, and uninstall. OpenCode is deliberately excluded.
+// TARGETS: Claude Code + Codex through the ONE HOST_CONFIG_ROOTS authority (the same env-var
+// semantics `hook install --scope user` uses). OpenCode reuses the Claude-compatible project path
+// and the documented global ~/.claude path. Those are one physical target unless Claude Code has
+// been explicitly relocated, in which case each host needs its own managed copy. New installs use
+// skills/superbee; skills/aslite is inspected only for migration, status, and uninstall.
 //
 // DESTRUCTIVE-WRITE DISCIPLINE (same boundary as hook.ts): install writes a manifest
 // (`.aslite-skill.json`: file list + package version + installed-by) inside the canonical folder
@@ -38,7 +40,7 @@
 // an empty one converges/uninstalls (rmdir); a non-empty one is a structured refusal — this tool
 // never recursive-deletes content no manifest names.
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, rmdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { dirname, join } from "node:path";
@@ -84,8 +86,9 @@ Usage:
   superbee skill uninstall [--scope project|user]
 
 Installs (or removes) the generated Agent Skill shipped with this npm package — SKILL.md plus its
-references/ folder — for Claude Code and Codex. OpenCode is deliberately not a target: it has no
-skill surface; its SessionStart integration is the plugin written by \`hook install\`.
+references/ folder — for Claude Code, Codex, and OpenCode. OpenCode shares the Claude-compatible
+target unless Claude Code uses a relocated config root, so duplicate bytes are not written in the
+normal case. Its separate SessionStart integration is the plugin written by \`hook install\`.
 
 Install writes a manifest (${"`"}.aslite-skill.json${"`"}) inside the canonical superbee folder.
 An owned old-only aslite folder migrates atomically; an unmanaged legacy folder coexists untouched;
@@ -102,7 +105,7 @@ host folder is changed. npx remains supported for read-only, trial, and bootstra
 
 Options:
   --scope project   Write to the CURRENT project (default): .claude/skills/superbee/, .codex/skills/superbee/
-  --scope user      Write to each host's configured user home (environment override or default)
+  --scope user      Write to each host's documented user path; OpenCode uses ~/.claude/skills/superbee/
   --json            Emit compact JSON instead of TOON
   -h, --help        Show this help
 
@@ -192,6 +195,7 @@ export function resolveSkillAssets(executable?: string): SkillAssets {
 export interface SkillTargets {
   claude: string;
   codex: string;
+  opencode: string;
 }
 
 function skillTargetsForName(
@@ -206,6 +210,7 @@ function skillTargetsForName(
     return {
       claude: paths.join(cwd, ".claude", "skills", dirName),
       codex: paths.join(cwd, ".codex", "skills", dirName),
+      opencode: paths.join(cwd, ".claude", "skills", dirName),
     };
   }
   const home = deps.home ?? homedir();
@@ -213,6 +218,9 @@ function skillTargetsForName(
   return {
     claude: paths.join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.claude, home, env, platform), "skills", dirName),
     codex: paths.join(resolveHostConfigRoot(HOST_CONFIG_ROOTS.codex, home, env, platform), "skills", dirName),
+    // OpenCode documents this literal Claude-compatible global path. It does not document
+    // CLAUDE_CONFIG_DIR as a discovery authority.
+    opencode: paths.join(home, ".claude", "skills", dirName),
   };
 }
 
@@ -228,6 +236,32 @@ export function legacySkillTargets(
   deps: { cwd?: string; home?: string; env?: NodeJS.ProcessEnv; platform?: string } = {},
 ): SkillTargets {
   return skillTargetsForName(LEGACY_SKILL_DIR_NAME, scope, deps);
+}
+
+/** Resolve a possibly absent target through its nearest existing ancestor for write deduplication. */
+function skillTargetIdentity(candidate: string, platform: string = process.platform): string {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const original = paths.resolve(candidate);
+  let cursor = original;
+  const missingTail: string[] = [];
+  while (true) {
+    try {
+      const resolved = paths.resolve(realpathSync.native(cursor), ...missingTail);
+      return platform === "win32" ? resolved.toLowerCase() : resolved;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const parent = paths.dirname(cursor);
+      if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === cursor) {
+        return platform === "win32" ? original.toLowerCase() : original;
+      }
+      missingTail.unshift(paths.basename(cursor));
+      cursor = parent;
+    }
+  }
+}
+
+function skillTargetPairIdentity(canonicalDir: string, legacyDir: string, platform: string = process.platform): string {
+  return `${skillTargetIdentity(canonicalDir, platform)}\u0000${skillTargetIdentity(legacyDir, platform)}`;
 }
 
 /**
@@ -773,7 +807,7 @@ export interface SkillStatusInspection {
   version: string;
   targets: SkillTargets;
   legacyTargets: SkillTargets;
-  hosts: { claude_code: SkillHostStatus; codex: SkillHostStatus };
+  hosts: { claude_code: SkillHostStatus; codex: SkillHostStatus; opencode: SkillHostStatus };
 }
 
 /** Read both supported hosts through the same asset and ownership authorities as `skill status`. */
@@ -803,6 +837,7 @@ export function inspectSkillStatus(
     hosts: {
       claude_code: inspect(targets.claude, legacyTargets.claude),
       codex: inspect(targets.codex, legacyTargets.codex),
+      opencode: inspect(targets.opencode, legacyTargets.opencode),
     },
   };
 }
@@ -826,7 +861,7 @@ export interface SkillDeps {
  * stale installs surface only when the exact scope command passes every host's install preflight.
  */
 export function skillRefreshScopes(
-  deps: Pick<SkillDeps, "cwd" | "home" | "env" | "executable"> = {},
+  deps: Pick<SkillDeps, "cwd" | "home" | "env" | "platform" | "executable"> = {},
 ): InstallScope[] {
   let assets: SkillAssets;
   try {
@@ -843,10 +878,18 @@ export function skillRefreshScopes(
       const hosts = [
         [targets.claude, legacyTargets.claude],
         [targets.codex, legacyTargets.codex],
+        [targets.opencode, legacyTargets.opencode],
       ] as const;
+      const hostRows = hosts.map(([canonicalDir, legacyDir]) => ({
+        canonicalDir,
+        legacyDir,
+        identity: skillTargetPairIdentity(canonicalDir, legacyDir, deps.platform),
+      }));
+      const distinctHosts = hostRows.filter((row, index, rows) =>
+        rows.findIndex((candidate) => candidate.identity === row.identity) === index);
       let actionableStale = false;
       let installable = true;
-      for (const [canonicalDir, legacyDir] of hosts) {
+      for (const { canonicalDir, legacyDir } of distinctHosts) {
         const inspected = inspectHostInstall(canonicalDir, legacyDir, assets, remedy);
         if (!inspected.ok) {
           installable = false;
@@ -933,6 +976,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     const rows = [
       ["claude_code", inspection.targets.claude, inspection.legacyTargets.claude, inspection.hosts.claude_code],
       ["codex", inspection.targets.codex, inspection.legacyTargets.codex, inspection.hosts.codex],
+      ["opencode", inspection.targets.opencode, inspection.legacyTargets.opencode, inspection.hosts.opencode],
     ] as const;
     for (const [key, canonicalDir, legacyDir, status] of rows) {
       hosts[key] = {
@@ -947,10 +991,21 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
 
   const targets = skillTargets(scope, deps);
   const legacyTargets = legacySkillTargets(scope, deps);
-  const hostDirs: [key: "claude_code" | "codex", canonicalDir: string, legacyDir: string][] = [
+  const hostDirs = ([
     ["claude_code", targets.claude, legacyTargets.claude],
     ["codex", targets.codex, legacyTargets.codex],
-  ];
+    ["opencode", targets.opencode, legacyTargets.opencode],
+  ] satisfies [key: IntegrationHost, canonicalDir: string, legacyDir: string][]).map(
+    ([key, canonicalDir, legacyDir]) => ({
+      key,
+      canonicalDir,
+      legacyDir,
+      identity: skillTargetPairIdentity(canonicalDir, legacyDir, deps.platform),
+    }),
+  );
+  const distinctHostDirs = hostDirs.filter((row, index, rows) =>
+    rows.findIndex((candidate) => candidate.identity === row.identity) === index);
+  const aliasesFor = (identity: string) => hostDirs.filter((row) => row.identity === identity);
 
   if (sub === "install") {
     const assets = resolveSkillAssets(deps.executable);
@@ -972,7 +1027,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
     const refusals: string[] = [];
     const hosts: Record<string, unknown> = {};
     const changedByHost: Partial<Record<IntegrationHost, boolean>> = {};
-    for (const [key, canonicalDir, legacyDir] of hostDirs) {
+    for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
       // Any unexpected fs throw on one host becomes a structured refusal so the sibling host
       // still processes (same aggregation shape as hook install).
       let result: HostInstallResult;
@@ -990,14 +1045,16 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
         refusals.push(`${collapseHomeDirectory(canonicalDir)}: ${result.reason}`);
         continue;
       }
-      changedByHost[key] = result.changed;
-      hosts[key] = {
-        path: collapseHomeDirectory(canonicalDir),
-        legacy_path: collapseHomeDirectory(legacyDir),
-        changed: result.changed,
-        migrated: result.migrated,
-        legacy_state_before: result.legacyState,
-      };
+      for (const { key } of aliasesFor(identity)) {
+        changedByHost[key] = result.changed;
+        hosts[key] = {
+          path: collapseHomeDirectory(canonicalDir),
+          legacy_path: collapseHomeDirectory(legacyDir),
+          changed: result.changed,
+          migrated: result.migrated,
+          legacy_state_before: result.legacyState,
+        };
+      }
     }
     if (refusals.length > 0) {
       throw new CliError(
@@ -1032,7 +1089,7 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
   const refusals: string[] = [];
   const hosts: Record<string, unknown> = {};
   let changed = false;
-  for (const [key, canonicalDir, legacyDir] of hostDirs) {
+  for (const { canonicalDir, legacyDir, identity } of distinctHostDirs) {
     const paths = [
       ["canonical", canonicalDir],
       ["legacy", legacyDir],
@@ -1076,7 +1133,9 @@ export async function skill(argv: string[], deps: SkillDeps = {}): Promise<void>
       pathResults[entry.label] = { path: collapseHomeDirectory(entry.dir), changed: result.changed };
     }
     changed = changed || hostChanged;
-    hosts[key] = { changed: hostChanged, ...pathResults };
+    for (const { key } of aliasesFor(identity)) {
+      hosts[key] = { changed: hostChanged, ...pathResults };
+    }
   }
   if (refusals.length > 0) {
     throw new CliError(

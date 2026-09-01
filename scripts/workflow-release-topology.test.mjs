@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -141,8 +141,9 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /^ {4}permissions:\n {6}contents: write$/m, "finalize needs only contents: write");
   assert.doesNotMatch(job, /id-token|registry-url|NODE_AUTH_TOKEN/, "finalize must not be able to authenticate to npm");
   assert.match(job, /npm view "superbee@\$V" version/, "finalize proves the registry serves the version");
-  assert.match(job, /npm view "superbee@\$V" version readmeFilename readme engines os --json/, "finalize reads the exact npm page metadata");
-  assert.match(job, /registry\.readme, readme/, "finalize proves npm renders the installed README bytes");
+  assert.match(job, /npm view "superbee@\$V" version readmeFilename engines os --json/, "finalize reads the exact supported npm metadata");
+  assert.doesNotMatch(job, /assert\.(?:equal|deepEqual)\(registry\.readme\s*,/, "staged publishing does not populate registry readme bytes");
+  assert.match(job, /manifest\.readme, readme/, "finalize proves the attested tarball carries the installed README bytes");
   assert.match(job, /registry\.engines, manifest\.engines/, "finalize proves npm exposes the installed Node requirement");
   assert.match(job, /registry\.os, manifest\.os/, "finalize proves npm exposes the installed platform metadata");
   assert.match(job, /How do I download Superbee on Windows/, "finalize dogfoods the novice Windows question");
@@ -155,6 +156,48 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /gh release view "\$TAG"[\s\S]*gh release create "\$TAG"/, "look before create so re-runs are idempotent");
   assert.match(job, /--verify-tag/, "the release must be created against the existing tag");
   assert.match(job, /gh release download "\$TAG"[\s\S]*differs from the bytes npm serves/, "every finalize path verifies the release asset against the npm bytes");
+});
+
+test("finalize accepts staged-publish metadata with an empty registry readme", () => {
+  const start = finalize.indexOf("- name: Prove the installed README and npm platform metadata");
+  assert.notEqual(start, -1, "release-finalize.yml declares the installed metadata proof");
+  const heredoc = finalize.indexOf("node --input-type=module <<'NODE'", start);
+  assert.notEqual(heredoc, -1, "the metadata proof executes a Node assertion block");
+  const scriptStart = finalize.indexOf("\n", heredoc) + 1;
+  const scriptEnd = finalize.indexOf("\n          NODE", scriptStart);
+  assert.notEqual(scriptEnd, -1, "the metadata proof closes its Node assertion block");
+  const script = finalize.slice(scriptStart, scriptEnd).split("\n").map((line) => line.slice(10)).join("\n");
+
+  const dir = mkdtempSync(path.join(os.tmpdir(), "release-finalize-metadata-"));
+  const out = path.join(dir, "out");
+  mkdirSync(out);
+  const readme = [
+    "# superbee",
+    "",
+    "## How do I download Superbee on Windows?",
+    "",
+    "Node.js 20 or newer on macOS, Linux, or native Windows",
+    "",
+    "`latest` and `next`",
+    "",
+    "npm install -g superbee@next",
+    "",
+    "After installation, ask your AI agent to run `superbee setup`.",
+    "",
+  ].join("\n");
+  const platform = { engines: { node: ">=20" }, os: ["darwin", "linux", "win32"] };
+  writeFileSync(path.join(out, "registry-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme: "", ...platform }));
+  writeFileSync(path.join(out, "registry-tags.json"), JSON.stringify({ latest: "0.1.3", next: "0.1.5-pre.1" }));
+  writeFileSync(path.join(out, "tarball-package.json"), JSON.stringify({ version: "0.1.5-pre.1", readmeFilename: "README.md", readme, ...platform }));
+  writeFileSync(path.join(out, "tarball-readme.md"), readme);
+
+  const result = spawnSync(process.execPath, ["--input-type=module"], {
+    cwd: dir,
+    env: { ...process.env, V: "0.1.5-pre.1", T: "next" },
+    input: script,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, `metadata proof rejected supported staged-publish state: ${result.stderr}`);
 });
 
 test("an ordinary npm publish from the package directory trips before it can publish", () => {

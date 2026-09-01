@@ -35,6 +35,7 @@ import { serve, type ServerHandle } from "@superbee/server";
 import { link, addLink } from "../src/commands/link.js";
 import { CliError, classifyBundleError, toExit } from "../src/errors.js";
 import { detectHostAliasing, hostAliasesPair } from "../../core/test/host-class.js";
+import { renderedQuoted, renderedQuotedPattern } from "./support/rendered-command.js";
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 
@@ -80,6 +81,25 @@ async function linkShow(dir: string, args: string[]): Promise<Record<string, unk
   let out = "";
   await link(["show", ...args, "--dir", dir, "--json"], { stdout: (s) => (out += s) });
   return JSON.parse(out);
+}
+
+/** Run `body` with `process.platform` forced, restoring it whatever happens. */
+async function withPlatform(platform: string, body: () => Promise<void>): Promise<void> {
+  const original = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  try {
+    await body();
+  } finally {
+    Object.defineProperty(process, "platform", original);
+  }
+}
+
+/**
+ * The near-miss hint renders the filter with the always-quote producer, which spells a token
+ * differently per platform. Match the rendered form rather than the POSIX spelling.
+ */
+function matchesNoLinks(hint: string, filter: string): boolean {
+  return hint.includes(`no links matched --text ${renderedQuoted(filter)}`);
 }
 
 /** Run `link list` in-process against `dir`, capturing stdout and decoding the `--json` envelope. */
@@ -444,7 +464,21 @@ test("link show --text: filters BOTH outbound links and backlinks to an exact te
     assert.equal(empty.backlink_count, 0);
     assert.deepEqual(empty.backlinks, []);
     const help = empty.help as string[];
-    assert.ok(help.some((h) => /no links matched --text 'no-such-relation'/.test(h)));
+    assert.ok(help.some((h) => matchesNoLinks(h, "no-such-relation")));
+
+    // An ORDINARY MULTI-WORD filter must come back as ONE copy-pasteable token. The hint exists to
+    // be copied, and a value rendered by the quoting authority must not also pick up the
+    // sentence's own quotes: `--text ''runs on''` pastes as two arguments.
+    const multiWord = await linkShow(dir, ["hub", "--text", "runs on"]);
+    const multiWordHelp = multiWord.help as string[];
+    assert.ok(
+      multiWordHelp.some((h) => h.includes(`no links matched --text ${renderedQuoted("runs on")}`)),
+      `a multi-word filter must render as one token, got: ${JSON.stringify(multiWordHelp)}`,
+    );
+    assert.ok(
+      !multiWordHelp.some((h) => h.includes("''")),
+      `no hint may double-quote a rendered token, got: ${JSON.stringify(multiWordHelp)}`,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -468,7 +502,7 @@ test("link show --text zero-match: help names the distinct link texts present (n
     assert.equal(miss.backlink_count, 0);
     const help = miss.help as string[];
     assert.ok(
-      help.some((h) => /no links matched --text 'prereqs'/.test(h) && /link texts present here: 'prereq', 'see also'/.test(h)),
+      help.some((h) => matchesNoLinks(h, "prereqs") && /link texts present here: 'prereq', 'see also'/.test(h)),
       `near-miss help should name the texts present, got: ${JSON.stringify(help)}`,
     );
 
@@ -824,7 +858,7 @@ test("link add: a same-spelling-different-case link type warns naming the declar
     assert.equal(warnings[0]!.code, "LINK_TYPE_CASE_VARIANT");
     assert.match(
       warnings[0]!.message as string,
-      /'Contains' is a case-variant of the declared link type 'contains' — did you mean --text 'contains'\?/,
+      new RegExp(`'Contains' is a case-variant of the declared link type 'contains' — did you mean --text ${renderedQuotedPattern("contains")}\\?`),
     );
 
     // An unrelated near-miss text (edit-distance close, but NOT a case variant) never warns —
@@ -1083,7 +1117,7 @@ test("link list --text: exact match only; a zero-match result carries a near-mis
     assert.equal(substring.count, 0);
     const help = substring.help as string[];
     assert.ok(
-      help.some((h) => /no links matched --text 'contain'/.test(h) && /link texts present here:/.test(h)),
+      help.some((h) => matchesNoLinks(h, "contain") && /link texts present here:/.test(h)),
       `expected a near-miss hint, got: ${JSON.stringify(help)}`,
     );
     // The whole-bundle near-miss hint names every distinct text present.
@@ -1264,7 +1298,7 @@ test("link list --text zero-match over --remote: exactly ONE round trip (2 HTTP 
       await link(["list", "--text", "no-such-text", "--remote", url, "--json"], { stdout: (s) => (out += s) });
       const result = JSON.parse(out) as Record<string, unknown>;
       assert.equal(result.count, 0);
-      assert.ok((result.help as string[])?.some((h) => /no links matched --text 'no-such-text'/.test(h)));
+      assert.ok((result.help as string[])?.some((h) => matchesNoLinks(h, "no-such-text")));
     } finally {
       globalThis.fetch = originalFetch;
       await handle.close();
@@ -1452,5 +1486,39 @@ test("every previously-documented fact from the old single combined block is rea
   ];
   for (const re of mustAppearSomewhere) {
     assert.match(combined, re, `expected this pre-slice fact to still be reachable somewhere: ${re}`);
+  }
+});
+
+/**
+ * These hints render a value the CLI does not own, and on Windows a few values have no inert
+ * rendering at all (see shell-quoting.ts). The renderer used here must ABSORB that refusal: an
+ * always-quote primitive that throws would escape a diagnostic builder as a bare `Error` carrying
+ * no CLI error code, replacing the message the user was owed with an unhandled stack trace.
+ */
+test("a filter Windows cannot render degrades the hint instead of crashing the command", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-link-test-"));
+  try {
+    const bundle = await initBundle(dir);
+    for (const id of ["hub", "t0"]) {
+      await writeDoc(bundle, { id, frontmatter: { type: "Concept", title: id, timestamp: OLD_TS }, body: "" });
+    }
+    await linkAdd(dir, ["hub", "t0", "--text", "prereq"]);
+
+    await withPlatform("win32", async () => {
+      for (const filter of ["a$b", "a\u201db"]) {
+        const shown = await linkShow(dir, ["hub", "--text", filter]);
+        assert.equal(shown.outbound_count, 0);
+        const help = (shown.help as string[]) ?? [];
+        assert.ok(
+          help.some((h) => h.includes("no links matched --text ")),
+          `the near-miss hint must still be produced, got: ${JSON.stringify(help)}`,
+        );
+      }
+      // The same path on a missing concept, which builds its hint from a different branch.
+      const missing = await linkShow(dir, ["nope", "--text", "a$b"]);
+      assert.ok(missing, "link show on a missing concept must still return an envelope");
+    });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

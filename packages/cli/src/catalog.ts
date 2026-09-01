@@ -8,6 +8,7 @@ import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { ensureUserStateRoot, readUserStateFile, resolveUserStatePolicy, writeUserStateFileAtomic0600 } from "./user-state.js";
+import { commandToken } from "./command-text.js";
 
 export const CATALOG_FILE_NAME = "catalog.json";
 export const CATALOG_LOCK_FILE_NAME = "catalog.lock";
@@ -330,7 +331,7 @@ export async function addCatalogEntry(
     const target = await resolveLocalBundleTarget(canonicalPath);
     if (!samePhysicalPath(target.canonicalRoot, canonicalPath)) {
       throw new CliError("NOT_FOUND", `workspace path is no longer canonical: ${canonicalPath}`, {
-        help: `${cliInvocation()} bundle locate --dir ${canonicalPath}`,
+        help: `${cliInvocation()} bundle locate --dir ${commandToken(canonicalPath)}`,
       });
     }
     const byLabel = current.entries.find((entry) => entry.label === label);
@@ -341,13 +342,13 @@ export async function addCatalogEntry(
     if (byLabel) {
       throw new CliError("ALREADY_EXISTS", `workspace label "${label}" already points to ${byLabel.locator.path}`, {
         details: { id: byLabel.id, label, path: byLabel.locator.path },
-        help: `${cliInvocation()} catalog resolve ${label}`,
+        help: `${cliInvocation()} catalog resolve ${commandToken(label)}`,
       });
     }
     if (byPath) {
       throw new CliError("ALREADY_EXISTS", `workspace path ${canonicalPath} is already labeled "${byPath.label}"`, {
         details: { id: byPath.id, label: byPath.label, path: canonicalPath },
-        help: `${cliInvocation()} catalog resolve ${byPath.label}`,
+        help: `${cliInvocation()} catalog resolve ${commandToken(byPath.label)}`,
       });
     }
     const entry: CatalogEntry = {

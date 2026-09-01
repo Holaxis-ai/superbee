@@ -1,6 +1,7 @@
 // `sync --show-incoming <id>` — the conflict VIEWER: prints the upstream version of one doc via
-// `git show origin/board:<path>` with full doc-read semantics (truncation, `--out` byte hatch,
-// `--out -` stderr envelope), labeled "as of last fetch" (no implicit fetch, ever).
+// `git show origin/board:<path>` with full doc-read semantics (truncation, raw `--out` and parsed
+// `--body-out` byte hatches, stdout-stream stderr envelopes), labeled "as of last fetch" (no
+// implicit fetch, ever).
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
@@ -9,6 +10,7 @@ import {
   isReservedFile,
   parseMarkdown,
   pathFromConceptId,
+  versionOfBytes,
 } from "@superbee/core";
 import {
   BOARD_BRANCH,
@@ -32,8 +34,9 @@ import {
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
 import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../doc/common.js";
-import { inBundlePollutionWarning } from "../egress.js";
+import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import type { ResolvedLocalRoute } from "../../bundle.js";
+import { commandToken, type CommandPrefix } from "../../command-text.js";
 // `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches
 // implicitly — the refusal string lives in THE sync-outcome table; this re-export keeps the
 // module's historical import surface stable.
@@ -47,19 +50,23 @@ export const SHOW_INCOMING_ABSENT_STATE =
   "absent upstream — not on origin/board as of the last fetch (deleted upstream, or a new local doc)";
 
 /** The in-tree viewer's refusal when the branch has no usable upstream to read a version from. */
-export function showIncomingInTreeNoBasis(inv: string, reason: InTreeNoBasisReason, ref?: string): CliError {
+export function showIncomingInTreeNoBasis(inv: CommandPrefix, reason: InTreeNoBasisReason, ref?: string): CliError {
   return syncOutcomeError("in-tree.show-incoming.no-basis", { inv, reason, ref });
 }
 
 /**
  * Print the UPSTREAM version of one board doc — `git show origin/board:<path>` — with FULL
  * doc-read semantics (gate-1): the default render truncates a large body and points at the byte
- * hatch; `--out <file>` writes the raw bytes to disk; `--out -` streams them to stdout with the
- * receipt (or ANY error envelope) on STDERR. A doc absent upstream renders as an EXPECTED STATE
- * (exit 0), never a fatal. Every render is labeled "as of last fetch" (no implicit fetch).
+ * hatches; `--out` preserves the raw blob while `--body-out` emits only a valid parsed concept
+ * document's body. A `-` destination streams payload bytes to stdout with the receipt (or ANY error
+ * envelope) on STDERR. A doc absent upstream renders as an EXPECTED STATE (exit 0), never a fatal.
+ * Every render is labeled "as of last fetch" (no implicit fetch).
  */
 export async function showIncoming(
-  id: string, values: { out?: string; dir?: string; json?: boolean }, deps: Partial<SyncCliDeps>, route?: ResolvedLocalRoute,
+  id: string,
+  values: { out?: string; "body-out"?: string; dir?: string; json?: boolean },
+  deps: Partial<SyncCliDeps>,
+  route?: ResolvedLocalRoute,
 ): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const stderr = deps.stderr ?? ((s: string) => void process.stderr.write(s));
@@ -67,11 +74,15 @@ export async function showIncoming(
   const inv = cliInvocation();
   const mode = resolveMode(values);
   const out = values.out?.trim();
-  const streamMode = out === "-";
+  const bodyOut = values["body-out"]?.trim();
+  const streamMode = out === "-" || bodyOut === "-";
+  const rawHatch = `${inv} sync --show-incoming ${commandToken(id)} --out <file>`;
+  const bodyHatch = `${inv} sync --show-incoming ${commandToken(id)} --body-out <path-outside-bundle>`;
 
   const run = async (): Promise<void> => {
     // A destination inside private state would land 0644 over an operational record.
-    if (out && !streamMode) assertPathOutsidePrivateState(path.resolve(out));
+    const fileTarget = out ?? bodyOut;
+    if (fileTarget && !streamMode) assertPathOutsidePrivateState(path.resolve(fileTarget));
 
     // Same location resolution as sync itself (board-interior invocations retarget to the
     // enclosing project); refs/remotes are SHARED across a repo's worktrees, so any directory
@@ -214,19 +225,80 @@ export async function showIncoming(
       return;
     }
 
+    // Parsed body channel (`--body-out`): this is the directly composable
+    // `doc update --body-file` input. It is intentionally unavailable for raw/reserved paths,
+    // malformed concept docs, or invalid-UTF-8 blobs whose decoded body would be lossy; `--out`
+    // remains the exact-byte escape hatch for all three.
+    if (bodyOut) {
+      if (!hit.probe.isDoc || hit.probe.conceptId === undefined) {
+        throw new CliError(
+          "USAGE",
+          `--body-out only applies to a parsed concept document; '${hit.probe.relPath}' is a raw or reserved path`,
+          { help: rawHatch },
+        );
+      }
+      const content = bytes.toString("utf8");
+      if (!Buffer.from(content, "utf8").equals(bytes)) {
+        throw new CliError(
+          "RUNTIME",
+          `incoming concept document '${hit.probe.conceptId}' is not valid UTF-8, so --body-out cannot decode it without changing bytes`,
+          { help: rawHatch },
+        );
+      }
+      let body: string;
+      try {
+        ({ body } = parseMarkdown(content, hit.probe.relPath));
+      } catch {
+        throw new CliError(
+          "RUNTIME",
+          `incoming concept document '${hit.probe.conceptId}' has malformed frontmatter, so --body-out cannot identify a safe body boundary`,
+          { help: rawHatch },
+        );
+      }
+      const bundleRoot = route?.kind === "bound-board"
+        ? route.owner.bundleRoot
+        : path.join(top, inTreeBundleDir);
+      if (!streamMode) {
+        await assertSafeNonDocumentOutTarget(
+          { root: bundleRoot },
+          "--body-out",
+          bodyOut,
+          "body-only markdown",
+          bodyHatch,
+        );
+      }
+      const bodyBytes = Buffer.from(body, "utf8");
+      const receipt: Record<string, unknown> = {
+        sync: "show-incoming",
+        id: hit.probe.conceptId,
+        as_of: SHOW_INCOMING_AS_OF,
+        body_out: bodyOut,
+        size_bytes: bodyBytes.byteLength,
+        content_type: "text/markdown; charset=utf-8",
+        version: versionOfBytes(content),
+      };
+      if (streamMode) {
+        writeStdoutBytes(bodyBytes);
+        stderr(render(receipt, mode));
+        return;
+      }
+      await fs.writeFile(bodyOut, bodyBytes);
+      stdout(render(receipt, mode));
+      return;
+    }
+
     // Default render: the parsed detail view with doc-read body semantics (a TEXT view — the
     // byte-exact channel is --out above). A raw/reserved path (log.md carries no frontmatter) —
     // or a doc whose upstream frontmatter is malformed — renders the raw content as the body:
     // the viewer's job is to SHOW the incoming version, whatever its shape.
     const content = bytes.toString("utf8");
-    const byteHatch = `${inv} sync --show-incoming ${id} --out <file>`;
     const rec: Record<string, unknown> = {};
     if (!hit.probe.isDoc) {
       // The path SHOWN is the one actually read — for a bare reserved spelling (`log`) that is
       // the derived `log.md`, not the input echo.
       rec.path = hit.probe.relPath;
       rec.as_of = SHOW_INCOMING_AS_OF;
-      attachBodyPreview(rec, content, [byteHatch]);
+      attachBodyPreview(rec, content, [rawHatch]);
     } else {
       let parsed: { frontmatter: Record<string, unknown>; body: string } | null = null;
       try {
@@ -249,7 +321,8 @@ export async function showIncoming(
         }
       }
       rec.as_of = SHOW_INCOMING_AS_OF;
-      attachBodyPreview(rec, parsed ? parsed.body : content, [byteHatch]);
+      const bodyChannelSafe = parsed !== null && Buffer.from(content, "utf8").equals(bytes);
+      attachBodyPreview(rec, parsed ? parsed.body : content, [bodyChannelSafe ? bodyHatch : rawHatch]);
     }
     stdout(render(rec, mode));
   };
@@ -258,7 +331,7 @@ export async function showIncoming(
     await run();
     return;
   }
-  // `--out -`: route any error envelope to STDERR (stdout is reserved for raw bytes), then rethrow
+  // `--out -` / `--body-out -`: route any error envelope to STDERR (stdout is reserved for payload bytes), then rethrow
   // as `handled` so the bin wrapper sets the exit code WITHOUT re-emitting the envelope to stdout —
   // the same dance `doc read --out -` pins (gate-1).
   try {

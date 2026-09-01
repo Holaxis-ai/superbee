@@ -18,7 +18,8 @@ import { CLI_LEAVES } from "../command-spec.js";
 import { deriveBundleDisplayName } from "../bundle-name.js";
 import { openBundle } from "../bundle.js";
 import { CliError, classifyBundleError } from "../errors.js";
-import { cliInvocation, shellArg } from "../invocation.js";
+import { cliInvocation } from "../invocation.js";
+import { commandLiteral, commandQuoted, joinCommandTokens, type CommandText } from "../command-text.js";
 import { render, resolveMode } from "../output.js";
 
 export const INDEX_USAGE = `superbee index — generate portable Markdown navigation
@@ -58,12 +59,13 @@ function displayPath(dir: string): string {
 }
 
 function generateCommand(options: { dir?: string; check?: boolean; force?: boolean } = {}): string {
-  const flags = [
-    ...(options.check ? ["--check"] : []),
-    ...(options.force ? ["--force"] : []),
-    ...(options.dir !== undefined ? ["--dir", shellArg(options.dir)] : []),
+  const flags: CommandText[] = [
+    ...(options.check ? [commandLiteral("--check")] : []),
+    ...(options.force ? [commandLiteral("--force")] : []),
+    ...(options.dir !== undefined ? [commandLiteral("--dir"), commandQuoted(options.dir)] : []),
   ];
-  return `${cliInvocation()} index generate${flags.length > 0 ? ` ${flags.join(" ")}` : ""}`;
+  const flagRun = flags.length > 0 ? joinCommandTokens([commandLiteral(""), ...flags]) : commandLiteral("");
+  return `${cliInvocation()} index generate${flagRun}`;
 }
 
 function cappedPaths(dirs: readonly string[]): Record<string, unknown> {

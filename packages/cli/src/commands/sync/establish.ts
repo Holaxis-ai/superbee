@@ -50,6 +50,7 @@ import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
 import { syncOutcomeError } from "../../sync-outcomes.js";
 import { clearStaleCommittedMarker, establishCommitted } from "./establish-committed.js";
 import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
+import { commandToken, type CommandPrefix } from "../../command-text.js";
 
 export const ESTABLISH_DONE =
   "the shared board is live — the project bundle now syncs over the 'board' branch";
@@ -57,7 +58,7 @@ export const ESTABLISH_ALREADY = "already established";
 
 export type EstablishOutcome = { already: true } | { already: false };
 
-export function establishNextSteps(inv: string): string[] {
+export function establishNextSteps(inv: CommandPrefix): string[] {
   return [
     `teammates just run '${inv} sync' — it provisions automatically`,
     `'${inv} hook install' keeps session start board-aware`,
@@ -65,9 +66,9 @@ export function establishNextSteps(inv: string): string[] {
 }
 
 /** Reject filesystem indirection before any ref, remote, index, or folder mutation. */
-function assertPlainBundleShape(bundlePath: string, inv: string): void {
+function assertPlainBundleShape(bundlePath: string, inv: CommandPrefix): void {
   const bundleDir = path.basename(bundlePath);
-  const runInitHelp = `${inv} init --create-only --dir ${BUNDLE_DIR}`;
+  const runInitHelp = `${inv} init --create-only --dir ${commandToken(BUNDLE_DIR)}`;
   if (!existsSync(bundlePath)) {
     throw new CliError(
       "RUNTIME",
@@ -107,7 +108,7 @@ function assertPlainBundleShape(bundlePath: string, inv: string): void {
   }
 }
 
-function assertFreshSource(top: string, boardPath: string, inv: string): void {
+function assertFreshSource(top: string, boardPath: string, inv: CommandPrefix): void {
   const bundleDir = path.basename(boardPath);
   assertPlainBundleShape(boardPath, inv);
   if (folderPresentInCodeIndex(top)) {
@@ -143,7 +144,7 @@ function gitignoreNote(top: string): string {
 interface ConversionResult { boardPath: string; boardCommit: string; gitignore: string }
 
 /** The only backup-deletion boundary: re-read the backup immediately before removing it. */
-function removeVerifiedBackup(top: string, backupPath: string, expectedCommit: string, inv: string): void {
+function removeVerifiedBackup(top: string, backupPath: string, expectedCommit: string, inv: CommandPrefix): void {
   if (!existsSync(backupPath)) return;
   assertPlainBundleShape(backupPath, inv);
   const backupSnapshot = snapshotBundleCommit(top, backupPath);
@@ -157,7 +158,7 @@ function removeVerifiedBackup(top: string, backupPath: string, expectedCommit: s
 }
 
 /** Finish the post-publish local swap, retaining the deterministic backup until every check passes. */
-function finishLocalConversion(top: string, sourcePath: string, publishedCommit: string, expectedTree: string, inv: string): ConversionResult {
+function finishLocalConversion(top: string, sourcePath: string, publishedCommit: string, expectedTree: string, inv: CommandPrefix): ConversionResult {
   const boardPath = path.join(top, bundleDirNameForProject(top));
   const backupPath = `${boardPath}.establish-backup`;
   const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
@@ -227,7 +228,7 @@ function finishLocalConversion(top: string, sourcePath: string, publishedCommit:
 
 async function renderEstablished(
   top: string, conversion: ConversionResult, snapshot: Pick<BundleSnapshotCommit, "docs">,
-  inv: string, mode: OutputMode, stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
+  inv: CommandPrefix, mode: OutputMode, stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
 ): Promise<EstablishOutcome> {
   const key = resolveBundleKey(conversion.boardPath);
   await defaultSyncStore.refreshMarker(key);
@@ -291,7 +292,7 @@ function pushAndConfirmRemote(top: string, sha: string): string | undefined {
  * post-publish crash, never evidence for another publication; the remaining conversion steps run
  * BEFORE deleting the only pre-conversion copy, so a failure stays resumable.
  */
-function resumeProvisionedEstablishment(top: string, st: GreenfieldState, remoteCommit: string, inv: string): EstablishOutcome {
+function resumeProvisionedEstablishment(top: string, st: GreenfieldState, remoteCommit: string, inv: CommandPrefix): EstablishOutcome {
   if (st.marker) {
     if (!isAncestor(top, st.marker, remoteCommit)) {
       throw new CliError(
@@ -317,7 +318,7 @@ function resumeProvisionedEstablishment(top: string, st: GreenfieldState, remote
  * materialized at the conventional path. Bare sync and SessionStart never take this path.
  */
 async function publishLocalBoardBranch(
-  top: string, boardPath: string, inv: string, mode: OutputMode, stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
+  top: string, boardPath: string, inv: CommandPrefix, mode: OutputMode, stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
 ): Promise<EstablishOutcome> {
   if (!isProvisioned(top)) {
     const provisioned = provisionBoardWorktree(top);
@@ -343,7 +344,7 @@ async function publishLocalBoardBranch(
 
 /** Resume an interrupted greenfield establishment from its git-dir marker. */
 async function resumeInterruptedEstablishment(
-  top: string, st: GreenfieldState, marker: string, inv: string, mode: OutputMode,
+  top: string, st: GreenfieldState, marker: string, inv: CommandPrefix, mode: OutputMode,
   stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
 ): Promise<EstablishOutcome> {
   const recoverySource = existsSync(st.backupPath) ? st.backupPath : st.boardPath;
@@ -373,7 +374,7 @@ async function resumeInterruptedEstablishment(
 
 /** The fresh greenfield publication: snapshot → marker → push → verify → convert → receipt. */
 async function publishGreenfieldBoard(
-  top: string, boardPath: string, inv: string, mode: OutputMode, stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
+  top: string, boardPath: string, inv: CommandPrefix, mode: OutputMode, stdout: (s: string) => void, deps: Partial<SyncCliDeps>,
 ): Promise<EstablishOutcome> {
   const namespaceConflicts = boardNamespaceConflicts(top);
   if (namespaceConflicts.length > 0) {
@@ -399,7 +400,7 @@ async function publishGreenfieldBoard(
 
 /** The establish entry: route structurally (committed vs greenfield), then dispatch by state. */
 export async function establishBoard(
-  dir: string, inv: string, mode: OutputMode, stdout: (s: string) => void,
+  dir: string, inv: CommandPrefix, mode: OutputMode, stdout: (s: string) => void,
   deps: Partial<SyncCliDeps>, opts: { yes?: boolean } = {},
 ): Promise<EstablishOutcome> {
   const top = repoTopLevel(dir);

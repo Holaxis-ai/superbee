@@ -22,6 +22,7 @@ import type { Bundle, SkippedDoc } from "../src/index.js";
 
 /** A document with an unterminated YAML flow sequence — js-yaml cannot parse it. */
 const MALFORMED = "---\ntype: [unclosed\ntitle: bad\n---\nbody\n";
+const UNTERMINATED = "---\ntype: Concept\ntitle: Missing close\n# Body that must not disappear\n";
 const WELL_FORMED = "---\ntype: Concept\ntitle: Good\n---\nfine\n";
 
 test("parseMarkdown throws an attributed MalformedDocumentError on bad YAML", () => {
@@ -42,6 +43,18 @@ test("parseMarkdown attribution is optional (no context ⇒ no 'in ...' clause)"
   assert.throws(
     () => parseMarkdown(MALFORMED),
     (err: unknown) => err instanceof MalformedDocumentError && !/ in '/.test(err.message),
+  );
+});
+
+test("parseMarkdown rejects an opening frontmatter delimiter without a closing delimiter", () => {
+  assert.throws(
+    () => parseMarkdown(UNTERMINATED, "notes/unterminated.md"),
+    (err: unknown) => {
+      assert.ok(err instanceof MalformedDocumentError);
+      assert.equal(err.context, "notes/unterminated.md");
+      assert.match(err.detail, /unterminated YAML frontmatter delimiter/);
+      return true;
+    },
   );
 });
 

@@ -116,6 +116,18 @@ export function parseMarkdown(
   raw: string,
   context?: string,
 ): { frontmatter: Frontmatter; body: string } {
+  // An exact opening delimiter asserts that the document has YAML frontmatter. gray-matter accepts
+  // a missing closing delimiter when the remaining bytes happen to be valid YAML (Markdown heading
+  // lines are YAML comments), then returns an empty body. That is lossy ambiguity, not a successful
+  // parse: every caller must see the same attributed malformed-document result before it can read,
+  // export, or rewrite a body that silently disappeared.
+  if (/^---(?:\r?\n|$)/.test(raw)) {
+    const firstLineEnd = raw.indexOf("\n");
+    const afterOpening = firstLineEnd === -1 ? "" : raw.slice(firstLineEnd + 1);
+    if (!/^---\r?$/m.test(afterOpening)) {
+      throw new MalformedDocumentError(context, new Error("unterminated YAML frontmatter delimiter"));
+    }
+  }
   let parsed;
   try {
     parsed = matter(raw, { engines: { yaml: yamlEngine } });
@@ -126,6 +138,11 @@ export function parseMarkdown(
   return { frontmatter, body: parsed.content };
 }
 
+/** Match the exact body shape emitted by the document serializer. */
+export function normalizeDocumentBodyForStorage(body: string): string {
+  return body.endsWith("\n") ? body : `${body}\n`;
+}
+
 /** Serialize an arbitrary YAML-mapping + body to OKF markdown (used for reserved files). */
 export function stringifyWithData(data: Record<string, unknown>, body: string): string {
   const engines = (matter as typeof matter & {
@@ -134,8 +151,8 @@ export function stringifyWithData(data: Record<string, unknown>, body: string): 
   const yaml = engines.yaml.stringify(data).trim();
   const content = body ?? "";
   const newline = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
-  if (yaml === "{}") return newline(content);
-  return `---\n${newline(yaml)}---\n${newline(content)}`;
+  if (yaml === "{}") return normalizeDocumentBodyForStorage(content);
+  return `---\n${newline(yaml)}---\n${normalizeDocumentBodyForStorage(content)}`;
 }
 
 /** Serialize a concept document's frontmatter + body to OKF-conformant markdown. */

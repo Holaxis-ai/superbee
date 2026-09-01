@@ -6,6 +6,7 @@ import { fstatSync } from "node:fs";
 import { parseLinks, type Bundle, type Link, type OkfDocument } from "@superbee/core";
 import { CliError, classifyBundleError } from "../../errors.js";
 import { cliInvocation } from "../../invocation.js";
+import { commandToken } from "../../command-text.js";
 
 /** The common flags every `doc` verb accepts — appended to each verb's focused help (§10). */
 const COMMON_OPTIONS = `Common options:
@@ -474,10 +475,10 @@ export function guardTruncatedBodyPreview(
   if (nextBody === existing.body) return;
 
   const inv = cliInvocation();
-  const help = `${inv} doc read ${existing.id} --body-out <path-outside-bundle>`;
+  const help = `${inv} doc read ${commandToken(existing.id)} --body-out <path-outside-bundle>`;
   const recovery =
     `Read the COMPLETE body first — '${help} --json' (its receipt carries the version), edit that ` +
-    `file, then '${inv} doc update ${existing.id} --body-file <path-outside-bundle> ` +
+    `file, then '${inv} doc update ${commandToken(existing.id)} --body-file <path-outside-bundle> ` +
     `--expected-version <version>'. Pass --accept-truncated-body to write this body deliberately.`;
 
   const notice = BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(nextBody);
@@ -769,9 +770,9 @@ export function guardDroppedLinks(
       `OKF cross-links live in the document body, so a full-body replace removes any link the new body ` +
       `doesn't repeat. Pass --replace-links to drop them deliberately, or keep them by including the same ` +
       `markdown link(s) in the new body, or re-add them afterward with ` +
-      `'${cliInvocation()} link add ${existing.id} <to>'.`,
+      `'${cliInvocation()} link add ${commandToken(existing.id)} <to>'.`,
     {
-      help: `${cliInvocation()} link add ${existing.id} <to>`,
+      help: `${cliInvocation()} link add ${commandToken(existing.id)} <to>`,
       details: { dropped_links: dropped.map((l) => ({ to: l.to, text: l.text })) },
     },
   );

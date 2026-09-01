@@ -3,6 +3,7 @@
 // Executable leaf identity, exact positional count, aliases, display attachment, and public command
 // ordering live in command-spec.ts. This module owns only reference rendering.
 import { CLI_COMMAND_GROUPS, type PublicLeafPath } from "./command-spec.js";
+import type { CommandPrefix } from "./command-text.js";
 
 export type { PublicLeafPath } from "./command-spec.js";
 
@@ -51,7 +52,7 @@ export const COMMAND_GROUPS: readonly CommandGroup[] = Object.freeze(
  * (`cliInvocation()` in `cli.ts`, `deps.invocation()` in `home.ts`) for its OTHER emitted hints, so
  * this is purely a projection of a value the caller already has.
  */
-export function kindsPointer(invocation: string): string {
+export function kindsPointer(invocation: CommandPrefix): string {
   return `kinds are declared per-bundle — run \`${invocation} kinds\` to list them`;
 }
 
@@ -83,7 +84,7 @@ export interface CommandReference {
  * `--help` reference render, so they cannot diverge. Pure: derives entirely from COMMAND_GROUPS plus
  * the caller-supplied `invocation` prefix (see {@link kindsPointer}).
  */
-export function commandReference(invocation: string): CommandReference {
+export function commandReference(invocation: CommandPrefix): CommandReference {
   const commands: Record<string, string[]> = {};
   for (const { group, commands: refs } of COMMAND_GROUPS) {
     commands[group] = refs.map((c) => `${c.usage} — ${c.summary}`);
@@ -111,7 +112,7 @@ export function commandName(usage: string): string {
  * every-session payload substantially. A comprehensive UX audit flagged the full reference (~1.6k
  * tokens) rendering on every session as the single worst §7 violation.
  */
-export function compactCommandReference(invocation: string): {
+export function compactCommandReference(invocation: CommandPrefix): {
   commands: Record<string, string>;
   commands_help: string;
 } {
@@ -160,7 +161,7 @@ export function wrapText(text: string, width = 96): string {
  * pointers are wrapped, via {@link wrapText}. Pure: derives entirely from {@link commandReference}
  * plus the caller-supplied `invocation` prefix; no I/O.
  */
-export function helpIndexText(invocation: string): string {
+export function helpIndexText(invocation: CommandPrefix): string {
   const ref = commandReference(invocation);
   const lines: string[] = [
     `${invocation} — ${DESCRIPTION}`,

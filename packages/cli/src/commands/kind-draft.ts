@@ -26,7 +26,8 @@ import {
 } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
-import { cliInvocation, typeArg } from "../invocation.js";
+import { cliInvocation } from "../invocation.js";
+import { commandQuoted } from "../command-text.js";
 import {
   collectInstanceStats,
   draftPlanToken,
@@ -125,7 +126,7 @@ function inferredBody(type: string, count: number): string {
   return (
     `Drafted from ${count} existing '${type}' instance${count === 1 ? "" : "s"} by ` +
     "`superbee kind draft`. It ratifies the shape those instances already share; evolve it with " +
-    `\`superbee kind field ${typeArg(type)} add <name>\`.\n`
+    `\`superbee kind field ${commandQuoted(type)} add <name>\`.\n`
   );
 }
 
@@ -139,7 +140,7 @@ async function prepareDraftPlan(bundle: Bundle, type: string): Promise<DraftPlan
     throw new CliError(
       "USAGE",
       `'${type}' is already governed by '${existing.id}' — the Kind exists; evolve it instead of drafting a second one`,
-      { help: `${inv} kind field ${typeArg(type)} add <name>` },
+      { help: `${inv} kind field ${commandQuoted(type)} add <name>` },
     );
   }
   const instances = (await query(bundle, { type })).sort((a, b) => a.id.localeCompare(b.id));
@@ -226,12 +227,12 @@ export async function kindDraftCommand(
     if (plan.redraftOver) receipt.redrafts = plan.redraftOver.id;
     const promotions = draftPromotions(plan.candidateKind, plan.stats);
     if (promotions.length > 0) receipt.promotions = promotions;
-    receipt.note = `apply creates the Kind as drafted; promotions are separate follow-ups via '${inv} kind field ${typeArg(plan.type)} add <name> --required'`;
+    receipt.note = `apply creates the Kind as drafted; promotions are separate follow-ups via '${inv} kind field ${commandQuoted(plan.type)} add <name> --required'`;
     receipt.plan_token = plan.token;
     // O1 (design appendix): these exact bytes — the --dir/--remote echo and the acceptance-gate
     // comment — are load-bearing for skill-less agents and pinned by test. The gate must sit
     // beside the command an agent would copy, not only in skill prose.
-    receipt.apply = `${inv} kind draft ${typeArg(plan.type)} --apply ${plan.token}${suffix}   # after the human accepts`;
+    receipt.apply = `${inv} kind draft ${commandQuoted(plan.type)} --apply ${plan.token}${suffix}   # after the human accepts`;
     stdout(render(receipt, resolveMode(values)));
     return;
   }
@@ -243,7 +244,7 @@ export async function kindDraftCommand(
       `kind draft plan changed (expected ${expected}, current ${plan.token}); inspect a fresh plan before applying`,
       {
         details: { expected_plan: expected, current_plan: plan.token },
-        help: `${inv} kind draft ${typeArg(plan.type)}${suffix}`,
+        help: `${inv} kind draft ${commandQuoted(plan.type)}${suffix}`,
       },
     );
   }
@@ -263,8 +264,8 @@ export async function kindDraftCommand(
       if (context.okfVersion !== plan.okfVersion) {
         throw new CliError(
           "STALE_HEAD",
-          `the bundle format changed while applying the '${plan.type}' draft — rerun '${inv} kind draft ${typeArg(plan.type)}'`,
-          { help: `${inv} kind draft ${typeArg(plan.type)}${suffix}` },
+          `the bundle format changed while applying the '${plan.type}' draft — rerun '${inv} kind draft ${commandQuoted(plan.type)}'`,
+          { help: `${inv} kind draft ${commandQuoted(plan.type)}${suffix}` },
         );
       }
       if (redraftTarget) {
@@ -276,7 +277,7 @@ export async function kindDraftCommand(
           throw new CliError(
             "STALE_HEAD",
             `'${redraftTarget.id}' is no longer a declaration-free convention governing '${plan.type}' — ` +
-              `re-run '${inv} kind draft ${typeArg(plan.type)}' against the current bundle`,
+              `re-run '${inv} kind draft ${commandQuoted(plan.type)}' against the current bundle`,
             { help: `${inv} kinds` },
           );
         }
@@ -294,7 +295,7 @@ export async function kindDraftCommand(
           "ALREADY_EXISTS",
           `'${plan.candidateDoc.id}' already exists — created concurrently, or the id is occupied by a ` +
             `convention governing a different type; nothing was written. Inspect '${inv} kinds', then ` +
-            `re-run '${inv} kind draft ${typeArg(plan.type)}'`,
+            `re-run '${inv} kind draft ${commandQuoted(plan.type)}'`,
           { help: `${inv} kinds` },
         ),
     },
@@ -358,7 +359,7 @@ export async function kindDismissCommand(
     "",
     // O3: the priced reopen route is `kind draft` — it forecasts instance conformance before any
     // write, which `recipe evolve`'s additive plan does not.
-    `Reopen by running \`${inv} kind draft ${typeArg(type)}\` — read-only; it prices adding a real schema`,
+    `Reopen by running \`${inv} kind draft ${commandQuoted(type)}\` — read-only; it prices adding a real schema`,
     "against the existing instances before anything is written.",
   ];
   if (catalog) {
@@ -407,7 +408,7 @@ export async function kindDismissCommand(
         changed: result.changed,
         version: result.version,
         ...(catalog ? { catalog: catalog.recipeId } : {}),
-        reopen: `${inv} kind draft ${typeArg(type)}${suffix}`,
+        reopen: `${inv} kind draft ${commandQuoted(type)}${suffix}`,
         help: [`${inv} kinds`],
       },
       resolveMode(values),

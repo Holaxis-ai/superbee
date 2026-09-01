@@ -25,6 +25,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { extractSerializedField, parseCommandLine, rendered } from "./support/rendered-command.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
@@ -81,7 +82,9 @@ function run(
  * takes a fixed literal. Mirrors what an agent following the printed `help` would do.
  */
 function fillPlaceholders(command: string): string {
-  return command.replace(/<([^>]+)>/g, (_m, inner: string) => {
+  // The placeholder is emitted as ONE shell token, so it may arrive quoted; the substituted real
+  // value replaces the whole token, quotes included.
+  return command.replace(/["']?<([^>]+)>["']?/g, (_m, inner: string) => {
     const alts = inner.split("|");
     return alts.length > 1 ? alts[0]! : "filled-value";
   });
@@ -93,7 +96,9 @@ function fillPlaceholders(command: string): string {
  * note: `output.ts`'s `formatError` never sees per-invocation flags).
  */
 function extractHelpLine(toonStdout: string): string | undefined {
-  return /^ {2}help: (.+)$/m.exec(toonStdout)?.[1];
+  // Decode the presentation envelope first: on Windows the rendered token contains `"`, so TOON
+  // quotes and escapes the whole scalar and a raw regex returns the ENVELOPE, not the command.
+  return extractSerializedField(toonStdout, "help");
 }
 
 test("built CLI: a `doc update --strict` kind refusal's help is a literal completing command that, once filled and executed via the real CLI, converges the doc to conformance", async () => {
@@ -121,14 +126,14 @@ test("built CLI: a `doc update --strict` kind refusal's help is a literal comple
     assert.ok(help, `the refusal must carry a help fixing command; stdout=${refusal.stdout}`);
 
     // The help is a LITERAL, bare-bin-resolved completing command naming the violated field.
-    assert.equal(help, "superbee doc update tasks/x --progress_status <todo|in_progress|blocked|done|canceled>");
+    assert.equal(help, `superbee doc update tasks/x --progress_status ${rendered("<todo|in_progress|blocked|done|canceled>")}`);
 
     // Fill the placeholder(s) and execute the string VERBATIM (split on whitespace, spawn as
     // argv[0]/argv[1..]) via the real CLI — no hand-picked replacement flags, no reasonable
     // substitutions beyond filling the printed placeholder tokens.
     const filled = fillPlaceholders(help);
     assert.equal(filled, "superbee doc update tasks/x --progress_status todo");
-    const [bin, ...argv] = filled.split(" ");
+    const [bin, ...argv] = parseCommandLine(filled);
     assert.equal(bin, "superbee");
     const completing = run(argv, { cwd: dir, env });
     assert.equal(
@@ -176,10 +181,10 @@ test("built CLI: a `doc write --strict` kind refusal OVERWRITING an EXISTING doc
     assert.equal(refusal.status, 2, `expected USAGE exit 2, got ${refusal.status}: ${refusal.stdout}${refusal.stderr}`);
     const help = extractHelpLine(refusal.stdout);
     assert.ok(help, `the refusal must carry a help fixing command; stdout=${refusal.stdout}`);
-    assert.equal(help, "superbee doc update tasks/z --progress_status <todo|in_progress|blocked|done|canceled>");
+    assert.equal(help, `superbee doc update tasks/z --progress_status ${rendered("<todo|in_progress|blocked|done|canceled>")}`);
 
     const filled = fillPlaceholders(help);
-    const [bin, ...argv] = filled.split(" ");
+    const [bin, ...argv] = parseCommandLine(filled);
     assert.equal(bin, "superbee");
     const completing = run(argv, { cwd: dir, env });
     assert.equal(

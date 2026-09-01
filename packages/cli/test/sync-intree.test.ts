@@ -53,6 +53,7 @@ import {
   makeTwoCloneTopology,
   type BoardRepo,
 } from "../../board-git/test/git-harness.js";
+import { testInvocation } from "./support/command-prefix.js";
 
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
@@ -125,7 +126,7 @@ test("in-tree: full sync refuses with truthful guidance — structured, discrimi
     assert.ok(err!.message.includes("--pull-only"), "the refusal names the read-side verb");
     assert.match(err!.help ?? "", /sync --establish/);
     // Pinned to the exported builder so copy drift is a deliberate act.
-    assert.ok(err!.message === syncInTreeRefusalMessage(err!.help!.replace(/ sync --establish$/, "")));
+    assert.ok(err!.message === syncInTreeRefusalMessage(testInvocation(err!.help!.replace(/ sync --establish$/, ""))));
     assert.equal(git(topo.a.root, ["status", "--porcelain"]), statusBefore, "refusal mutates nothing");
     assert.notEqual(gitTry(topo.origin, ["rev-parse", "--verify", "--quiet", "refs/heads/board"]).status, 0, "no board branch was created");
   } finally {

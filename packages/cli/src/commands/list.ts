@@ -55,6 +55,7 @@ import { render, resolveMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { compareByMeaningfulChange, meaningfulChangeOrderKey } from "../meaningful-change-order.js";
+import { commandToken } from "../command-text.js";
 
 export const LIST_USAGE = `superbee list — query concepts over their frontmatter (alias: query)
 
@@ -178,13 +179,13 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
         if (!rawValue.includes(",")) {
           throw new CliError(
             "USAGE",
-            `--field ${key} has an empty value — expected --field ${key}=<value>, or comma-separated set membership --field ${key}=a,b`,
+            `--field ${commandToken(key)} has an empty value — expected --field ${commandToken(key)}=<value>, or comma-separated set membership --field ${commandToken(key)}=a,b`,
             { help: `${cliInvocation()} list --field progress_status=done` },
           );
         }
         throw new CliError(
           "USAGE",
-          `--field ${key} has an empty member in '${rawValue}' (comma is the set-membership separator — use 'a,b', not 'a,,b' or a leading/trailing comma)`,
+          `--field ${commandToken(key)} has an empty member in '${rawValue}' (comma is the set-membership separator — use 'a,b', not 'a,,b' or a leading/trailing comma)`,
           { help: `${cliInvocation()} list --field progress_status=todo,in_progress` },
         );
       }
@@ -441,9 +442,8 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
           (f) => f !== "id" && f !== "title" && f !== "description",
         );
         if (cols.length > 0) {
-          const typeArg = /\s/.test(first) ? `"${first}"` : first;
           help.push(
-            `all ${total} rows are '${first}' — \`${cliInvocation()} list --type ${typeArg}\` projects its ${cols.join("/")} columns`,
+            `all ${total} rows are '${first}' — \`${cliInvocation()} list --type ${commandToken(first)}\` projects its ${cols.join("/")} columns`,
           );
         }
       }

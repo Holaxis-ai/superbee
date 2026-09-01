@@ -9,6 +9,7 @@ import { spawnSync } from "node:child_process";
 
 import { CONVENTION_TYPE, initBundle, readDoc, writeDoc, type Bundle } from "@superbee/core";
 import { shellArg } from "../src/invocation.js";
+import { extractSerializedField } from "./support/rendered-command.js";
 
 const cliBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 const T = "2026-07-01T00:00:00.000Z";
@@ -141,18 +142,16 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(missingProgress.status, 2, `stdout=${missingProgress.stdout} stderr=${missingProgress.stderr}`);
     assert.match(missingProgress.stdout, /progress_status/);
     assert.doesNotMatch(missingProgress.stdout, /superbee_progress_status/);
-    const renderedFixingCommand = /^  help: (.+)$/m.exec(missingProgress.stdout)?.[1];
-    assert.ok(renderedFixingCommand, `missing-field refusal carries a fixing command: ${missingProgress.stdout}`);
-    // TOON quotes scalars containing a Windows drive/path command; decode that presentation
-    // envelope before checking the command itself.
-    const fixingCommand = renderedFixingCommand!.startsWith('"')
-      ? JSON.parse(renderedFixingCommand!) as string
-      : renderedFixingCommand!;
+    // TOON quotes scalars containing a rendered token; decode that presentation envelope before
+    // checking the command itself. Shared helper rather than a local copy — this file had the only
+    // correct handling in the repo, and a second copy of a rule is how the other sites drifted.
+    const fixingCommand = extractSerializedField(missingProgress.stdout, "help");
+    assert.ok(fixingCommand, `missing-field refusal carries a fixing command: ${missingProgress.stdout}`);
     const validTargets = [dir, realpathSync(dir)].map((target) =>
       `new ${shellArg("Task")} --help --dir ${shellArg(target)}`
     );
     assert.ok(
-      validTargets.some((tail) => fixingCommand.endsWith(tail)),
+      validTargets.some((tail) => fixingCommand!.endsWith(tail)),
       `fixing command retains the requested physical target: ${fixingCommand}`,
     );
 
@@ -190,7 +189,9 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(Object.hasOwn(saved.frontmatter, "progress_status"), false);
     assert.equal(Object.hasOwn(saved.frontmatter, "timestamp"), false);
     assert.equal(Object.hasOwn(saved.frontmatter, "actor"), false);
-    assert.equal(Object.hasOwn(saved.frontmatter, "generated"), false);
+    // Every v0.2 create without a usable time now seeds the one standard clock (horizon or not).
+    assert.equal((saved.frontmatter.generated as { by?: string }).by, "process:superbee");
+    assert.match((saved.frontmatter.generated as { at?: string }).at ?? "", /^\d{4}-/);
     assert.equal((JSON.parse(result.stdout) as Record<string, unknown>).field_coordinates, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });

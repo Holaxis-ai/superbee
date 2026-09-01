@@ -181,7 +181,9 @@ Across both editions:
   round trips.
 - Writes normalize only the selected edition's document shape. v0.1 retains or creates its legacy
   `timestamp`; raw v0.2 transport does not invent optional `generated`, legacy clocks, or legacy
-  actor fields. Substantive product mutations advance the edition-appropriate clock.
+  actor fields. Engine-mediated v0.2 creates seed one standard `generated` clock when the document
+  carries no usable time (definition installs opt out to stay source-comparable). Substantive
+  product mutations advance the edition-appropriate clock.
 - Generated internal links use relative bundle-relative Markdown hrefs. External URLs pass through;
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars are normalized to ISO-8601 strings without converting unrelated nested or

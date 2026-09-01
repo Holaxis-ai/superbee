@@ -77,6 +77,7 @@ import {
   type LoadedRecipe,
 } from "../src/recipe-source.js";
 import { cliInvocation, shellArg } from "../src/invocation.js";
+import { testInvocation } from "./support/command-prefix.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 const EXAMPLE_RECIPE_FIXTURE = path.resolve(import.meta.dirname, "fixtures/example-recipe");
@@ -186,6 +187,26 @@ test("default init teaches the current workflow field in the in-bundle authoring
     assert.match(body, /timestamp.*explicit compatibility field/);
     assert.match(body, /freshness_horizon.*Superbee Kind extension/);
     assert.doesNotMatch(body, /\{\{superbee:progress_status\}\}/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("v0.2 recipe re-add reports NO source drift — installed definitions never carry an engine-seeded clock", async () => {
+  // Adversarial probe for the generation-clock widening: if recipe installs seeded
+  // `generated: {by: process:superbee}` (sameInstalledDoc strips only `at`), every re-add on a
+  // v0.2 bundle would report a spurious RECIPE_SOURCE_DIFFERS against an untouched install.
+  const dir = await tempDir();
+  try {
+    await initBundle(dir); // default authoring edition: v0.2
+    await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    const installed = await readFile(path.join(dir, "conventions", "context-note.md"), "utf8");
+    assert.doesNotMatch(installed, /generated:/, "installed definition bytes must carry no engine clock");
+    const second = await runJson(recipe, ["add", "context-notes", "--dir", dir]);
+    assert.equal(second.changed, false);
+    assert.deepEqual(second.warnings ?? [], [], "a clean re-add must report no drift warnings");
+    const counts = second.counts as Record<string, number>;
+    assert.equal(counts.source_differs ?? 0, 0);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -365,7 +386,7 @@ test("recipe inventory derives Reference and View identities from any loaded man
   assert.ok(loaded?.ok);
   if (!loaded?.ok) return;
 
-  const row = recipeInventoryRow(loaded.recipe, null, "aslite");
+  const row = recipeInventoryRow(loaded.recipe, null, testInvocation("aslite"));
   assert.deepEqual(row.assets, {
     kinds: ["Review Request", "View"],
     references: ["references/view-authoring-v0"],

@@ -71,6 +71,8 @@ import {
   git,
   type BoardRepo,
 } from "../../board-git/test/git-harness.js";
+import { testInvocation } from "./support/command-prefix.js";
+import { rendered } from "./support/rendered-command.js";
 
 // ── test scaffolding ───────────────────────────────────────────────────────────
 
@@ -279,7 +281,7 @@ test("buildConvergeMessage: multiple entries join with '; ', and the DROPPED phr
 
 test("convergeHelp: the documented reconcile chain — show-incoming → doc update --body-file → sync", () => {
   assert.equal(
-    convergeHelp("aslite", "tasks/seed-one", "/x/tasks/seed-one.md"),
+    convergeHelp(testInvocation("aslite"), "tasks/seed-one", "/x/tasks/seed-one.md"),
     "aslite sync --show-incoming tasks/seed-one → aslite doc update tasks/seed-one --body-file /x/tasks/seed-one.md → aslite sync",
   );
 });
@@ -305,17 +307,17 @@ test("pickHelp: prefers a LANDED doc; falls back to the doc-write re-create chai
   // A deleted-upstream doc listed FIRST must not win over a landed one — and the chain names the
   // BODY-ONLY export (round-2 REQUIRED 3: `--body-file` input, literally executable).
   assert.equal(
-    pickHelp("aslite", [deletedUpstream, landed], []),
+    pickHelp(testInvocation("aslite"), [deletedUpstream, landed], []),
     "aslite sync --show-incoming tasks/a → aslite doc update tasks/a --body-file /x/tasks/a.body.md → aslite sync",
   );
   // Every conflicted doc deleted upstream → the doc-write re-create chain (body export again).
   assert.equal(
-    pickHelp("aslite", [deletedUpstream], []),
+    pickHelp(testInvocation("aslite"), [deletedUpstream], []),
     "aslite doc write tasks/b --type <Type> --body-file /x/tasks/b.body.md → aslite sync",
   );
   // Nothing usable at all (no export, or no BODY export to feed --body-file) → no help.
-  assert.equal(pickHelp("aslite", [localDeletion], []), undefined);
-  assert.equal(pickHelp("aslite", [unparseable], []), undefined);
+  assert.equal(pickHelp(testInvocation("aslite"), [localDeletion], []), undefined);
+  assert.equal(pickHelp(testInvocation("aslite"), [unparseable], []), undefined);
 });
 
 test("pickHelp: a claim-only conflict is never the chain's subject — the loser is not routed into publishing over the winner", () => {
@@ -330,22 +332,22 @@ test("pickHelp: a claim-only conflict is never the chain's subject — the loser
   const claimAnalysis = { meta: {}, frontmatterDiffers: [], claim: { statement: "owner is a", only: true } };
   const plainAnalysis = { meta: {}, frontmatterDiffers: ["title"] };
 
-  assert.equal(pickHelp("aslite", [claimOnly], [claimAnalysis]), undefined, "no chain at all for a claim-only run");
+  assert.equal(pickHelp(testInvocation("aslite"), [claimOnly], [claimAnalysis]), undefined, "no chain at all for a claim-only run");
   // A claim-only doc listed FIRST must not win the pick over a doc that really needs merging.
   assert.equal(
-    pickHelp("aslite", [claimOnly, bodyDiverged], [claimAnalysis, plainAnalysis]),
+    pickHelp(testInvocation("aslite"), [claimOnly, bodyDiverged], [claimAnalysis, plainAnalysis]),
     "aslite sync --show-incoming tasks/b → aslite doc update tasks/b --body-file /x/tasks/b.body.md → aslite sync",
   );
 });
 
 test("ffSwallowToError: git-missing / no-upstream reuse the EXACT test-pinned wording (message pack f)", () => {
-  const missing = ffSwallowToError("git-missing", "agentstate-lite");
+  const missing = ffSwallowToError("git-missing", testInvocation("agentstate-lite"));
   assert.equal(missing.code, "GIT_MISSING");
   assert.equal(missing.exitCode, 1);
   assert.equal(missing.message, "sync needs git, which isn't installed on this machine");
 
   // Pull-only reports the missing pull source without implying that local-only use is invalid.
-  const noUpstream = ffSwallowToError("no-upstream", "agentstate-lite");
+  const noUpstream = ffSwallowToError("no-upstream", testInvocation("agentstate-lite"));
   assert.equal(noUpstream.code, "NO_UPSTREAM");
   assert.equal(noUpstream.exitCode, 1);
   assert.equal(
@@ -358,15 +360,15 @@ test("ffSwallowToError: git-missing / no-upstream reuse the EXACT test-pinned wo
 });
 
 test("ffSwallowToError: auth is exit 4, network/busy/dirty/diverged classify sensibly", () => {
-  assert.equal(ffSwallowToError("auth", "aslite").exitCode, 4);
-  assert.equal(ffSwallowToError("auth", "aslite").code, "AUTH_REQUIRED");
-  assert.equal(ffSwallowToError("network", "aslite").exitCode, 1);
-  assert.equal(ffSwallowToError("network", "aslite").code, "TRANSIENT");
-  assert.equal(ffSwallowToError("busy", "aslite").code, "GIT_BUSY");
-  assert.equal(ffSwallowToError("diverged", "aslite").code, "CONFLICT");
-  assert.equal(ffSwallowToError("diverged", "aslite").exitCode, 5);
-  assert.equal(ffSwallowToError("dirty", "aslite").code, "RUNTIME");
-  assert.equal(ffSwallowToError("totally-unknown-reason", "aslite").code, "RUNTIME");
+  assert.equal(ffSwallowToError("auth", testInvocation("aslite")).exitCode, 4);
+  assert.equal(ffSwallowToError("auth", testInvocation("aslite")).code, "AUTH_REQUIRED");
+  assert.equal(ffSwallowToError("network", testInvocation("aslite")).exitCode, 1);
+  assert.equal(ffSwallowToError("network", testInvocation("aslite")).code, "TRANSIENT");
+  assert.equal(ffSwallowToError("busy", testInvocation("aslite")).code, "GIT_BUSY");
+  assert.equal(ffSwallowToError("diverged", testInvocation("aslite")).code, "CONFLICT");
+  assert.equal(ffSwallowToError("diverged", testInvocation("aslite")).exitCode, 5);
+  assert.equal(ffSwallowToError("dirty", testInvocation("aslite")).code, "RUNTIME");
+  assert.equal(ffSwallowToError("totally-unknown-reason", testInvocation("aslite")).code, "RUNTIME");
 });
 
 test("pushFailureMessage: auth and connectivity failures get the exact pinned safety string", () => {
@@ -768,8 +770,14 @@ test("sync: CONVERGING conflict (pre-committed divergence) — exit 5, upstream 
     assert.equal(conflicts.rows[0]!.yours, exportPath);
     assert.equal(conflicts.rows[0]!.yours_body, bodyExportPath);
     assert.equal(conflicts.rows[0]!.theirs, "kept");
-    assert.ok(result.err!.help!.includes(`sync --show-incoming ${div.docId}`), "help chain step 1");
-    assert.ok(result.err!.help!.includes(`doc update ${div.docId} --body-file ${bodyExportPath}`), "help chain step 2 (body-only input)");
+    assert.ok(
+      result.err!.help!.includes(`sync --show-incoming ${rendered(div.docId)}`),
+      `help chain step 1: ${result.err!.help}`,
+    );
+    assert.ok(
+      result.err!.help!.includes(`doc update ${rendered(div.docId)} --body-file ${rendered(bodyExportPath)}`),
+      `help chain step 2 (body-only input): ${result.err!.help}`,
+    );
     // The body-only companion really is body-only (no YAML frontmatter to nest).
     const bodyExport = await readFile(bodyExportPath, "utf8");
     assert.ok(!bodyExport.startsWith("---"), "body export carries no frontmatter block");

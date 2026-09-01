@@ -10,8 +10,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { COMMAND_GROUPS, DESCRIPTION, compactCommandReference, helpIndexText, remoteEnvPointer, wrapText } from "../src/reference.js";
+import { testInvocation } from "./support/command-prefix.js";
 
-const INV = "agentstate-lite";
+const INV = testInvocation("agentstate-lite");
 
 /** Escape a string for embedding in a `new RegExp(...)` pattern. */
 function escapeRegExp(s: string): string {
@@ -62,14 +63,14 @@ test("helpIndexText: the kinds + bundle-resolution footer pointers still appear,
 });
 
 test("helpIndexText: is invocation-parameterized (no hardcoded bin name)", () => {
-  const text = helpIndexText("some-other-bin");
+  const text = helpIndexText(testInvocation("some-other-bin"));
   assert.match(text, /^some-other-bin — /m);
   assert.doesNotMatch(text, /\bagentstate-lite\b/);
 });
 
 test("helpIndexText: agent setup quick-start uses the resolved no-download invocation", () => {
   const invocation = "npx --no-install superbee";
-  const text = helpIndexText(invocation);
+  const text = helpIndexText(testInvocation(invocation));
   assert.match(text, /The calling agent executes the returned action/);
   assert.ok(text.includes(`    ${invocation} setup --host <host> --scope <scope> --json`));
   assert.doesNotMatch(text, /npx -y superbee/);

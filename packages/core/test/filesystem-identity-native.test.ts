@@ -475,57 +475,70 @@ test("I4: a backend built with a relative root keeps its identity across a later
 
 // ── AC-12a crash residue, single process ──────────────────────────────────────
 
-// I5 says the diagnosis names the LOGICAL identity. The fold gives one lock key to every
-// spelling of that identity, so the holder that crashed and the writer now blocked can hold
-// different spellings of it. The stale case records the alias spelling as the holder's target:
-// the message must name the blocked spelling AND the holder's, or a human reading it goes
-// looking for a file that does not exist under the name they were shown.
-test("AC-12a: a stale or malformed identity lock fails the next write closed, naming the identity, with no partial file", async () => {
-  const cases = [
-    {
-      name: "stale",
-      owner: { pid: 999_999, hostname: hostname(), created_at_ms: Date.now() - 60_000, token: "dead" },
-      stale: true,
-      malformed: false,
-    },
-    { name: "malformed", owner: null, stale: false, malformed: true },
-  ] as const;
-  for (const fixture of cases) {
-    const root = await tempRoot(`residue-${fixture.name}`);
-    const key = await identityKey(root, "concepts/x.md");
-    // The holder's spelling folds to the same key as the claimant's, so it is the same lock.
-    const holderTarget = `${path.resolve(root)}:concepts/X.md`;
-    assert.equal(await identityKey(root, "concepts/X.md"), key, "the two spellings must share one key");
-    const lockPath = filesystemIdentityLockPath(key, root);
-    try {
-      await mkdir(filesystemMutationLockRoot(root), { recursive: true, mode: 0o700 });
-      await mkdir(lockPath, { recursive: true });
-      if (fixture.owner) {
-        await writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ ...fixture.owner, target: holderTarget }));
-      }
-      await assert.rejects(
-        () => new FilesystemBackend(root).write("concepts/x", doc("concepts/x", "x")),
-        (err: unknown) => {
-          assert.ok(err instanceof FilesystemMutationLockError);
-          assert.equal(err.stale, fixture.stale);
-          assert.equal(err.malformed, fixture.malformed);
-          assert.equal(err.lockPath, lockPath);
-          assert.ok(err.message.includes(`${path.resolve(root)}:concepts/x.md`), err.message);
-          if (fixture.owner) {
-            assert.ok(err.message.includes(holderTarget), `holder spelling missing from: ${err.message}`);
-            assert.equal(err.owner?.target, holderTarget);
-          } else {
-            assert.ok(!/holder recorded/.test(err.message), `no holder to name, but claimed one: ${err.message}`);
-          }
-          return true;
-        },
-      );
-      assert.deepEqual(await readdir(root), [], "no partial file in the bundle");
-      assert.equal((await stat(lockPath)).isDirectory(), true, "the leftover is never stolen");
-    } finally {
-      await rm(lockPath, { recursive: true, force: true });
-      await rm(root, { recursive: true, force: true });
-    }
+test("AC-12a: a valid same-host stale identity lock is quarantined and the blocked write completes", async () => {
+  const root = await tempRoot("residue-stale");
+  const key = await identityKey(root, "concepts/x.md");
+  const holderTarget = `${path.resolve(root)}:concepts/X.md`;
+  assert.equal(await identityKey(root, "concepts/X.md"), key, "the two spellings must share one key");
+  const lockRoot = filesystemMutationLockRoot(root);
+  const lockPath = filesystemIdentityLockPath(key, root);
+  let quarantinePath: string | undefined;
+  try {
+    await mkdir(lockRoot, { recursive: true, mode: 0o700 });
+    await mkdir(lockPath, { recursive: true });
+    await writeFile(
+      path.join(lockPath, "owner.json"),
+      JSON.stringify({
+        pid: 999_999,
+        hostname: hostname(),
+        created_at_ms: Date.now() - 60_000,
+        token: "dead",
+        target: holderTarget,
+      }),
+    );
+
+    const backend = new FilesystemBackend(root);
+    await backend.write("concepts/x", doc("concepts/x", "x"));
+    assert.equal((await backend.read("concepts/x")).doc.body.trimEnd(), "x");
+    const entries = await readdir(lockRoot);
+    const quarantineName = entries.find((entry) => new RegExp(`^${key}\\.lock\\.stale-[a-f0-9]{64}$`).test(entry));
+    assert.ok(quarantineName);
+    quarantinePath = path.join(lockRoot, quarantineName);
+    const quarantinedOwner = JSON.parse(
+      await readFile(path.join(quarantinePath, "owner.json"), "utf8"),
+    ) as { target?: string };
+    assert.equal(quarantinedOwner.target, holderTarget);
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+    if (quarantinePath) await rm(quarantinePath, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("AC-12a: malformed identity-lock residue remains fail-closed with no partial file", async () => {
+  const root = await tempRoot("residue-malformed");
+  const key = await identityKey(root, "concepts/x.md");
+  const lockPath = filesystemIdentityLockPath(key, root);
+  try {
+    await mkdir(filesystemMutationLockRoot(root), { recursive: true, mode: 0o700 });
+    await mkdir(lockPath, { recursive: true });
+    await assert.rejects(
+      () => new FilesystemBackend(root).write("concepts/x", doc("concepts/x", "x")),
+      (err: unknown) => {
+        assert.ok(err instanceof FilesystemMutationLockError);
+        assert.equal(err.stale, false);
+        assert.equal(err.malformed, true);
+        assert.equal(err.lockPath, lockPath);
+        assert.ok(err.message.includes(`${path.resolve(root)}:concepts/x.md`), err.message);
+        assert.ok(!/holder recorded/.test(err.message), `no holder to name, but claimed one: ${err.message}`);
+        return true;
+      },
+    );
+    assert.deepEqual(await readdir(root), [], "no partial file in the bundle");
+    assert.equal((await stat(lockPath)).isDirectory(), true, "malformed residue is never moved");
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });
 
