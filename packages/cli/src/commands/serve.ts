@@ -28,6 +28,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
+import { commandToken } from "../command-text.js";
 
 export const SERVE_USAGE = `superbee serve — boot the reference wire-protocol server over a local bundle
 
@@ -127,7 +128,7 @@ export async function serve(argv: string[], deps: Partial<ServeCliDeps> = {}): P
         auth: "none (v0 reference server; loopback-only default — see docs/WIRE-PROTOCOL.md)",
         concurrency:
           "lossless per target across same-user local processes; a crash-leftover lock fails closed until inspected and removed",
-        help: [`${cliInvocation()} list --remote ${url}`],
+        help: [`${cliInvocation()} list --remote ${commandToken(url)}`],
       },
       resolveMode(values),
     ),

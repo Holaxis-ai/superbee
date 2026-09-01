@@ -14,9 +14,10 @@ import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { cliInvocation, shellArg } from "../invocation.js";
+import { cliInvocation } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
 import { resolveRecipe, DEFAULT_RECIPE_REF } from "../recipe-source.js";
+import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
 export const INIT_USAGE = `superbee init — create (or open) an OKF knowledge bundle
 
@@ -113,7 +114,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
       throw new CliError(
         "CONFLICT",
         "a project binding already selects a private board; bare init refuses before writing",
-        { help: `${cliInvocation()} sync --dir ${shellArg(boundRoute.owner.ownerRoot)}` },
+        { help: `${cliInvocation()} sync --dir ${commandQuoted(boundRoute.owner.ownerRoot)}` },
       );
     }
   }
@@ -194,7 +195,9 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
   // offer the known Context Note shortcut or send the caller through the generic kind catalog.
   // When `--dir` selected a bundle outside the invocation cwd, retain that resolved target in every
   // follow-up. Otherwise a copy-pasted read can inspect a different bundle and `new` can mutate it.
-  const target = values.dir === undefined ? "" : ` --dir ${shellArg(root)}`;
+  const target: CommandText = values.dir === undefined
+    ? commandLiteral("")
+    : commandFragment` --dir ${commandQuoted(root)}`;
   const help: string[] = [];
   if (selectedRecipeKinds.includes("Context Note")) {
     help.push(`${cliInvocation()} new "Context Note" <id> --title <title>${target}`);

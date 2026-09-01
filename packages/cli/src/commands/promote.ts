@@ -54,6 +54,7 @@ import { readExternalFileBytes, readExternalTextFile } from "../external-file.js
 import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { guardTruncatedBodyPreview } from "./doc/common.js";
+import { commandLiteral, commandToken } from "../command-text.js";
 
 export const PROMOTE_USAGE = `superbee promote — move a local file's bytes into the store (the reverse of 'doc read --out')
 
@@ -153,7 +154,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
   const key = values["doc-key"]?.trim();
   if (!key) {
     throw new CliError("USAGE", "--doc-key <key> is required", {
-      help: `${cliInvocation()} promote ${file} --doc-key <key>`,
+      help: `${cliInvocation()} promote ${commandToken(file)} --doc-key <key>`,
     });
   }
 
@@ -286,7 +287,7 @@ async function promoteDoc(
   // never an error. The blob route has no frontmatter to inspect and stays untouched.
   if (isLegacyPageDoc(result.doc.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
   // A10: a ready-to-paste PULL hint closes the loop in the other direction.
-  receipt.help = [`${cliInvocation()} pull --doc-key ${key} --out <path>`];
+  receipt.help = [`${cliInvocation()} pull --doc-key ${commandToken(key)} --out <path>`];
   stdout(render(receipt, mode));
 }
 
@@ -323,7 +324,7 @@ async function promoteBlob(
     version,
     size_bytes: bytes.byteLength,
   };
-  receipt.help = [`${cliInvocation()} pull --doc-key ${key} --out <path>`];
+  receipt.help = [`${cliInvocation()} pull --doc-key ${commandToken(key)} --out <path>`];
   stdout(render(receipt, mode));
 }
 
@@ -354,20 +355,20 @@ function promoteWriteErrorToCliError(err: unknown, key: string, file: string, re
       return new CliError(
         "ALREADY_EXISTS",
         `'${key}' already exists — promote with no --expected-version means expect-absent CREATE, ` +
-          `not an overwrite. Pass --expected-version ${current ?? "<token>"} (from a prior ` +
+          `not an overwrite. Pass --expected-version ${current ? commandToken(current) : commandLiteral("<token>")} (from a prior ` +
           `pull/promote receipt) to update it.`,
         {
-          help: `${cliInvocation()} promote ${file} --doc-key ${key} --expected-version ${current ?? "<token>"}`,
+          help: `${cliInvocation()} promote ${commandToken(file)} --doc-key ${commandToken(key)} --expected-version ${current ? commandToken(current) : commandLiteral("<token>")}`,
           details: { expected: err.expected, actual: err.actual },
         },
       );
     }
     return new CliError(
       "STALE_HEAD",
-      `'${key}' has moved since --expected-version ${err.expected} was read (current: ${current ?? "absent"}) ` +
+      `'${key}' has moved since --expected-version ${commandToken(err.expected)} was read (current: ${current ?? "absent"}) ` +
         `— re-pull, re-apply your edit, and re-promote with the current version.`,
       {
-        help: `${cliInvocation()} pull --doc-key ${key} --out <path>`,
+        help: `${cliInvocation()} pull --doc-key ${commandToken(key)} --out <path>`,
         details: { expected: err.expected, actual: err.actual },
       },
     );

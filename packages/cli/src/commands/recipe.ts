@@ -17,10 +17,11 @@ import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { cliInvocation, exactCliInvocation, shellArg } from "../invocation.js";
+import { cliInvocation, exactCliInvocation } from "../invocation.js";
 import { applyRecipe } from "../recipes.js";
 import { applyRecipeEvolution, planRecipeEvolution } from "../recipe-evolution.js";
 import { resolveRecipe } from "../recipe-source.js";
+import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
@@ -121,13 +122,13 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   }
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   const bundle = await openBundle(values.dir, remote);
-  const target = values.dir !== undefined
-    ? ` --dir ${shellArg(values.dir)}`
+  const target: CommandText = values.dir !== undefined
+    ? commandFragment` --dir ${commandQuoted(values.dir)}`
     : remote !== undefined
-      ? ` --remote ${shellArg(remote)}`
-      : "";
-  const planCommand = `${cliInvocation()} recipe evolve ${shellArg(ref)}${target}`;
-  const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${shellArg(ref)}${target}`;
+      ? commandFragment` --remote ${commandQuoted(remote)}`
+      : commandLiteral("");
+  const planCommand = `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
+  const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
 
   if (values.apply !== undefined) {
     const result = await applyRecipeEvolution(bundle, loaded.recipe, values.apply.trim(), values.actor?.trim());
@@ -143,10 +144,10 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   };
   if (plan.ready && plan.changed) {
     receipt.commands = {
-      apply: `${exactPlanCommand} --apply ${plan.plan_token}${values.actor ? ` --actor ${shellArg(values.actor.trim())}` : ""}`,
+      apply: `${exactPlanCommand} --apply ${commandToken(plan.plan_token)}${values.actor ? ` --actor ${commandQuoted(values.actor.trim())}` : ""}`,
     };
   } else if (plan.blockers.some((blocker) => blocker.code === "RECIPE_EVOLUTION_DEFINITION_MISSING" || blocker.code === "RECIPE_EVOLUTION_ASSET_MISSING")) {
-    receipt.commands = { install_missing: `${cliInvocation()} recipe add ${shellArg(ref)}${target}` };
+    receipt.commands = { install_missing: `${cliInvocation()} recipe add ${commandQuoted(ref)}${target}` };
   }
   receipt.help = [planCommand, `${cliInvocation()} kinds`];
   stdout(render(receipt, resolveMode(values)));
@@ -217,12 +218,12 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
   receipt.counts = result.counts;
   if (warnings.length > 0) receipt.warnings = warnings;
   if (sourceDiffers > 0) {
-    const target = values.dir !== undefined
-      ? ` --dir ${shellArg(values.dir)}`
+    const target: CommandText = values.dir !== undefined
+      ? commandFragment` --dir ${commandQuoted(values.dir)}`
       : remote !== undefined
-        ? ` --remote ${shellArg(remote)}`
-        : "";
-    receipt.commands = { plan_evolution: `${cliInvocation()} recipe evolve ${shellArg(ref)}${target}` };
+        ? commandFragment` --remote ${commandQuoted(remote)}`
+        : commandLiteral("");
+    receipt.commands = { plan_evolution: `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}` };
   }
   receipt.help = [`${cliInvocation()} recipes`, `${cliInvocation()} kinds`];
 

@@ -74,6 +74,7 @@ import {
 import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../../bundle.js";
 import type { BoundBoardOwner } from "../../bound-board-owner.js";
 import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
+import { commandToken, type CommandPrefix } from "../../command-text.js";
 
 export const SYNC_USAGE = `superbee sync — share the board branch with a remote (git tier)
 
@@ -199,7 +200,7 @@ const DEFAULT_LIMIT = 20;
 export const SYNC_LOCAL_ONLY_MESSAGE =
   "local-only board — no shared board branch exists, so there is nothing to pull or push";
 
-export function syncLocalOnlyNote(inv: string): string {
+export function syncLocalOnlyNote(inv: CommandPrefix): string {
   return (
     "a supported mode: every local command works, and your board changes stay on this machine " +
     `(sync committed nothing). To share the board with teammates, run \`${inv} sync --establish\` ` +
@@ -211,7 +212,7 @@ export function syncLocalOnlyNote(inv: string): string {
 export const SYNC_REMOTE_STATE_UNKNOWN_MESSAGE =
   "shared board state unknown — origin could not be checked, so sync cannot tell whether a remote board exists";
 
-export function syncRemoteStateUnknownNote(inv: string, hasLocalBundle: boolean): string {
+export function syncRemoteStateUnknownNote(inv: CommandPrefix, hasLocalBundle: boolean): string {
   const local = hasLocalBundle
     ? "your local bundle remains usable and sync committed nothing. "
     : "sync changed nothing. ";
@@ -245,7 +246,7 @@ export const SYNC_IN_TREE_CURRENT = "checkout is current with upstream";
 
 /** The per-run inputs every phase shares, assembled once by {@link syncCommand}. */
 interface SyncRun {
-  dir: string; inv: string; mode: OutputMode; limit: number; pullOnly: boolean;
+  dir: string; inv: CommandPrefix; mode: OutputMode; limit: number; pullOnly: boolean;
   stdout: (s: string) => void; deps: Partial<SyncCliDeps>;
   owner?: BoundBoardOwner;
   route?: ResolvedLocalRoute;
@@ -355,7 +356,7 @@ function requestsShowIncomingStdoutByteChannel(argv: string[]): boolean {
 }
 
 /** The arg-parse phase: flag validation (usage refusals in their pinned order) and dispatch. */
-async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDispatch> {
+async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<SyncDispatch> {
   const { values } = parseLeafOrUsage(
     () =>
       parseArgs({
@@ -418,21 +419,21 @@ async function parseSyncInvocation(argv: string[], inv: string): Promise<SyncDis
       throw new CliError(
         "USAGE",
         "--out and --body-out cannot be combined — each reserves one output channel",
-        { help: `${inv} sync --show-incoming ${id} --body-out (<path> | -)` },
+        { help: `${inv} sync --show-incoming ${commandToken(id)} --body-out (<path> | -)` },
       );
     }
     if (outValue !== undefined && outValue.trim() === "") {
       throw new CliError(
         "USAGE",
         "--out was given an empty value — pass a file path or '-' for stdout.",
-        { help: `${inv} sync --show-incoming ${id} --out (<path> | -)` },
+        { help: `${inv} sync --show-incoming ${commandToken(id)} --out (<path> | -)` },
       );
     }
     if (bodyOutValue !== undefined && bodyOutValue.trim() === "") {
       throw new CliError(
         "USAGE",
         "--body-out was given an empty value — pass a file path or '-' for stdout.",
-        { help: `${inv} sync --show-incoming ${id} --body-out (<path> | -)` },
+        { help: `${inv} sync --show-incoming ${commandToken(id)} --body-out (<path> | -)` },
       );
     }
     let route: ResolvedLocalRoute | undefined;

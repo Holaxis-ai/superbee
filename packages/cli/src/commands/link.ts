@@ -57,6 +57,7 @@ import { collectLinkDeclarations } from "../link-types.js";
 import { resolveActor } from "../actor.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../concept-id.js";
 import { mutateDoc } from "../mutate.js";
+import { commandQuoted, commandToken } from "../command-text.js";
 
 /** The common flags every `link` subcommand accepts — appended to each verb's focused help. */
 const LINK_COMMON_OPTIONS = `Common options:
@@ -243,7 +244,7 @@ async function lintLinkType(
       return [
         {
           code: "LINK_TYPE_CASE_VARIANT",
-          message: `'${args.text}' is a case-variant of the declared link type '${declaredText}' — did you mean --text '${declaredText}'?`,
+          message: `'${args.text}' is a case-variant of the declared link type '${declaredText}' — did you mean --text ${commandQuoted(declaredText)}?`,
           field: "text",
           severity: "warning",
         },
@@ -299,7 +300,7 @@ async function targetAbsentWarning(
       code: "LINK_TARGET_ABSENT",
       message:
         `target '${to}' has no document yet — this link is a forward-declaration (dangling links ` +
-        `stay allowed); create it with \`${cliInvocation()} doc write ${to} --type <t>\`.`,
+        `stay allowed); create it with \`${cliInvocation()} doc write ${commandToken(to)} --type <t>\`.`,
       field: "to",
       severity: "warning",
     };
@@ -334,7 +335,7 @@ export async function link(argv: string[], deps: Partial<LinkCliDeps> = {}): Pro
  */
 function nearMissTextHint(textFilter: string, textsPresent: string[], scope: string): string {
   if (textsPresent.length === 0) {
-    return `no links matched --text '${textFilter}'${scope} — this is a definitive empty result, not an error`;
+    return `no links matched --text ${commandQuoted(textFilter)}${scope} — this is a definitive empty result, not an error`;
   }
   const TEXTS_SHOWN = 8;
   const shown = textsPresent
@@ -342,7 +343,7 @@ function nearMissTextHint(textFilter: string, textsPresent: string[], scope: str
     .map((t) => `'${t}'`)
     .join(", ");
   const more = textsPresent.length > TEXTS_SHOWN ? ` (+${textsPresent.length - TEXTS_SHOWN} more)` : "";
-  return `no links matched --text '${textFilter}'${scope} (exact match) — link texts present here: ${shown}${more}`;
+  return `no links matched --text ${commandQuoted(textFilter)}${scope} (exact match) — link texts present here: ${shown}${more}`;
 }
 
 /** Options for {@link addLink} — a subset of `link add`'s own flags, since callers other than
@@ -453,7 +454,7 @@ export async function addLink(
         help: `${cliInvocation()} list`,
       }),
       staleHead: (error) => new CliError("STALE_HEAD", error.message, {
-        help: `${cliInvocation()} link add ${from} ${to}`,
+        help: `${cliInvocation()} link add ${commandToken(from)} ${commandToken(to)}`,
       }),
     },
   });
@@ -532,7 +533,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
       help: `${cliInvocation()} link add <from> <to>`,
     });
   }
-  const actor = resolveActor(values.actor, { help: `${cliInvocation()} link add ${from} ${to} --actor <name>` });
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} link add ${commandToken(from)} ${commandToken(to)} --actor <name>` });
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
   const mode = resolveMode(values);
@@ -552,7 +553,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
           from: result.from,
           to: result.normalizedTo,
           changed: false,
-          help: [`${cliInvocation()} link show ${result.normalizedTo}`],
+          help: [`${cliInvocation()} link show ${commandToken(result.normalizedTo)}`],
         },
         mode,
       ),
@@ -567,7 +568,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
     href: result.href,
     text: result.text,
     changed: true,
-    help: [`${cliInvocation()} link show ${to}`],
+    help: [`${cliInvocation()} link show ${commandToken(to)}`],
   };
   if (result.warnings && result.warnings.length > 0) receipt.warnings = result.warnings;
   stdout(render(receipt, mode));
@@ -697,7 +698,7 @@ async function linkShow(
   const help: string[] = [];
   if (outboundShown.length < outbound.length || inboundShown.length < inboundMatched.length) {
     help.push(
-      `showing ${outboundShown.length}/${outbound.length} outbound + ${inboundShown.length}/${inboundMatched.length} backlinks — run \`${cliInvocation()} link show ${id} --limit 0\` for all`,
+      `showing ${outboundShown.length}/${outbound.length} outbound + ${inboundShown.length}/${inboundMatched.length} backlinks — run \`${cliInvocation()} link show ${commandToken(id)} --limit 0\` for all`,
     );
   }
   if (textFilter !== undefined && outbound.length === 0 && inboundMatched.length === 0) {
@@ -711,8 +712,8 @@ async function linkShow(
   if (!exists) {
     help.push(
       inboundMatched.length > 0
-        ? `'${id}' has no document yet but is cited by ${inboundMatched.length} — run \`${cliInvocation()} doc write ${id} --type <t>\` to create it`
-        : `no concept at '${id}': it has no document and nothing links to it${textFilter !== undefined ? ` matching --text '${textFilter}'` : ""}`,
+        ? `'${id}' has no document yet but is cited by ${inboundMatched.length} — run \`${cliInvocation()} doc write ${commandToken(id)} --type <t>\` to create it`
+        : `no concept at '${id}': it has no document and nothing links to it${textFilter !== undefined ? ` matching --text ${commandQuoted(textFilter)}` : ""}`,
     );
   }
   if (help.length > 0) payload.help = help;

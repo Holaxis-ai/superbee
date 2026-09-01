@@ -14,6 +14,7 @@ import { resolveLocalBundleTarget } from "../bundle.js";
 import { asHandled, CliError, toExit } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { render, renderErrorEnvelope, resolveMode } from "../output.js";
+import { commandToken } from "../command-text.js";
 
 export const CATALOG_USAGE = `superbee catalog — register and resolve this user's workspaces
 
@@ -137,7 +138,7 @@ async function catalogInner(argv: string[], deps: Partial<CatalogCliDeps>): Prom
           catalog: result.changed ? "added" : "unchanged",
           changed: result.changed,
           ...entryReceipt({ ...result.entry, available: true }),
-          help: [`${cliInvocation()} catalog resolve ${result.entry.label} --field path`],
+          help: [`${cliInvocation()} catalog resolve ${commandToken(result.entry.label)} --field path`],
         },
         resolveMode(parsed.values),
       ),

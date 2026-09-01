@@ -36,6 +36,7 @@ import {
 import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../doc/common.js";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import type { ResolvedLocalRoute } from "../../bundle.js";
+import { commandToken, type CommandPrefix } from "../../command-text.js";
 // `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches
 // implicitly — the refusal string lives in THE sync-outcome table; this re-export keeps the
 // module's historical import surface stable.
@@ -49,7 +50,7 @@ export const SHOW_INCOMING_ABSENT_STATE =
   "absent upstream — not on origin/board as of the last fetch (deleted upstream, or a new local doc)";
 
 /** The in-tree viewer's refusal when the branch has no usable upstream to read a version from. */
-export function showIncomingInTreeNoBasis(inv: string, reason: InTreeNoBasisReason, ref?: string): CliError {
+export function showIncomingInTreeNoBasis(inv: CommandPrefix, reason: InTreeNoBasisReason, ref?: string): CliError {
   return syncOutcomeError("in-tree.show-incoming.no-basis", { inv, reason, ref });
 }
 
@@ -75,8 +76,8 @@ export async function showIncoming(
   const out = values.out?.trim();
   const bodyOut = values["body-out"]?.trim();
   const streamMode = out === "-" || bodyOut === "-";
-  const rawHatch = `${inv} sync --show-incoming ${id} --out <file>`;
-  const bodyHatch = `${inv} sync --show-incoming ${id} --body-out <path-outside-bundle>`;
+  const rawHatch = `${inv} sync --show-incoming ${commandToken(id)} --out <file>`;
+  const bodyHatch = `${inv} sync --show-incoming ${commandToken(id)} --body-out <path-outside-bundle>`;
 
   const run = async (): Promise<void> => {
     // A destination inside private state would land 0644 over an operational record.

@@ -48,7 +48,7 @@
 // a non-fatal `project_binding_error`, preserving SessionStart's render-always contract.
 //
 // Adapted from holaxis-agentstate `packages/cli/src/commands/home.ts`.
-import { cliInvocation, binPath, collapseHomeDirectory, shellArg } from "../invocation.js";
+import { cliInvocation, binPath, collapseHomeDirectory } from "../invocation.js";
 import { DESCRIPTION, commandReference, compactCommandReference } from "../reference.js";
 import { render } from "../output.js";
 import {
@@ -240,7 +240,7 @@ export interface HomeDeps {
   /** The home-collapsed absolute path of the running executable (the `bin:` identity field). */
   binPath: () => string;
   /** The runnable command prefix for emitted next-step hints (bare bin, else `npx -y …`). */
-  invocation: () => string;
+  invocation: () => CommandPrefix;
   stdout: (s: string) => void;
   /**
    * Produce the live bundle dashboard for the CWD: a full {@link BundleSummary}, an
@@ -495,6 +495,7 @@ import {
   uncommittedLine,
   unpushedLine,
 } from "../sync-outcomes.js";
+import { commandFragment, commandLiteral, commandQuoted, commandToken, type CommandPrefix, type CommandText } from "../command-text.js";
 export {
   BOARD_IN_TREE_LINE,
   BOARD_OFFLINE_NOTE,
@@ -515,7 +516,7 @@ export const BOARD_CHANGES_SHOWN_LIMIT = 10;
 export const IN_TREE_SINCE_FIELD = "since_this_machine_last_checked";
 
 /** The hook-reinstall prompt: the installed hook predates `session-start`. */
-export function hookUpdateNote(inv: string): string {
+export function hookUpdateNote(inv: CommandPrefix): string {
   return `the installed SessionStart hook predates \`session-start\` — re-run \`${inv} hook install\` to pick up the board-aware hook`;
 }
 
@@ -527,7 +528,7 @@ export interface SkillUpdateNotice {
 }
 
 /** The managed-Skill refresh prompt: exact commands plus the host restart the new bytes require. */
-export function skillUpdateNotice(inv: string, scopes: InstallScope[]): SkillUpdateNotice {
+export function skillUpdateNotice(inv: CommandPrefix, scopes: InstallScope[]): SkillUpdateNotice {
   return {
     state: "stale",
     scopes,
@@ -577,7 +578,7 @@ function countOr(live: number | null, cached: number | undefined): number {
 export function buildBoardBlock(
   status: BoardStatus | null,
   pull: BoardPullOutcome | undefined,
-  inv: string,
+  inv: CommandPrefix,
 ): { block?: string | Record<string, unknown>; firstContact?: string } {
   if (!status) return {};
   if (status.state === "unprovisioned") return { firstContact: boardFirstContactLine(inv) };
@@ -747,12 +748,14 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
  */
 function bundleOffers(
   summary: BundleSummary,
-  deps: { invocation: () => string; targetDir?: string },
+  deps: { invocation: () => CommandPrefix; targetDir?: string },
   board?: { block?: string | Record<string, unknown>; firstContact?: string },
 ): OfferRow[] {
   if (board?.firstContact) return [];
   try {
-    const dirSuffix = deps.targetDir ? ` --dir ${shellArg(deps.targetDir)}` : "";
+    const dirSuffix: CommandText = deps.targetDir
+      ? commandFragment` --dir ${commandQuoted(deps.targetDir)}`
+      : commandLiteral("");
     return deriveOffers(summary.byType, summary.conventionIds ?? [], deps.invocation(), dirSuffix);
   } catch {
     return [];
@@ -775,7 +778,7 @@ function bundleOffers(
 export function buildHomeView(
   deps: {
     binPath: () => string;
-    invocation: () => string;
+    invocation: () => CommandPrefix;
     identity?: () => { version: string; channel: ArtifactChannel };
     /** Preserve an explicit home --dir selector in every emitted mutating follow-up command. */
     targetDir?: string;
@@ -813,8 +816,8 @@ export function buildHomeView(
     const remoteBlock: Record<string, unknown> = {
       url: remote,
       help: [
-        `${inv} list --remote ${remote}`,
-        `${inv} status --remote ${remote}`,
+        `${inv} list --remote ${commandToken(remote)}`,
+        `${inv} status --remote ${commandToken(remote)}`,
       ],
     };
     if (binding && binding.target === remote) remoteBlock.via = binding.file;
@@ -849,7 +852,7 @@ export function buildHomeView(
       // exact command. Home-only (the ui config stays machine-clean), and only for rung (b), so
       // an explicitly named bundle never sees it.
       if (summary.nameSource === "conventional-parent") {
-        bundleBlock.name_help = `name derived from the project folder — set it explicitly: ${deps.invocation()} doc write ${BUNDLE_NAME_DOC_ID} --type "${BUNDLE_NAME_DOC_TYPE}" --title "<name>"`;
+        bundleBlock.name_help = `name derived from the project folder — set it explicitly: ${deps.invocation()} doc write ${BUNDLE_NAME_DOC_ID} --type ${commandToken(BUNDLE_NAME_DOC_TYPE)} --title "<name>"`;
       }
     }
     bundleBlock.root = summary.root;
@@ -888,14 +891,14 @@ export function buildHomeView(
       // A reached binding is always local. Its target may have disappeared, but it remains the
       // committed selection: never suggest an unscoped init that would mint a divergent cwd bundle,
       // and do not advertise recipes until the broken binding is repaired (recipes fails closed).
-      const target = ` --dir ${shellArg(binding.target)}`;
+      const target = commandFragment` --dir ${commandQuoted(binding.target)}`;
       view.getting_started =
         `project binding ${binding.file} -> ${binding.target} did not resolve to a bundle — ` +
         `run \`${deps.invocation()} init --recipe none${target}\` to recreate that bound bundle, ` +
         `or fix/remove the binding before browsing recipes`;
     } else {
       const createTarget = path.join(deps.targetDir ?? ".", CONVENTIONAL_BUNDLE_DIR_NAME);
-      const target = ` --dir ${shellArg(createTarget)}`;
+      const target = commandFragment` --dir ${commandQuoted(createTarget)}`;
       view.getting_started =
         `no OKF bundle found in this directory — run \`${deps.invocation()} init --create-only --recipe none${target}\` ` +
         `to create a blank bundle, or \`${deps.invocation()} recipes\` to compare available workspace setups` +

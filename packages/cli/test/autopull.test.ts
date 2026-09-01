@@ -63,6 +63,7 @@ import {
   pushBoard,
   writeBoardDoc,
 } from "../../board-git/test/git-harness.js";
+import { testInvocation } from "./support/command-prefix.js";
 
 // ── scaffolding (mirrors sync.test.ts / session-start.test.ts) ────────────────
 
@@ -443,7 +444,7 @@ test("hookInstallHintOnce: state failure suppresses the hint, never the receipt 
   try {
     // A throwing probe must yield undefined, not a throw.
     const hint = await withHome(homeA, () =>
-      hookInstallHintOnce("some\nkey", "aslite", () => {
+      hookInstallHintOnce("some\nkey", testInvocation("aslite"), () => {
         throw new Error("probe boom");
       }),
     );

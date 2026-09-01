@@ -52,6 +52,7 @@ import { cliInvocation } from "../invocation.js";
 import { assertPathOutsidePrivateState } from "../private-state-bundle-boundary.js";
 import { readErrorToCliError } from "./doc.js";
 import { inBundlePollutionWarning } from "./egress.js";
+import { commandToken } from "../command-text.js";
 
 export const PULL_USAGE = `superbee pull — pull a doc or blob's bytes out of the store (the reverse of 'promote')
 
@@ -136,7 +137,7 @@ async function pullBlob(bundle: Bundle, key: string, remoteUrl?: string): Promis
   }
   if (result === null) {
     throw new CliError("NOT_FOUND", `no blob at key '${key}'`, {
-      help: `${cliInvocation()} promote <file> --doc-key ${key}`,
+      help: `${cliInvocation()} promote <file> --doc-key ${commandToken(key)}`,
     });
   }
   const actual = blobVersion(result.bytes);
@@ -193,7 +194,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
   const out = values.out?.trim();
   if (!out) {
     throw new CliError("USAGE", "--out (<path> | -) is required", {
-      help: `${cliInvocation()} pull --doc-key ${key} --out <path>`,
+      help: `${cliInvocation()} pull --doc-key ${commandToken(key)} --out <path>`,
     });
   }
 
@@ -216,7 +217,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
     // elsewhere) — a placeholder makes the shape of the follow-up command clear regardless.
     const version = result.fields.version as string;
     const fileHint = streamMode ? "<file>" : out;
-    receipt.help = [`${cliInvocation()} promote ${fileHint} --doc-key ${key} --expected-version ${version}`];
+    receipt.help = [`${cliInvocation()} promote ${commandToken(fileHint)} --doc-key ${commandToken(key)} --expected-version ${commandToken(version)}`];
 
     if (streamMode) {
       writeStdoutBytes(result.bytes);

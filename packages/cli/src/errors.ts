@@ -10,6 +10,7 @@
 // The 0/1/2/4/5/6 exit taxonomy is PRESERVED intact from holaxis-agentstate.
 import { InvalidInputError, MalformedDocumentError, RemoteError, VersionConflict } from "@superbee/core";
 import { isBoardGitError, type BoardGitError } from "@superbee/board-git";
+import { commandLiteral, commandToken } from "./command-text.js";
 
 /** Stable, documented error codes. Finer than the exit table; rides alongside it in the envelope. */
 export type CliErrorCode =
@@ -206,7 +207,7 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
     if (err.code === "AUTH_REQUIRED") {
       return new CliError("AUTH_REQUIRED", err.message, {
         help:
-          `set SUPERBEE_API_KEY=<key> and retry the same command against --remote ${remoteUrl ?? "<url>"}; ` +
+          `set SUPERBEE_API_KEY=<key> and retry the same command against --remote ${remoteUrl ? commandToken(remoteUrl) : commandLiteral("<url>")}; ` +
           "an already-provisioned stored per-origin credential is also accepted",
       });
     }

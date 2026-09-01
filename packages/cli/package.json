@@ -50,9 +50,9 @@
   "scripts": {
     "build": "node build.mjs local-dev",
     "build:npm-package": "node build.mjs npm-package",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
     "pretest": "node build.mjs local-dev",
-    "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts",
+    "test:host-class": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/private-state-bundle-boundary.test.ts ./test/filesystem-cross-process-cas.test.ts ./test/link.test.ts ./test/promote-pull.test.ts ./test/recipe-source.test.ts ./test/command-text.test.ts",
     "test": "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
     "mutation": "node scripts/run-test-command.mjs npm-exec stryker run",
     "gen:skill": "node scripts/gen-skill.mjs",

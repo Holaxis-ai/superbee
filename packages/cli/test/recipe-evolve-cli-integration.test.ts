@@ -14,6 +14,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { initBundle } from "@superbee/core";
+import { renderShellToken } from "../src/shell-quoting.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cliPackageRoot = path.resolve(here, "..");
@@ -25,13 +26,14 @@ before(() => {
   if (!existsSync(cliBin)) execFileSync("node", ["build.mjs", "local-dev"], { cwd: cliPackageRoot, stdio: "inherit" });
 });
 
+/**
+ * Delegates to the SHIPPED renderer rather than re-implementing it. A second copy of the quoting
+ * rules here would keep asserting whatever it was written against, so it would stop describing the
+ * renderer the moment the renderer changed — a second implementation of a rule inside its own test
+ * is a way of not testing the rule.
+ */
 function commandArg(value: string, platform: NodeJS.Platform = process.platform): string {
-  if (platform === "win32") {
-    const normalized = value.replaceAll("\\", "/");
-    assert.doesNotMatch(normalized, /[\x00-\x1f\x7f"%!$`]/);
-    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(normalized) ? normalized : `"${normalized}"`;
-  }
-  return `'${value.replaceAll("'", "'\\''")}'`;
+  return renderShellToken(value, platform);
 }
 
 function commandArgs(values: string[], platform: NodeJS.Platform = process.platform): string {
@@ -50,7 +52,12 @@ function hostShell(
     // serializer would quote that argument again and escape its embedded quotes, causing those
     // quotes to reach the CLI literally. Pass the generated characters through unchanged, just
     // as an interactive paste does.
-    return { file, args: ["/d", "/s", "/c", command], windowsVerbatimArguments: true };
+    // Under `/s`, cmd strips the FIRST and LAST quote of the command line (`cmd /?`, rule 2).
+    // A rendered command begins with a quoted executable and can end with a quoted argument, so
+    // without an extra outer pair the stripping lands inside the real command and it fails with
+    // "The filename, directory name, or volume label syntax is incorrect." An interactive paste is
+    // not subject to rule 2; this wrapper is what makes `/c` behave like that paste.
+    return { file, args: ["/d", "/s", "/c", `"${command}"`], windowsVerbatimArguments: true };
   }
   return { file: "/bin/sh", args: ["-c", command], windowsVerbatimArguments: false };
 }
@@ -65,7 +72,7 @@ test("exact apply commands use the native host shell contract", () => {
     hostShell("superbee recipe evolve", "win32", { ComSpec: String.raw`C:\Windows\System32\cmd.exe` }),
     {
       file: String.raw`C:\Windows\System32\cmd.exe`,
-      args: ["/d", "/s", "/c", "superbee recipe evolve"],
+      args: ["/d", "/s", "/c", '"superbee recipe evolve"'],
       windowsVerbatimArguments: true,
     },
   );
@@ -74,13 +81,16 @@ test("exact apply commands use the native host shell contract", () => {
     /absolute ComSpec/,
   );
   assert.equal(commandArg("/tmp/recipe with spaces", "linux"), "'/tmp/recipe with spaces'");
+  // Backslashes are PRESERVED: the renderer no longer rewrites them, because it carries arbitrary
+  // bundle values and not only paths, and rewriting turned `Task\Sub` into a different value.
   assert.equal(
     commandArg(String.raw`C:\Program Files\Superbee\recipe`, "win32"),
-    '"C:/Program Files/Superbee/recipe"',
+    String.raw`"C:\Program Files\Superbee\recipe"`,
   );
+  // Always-quote: `shellArg` quotes unconditionally, so an inert token is quoted here too.
   assert.equal(
     commandArgs([String.raw`C:\Program Files\node.exe`, "--import", "file:///C:/loader.mjs"], "win32"),
-    '"C:/Program Files/node.exe" --import file:///C:/loader.mjs',
+    String.raw`"C:\Program Files\node.exe" "--import" "file:///C:/loader.mjs"`,
   );
 });
 
