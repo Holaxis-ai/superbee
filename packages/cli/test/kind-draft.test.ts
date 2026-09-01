@@ -301,6 +301,51 @@ test("kind dismiss: the decline record carries NO engine clock, so its provenanc
   }
 });
 
+test("kind draft: refuses a PATH-ONLY convention — a declared path is a policy, not an empty kind", async () => {
+  // A path-only convention declares where its instances live. Treating it as declaration-free let
+  // a draft redraft over it and the apply silently drop the path.
+  const { dir, cleanup } = await tempBundle();
+  try {
+    await seed(dir, "conventions/plan", { type: "Convention", title: "Plan", governs: "Plan", path: "plans/" });
+    await seed(dir, "plans/a", { type: "Plan", title: "a" });
+    await seed(dir, "plans/b", { type: "Plan", title: "b" });
+
+    await assert.rejects(
+      () => runKind(["draft", "Plan", "--dir", dir]),
+      (error: unknown) => error instanceof CliError,
+      "a path-only convention must not be drafted over",
+    );
+
+    const raw = await readFile(path.join(dir, "conventions", "plan.md"), "utf8");
+    assert.match(raw, /^path: plans\/$/m, `the declared path must survive:\n${raw}`);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("kind draft --apply: a token is STALE once an instance edit changes the measured warning count", async () => {
+  // The forecast is what the human accepted. An edit that moves a value out of a declared enum
+  // changes that forecast, so the acceptance no longer describes what would be written.
+  const { dir, cleanup } = await tempBundle();
+  try {
+    for (const id of ["tasks/one", "tasks/two"]) {
+      await seed(dir, id, { type: "Task", title: id, superbee_progress_status: "todo" });
+    }
+    const plan = await runKind(["draft", "Task", "--dir", dir]);
+    assert.equal(plan.warnings_after_apply, 0);
+
+    await seed(dir, "tasks/two", { type: "Task", title: "tasks/two", superbee_progress_status: "not-a-real-state" });
+
+    await assert.rejects(
+      () => runKind(["draft", "Task", "--apply", String(plan.plan_token), "--dir", dir]),
+      (error: unknown) => error instanceof CliError,
+      "a token issued against zero warnings must not apply once the forecast changed",
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
 test("kind dismiss: refuses a declaration-bearing governed type", async () => {
   const { dir, cleanup } = await tempBundle();
   try {

@@ -172,7 +172,7 @@ async function prepareDraftPlan(bundle: Bundle, type: string): Promise<DraftPlan
   // conventions for one kind; the slug id is only for true creates).
   if (existing) candidateDoc = { ...candidateDoc, id: existing.id };
   const warnings = warningsAfterApply(candidateKind, instances);
-  const token = draftPlanToken({ target: candidateDoc.id, candidate: candidateDoc, okfVersion, stats });
+  const token = draftPlanToken({ target: candidateDoc.id, candidate: candidateDoc, okfVersion, stats, warnings });
   return {
     type,
     okfVersion,

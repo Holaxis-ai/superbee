@@ -50,7 +50,11 @@ export function kindDeclaresAnything(kind: KindConvention): boolean {
     (kind.links !== undefined && Object.keys(kind.links).length > 0) ||
     (kind.expectsInbound !== undefined && Object.keys(kind.expectsInbound).length > 0) ||
     kind.freshnessHorizon !== undefined ||
-    kind.claim !== undefined
+    kind.claim !== undefined ||
+    // A declared `path` is a policy like any other: it decides where instances live. Omitting it
+    // here made a path-only convention read as declaration-free, so a draft would redraft over it
+    // and an apply could silently drop the path it declared.
+    (kind.path !== undefined && kind.path !== "")
   );
 }
 
@@ -229,16 +233,18 @@ export function warningsAfterApply(kind: KindConvention, instances: readonly Okf
  * the human inspected — the exact candidate document, the bundle edition, and the instance stats
  * it was inferred from. Any change to WHAT THE TOKEN BINDS between draft and apply refuses:
  * a presence-stat change (new/removed instances, a key appearing or emptying), an edition
- * change, or a candidate difference. An instance edit that alters none of those (e.g. one title
- * VALUE changing) deliberately keeps the token valid — the written candidate is unchanged and
- * `warnings_after_apply` is re-measured at apply (the `recipe evolve` discipline,
- * recipe-evolution.ts's `evolutionPlanToken`).
+ * change, or a candidate difference. It ALSO binds the measured warning count, because that count
+ * is what the human accepted: an instance edit that changes the forecast (a value leaving a
+ * declared enum) must not apply under a token issued against a different number. An edit changing
+ * neither the candidate, the presence stats, nor the warning count keeps the token valid — the
+ * written bytes are identical either way.
  */
 export function draftPlanToken(input: {
   target: string;
   candidate: { id: string; frontmatter: unknown; body: string };
   okfVersion: string;
   stats: DraftInstanceStats;
+  warnings: number;
 }): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(input), "utf8").digest("hex")}`;
 }
