@@ -58,6 +58,13 @@ export interface MutateDocOptions {
   actor?: string;
   persistActor?: boolean;
   expectedVersion?: Version;
+  /**
+   * Seed the v0.2 generation clock on a create lacking a usable time (default true). A caller
+   * writing a DEFINITION - a kind convention adopted from a recipe source - passes false, because
+   * `sameInstalledDoc` strips `generated.at` but not an engine-seeded `generated.by`, so a seeded
+   * clock would make an untouched install report as drifted.
+   */
+  seedGenerationClock?: boolean;
   /** Best-effort CLI orchestration hook; it never changes mutation success. */
   onPersisted?: () => void | Promise<void>;
   errors: MutateErrorHooks;
@@ -120,6 +127,7 @@ async function translateMutationError(error: unknown, opts: MutateDocOptions): P
 export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
   try {
     const result = await mutateDocument({
+      ...(opts.seedGenerationClock === undefined ? {} : { seedGenerationClock: opts.seedGenerationClock }),
       bundle: opts.bundle,
       id: opts.id,
       mode: opts.mode,

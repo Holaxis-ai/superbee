@@ -25,7 +25,8 @@ import { recipes } from "../src/commands/recipes.js";
 import { applyRecipe } from "../src/recipes.js";
 import { resolveBuiltinSync } from "../src/recipe-source-builtin.js";
 import { CliError } from "../src/errors.js";
-import { cliInvocation, typeArg } from "../src/invocation.js";
+import { cliInvocation } from "../src/invocation.js";
+import { commandQuoted } from "../src/command-text.js";
 
 async function tempBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-kind-draft-test-"));
@@ -35,7 +36,7 @@ async function tempBundle(): Promise<{ dir: string; cleanup: () => Promise<void>
 
 async function runKind(argv: string[]): Promise<Record<string, unknown>> {
   let out = "";
-  await kind([...argv, "--json"], { stdout: (s) => (out += s) });
+  await kind([...argv, "--json"], { stdout: (s: string) => (out += s) });
   return JSON.parse(out) as Record<string, unknown>;
 }
 
@@ -112,11 +113,11 @@ test("kind draft: O1 apply-line bytes — --dir echo and the acceptance-gate com
     const plan = await runKind(["draft", "Plan", "--dir", dir]);
     assert.equal(
       plan.apply,
-      `${cliInvocation()} kind draft ${typeArg("Plan")} --apply ${plan.plan_token as string} --dir ${dir}   # after the human accepts`,
+      `${cliInvocation()} kind draft ${commandQuoted("Plan")} --apply ${plan.plan_token as string} --dir ${dir}   # after the human accepts`,
     );
     assert.equal(
       plan.note,
-      `apply creates the Kind as drafted; promotions are separate follow-ups via '${cliInvocation()} kind field ${typeArg("Plan")} add <name> --required'`,
+      `apply creates the Kind as drafted; promotions are separate follow-ups via '${cliInvocation()} kind field ${commandQuoted("Plan")} add <name> --required'`,
     );
   } finally {
     await cleanup();
@@ -194,7 +195,7 @@ test("kind draft --apply: an instance write between draft and apply refuses STAL
     assert.equal(details.expected_plan, plan.plan_token);
     assert.match(details.current_plan as string, /^sha256:/);
     assert.notEqual(details.current_plan, details.expected_plan);
-    assert.equal(err.help, `${cliInvocation()} kind draft ${typeArg("Plan")} --dir ${dir}`);
+    assert.equal(err.help, `${cliInvocation()} kind draft ${commandQuoted("Plan")} --dir ${dir}`);
   } finally {
     await cleanup();
   }
@@ -255,7 +256,7 @@ test("kind dismiss: writes a declaration-free convention; `new` fails byte-ident
     assert.equal(receipt.dismissed, "Research");
     assert.equal(receipt.convention, "conventions/research");
     assert.equal(receipt.changed, true);
-    assert.equal(receipt.reopen, `${cliInvocation()} kind draft ${typeArg("Research")} --dir ${dir}`);
+    assert.equal(receipt.reopen, `${cliInvocation()} kind draft ${commandQuoted("Research")} --dir ${dir}`);
 
     const doc = await readDoc({ root: dir }, "conventions/research");
     assert.equal(doc.frontmatter.type, CONVENTION_TYPE);
@@ -340,7 +341,7 @@ test("catalog dismiss of Task: recipes reports applied+drift with the command-fr
     // descriptive help clause, with NO fixing command anywhere near the flag (O2).
     let out = "";
     await recipes(["--dir", dir, "--json"], {
-      stdout: (s) => (out += s),
+      stdout: (s: string) => (out += s),
     } as never);
     const listing = JSON.parse(out) as Record<string, unknown>;
     const rows = listing.recipes as Array<Record<string, unknown>>;
@@ -384,7 +385,7 @@ test("catalog draft of Task: adopts the builtin schema verbatim and MEASURES the
 
     // The adopted convention IS the recipe source: applied flips true with NO drift.
     let out = "";
-    await recipes(["--dir", dir, "--json"], { stdout: (s) => (out += s) } as never);
+    await recipes(["--dir", dir, "--json"], { stdout: (s: string) => (out += s) } as never);
     const listing = JSON.parse(out) as Record<string, unknown>;
     const workTracking = (listing.recipes as Array<Record<string, unknown>>).find((r) => r.name === "work-tracking")!;
     assert.equal(workTracking.applied, true);
@@ -415,7 +416,7 @@ test("recipes drift bit also flags a legitimately evolved kind (the documented f
     await runKind(["field", "Context Note", "add", "due", "--dir", dir]); // sanctioned evolution
 
     let out = "";
-    await recipes(["--dir", dir, "--json"], { stdout: (s) => (out += s) } as never);
+    await recipes(["--dir", dir, "--json"], { stdout: (s: string) => (out += s) } as never);
     const listing = JSON.parse(out) as Record<string, unknown>;
     const contextNotes = (listing.recipes as Array<Record<string, unknown>>).find((r) => r.name === "context-notes")!;
     assert.equal(contextNotes.applied, true);
@@ -434,7 +435,7 @@ test("recipes: a pristine applied recipe reports no drift and no drift_help (omi
   try {
     await applyRecipe({ root: dir }, resolveBuiltinSync("context-notes"));
     let out = "";
-    await recipes(["--dir", dir, "--json"], { stdout: (s) => (out += s) } as never);
+    await recipes(["--dir", dir, "--json"], { stdout: (s: string) => (out += s) } as never);
     const listing = JSON.parse(out) as Record<string, unknown>;
     const contextNotes = (listing.recipes as Array<Record<string, unknown>>).find((r) => r.name === "context-notes")!;
     assert.equal(contextNotes.applied, true);
@@ -506,11 +507,11 @@ test("hostile type name: every emitted command renders the type through typeArg 
     await seed(dir, "attack/a1", { type: hostile, title: "a1" });
     await seed(dir, "attack/a2", { type: hostile, title: "a2" });
 
-    // Draft end-to-end: the apply line's type token is exactly typeArg(hostile) — never the raw
+    // Draft end-to-end: the apply line's type token is exactly commandQuoted(hostile) — never the raw
     // name inside double quotes, which a shared-board writer could turn into command injection.
     const plan = await runKind(["draft", hostile, "--dir", dir]);
     const applyLine = plan.apply as string;
-    assert.ok(applyLine.includes(`kind draft ${typeArg(hostile)} --apply `), applyLine);
+    assert.ok(applyLine.includes(`kind draft ${commandQuoted(hostile)} --apply `), applyLine);
     assert.ok(!applyLine.includes(`draft "${hostile}"`), "raw double-quoted type must never be emitted");
     // The kebab slug collapses quotes/spaces/punctuation to hyphenated alphanumerics — non-explosive.
     assert.equal((plan.candidate as Record<string, unknown>).convention, "conventions/x-touch-tmp-pwned");
@@ -523,14 +524,14 @@ test("hostile type name: every emitted command renders the type through typeArg 
     const plan2 = await runKind(["draft", 'y"; rm -rf ~; "', "--dir", dir]);
     await seed(dir, "attack2/b2", { type: 'y"; rm -rf ~; "', title: "b2" });
     const stale = await kindError(["draft", 'y"; rm -rf ~; "', "--apply", plan2.plan_token as string, "--dir", dir]);
-    assert.equal(stale.help, `${cliInvocation()} kind draft ${typeArg('y"; rm -rf ~; "')} --dir ${dir}`);
+    assert.equal(stale.help, `${cliInvocation()} kind draft ${commandQuoted('y"; rm -rf ~; "')} --dir ${dir}`);
 
     // Dismiss end-to-end: receipt and record body carry only the safe token.
     const dismissed = await runKind(["dismiss", 'y"; rm -rf ~; "', "--dir", dir]);
     assert.equal(dismissed.convention, "conventions/y-rm-rf");
-    assert.equal(dismissed.reopen, `${cliInvocation()} kind draft ${typeArg('y"; rm -rf ~; "')} --dir ${dir}`);
+    assert.equal(dismissed.reopen, `${cliInvocation()} kind draft ${commandQuoted('y"; rm -rf ~; "')} --dir ${dir}`);
     const record = await readDoc({ root: dir }, "conventions/y-rm-rf");
-    assert.ok(record.body.includes(`kind draft ${typeArg('y"; rm -rf ~; "')}`));
+    assert.ok(record.body.includes(`kind draft ${commandQuoted('y"; rm -rf ~; "')}`));
     assert.ok(!record.body.includes('kind draft "y'), "raw double-quoted type must never reach the record body");
   } finally {
     await cleanup();

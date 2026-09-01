@@ -27,7 +27,7 @@ import {
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
-import { commandQuoted } from "../command-text.js";
+import { commandFragment, commandQuoted, commandToken, type CommandText } from "../command-text.js";
 import {
   collectInstanceStats,
   draftPlanToken,
@@ -52,10 +52,10 @@ export interface KindDraftFlags extends OutputFlags {
 }
 
 /** The `--dir`/`--remote` echo every emitted command carries (offers/recipes rows' pattern). */
-function targetSuffix(values: Pick<KindDraftFlags, "dir" | "remote">): string {
-  let suffix = "";
-  if (values.dir !== undefined) suffix += ` --dir ${values.dir}`;
-  if (values.remote !== undefined) suffix += ` --remote ${values.remote}`;
+function targetSuffix(values: Pick<KindDraftFlags, "dir" | "remote">): CommandText {
+  let suffix = commandFragment``;
+  if (values.dir !== undefined) suffix = commandFragment`${suffix} --dir ${commandToken(values.dir)}`;
+  if (values.remote !== undefined) suffix = commandFragment`${suffix} --remote ${commandToken(values.remote)}`;
   return suffix;
 }
 
@@ -221,7 +221,7 @@ export async function kindDraftCommand(
       if (plan.catalog.siblings.length > 0) {
         receipt.catalog_note =
           `recipe '${plan.catalog.recipeId}' also defines ${plan.catalog.siblings.join(", ")}; ` +
-          `'${inv} recipe evolve ${plan.catalog.recipeId}' completes it`;
+          `'${inv} recipe evolve ${commandToken(plan.catalog.recipeId)}' completes it`;
       }
     }
     if (plan.redraftOver) receipt.redrafts = plan.redraftOver.id;
@@ -232,7 +232,7 @@ export async function kindDraftCommand(
     // O1 (design appendix): these exact bytes — the --dir/--remote echo and the acceptance-gate
     // comment — are load-bearing for skill-less agents and pinned by test. The gate must sit
     // beside the command an agent would copy, not only in skill prose.
-    receipt.apply = `${inv} kind draft ${commandQuoted(plan.type)} --apply ${plan.token}${suffix}   # after the human accepts`;
+    receipt.apply = `${inv} kind draft ${commandQuoted(plan.type)} --apply ${commandToken(plan.token)}${suffix}   # after the human accepts`;
     stdout(render(receipt, resolveMode(values)));
     return;
   }
@@ -251,6 +251,10 @@ export async function kindDraftCommand(
 
   const redraftTarget = plan.redraftOver;
   const result = await mutateDoc({
+    // A convention is a DEFINITION: an engine-seeded clock would make an adopted catalog
+    // convention report as drifted against its recipe source. Recipe installs opt out for the
+    // same reason.
+    seedGenerationClock: false,
     bundle,
     id: plan.candidateDoc.id,
     // A redraft UPGRADES the dismissal record in place (patch); a fresh draft must not clobber a
@@ -371,6 +375,10 @@ export async function kindDismissCommand(
   }
 
   const result = await mutateDoc({
+    // A convention is a DEFINITION: an engine-seeded clock would make an adopted catalog
+    // convention report as drifted against its recipe source. Recipe installs opt out for the
+    // same reason.
+    seedGenerationClock: false,
     bundle,
     id,
     mode: "create-only",
