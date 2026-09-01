@@ -9,6 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import {
   CONVENTION_TYPE,
@@ -284,6 +285,22 @@ test("kind dismiss: writes a declaration-free convention; `new` fails byte-ident
   }
 });
 
+test("kind dismiss: the decline record carries NO engine clock, so its provenance does not depend on which command wrote it first", async () => {
+  // Both writers target `conventions/<slug>` and the draft path PATCHES OVER a dismissal, so a
+  // per-writer clock difference would make a convention's provenance depend on whether it was
+  // dismissed first or drafted first. Reverting the opt-out at the dismiss site alone leaves every
+  // other test green, which is why this one exists.
+  const { dir, cleanup } = await tempBundle();
+  try {
+    await seed(dir, "research/a", { type: "Research", title: "a" });
+    await runKind(["dismiss", "Research", "--dir", dir]);
+    const raw = await readFile(path.join(dir, "conventions", "research.md"), "utf8");
+    assert.doesNotMatch(raw, /^generated:/m, `a dismissal record must carry no engine clock:\n${raw}`);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("kind dismiss: refuses a declaration-bearing governed type", async () => {
   const { dir, cleanup } = await tempBundle();
   try {
@@ -500,7 +517,7 @@ test("kind draft --apply: a slug collision with a convention governing a DIFFERE
   }
 });
 
-test("hostile type name: every emitted command renders the type through typeArg as ONE shell-safe token, slugging stays sane, and draft/dismiss work end-to-end", async () => {
+test("hostile type name: every emitted command renders the type through the quoting authority as ONE shell-safe token, slugging stays sane, and draft/dismiss work end-to-end", async () => {
   const { dir, cleanup } = await tempBundle();
   const hostile = 'x"; touch /tmp/pwned; "';
   try {

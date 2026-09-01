@@ -251,9 +251,14 @@ export async function kindDraftCommand(
 
   const redraftTarget = plan.redraftOver;
   const result = await mutateDoc({
-    // A convention is a DEFINITION: an engine-seeded clock would make an adopted catalog
-    // convention report as drifted against its recipe source. Recipe installs opt out for the
-    // same reason.
+    // A convention adopted from a recipe source must stay byte-comparable to it, and
+    // `sameInstalledDoc` strips `generated.at` but not an engine-seeded `generated.by` - so a
+    // seeded clock makes an untouched install report as drifted. Recipe installation opts out for
+    // the same reason. Both writers here target `conventions/<slug>` and the draft path patches
+    // OVER a dismissal, so this must be uniform: otherwise a convention's provenance would depend
+    // on whether it was dismissed first or drafted first. NOT bundle-wide - a generic
+    // `doc write --type Convention` still seeds a clock, which is a recorded decision (provenance
+    // is arguably wanted on a hand-authored convention) rather than an oversight.
     seedGenerationClock: false,
     bundle,
     id: plan.candidateDoc.id,
@@ -375,9 +380,14 @@ export async function kindDismissCommand(
   }
 
   const result = await mutateDoc({
-    // A convention is a DEFINITION: an engine-seeded clock would make an adopted catalog
-    // convention report as drifted against its recipe source. Recipe installs opt out for the
-    // same reason.
+    // A convention adopted from a recipe source must stay byte-comparable to it, and
+    // `sameInstalledDoc` strips `generated.at` but not an engine-seeded `generated.by` - so a
+    // seeded clock makes an untouched install report as drifted. Recipe installation opts out for
+    // the same reason. Both writers here target `conventions/<slug>` and the draft path patches
+    // OVER a dismissal, so this must be uniform: otherwise a convention's provenance would depend
+    // on whether it was dismissed first or drafted first. NOT bundle-wide - a generic
+    // `doc write --type Convention` still seeds a clock, which is a recorded decision (provenance
+    // is arguably wanted on a hand-authored convention) rather than an oversight.
     seedGenerationClock: false,
     bundle,
     id,
