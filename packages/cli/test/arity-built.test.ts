@@ -99,6 +99,8 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
         ...dir,
       ],
     },
+    kindDraft: simple(CLI_LEAVES.kindDraft, ["kind", "draft"], ["Test"], dir),
+    kindDismiss: simple(CLI_LEAVES.kindDismiss, ["kind", "dismiss"], ["Test"], dir),
     recipes: simple(CLI_LEAVES.recipes, ["recipes"], [], dir),
     recipeAdd: simple(CLI_LEAVES.recipeAdd, ["recipe", "add"], ["work-tracking"], dir),
     recipeEvolve: simple(CLI_LEAVES.recipeEvolve, ["recipe", "evolve"], ["work-tracking"], dir),
