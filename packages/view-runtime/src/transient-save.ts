@@ -85,6 +85,9 @@ function withoutMutationMetadata(frontmatter: Frontmatter): Frontmatter {
   const {
     timestamp: _timestamp,
     actor: _actor,
+    // The engine seeds `generated: {by, at}` on v0.2 creates; like the fields above it is
+    // mutation metadata the engine owns, not part of the registration the caller asked to save.
+    generated: _generated,
     [SUPERBEE_UPDATED_BY_FIELD]: _updatedBy,
     ...rest
   } = frontmatter;

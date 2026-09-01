@@ -189,7 +189,9 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal(Object.hasOwn(saved.frontmatter, "progress_status"), false);
     assert.equal(Object.hasOwn(saved.frontmatter, "timestamp"), false);
     assert.equal(Object.hasOwn(saved.frontmatter, "actor"), false);
-    assert.equal(Object.hasOwn(saved.frontmatter, "generated"), false);
+    // Every v0.2 create without a usable time now seeds the one standard clock (horizon or not).
+    assert.equal((saved.frontmatter.generated as { by?: string }).by, "process:superbee");
+    assert.match((saved.frontmatter.generated as { at?: string }).at ?? "", /^\d{4}-/);
     assert.equal((JSON.parse(result.stdout) as Record<string, unknown>).field_coordinates, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });

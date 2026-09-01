@@ -564,6 +564,9 @@ async function createRecipeDocument(
     mode: "create-only",
     registry: RECIPE_WRITE_REGISTRY,
     strict: false,
+    // Installed definitions must stay byte-comparable to their recipe source (sameInstalledDoc
+    // strips generated.at but not an engine-seeded generated.by), so never seed a clock here.
+    seedGenerationClock: false,
     now: () => now,
     buildCandidate: (_existing, context) => {
       if (context.okfVersion !== okfVersion) {

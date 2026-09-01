@@ -261,7 +261,8 @@ test("promote .md: parses the file and writes a REAL concept doc through the eng
     assert.equal(stored.frontmatter.title, "Auth");
     assert.match(stored.body, /Body\./);
     assert.equal(stored.frontmatter.timestamp, undefined);
-    assert.equal(stored.frontmatter.generated, undefined);
+    // Promotion is a real v0.2 create: the engine seeds the standard clock for ungoverned types.
+    assert.equal((stored.frontmatter.generated as { by?: string }).by, "process:superbee");
   } finally {
     await cleanup();
     await rm(work, { recursive: true, force: true });

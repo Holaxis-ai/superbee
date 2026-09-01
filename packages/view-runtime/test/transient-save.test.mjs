@@ -163,7 +163,12 @@ test("save on OKF v0.2 preserves storage attribution without inventing legacy do
   assert.equal(Object.hasOwn(registry.doc.frontmatter, "timestamp"), false);
   assert.equal(Object.hasOwn(registry.doc.frontmatter, "actor"), false);
   assert.equal(registry.doc.frontmatter.superbee_updated_by, "openai/codex");
-  assert.equal(Object.hasOwn(registry.doc.frontmatter, "generated"), false);
+  // The engine seeds the one standard v0.2 clock on creates; a saved registration is an
+  // ordinary instance doc, so it carries generated {by, at} like any other create.
+  assert.deepEqual(registry.doc.frontmatter.generated, {
+    by: "process:superbee",
+    at: "2026-08-02T19:30:00.000Z",
+  });
   assert.equal((await docVersions(f.bundle, saved.viewId))[0]?.actor, "openai/codex");
 });
 
