@@ -19,6 +19,7 @@ import {
   validateAgainstKind,
   type KindConvention,
   type OkfDocument,
+  type KindFields,
 } from "@superbee/core";
 
 /** Enum inference gates: 100% presence, at least this many instances, 2-6 distinct scalar strings. */
@@ -54,13 +55,26 @@ type DeclarationKey = Exclude<keyof KindConvention, NonDeclaringKey>;
  * cosmetic gap: it makes a real convention read as a dismissal record, so a draft will overwrite
  * the declaration it could not see.
  */
+/**
+ * The same exhaustiveness, one level down. `fields` is a structured sub-object, and the first
+ * version of this classifier enumerated four of its six keys by hand — missing `descriptions`
+ * and `valueDescriptions`, so a convention carrying only field guidance read as declaration-free
+ * and could be drafted over. Every key of `KindFields` declares something (a dismissal record has
+ * an EMPTY fields block, not a partially-filled one), so nothing is excluded here; adding a key to
+ * `KindFields` in core fails the build until it is classified.
+ */
+const FIELDS_DECLARES: Record<keyof KindFields, (fields: KindFields) => boolean> = {
+  required: (f) => f.required.length > 0,
+  optional: (f) => f.optional.length > 0,
+  values: (f) => Object.keys(f.values).length > 0,
+  valueDescriptions: (f) => f.valueDescriptions !== undefined && Object.keys(f.valueDescriptions).length > 0,
+  terminal: (f) => Object.keys(f.terminal).length > 0,
+  descriptions: (f) => Object.keys(f.descriptions).length > 0,
+};
+
 const DECLARES: Record<DeclarationKey, (kind: KindConvention) => boolean> = {
   path: (kind) => kind.path !== undefined && kind.path !== "",
-  fields: (kind) =>
-    kind.fields.required.length > 0 ||
-    kind.fields.optional.length > 0 ||
-    Object.keys(kind.fields.values).length > 0 ||
-    Object.keys(kind.fields.terminal).length > 0,
+  fields: (kind) => Object.values(FIELDS_DECLARES).some((declares) => declares(kind.fields)),
   links: (kind) => kind.links !== undefined && Object.keys(kind.links).length > 0,
   linkDescriptions: (kind) =>
     kind.linkDescriptions !== undefined && Object.keys(kind.linkDescriptions).length > 0,
@@ -68,7 +82,8 @@ const DECLARES: Record<DeclarationKey, (kind: KindConvention) => boolean> = {
     kind.expectsInbound !== undefined && Object.keys(kind.expectsInbound).length > 0,
   sections: (kind) => kind.sections !== undefined && kind.sections.length > 0,
   freshnessHorizon: (kind) => kind.freshnessHorizon !== undefined,
-  // An explicit `browse_collapsed: false` is still a declaration — the bundle chose it.
+  // Core parses only a strict `true` here; a declared `false` never reaches this predicate, so the
+  // `!== undefined` form is the whole check rather than a distinction between true and false.
   browseCollapsed: (kind) => kind.browseCollapsed !== undefined,
   claim: (kind) => kind.claim !== undefined,
 };

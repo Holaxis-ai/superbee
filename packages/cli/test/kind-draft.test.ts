@@ -368,6 +368,34 @@ test("kind draft: refuses a BROWSE-ONLY convention — a declared display behavi
   }
 });
 
+test("kind draft: refuses a DESCRIPTIONS-ONLY convention — field guidance is a declaration even when nothing is required", async () => {
+  // A convention carrying only `fields.descriptions` parses, renders, and (because the described
+  // field is not declared required or optional) carries a consistency warning — but it is a real
+  // declaration, not a dismissal record. The first exhaustive classifier stopped at the top level
+  // and enumerated four of KindFields' six keys by hand, so this shape read as declaration-free.
+  const { dir, cleanup } = await tempBundle();
+  try {
+    await seed(dir, "conventions/note", {
+      type: "Convention",
+      title: "Note",
+      governs: "Note",
+      fields: { descriptions: { audience: "Who this note is written for." } },
+    });
+    await seed(dir, "notes/a", { type: "Note", title: "a" });
+
+    await assert.rejects(
+      () => runKind(["draft", "Note", "--dir", dir]),
+      (error: unknown) => error instanceof CliError,
+      "a descriptions-only convention must not be drafted over",
+    );
+
+    const raw = await readFile(path.join(dir, "conventions", "note.md"), "utf8");
+    assert.match(raw, /audience: Who this note is written for\./, `the field guidance must survive:\n${raw}`);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("kind dismiss: refuses a declaration-bearing governed type", async () => {
   const { dir, cleanup } = await tempBundle();
   try {
