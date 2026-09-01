@@ -35,27 +35,52 @@ export const SECTION_PROMOTION_FLOOR = 0.6;
 const EXCLUDED_FIELDS = new Set<string>([...RESERVED_KIND_FIELD_NAMES, SUPERBEE_UPDATED_BY_FIELD]);
 
 /**
+ * The keys of a `KindConvention` that carry NO declaration: the record's own identity, its display
+ * title, and human prose. `description` is deliberately here — a dismissal record carries one
+ * naming the decline, so counting it would make every dismissal look declaration-bearing and break
+ * `kind dismiss`'s idempotency.
+ */
+type NonDeclaringKey = "id" | "title" | "governs" | "description";
+
+/** Every remaining key, each answering: does this convention declare anything through it? */
+type DeclarationKey = Exclude<keyof KindConvention, NonDeclaringKey>;
+
+/**
+ * One predicate per declaring key. The `Record<DeclarationKey, ...>` type is the point: adding a
+ * key to `KindConvention` in core makes this object structurally incomplete and FAILS THE BUILD
+ * until the new key is classified. This predicate was previously a hand-written chain of `||`,
+ * and an enumeration maintained by hand goes stale silently — it omitted `path`, and then
+ * `browseCollapsed`, each found only by someone probing for it. A missing entry here is not a
+ * cosmetic gap: it makes a real convention read as a dismissal record, so a draft will overwrite
+ * the declaration it could not see.
+ */
+const DECLARES: Record<DeclarationKey, (kind: KindConvention) => boolean> = {
+  path: (kind) => kind.path !== undefined && kind.path !== "",
+  fields: (kind) =>
+    kind.fields.required.length > 0 ||
+    kind.fields.optional.length > 0 ||
+    Object.keys(kind.fields.values).length > 0 ||
+    Object.keys(kind.fields.terminal).length > 0,
+  links: (kind) => kind.links !== undefined && Object.keys(kind.links).length > 0,
+  linkDescriptions: (kind) =>
+    kind.linkDescriptions !== undefined && Object.keys(kind.linkDescriptions).length > 0,
+  expectsInbound: (kind) =>
+    kind.expectsInbound !== undefined && Object.keys(kind.expectsInbound).length > 0,
+  sections: (kind) => kind.sections !== undefined && kind.sections.length > 0,
+  freshnessHorizon: (kind) => kind.freshnessHorizon !== undefined,
+  // An explicit `browse_collapsed: false` is still a declaration — the bundle chose it.
+  browseCollapsed: (kind) => kind.browseCollapsed !== undefined,
+  claim: (kind) => kind.claim !== undefined,
+};
+
+/**
  * Whether `kind` declares ANY schema obligation or behavior. The ONE predicate shared by
  * `kind draft`'s refusal (a declaration-bearing kind is never silently redrafted), `kind
  * dismiss`'s idempotency check, and `new`'s registry-lookup guard (a declaration-free kind — a
  * dismissal record — must leave `new`'s command surface exactly as it was before the dismissal).
  */
 export function kindDeclaresAnything(kind: KindConvention): boolean {
-  return (
-    kind.fields.required.length > 0 ||
-    kind.fields.optional.length > 0 ||
-    Object.keys(kind.fields.values).length > 0 ||
-    Object.keys(kind.fields.terminal).length > 0 ||
-    (kind.sections !== undefined && kind.sections.length > 0) ||
-    (kind.links !== undefined && Object.keys(kind.links).length > 0) ||
-    (kind.expectsInbound !== undefined && Object.keys(kind.expectsInbound).length > 0) ||
-    kind.freshnessHorizon !== undefined ||
-    kind.claim !== undefined ||
-    // A declared `path` is a policy like any other: it decides where instances live. Omitting it
-    // here made a path-only convention read as declaration-free, so a draft would redraft over it
-    // and an apply could silently drop the path it declared.
-    (kind.path !== undefined && kind.path !== "")
-  );
+  return Object.values(DECLARES).some((declares) => declares(kind));
 }
 
 /** `"Context Note"` -> `"context-note"` — the same slug shape the builtin conventions use. */

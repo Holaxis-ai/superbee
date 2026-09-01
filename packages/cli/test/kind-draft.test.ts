@@ -346,6 +346,28 @@ test("kind draft --apply: a token is STALE once an instance edit changes the mea
   }
 });
 
+test("kind draft: refuses a BROWSE-ONLY convention — a declared display behavior is a declaration", async () => {
+  // `browse_collapsed` is bundle-declared presentation behavior. Reading it as declaration-free
+  // meant a draft would redraft over it and the apply would drop it, silently changing how the
+  // kind presents. Sibling of the path-only case; both now come from one exhaustive predicate.
+  const { dir, cleanup } = await tempBundle();
+  try {
+    await seed(dir, "conventions/note", { type: "Convention", title: "Note", governs: "Note", browse_collapsed: true });
+    await seed(dir, "notes/a", { type: "Note", title: "a" });
+
+    await assert.rejects(
+      () => runKind(["draft", "Note", "--dir", dir]),
+      (error: unknown) => error instanceof CliError,
+      "a browse-only convention must not be drafted over",
+    );
+
+    const raw = await readFile(path.join(dir, "conventions", "note.md"), "utf8");
+    assert.match(raw, /^browse_collapsed: true$/m, `the declared browse behavior must survive:\n${raw}`);
+  } finally {
+    await cleanup();
+  }
+});
+
 test("kind dismiss: refuses a declaration-bearing governed type", async () => {
   const { dir, cleanup } = await tempBundle();
   try {
