@@ -67,13 +67,14 @@ import { CliError, asHandled, classifyBundleError } from "../errors.js";
 import { parseLeafOrUsage, parseNewSchemaPhaseOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode } from "../output.js";
-import { cliInvocation, shellArg } from "../invocation.js";
+import { cliInvocation } from "../invocation.js";
 import { mutateDoc } from "../mutate.js";
 import { isKnownShippedLegacyPageConvention, isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
 import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
 import { readExternalTextFile } from "../external-file.js";
 import { addLink } from "./link.js";
+import { commandQuoted, commandToken, type CommandPrefix, type CommandText } from "../command-text.js";
 
 export const NEW_USAGE = `superbee new — create a new instance of a bundle-declared kind
 
@@ -214,8 +215,8 @@ function parseLinkFlagValue(raw: string): ParsedLinkFlag {
  */
 function controlFlagValue(val: string | boolean | undefined, flag: string): string | undefined {
   if (typeof val === "boolean") {
-    throw new CliError("USAGE", `--${flag} requires a value`, {
-      help: `${cliInvocation()} new "<Kind>" <id> --${flag} <value>`,
+    throw new CliError("USAGE", `--${commandToken(flag)} requires a value`, {
+      help: `${cliInvocation()} new "<Kind>" <id> --${commandToken(flag)} <value>`,
     });
   }
   return val;
@@ -246,10 +247,12 @@ function inboundLinkDecls(
 }
 
 /** `roadmap-items/<roadmap-item>`-style placeholder for a kind: declared path prefix + slugged name. */
-function kindIdPlaceholder(kind: KindConvention | undefined, governs: string): string {
+function kindIdPlaceholder(kind: KindConvention | undefined, governs: string): CommandText {
   const slug = governs.toLowerCase().replace(/\s+/g, "-");
   const prefix = kind?.path ? kind.path.replace(/\/+$/, "") + "/" : "";
-  return `${prefix}<${slug}>`;
+  // Both halves are bundle-authored, and the `<`/`>` scaffolding joins them, so the ASSEMBLED
+  // token is what gets rendered — rendering the halves would leave the joins live.
+  return commandToken(`${prefix}<${slug}>`);
 }
 
 /**
@@ -260,7 +263,7 @@ function kindIdPlaceholder(kind: KindConvention | undefined, governs: string): s
 function renderKindHelp(
   kind: KindConvention,
   registry: KindRegistry,
-  inv: string,
+  inv: CommandPrefix,
 ): string {
   const oneLine = (value: string) => value.trim().replace(/\s+/g, " ");
   const ownDescription = (record: Record<string, string> | undefined, key: string): string | undefined => {
@@ -286,7 +289,7 @@ function renderKindHelp(
       : undefined;
     const describedValues = allowed?.map((value) => ({ value, description: ownDescription(valueDescriptions, value) }));
     const hasValueDescriptions = describedValues?.some((entry) => entry.description !== undefined) ?? false;
-    const fieldLine = `  --${field} <v>  ${requirement}`;
+    const fieldLine = `  --${commandToken(field)} <v>  ${requirement}`;
     if (!allowed || allowed.length === 0) return fieldLine + (description ? ` — ${description}` : "");
     if (!hasValueDescriptions) {
       return `${fieldLine}; allowed: ${allowed.join(" | ")}` + (description ? ` — ${description}` : "");
@@ -331,7 +334,7 @@ function renderKindHelp(
         "\n"
       : "";
   return (
-    `${inv} new "${kind.governs}" <id> — create a ${kind.governs} instance\n\n` +
+    `${inv} new ${commandToken(kind.governs)} <id> — create a ${kind.governs} instance\n\n` +
     (kind.description ? `Description:  ${kind.description}\n` : "") +
     `Fields (declared by the '${kind.governs}' kind convention):\n` +
     (fieldRows.length > 0 ? fieldRows.join("\n") + "\n" : "  (none)\n") +
@@ -477,7 +480,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
             (declaredFields.length > 0
               ? ` (declared: ${declaredFields.join(", ")})`
               : " (this kind declares no fields)") +
-            ` — to ADD it to the '${kind.governs}' kind: \`${cliInvocation()} kind field "${kind.governs}" add ${field}\` (then re-run).`,
+            ` — to ADD it to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add ${commandToken(field)}\` (then re-run).`,
           { help: `${cliInvocation()} kinds` },
         );
       }
@@ -520,14 +523,14 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const bodyFile = values["body-file"] as string | undefined;
   if (inlineBody !== undefined && bodyFile !== undefined) {
     throw new CliError("USAGE", "--body and --body-file are mutually exclusive", {
-      help: `${cliInvocation()} new "${kindName}" <id> [--body <markdown> | --body-file <path>]`,
+      help: `${cliInvocation()} new ${commandToken(kindName)} <id> [--body <markdown> | --body-file <path>]`,
     });
   }
   let suppliedBody = inlineBody;
   if (bodyFile !== undefined) {
     if (bodyFile.trim() === "") {
       throw new CliError("USAGE", "--body-file requires a non-empty path", {
-        help: `${cliInvocation()} new "${kindName}" <id> --body-file <path>`,
+        help: `${cliInvocation()} new ${commandToken(kindName)} <id> --body-file <path>`,
       });
     }
     try {
@@ -538,8 +541,8 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       if (err instanceof CliError) throw err;
       throw new CliError(
         "USAGE",
-        `could not read --body-file ${JSON.stringify(bodyFile)}: ${err instanceof Error ? err.message : String(err)}`,
-        { help: `${cliInvocation()} new "${kindName}" <id> --body-file <path>` },
+        `could not read --body-file ${commandToken(bodyFile)}: ${err instanceof Error ? err.message : String(err)}`,
+        { help: `${cliInvocation()} new ${commandToken(kindName)} <id> --body-file <path>` },
       );
     }
   }
@@ -560,7 +563,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       throw new CliError(
         "USAGE",
         `'${logicalField}' was supplied more than once; pass it once`,
-        { help: `${cliInvocation()} new "${kind.governs}" <id> --${logicalField} <value>` },
+        { help: `${cliInvocation()} new ${commandToken(kind.governs)} <id> --${commandToken(logicalField)} <value>` },
       );
     }
     suppliedByStorageField.set(coordinate.storageField, field);
@@ -597,11 +600,11 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     remoteUrl: remote,
     strict: true,
     helpOnKindReject:
-      `${cliInvocation()} new ${shellArg(kind.governs)} --help` +
+      `${cliInvocation()} new ${commandQuoted(kind.governs)} --help` +
       (preDir !== undefined
-        ? ` --dir ${shellArg(preDir)}`
+        ? ` --dir ${commandQuoted(preDir)}`
         : preRemote !== undefined
-          ? ` --remote ${shellArg(preRemote)}`
+          ? ` --remote ${commandQuoted(preRemote)}`
           : ""),
     actor,
     persistActor: true,
@@ -613,7 +616,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
         throw new CliError(
           "STALE_HEAD",
           `the bundle OKF edition changed from '${preparedEdition}' to '${context.okfVersion}' while creating '${targetId}' — rerun the command against the current edition`,
-          { help: `${cliInvocation()} new "${kindName}" ${rawId}` },
+          { help: `${cliInvocation()} new ${commandToken(kindName)} ${commandToken(rawId)}` },
         );
       }
       return { frontmatter, body };
@@ -623,10 +626,10 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
         new CliError(
           "ALREADY_EXISTS",
           `'${targetId}' already exists — 'new' only creates fresh instances of a kind and refuses to ` +
-            `silently overwrite one. Run '${cliInvocation()} doc update ${targetId}' to patch it, or ` +
-            `'${cliInvocation()} doc write ${targetId} --type ${kind.governs}' to overwrite it outright ` +
+            `silently overwrite one. Run '${cliInvocation()} doc update ${commandToken(targetId)}' to patch it, or ` +
+            `'${cliInvocation()} doc write ${commandToken(targetId)} --type ${commandToken(kind.governs)}' to overwrite it outright ` +
             `and deliberately.`,
-          { help: `${cliInvocation()} doc update ${targetId}` },
+          { help: `${cliInvocation()} doc update ${commandToken(targetId)}` },
         ),
     },
   });
@@ -723,17 +726,17 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   // outbound = this kind's own). Capped per direction; a bundle declaring no links adds nothing.
   // An outbound type already satisfied via --link above is dropped from its own hint — suggesting
   // a follow-up `link add` for a relationship this very command just established would be noise.
-  const help = [`${cliInvocation()} doc read ${saved.id}`];
+  const help = [`${cliInvocation()} doc read ${commandToken(saved.id)}`];
   const HINTS_PER_DIRECTION = 3;
   for (const { source, linkType } of inboundLinkDecls(registry, kind).slice(0, HINTS_PER_DIRECTION)) {
     help.push(
-      `link from a ${source.governs}: ${cliInvocation()} link add ${kindIdPlaceholder(source, source.governs)} ${saved.id} --text "${linkType}"`,
+      `link from a ${source.governs}: ${cliInvocation()} link add ${kindIdPlaceholder(source, source.governs)} ${commandToken(saved.id)} --text ${commandToken(linkType)}`,
     );
   }
   const outboundLinkDecls = Object.entries(kind.links ?? {}).filter(([linkType]) => !satisfiedOutboundTypes.has(linkType));
   for (const [linkType, target] of outboundLinkDecls.slice(0, HINTS_PER_DIRECTION)) {
     help.push(
-      `link to a ${target}: ${cliInvocation()} link add ${saved.id} ${kindIdPlaceholder(registry.kinds.get(target), target)} --text "${linkType}"`,
+      `link to a ${target}: ${cliInvocation()} link add ${commandToken(saved.id)} ${kindIdPlaceholder(registry.kinds.get(target), target)} --text ${commandToken(linkType)}`,
     );
   }
   receipt.help = help;

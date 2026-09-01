@@ -77,6 +77,7 @@ import {
   type LoadedRecipe,
 } from "../src/recipe-source.js";
 import { cliInvocation, shellArg } from "../src/invocation.js";
+import { testInvocation } from "./support/command-prefix.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 const EXAMPLE_RECIPE_FIXTURE = path.resolve(import.meta.dirname, "fixtures/example-recipe");
@@ -385,7 +386,7 @@ test("recipe inventory derives Reference and View identities from any loaded man
   assert.ok(loaded?.ok);
   if (!loaded?.ok) return;
 
-  const row = recipeInventoryRow(loaded.recipe, null, "aslite");
+  const row = recipeInventoryRow(loaded.recipe, null, testInvocation("aslite"));
   assert.deepEqual(row.assets, {
     kinds: ["Review Request", "View"],
     references: ["references/view-authoring-v0"],

@@ -30,6 +30,8 @@ import { toEnvelope, type CliError } from "../src/errors.js";
 import { renderErrorEnvelope } from "../src/output.js";
 import { boardWindowGuidance, preShareWindowError, type StatusRow } from "@superbee/board-git";
 import { makeLocalBoardTop, makePlainTop, makeRemnantTop, type OutcomeState } from "./sync-outcome-states.js";
+import { testInvocation } from "./support/command-prefix.js";
+import { renderedQuoted } from "./support/rendered-command.js";
 
 interface Fixture {
   key: string;
@@ -45,7 +47,7 @@ const FIXTURES_PATH = path.resolve(
 const FIXTURES = (JSON.parse(readFileSync(FIXTURES_PATH, "utf8")) as { fixtures: Fixture[] }).fixtures;
 
 // The fixed representative params the capture used — MUST stay in lockstep with the fixtures.
-const INV = "aslite";
+const INV = testInvocation("aslite");
 const BOARD_PATH = "/repo/.superbee";
 const BUNDLE_DIR = path.basename(BOARD_PATH);
 const TOP = "/repo";
@@ -67,6 +69,25 @@ const DIRTY_ROWS: StatusRow[] = [
   { status: "M", path: ".superbee/tasks/a.md" },
   { status: "A", path: ".superbee/tasks/b.md" },
 ];
+
+/**
+ * The fixtures pin the POSIX spelling. Exactly ONE line renders its cleanup-branch value through
+ * the quoting authority (`line.marker.interrupted-offer.note`), and the authority spells a token
+ * differently per platform — so only that line's POSIX spelling is rewritten before comparing.
+ *
+ * Scoped to the one key on purpose. A blanket "normalise quotes" would also rewrite the lines that
+ * quote the same branch name as plain ENGLISH — `line.marker.prepared.note` and
+ * `establish.cleanup-branch-exists` — and those must keep their literal quotes. Rewriting them
+ * would assert the wrong bytes and hide the drift these fixtures exist to catch. (Confirmed by
+ * running this file under a forced win32 platform: the blanket form failed on exactly those lines.)
+ * On POSIX every case is a no-op, so the pin still compares byte-for-byte there.
+ */
+const RENDERS_CLEANUP_BRANCH = "line.marker.interrupted-offer.note";
+
+function expectedLineBytes(key: string, bytes: string): string {
+  if (key !== RENDERS_CLEANUP_BRANCH) return bytes;
+  return bytes.replaceAll(`'${CLEANUP_BRANCH}'`, renderedQuoted(CLEANUP_BRANCH));
+}
 
 test("sync-outcome agreement: every row renders byte-identical to its pre-refactor fixture", async () => {
   const plainTop = await makePlainTop();
@@ -225,7 +246,11 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
         );
       } else {
         assert.equal(typeof built, "string", `${f.key}#${f.variant}: expected a line string`);
-        assert.equal(built, f.bytes, `guidance line drifted from the pre-refactor fixture: ${f.key}#${f.variant}`);
+        assert.equal(
+          built,
+          expectedLineBytes(f.key, f.bytes),
+          `guidance line drifted from the pre-refactor fixture: ${f.key}#${f.variant}`,
+        );
       }
     }
 

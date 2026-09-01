@@ -73,6 +73,7 @@ import {
   SUPERBEE_API_KEY_ENV,
   resolveCompatibleScalarEnv,
 } from "./env-policy.js";
+import { commandLiteral, commandToken } from "./command-text.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -315,8 +316,8 @@ function parseProjectBinding(file: string, raw: string): ProjectBinding {
     const remote = uriIntent.suggestedRemote ?? "<url>";
     throw new CliError(
       "USAGE",
-      `project binding ${file} cannot use ${uriIntent.detail}; URL bindings no longer activate remotes — pass --remote ${remote} explicitly or replace "bundle" with a filesystem path`,
-      { help: `${cliInvocation()} <command> --remote ${remote}` },
+      `project binding ${file} cannot use ${uriIntent.detail}; URL bindings no longer activate remotes — pass --remote ${commandToken(remote)} explicitly or replace "bundle" with a filesystem path`,
+      { help: `${cliInvocation()} <command> --remote ${commandToken(remote)}` },
     );
   }
   return { file, target: path.resolve(path.dirname(file), value) };
@@ -517,7 +518,7 @@ export async function resolveRemoteFlag(
     throw new CliError(
       "USAGE",
       `${REMOTE_ENV_VAR} ambient remote selection is retired; pass --remote <url> explicitly`,
-      { help: `${cliInvocation()} <command> --remote ${legacy || "<url>"}` },
+      { help: `${cliInvocation()} <command> --remote ${legacy ? commandToken(legacy) : commandLiteral("<url>")}` },
     );
   }
   await resolveProjectBinding();
@@ -1316,7 +1317,7 @@ export async function resolveLocalBundleTarget(
       canonicalRoot = await canonicalDirectoryRoot(
         root,
         `no local bundle directory at ${root}`,
-        `${cliInvocation()} init --create-only --dir ${dirFlag}`,
+        `${cliInvocation()} init --create-only --dir ${commandToken(dirFlag)}`,
       );
     } catch (error) {
       if (!(error instanceof CliError)) throw error;
@@ -1328,8 +1329,8 @@ export async function resolveLocalBundleTarget(
         `no local bundle directory at ${requested}`,
         {
           help: enclosing
-            ? `${cliInvocation()} <command> --dir ${enclosing}`
-            : `${cliInvocation()} init --create-only --dir ${dirFlag}`,
+            ? `${cliInvocation()} <command> --dir ${commandToken(enclosing)}`
+            : `${cliInvocation()} init --create-only --dir ${commandToken(dirFlag)}`,
         },
       );
     }
@@ -1347,7 +1348,7 @@ export async function resolveLocalBundleTarget(
     const canonicalRoot = await canonicalDirectoryRoot(
       binding.target,
       `no local bundle directory at ${binding.target} — from project binding ${binding.file}`,
-      `${cliInvocation()} init --create-only --dir ${binding.target}`,
+      `${cliInvocation()} init --create-only --dir ${commandToken(binding.target)}`,
     );
     assertBundleOutsidePrivateState(canonicalRoot);
     return {
@@ -1363,13 +1364,13 @@ export async function resolveLocalBundleTarget(
     throw new CliError(
       "NOT_FOUND",
       `no OKF bundle found (no index.md, and no ${CONVENTIONAL_BUNDLE_DIR_NAME}/index.md, in the current directory or its ancestors)`,
-      { help: `${cliInvocation()} init --create-only --dir ${CONVENTIONAL_BUNDLE_DIR_NAME}` },
+      { help: `${cliInvocation()} init --create-only --dir ${commandToken(CONVENTIONAL_BUNDLE_DIR_NAME)}` },
     );
   }
   const canonicalRoot = await canonicalDirectoryRoot(
     discovered,
     `no OKF bundle at ${discovered} (no index.md)`,
-    `${cliInvocation()} init --create-only --dir ${CONVENTIONAL_BUNDLE_DIR_NAME}`,
+    `${cliInvocation()} init --create-only --dir ${commandToken(CONVENTIONAL_BUNDLE_DIR_NAME)}`,
   );
   assertBundleOutsidePrivateState(canonicalRoot);
   return { root: discovered, canonicalRoot, selectedBy: "discovery" };

@@ -26,6 +26,7 @@ import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { render, resolveMode, type OutputMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
+import { commandLiteral, commandToken } from "../command-text.js";
 
 export const DELETE_USAGE = `superbee delete — hard-delete a doc or blob by its key (symmetric with promote/pull)
 
@@ -105,7 +106,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
     throw new CliError(
       "USAGE",
       "--expected-version was given an empty value — pass a real version token (from a prior read/write/pull receipt) or omit the flag for an unconditional delete.",
-      { help: `${cliInvocation()} delete --doc-key ${key} --expected-version <v>` },
+      { help: `${cliInvocation()} delete --doc-key ${commandToken(key)} --expected-version <v>` },
     );
   }
 
@@ -147,10 +148,10 @@ function deleteErrorToCliError(err: unknown, key: string, remoteUrl?: string): C
   if (err instanceof VersionConflict) {
     return new CliError(
       "STALE_HEAD",
-      `'${key}' has moved since --expected-version ${err.expected} was read (current: ` +
+      `'${key}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +
         `${err.actual ?? "absent"}) — re-read and retry with the current version.`,
       {
-        help: `${cliInvocation()} delete --doc-key ${key} --expected-version ${err.actual ?? "<token>"}`,
+        help: `${cliInvocation()} delete --doc-key ${commandToken(key)} --expected-version ${err.actual ? commandToken(err.actual) : commandLiteral("<token>")}`,
         details: { expected: err.expected, actual: err.actual },
       },
     );

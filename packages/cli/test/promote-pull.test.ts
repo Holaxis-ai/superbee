@@ -30,6 +30,7 @@ import { KNOWN_COMMANDS } from "../src/cli.js";
 import { commandReference } from "../src/reference.js";
 import { applyRecipe } from "../src/recipes.js";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
+import { testInvocation } from "./support/command-prefix.js";
 
 test("promote --help describes edition-aware document normalization", async () => {
   let out = "";
@@ -772,7 +773,7 @@ test("promote: a non-existent local <file> is a USAGE error naming the file, not
 test("promote/pull are registered in KNOWN_COMMANDS and the command reference", () => {
   assert.ok(KNOWN_COMMANDS.includes("promote"));
   assert.ok(KNOWN_COMMANDS.includes("pull"));
-  const ref = commandReference("agentstate-lite");
+  const ref = commandReference(testInvocation("agentstate-lite"));
   const artifacts = ref.commands["Artifacts"] ?? [];
   assert.ok(artifacts.some((l) => l.startsWith("promote ")));
   assert.ok(artifacts.some((l) => l.startsWith("pull ")));

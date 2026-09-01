@@ -1,6 +1,7 @@
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { assertCliLeaf, type CliLeafSpec } from "./command-spec.js";
+import { commandWords } from "./command-text.js";
 
 function boundedToken(token: string | undefined): string | undefined {
   if (token === undefined) return undefined;
@@ -30,6 +31,6 @@ export function assertLeafArity(
       ...(surplus === 0 ? {} : { surplus }),
       ...(firstUnexpected === undefined ? {} : { first_unexpected: firstUnexpected }),
     },
-    help: `${cliInvocation()} ${path} --help`,
+    help: `${cliInvocation()} ${commandWords(path)} --help`,
   });
 }

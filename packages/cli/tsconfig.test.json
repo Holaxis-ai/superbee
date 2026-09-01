@@ -1,0 +1,38 @@
+{
+  // Typecheck the TEST tree.
+  //
+  // `tsconfig.json` includes only `src`, and the test runner strips types rather than checking
+  // them, so until this file existed NOTHING typechecked `test/**`. A test file could carry a type
+  // error — or an unimported symbol — indefinitely, surfacing as a runtime failure only when that
+  // specific branch executed. That is how an unimported `commandToken` reached a PowerShell-gated
+  // test in this change: skipped everywhere we could run it, broken on the one host it existed for.
+  //
+  // `exclude` lists files that carry PRE-EXISTING type errors, unrelated to what this config was
+  // added for. It is a ratchet, not a permanent allowance: shrink it, never grow it. A new test
+  // file is checked by default, which is the property that matters.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src", "test"],
+  "exclude": [
+    "test/bundle-name.test.ts",
+    "test/cli-path-surface.test.ts",
+    "test/command-spec.test.ts",
+    "test/doc-cli-integration.test.ts",
+    "test/mcp-registration.test.ts",
+    "test/mcp-stdio.test.ts",
+    "test/mcp.test.ts",
+    "test/private-state-bundle-boundary.test.ts",
+    "test/recipes.test.ts",
+    "test/session-start.test.ts",
+    "test/setup.test.ts",
+    "test/skill-command.test.ts",
+    "test/sync-conflict.test.ts",
+    "test/ui-pages.test.ts",
+    "test/ui-proxy.test.ts",
+    "test/update-check.test.ts",
+    "test/update-orientation.test.ts",
+    "test/user-state-migration-interruption.test.ts",
+    "test/user-state-migration.test.ts",
+    "test/version.test.ts"
+  ]
+}

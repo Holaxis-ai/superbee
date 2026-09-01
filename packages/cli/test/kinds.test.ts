@@ -26,6 +26,8 @@ import { buildHomeView } from "../src/commands/home.js";
 import { applyRecipe } from "../src/recipes.js";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
 import { shellArg } from "../src/invocation.js";
+import { testInvocation } from "./support/command-prefix.js";
+import { renderedPattern } from "./support/rendered-command.js";
 
 const T = "2026-07-01T00:00:00.000Z";
 
@@ -64,15 +66,15 @@ test("kindsPointer: interpolated with the CALLER's resolved invocation, not a ha
   // reference.ts stays pure (no invocation.ts import): commandReference() takes the resolved
   // invocation prefix as a plain argument. A caller passing a DIFFERENT prefix (e.g. the
   // npx-fallback form an off-PATH install would resolve to) must see it reflected verbatim.
-  const npxForm = commandReference("npx -y @holaxis/aslite");
+  const npxForm = commandReference(testInvocation("npx -y @holaxis/aslite"));
   assert.equal(npxForm.kinds, "kinds are declared per-bundle — run `npx -y @holaxis/aslite kinds` to list them");
 
-  const bareForm = commandReference("agentstate-lite");
+  const bareForm = commandReference(testInvocation("agentstate-lite"));
   assert.equal(bareForm.kinds, "kinds are declared per-bundle — run `agentstate-lite kinds` to list them");
 
   // buildHomeView (home.ts) threads deps.invocation() through to commandReference() the same way.
   // (The 2-arg call omits the 3rd `summary` param — optional, so this stays the no-bundle path.)
-  const home = buildHomeView({ binPath: () => "/bin/agentstate-lite", invocation: () => "npx -y @holaxis/aslite" });
+  const home = buildHomeView({ binPath: () => "/bin/agentstate-lite", invocation: () => testInvocation("npx -y @holaxis/aslite") });
   assert.equal(home.kinds, "kinds are declared per-bundle — run `npx -y @holaxis/aslite kinds` to list them");
 });
 
@@ -336,11 +338,11 @@ test("new: point-of-use link teaching is GENERIC — per-kind help shows both di
     const hints = receipt.help as string[];
     assert.ok(!hints.some((h) => /reliability|runtime service/.test(h)), "creation receipts stay compact");
     assert.ok(
-      hints.some((h) => /link from a Incident:/.test(h) && /link add incidents\/<incident> services\/api --text "affects"/.test(h)),
+      hints.some((h) => /link from a Incident:/.test(h) && new RegExp(`link add ${renderedPattern("incidents/<incident>")} services/api --text ${renderedPattern("affects")}`).test(h)),
       `expected the inbound alignment hint, got: ${JSON.stringify(hints)}`,
     );
     assert.ok(
-      hints.some((h) => /link to a Service:/.test(h) && /link add services\/api services\/<service> --text "runs on"/.test(h)),
+      hints.some((h) => /link to a Service:/.test(h) && new RegExp(`link add services/api ${renderedPattern("services/<service>")} --text ${renderedPattern("runs on")}`).test(h)),
       `expected the outbound hint, got: ${JSON.stringify(hints)}`,
     );
 

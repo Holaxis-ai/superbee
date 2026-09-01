@@ -39,6 +39,7 @@ import { readExternalFileBytes } from "../external-file.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
+import { commandToken } from "../command-text.js";
 
 export const ARTIFACT_USAGE = `superbee artifact — produced outputs you share with a human (HTML today)
 
@@ -124,7 +125,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   const title = (values.title as string | undefined)?.trim();
   if (!title) {
     throw new CliError("USAGE", "artifact create requires --title <title>", {
-      help: `${cliInvocation()} artifact create ${file} --title <title>`,
+      help: `${cliInvocation()} artifact create ${commandToken(file)} --title <title>`,
     });
   }
 
@@ -255,8 +256,8 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
     const why = err instanceof Error ? err.message : String(err);
     throw new CliError(
       code,
-      `${why}\nThe blob '${entryKey}' was written but its record '${id}' was NOT — those bytes are orphaned. Re-run 'artifact create' (it picks a fresh id), or remove them with '${cliInvocation()} delete --doc-key ${entryKey}'.`,
-      { help: `${cliInvocation()} delete --doc-key ${entryKey}` },
+      `${why}\nThe blob '${entryKey}' was written but its record '${id}' was NOT — those bytes are orphaned. Re-run 'artifact create' (it picks a fresh id), or remove them with '${cliInvocation()} delete --doc-key ${commandToken(entryKey)}'.`,
+      { help: `${cliInvocation()} delete --doc-key ${commandToken(entryKey)}` },
     );
   }
 
@@ -307,8 +308,8 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   // The in-shell viewer (?view=artifact) ships in designs/artifact-runtime Unit 2 — don't advertise a
   // route that doesn't resolve yet (AXI honesty). Until then, pull the bytes out to view them.
   receipt.help = [
-    `${cliInvocation()} doc read ${createdId}`,
-    `${cliInvocation()} pull --doc-key ${entryKey} --out ${id.split("/").pop()}.html   # then open it (in-shell viewer: Unit 2)`,
+    `${cliInvocation()} doc read ${commandToken(createdId)}`,
+    `${cliInvocation()} pull --doc-key ${commandToken(entryKey)} --out ${commandToken(`${id.split("/").pop()}.html`)}   # then open it (in-shell viewer: Unit 2)`,
   ];
   stdout(render(receipt, mode));
 }

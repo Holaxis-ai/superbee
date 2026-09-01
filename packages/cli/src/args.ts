@@ -23,6 +23,7 @@ import {
   type PublicCommandName,
 } from "./command-spec.js";
 import { assertLeafArity } from "./positional-arity.js";
+import { commandToken, commandWords } from "./command-text.js";
 
 export type SelectorResolution<P> =
   | { readonly kind: "navigation" }
@@ -114,7 +115,7 @@ function nearestLongOption(token: string | undefined, candidates: readonly strin
       tied = true;
     }
   }
-  return best !== undefined && !tied && bestDistance <= maxDistance ? `--${best}` : undefined;
+  return best !== undefined && !tied && bestDistance <= maxDistance ? `--${commandToken(best)}` : undefined;
 }
 
 /**
@@ -162,7 +163,7 @@ function parseOwnedOrUsage<T extends { positionals: readonly string[]; values?: 
       : undefined;
     const baseMessage = translated ?? stripAdvisory(raw); // unrecognized -> trimmed original, never worse
     const message = suggestion ? `${baseMessage} — did you mean '${suggestion}'?` : baseMessage;
-    throw new CliError("USAGE", message, { help: `${cliInvocation()} ${command} --help` });
+    throw new CliError("USAGE", message, { help: `${cliInvocation()} ${commandWords(command)} --help` });
   }
 }
 

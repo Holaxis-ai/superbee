@@ -49,6 +49,8 @@ import { KNOWN_COMMANDS } from "../src/cli.js";
 import { fileURLToPath } from "node:url";
 import { credentialsDir } from "../src/credentials.js";
 import { canonicalUserStateDir, ensureUserStateRootSync } from "../src/user-state.js";
+import { testInvocation } from "./support/command-prefix.js";
+import { escapeForSerializedString, renderedQuoted } from "./support/rendered-command.js";
 
 const RUNNING = "0.1.0-pre.3";
 const SELECTED = "0.1.0-pre.4";
@@ -111,12 +113,17 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
     "bundle resolution: HTTP is activated only by explicit --remote <url>; otherwise an explicit --dir wins, then a committed .superbee.json or supported .agentstate.json local-path binding at or above the cwd, then local discovery walks up for an enclosing or conventional project bundle. Both binding names at one level conflict. URL-valued bindings and the retired AGENTSTATE_LITE_REMOTE ambient default fail with guidance to pass --remote explicitly",
 })}\n`;
 
-const PLATFORM_HOME_BASELINE_TOON = process.platform === "win32"
-  ? HOME_BASELINE_TOON.replaceAll("--dir '.superbee'", "--dir .superbee")
-  : HOME_BASELINE_TOON;
-const PLATFORM_HOME_BASELINE_JSON = process.platform === "win32"
-  ? HOME_BASELINE_JSON.replaceAll("--dir '.superbee'", "--dir .superbee")
-  : HOME_BASELINE_JSON;
+// The baseline is written in the POSIX spelling; rewrite it into the RUNNING platform's spelling.
+// This used to be a hand-written `win32 ? bare : quoted` branch, which described the renderer's old
+// Windows behaviour and silently stopped matching when that changed — the same drift that a
+// second copy of the quoting rules always produces. `renderedQuoted` is the shipped producer, so on
+// POSIX this substitution is a no-op and on Windows it tracks the renderer automatically.
+// Both baselines pin SERIALIZED bytes, and a Windows-rendered token contains `"`, which TOON and
+// JSON both escape. Substituting the raw token would compare against bytes the serializer never
+// emits, so the replacement is escaped the same way the serializer escapes it.
+const GETTING_STARTED_DIR = escapeForSerializedString(`--dir ${renderedQuoted(".superbee")}`);
+const PLATFORM_HOME_BASELINE_TOON = HOME_BASELINE_TOON.replaceAll("--dir '.superbee'", GETTING_STARTED_DIR);
+const PLATFORM_HOME_BASELINE_JSON = HOME_BASELINE_JSON.replaceAll("--dir '.superbee'", GETTING_STARTED_DIR);
 
 function successfulCheck(
   status: "current" | "deprecated" | "successor_not_ready" | "upgrade_available" | "rollback_available" =
@@ -779,7 +786,7 @@ test("worker revalidates token immediately before cache commit", async () => {
 test("home bytes stay exact and notice is one five-field block immediately after identity", () => {
   const deps = {
     binPath: () => "/opt/superbee/dist/superbee.mjs",
-    invocation: () => "superbee",
+    invocation: () => testInvocation("superbee"),
     identity: () => ({ version: "0.1.0-pre.3", channel: "local-dev" as const }),
   };
   const baseline = buildHomeView(deps, null);
@@ -810,7 +817,7 @@ test("home bytes stay exact and notice is one five-field block immediately after
 test("home JSON and every exact suppressor bypass the orientation seam; default TOON calls it once", async () => {
   const base = {
     binPath: () => "/opt/superbee/dist/superbee.mjs",
-    invocation: () => "superbee",
+    invocation: () => testInvocation("superbee"),
     stdout: (_value: string) => {},
     summarizeBundle: async () => null,
     loadBoardStatus: async () => null,

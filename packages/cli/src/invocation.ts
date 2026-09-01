@@ -22,7 +22,11 @@ import { fileURLToPath } from "node:url";
 import { readFileSync, realpathSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { homedir } from "node:os";
-import { renderGeneratedHookToken } from "./hook-compatibility.js";
+import { renderShellToken } from "./shell-quoting.js";
+// Type-only (erased at runtime): command-text.ts imports shellArg from here, so a value import
+// would close a cycle. Branding the two invocation prefixes is what lets the quoting checker
+// recognise a command-shaped template literal by TYPE instead of by pattern-matching its text.
+import type { CommandPrefix, CommandText } from "./command-text.js";
 
 /** The npm package coordinate — the token used for the no-download npx fallback. */
 export const PACKAGE_NAME = "superbee";
@@ -38,10 +42,18 @@ export function collapseHomeDirectory(p: string): string {
   return p;
 }
 
-/** Quote one arbitrary value as a single host-shell argument for emitted copy-paste commands. */
-export function shellArg(value: string): string {
-  if (process.platform === "win32") return renderGeneratedHookToken(value, "win32");
-  return `'${value.replaceAll("'", "'\\''")}'`;
+/**
+ * Quote one arbitrary value as a single host-shell argument for emitted copy-paste commands. The
+ * result is branded {@link CommandText}: this is the low-level quoting authority, and always-quote
+ * is unconditionally safe, so a site already using it needs no change. New sites should prefer
+ * `commandToken` from command-text.ts, which leaves inert values unquoted and keeps help readable.
+ *
+ * Note the win32 branch THROWS for the few values Windows cannot render inertly (see
+ * shell-quoting.ts); `commandToken` absorbs that, so such a value degrades one hint rather than
+ * aborting the diagnostic carrying it.
+ */
+export function shellArg(value: string): CommandText {
+  return renderShellToken(value) as CommandText;
 }
 
 /** realpath a path, or undefined if it does not exist / is not resolvable. */
@@ -165,10 +177,10 @@ export function managedBinNameOnPath(): string | undefined {
  * PATH; otherwise `npx --no-install superbee`. Every `help:` field and success `help[]` entry is
  * built from this so a copy-pasted next step never silently downloads a newer npm artifact.
  */
-export function cliInvocation(): string {
+export function cliInvocation(): CommandPrefix {
   const onPath = managedBinNameOnPath();
-  if (onPath) return onPath;
-  return `npx --no-install ${PACKAGE_NAME}`;
+  if (onPath) return onPath as CommandPrefix;
+  return `npx --no-install ${PACKAGE_NAME}` as CommandPrefix;
 }
 
 /**
@@ -177,12 +189,12 @@ export function cliInvocation(): string {
  * appropriate only when substituting another installed or registry artifact would break the
  * command's state/feature contract.
  */
-export function exactCliInvocation(): string {
+export function exactCliInvocation(): CommandPrefix {
   // Only src/index.ts can establish production command-dispatch identity. Helper-only unit imports
   // deliberately have no exact executable contract and retain the portable guidance fallback.
   if (!registeredExecutableEntry) return cliInvocation();
   const node = realOrUndefined(process.execPath) ?? process.execPath;
-  return [node, ...process.execArgv, registeredExecutableEntry].map(shellArg).join(" ");
+  return [node, ...process.execArgv, registeredExecutableEntry].map(shellArg).join(" ") as CommandPrefix;
 }
 
 /**

@@ -84,6 +84,7 @@ import {
   writeBoardDoc,
   type BoardRepo,
 } from "../../board-git/test/git-harness.js";
+import { testInvocation } from "./support/command-prefix.js";
 
 // ── scaffolding (mirrors sync.test.ts) ───────────────────────────────────────
 
@@ -274,7 +275,7 @@ function provisionedStatus(
   return { state: "provisioned", cache, selfActors: [], unpushed: null, uncommitted: null, ...extra };
 }
 
-const INV = "superbee";
+const INV = testInvocation("superbee");
 
 // ── 1. pinned moment-(e) strings (pure) ───────────────────────────────────────
 

@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 
 import { isReservedFile, type Bundle } from "@superbee/core";
 import { CliError } from "../errors.js";
+import { commandToken } from "../command-text.js";
 
 /**
  * Classify what a whole-document byte export does when its destination lands inside a local
@@ -18,14 +19,14 @@ export async function inBundlePollutionWarning(bundle: Bundle, out: string): Pro
 
   if (isReservedFile(resolvedOut)) {
     return (
-      `--out ${out} resolves to ${resolvedOut}, which is INSIDE this bundle (${root}) at a reserved ` +
+      `--out ${commandToken(out)} resolves to ${resolvedOut}, which is INSIDE this bundle (${root}) at a reserved ` +
       `OKF filename — the write will CLOBBER that reserved file (index.md/log.md is never re-parsed ` +
       `as a concept doc). Pass a path outside the bundle if that is not intended.`
     );
   }
   if (!resolvedOut.endsWith(".md")) return undefined;
   return (
-    `--out ${out} resolves to ${resolvedOut}, which is INSIDE this bundle (${root}) — the exported ` +
+    `--out ${commandToken(out)} resolves to ${resolvedOut}, which is INSIDE this bundle (${root}) — the exported ` +
     `file will be re-ingested as a new concept doc on the next bundle walk (list/query/status). ` +
     `Pass a path outside the bundle if that is not intended.`
   );

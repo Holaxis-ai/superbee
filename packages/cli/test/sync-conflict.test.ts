@@ -41,6 +41,7 @@ import {
   writeBoardDoc,
   type TwoCloneTopology,
 } from "../../board-git/test/git-harness.js";
+import { parseCommandLine, rendered } from "./support/rendered-command.js";
 
 // ── scaffolding (mirrors sync.test.ts; adds stderr + byte capture for --out -) ──
 
@@ -422,7 +423,10 @@ test("U3b deletion conflict (upstream deleted, local edited): deletion kept, you
     assert.equal(rows[0]!.yours, exportPath);
     const bodyExportPath = exportPath.replace(/\.md$/, ".body.md");
     assert.equal(rows[0]!.yours_body, bodyExportPath, "the body-only companion rides the row");
-    assert.ok(result.err!.help!.includes(`--body-file ${bodyExportPath}`), "the chain consumes the BODY export (round-2 REQUIRED 3)");
+    assert.ok(
+      result.err!.help!.includes(`--body-file ${rendered(bodyExportPath)}`),
+      `the chain consumes the BODY export (round-2 REQUIRED 3): ${result.err!.help}`,
+    );
     assert.equal(isMidRebase(topo.b), false);
     assertPristine(topo.b, "B after upstream-deletion converge");
 
@@ -1028,7 +1032,10 @@ test("U3b round-2 REQUIRED 2: a DOTTED doc id (notes/v1.2) conflicts as a DOC �
 async function runChainStep(home: string, cwd: string, command: string): Promise<void> {
   const inv = cliInvocation();
   assert.ok(command.startsWith(`${inv} `), `chain step must start with the invocation verbatim: ${command}`);
-  const argv = command.slice(inv.length + 1).split(" ");
+  // Tokenise the way a shell would. Splitting on spaces keeps a rendered token's quotes in
+  // the argv element, which on Windows makes the path unopenable — a harness failure that
+  // reads exactly like the emitted chain being wrong.
+  const argv = parseCommandLine(command.slice(inv.length + 1));
   const prevCwd = process.cwd();
   process.chdir(cwd);
   try {

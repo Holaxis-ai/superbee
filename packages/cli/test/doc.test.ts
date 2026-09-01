@@ -80,6 +80,7 @@ import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
 import { applyRecipe } from "../src/recipes.js";
 import { CONTEXT_NOTES_RECIPE } from "../src/recipe-source.js";
+import { rendered } from "./support/rendered-command.js";
 
 const OLD_TS = "2020-01-01T00:00:00.000Z";
 const T = "2026-07-01T00:00:00.000Z";
@@ -1539,7 +1540,7 @@ test("doc update --strict: a kind refusal's help is a literal completing 'doc up
         assert.equal(err.exitCode, 2);
         assert.equal(
           err.help,
-          `${cliInvocation()} doc update tasks/x --title <value> --progress_status <todo|in_progress|blocked|done|canceled>`,
+          `${cliInvocation()} doc update tasks/x --title <value> --progress_status ${rendered("<todo|in_progress|blocked|done|canceled>")}`,
         );
         return true;
       },
@@ -1568,7 +1569,7 @@ test("doc write --strict: a kind refusal OVERWRITING an EXISTING doc gets the sa
         assert.equal(err.exitCode, 2);
         assert.equal(
           err.help,
-          `${cliInvocation()} doc update tasks/z --progress_status <todo|in_progress|blocked|done|canceled>`,
+          `${cliInvocation()} doc update tasks/z --progress_status ${rendered("<todo|in_progress|blocked|done|canceled>")}`,
         );
         return true;
       },
@@ -2028,7 +2029,7 @@ test("doc write over a CONFORMING existing doc now REFUSES dropping a REQUIRED f
         // naming the dropped required field — docExists resolves true (the doc exists by construction).
         assert.equal(
           err.help,
-          `${cliInvocation()} doc update tasks/x --progress_status <todo|in_progress|blocked|done|canceled>`,
+          `${cliInvocation()} doc update tasks/x --progress_status ${rendered("<todo|in_progress|blocked|done|canceled>")}`,
         );
         return true;
       },

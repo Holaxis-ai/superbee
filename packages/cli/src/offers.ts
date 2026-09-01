@@ -6,6 +6,7 @@
 // "Opening a session" section supplies the BEHAVIOR that turns them into an opener.
 import { builtinNames, resolveBuiltinSync } from "./recipe-source-builtin.js";
 import { isRecipeApplied } from "./recipes.js";
+import { commandLiteral, commandToken, type CommandPrefix, type CommandText } from "./command-text.js";
 
 /** One ready-made offer: a builtin capability this bundle is not using, with its exact command. */
 export interface OfferRow {
@@ -31,8 +32,8 @@ const OFFERS_CAP = 3;
 export function deriveOffers(
   byType: Record<string, number>,
   conventionIds: Iterable<string>,
-  invocation: string,
-  targetDirSuffix = "",
+  invocation: CommandPrefix,
+  targetDirSuffix: CommandText = commandLiteral(""),
 ): OfferRow[] {
   const applied = new Set(conventionIds);
   const rows: OfferRow[] = [];
@@ -44,7 +45,7 @@ export function deriveOffers(
     rows.push({
       recipe: recipe.id,
       offer: recipe.offer,
-      command: `${invocation} recipe add ${recipe.id}${targetDirSuffix}`,
+      command: `${invocation} recipe add ${commandToken(recipe.id)}${targetDirSuffix}`,
     });
   }
   return rows;

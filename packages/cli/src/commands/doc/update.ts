@@ -31,6 +31,7 @@ import {
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
+import { commandToken } from "../../command-text.js";
 
 /** The `doc update` STANDARD patch fields; excludes control flags (--keep-timestamp/--strict/--dir/--remote/…). */
 const DOC_UPDATE_FIELD_FLAGS = ["title", "description", "tag", "type", "body", "body-file"] as const;
@@ -159,7 +160,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
     if (DOC_UPDATE_BOOLEAN_FLAGS.has(name)) {
       if (tok.value !== undefined) {
         // strict:false won't reject a boolean given `=value`; reject it here instead.
-        throw new CliError("USAGE", `--${name} does not take a value (got --${name}=${tok.value})`, {
+        throw new CliError("USAGE", `--${commandToken(name)} does not take a value (got --${commandToken(name)}=${commandToken(tok.value)})`, {
           help: `${cliInvocation()} doc update --help`,
         });
       }
@@ -170,7 +171,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
       // consuming a following `--flag` as the value); a MISSING value leaves `tok.value` undefined
       // (parseArgs fell back to boolean `true`) → the same clean USAGE the retired `takeValue()` threw.
       if (tok.value === undefined) {
-        throw new CliError("USAGE", `--${name} requires a value`, { help: `${cliInvocation()} doc update --help` });
+        throw new CliError("USAGE", `--${commandToken(name)} requires a value`, { help: `${cliInvocation()} doc update --help` });
       }
       std[name] = tok.value; // last-wins across repeats, matching the retired parser
       continue;
@@ -196,7 +197,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
       }
     }
     if (value === undefined) {
-      throw new CliError("USAGE", `--${name} requires a value`, { help: `${cliInvocation()} doc update --help` });
+      throw new CliError("USAGE", `--${commandToken(name)} requires a value`, { help: `${cliInvocation()} doc update --help` });
     }
     const arr = kindFields.get(name) ?? [];
     arr.push(value);
@@ -250,10 +251,10 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     throw new CliError(
       "USAGE",
       "--expected-version was given an empty value — pass a real version token (from a prior read/write receipt) or omit the flag for a normal (retrying) update.",
-      { help: `${cliInvocation()} doc update ${id} --expected-version <v>` },
+      { help: `${cliInvocation()} doc update ${commandToken(id)} --expected-version <v>` },
     );
   }
-  const actor = resolveActor(p.actor, { help: `${cliInvocation()} doc update ${id} --actor <name>` });
+  const actor = resolveActor(p.actor, { help: `${cliInvocation()} doc update ${commandToken(id)} --actor <name>` });
 
   // A patchable field OTHER than body, given via a flag — title/description/tag/type/kind fields.
   // Computed BEFORE the stdin read below: a FIELD-ONLY patch (one of these given, no --body/
@@ -301,7 +302,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
         // The same silent-stdin signal doc write's receipt carries (see write.ts): when the probe
         // timed out, "nothing to patch" may really mean "your piped body arrived too late".
         (stdinSilentTimeout ? `. Note: ${STDIN_SILENT_NOTE}.` : ""),
-      { help: `${cliInvocation()} doc update ${id} --title <t>` },
+      { help: `${cliInvocation()} doc update ${commandToken(id)} --title <t>` },
     );
   }
 
@@ -402,11 +403,11 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
           const schemaHint =
             resultType === "Convention"
               ? ` To change a kind's SCHEMA (add/remove a declared field or enum value), use ` +
-                `\`${cliInvocation()} kind field "${governedKind}" add/remove <name>\` (or edit the convention frontmatter directly).`
+                `\`${cliInvocation()} kind field ${commandToken(governedKind)} add/remove <name>\` (or edit the convention frontmatter directly).`
               : "";
           throw new CliError(
             "USAGE",
-            `no kind governs type '${resultType}', so kind field(s) ${[...p.kindFields.keys()].map((f) => `--${f}`).join(", ")} ` +
+            `no kind governs type '${resultType}', so kind field(s) ${[...p.kindFields.keys()].map((f) => `--${commandToken(f)}`).join(", ")} ` +
               `cannot be patched here — only the standard fields (--title/--description/--tag/--type/--body/--body-file) ` +
               `are patchable on an ungoverned doc.` +
               schemaHint,
@@ -429,7 +430,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             `unknown field(s) for kind '${kind.governs}': ${unknown.join(", ")} ` +
               `(declared: ${declared.length > 0 ? declared.join(", ") : "none"}; standard patch flags: ` +
               `title, description, tag, type, body, body-file)` +
-              ` — to ADD a field to the '${kind.governs}' kind: \`${cliInvocation()} kind field "${kind.governs}" add <name>\`.`,
+              ` — to ADD a field to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add <name>\`.`,
             { help: `${cliInvocation()} kinds` },
           );
         }
@@ -444,7 +445,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             throw new CliError(
               "USAGE",
               `'${logicalField}' was supplied more than once; pass it once`,
-              { help: `${cliInvocation()} doc update ${id} --${logicalField} <value>` },
+              { help: `${cliInvocation()} doc update ${commandToken(id)} --${commandToken(logicalField)} <value>` },
             );
           }
           suppliedByStorageField.set(coordinate.storageField, field);
@@ -460,9 +461,9 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       staleHead: (err) =>
         new CliError(
           "STALE_HEAD",
-          `'${id}' has moved since --expected-version ${err.expected} was read (current: ` +
+          `'${id}' has moved since --expected-version ${commandToken(String(err.expected))} was read (current: ` +
             `${err.actual ?? "absent"}) — re-read and retry with the current version.`,
-          { help: `${cliInvocation()} doc read ${id}`, details: { expected: err.expected, actual: err.actual } },
+          { help: `${cliInvocation()} doc read ${commandToken(id)}`, details: { expected: err.expected, actual: err.actual } },
         ),
     },
   });
@@ -481,6 +482,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   // Legacy-naming nudge (legacy-page.ts): fires on the RESULT doc's type at an authoring moment
   // only — never blocks, never on reads.
   if (isLegacyPageDoc(result.doc.frontmatter)) receipt.hint = LEGACY_PAGE_TYPE_HINT;
-  receipt.help = [`${cliInvocation()} doc read ${result.doc.id}`];
+  receipt.help = [`${cliInvocation()} doc read ${commandToken(result.doc.id)}`];
   stdout(render(receipt, mode));
 }

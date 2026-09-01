@@ -42,8 +42,10 @@ import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 import { canonicalUserStateDir, USER_STATE_MARKER_BYTES } from "../src/user-state.js";
 import { shellArg } from "../src/invocation.js";
+import { testInvocation } from "./support/command-prefix.js";
+import { renderedPattern } from "./support/rendered-command.js";
 
-const INVOKE = "npx --no-install superbee";
+const INVOKE = testInvocation("npx --no-install superbee");
 const DEFAULT_INVOKE = "npx --no-install superbee";
 const BASE_DEPS = { binPath: () => "/bin/superbee", invocation: () => INVOKE };
 
@@ -580,7 +582,10 @@ test("A1.6b bundle display name (tasks/bundle-display-name): a conventional bund
       await home(["--json"], { stdout: (s) => (out1 += s) });
       const view1 = JSON.parse(out1) as { bundle: { name?: string; name_help?: string } };
       assert.equal(view1.bundle.name, "my-project");
-      assert.match(view1.bundle.name_help ?? "", /doc write docs\/bundle --type "Bundle Name" --title/);
+      assert.match(
+        view1.bundle.name_help ?? "",
+        new RegExp(`doc write docs/bundle --type ${renderedPattern("Bundle Name")} --title`),
+      );
 
       // SILENT-APPROPRIATION guard (PR #67 review): an ordinary doc at the well-known id — any
       // type other than the marker — must NOT rename the project.
