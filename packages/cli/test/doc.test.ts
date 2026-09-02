@@ -3192,6 +3192,54 @@ test("truncated-preview guard: a document written deliberately with a preview st
   }
 });
 
+test("truncated-preview guard: a stored notice excuses NOTHING but an append — a foreign preview whose count matches a sentence quoted in the stored prose is still refused as a replace (independent review probe)", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    // docs/b is 1500 chars, so its preview notice reads "... 501 more character(s) are NOT shown".
+    await writeDoc({ root: dir }, { id: "docs/b", frontmatter: { type: "Note", title: "B", timestamp: T }, body: "B".repeat(1500) });
+    const previewB = String((await runDoc(["read", "docs/b", "--dir", dir])).body_preview);
+    const noticeB = BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(previewB)![0];
+
+    // docs/a is a long record whose prose QUOTES that exact sentence (a pasted transcript), written
+    // once through the sanctioned override.
+    const prose = `${"IRREPLACEABLE PROSE. ".repeat(200)}\n\nEvidence transcript:\n${noticeB}\n\n${"MORE PROSE. ".repeat(50)}`;
+    await runDoc(["write", "docs/a", "--type", "Note", "--title", "A", "--body", prose, "--accept-truncated-body", "--dir", dir]);
+    const stored = await storedBody(dir, "docs/a");
+    assert.ok(stored.includes(noticeB));
+
+    // The paste accident, with a FOREIGN preview: a replace, not an append, so the stored sentence
+    // buys it nothing.
+    await assert.rejects(
+      () => runDoc(["update", "docs/a", "--body", previewB, "--dir", dir]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/a"), stored, "the refusal wrote nothing");
+
+    // A mid-body rewrite that keeps the sentence is not an append either: the pre-excusal posture
+    // (the override, each time) still applies to it.
+    await assert.rejects(
+      () => runDoc(["update", "docs/a", "--body", stored.replace("MORE PROSE.", "LESS PROSE."), "--dir", dir]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/a"), stored);
+
+    // The append is the one excused shape.
+    const appended = await runDoc(["update", "docs/a", "--body", `${stored}\nAppended.\n`, "--dir", dir]);
+    assert.equal(appended.changed, true);
+  } finally {
+    await cleanup();
+  }
+});
+
 // ── `doc read --field <name>`: raw single-value output for scripting ───────────────────────────
 
 test("doc read --field: a scalar frontmatter field prints ONLY the raw value + newline (no envelope, no quotes)", async () => {

@@ -5,7 +5,10 @@
  * module owns CLI presentation — verb-specific error wording, remote error hints,
  * help text, the best-effort board attribution hook — and ONE piece of CLI
  * mutation policy: the body-replace guards (body-replace-guards.ts) run here, on
- * every attempt's candidate, so no verb can forget them.
+ * every attempt's candidate, so no `mutateDoc` caller can forget them. The
+ * mutation-seam boundary test pins that every other CLI writer reaches core's
+ * `mutateDocument` only through this module or as a recorded, body-preserving
+ * exemption.
  */
 import {
   DocumentNotFoundError,

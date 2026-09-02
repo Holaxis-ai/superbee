@@ -143,6 +143,23 @@ function matchesPreviewSlice(candidate: string, preview: string): boolean {
 }
 
 /**
+ * The first generated notice in `nextBody` that clause 1 of {@link guardTruncatedBodyPreview} must
+ * treat as a paste, if any. EVERY occurrence is checked, not just the first, so a foreign preview
+ * appended after a legitimately stored notice is still recognized. A notice is excused only when
+ * BOTH hold: the candidate is an append (it still contains the whole stored body, trailing
+ * whitespace aside, so nothing stored can be lost) AND the stored body already carries that exact
+ * sentence. On any other candidate every notice counts, which is the pre-excusal behavior.
+ */
+function firstForeignNotice(storedBody: string, nextBody: string): string | undefined {
+  const preservesStoredBody = nextBody.includes(storedBody.trimEnd());
+  const every = new RegExp(BODY_PREVIEW_TRUNCATION_SIGNATURE.source, `${BODY_PREVIEW_TRUNCATION_SIGNATURE.flags}g`);
+  for (const match of nextBody.matchAll(every)) {
+    if (!(preservesStoredBody && storedBody.includes(match[0]))) return match[0];
+  }
+  return undefined;
+}
+
+/**
  * Truncated-preview guard (P1, data loss): a `doc read` detail render deliberately shows only the
  * first {@link BODY_PREVIEW_LIMIT} characters of a large body, and a caller that feeds that preview
  * straight back into a full-body replace DESTROYS everything past the cut with exit 0 and no trace.
@@ -165,8 +182,18 @@ function matchesPreviewSlice(candidate: string, preview: string): boolean {
  * loss — and that also keeps a document whose stored body legitimately contains the marker (written
  * once with the override) patchable by every later field-only update.
  *
- * RESIDUAL, stated exactly. A candidate escapes both clauses iff (a) the tolerant signature does not
- * match it AND (b) it is not byte-identical — trailing whitespace aside — to the target's stored
+ * Clause 1 excuses exactly one shape: an APPEND. When the candidate still contains the whole stored
+ * body (trailing whitespace aside), nothing stored can be lost, so a notice the stored body already
+ * carries verbatim is that notice travelling along, not a new paste — see {@link firstForeignNotice}.
+ * That is what keeps a document written once with the override (its stored body legitimately holds
+ * the generated sentence) open to `link add`, which has no override flag of its own. A candidate that
+ * drops or rewrites any stored byte gets no such excuse: every notice it carries is treated as a
+ * paste, exactly as before the excusal existed, so a foreign preview can never replace a document
+ * merely because its omitted count happens to match a sentence quoted in the stored prose.
+ *
+ * RESIDUAL, stated exactly. A candidate escapes both clauses iff (a) it carries no tolerant-signature
+ * notice that clause 1 treats as a paste — i.e. no notice at all, or only stored notices on an
+ * append — AND (b) it is not byte-identical, trailing whitespace aside, to the target's stored
  * preview slice. Nothing further is required. In particular an untolerated perturbation of the
  * notice is sufficient ON ITS OWN, with the preview head left completely untouched: a pasted preview
  * carries notice text, so it is never byte-equal to the stored slice, and clause 2 therefore cannot
@@ -178,27 +205,7 @@ function matchesPreviewSlice(candidate: string, preview: string): boolean {
  * Enforced by `mutateDoc` inside every compare-and-swap attempt (see {@link guardBodyReplace}) so,
  * like the link-drop guard, it evaluates against the version-matched snapshot rather than a stale
  * upfront peek. `--accept-truncated-body` opts into the write deliberately.
- *
- * A notice the STORED body already carries verbatim is not a new paste. A document written once
- * with the override legitimately holds the generated sentence, and every later body change that
- * keeps it — `link add` appending a link, an edit elsewhere in the body — would otherwise be refused
- * with a recovery that reproduces the same sentence. The residual is exact: a preview of ANOTHER
- * document whose omitted count coincides with the stored notice's count passes clause 1 on such a
- * document, and only on such a document; clause 2 is unaffected.
  */
-/**
- * The first generated notice in `nextBody` that `storedBody` does not already carry verbatim —
- * EVERY occurrence is checked, not just the first, so a foreign preview appended after a
- * legitimately stored notice is still recognized as a paste.
- */
-function firstForeignNotice(storedBody: string, nextBody: string): string | undefined {
-  const every = new RegExp(BODY_PREVIEW_TRUNCATION_SIGNATURE.source, `${BODY_PREVIEW_TRUNCATION_SIGNATURE.flags}g`);
-  for (const match of nextBody.matchAll(every)) {
-    if (!storedBody.includes(match[0])) return match[0];
-  }
-  return undefined;
-}
-
 export function guardTruncatedBodyPreview(
   existing: OkfDocument,
   nextBody: string,
@@ -303,6 +310,18 @@ function computeDroppedLinks(existingLinks: Link[], nextLinks: Link[]): Link[] {
 }
 
 /**
+ * The outbound links `existing` carries that replacing its body with `nextBody` would drop —
+ * occurrence-aware, see {@link computeDroppedLinks}. The link-drop guard refuses on a non-empty
+ * result; a verb that has DECLARED the drop (`replaceLinks`) uses it to disclose what went on its
+ * receipt, so a permitted drop is never a silent one.
+ */
+export function droppedLinks(bundle: Bundle, existing: OkfDocument, nextBody: string): Link[] {
+  const existingLinks = parseLinks(bundle, existing);
+  if (existingLinks.length === 0) return []; // nothing to lose
+  return computeDroppedLinks(existingLinks, parseLinks(bundle, { ...existing, body: nextBody }));
+}
+
+/**
  * Data-loss guard (SHORT-TERM — see `roadmap-items/link-model-body-safe` for the proper
  * preserve-by-default fix this is standing in for): OKF cross-links are markdown links stored IN a
  * doc's body, so a `--body`/`--body-file` FULL-BODY REPLACE (`doc write`/`doc update`) silently drops
@@ -331,10 +350,7 @@ export function guardDroppedLinks(
   replaceLinks: boolean,
 ): void {
   if (replaceLinks) return;
-  const existingLinks = parseLinks(bundle, existing);
-  if (existingLinks.length === 0) return; // nothing to lose
-  const nextLinks = parseLinks(bundle, { ...existing, body: nextBody });
-  const dropped = computeDroppedLinks(existingLinks, nextLinks);
+  const dropped = droppedLinks(bundle, existing, nextBody);
   if (dropped.length === 0) return;
   const named = dropped.map((l) => `'${l.text}' -> ${l.to}`).join(", ");
   throw new CliError(
