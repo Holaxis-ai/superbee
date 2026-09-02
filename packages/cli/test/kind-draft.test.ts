@@ -27,7 +27,7 @@ import { applyRecipe } from "../src/recipes.js";
 import { resolveBuiltinSync } from "../src/recipe-source-builtin.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
-import { commandQuoted } from "../src/command-text.js";
+import { commandQuoted, commandToken } from "../src/command-text.js";
 
 async function tempBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "aslite-kind-draft-test-"));
@@ -114,7 +114,7 @@ test("kind draft: O1 apply-line bytes — --dir echo and the acceptance-gate com
     const plan = await runKind(["draft", "Plan", "--dir", dir]);
     assert.equal(
       plan.apply,
-      `${cliInvocation()} kind draft ${commandQuoted("Plan")} --apply ${plan.plan_token as string} --dir ${dir}   # after the human accepts`,
+      `${cliInvocation()} kind draft ${commandQuoted("Plan")} --apply ${plan.plan_token as string} --dir ${commandToken(dir)}   # after the human accepts`,
     );
     assert.equal(
       plan.note,
@@ -196,7 +196,7 @@ test("kind draft --apply: an instance write between draft and apply refuses STAL
     assert.equal(details.expected_plan, plan.plan_token);
     assert.match(details.current_plan as string, /^sha256:/);
     assert.notEqual(details.current_plan, details.expected_plan);
-    assert.equal(err.help, `${cliInvocation()} kind draft ${commandQuoted("Plan")} --dir ${dir}`);
+    assert.equal(err.help, `${cliInvocation()} kind draft ${commandQuoted("Plan")} --dir ${commandToken(dir)}`);
   } finally {
     await cleanup();
   }
@@ -257,14 +257,14 @@ test("kind dismiss: writes a declaration-free convention; `new` fails byte-ident
     assert.equal(receipt.dismissed, "Research");
     assert.equal(receipt.convention, "conventions/research");
     assert.equal(receipt.changed, true);
-    assert.equal(receipt.reopen, `${cliInvocation()} kind draft ${commandQuoted("Research")} --dir ${dir}`);
+    assert.equal(receipt.reopen, `${cliInvocation()} kind draft ${commandQuoted("Research")} --dir ${commandToken(dir)}`);
 
     const doc = await readDoc({ root: dir }, "conventions/research");
     assert.equal(doc.frontmatter.type, CONVENTION_TYPE);
     assert.equal(doc.frontmatter.governs, "Research");
     assert.equal(doc.frontmatter.fields, undefined); // declaration-free by construction
     assert.match(doc.body, /research stays freeform/);
-    assert.match(doc.body, /kind draft 'Research'/); // the priced reopen route (O3)
+    assert.ok(doc.body.includes(`kind draft ${commandQuoted("Research")}`)); // the priced reopen route (O3)
 
     // The registry sees it (the modeling gate's G1 suppression source)…
     const governing = (await loadKinds({ root: dir })).kinds.get("Research");
@@ -446,7 +446,7 @@ test("catalog dismiss of Task: recipes reports applied+drift with the command-fr
     assert.equal(receipt.convention, "conventions/task"); // deliberately the canonical id
     assert.equal(receipt.catalog, "work-tracking");
     const record = await readDoc({ root: dir }, "conventions/task");
-    assert.match(record.body, /kind draft 'Task'/); // O3: the priced reopen names kind draft
+    assert.ok(record.body.includes(`kind draft ${commandQuoted("Task")}`)); // O3: the priced reopen names kind draft
     assert.match(record.body, /work-tracking/);
 
     // The recipes surface: applied (ids occupied) + drift (content is not the recipe's) + the
@@ -636,12 +636,18 @@ test("hostile type name: every emitted command renders the type through the quot
     const plan2 = await runKind(["draft", 'y"; rm -rf ~; "', "--dir", dir]);
     await seed(dir, "attack2/b2", { type: 'y"; rm -rf ~; "', title: "b2" });
     const stale = await kindError(["draft", 'y"; rm -rf ~; "', "--apply", plan2.plan_token as string, "--dir", dir]);
-    assert.equal(stale.help, `${cliInvocation()} kind draft ${commandQuoted('y"; rm -rf ~; "')} --dir ${dir}`);
+    assert.equal(
+      stale.help,
+      `${cliInvocation()} kind draft ${commandQuoted('y"; rm -rf ~; "')} --dir ${commandToken(dir)}`,
+    );
 
     // Dismiss end-to-end: receipt and record body carry only the safe token.
     const dismissed = await runKind(["dismiss", 'y"; rm -rf ~; "', "--dir", dir]);
     assert.equal(dismissed.convention, "conventions/y-rm-rf");
-    assert.equal(dismissed.reopen, `${cliInvocation()} kind draft ${commandQuoted('y"; rm -rf ~; "')} --dir ${dir}`);
+    assert.equal(
+      dismissed.reopen,
+      `${cliInvocation()} kind draft ${commandQuoted('y"; rm -rf ~; "')} --dir ${commandToken(dir)}`,
+    );
     const record = await readDoc({ root: dir }, "conventions/y-rm-rf");
     assert.ok(record.body.includes(`kind draft ${commandQuoted('y"; rm -rf ~; "')}`));
     assert.ok(!record.body.includes('kind draft "y'), "raw double-quoted type must never reach the record body");
