@@ -43,6 +43,9 @@ jobs:
       - name: Run Windows command-output regressions first
         working-directory: packages/cli
         run: node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts
+      - name: Run the managed UI Windows startup proof first
+        working-directory: packages/cli
+        run: node --test --test-name-pattern="built CLI returns while its managed document remains live|managed worker preserves an indexless project-binding boundary" --import ./test/ts-loader.mjs ./test/ui-managed-authority.test.ts ./test/ui.test.ts
       - name: Typecheck the complete workspace contract natively
         run: npm run typecheck --workspaces --if-present --ignore-scripts
       - name: Run the CLI runtime contract (shard 1 of 4)
