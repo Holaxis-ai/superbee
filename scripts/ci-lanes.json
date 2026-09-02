@@ -105,7 +105,7 @@
       "runtime_node": 22,
       "installed_package_node": 20,
       "installed_package_proof_script": "scripts/windows-installed-package-proof.mjs",
-      "installed_package_proof_sha256": "ed57b2ce1c65ff0285b9ab6c86473d0704f59b4117bc8d3d06deb7f7544d4cf3",
+      "installed_package_proof_sha256": "e7044a178fb6d5fcc07cf2a2d523b27b65f6b9d4c9674a4af4f5cf28f9080151",
       "installed_package_proof_digest_update": {
         "command": "node scripts/windows-installed-package-proof-digest.mjs",
         "instructions": "After an intentional review of the proof bytes, run the command and update installed_package_proof_sha256 in this manifest in the same commit."
@@ -129,7 +129,7 @@
           "doc open",
           "parent exit",
           "authority reuse/isolation/convergence",
-          "real Edge render",
+          "real Chrome render",
           "exact stop"
         ],
         "mcp-config-lifecycle": [

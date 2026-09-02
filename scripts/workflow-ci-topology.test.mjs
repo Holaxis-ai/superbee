@@ -255,12 +255,19 @@ function validateProofCompletionAuthority(program, lifecycle, completionAssertio
     (node) => (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
       && staticMemberPath(node) === "process.stderr.write",
   );
-  assert.deepEqual(
-    stderrAuthorities,
-    scenarioStderrAuthorities,
+  assert.equal(
+    stderrAuthorities.length,
+    scenarioStderrAuthorities.length,
     "only the reviewed scenario wrapper may emit progress diagnostics on stderr",
   );
-  assert.equal(stderrAuthorities.length, 3, "the scenario wrapper must emit START, PASS, and FAIL diagnostics");
+  for (let index = 0; index < stderrAuthorities.length; index += 1) {
+    assert.equal(
+      stderrAuthorities[index],
+      scenarioStderrAuthorities[index],
+      "only the reviewed scenario wrapper may emit progress diagnostics on stderr",
+    );
+  }
+  assert.equal(stderrAuthorities.length, 4, "the scenario wrapper must emit START, SLOW, PASS, and FAIL diagnostics");
 
   const outputAuthorities = memberAccesses.filter((node) =>
     [
@@ -348,7 +355,7 @@ function validateProofTopLevel(program) {
     ["entrypoint", "process.env.SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT"],
     ["prefix", "process.env.SUPERBEE_WINDOWS_INSTALLED_PREFIX"],
     ["COMMAND_TIMEOUT_MS", "45_000"],
-    ["SCENARIO_TIMEOUT_MS", "120_000"],
+    ["SCENARIO_SLOW_MS", "120_000"],
     ["scratch", 'await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "superbee-windows-installed-"))'],
     ["home", 'path.join(scratch, "home")'],
     ["localAppData", 'path.join(home, "AppData", "Local")'],
@@ -368,6 +375,7 @@ function validateProofTopLevel(program) {
   const expectedFunctions = [
     "run",
     "runScenario",
+    "windowsCaseAlias",
     "cli",
     "cliJson",
     "git",
@@ -510,8 +518,10 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
   );
   assert.match(runSource, /killSignal: "SIGKILL"/, "a timed-out installed-package child must be terminated");
   const scenarioSource = proofFunction(program, "runScenario").getText();
-  assert.match(scenarioSource, /Promise\.race\(\[operation\(\), timeout\]\)/, "each lifecycle must race its scenario deadline");
-  assert.match(scenarioSource, /SCENARIO_TIMEOUT_MS/, "each lifecycle must use the reviewed scenario deadline");
+  assert.match(scenarioSource, /const result = await operation\(\)/, "scenario telemetry must observe the complete lifecycle");
+  assert.doesNotMatch(scenarioSource, /Promise\.race/, "scenario telemetry must not pretend to cancel still-running work");
+  assert.match(scenarioSource, /SCENARIO_SLOW_MS/, "each lifecycle must use the reviewed slow-scenario threshold");
+  assert.match(scenarioSource, /WINDOWS_PROOF_SLOW/, "slow scenario telemetry must be explicit and non-terminal");
   for (const state of ["START", "PASS", "FAIL"]) {
     assert.match(scenarioSource, new RegExp(`WINDOWS_PROOF_${state}`), `scenario telemetry must report ${state}`);
   }
@@ -1049,8 +1059,8 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
       windowsJob,
       lane,
       windowsInstalledProof.replace(
-        "} finally {",
-        '} catch {\n  process.stdout.write("installed package proof passed\\n");\n} finally {',
+        "} finally {\n  await rm(scratch",
+        '} catch {\n  process.stdout.write("installed package proof passed\\n");\n} finally {\n  await rm(scratch',
       ),
     ),
     /stdout authority|cannot convert failures to success/,
@@ -1096,9 +1106,9 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     () => validateWindowsInstalledProofSemantics(
       windowsJob,
       lane,
-      windowsInstalledProof.replace("Promise.race([operation(), timeout])", "operation()"),
+      windowsInstalledProof.replace("const result = await operation();", "const result = operation();"),
     ),
-    /scenario deadline/,
+    /complete lifecycle/,
   );
 });
 

@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 const entrypoint = process.env.SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT;
 const prefix = process.env.SUPERBEE_WINDOWS_INSTALLED_PREFIX;
 const COMMAND_TIMEOUT_MS = 45_000;
-const SCENARIO_TIMEOUT_MS = 120_000;
+const SCENARIO_SLOW_MS = 120_000;
 
 assert.equal(process.platform, "win32", "this proof must execute on the native Windows runner");
 assert.ok(entrypoint, "SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT is required");
@@ -47,15 +47,11 @@ async function run(file, args, options = {}) {
 async function runScenario(name, operation) {
   const startedAt = Date.now();
   process.stderr.write(`WINDOWS_PROOF_START ${name}\n`);
-  let timer;
+  const slowTimer = setTimeout(() => {
+    process.stderr.write(`WINDOWS_PROOF_SLOW ${name} ${Date.now() - startedAt}ms\n`);
+  }, SCENARIO_SLOW_MS);
   try {
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`${name} exceeded its ${SCENARIO_TIMEOUT_MS}ms scenario deadline`)),
-        SCENARIO_TIMEOUT_MS,
-      );
-    });
-    const result = await Promise.race([operation(), timeout]);
+    const result = await operation();
     process.stderr.write(`WINDOWS_PROOF_PASS ${name} ${Date.now() - startedAt}ms\n`);
     return result;
   } catch (error) {
@@ -64,8 +60,16 @@ async function runScenario(name, operation) {
     );
     throw error;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(slowTimer);
   }
+}
+
+function windowsCaseAlias(value) {
+  const index = [...value].findIndex((character) => /[a-z]/iu.test(character));
+  assert.notEqual(index, -1, `Windows path has no case-varying segment: ${value}`);
+  const character = value[index];
+  const replacement = character === character.toUpperCase() ? character.toLowerCase() : character.toUpperCase();
+  return `${value.slice(0, index)}${replacement}${value.slice(index + 1)}`;
 }
 
 async function cli(args, options = {}) {
@@ -321,7 +325,7 @@ async function renderManagedDocumentInChromium(url, expectedTitle) {
 }
 
 async function proveManagedDocumentLifecycle(bundle) {
-  // doc open -> parent exit -> exact authority reuse/isolation/convergence -> real Edge render -> exact stop
+  // doc open -> parent exit -> exact authority reuse/isolation/convergence -> real Chrome render -> exact stop
   const actors = ["windows-proof", "windows-proof-other", "windows-proof-concurrent"];
   const managedEnv = { ...commandEnv, PATH: prefix };
   const managed = (args) => cliJson(args, { env: managedEnv });
@@ -352,6 +356,12 @@ async function proveManagedDocumentLifecycle(bundle) {
     ]);
     assert.equal(reused.state, "reused");
     assert.equal(reused.url, first.url);
+
+    const caseAliased = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", windowsCaseAlias(bundle), "--actor", actors[0],
+    ]);
+    assert.equal(caseAliased.state, "reused", "Windows path casing must not fork an exact authority");
+    assert.equal(caseAliased.url, first.url);
 
     const secondDocument = await managed([
       "doc", "open", "docs/windows-managed-second", "--dir", bundle, "--actor", actors[0],

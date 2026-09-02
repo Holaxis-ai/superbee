@@ -9,6 +9,7 @@ import path from "node:path";
 import { withFilesystemMutationLock } from "@superbee/core";
 
 import { CliError } from "../errors.js";
+import { samePhysicalPath } from "../bundle.js";
 import { currentExecutableRealPath, cliInvocation } from "../invocation.js";
 import {
   ensureUserStateRoot,
@@ -504,7 +505,7 @@ async function recoverOrReuse(
   }
   if (result.kind === "indeterminate") throw probeUncertain(record, result.reason);
   const probe = result.probe;
-  if (record.authority.launch_root !== desiredAuthority.launch_root) {
+  if (!samePhysicalPath(record.authority.launch_root, desiredAuthority.launch_root)) {
     throw new CliError("CONFLICT", "the managed UI authority is active through a different trusted bundle route", {
       help: `${cliInvocation()} ui --stop --dir ${commandToken(record.authority.launch_root)}${actorArgs(record)}, then retry`,
     });
