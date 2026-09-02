@@ -16,7 +16,7 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getDoc, listAllHeads, ApiError } from "../api/client.js";
-import { fetchEdges, fetchKinds } from "../api/pages.js";
+import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
 import { formatWhen } from "./format.js";
@@ -29,6 +29,10 @@ import {
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function canRetainLastDocument(error: unknown): boolean {
+  return !(error instanceof ApiError) || error.status >= 500;
 }
 
 /** Frontmatter fields the header card shows as chips: kind-DECLARED fields with scalar values (status and friends), excluding the standard identity fields the card already presents. */
@@ -48,6 +52,11 @@ export function DocPage({ docId }: { docId: string }) {
   const docQuery = useQuery({
     queryKey: ["doc", docId],
     queryFn: () => getDoc(docId),
+    retry: false,
+  });
+  const openCommandQuery = useQuery({
+    queryKey: ["doc-open-command", docId],
+    queryFn: () => fetchDocumentOpenCommand(docId),
     retry: false,
   });
   const kindsQuery = useQuery({ queryKey: ["kinds"], queryFn: fetchKinds, refetchInterval: false });
@@ -98,7 +107,10 @@ export function DocPage({ docId }: { docId: string }) {
     );
   }
 
-  if (docQuery.isError) {
+  const refreshFailed =
+    docQuery.isRefetchError && docQuery.data !== undefined && canRetainLastDocument(docQuery.error);
+
+  if (docQuery.isError && !refreshFailed) {
     const err = docQuery.error;
     const gone = err instanceof ApiError && err.status === 404;
     return (
@@ -107,7 +119,7 @@ export function DocPage({ docId }: { docId: string }) {
         <div className="doc-terminal">
           <p className="view-status view-status-error">
             {gone
-              ? `No doc '${docId}' exists in this bundle${docQuery.isFetched ? " — it may have been removed" : ""}.`
+              ? `No doc '${docId}' exists in this bundle${docQuery.isRefetchError ? " — it may have been removed" : ""}.`
               : `Could not load '${docId}': ${err instanceof Error ? err.message : String(err)}`}
           </p>
           <button type="button" className="page-back" onClick={() => navigate({ view: "launcher" })}>
@@ -156,6 +168,29 @@ export function DocPage({ docId }: { docId: string }) {
     <div className="page-frame">
       {bar}
       <article className="doc-page">
+        {refreshFailed && (
+          <aside className="doc-refresh-warning" role="status">
+            <div className="doc-refresh-summary">
+              <p>Could not refresh; displaying the last loaded version.</p>
+              <button type="button" onClick={() => void docQuery.refetch()}>
+                Retry
+              </button>
+            </div>
+            {openCommandQuery.data && (
+              <div className="doc-refresh-command">
+                <span>Reopen from a terminal:</span>
+                <code>{openCommandQuery.data}</code>
+                <button
+                  type="button"
+                  aria-label="Copy document reopen command"
+                  onClick={() => void navigator.clipboard?.writeText(openCommandQuery.data!).catch(() => {})}
+                >
+                  Copy
+                </button>
+              </div>
+            )}
+          </aside>
+        )}
         <header className="doc-head">
           <h1>{title}</h1>
           <p className="doc-head-meta">

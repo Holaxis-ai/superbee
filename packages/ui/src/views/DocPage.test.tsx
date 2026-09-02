@@ -10,7 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DocPage } from "./DocPage.js";
 import { ApiError, getDoc, listAllHeads } from "../api/client.js";
-import { fetchEdges, fetchKinds } from "../api/pages.js";
+import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -20,14 +20,22 @@ vi.mock("../api/client.js", async (importOriginal) => {
 });
 
 vi.mock("../api/pages.js", () => ({
+  fetchDocumentOpenCommand: vi.fn(async (id: string) => `superbee doc open ${id}`),
   fetchEdges: vi.fn(async () => []),
   fetchKinds: vi.fn(async () => []),
   invalidateKinds: vi.fn(),
 }));
 
+const eventHandlers = vi.hoisted(() => ({ resync: undefined as (() => void) | undefined }));
+
 vi.mock("../pages/pageEvents.js", () => ({
   subscribeToChanges: vi.fn(() => () => {}),
-  subscribeToResync: vi.fn(() => () => {}),
+  subscribeToResync: vi.fn((handler: () => void) => {
+    eventHandlers.resync = handler;
+    return () => {
+      if (eventHandlers.resync === handler) eventHandlers.resync = undefined;
+    };
+  }),
 }));
 
 const TASK_KIND = {
@@ -52,6 +60,8 @@ describe("DocPage", () => {
     vi.mocked(fetchEdges).mockResolvedValue([]);
     vi.mocked(fetchKinds).mockReset();
     vi.mocked(fetchKinds).mockResolvedValue([]);
+    vi.mocked(fetchDocumentOpenCommand).mockReset();
+    vi.mocked(fetchDocumentOpenCommand).mockImplementation(async (id) => `superbee doc open ${id}`);
     vi.mocked(listAllHeads).mockReset();
     vi.mocked(listAllHeads).mockResolvedValue([]);
     container = document.createElement("div");
@@ -74,6 +84,18 @@ describe("DocPage", () => {
           <DocPage docId={docId} />
         </QueryClientProvider>,
       );
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+
+  async function resync(): Promise<void> {
+    await act(async () => {
+      eventHandlers.resync?.();
+      await new Promise((resolve) => setTimeout(resolve, 0));
     });
     for (let i = 0; i < 10; i++) {
       await act(async () => {
@@ -135,6 +157,73 @@ describe("DocPage", () => {
     await render("tasks/alpha");
     expect(container.textContent).toContain("Could not load 'tasks/alpha'");
     expect(container.textContent).not.toContain("No doc");
+  });
+
+  it.each([
+    ["transport", new TypeError("Failed to fetch")],
+    ["server", new ApiError(502, "RUNTIME", "upstream broke")],
+  ])("retains the last loaded document after a %s refresh failure", async (_label, failure) => {
+    vi.mocked(getDoc)
+      .mockResolvedValueOnce({
+        doc: { id: "docs/core", frontmatter: { type: "Doc", title: "Core" }, body: "# Durable content" },
+        version: "v1",
+      })
+      .mockRejectedValueOnce(failure);
+
+    await render("docs/core");
+    await resync();
+
+    expect(container.querySelector(".doc-body")!.textContent).toContain("Durable content");
+    expect(container.querySelector(".doc-refresh-warning")!.textContent).toContain(
+      "Could not refresh; displaying the last loaded version.",
+    );
+    expect(container.querySelector(".doc-refresh-warning button")!.textContent).toBe("Retry");
+    expect(container.querySelector(".doc-refresh-command code")!.textContent).toBe("superbee doc open docs/core");
+  });
+
+  it("Retry replaces stale content and clears the warning after recovery", async () => {
+    vi.mocked(getDoc)
+      .mockResolvedValueOnce({
+        doc: { id: "docs/core", frontmatter: { type: "Doc", title: "Core" }, body: "# Version one" },
+        version: "v1",
+      })
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({
+        doc: { id: "docs/core", frontmatter: { type: "Doc", title: "Core" }, body: "# Version two" },
+        version: "v2",
+      });
+
+    await render("docs/core");
+    await resync();
+    const retry = container.querySelector(".doc-refresh-summary button") as HTMLButtonElement;
+    await act(async () => {
+      retry.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    for (let i = 0; i < 10; i++) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    expect(container.querySelector(".doc-body")!.textContent).toContain("Version two");
+    expect(container.querySelector(".doc-refresh-warning")).toBeNull();
+  });
+
+  it("a confirmed 404 after a successful load removes stale content", async () => {
+    vi.mocked(getDoc)
+      .mockResolvedValueOnce({
+        doc: { id: "docs/core", frontmatter: { type: "Doc", title: "Core" }, body: "# Was here" },
+        version: "v1",
+      })
+      .mockRejectedValueOnce(new ApiError(404, "NOT_FOUND", "removed"));
+
+    await render("docs/core");
+    await resync();
+
+    expect(container.textContent).toContain("No doc 'docs/core' exists in this bundle — it may have been removed.");
+    expect(container.querySelector(".doc-body")).toBeNull();
+    expect(container.querySelector(".doc-refresh-warning")).toBeNull();
   });
 
   it("renders a bare concept-link block as an INLINE 'verb → target-title' edge list in the body — no separate section", async () => {

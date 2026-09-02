@@ -119,6 +119,15 @@ test("doc open verifies and opens one exact document through the existing DocPag
     assert.ok(url.searchParams.get("token"));
     assert.equal(opened, receipt.url, "doc open opens without a redundant --open flag");
     assert.equal((await fetch(receipt.url)).status, 200);
+    const recoveryUrl = new URL(receipt.url);
+    recoveryUrl.pathname = "/__ui/document-open-command";
+    recoveryUrl.searchParams.set("id", "docs/review");
+    const recoveryResponse = await fetch(recoveryUrl);
+    assert.equal(recoveryResponse.status, 200);
+    const recovery = (await recoveryResponse.json()) as { command: string };
+    assert.match(recovery.command, /doc open docs\/review/);
+    assert.match(recovery.command, /--dir/);
+    assert.match(recovery.command, /--port 0$/);
 
     resolveShutdown();
     await run;

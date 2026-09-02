@@ -99,6 +99,11 @@ interface CommonUiServerOptions {
   bundle: Bundle;
   /** Consumer-owned canonical document renderer; this host never imports presentation code. */
   renderDocument: BridgeDocumentRenderer;
+  /**
+   * Consumer-owned rendering of a runnable command that reopens one document. The runtime never
+   * assembles shell text: quoting and source selection belong to the CLI that launched it.
+   */
+  renderDocumentOpenCommand?: (documentId: string) => string | null;
   /** Asset bytes stay consumer-owned (the CLI injects its build-generated embedded table). */
   serveAsset: UiAssetHandler;
   /** Injectable for tests; defaults to a fresh random secret per boot (never reused across runs). */
@@ -358,6 +363,26 @@ async function configResponse(options: UiServerOptions): Promise<Response> {
     JSON.stringify(await configData(options)),
     { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
   );
+}
+
+/**
+ * Session-gated recovery metadata for the document reader. The command is rendered by the CLI,
+ * then cached by the browser while the authority is healthy so it remains useful after a crash.
+ */
+function documentOpenCommandResponse(options: UiServerOptions, url: URL): Response {
+  const documentId = url.searchParams.get("id");
+  if (!documentId) return jsonError(400, "BAD_REQUEST", "id is required");
+  if (!options.renderDocumentOpenCommand) {
+    return jsonError(404, "NOT_FOUND", "this UI host does not provide a document reopen command");
+  }
+  const command = options.renderDocumentOpenCommand(documentId);
+  if (!command) {
+    return jsonError(422, "UNREPRESENTABLE_COMMAND", "this document id cannot be represented safely for the host shell");
+  }
+  return new Response(JSON.stringify({ command }), {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
 /**
@@ -766,6 +791,8 @@ async function handleRequest(
     response = await finishAction(request, runtime, "cancel");
   } else if (url.pathname === "/__ui/config") {
     response = await configResponse(options);
+  } else if (url.pathname === "/__ui/document-open-command" && request.method === "GET") {
+    response = documentOpenCommandResponse(options, url);
   } else if (url.pathname === "/__ui/kinds") {
     response = await kindsResponse(options);
   } else if (url.pathname === "/__ui/views" && request.method === "GET") {
