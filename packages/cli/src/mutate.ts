@@ -2,8 +2,13 @@
  * CLI adapter for core's document mutation service.
  *
  * Core owns the read/decide/CAS/retry policy and typed domain failures. This
- * module deliberately owns only CLI presentation: verb-specific error wording,
- * remote error hints, help text, and the best-effort board attribution hook.
+ * module owns CLI presentation — verb-specific error wording, remote error hints,
+ * help text, the best-effort board attribution hook — and ONE piece of CLI
+ * mutation policy: the body-replace guards (body-replace-guards.ts) run here, on
+ * every attempt's candidate, so no `mutateDoc` caller can forget them. The
+ * mutation-seam boundary test pins that every other CLI writer reaches core's
+ * `mutateDocument` only through this module or as a recorded, body-preserving
+ * exemption.
  */
 import {
   DocumentNotFoundError,
@@ -24,6 +29,7 @@ import {
 } from "@superbee/core";
 import { CliError, classifyBundleError } from "./errors.js";
 import { kindConformanceCliError } from "./kind-write.js";
+import { guardBodyReplace, type BodyReplacePosture } from "./body-replace-guards.js";
 
 export type MutateMode = DocumentMutationMode;
 
@@ -58,6 +64,14 @@ export interface MutateDocOptions {
   actor?: string;
   persistActor?: boolean;
   expectedVersion?: Version;
+  /**
+   * The verb's body-replace posture — its `--accept-truncated-body` / `--replace-links` opt-outs.
+   * The truncated-preview and link-drop guards run on EVERY attempt's candidate whose body differs
+   * from the version-matched stored body, whether or not this is set: a verb declares what it
+   * accepts, it never decides whether to guard. Omit on a verb that never replaces a body; both
+   * guards are no-ops on an unchanged body.
+   */
+  bodyReplace?: BodyReplacePosture;
   /**
    * Seed the v0.2 generation clock on a create lacking a usable time (default true). A caller
    * writing a DEFINITION - a kind convention adopted from a recipe source - passes false, because
@@ -133,7 +147,13 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       mode: opts.mode,
       registry: opts.registry,
       strict: opts.strict,
-      buildCandidate: opts.buildCandidate,
+      buildCandidate: async (existing, context) => {
+        const candidate = await opts.buildCandidate(existing, context);
+        // Inside the attempt, after the verb's own refusals, so the guards see the version-matched
+        // snapshot this compare-and-swap write is about to replace — never a stale upfront peek.
+        if (existing) guardBodyReplace(opts.bundle, existing, candidate.body, opts.bodyReplace);
+        return candidate;
+      },
       onAbsent: opts.onAbsent,
       maxAttempts: opts.maxAttempts,
       compareTimestamp: opts.compareTimestamp,

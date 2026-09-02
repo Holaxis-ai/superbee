@@ -33,7 +33,7 @@ import {
   assertPathOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
-import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../doc/common.js";
+import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../../body-replace-guards.js";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
 import type { ResolvedLocalRoute } from "../../bundle.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
