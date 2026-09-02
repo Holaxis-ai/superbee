@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,6 +20,7 @@ import {
 } from "../src/ui/managed-authority.js";
 import { CliError } from "../src/errors.js";
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../src/user-state.js";
+import { runManagedUiWorkerInput } from "../src/ui/managed-worker.js";
 
 interface FakeService {
   input: ManagedUiWorkerInput;
@@ -45,6 +46,7 @@ function fakeRuntime(home: string): {
   let spawns = 0;
   const options: ManagedUiControllerOptions = {
     home,
+    launchIdentity: { canonical_root: "/canonical/fake", dev: 1, ino: 1 },
     spawnWorker: async (input) => {
       spawns += 1;
       // Widen the critical section so concurrent controllers genuinely contend on the shared lock.
@@ -247,6 +249,38 @@ test("fresh and expired pending records have deterministic interruption recovery
   }
 });
 
+test("a child whose pre-listen boot exceeds the absolute operation deadline terminates before pending reclaim", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-managed-deadline-"));
+  const canonicalRoot = await realpath(root);
+  const metadata = await stat(canonicalRoot);
+  const authority = managedUiAuthority(canonicalRoot, undefined, root);
+  let terminated = false;
+  const started = Date.now();
+  try {
+    await assert.rejects(
+      () => runManagedUiWorkerInput({
+        schema_version: 1,
+        operation_id: "slow-pre-listen",
+        authority,
+        management_secret: "a".repeat(32),
+        startup_deadline_at: new Date(started + 30).toISOString(),
+        launch_identity: { canonical_root: canonicalRoot, dev: metadata.dev, ino: metadata.ino },
+        port: 0,
+      }, {
+        terminate: () => { terminated = true; },
+        launchUi: async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 70));
+        },
+      }),
+      /startup deadline expired/u,
+    );
+    assert.equal(terminated, true);
+    assert.ok(Date.now() - started < MANAGED_UI_PENDING_RECLAIM_MS);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("ready and adopted child states recover an interrupted parent adoption idempotently", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-adoption-"));
   const runtime = fakeRuntime(home);
@@ -424,6 +458,8 @@ test("built CLI returns while its managed document remains live, then reuses, re
     const bounded = run(["ui", "--status", "--dir", bundleRoot, "--limit", "1"]);
     assert.equal(bounded.count, 2);
     assert.equal(bounded.shown, 1);
+    assert.ok(Array.isArray(bounded.help));
+    assert.match(String((bounded.help as string[])[0]), /ui --status .* --limit 0/u);
 
     const stopped = run(["ui", "--stop", "--dir", bundleRoot]);
     assert.equal(stopped.stopped, true);

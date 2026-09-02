@@ -9,9 +9,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:net";
 import { EventEmitter } from "node:events";
-import type { ChildProcess, spawn as spawnType } from "node:child_process";
+import { spawnSync, type ChildProcess, type spawn as spawnType } from "node:child_process";
 
 import { initBundle, writeDoc } from "@superbee/core";
 import { serve } from "@superbee/server";
@@ -146,8 +147,54 @@ test("doc open verifies and opens one exact document through the existing DocPag
     assert.equal(opened, receipt.url, "doc open opens without a redundant --open flag");
     assert.equal(workerInput!.authority.bundle_root, await realpath(dir));
     assert.equal(workerInput!.authority.launch_root, path.resolve(dir));
+    assert.equal(workerInput!.launch_identity.canonical_root, await realpath(dir));
+    assert.ok(Date.parse(workerInput!.startup_deadline_at) > Date.now());
   } finally {
     await cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("managed worker preserves an indexless project-binding boundary beside an indexed conventional child", async () => {
+  const project = await mkdtemp(path.join(tmpdir(), "superbee-managed-binding-boundary-"));
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-binding-home-"));
+  const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+  await writeDoc(
+    { root: project },
+    { id: "docs/root-only", frontmatter: { type: "Doc", title: "Root only" }, body: "# Root only" },
+  );
+  await initBundle(path.join(project, ".superbee"));
+  await writeFile(path.join(project, ".superbee.json"), JSON.stringify({ bundle: "." }));
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    LOCALAPPDATA: path.join(home, "AppData", "Local"),
+    PATH: "",
+  };
+  try {
+    const opened = spawnSync(process.execPath, [cli, "doc", "open", "docs/root-only", "--json"], {
+      cwd: project,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(opened.status, 0, opened.stderr || opened.stdout);
+    const receipt = JSON.parse(opened.stdout) as { url: string; root: string };
+    assert.equal(receipt.root, await realpath(project));
+    assert.equal((await fetch(receipt.url)).status, 200);
+
+    const stopped = spawnSync(process.execPath, [cli, "ui", "--stop", "--json"], {
+      cwd: project,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+    assert.equal((JSON.parse(stopped.stdout) as { stopped: boolean }).stopped, true);
+  } finally {
+    spawnSync(process.execPath, [cli, "ui", "--stop", "--json"], { cwd: project, env, encoding: "utf8", timeout: 5_000 });
+    await rm(project, { recursive: true, force: true });
     await rm(home, { recursive: true, force: true });
   }
 });

@@ -40,6 +40,7 @@ import { DOC_OPEN_USAGE, readErrorToCliError } from "./doc/common.js";
 import { commandFragment, commandToken, commandWords } from "../command-text.js";
 import { isRenderableToken } from "../shell-quoting.js";
 import {
+  captureManagedUiLaunchIdentity,
   listManagedUiStatus,
   managedUiAuthority,
   startOrReuseManagedUi,
@@ -249,7 +250,10 @@ async function runManagedDocumentUi(
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc open --actor <name>` });
   const requestedPort = parsedPort(values.port, `doc open ${rawDocumentId}`);
   const authority = managedUiAuthority(target.canonicalRoot, actor, bundle.root);
-  const receipt = await startOrReuseManagedUi(authority, documentId, requestedPort, deps.managedController);
+  const receipt = await startOrReuseManagedUi(authority, documentId, requestedPort, {
+    ...deps.managedController,
+    launchIdentity: deps.managedController?.launchIdentity ?? await captureManagedUiLaunchIdentity(authority),
+  });
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   const openBrowser = deps.openBrowser ?? defaultOpenBrowser;
   stdout(render({
@@ -294,7 +298,16 @@ async function runManagedUiControl(
       started_at: item.started_at,
     }));
     const shown = limit === 0 ? rows : rows.slice(0, limit);
-    stdout(render({ ui: "managed-status", root: target.canonicalRoot, count: rows.length, shown: shown.length, instances: shown }, resolveMode(values)));
+    stdout(render({
+      ui: "managed-status",
+      root: target.canonicalRoot,
+      count: rows.length,
+      shown: shown.length,
+      instances: shown,
+      ...(shown.length < rows.length
+        ? { help: [`${cliInvocation()} ui --status --dir ${commandToken(target.canonicalRoot)} --limit 0`] }
+        : {}),
+    }, resolveMode(values)));
     return;
   }
   if (values.limit !== undefined) throw new CliError("USAGE", "--limit is available only with ui --status");

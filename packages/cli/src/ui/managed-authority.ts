@@ -3,7 +3,7 @@
 // browser-session auth, rendering, or the HTTP listener itself.
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
-import { readdir, unlink } from "node:fs/promises";
+import { readdir, realpath, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { withFilesystemMutationLock } from "@superbee/core";
@@ -20,7 +20,7 @@ import { commandFragment, commandToken, type CommandText } from "../command-text
 
 export const MANAGED_UI_PROTOCOL = 1;
 export const MANAGED_UI_RECORD_SCHEMA = 1;
-export const MANAGED_UI_STARTUP_LEASE_MS = 15_000;
+export const MANAGED_UI_STARTUP_DEADLINE_MS = 15_000;
 export const MANAGED_UI_PENDING_RECLAIM_MS = 20_000;
 const RECORD_PREFIX = "managed-ui-";
 const RECORD_SUFFIX = ".json";
@@ -28,7 +28,7 @@ const RECORD_MAX_BYTES = 32 * 1024;
 const PROBE_TIMEOUT_MS = 2_000;
 const START_TIMEOUT_MS = 10_000;
 const STOP_POLL_MS = 100;
-const STOP_POLL_ATTEMPTS = 50;
+const STOP_EXIT_DEADLINE_MS = 20_000;
 const LIFECYCLE_LOCK_WAIT_MS = 30_000;
 
 export interface ManagedUiAuthority {
@@ -74,7 +74,15 @@ export interface ManagedUiWorkerInput {
   operation_id: string;
   authority: ManagedUiAuthority;
   management_secret: string;
+  startup_deadline_at: string;
+  launch_identity: ManagedUiLaunchIdentity;
   port: number;
+}
+
+export interface ManagedUiLaunchIdentity {
+  canonical_root: string;
+  dev: number;
+  ino: number;
 }
 
 export interface ManagedUiWorkerReady {
@@ -93,6 +101,17 @@ export interface ManagedUiControllerOptions {
   spawnWorker?: (input: ManagedUiWorkerInput) => Promise<ManagedUiWorkerReady>;
   withLock?: <T>(target: string, fn: () => Promise<T>) => Promise<T>;
   sleep?: (ms: number) => Promise<void>;
+  launchIdentity?: ManagedUiLaunchIdentity;
+}
+
+export async function captureManagedUiLaunchIdentity(authority: ManagedUiAuthority): Promise<ManagedUiLaunchIdentity> {
+  const canonicalRoot = await realpath(authority.launch_root);
+  if (canonicalRoot !== authority.bundle_root) {
+    throw new CliError("CONFLICT", "managed UI launch route changed after controller selection");
+  }
+  const metadata = await stat(canonicalRoot);
+  if (!metadata.isDirectory()) throw new CliError("CONFLICT", "managed UI launch route is no longer a directory");
+  return { canonical_root: canonicalRoot, dev: metadata.dev, ino: metadata.ino };
 }
 
 function exactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
@@ -215,9 +234,14 @@ function managementHeaders(record: ManagedUiRecord): Record<string, string> {
   };
 }
 
-async function boundedFetch(fetchImpl: typeof fetch, url: string, init: RequestInit = {}): Promise<Response> {
+async function boundedFetch(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit = {},
+  timeoutMs: number = PROBE_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
   timer.unref?.();
   try {
     return await fetchImpl(url, { ...init, signal: controller.signal });
@@ -258,12 +282,12 @@ function hasConnectionRefused(error: unknown): boolean {
   return visit(error);
 }
 
-async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch): Promise<ProbeResult> {
+async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch, timeoutMs?: number): Promise<ProbeResult> {
   if (!record.port || !record.launch_nonce) return { kind: "indeterminate", reason: "record has no live launch identity" };
   try {
     const response = await boundedFetch(fetchImpl, `http://127.0.0.1:${record.port}/__manage/status`, {
       headers: managementHeaders(record),
-    });
+    }, timeoutMs);
     if (!response.ok) return { kind: "indeterminate", reason: `management endpoint returned ${response.status}` };
     const value = await response.json() as Partial<Probe>;
     if (
@@ -296,12 +320,15 @@ async function waitForExactExit(
   fetchImpl: typeof fetch,
   sleep: (ms: number) => Promise<void>,
 ): Promise<void> {
+  const deadline = Date.now() + STOP_EXIT_DEADLINE_MS;
   let lastReason = "the listener still answers for the exact launch nonce";
-  for (let attempt = 0; attempt < STOP_POLL_ATTEMPTS; attempt += 1) {
-    const result = await probeRecord(record, fetchImpl);
+  while (Date.now() < deadline) {
+    const remaining = deadline - Date.now();
+    const result = await probeRecord(record, fetchImpl, Math.min(PROBE_TIMEOUT_MS, remaining));
     if (result.kind === "absent") return;
     lastReason = result.kind === "indeterminate" ? result.reason : lastReason;
-    await sleep(STOP_POLL_MS);
+    const sleepMs = Math.min(STOP_POLL_MS, deadline - Date.now());
+    if (sleepMs > 0) await sleep(sleepMs);
   }
   throw new CliError("TRANSIENT", `managed UI stop was acknowledged but listener exit is not yet proven: ${lastReason}`, {
     help: `${cliInvocation()} ui --stop --dir ${commandToken(record.authority.bundle_root)}${actorArgs(record)}`,
@@ -500,6 +527,9 @@ export async function startOrReuseManagedUi(
       if (reused) return { state: "reused", authority, record: reused, url: launchUrl(reused, documentId) };
     }
 
+    // Freeze the exact selected directory before publishing a pending operation. A failed
+    // identity capture therefore cannot strand a record that another controller must recover.
+    const launchIdentity = options.launchIdentity ?? await captureManagedUiLaunchIdentity(authority);
     const pending = pendingRecord(authority, now());
     await writeRecord(pending, home);
     let ready: ManagedUiWorkerReady;
@@ -509,6 +539,8 @@ export async function startOrReuseManagedUi(
         operation_id: pending.operation_id,
         authority,
         management_secret: pending.management_secret,
+        startup_deadline_at: new Date(Date.parse(pending.created_at) + MANAGED_UI_STARTUP_DEADLINE_MS).toISOString(),
+        launch_identity: launchIdentity,
         // The record makes the chosen port durable for reuse. Letting the OS choose for an
         // unpinned first launch avoids colliding with unrelated loopback services.
         port: requestedPort ?? 0,
