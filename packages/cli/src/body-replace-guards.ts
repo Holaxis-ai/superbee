@@ -146,8 +146,8 @@ function matchesPreviewSlice(candidate: string, preview: string): boolean {
  * The first generated notice in `nextBody` that clause 1 of {@link guardTruncatedBodyPreview} must
  * treat as a paste, if any. EVERY occurrence is checked, not just the first, so a foreign preview
  * appended after a legitimately stored notice is still recognized. A notice is excused only when
- * BOTH hold: the candidate is an append (it still contains the whole stored body, trailing
- * whitespace aside, so nothing stored can be lost) AND the stored body already carries that exact
+ * BOTH hold: the candidate CONTAINS the whole stored body, trailing whitespace aside — an append, a
+ * prepend, or a wrap, so nothing stored can be lost — AND the stored body already carries that exact
  * sentence. On any other candidate every notice counts, which is the pre-excusal behavior.
  */
 function firstForeignNotice(storedBody: string, nextBody: string): string | undefined {
@@ -182,9 +182,11 @@ function firstForeignNotice(storedBody: string, nextBody: string): string | unde
  * loss — and that also keeps a document whose stored body legitimately contains the marker (written
  * once with the override) patchable by every later field-only update.
  *
- * Clause 1 excuses exactly one shape: an APPEND. When the candidate still contains the whole stored
- * body (trailing whitespace aside), nothing stored can be lost, so a notice the stored body already
- * carries verbatim is that notice travelling along, not a new paste — see {@link firstForeignNotice}.
+ * Clause 1 excuses exactly one shape: a candidate that CONTAINS the whole stored body (trailing
+ * whitespace aside) — an append, a prepend, or a wrap. Nothing stored can be lost by such a write, so
+ * a notice the stored body already carries verbatim is that notice travelling along, not a new
+ * paste — see {@link firstForeignNotice}. The guarantee is therefore "no stored byte is lost", not
+ * "no preview is ever persisted": a foreign preview appended to such a document is permitted.
  * That is what keeps a document written once with the override (its stored body legitimately holds
  * the generated sentence) open to `link add`, which has no override flag of its own. A candidate that
  * drops or rewrites any stored byte gets no such excuse: every notice it carries is treated as a
