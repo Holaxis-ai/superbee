@@ -18,8 +18,8 @@ export function mintSessionSecret(): string {
 }
 
 /** The `Set-Cookie` header value that exchanges the URL token for a session cookie. */
-export function sessionCookieHeader(secret: string): string {
-  return `${SESSION_COOKIE_NAME}=${secret}; HttpOnly; SameSite=Strict; Path=/`;
+export function sessionCookieHeader(secret: string, cookieName: string = SESSION_COOKIE_NAME): string {
+  return `${cookieName}=${secret}; HttpOnly; SameSite=Strict; Path=/`;
 }
 
 /** Parse one named cookie out of a raw `Cookie` request header, or `undefined` if absent. */
@@ -49,9 +49,14 @@ export type AuthOutcome =
   | { ok: true; grantsCookie: false };
 
 /** Check a request's token/cookie against the per-run `secret`. */
-export function checkAuth(secret: string, tokenParam: string | null, cookieHeader: string | null | undefined): AuthOutcome {
+export function checkAuth(
+  secret: string,
+  tokenParam: string | null,
+  cookieHeader: string | null | undefined,
+  cookieName: string = SESSION_COOKIE_NAME,
+): AuthOutcome {
   if (tokenParam && constantTimeEqual(tokenParam, secret)) return { ok: true, grantsCookie: true };
-  const cookie = readCookie(cookieHeader, SESSION_COOKIE_NAME);
+  const cookie = readCookie(cookieHeader, cookieName);
   if (cookie && constantTimeEqual(cookie, secret)) return { ok: true, grantsCookie: false };
   return { ok: false };
 }

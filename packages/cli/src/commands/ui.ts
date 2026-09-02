@@ -16,7 +16,15 @@ import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { readDocVersioned, type Bundle } from "@superbee/core";
 import { createRouter } from "@superbee/server";
-import { openBundle, resolveRemoteFlag, resolveApiKeyEnv } from "../bundle.js";
+import type { UiManagementOptions } from "@superbee/ui-server";
+import {
+  assertResolvedLocalRouteIdentity,
+  openBundle,
+  resolveLocalBundleRoute,
+  resolveLocalBundleTarget,
+  resolveRemoteFlag,
+  resolveApiKeyEnv,
+} from "../bundle.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
 import { normalizeServer } from "../config.js";
 import { getApiKeyForOrigin } from "../credentials.js";
@@ -29,13 +37,23 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { resolveActor } from "../actor.js";
 import { DOC_OPEN_USAGE, readErrorToCliError } from "./doc/common.js";
-import { commandToken, commandWords } from "../command-text.js";
+import { commandFragment, commandToken, commandWords } from "../command-text.js";
 import { isRenderableToken } from "../shell-quoting.js";
+import {
+  captureManagedUiLaunchIdentity,
+  listManagedUiStatus,
+  managedUiAuthority,
+  startOrReuseManagedUi,
+  stopManagedUi,
+  type ManagedUiControllerOptions,
+} from "../ui/managed-authority.js";
 
 export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
 
 Usage:
   superbee ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
+  superbee ui --status [--dir <path>] [--limit <n>]
+  superbee ui --stop [--dir <path>] [--actor <name>]
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd) — mounts the
@@ -46,6 +64,9 @@ Options:
                          --actor > SUPERBEE_ACTOR > AGENTSTATE_LITE_ACTOR (legacy) > absent.
                          Read-only Views need none
   --open                Open the printed URL in a browser once the server is listening
+  --status              List managed local document authorities for the selected bundle
+  --stop                Stop the exact managed local authority selected by bundle + resolved actor
+  --limit <n>           Maximum status rows (default: 20; 0 = all)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 
@@ -66,12 +87,20 @@ dead (the server is gone, and the secret rotates next boot).
 export interface UiCliDeps {
   stdout: (s: string) => void;
   bootUiServer: (options: UiServerOptions) => Promise<UiServerHandle>;
-  waitForShutdown: () => Promise<void>;
+  waitForShutdown: (handle?: UiServerHandle) => Promise<void>;
   openBrowser: (url: string) => void;
   /** Record the current tokenized URL for one-click re-entry in private user state. Injectable so tests never touch the real profile. */
   writeUrlFile: (url: string) => Promise<void>;
   /** Remove the URL file on clean shutdown (default: the real one, only if it still points at `url`). */
   clearUrlFile: (url: string) => Promise<void>;
+  /** Private managed-child seam; public foreground callers never supply it. */
+  management?: UiManagementOptions;
+  /** Private managed-child cookie isolation; foreground callers keep the compatibility default. */
+  sessionCookieName?: string;
+  /** Managed-controller injection used by lifecycle tests. */
+  managedController?: ManagedUiControllerOptions;
+  /** Private managed-child seam: an already-selected and revalidated local bundle. */
+  localBundle?: Bundle;
 }
 
 function defaultWaitForShutdown(): Promise<void> {
@@ -134,6 +163,9 @@ const UI_PARSE_OPTIONS = {
   port: { type: "string" },
   actor: { type: "string" },
   open: { type: "boolean" },
+  status: { type: "boolean" },
+  stop: { type: "boolean" },
+  limit: { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -145,6 +177,9 @@ interface ParsedUiArgs {
     port?: string;
     actor?: string;
     open?: boolean;
+    status?: boolean;
+    stop?: boolean;
+    limit?: string;
     json?: boolean;
     help?: boolean;
   };
@@ -160,6 +195,10 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
     (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(UI_USAGE);
     return;
   }
+  if (parsed.values.status || parsed.values.stop) {
+    await runManagedUiControl(parsed, deps);
+    return;
+  }
   await runUi(parsed, deps, { kind: "launcher" });
 }
 
@@ -173,7 +212,114 @@ export async function openDocumentUi(argv: string[], deps: Partial<UiCliDeps> = 
     (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(DOC_OPEN_USAGE);
     return;
   }
-  await runUi(parsed, deps, { kind: "document" });
+  const remoteFlag = await resolveRemoteFlag(parsed.values.remote, parsed.values.dir);
+  if (remoteFlag !== undefined) {
+    await runUi(parsed, deps, { kind: "document" });
+    return;
+  }
+  await runManagedDocumentUi(parsed, deps);
+}
+
+function parsedPort(raw: string | undefined, commandPath: string): number | undefined {
+  if (raw === undefined) return undefined;
+  const trimmed = raw.trim();
+  if (!/^\d+$/u.test(trimmed) || Number(trimmed) > 65535) {
+    throw new CliError("USAGE", "--port must be an integer between 0 and 65535", {
+      help: `${cliInvocation()} ${commandWords(commandPath)} --port <p>`,
+    });
+  }
+  return Number(trimmed);
+}
+
+async function runManagedDocumentUi(
+  { values, positionals }: ParsedUiArgs,
+  deps: Partial<UiCliDeps>,
+): Promise<void> {
+  if (values.status || values.stop) throw new CliError("USAGE", "doc open does not accept --status or --stop");
+  const rawDocumentId = positionals[0]!;
+  const route = await resolveLocalBundleRoute(values.dir);
+  await assertResolvedLocalRouteIdentity(route);
+  const target = route.target;
+  const bundle = route.bundle;
+  const documentId = await resolveConceptIdCliArgument(bundle, rawDocumentId);
+  try {
+    await readDocVersioned(bundle, documentId);
+  } catch (error) {
+    throw readErrorToCliError(error, documentId, undefined);
+  }
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc open --actor <name>` });
+  const requestedPort = parsedPort(values.port, `doc open ${rawDocumentId}`);
+  const authority = managedUiAuthority(target.canonicalRoot, actor, bundle.root);
+  const receipt = await startOrReuseManagedUi(authority, documentId, requestedPort, {
+    ...deps.managedController,
+    launchIdentity: deps.managedController?.launchIdentity ?? await captureManagedUiLaunchIdentity(authority),
+  });
+  const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
+  const openBrowser = deps.openBrowser ?? defaultOpenBrowser;
+  stdout(render({
+    ui: "managed",
+    state: receipt.state,
+    url: receipt.url,
+    mode: "dir",
+    root: target.canonicalRoot,
+    document: documentId,
+    actor: authority.actor,
+    actor_present: authority.actor !== null,
+    help: [`open ${receipt.url} in a browser`, `${cliInvocation()} ui --status --dir ${commandToken(target.canonicalRoot)}`],
+  }, resolveMode(values)));
+  openBrowser(receipt.url);
+}
+
+async function runManagedUiControl(
+  { values, positionals }: ParsedUiArgs,
+  deps: Partial<UiCliDeps>,
+): Promise<void> {
+  if (values.status && values.stop) throw new CliError("USAGE", "--status and --stop are mutually exclusive");
+  if (values.remote !== undefined) throw new CliError("USAGE", "managed UI status and stop are local-only; --remote remains foreground");
+  if (values.port !== undefined || values.open || positionals.length > 0) {
+    throw new CliError("USAGE", "ui --status/--stop accept only their documented --dir, --actor, --limit, and --json options");
+  }
+  const target = await resolveLocalBundleTarget(values.dir);
+  const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
+  if (values.status) {
+    if (values.actor !== undefined) throw new CliError("USAGE", "ui --status lists every actor authority and does not accept --actor");
+    const rawLimit = values.limit ?? "20";
+    if (!/^\d+$/u.test(rawLimit)) throw new CliError("USAGE", "--limit must be a non-negative integer (0 = unlimited)");
+    const limit = Number(rawLimit);
+    if (!Number.isSafeInteger(limit)) throw new CliError("USAGE", "--limit must be a non-negative safe integer (0 = unlimited)");
+    const instances = await listManagedUiStatus(target.canonicalRoot, deps.managedController);
+    const rows = instances.map((item) => ({
+      actor: item.authority.actor,
+      actor_present: item.authority.actor !== null,
+      phase: item.phase,
+      live: item.live,
+      port: item.port,
+      ...(item.active_clients === undefined ? {} : { active_clients: item.active_clients }),
+      started_at: item.started_at,
+    }));
+    const shown = limit === 0 ? rows : rows.slice(0, limit);
+    stdout(render({
+      ui: "managed-status",
+      root: target.canonicalRoot,
+      count: rows.length,
+      shown: shown.length,
+      instances: shown,
+      ...(shown.length < rows.length
+        ? { help: [`${cliInvocation()} ui --status --dir ${commandToken(target.canonicalRoot)} --limit 0`] }
+        : {}),
+    }, resolveMode(values)));
+    return;
+  }
+  if (values.limit !== undefined) throw new CliError("USAGE", "--limit is available only with ui --status");
+  const actor = resolveActor(values.actor, { help: `${cliInvocation()} ui --stop --dir ${commandToken(target.canonicalRoot)} --actor <name>` });
+  const result = await stopManagedUi(managedUiAuthority(target.canonicalRoot, actor), deps.managedController);
+  stdout(render({
+    ui: "managed-stop",
+    root: target.canonicalRoot,
+    actor: actor ?? null,
+    actor_present: actor !== undefined,
+    stopped: result.stopped,
+  }, resolveMode(values)));
 }
 
 async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliDeps>, entry: UiEntry): Promise<void> {
@@ -205,9 +351,12 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     const source = remoteFlag ?? bundle.root;
     if (!isRenderableToken(id) || !isRenderableToken(source)) return null;
     const sourceFlag = remoteFlag ? "--remote" : "--dir";
+    const actorFlag = actor === undefined
+      ? commandFragment``
+      : commandFragment` --actor ${commandToken(actor)}`;
     return explicitPort
-      ? `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))} -- ${commandToken(id)}`
-      : `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} -- ${commandToken(id)}`;
+      ? `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))}${actorFlag} -- ${commandToken(id)}`
+      : `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)}${actorFlag} -- ${commandToken(id)}`;
   };
   let options: UiServerOptions;
   let rootLabel: string;
@@ -239,19 +388,29 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     options = { mode: "remote", port, remoteBase: base, apiKey, bundle, actor, renderDocumentOpenCommand };
     rootLabel = base;
   } else {
-    bundle = await openBundle(values.dir);
+    bundle = deps.localBundle ?? await openBundle(values.dir);
     const router = createRouter(bundle);
-    options = { mode: "dir", port, router, bundle, actor, renderDocumentOpenCommand };
+    options = {
+      mode: "dir",
+      port,
+      router,
+      bundle,
+      actor,
+      renderDocumentOpenCommand,
+      ...(deps.management ? { management: deps.management } : {}),
+      ...(deps.sessionCookieName ? { sessionCookieName: deps.sessionCookieName } : {}),
+    };
     rootLabel = bundle.root;
   }
 
   let documentId: string | undefined;
   if (rawDocumentId !== undefined) {
-    documentId = await resolveConceptIdCliArgument(bundle, rawDocumentId);
+    const resolvedDocumentId = await resolveConceptIdCliArgument(bundle, rawDocumentId);
+    documentId = resolvedDocumentId;
     try {
-      await readDocVersioned(bundle, documentId);
+      await readDocVersioned(bundle, resolvedDocumentId);
     } catch (error) {
-      throw readErrorToCliError(error, documentId, values.remote);
+      throw readErrorToCliError(error, resolvedDocumentId, values.remote);
     }
   }
 
@@ -323,7 +482,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
 
   // Stay in the foreground; SIGINT/SIGTERM (or the injected waitForShutdown) close the listener
   // cleanly and this resolves — exit 0. No request logs to stdout by default.
-  await waitForShutdown();
+  await waitForShutdown(handle);
   await handle.close();
   await clearUrlFile(url);
 }
