@@ -21,9 +21,13 @@ function stubAsset(): { status: number; headers: Record<string, string>; body: U
 }
 
 async function fetchConfig(server: UiServerHandle): Promise<Record<string, unknown>> {
+  return fetchJson(server, "/__ui/config");
+}
+
+async function fetchJson(server: UiServerHandle, requestPath: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     httpGet(
-      { hostname: server.host, port: server.port, path: "/__ui/config", headers: { cookie: `aslite_ui_session=${SECRET}` } },
+      { hostname: server.host, port: server.port, path: requestPath, headers: { cookie: `aslite_ui_session=${SECRET}` } },
       (res) => {
         let text = "";
         res.setEncoding("utf8");
@@ -74,6 +78,18 @@ test("config passes an injected sharing summary and workspaces through verbatim"
     const config = await fetchConfig(server);
     assert.deepEqual(config.sharing, SHARED);
     assert.deepEqual(config.workspaces, [{ label: "alpha", path: "/a", open: true }]);
+  } finally {
+    await server.close();
+  }
+});
+
+test("the session-gated document recovery endpoint returns only the consumer-rendered command", async () => {
+  const server = await bootDir({
+    renderDocumentOpenCommand: (id) => `consumer-safe:${id}`,
+  });
+  try {
+    const payload = await fetchJson(server, "/__ui/document-open-command?id=docs%2Fcore");
+    assert.deepEqual(payload, { command: "consumer-safe:docs/core" });
   } finally {
     await server.close();
   }

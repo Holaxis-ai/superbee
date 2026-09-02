@@ -11,7 +11,7 @@
 import { test, expect } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { rm } from "node:fs/promises";
-import { writeBlob, writeDoc } from "@superbee/core";
+import { deleteDoc, writeBlob, writeDoc } from "@superbee/core";
 import { approveViewIfPrompted, bootUiOverPagesBundle, bootUiServerInProcess, openRegisteredView, seedPagesBundle, CLI_DIST } from "./harness.js";
 import { VIEW_LOAD_DEADLINE_MS } from "../src/views/viewReadiness.js";
 
@@ -417,6 +417,40 @@ test("P1: an SSE outage self-heals — a change made while the stream was down a
     });
   } finally {
     await first.close().catch(() => {}); // already closed on the happy path
+    await second?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a document reader preserves its last good content through an outage, recovers, then honors removal", async ({ page }) => {
+  const dir = await seedPagesBundle(TASKS);
+  const secret = "e2e-doc-resilience-fixed-secret";
+  const first = await bootUiServerInProcess({ dir, sessionSecret: secret });
+  let second: Awaited<ReturnType<typeof bootUiServerInProcess>> | undefined;
+  try {
+    await page.goto(
+      `http://127.0.0.1:${first.port}/?token=${secret}&view=doc&id=tasks%2Falpha`,
+    );
+    await expect(page.locator(".doc-head h1")).toHaveText("Alpha task");
+
+    await first.close();
+    await expect(page.locator(".doc-refresh-warning")).toContainText(
+      "Could not refresh; displaying the last loaded version.",
+      { timeout: 15_000 },
+    );
+    await expect(page.locator(".doc-head h1")).toHaveText("Alpha task");
+
+    second = await bootUiServerInProcess({ dir, port: first.port, sessionSecret: secret });
+    await expect(page.locator(".doc-refresh-warning")).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.locator(".doc-head h1")).toHaveText("Alpha task");
+
+    await deleteDoc({ root: dir }, "tasks/alpha");
+    await expect(page.locator(".doc-terminal")).toContainText("it may have been removed", {
+      timeout: 15_000,
+    });
+    await expect(page.locator(".doc-body")).toHaveCount(0);
+  } finally {
+    await first.close().catch(() => {});
     await second?.close();
     await rm(dir, { recursive: true, force: true });
   }

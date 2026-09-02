@@ -48,16 +48,17 @@ export const DOC_OPEN_USAGE = `superbee doc open — display one exact bundle do
 Usage:
   superbee doc open <id> [options]
 
-The command verifies the document exists, starts the existing local web UI, and opens its trusted
-DocPage route directly. It uses the same bounded Markdown renderer as the rest of Superbee; it does
-not export a second HTML copy or introduce another rendering path. The UI server stays in the
-foreground until SIGINT/SIGTERM, matching 'superbee ui'.
+The command verifies the document exists and opens its trusted DocPage route in the existing local web UI.
+It uses the same bounded Markdown renderer as the rest of Superbee; it does not export
+a second HTML copy or introduce another rendering path. Local launches return promptly and reuse one
+managed UI per exact bundle + actor. Explicit remote launches stay in the foreground. Use
+'superbee ui --status' or 'superbee ui --stop' to inspect or stop a managed local UI.
 
 Options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Display a document from an explicit remote bundle
                        (mutually exclusive with --dir; remote access is always explicit)
-  --port <p>           Port to bind (default: stable per bundle, then OS-assigned if occupied)
+  --port <p>           Require this port for a new managed UI (default: OS-assigned and then reused)
   --actor <name>       Advisory identity for any later human-confirmed View actions in this UI
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help
