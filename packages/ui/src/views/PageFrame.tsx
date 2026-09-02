@@ -582,7 +582,7 @@ export function PageFrame({ pageId }: { pageId: string }) {
           title={title}
           onLoad={(event) => {
             const launchId = launchIdRef.current;
-            if (frameSeq === null || !launchId) return;
+            if (frameSeq === null || !launchId || frameReadySeqRef.current === frameSeq) return;
             probeFrameDelivery(event.currentTarget, frameSeq, launchId);
           }}
           onError={() => {
