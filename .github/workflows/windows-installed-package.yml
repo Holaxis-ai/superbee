@@ -40,8 +40,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm test -w @superbee/publication
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Run the complete workspace contract natively
-        run: npm run ci:runtime
+          npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Typecheck the complete workspace contract natively
+        run: npm run typecheck --workspaces --if-present --ignore-scripts
+      - name: Run the CLI runtime contract (shard 1 of 4)
+        run: npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --test-shard=1/4 --import ./test/ts-loader.mjs './test/*.test.ts'
+      - name: Run the CLI runtime contract (shard 2 of 4)
+        run: npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --test-shard=2/4 --import ./test/ts-loader.mjs './test/*.test.ts'
+      - name: Run the CLI runtime contract (shard 3 of 4)
+        run: npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --test-shard=3/4 --import ./test/ts-loader.mjs './test/*.test.ts'
+      - name: Run the CLI runtime contract (shard 4 of 4)
+        run: npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --test-shard=4/4 --import ./test/ts-loader.mjs './test/*.test.ts'
+      - name: Run the non-CLI workspace contracts natively
+        run: npm test --if-present --ignore-scripts -w @superbee/board-git -w @superbee/core -w @superbee/markdown-renderer -w @superbee/mcp-app -w @superbee/publication -w @superbee/server -w @superbee/ui -w @superbee/ui-server -w @superbee/view-runtime
       - name: Build, pack, and verify the publishable artifact
         shell: pwsh
         run: |

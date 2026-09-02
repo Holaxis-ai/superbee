@@ -501,11 +501,44 @@ function assertWindowsJob(job, lane) {
   assert.match(job, /name: Run Windows-sensitive filesystem regressions first/);
   assert.match(job, /npm test -w @superbee\/core -- --test-name-pattern="AC-10"/);
   assert.match(job, /npm test -w @superbee\/publication/);
+  const kindDraftProbe = "npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
+  assert.ok(job.includes(kindDraftProbe), "Windows preflight must run the command-emission contract before the long runtime lanes");
+  const typecheck = "npm run typecheck --workspaces --if-present --ignore-scripts";
+  assert.ok(job.includes(typecheck), "Windows runtime must preserve the complete workspace typecheck");
+  const shards = [1, 2, 3, 4].map(
+    (index) => `npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --test-shard=${index}/4 --import ./test/ts-loader.mjs './test/*.test.ts'`,
+  );
+  for (const shard of shards) {
+    assert.equal(job.split(shard).length - 1, 1, `Windows CLI runtime must execute exactly one ${shard}`);
+  }
+  const nonCliWorkspaces = [
+    "@superbee/board-git",
+    "@superbee/core",
+    "@superbee/markdown-renderer",
+    "@superbee/mcp-app",
+    "@superbee/publication",
+    "@superbee/server",
+    "@superbee/ui",
+    "@superbee/ui-server",
+    "@superbee/view-runtime",
+  ];
+  const nonCliCommand = job.match(/^ {8}run: npm test --if-present --ignore-scripts (.+)$/m)?.[1];
+  assert.ok(nonCliCommand, "Windows runtime must retain an explicit non-CLI workspace test step");
+  assert.deepEqual(
+    [...nonCliCommand.matchAll(/-w ([^ ]+)/g)].map((match) => match[1]),
+    nonCliWorkspaces,
+    "Windows non-CLI runtime workspace coverage drifted",
+  );
+  assert.doesNotMatch(job, /run: npm run ci:runtime/, "Windows runtime must remain split into observable failure domains");
   assert.ok(
-    job.indexOf("npm test -w @superbee/publication") < job.indexOf("run: npm run ci:runtime"),
+    job.indexOf(kindDraftProbe) < job.indexOf(typecheck)
+      && job.indexOf(typecheck) < job.indexOf(shards[0])
+      && job.indexOf(shards[0]) < job.indexOf(shards[1])
+      && job.indexOf(shards[1]) < job.indexOf(shards[2])
+      && job.indexOf(shards[2]) < job.indexOf(shards[3])
+      && job.indexOf(shards[3]) < job.indexOf(nonCliCommand),
     "Windows-sensitive filesystem regressions must fail before the complete workspace contract",
   );
-  assert.match(job, /run: npm run ci:runtime/);
   assert.match(job, /npm run --silent pack:npm-package -- --pack-destination \$env:RUNNER_TEMP/);
   assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
   assert.match(job, /npm install --global \$env:SUPERBEE_WINDOWS_TARBALL --prefix \$prefix/);
@@ -661,6 +694,39 @@ test("Windows proof cannot be reattached to automatic CI or lose its manual trig
   const required = structuredClone(manifest);
   required.lanes.windows.required = true;
   assert.throws(() => validateCiTopology(workflow, required), /automatically run lane set/);
+});
+
+test("Windows runtime partition cannot lose its early probe, shards, or workspace coverage", () => {
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace("--test-shard=4/4", "--test-shard=3/4"),
+    ),
+    /exactly one/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(" -w @superbee/ui -w @superbee/ui-server", " -w @superbee/ui-server"),
+    ),
+    /workspace coverage drifted/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(
+        "npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts",
+        "node packages/cli/scripts/run-test-command.mjs node --test --import ./packages/cli/test/ts-loader.mjs ./packages/cli/test/kind-draft.test.ts",
+      ),
+    ),
+    /command-emission contract/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(
+        "npm run typecheck --workspaces --if-present --ignore-scripts",
+        "npm run typecheck -w superbee --ignore-scripts",
+      ),
+    ),
+    /complete workspace typecheck/,
+  );
 });
 
 test("Windows installed-package topology mutations cannot skip lifecycles or weaken artifact binding", () => {
