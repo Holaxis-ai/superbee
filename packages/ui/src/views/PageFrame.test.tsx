@@ -155,7 +155,43 @@ describe("PageFrame: bridge revocation race (P1)", () => {
 
   it("skips delivery probing when message readiness arrives before the frame load event", async () => {
     vi.useFakeTimers();
+    // A negative receipt makes any probe that DOES run visibly harmful. It is a persistent value
+    // restored in `finally`, deliberately not a one-shot: this row never consumes it (that is the
+    // point), and an unconsumed one-shot outlives clearAllMocks and would be served to the next
+    // row's probe ahead of that row's own receipt.
     vi.mocked(verifyViewDelivery).mockResolvedValue({ delivered: false });
+    try {
+      vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+      await act(async () => {
+        root.render(<PageFrame pageId="pages-registry/p" />);
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+      expect(iframe).toBeTruthy();
+      act(() => window.dispatchEvent(new MessageEvent("message", {
+        source: iframe.contentWindow,
+        data: { bridge: "v0", id: "hello-before-load", type: "hello" },
+      })));
+      await act(async () => {
+        iframe.dispatchEvent(new Event("load"));
+        await Promise.resolve();
+      });
+      act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
+
+      expect(verifyViewDelivery).not.toHaveBeenCalled();
+      expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+    } finally {
+      vi.mocked(verifyViewDelivery).mockResolvedValue({ delivered: true }); // the factory default
+    }
+  });
+
+  it("readiness proven by generation N never suppresses the probe for a quiet, hot-reloaded generation N+1", async () => {
+    // The guard is generation-fenced, not a one-time latch: a generation-blind guard
+    // (frameReadySeqRef !== null) would pass the row above and fail this one.
+    vi.useFakeTimers();
     vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
     await act(async () => {
       root.render(<PageFrame pageId="pages-registry/p" />);
@@ -163,21 +199,53 @@ describe("PageFrame: bridge revocation race (P1)", () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-
     const iframe = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
     expect(iframe).toBeTruthy();
+
+    // Generation 1 proves itself by message, then fires load: no probe.
     act(() => window.dispatchEvent(new MessageEvent("message", {
       source: iframe.contentWindow,
-      data: { bridge: "v0", id: "hello-before-load", type: "hello" },
+      data: { bridge: "v0", id: "hello-gen1", type: "hello" },
     })));
     await act(async () => {
       iframe.dispatchEvent(new Event("load"));
       await Promise.resolve();
     });
-    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
-
     expect(verifyViewDelivery).not.toHaveBeenCalled();
+
+    // A blob hot reload of this page's own HTML runs loadPage() -> generation 2 on the same DOM
+    // node. Take the LAST change listener: the effect re-subscribed once entryKey resolved.
+    // The reload re-reads the registry doc, so it needs its own resolved read.
+    vi.mocked(getDoc).mockResolvedValueOnce(pageDoc({ access: "bundle-read" }));
+    const calls = vi.mocked(subscribeToChanges).mock.calls;
+    const changeListener = calls[calls.length - 1]![0];
+    const mintsBefore = vi.mocked(getDoc).mock.calls.length;
+    await act(async () => {
+      changeListener({
+        docs: { changed: [], removed: [] },
+        blobs: { changed: [{ key: "pages/p.html" }], removed: [] },
+      } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const reloaded = container.querySelector("iframe.page-frame-iframe") as HTMLIFrameElement;
+    expect(reloaded).toBeTruthy();
+    expect(vi.mocked(getDoc).mock.calls.length).toBeGreaterThan(mintsBefore); // the generation really bumped
+
+    // Generation 2 is QUIET (no message): its load event MUST start a receipt probe.
+    await act(async () => {
+      reloaded.dispatchEvent(new Event("load"));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(verifyViewDelivery).toHaveBeenCalledTimes(1);
+    expect(verifyViewDelivery).toHaveBeenCalledWith("launch-pages-registry/p");
+
+    // The good receipt keeps the reloaded View alive past the deadline.
+    act(() => vi.advanceTimersByTime(VIEW_LOAD_DEADLINE_MS));
     expect(container.querySelector("iframe.page-frame-iframe")).toBeTruthy();
+    expect(container.textContent).not.toContain("could not confirm that this View finished loading");
   });
 
   it("ignores wrong-source readiness messages and times out without a current-frame proof", async () => {
