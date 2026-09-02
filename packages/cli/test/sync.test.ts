@@ -54,6 +54,7 @@ import { doc } from "../src/commands/doc.js";
 import { CliError } from "../src/errors.js";
 import { REANCHOR_NOTE, readSyncState, bundleKey, syncExportsDir, syncStateDir, writeCursor } from "../src/cursor.js";
 import {
+  BOARD_BRANCH,
   BUNDLE_DIR,
   boardHead,
   commitBoard,
@@ -602,6 +603,77 @@ test("sync: a single-branch clone discovers a remote board despite its refspec a
   } finally {
     await cleanup();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("sync: standalone board-branch root checkout commits, pushes, pulls, and stays idempotent", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const directA = path.join(topo.dir, "direct-A");
+  const directB = path.join(topo.dir, "direct-B");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, directA]);
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, directB]);
+
+    const clean = await runSync(homes[0]!, ["--dir", directA]);
+    assert.equal(clean.err, undefined, clean.err?.message);
+    assert.equal(clean.out, "sync: already up to date\n");
+    assert.equal(existsSync(path.join(directA, BUNDLE_DIR)), false, "sync never creates a nested worktree");
+
+    await cliDocWrite(directA, "notes/from-slack-agent", [
+      "--type", "Note", "--title", "From Slack agent", "--body", "# Direct checkout\n", "--actor", "claude-tag",
+    ]);
+    const written = await runSync(homes[0]!, ["--dir", directA]);
+    assert.equal(written.err, undefined, written.err?.message);
+    assert.match(written.out, /committed: 1/);
+    assert.match(written.out, /pushed: 1/);
+    assert.match(written.out, /actor: claude-tag/);
+    assert.equal(git(directA, ["rev-parse", "HEAD"]).trim(), git(topo.origin, ["rev-parse", "board"]).trim());
+
+    assert.notEqual(
+      git(directB, ["rev-parse", "HEAD"]).trim(),
+      git(topo.origin, ["rev-parse", "board"]).trim(),
+      "the second standalone checkout is stale before its own sync",
+    );
+    assert.equal(
+      git(directB, ["rev-parse", "HEAD"]).trim(),
+      git(directB, ["rev-parse", `refs/remotes/origin/${BOARD_BRANCH}`]).trim(),
+      "the cached tracking ref remains the pre-fetch baseline",
+    );
+
+    const received = await runSync(homes[1]!, ["--dir", directB, "--pull-only"]);
+    assert.equal(received.err, undefined, received.err?.message);
+    assert.match(received.out, /pulled: 1/);
+    assert.match(received.out, /notes\/from-slack-agent/);
+    assert.match(received.out, /claude-tag/);
+    assert.equal(await readFile(path.join(directB, "notes", "from-slack-agent.md"), "utf8")
+      .then((content) => content.includes("# Direct checkout")), true);
+
+    const again = await runSync(homes[1]!, ["--dir", directB, "--pull-only"]);
+    assert.equal(again.out, "sync: already up to date\n");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: root OKF bundle on the wrong branch fails closed before nested worktree creation", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  const direct = path.join(topo.dir, "direct-wrong-branch");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, direct]);
+    git(direct, ["checkout", "-b", "not-board"]);
+
+    const result = await runSync(homes[0]!, ["--dir", direct]);
+    assert.equal(result.err?.code, "CONFLICT");
+    assert.equal(result.err?.details?.state, "standalone-board-wrong-branch");
+    assert.match(result.err?.help ?? "", /separate checkout.*'board'/);
+    assert.equal(existsSync(path.join(direct, BUNDLE_DIR)), false);
+    assert.equal(git(direct, ["status", "--porcelain"]), "", "refusal is non-mutating");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
   }
 });
 

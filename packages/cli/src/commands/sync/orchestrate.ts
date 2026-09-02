@@ -98,6 +98,9 @@ from a bare \`sync\` (which never publishes a bundle nobody has chosen to share)
 (here or by a teammate), plain \`sync\` is everyone's setup AND ongoing verb: on a project that
 already shares a board, it provisions the local checkout, then commits, pulls, and pushes ordinary
 board changes.
+The same verb also works when an automation or chat agent clones the shared \`board\` branch as
+the repository root: a tracked OKF root index plus the exact attached \`board\` branch identifies
+that standalone checkout, so sync operates there directly and never creates a nested bundle.
 \`--establish\` on an already-established project is a safe no-op that notes \`already established\`
 and proceeds as an ordinary sync.
 

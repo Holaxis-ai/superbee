@@ -411,6 +411,60 @@ test("GIT_BUSY: a held index.lock yields a structured RETRY envelope, never a ra
 
 // ── provisioning: self-heal, refusal, idempotence ─────────────────────────────
 
+test("provision: standalone root checkout of tracked origin/board is the board worktree", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const root = path.join(topo.dir, "standalone-board");
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, root]);
+
+    const outcome = provisionBoardWorktree(root, { allowLocalBranch: false, ensureIgnore: true });
+    assert.deepEqual(outcome, { kind: "already", boardPath: root });
+    assert.equal(existsSync(path.join(root, BUNDLE_DIR)), false, "never creates a nested bundle worktree");
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("provision: root OKF bundle on a non-board branch is refused without creating a nested checkout", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const root = path.join(topo.dir, "wrong-root-branch");
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, root]);
+    git(root, ["checkout", "-b", "not-board"]);
+
+    const err = capture(() => provisionBoardWorktree(root, { allowLocalBranch: false }));
+    assert.ok(isBoardGitError(err));
+    assert.equal(err.code, "CONFLICT");
+    assert.deepEqual(err.details, {
+      path: root,
+      state: "standalone-board-wrong-branch",
+      branch: "not-board",
+    });
+    assert.match(err.message, /standalone root checkout.*'board'/);
+    assert.equal(existsSync(path.join(root, BUNDLE_DIR)), false);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
+test("provision: unpublished root bundle on a local board branch keeps explicit publication authority", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const root = path.join(topo.dir, "local-root-board");
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, root]);
+    git(root, ["remote", "remove", "origin"]);
+
+    assert.deepEqual(provisionBoardWorktree(root, { allowLocalBranch: false }), {
+      kind: "local_board",
+      boardPath: root,
+      remoteExists: false,
+    });
+    assert.equal(existsSync(path.join(root, BUNDLE_DIR)), false);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
 test("provision: fresh unprovisioned clone self-heals from origin/board; isProvisioned tracks it", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
@@ -1486,12 +1540,12 @@ test("F2 refusal: an UNRELATED local board branch (foreign root) is never adopte
   }
 });
 
-test("F2 refusal: the branch checked out as the MAIN worktree's HEAD is refused — the user's checkout never moves", async () => {
+test("F2 root checkout: the attached board HEAD is accepted without moving during provisioning", async () => {
   const { topo, oldSha } = await makeAncestorBranchFixture();
   try {
     git(topo.b.root, ["checkout", BOARD_BRANCH]);
     const outcome = provisionBoardWorktree(topo.b.root, { allowLocalBranch: false });
-    assertRefused(topo, oldSha, outcome);
+    assert.deepEqual(outcome, { kind: "already", boardPath: topo.b.root });
     assert.equal(git(topo.b.root, ["rev-parse", "HEAD"]).trim(), oldSha, "HEAD did not move");
     assert.equal(git(topo.b.root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH, "still on the branch");
   } finally {

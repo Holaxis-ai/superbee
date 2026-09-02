@@ -528,6 +528,38 @@ export function isProvisioned(dir: string): boolean {
   return branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH;
 }
 
+/**
+ * A standalone clone may check out the dedicated `board` branch at the repository root instead
+ * of attaching it beneath a separate code checkout.  Recognize only a tracked OKF root index:
+ * an arbitrary repository that happens to use the branch name `board` must never become sync
+ * authority merely because an untracked or ordinary prose `index.md` is present in its worktree.
+ */
+function hasTrackedBundleRootAtHead(top: string): boolean {
+  const shown = runGit(top, ["show", "HEAD:index.md"]);
+  if (shown.status !== 0) return false;
+  try {
+    const version = parseMarkdown(shown.stdout, "index.md").frontmatter.okf_version;
+    return typeof version === "string" && version.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+function standaloneRootWrongBranch(top: string, branch: string): BoardGitError {
+  const shown = branch === "HEAD" ? "detached HEAD" : `'${branch}'`;
+  return new BoardGitError(
+    "CONFLICT",
+    `this repository root is an OKF bundle, but it is checked out at ${shown}; a standalone root ` +
+      `checkout may sync only when it is attached to the dedicated '${BOARD_BRANCH}' branch`,
+    {
+      details: { path: top, state: "standalone-board-wrong-branch", branch },
+      help:
+        `use a separate checkout attached to '${BOARD_BRANCH}', or run sync from the repository's ` +
+        `code checkout and let it provision the conventional bundle worktree`,
+    },
+  );
+}
+
 // ── provisioning (self-heal) ──────────────────────────────────────────────────
 
 export type ProvisionOutcome =
@@ -853,6 +885,21 @@ export interface NetworkBudgetOptions {
 export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions = {}): ProvisionOutcome {
   const top = repoTopLevel(dir);
   if (!top) return { kind: "no_repo" };
+  const rootIsBundle = hasTrackedBundleRootAtHead(top);
+  const rootBranch = rootIsBundle ? currentBranch(top) : undefined;
+  if (rootBranch !== undefined && rootBranch !== BOARD_BRANCH) {
+    throw standaloneRootWrongBranch(top, rootBranch);
+  }
+  // Match the steady-state linked-worktree fast path: a clone of `board` already carries this
+  // explicit remote-tracking ref.  Returning before a network fetch preserves the sync command's
+  // pre-fetch baseline, so a later pull can report the exact incoming documents instead of
+  // silently advancing the tracking ref during provisioning.
+  if (
+    rootBranch === BOARD_BRANCH &&
+    runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status === 0
+  ) {
+    return { kind: "already", boardPath: top };
+  }
   const bundleDir = bundleDirNameForProject(top);
   const boardPath = path.join(top, bundleDir);
   const withIgnoreCoverage = <T extends { boardPath: string }>(outcome: T): T & { gitignore?: GitignoreUpdate } => {
@@ -925,6 +972,14 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   const remoteBoard = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]);
   const hasLocal = localBoard.status === 0;
   const hasRemote = remoteBoard.status === 0 && !remoteBoardKnownAbsent;
+  // A root checkout is already the exact worktree the remaining sync phases need.  Require the
+  // fetched remote-tracking board ref as the sharing provenance before granting that authority;
+  // a merely local branch named `board` keeps the existing explicit-establishment refusal.
+  if (rootIsBundle && rootBranch === BOARD_BRANCH) {
+    return hasRemote
+      ? { kind: "already", boardPath: top }
+      : { kind: "local_board", boardPath: top, remoteExists: false };
+  }
   const localMatchesRemote =
     hasLocal &&
     hasRemote &&
