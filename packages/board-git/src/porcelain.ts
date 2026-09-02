@@ -1048,14 +1048,19 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   // establishment refusal. When this run created the first cached remote ref, carry the proven
   // merge-base forward so the receipt can still describe what arrived during this fetch.
   if (rootIsBundle && rootBranch === BOARD_BRANCH) {
+    // Standalone publication authority is re-proven live for every sync. A cached ref remains
+    // useful for read-side discovery, but it cannot authorize commit/push after an indeterminate
+    // exact probe: the remote branch may have been deleted while an ambient fetch refspec excludes
+    // it. Route the command to the honest remote-unknown state before any local commit or push.
+    if (remoteState === "unknown" && !liveFetch) {
+      return { kind: "no_board", remoteState: "unknown" };
+    }
     const standaloneCheckout = hasRemote ? resolveStandaloneBoardCheckout(top) : null;
     if (standaloneCheckout !== null) {
       const fetchedOrigin = remoteBoard.stdout.trim();
-      const originBaseline = rootCachedBaseline !== null && rootCachedBaseline !== fetchedOrigin
-        ? rootCachedBaseline
-        : rootOriginBefore?.status === 0
-          ? null
-          : standaloneHistoryBase(top);
+      const originBaseline = rootCachedBaseline !== null
+        ? rootCachedBaseline === fetchedOrigin ? null : rootCachedBaseline
+        : standaloneHistoryBase(top);
       return originBaseline === null
         ? { kind: "already", boardPath: top }
         : { kind: "already", boardPath: top, originBaseline };

@@ -690,6 +690,38 @@ test("sync: standalone checkout without a cached origin ref still reports the do
   }
 });
 
+test("sync: standalone exact fetch repairs an unproven cache without losing the incoming receipt", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const writer = path.join(topo.dir, "root-unproven-cache-writer");
+  const reader = path.join(topo.dir, "root-unproven-cache-reader");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, writer]);
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, reader]);
+    git(reader, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+
+    await cliDocWrite(writer, "notes/recovered-from-unproven-cache", [
+      "--type", "Note", "--title", "Recovered cache", "--body", "# Arrived\n", "--actor", "claude-tag",
+    ]);
+    const sent = await runSync(homes[0]!, ["--dir", writer]);
+    assert.equal(sent.err, undefined, sent.err?.message);
+
+    const tree = git(reader, ["rev-parse", "HEAD^{tree}"]).trim();
+    const unrelated = git(reader, ["commit-tree", tree, "-m", "unrelated cached remote evidence"]).trim();
+    git(reader, ["update-ref", `refs/remotes/origin/${BOARD_BRANCH}`, unrelated]);
+
+    const received = await runSync(homes[1]!, ["--dir", reader, "--pull-only"]);
+    assert.equal(received.err, undefined, received.err?.message);
+    assert.match(received.out, /pulled: 1/);
+    assert.match(received.out, /notes\/recovered-from-unproven-cache/);
+    assert.match(received.out, /claude-tag/);
+    assert.equal(existsSync(path.join(reader, "notes", "recovered-from-unproven-cache.md")), true);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("sync: standalone checkout cannot recreate a deleted remote board from a stale excluded tracking ref", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(1);
@@ -719,6 +751,40 @@ test("sync: standalone checkout cannot recreate a deleted remote board from a st
     );
     assert.equal(existsSync(path.join(direct, "notes", "remains-private.md")), true);
     assert.equal(existsSync(path.join(direct, BUNDLE_DIR)), false, "refusal never creates a nested worktree");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: standalone remote-unknown state never commits, pushes, or recommends establishment", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const cached = path.join(topo.dir, "root-unknown-cached");
+  const uncached = path.join(topo.dir, "root-unknown-uncached");
+  const offlineOrigin = `${topo.origin}.offline`;
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, cached]);
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, uncached]);
+    git(cached, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+    git(uncached, ["update-ref", "-d", `refs/remotes/origin/${BOARD_BRANCH}`]);
+    await cliDocWrite(cached, "notes/cached-offline-work", [
+      "--type", "Note", "--title", "Cached offline", "--body", "# Local only\n", "--actor", "codex",
+    ]);
+    await cliDocWrite(uncached, "notes/uncached-offline-work", [
+      "--type", "Note", "--title", "Uncached offline", "--body", "# Local only\n", "--actor", "codex",
+    ]);
+    const cachedHead = git(cached, ["rev-parse", "HEAD"]).trim();
+    const uncachedHead = git(uncached, ["rev-parse", "HEAD"]).trim();
+    await rename(topo.origin, offlineOrigin);
+
+    for (const [i, root, head] of [[0, cached, cachedHead], [1, uncached, uncachedHead]] as const) {
+      const result = await runSync(homes[i]!, ["--dir", root]);
+      assert.equal(result.err, undefined, result.err?.message);
+      assert.ok(result.out.includes(SYNC_REMOTE_STATE_UNKNOWN_MESSAGE));
+      assert.ok(!result.out.includes("--establish"), "unknown remote state must never suggest publication");
+      assert.equal(git(root, ["rev-parse", "HEAD"]).trim(), head, "unknown authority refuses before commit");
+    }
   } finally {
     await cleanup();
     await topo.cleanup();
