@@ -18,10 +18,10 @@ env:
   AGENTSTATE_LITE_NO_AUTOPULL: 1
 
 jobs:
-  windows:
-    name: native Windows runtime and installed package
+  windows-preflight:
+    name: native Windows preflight and workspace contracts
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -48,20 +48,44 @@ jobs:
         run: node --test --test-name-pattern="built CLI returns while its managed document remains live|managed worker preserves an indexless project-binding boundary" --import ./test/ts-loader.mjs ./test/ui-managed-authority.test.ts ./test/ui.test.ts
       - name: Typecheck the complete workspace contract natively
         run: npm run typecheck --workspaces --if-present --ignore-scripts
-      - name: Run the CLI runtime contract (shard 1 of 4)
-        working-directory: packages/cli
-        run: node scripts/run-test-command.mjs node --test --test-shard=1/4 --import ./test/ts-loader.mjs './test/*.test.ts'
-      - name: Run the CLI runtime contract (shard 2 of 4)
-        working-directory: packages/cli
-        run: node scripts/run-test-command.mjs node --test --test-shard=2/4 --import ./test/ts-loader.mjs './test/*.test.ts'
-      - name: Run the CLI runtime contract (shard 3 of 4)
-        working-directory: packages/cli
-        run: node scripts/run-test-command.mjs node --test --test-shard=3/4 --import ./test/ts-loader.mjs './test/*.test.ts'
-      - name: Run the CLI runtime contract (shard 4 of 4)
-        working-directory: packages/cli
-        run: node scripts/run-test-command.mjs node --test --test-shard=4/4 --import ./test/ts-loader.mjs './test/*.test.ts'
       - name: Run the non-CLI workspace contracts natively
         run: npm test --if-present --ignore-scripts -w @superbee/board-git -w @superbee/core -w @superbee/markdown-renderer -w @superbee/mcp-app -w @superbee/publication -w @superbee/server -w @superbee/ui -w @superbee/ui-server -w @superbee/view-runtime
+
+  windows-cli:
+    name: native Windows CLI shard ${{ matrix.shard }} of 4
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run the CLI runtime contract
+        working-directory: packages/cli
+        run: node scripts/run-test-command.mjs node --test --test-shard=${{ matrix.shard }}/4 --import ./test/ts-loader.mjs './test/*.test.ts'
+
+  windows-package:
+    name: native Windows installed package and Chromium lifecycle
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
       - name: Build, pack, and verify the publishable artifact
         shell: pwsh
         run: |

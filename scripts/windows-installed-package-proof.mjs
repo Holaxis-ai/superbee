@@ -9,6 +9,8 @@ import { pathToFileURL } from "node:url";
 const execFileAsync = promisify(execFile);
 const entrypoint = process.env.SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT;
 const prefix = process.env.SUPERBEE_WINDOWS_INSTALLED_PREFIX;
+const COMMAND_TIMEOUT_MS = 45_000;
+const SCENARIO_TIMEOUT_MS = 120_000;
 
 assert.equal(process.platform, "win32", "this proof must execute on the native Windows runner");
 assert.ok(entrypoint, "SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT is required");
@@ -37,7 +39,33 @@ async function run(file, args, options = {}) {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     windowsHide: true,
+    timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
+}
+
+async function runScenario(name, operation) {
+  const startedAt = Date.now();
+  process.stderr.write(`WINDOWS_PROOF_START ${name}\n`);
+  let timer;
+  try {
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${name} exceeded its ${SCENARIO_TIMEOUT_MS}ms scenario deadline`)),
+        SCENARIO_TIMEOUT_MS,
+      );
+    });
+    const result = await Promise.race([operation(), timeout]);
+    process.stderr.write(`WINDOWS_PROOF_PASS ${name} ${Date.now() - startedAt}ms\n`);
+    return result;
+  } catch (error) {
+    process.stderr.write(
+      `WINDOWS_PROOF_FAIL ${name} ${Date.now() - startedAt}ms ${String(error?.message ?? error)}\n`,
+    );
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function cli(args, options = {}) {
@@ -191,34 +219,105 @@ void probe().catch((error) => {
   await assert.rejects(readFile(uiUrl, "utf8"), /ENOENT/, "clean shutdown must clear the ui-url pointer");
 }
 
-async function renderManagedDocumentInEdge(url, expectedTitle) {
-  const candidates = [
-    process.env["ProgramFiles(x86)"],
-    process.env.ProgramFiles,
-  ].filter(Boolean).map((root) => path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"));
-  let edge;
-  for (const candidate of candidates) {
+async function renderManagedDocumentInChromium(url, expectedTitle) {
+  const driverRoot = process.env.CHROMEWEBDRIVER;
+  assert.ok(driverRoot, "the native Windows proof requires GitHub's matched ChromeDriver");
+  const driver = path.join(driverRoot, "chromedriver.exe");
+  await access(driver);
+  const profile = path.join(scratch, "managed-chromium-profile");
+  await mkdir(profile, { recursive: true });
+  const driverPort = 9515;
+  const driverProcess = spawn(driver, [`--port=${driverPort}`, "--allowed-ips="], {
+    cwd: scratch,
+    env: commandEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let driverOutput = "";
+  driverProcess.stdout.setEncoding("utf8").on("data", (chunk) => { driverOutput += chunk; });
+  driverProcess.stderr.setEncoding("utf8").on("data", (chunk) => { driverOutput += chunk; });
+  const driverExit = new Promise((resolve) => driverProcess.once("exit", resolve));
+
+  async function webdriver(method, route, body, timeoutMs = 10_000) {
     try {
-      await access(candidate);
-      edge = candidate;
-      break;
-    } catch {
-      // Keep looking: GitHub's native Windows image may expose either Program Files root.
+      const response = await fetch(`http://127.0.0.1:${driverPort}${route}`, {
+        method,
+        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const payload = await response.json();
+      assert.equal(response.ok, true, `${method} ${route} failed: ${JSON.stringify(payload)}`);
+      assert.equal(payload.value?.error, undefined, `${method} ${route} failed: ${JSON.stringify(payload)}`);
+      return payload.value;
+    } catch (error) {
+      throw new Error(`${method} ${route} failed: ${String(error?.message ?? error)}; driver: ${driverOutput}`);
     }
   }
-  assert.ok(edge, "the native Windows proof requires the runner's installed Microsoft Edge");
-  const profile = path.join(scratch, "managed-edge-profile");
-  await mkdir(profile, { recursive: true });
-  const rendered = await run(edge, [
-    "--headless=new",
-    "--disable-extensions",
-    "--no-first-run",
-    `--user-data-dir=${profile}`,
-    "--virtual-time-budget=5000",
-    "--dump-dom",
-    url,
-  ]);
-  assert.match(rendered.stdout, new RegExp(expectedTitle), "Edge must render the exact managed document");
+
+  let sessionId;
+  try {
+    const readyDeadline = Date.now() + 10_000;
+    let ready = false;
+    while (!ready && Date.now() < readyDeadline) {
+      try {
+        const status = await webdriver("GET", "/status");
+        ready = status.ready === true;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    assert.equal(ready, true, `ChromeDriver did not become ready: ${driverOutput}`);
+
+    const session = await webdriver("POST", "/session", {
+      capabilities: {
+        alwaysMatch: {
+          browserName: "chrome",
+          pageLoadStrategy: "eager",
+          "goog:chromeOptions": {
+            args: [
+              "--headless=new",
+              "--disable-background-networking",
+              "--disable-component-update",
+              "--disable-default-apps",
+              "--disable-gpu",
+              "--disable-extensions",
+              "--disable-sync",
+              "--metrics-recording-only",
+              "--no-default-browser-check",
+              "--no-first-run",
+              `--user-data-dir=${profile}`,
+            ],
+          },
+        },
+      },
+    }, 30_000);
+    sessionId = session.sessionId;
+    assert.ok(sessionId, `ChromeDriver did not return a session: ${JSON.stringify(session)}`);
+    await webdriver("POST", `/session/${sessionId}/url`, { url });
+
+    const renderDeadline = Date.now() + 15_000;
+    let source = "";
+    while (Date.now() < renderDeadline) {
+      source = await webdriver("GET", `/session/${sessionId}/source`);
+      if (source.includes(expectedTitle)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.match(source, new RegExp(expectedTitle), "Chromium must render the exact managed document");
+  } finally {
+    if (sessionId) {
+      try {
+        await webdriver("DELETE", `/session/${sessionId}`);
+      } catch {
+        // Driver termination below remains the bounded cleanup authority.
+      }
+    }
+    driverProcess.kill();
+    await Promise.race([
+      driverExit,
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  }
 }
 
 async function proveManagedDocumentLifecycle(bundle) {
@@ -278,7 +377,7 @@ async function proveManagedDocumentLifecycle(bundle) {
     assert.equal(converged.count, 3, "three exact actor authorities must remain after concurrent convergence");
     assert.ok(converged.instances.every((instance) => instance.phase === "adopted" && instance.live === true));
 
-    await renderManagedDocumentInEdge(first.url, "Windows managed UI proof");
+    await renderManagedDocumentInChromium(first.url, "Windows managed UI proof");
   } finally {
     for (const actor of actors) {
       await managed(["ui", "--stop", "--dir", bundle, "--actor", actor]);
@@ -324,11 +423,11 @@ async function proveMcpConfigLifecycle() {
 const installedPackageProofComplete = Symbol("installed-package-proof-complete");
 
 async function runInstalledPackageProof() {
-  const { bundle } = await proveCatalogLifecycle();
-  await proveLocalRemoteSync();
-  await proveUiUrlLifecycle(bundle);
-  await proveManagedDocumentLifecycle(bundle);
-  await proveMcpConfigLifecycle();
+  const { bundle } = await runScenario("catalog-lifecycle", proveCatalogLifecycle);
+  await runScenario("local-remote-sync", proveLocalRemoteSync);
+  await runScenario("ui-url-lifecycle", () => proveUiUrlLifecycle(bundle));
+  await runScenario("managed-document-lifecycle", () => proveManagedDocumentLifecycle(bundle));
+  await runScenario("mcp-config-lifecycle", proveMcpConfigLifecycle);
   return installedPackageProofComplete;
 }
 
