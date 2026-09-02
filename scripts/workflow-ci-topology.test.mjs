@@ -38,6 +38,74 @@ function extractJobs(text) {
   return Object.fromEntries(Object.entries(jobs).map(([name, lines]) => [name, lines.join("\n")]));
 }
 
+function parseStepField(step, source) {
+  const field = /^([A-Za-z0-9_-]+):(?:\s(.*))?$/.exec(source);
+  assert.ok(field, `unsupported workflow step field: ${source}`);
+  assert.equal(
+    Object.hasOwn(step.fields, field[1]),
+    false,
+    `workflow step ${step.position + 1} must not repeat field ${field[1]}`,
+  );
+  step.fields[field[1]] = field[2] ?? "";
+}
+
+// This intentionally parses only the job-level step sequence used by these topology assertions.
+// Nested `with`, `env`, and block-scalar bodies are opaque; required gates use exact scalar fields.
+// Unknown sequence-item shapes fail closed instead of being guessed as YAML semantics.
+function stepsOf(job) {
+  const lines = job.split("\n");
+  const stepsAt = lines.indexOf("    steps:");
+  assert.notEqual(stepsAt, -1, "workflow job must declare steps");
+  const steps = [];
+  let current = null;
+  for (let index = stepsAt + 1; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (/^ {4}[A-Za-z0-9_-]+:/.test(line)) break;
+    if (!line.trim() || /^\s*#/.test(line)) continue;
+    const item = /^ {6}- (.+)$/.exec(line);
+    if (item) {
+      current = { position: steps.length, fields: Object.create(null) };
+      parseStepField(current, item[1]);
+      steps.push(current);
+      continue;
+    }
+    assert.doesNotMatch(line, /^ {6}-/, "workflow step sequence items must declare one field inline");
+    const field = /^ {8}(\S.*)$/.exec(line);
+    if (field && current) {
+      parseStepField(current, field[1]);
+      continue;
+    }
+    if (/^ {10}/.test(line)) continue;
+    assert.fail(`unsupported workflow step line: ${line}`);
+  }
+  assert.ok(steps.length > 0, "workflow job must declare at least one step");
+  return steps;
+}
+
+function requiredUnconditionalStep(steps, expected) {
+  const named = steps.filter((step) => step.fields.name === expected.name);
+  assert.equal(named.length, 1, `${expected.label} must be declared exactly once by name`);
+  const step = named[0];
+  assert.equal(step.fields.run, expected.run, `${expected.label} command drifted`);
+  assert.equal(
+    step.fields["working-directory"],
+    expected.workingDirectory,
+    `${expected.label} must run directly from its reviewed working directory`,
+  );
+  assert.equal(step.fields.if, undefined, `${expected.label} must be unconditional`);
+  assert.equal(
+    step.fields["continue-on-error"],
+    undefined,
+    `${expected.label} must fail closed rather than continue on error`,
+  );
+  assert.equal(
+    steps.filter((candidate) => candidate.fields.run === expected.run).length,
+    1,
+    `${expected.label} command must execute exactly once`,
+  );
+  return step;
+}
+
 function needsOf(job) {
   const list = /^ {4}needs: \[([^\]]*)\]\s*$/m.exec(job);
   if (list) return list[1].split(",").map((name) => name.trim()).filter(Boolean);
@@ -492,6 +560,7 @@ function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProofB
 }
 
 function assertWindowsJob(job, lane) {
+  const steps = stepsOf(job);
   assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
   assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2);
   assert.deepEqual(
@@ -501,11 +570,57 @@ function assertWindowsJob(job, lane) {
   assert.match(job, /name: Run Windows-sensitive filesystem regressions first/);
   assert.match(job, /npm test -w @superbee\/core -- --test-name-pattern="AC-10"/);
   assert.match(job, /npm test -w @superbee\/publication/);
+  const kindDraftProbe = "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
+  const kindDraftStep = requiredUnconditionalStep(steps, {
+    label: "Windows command-emission contract",
+    name: "Run Windows command-output regressions first",
+    workingDirectory: "packages/cli",
+    run: kindDraftProbe,
+  });
+  const typecheck = "npm run typecheck --workspaces --if-present --ignore-scripts";
+  const typecheckStep = requiredUnconditionalStep(steps, {
+    label: "Windows complete workspace typecheck",
+    name: "Typecheck the complete workspace contract natively",
+    workingDirectory: undefined,
+    run: typecheck,
+  });
+  const shards = [1, 2, 3, 4].map(
+    (index) => `node scripts/run-test-command.mjs node --test --test-shard=${index}/4 --import ./test/ts-loader.mjs './test/*.test.ts'`,
+  );
+  const shardSteps = shards.map((shard, index) => requiredUnconditionalStep(steps, {
+    label: `Windows CLI shard ${index + 1}`,
+    name: `Run the CLI runtime contract (shard ${index + 1} of 4)`,
+    workingDirectory: "packages/cli",
+    run: shard,
+  }));
+  const nonCliWorkspaces = [
+    "@superbee/board-git",
+    "@superbee/core",
+    "@superbee/markdown-renderer",
+    "@superbee/mcp-app",
+    "@superbee/publication",
+    "@superbee/server",
+    "@superbee/ui",
+    "@superbee/ui-server",
+    "@superbee/view-runtime",
+  ];
+  const nonCliCommand = `npm test --if-present --ignore-scripts ${nonCliWorkspaces.map((workspace) => `-w ${workspace}`).join(" ")}`;
+  const nonCliStep = requiredUnconditionalStep(steps, {
+    label: "Windows non-CLI workspace coverage",
+    name: "Run the non-CLI workspace contracts natively",
+    workingDirectory: undefined,
+    run: nonCliCommand,
+  });
+  assert.doesNotMatch(job, /run: npm run ci:runtime/, "Windows runtime must remain split into observable failure domains");
   assert.ok(
-    job.indexOf("npm test -w @superbee/publication") < job.indexOf("run: npm run ci:runtime"),
+    kindDraftStep.position < typecheckStep.position
+      && typecheckStep.position < shardSteps[0].position
+      && shardSteps[0].position < shardSteps[1].position
+      && shardSteps[1].position < shardSteps[2].position
+      && shardSteps[2].position < shardSteps[3].position
+      && shardSteps[3].position < nonCliStep.position,
     "Windows-sensitive filesystem regressions must fail before the complete workspace contract",
   );
-  assert.match(job, /run: npm run ci:runtime/);
   assert.match(job, /npm run --silent pack:npm-package -- --pack-destination \$env:RUNNER_TEMP/);
   assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
   assert.match(job, /npm install --global \$env:SUPERBEE_WINDOWS_TARBALL --prefix \$prefix/);
@@ -661,6 +776,84 @@ test("Windows proof cannot be reattached to automatic CI or lose its manual trig
   const required = structuredClone(manifest);
   required.lanes.windows.required = true;
   assert.throws(() => validateCiTopology(workflow, required), /automatically run lane set/);
+});
+
+test("Windows runtime partition cannot lose its early probe, shards, or workspace coverage", () => {
+  const kindDraftProbe = "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
+  const kindDraftStep = [
+    "      - name: Run Windows command-output regressions first",
+    "        working-directory: packages/cli",
+    `        run: ${kindDraftProbe}`,
+  ].join("\n");
+  const nonCliStep = [
+    "      - name: Run the non-CLI workspace contracts natively",
+    "        run: npm test --if-present --ignore-scripts -w @superbee/board-git -w @superbee/core -w @superbee/markdown-renderer -w @superbee/mcp-app -w @superbee/publication -w @superbee/server -w @superbee/ui -w @superbee/ui-server -w @superbee/view-runtime",
+  ].join("\n");
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace("--test-shard=4/4", "--test-shard=3/4"),
+    ),
+    /exactly once/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(" -w @superbee/ui -w @superbee/ui-server", " -w @superbee/ui-server"),
+    ),
+    /workspace coverage.*drifted/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(
+        "      - name: Run Windows command-output regressions first\n        working-directory: packages/cli",
+        "      - name: Run Windows command-output regressions first\n        working-directory: .",
+      ),
+    ),
+    /command-emission contract.*reviewed working directory/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(
+        "      - name: Run the CLI runtime contract (shard 2 of 4)\n        working-directory: packages/cli",
+        "      - name: Run the CLI runtime contract (shard 2 of 4)\n        working-directory: .",
+      ),
+    ),
+    /CLI shard 2.*reviewed working directory/,
+  );
+  const lateProbeWithCommentDecoy = windowsWorkflow
+    .replace(kindDraftStep, `      # ${kindDraftProbe}`)
+    .replace(nonCliStep, `${nonCliStep}\n${kindDraftStep}`);
+  assert.throws(
+    () => validateWindowsProofWorkflow(lateProbeWithCommentDecoy),
+    /Windows-sensitive filesystem regressions must fail before the complete workspace contract/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(kindDraftStep, `${kindDraftStep}\n        if: \${{ false }}`),
+    ),
+    /command-emission contract must be unconditional/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(kindDraftStep, `${kindDraftStep}\n        continue-on-error: true`),
+    ),
+    /command-emission contract must fail closed rather than continue on error/,
+  );
+  const skippedEarlyLateProbe = windowsWorkflow
+    .replace(kindDraftStep, `${kindDraftStep}\n        if: \${{ false }}`)
+    .replace(nonCliStep, `${nonCliStep}\n${kindDraftStep}`);
+  assert.throws(
+    () => validateWindowsProofWorkflow(skippedEarlyLateProbe),
+    /command-emission contract must be declared exactly once by name/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(
+        "npm run typecheck --workspaces --if-present --ignore-scripts",
+        "npm run typecheck -w superbee --ignore-scripts",
+      ),
+    ),
+    /complete workspace typecheck/,
+  );
 });
 
 test("Windows installed-package topology mutations cannot skip lifecycles or weaken artifact binding", () => {

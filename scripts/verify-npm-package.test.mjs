@@ -12,6 +12,7 @@ import {
   assertPackageContract,
   assertPackageReadmeReleaseChannel,
   assertRetiredDistributionAbsent,
+  expectedQuotedShellArgument,
   expectedTarballFiles,
   expectedPrivateStateRoot,
   parseVerificationArgs,
@@ -49,6 +50,16 @@ const manifest = {
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
 };
+
+test("installed-package expectations preserve always-quoted native shell paths", () => {
+  assert.equal(expectedQuotedShellArgument(".superbee", "linux"), "'.superbee'");
+  assert.equal(expectedQuotedShellArgument(".superbee", "win32"), '".superbee"');
+  assert.equal(
+    expectedQuotedShellArgument("C:\\a\\_temp\\bundle", "win32"),
+    '"C:\\a\\_temp\\bundle"',
+  );
+  assert.equal(expectedQuotedShellArgument("C:\\dir\\", "win32"), '"C:\\dir\\\\"');
+});
 
 test("the retained tarball manifest carries the exact npm page bytes", () => {
   const source = { name: "superbee", version: "1.2.3" };
