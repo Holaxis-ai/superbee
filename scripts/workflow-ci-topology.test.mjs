@@ -223,7 +223,7 @@ function validateProofCompletionAuthority(program, lifecycle, completionAssertio
       "process.stdout.write(`${JSON.stringify({",
       "    platform: process.platform,",
       '    artifact: "exact installed npm tarball",',
-      '    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "mcp-config-lifecycle"],',
+      '    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "managed-document-lifecycle", "mcp-config-lifecycle"],',
       "  })}\\n`);",
     ].join("\n"),
     "the native proof terminal success payload must retain its reviewed receipt",
@@ -249,10 +249,29 @@ function validateProofCompletionAuthority(program, lifecycle, completionAssertio
   );
   assert.equal(exitAuthorities.length, 0, "the native proof permits no process exit authority");
 
+  const stderrAuthorities = memberAccesses.filter((node) => staticMemberPath(node) === "process.stderr.write");
+  const scenarioStderrAuthorities = proofNodes(
+    proofFunction(program, "runScenario"),
+    (node) => (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+      && staticMemberPath(node) === "process.stderr.write",
+  );
+  assert.equal(
+    stderrAuthorities.length,
+    scenarioStderrAuthorities.length,
+    "only the reviewed scenario wrapper may emit progress diagnostics on stderr",
+  );
+  for (let index = 0; index < stderrAuthorities.length; index += 1) {
+    assert.equal(
+      stderrAuthorities[index],
+      scenarioStderrAuthorities[index],
+      "only the reviewed scenario wrapper may emit progress diagnostics on stderr",
+    );
+  }
+  assert.equal(stderrAuthorities.length, 4, "the scenario wrapper must emit START, SLOW, PASS, and FAIL diagnostics");
+
   const outputAuthorities = memberAccesses.filter((node) =>
     [
       "process.stdout.end",
-      "process.stderr.write",
       "process.stderr.end",
       "console.log",
       "console.info",
@@ -335,6 +354,8 @@ function validateProofTopLevel(program) {
     ["execFileAsync", "promisify(execFile)"],
     ["entrypoint", "process.env.SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT"],
     ["prefix", "process.env.SUPERBEE_WINDOWS_INSTALLED_PREFIX"],
+    ["COMMAND_TIMEOUT_MS", "45_000"],
+    ["SCENARIO_SLOW_MS", "120_000"],
     ["scratch", 'await mkdtemp(path.join(process.env.RUNNER_TEMP ?? tmpdir(), "superbee-windows-installed-"))'],
     ["home", 'path.join(scratch, "home")'],
     ["localAppData", 'path.join(home, "AppData", "Local")'],
@@ -353,6 +374,8 @@ function validateProofTopLevel(program) {
   ]);
   const expectedFunctions = [
     "run",
+    "runScenario",
+    "windowsCaseAlias",
     "cli",
     "cliJson",
     "git",
@@ -360,6 +383,8 @@ function validateProofTopLevel(program) {
     "configureRepository",
     "proveLocalRemoteSync",
     "proveUiUrlLifecycle",
+    "renderManagedDocumentInChromium",
+    "proveManagedDocumentLifecycle",
     "proveMcpConfigLifecycle",
     "runInstalledPackageProof",
   ];
@@ -485,6 +510,38 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
     "installed-package lifecycle commands must execute through Node and the bound entrypoint",
   );
 
+  const runSource = proofFunction(program, "run").getText();
+  assert.match(
+    runSource,
+    /timeout: options\.timeoutMs \?\? COMMAND_TIMEOUT_MS/,
+    "every installed-package child process must have the reviewed command deadline",
+  );
+  assert.match(runSource, /killSignal: "SIGKILL"/, "a timed-out installed-package child must be terminated");
+  const scenarioSource = proofFunction(program, "runScenario").getText();
+  assert.match(scenarioSource, /const result = await operation\(\)/, "scenario telemetry must observe the complete lifecycle");
+  assert.doesNotMatch(scenarioSource, /Promise\.race/, "scenario telemetry must not pretend to cancel still-running work");
+  assert.match(scenarioSource, /SCENARIO_SLOW_MS/, "each lifecycle must use the reviewed slow-scenario threshold");
+  assert.match(scenarioSource, /WINDOWS_PROOF_SLOW/, "slow scenario telemetry must be explicit and non-terminal");
+  for (const state of ["START", "PASS", "FAIL"]) {
+    assert.match(scenarioSource, new RegExp(`WINDOWS_PROOF_${state}`), `scenario telemetry must report ${state}`);
+  }
+  const browserSource = proofFunction(program, "renderManagedDocumentInChromium").getText();
+  assert.match(
+    browserSource,
+    /process\.env\.CHROMEWEBDRIVER/,
+    "the native browser render must use the runner's matched ChromeDriver",
+  );
+  assert.match(
+    browserSource,
+    /webdriver\("GET", `\/session\/\$\{sessionId\}\/source`\)/,
+    "the native browser render must inspect the browser-serialized DOM",
+  );
+  assert.match(
+    browserSource,
+    /const renderDeadline = Date\.now\(\) \+ 15_000/,
+    "the native browser render must retain a bounded render deadline",
+  );
+
   const lifecycle = proofFunction(program, "runInstalledPackageProof");
   assert.deepEqual(
     lifecycle.body.statements.map((statement) => {
@@ -496,13 +553,14 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
       return { kind: ts.SyntaxKind[statement.kind] };
     }),
     [
-      { kind: "await", name: "proveCatalogLifecycle", args: [], binding: "{ bundle }" },
-      { kind: "await", name: "proveLocalRemoteSync", args: [], binding: "" },
-      { kind: "await", name: "proveUiUrlLifecycle", args: ["bundle"], binding: "" },
-      { kind: "await", name: "proveMcpConfigLifecycle", args: [], binding: "" },
+      { kind: "await", name: "runScenario", args: ['"catalog-lifecycle"', "proveCatalogLifecycle"], binding: "{ bundle }" },
+      { kind: "await", name: "runScenario", args: ['"local-remote-sync"', "proveLocalRemoteSync"], binding: "" },
+      { kind: "await", name: "runScenario", args: ['"ui-url-lifecycle"', "() => proveUiUrlLifecycle(bundle)"], binding: "" },
+      { kind: "await", name: "runScenario", args: ['"managed-document-lifecycle"', "() => proveManagedDocumentLifecycle(bundle)"], binding: "" },
+      { kind: "await", name: "runScenario", args: ['"mcp-config-lifecycle"', "proveMcpConfigLifecycle"], binding: "" },
       { kind: "return", expression: "installedPackageProofComplete" },
     ],
-    "the installed-package runner must contain only the four awaited lifecycles followed by its completion token",
+    "the installed-package runner must wrap exactly five awaited lifecycles before its completion token",
   );
   const entryTry = validateProofTopLevel(program);
   assert.equal(entryTry?.tryBlock.statements.length, 3, "the native proof entrypoint must gate success on completion");
@@ -539,7 +597,7 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
 
   assert.deepEqual(
     Object.keys(lane.installed_package_scenarios).sort(),
-    ["catalog-lifecycle", "local-remote-sync", "mcp-config-lifecycle", "ui-url-lifecycle"],
+    ["catalog-lifecycle", "local-remote-sync", "managed-document-lifecycle", "mcp-config-lifecycle", "ui-url-lifecycle"],
     "Windows installed-package scenario inventory drifted",
   );
   for (const [scenario, literals] of Object.entries(lane.installed_package_scenarios)) {
@@ -559,15 +617,18 @@ function validateWindowsInstalledProof(job, lane, proof = windowsInstalledProofB
   );
 }
 
-function assertWindowsJob(job, lane) {
+function assertWindowsPreflightJob(job, lane) {
   const steps = stepsOf(job);
   assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
-  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2);
-  assert.deepEqual(
-    [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])),
-    [lane.runtime_node, lane.installed_package_node],
-  );
-  assert.match(job, /name: Run Windows-sensitive filesystem regressions first/);
+  assert.match(job, /^ {4}timeout-minutes: 20\s*$/m);
+  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 1);
+  assert.deepEqual([...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])), [lane.runtime_node]);
+  const filesystemStep = requiredUnconditionalStep(steps, {
+    label: "Windows-sensitive filesystem regressions",
+    name: "Run Windows-sensitive filesystem regressions first",
+    workingDirectory: undefined,
+    run: "|",
+  });
   assert.match(job, /npm test -w @superbee\/core -- --test-name-pattern="AC-10"/);
   assert.match(job, /npm test -w @superbee\/publication/);
   const kindDraftProbe = "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
@@ -577,6 +638,13 @@ function assertWindowsJob(job, lane) {
     workingDirectory: "packages/cli",
     run: kindDraftProbe,
   });
+  const managedUiProbe = 'node --test --test-name-pattern="built CLI returns while its managed document remains live|managed worker preserves an indexless project-binding boundary" --import ./test/ts-loader.mjs ./test/ui-managed-authority.test.ts ./test/ui.test.ts';
+  const managedUiStep = requiredUnconditionalStep(steps, {
+    label: "Windows managed UI startup contract",
+    name: "Run the managed UI Windows startup proof first",
+    workingDirectory: "packages/cli",
+    run: managedUiProbe,
+  });
   const typecheck = "npm run typecheck --workspaces --if-present --ignore-scripts";
   const typecheckStep = requiredUnconditionalStep(steps, {
     label: "Windows complete workspace typecheck",
@@ -584,15 +652,6 @@ function assertWindowsJob(job, lane) {
     workingDirectory: undefined,
     run: typecheck,
   });
-  const shards = [1, 2, 3, 4].map(
-    (index) => `node scripts/run-test-command.mjs node --test --test-shard=${index}/4 --import ./test/ts-loader.mjs './test/*.test.ts'`,
-  );
-  const shardSteps = shards.map((shard, index) => requiredUnconditionalStep(steps, {
-    label: `Windows CLI shard ${index + 1}`,
-    name: `Run the CLI runtime contract (shard ${index + 1} of 4)`,
-    workingDirectory: "packages/cli",
-    run: shard,
-  }));
   const nonCliWorkspaces = [
     "@superbee/board-git",
     "@superbee/core",
@@ -613,13 +672,39 @@ function assertWindowsJob(job, lane) {
   });
   assert.doesNotMatch(job, /run: npm run ci:runtime/, "Windows runtime must remain split into observable failure domains");
   assert.ok(
-    kindDraftStep.position < typecheckStep.position
-      && typecheckStep.position < shardSteps[0].position
-      && shardSteps[0].position < shardSteps[1].position
-      && shardSteps[1].position < shardSteps[2].position
-      && shardSteps[2].position < shardSteps[3].position
-      && shardSteps[3].position < nonCliStep.position,
-    "Windows-sensitive filesystem regressions must fail before the complete workspace contract",
+    filesystemStep.position < kindDraftStep.position
+      && kindDraftStep.position < managedUiStep.position
+      && managedUiStep.position < typecheckStep.position
+      && typecheckStep.position < nonCliStep.position,
+    "Windows-sensitive probes must fail before the complete preflight workspace contract",
+  );
+}
+
+function assertWindowsCliJob(job, lane) {
+  const steps = stepsOf(job);
+  assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
+  assert.match(job, /^ {4}timeout-minutes: 30\s*$/m);
+  assert.match(job, /^ {6}fail-fast: false\s*$/m);
+  assert.match(job, /^ {8}shard: \[1, 2, 3, 4\]\s*$/m);
+  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 1);
+  assert.deepEqual([...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])), [lane.runtime_node]);
+  const shardCommand = "node scripts/run-test-command.mjs node --test --test-shard=${{ matrix.shard }}/4 --import ./test/ts-loader.mjs './test/*.test.ts'";
+  requiredUnconditionalStep(steps, {
+    label: "Windows parallel CLI shard",
+    name: "Run the CLI runtime contract",
+    workingDirectory: "packages/cli",
+    run: shardCommand,
+  });
+  assert.match(job, /^ {6}- run: npm run build\s*$/m, "each fresh Windows shard must build before testing");
+}
+
+function assertWindowsPackageJob(job, lane) {
+  assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
+  assert.match(job, /^ {4}timeout-minutes: 25\s*$/m);
+  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2);
+  assert.deepEqual(
+    [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])),
+    [lane.runtime_node, lane.installed_package_node],
   );
   assert.match(job, /npm run --silent pack:npm-package -- --pack-destination \$env:RUNNER_TEMP/);
   assert.match(job, /npm run verify:npm-package:tarball -- \$tarball/);
@@ -704,8 +789,15 @@ function validateWindowsProofWorkflow(text, candidate = manifest) {
   assert.match(text, /^name: Windows installed-package proof$/m);
   assert.deepEqual(workflowTriggers(text), ["workflow_dispatch"], "Windows proof must be manually dispatched only");
   const jobs = extractJobs(text);
-  assert.deepEqual(Object.keys(jobs), ["windows"], "manual Windows workflow must contain only the proof job");
-  assertWindowsJob(jobs.windows, lane);
+  assert.deepEqual(
+    Object.keys(jobs),
+    ["windows-preflight", "windows-cli", "windows-package"],
+    "manual Windows workflow must contain exactly the parallel preflight, CLI, and package proof jobs",
+  );
+  assert.doesNotMatch(text, /^\s+continue-on-error:/m, "Windows proof jobs must fail closed");
+  assertWindowsPreflightJob(jobs["windows-preflight"], lane);
+  assertWindowsCliJob(jobs["windows-cli"], lane);
+  assertWindowsPackageJob(jobs["windows-package"], lane);
   return jobs;
 }
 
@@ -778,7 +870,7 @@ test("Windows proof cannot be reattached to automatic CI or lose its manual trig
   assert.throws(() => validateCiTopology(workflow, required), /automatically run lane set/);
 });
 
-test("Windows runtime partition cannot lose its early probe, shards, or workspace coverage", () => {
+test("Windows runtime partition cannot lose its early probes, parallel shards, or workspace coverage", () => {
   const kindDraftProbe = "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
   const kindDraftStep = [
     "      - name: Run Windows command-output regressions first",
@@ -791,9 +883,9 @@ test("Windows runtime partition cannot lose its early probe, shards, or workspac
   ].join("\n");
   assert.throws(
     () => validateWindowsProofWorkflow(
-      windowsWorkflow.replace("--test-shard=4/4", "--test-shard=3/4"),
+      windowsWorkflow.replace("shard: [1, 2, 3, 4]", "shard: [1, 2, 3]"),
     ),
-    /exactly once/,
+    /shard/,
   );
   assert.throws(
     () => validateWindowsProofWorkflow(
@@ -813,18 +905,18 @@ test("Windows runtime partition cannot lose its early probe, shards, or workspac
   assert.throws(
     () => validateWindowsProofWorkflow(
       windowsWorkflow.replace(
-        "      - name: Run the CLI runtime contract (shard 2 of 4)\n        working-directory: packages/cli",
-        "      - name: Run the CLI runtime contract (shard 2 of 4)\n        working-directory: .",
+        "      - name: Run the CLI runtime contract\n        working-directory: packages/cli",
+        "      - name: Run the CLI runtime contract\n        working-directory: .",
       ),
     ),
-    /CLI shard 2.*reviewed working directory/,
+    /parallel CLI shard.*reviewed working directory/,
   );
   const lateProbeWithCommentDecoy = windowsWorkflow
     .replace(kindDraftStep, `      # ${kindDraftProbe}`)
     .replace(nonCliStep, `${nonCliStep}\n${kindDraftStep}`);
   assert.throws(
     () => validateWindowsProofWorkflow(lateProbeWithCommentDecoy),
-    /Windows-sensitive filesystem regressions must fail before the complete workspace contract/,
+    /Windows-sensitive probes must fail before the complete preflight workspace contract/,
   );
   assert.throws(
     () => validateWindowsProofWorkflow(
@@ -836,7 +928,7 @@ test("Windows runtime partition cannot lose its early probe, shards, or workspac
     () => validateWindowsProofWorkflow(
       windowsWorkflow.replace(kindDraftStep, `${kindDraftStep}\n        continue-on-error: true`),
     ),
-    /command-emission contract must fail closed rather than continue on error/,
+    /must fail closed/,
   );
   const skippedEarlyLateProbe = windowsWorkflow
     .replace(kindDraftStep, `${kindDraftStep}\n        if: \${{ false }}`)
@@ -854,24 +946,35 @@ test("Windows runtime partition cannot lose its early probe, shards, or workspac
     ),
     /complete workspace typecheck/,
   );
+  for (const [from, to] of [
+    ["timeout-minutes: 20", "timeout-minutes: 90"],
+    ["timeout-minutes: 30", "timeout-minutes: 90"],
+    ["timeout-minutes: 25", "timeout-minutes: 90"],
+  ]) {
+    assert.throws(
+      () => validateWindowsProofWorkflow(windowsWorkflow.replace(from, to)),
+      /timeout-minutes/,
+    );
+  }
 });
 
 test("Windows installed-package topology mutations cannot skip lifecycles or weaken artifact binding", () => {
-  const windowsJob = extractJobs(windowsWorkflow).windows;
+  const windowsJob = extractJobs(windowsWorkflow)["windows-package"];
   const lane = manifest.lanes.windows;
   for (const call of [
-    "const { bundle } = await proveCatalogLifecycle();",
-    "await proveLocalRemoteSync();",
-    "await proveUiUrlLifecycle(bundle);",
-    "await proveMcpConfigLifecycle();",
+    'const { bundle } = await runScenario("catalog-lifecycle", proveCatalogLifecycle);',
+    'await runScenario("local-remote-sync", proveLocalRemoteSync);',
+    'await runScenario("ui-url-lifecycle", () => proveUiUrlLifecycle(bundle));',
+    'await runScenario("managed-document-lifecycle", () => proveManagedDocumentLifecycle(bundle));',
+    'await runScenario("mcp-config-lifecycle", proveMcpConfigLifecycle);',
   ]) {
     assert.throws(
       () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, "")),
-      /four awaited lifecycles/,
+      /five awaited lifecycles/,
     );
     assert.throws(
       () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, call.replace("await ", "void "))),
-      /four awaited lifecycles/,
+      /five awaited lifecycles/,
     );
   }
   const runnerStart = "async function runInstalledPackageProof() {";
@@ -887,7 +990,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
         lane,
         windowsInstalledProof.replace(runnerStart, `${runnerStart}\n  ${bypass}`),
       ),
-      /four awaited lifecycles/,
+      /five awaited lifecycles/,
     );
   }
   assert.throws(
@@ -956,8 +1059,8 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
       windowsJob,
       lane,
       windowsInstalledProof.replace(
-        "} finally {",
-        '} catch {\n  process.stdout.write("installed package proof passed\\n");\n} finally {',
+        "} finally {\n  await rm(scratch",
+        '} catch {\n  process.stdout.write("installed package proof passed\\n");\n} finally {\n  await rm(scratch',
       ),
     ),
     /stdout authority|cannot convert failures to success/,
@@ -965,6 +1068,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
   const helperStart = "async function proveCatalogLifecycle() {";
   for (const [authority, error] of [
     ['process.stdout.write("installed package proof passed\\n");', /stdout authority/],
+    ['process.stderr.write("fake progress\\n");', /reviewed scenario wrapper/],
     ["process.exit(0);", /process exit authority/],
     ['process["exit"](0);', /process exit authority/],
     ["process.exitCode = 0;", /process exit authority/],
@@ -990,10 +1094,26 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     ),
     /terminal success payload/,
   );
+  assert.throws(
+    () => validateWindowsInstalledProofSemantics(
+      windowsJob,
+      lane,
+      windowsInstalledProof.replace("timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,", ""),
+    ),
+    /command deadline/,
+  );
+  assert.throws(
+    () => validateWindowsInstalledProofSemantics(
+      windowsJob,
+      lane,
+      windowsInstalledProof.replace("const result = await operation();", "const result = operation();"),
+    ),
+    /complete lifecycle/,
+  );
 });
 
 test("Windows installed-package proof digest rejects every unreviewed byte mutation", () => {
-  const windowsJob = extractJobs(windowsWorkflow).windows;
+  const windowsJob = extractJobs(windowsWorkflow)["windows-package"];
   const lane = manifest.lanes.windows;
   const helperStart = "async function proveCatalogLifecycle() {";
   for (const mutation of [

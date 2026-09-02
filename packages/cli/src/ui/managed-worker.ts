@@ -16,7 +16,9 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function parseInput(raw: string): ManagedUiWorkerInput {
+const DECIMAL_IDENTITY = /^(?:0|[1-9][0-9]*)$/u;
+
+export function parseManagedUiWorkerInput(raw: string): ManagedUiWorkerInput {
   if (Buffer.byteLength(raw) > INPUT_MAX_BYTES) throw new Error("managed UI startup input is too large");
   const value = JSON.parse(raw) as unknown;
   if (!object(value) || Object.keys(value).sort().join(",") !== "authority,launch_identity,management_secret,operation_id,port,schema_version,startup_deadline_at") {
@@ -27,21 +29,43 @@ function parseInput(raw: string): ManagedUiWorkerInput {
   if (!object(authority) || Object.keys(authority).sort().join(",") !== "actor,bundle_root,key,launch_root,mode,protocol") {
     throw new Error("managed UI startup authority has an unsupported shape");
   }
-  if (
-    value.schema_version !== 1 ||
-    typeof value.operation_id !== "string" || value.operation_id.length === 0 || value.operation_id.length > 128 ||
-    typeof value.management_secret !== "string" || value.management_secret.length < 32 || value.management_secret.length > 256 ||
-    typeof value.startup_deadline_at !== "string" || !Number.isFinite(Date.parse(value.startup_deadline_at)) ||
-    !object(launchIdentity) || Object.keys(launchIdentity).sort().join(",") !== "canonical_root,dev,ino" ||
-    typeof launchIdentity.canonical_root !== "string" || !path.isAbsolute(launchIdentity.canonical_root) ||
-    typeof launchIdentity.dev !== "number" || !Number.isSafeInteger(launchIdentity.dev) || launchIdentity.dev < 0 ||
-    typeof launchIdentity.ino !== "number" || !Number.isSafeInteger(launchIdentity.ino) || launchIdentity.ino < 0 ||
-    typeof value.port !== "number" || !Number.isInteger(value.port) || value.port < 0 || value.port > 65535 ||
-    authority.mode !== "dir" || authority.protocol !== MANAGED_UI_PROTOCOL ||
-    typeof authority.bundle_root !== "string" || !path.isAbsolute(authority.bundle_root) ||
-    typeof authority.launch_root !== "string" || !path.isAbsolute(authority.launch_root) ||
-    !(authority.actor === null || (typeof authority.actor === "string" && authority.actor.length > 0 && authority.actor.length <= 1024))
-  ) throw new Error("managed UI startup input is invalid");
+  if (value.schema_version !== 1) throw new Error("managed UI startup schema version is invalid");
+  if (typeof value.operation_id !== "string" || value.operation_id.length === 0 || value.operation_id.length > 128) {
+    throw new Error("managed UI startup operation id is invalid");
+  }
+  if (typeof value.management_secret !== "string" || value.management_secret.length < 32 || value.management_secret.length > 256) {
+    throw new Error("managed UI startup management secret is invalid");
+  }
+  if (typeof value.startup_deadline_at !== "string" || !Number.isFinite(Date.parse(value.startup_deadline_at))) {
+    throw new Error("managed UI startup deadline is invalid");
+  }
+  if (!object(launchIdentity) || Object.keys(launchIdentity).sort().join(",") !== "canonical_root,dev,ino") {
+    throw new Error("managed UI startup launch identity has an unsupported shape");
+  }
+  if (typeof launchIdentity.canonical_root !== "string" || !path.isAbsolute(launchIdentity.canonical_root)) {
+    throw new Error("managed UI startup canonical root is invalid");
+  }
+  if (typeof launchIdentity.dev !== "string" || !DECIMAL_IDENTITY.test(launchIdentity.dev)) {
+    throw new Error("managed UI startup device identity is invalid");
+  }
+  if (typeof launchIdentity.ino !== "string" || !DECIMAL_IDENTITY.test(launchIdentity.ino)) {
+    throw new Error("managed UI startup inode identity is invalid");
+  }
+  if (typeof value.port !== "number" || !Number.isInteger(value.port) || value.port < 0 || value.port > 65535) {
+    throw new Error("managed UI startup port is invalid");
+  }
+  if (authority.mode !== "dir" || authority.protocol !== MANAGED_UI_PROTOCOL) {
+    throw new Error("managed UI startup authority protocol is invalid");
+  }
+  if (typeof authority.bundle_root !== "string" || !path.isAbsolute(authority.bundle_root)) {
+    throw new Error("managed UI startup bundle root is invalid");
+  }
+  if (typeof authority.launch_root !== "string" || !path.isAbsolute(authority.launch_root)) {
+    throw new Error("managed UI startup launch root is invalid");
+  }
+  if (!(authority.actor === null || (typeof authority.actor === "string" && authority.actor.length > 0 && authority.actor.length <= 1024))) {
+    throw new Error("managed UI startup actor is invalid");
+  }
   const expected = managedUiAuthority(authority.bundle_root, authority.actor ?? undefined);
   if (authority.key !== expected.key) throw new Error("managed UI startup authority key is invalid");
   if (launchIdentity.canonical_root !== authority.bundle_root) {
@@ -76,13 +100,13 @@ async function adoptionLifecycle(handle: UiServerHandle | undefined, deadlineTim
 
 async function assertFrozenLaunchIdentity(input: ManagedUiWorkerInput): Promise<void> {
   const canonicalRoot = await realpath(input.authority.launch_root);
-  const metadata = await stat(canonicalRoot);
+  const metadata = await stat(canonicalRoot, { bigint: true });
   if (
     canonicalRoot !== input.authority.bundle_root ||
     canonicalRoot !== input.launch_identity.canonical_root ||
     !metadata.isDirectory() ||
-    metadata.dev !== input.launch_identity.dev ||
-    metadata.ino !== input.launch_identity.ino
+    metadata.dev.toString() !== input.launch_identity.dev ||
+    metadata.ino.toString() !== input.launch_identity.ino
   ) throw new Error("managed UI launch route changed after controller selection");
 }
 
@@ -166,5 +190,5 @@ export async function runManagedUiWorkerInput(
 }
 
 export async function runManagedUiWorker(): Promise<void> {
-  await runManagedUiWorkerInput(parseInput(await readStartupInput()));
+  await runManagedUiWorkerInput(parseManagedUiWorkerInput(await readStartupInput()));
 }
