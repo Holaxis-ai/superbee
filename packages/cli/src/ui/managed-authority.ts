@@ -85,8 +85,8 @@ export interface ManagedUiWorkerInput {
 
 export interface ManagedUiLaunchIdentity {
   canonical_root: string;
-  dev: number;
-  ino: number;
+  dev: string;
+  ino: string;
 }
 
 export interface ManagedUiWorkerReady {
@@ -113,9 +113,9 @@ export async function captureManagedUiLaunchIdentity(authority: ManagedUiAuthori
   if (canonicalRoot !== authority.bundle_root) {
     throw new CliError("CONFLICT", "managed UI launch route changed after controller selection");
   }
-  const metadata = await stat(canonicalRoot);
+  const metadata = await stat(canonicalRoot, { bigint: true });
   if (!metadata.isDirectory()) throw new CliError("CONFLICT", "managed UI launch route is no longer a directory");
-  return { canonical_root: canonicalRoot, dev: metadata.dev, ino: metadata.ino };
+  return { canonical_root: canonicalRoot, dev: metadata.dev.toString(), ino: metadata.ino.toString() };
 }
 
 function exactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {

@@ -16,7 +16,9 @@ function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function parseInput(raw: string): ManagedUiWorkerInput {
+const DECIMAL_IDENTITY = /^(?:0|[1-9][0-9]*)$/u;
+
+export function parseManagedUiWorkerInput(raw: string): ManagedUiWorkerInput {
   if (Buffer.byteLength(raw) > INPUT_MAX_BYTES) throw new Error("managed UI startup input is too large");
   const value = JSON.parse(raw) as unknown;
   if (!object(value) || Object.keys(value).sort().join(",") !== "authority,launch_identity,management_secret,operation_id,port,schema_version,startup_deadline_at") {
@@ -43,10 +45,10 @@ function parseInput(raw: string): ManagedUiWorkerInput {
   if (typeof launchIdentity.canonical_root !== "string" || !path.isAbsolute(launchIdentity.canonical_root)) {
     throw new Error("managed UI startup canonical root is invalid");
   }
-  if (typeof launchIdentity.dev !== "number" || !Number.isSafeInteger(launchIdentity.dev) || launchIdentity.dev < 0) {
+  if (typeof launchIdentity.dev !== "string" || !DECIMAL_IDENTITY.test(launchIdentity.dev)) {
     throw new Error("managed UI startup device identity is invalid");
   }
-  if (typeof launchIdentity.ino !== "number" || !Number.isSafeInteger(launchIdentity.ino) || launchIdentity.ino < 0) {
+  if (typeof launchIdentity.ino !== "string" || !DECIMAL_IDENTITY.test(launchIdentity.ino)) {
     throw new Error("managed UI startup inode identity is invalid");
   }
   if (typeof value.port !== "number" || !Number.isInteger(value.port) || value.port < 0 || value.port > 65535) {
@@ -98,13 +100,13 @@ async function adoptionLifecycle(handle: UiServerHandle | undefined, deadlineTim
 
 async function assertFrozenLaunchIdentity(input: ManagedUiWorkerInput): Promise<void> {
   const canonicalRoot = await realpath(input.authority.launch_root);
-  const metadata = await stat(canonicalRoot);
+  const metadata = await stat(canonicalRoot, { bigint: true });
   if (
     canonicalRoot !== input.authority.bundle_root ||
     canonicalRoot !== input.launch_identity.canonical_root ||
     !metadata.isDirectory() ||
-    metadata.dev !== input.launch_identity.dev ||
-    metadata.ino !== input.launch_identity.ino
+    metadata.dev.toString() !== input.launch_identity.dev ||
+    metadata.ino.toString() !== input.launch_identity.ino
   ) throw new Error("managed UI launch route changed after controller selection");
 }
 
@@ -188,5 +190,5 @@ export async function runManagedUiWorkerInput(
 }
 
 export async function runManagedUiWorker(): Promise<void> {
-  await runManagedUiWorkerInput(parseInput(await readStartupInput()));
+  await runManagedUiWorkerInput(parseManagedUiWorkerInput(await readStartupInput()));
 }
