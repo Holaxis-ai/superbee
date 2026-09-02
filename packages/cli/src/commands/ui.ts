@@ -29,7 +29,8 @@ import { render, resolveMode } from "../output.js";
 import { cliInvocation } from "../invocation.js";
 import { resolveActor } from "../actor.js";
 import { DOC_OPEN_USAGE, readErrorToCliError } from "./doc/common.js";
-import { commandWords } from "../command-text.js";
+import { commandToken, commandWords } from "../command-text.js";
+import { isRenderableToken } from "../shell-quoting.js";
 
 export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
 
@@ -200,6 +201,14 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
 
   const remoteFlag = await resolveRemoteFlag(values.remote, values.dir);
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} ${commandWords(commandPath)} --actor <name>` });
+  const renderDocumentOpenCommand = (id: string): string | null => {
+    const source = remoteFlag ?? bundle.root;
+    if (!isRenderableToken(id) || !isRenderableToken(source)) return null;
+    const sourceFlag = remoteFlag ? "--remote" : "--dir";
+    return explicitPort
+      ? `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))} -- ${commandToken(id)}`
+      : `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} -- ${commandToken(id)}`;
+  };
   let options: UiServerOptions;
   let rootLabel: string;
   let bundle: Bundle;
@@ -227,12 +236,12 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     // RemoteBackend bundle every other engine-aware command uses over --remote; the SPA's /v0
     // transport path stays the raw proxy.
     bundle = await openBundle(undefined, remoteFlag);
-    options = { mode: "remote", port, remoteBase: base, apiKey, bundle, actor };
+    options = { mode: "remote", port, remoteBase: base, apiKey, bundle, actor, renderDocumentOpenCommand };
     rootLabel = base;
   } else {
     bundle = await openBundle(values.dir);
     const router = createRouter(bundle);
-    options = { mode: "dir", port, router, bundle, actor };
+    options = { mode: "dir", port, router, bundle, actor, renderDocumentOpenCommand };
     rootLabel = bundle.root;
   }
 

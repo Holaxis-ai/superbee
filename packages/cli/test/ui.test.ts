@@ -119,9 +119,42 @@ test("doc open verifies and opens one exact document through the existing DocPag
     assert.ok(url.searchParams.get("token"));
     assert.equal(opened, receipt.url, "doc open opens without a redundant --open flag");
     assert.equal((await fetch(receipt.url)).status, 200);
+    const recoveryUrl = new URL(receipt.url);
+    recoveryUrl.pathname = "/__ui/document-open-command";
+    recoveryUrl.searchParams.set("id", "docs/review");
+    const recoveryResponse = await fetch(recoveryUrl);
+    assert.equal(recoveryResponse.status, 200);
+    const recovery = (await recoveryResponse.json()) as { command: string };
+    assert.match(recovery.command, /doc open --dir .* --port 0 -- docs\/review$/);
 
     resolveShutdown();
     await run;
+  } finally {
+    await cleanup();
+  }
+});
+
+test("the recovery command keeps an option-shaped document id positional", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  await writeDoc(
+    { root: dir },
+    { id: "--remote", frontmatter: { type: "Doc", title: "Option-shaped id" }, body: "# Safe" },
+  );
+  try {
+    let recoveryCommand: string | null | undefined;
+    await docOpen(["--dir", dir, "--port", "0", "--", "--remote"], {
+      stdout: () => {},
+      bootUiServer: async (options) => {
+        recoveryCommand = options.renderDocumentOpenCommand?.("--remote");
+        return { host: "127.0.0.1", port: 49152, token: "test-token", close: async () => {} };
+      },
+      waitForShutdown: async () => {},
+      openBrowser: () => {},
+      writeUrlFile: async () => {},
+      clearUrlFile: async () => {},
+    });
+
+    assert.match(recoveryCommand ?? "", /doc open --dir .* --port 0 -- --remote$/);
   } finally {
     await cleanup();
   }

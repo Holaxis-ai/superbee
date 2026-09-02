@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getDoc } from "./client.js";
-import { listPages, pageFromFrontmatter, resolvePageTarget } from "./pages.js";
+import { fetchDocumentOpenCommand, listPages, pageFromFrontmatter, resolvePageTarget } from "./pages.js";
 import type { Frontmatter } from "./types.js";
 
 vi.mock("./client.js", async (importOriginal) => {
@@ -63,6 +63,23 @@ describe("listPages", () => {
     expect(fetchMock).toHaveBeenCalledWith("/__ui/views", { credentials: "same-origin" });
     expect(pages.map((p) => p.id)).toEqual(["pages-registry/legacy", "views-registry/board"]);
     expect(pages[1]).toMatchObject({ bridge: "bundle-read", presentation: "workspace" });
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("fetchDocumentOpenCommand", () => {
+  it("asks the session-gated shell endpoint with an encoded document id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ command: "superbee doc open 'docs/a b'" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fetchDocumentOpenCommand("docs/a b")).resolves.toBe("superbee doc open 'docs/a b'");
+    expect(fetchMock).toHaveBeenCalledWith("/__ui/document-open-command?id=docs%2Fa+b", {
+      credentials: "same-origin",
+    });
     vi.unstubAllGlobals();
   });
 });

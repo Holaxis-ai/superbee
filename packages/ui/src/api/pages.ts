@@ -44,6 +44,15 @@ export async function fetchConfig(): Promise<UiConfig> {
   return (await res.json()) as UiConfig;
 }
 
+/** CLI-rendered, host-shell-safe recovery command for one document. */
+export async function fetchDocumentOpenCommand(documentId: string): Promise<string> {
+  const query = new URLSearchParams({ id: documentId });
+  const res = await fetch(`/__ui/document-open-command?${query.toString()}`, { credentials: "same-origin" });
+  if (!res.ok) throw await parseErrorEnvelope(res);
+  const payload = (await res.json()) as { command: string };
+  return payload.command;
+}
+
 /**
  * Every valid durable View from the server-owned shared catalog. Discovery no longer re-runs in
  * the browser: the web launcher, CLI, and MCP all consume the same runtime projection.
