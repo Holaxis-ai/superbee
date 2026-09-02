@@ -501,15 +501,32 @@ function assertWindowsJob(job, lane) {
   assert.match(job, /name: Run Windows-sensitive filesystem regressions first/);
   assert.match(job, /npm test -w @superbee\/core -- --test-name-pattern="AC-10"/);
   assert.match(job, /npm test -w @superbee\/publication/);
-  const kindDraftProbe = "npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
-  assert.ok(job.includes(kindDraftProbe), "Windows preflight must run the command-emission contract before the long runtime lanes");
+  const kindDraftProbe = "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
+  const kindDraftStep = [
+    "      - name: Run Windows command-output regressions first",
+    "        working-directory: packages/cli",
+    `        run: ${kindDraftProbe}`,
+  ].join("\n");
+  assert.ok(
+    job.includes(kindDraftStep),
+    "Windows preflight must run the command-emission contract directly from the CLI working directory",
+  );
   const typecheck = "npm run typecheck --workspaces --if-present --ignore-scripts";
   assert.ok(job.includes(typecheck), "Windows runtime must preserve the complete workspace typecheck");
   const shards = [1, 2, 3, 4].map(
-    (index) => `npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --test-shard=${index}/4 --import ./test/ts-loader.mjs './test/*.test.ts'`,
+    (index) => `node scripts/run-test-command.mjs node --test --test-shard=${index}/4 --import ./test/ts-loader.mjs './test/*.test.ts'`,
   );
-  for (const shard of shards) {
+  for (const [index, shard] of shards.entries()) {
     assert.equal(job.split(shard).length - 1, 1, `Windows CLI runtime must execute exactly one ${shard}`);
+    const shardStep = [
+      `      - name: Run the CLI runtime contract (shard ${index + 1} of 4)`,
+      "        working-directory: packages/cli",
+      `        run: ${shard}`,
+    ].join("\n");
+    assert.ok(
+      job.includes(shardStep),
+      `Windows CLI shard ${index + 1} must run directly from the CLI working directory`,
+    );
   }
   const nonCliWorkspaces = [
     "@superbee/board-git",
@@ -712,11 +729,20 @@ test("Windows runtime partition cannot lose its early probe, shards, or workspac
   assert.throws(
     () => validateWindowsProofWorkflow(
       windowsWorkflow.replace(
-        "npm exec -w superbee --no -- node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts",
-        "node packages/cli/scripts/run-test-command.mjs node --test --import ./packages/cli/test/ts-loader.mjs ./packages/cli/test/kind-draft.test.ts",
+        "      - name: Run Windows command-output regressions first\n        working-directory: packages/cli",
+        "      - name: Run Windows command-output regressions first\n        working-directory: .",
       ),
     ),
-    /command-emission contract/,
+    /command-emission contract directly from the CLI working directory/,
+  );
+  assert.throws(
+    () => validateWindowsProofWorkflow(
+      windowsWorkflow.replace(
+        "      - name: Run the CLI runtime contract (shard 2 of 4)\n        working-directory: packages/cli",
+        "      - name: Run the CLI runtime contract (shard 2 of 4)\n        working-directory: .",
+      ),
+    ),
+    /CLI shard 2 must run directly from the CLI working directory/,
   );
   assert.throws(
     () => validateWindowsProofWorkflow(
