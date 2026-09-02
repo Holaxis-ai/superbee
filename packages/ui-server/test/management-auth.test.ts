@@ -34,6 +34,7 @@ async function boot(managed = true): Promise<UiServerHandle> {
           mode: "dir" as const,
           authority_key: "a".repeat(64),
           bundle_root: "/bundle",
+          launch_root: "/bundle-alias",
           actor: null,
           launch_nonce: NONCE,
           pid: 123,
@@ -93,6 +94,7 @@ test("authenticated status is exact, cacheless, and never returns either secret"
       mode: "dir",
       authority_key: "a".repeat(64),
       bundle_root: "/bundle",
+      launch_root: "/bundle-alias",
       actor: null,
       launch_nonce: NONCE,
       pid: 123,
@@ -103,6 +105,35 @@ test("authenticated status is exact, cacheless, and never returns either secret"
   } finally {
     await server.close();
   }
+});
+
+test("weak or malformed exported management authority is rejected at boot", async () => {
+  const value = bundle();
+  const base = {
+    mode: "dir" as const,
+    bundle: value,
+    router: createRouter(value),
+    renderDocument,
+    serveAsset: asset,
+    sessionSecret: SESSION,
+  };
+  const identity = {
+    protocol: 1,
+    mode: "dir" as const,
+    authority_key: "a".repeat(64),
+    bundle_root: "/bundle",
+    launch_root: "/bundle",
+    actor: null,
+    launch_nonce: NONCE,
+    pid: 123,
+    started_at: "2026-09-01T00:00:00.000Z",
+  };
+  await assert.rejects(() => bootUiServer({ ...base, management: { secret: "", identity } }), /invalid managed UI/);
+  await assert.rejects(() => bootUiServer({
+    ...base,
+    management: { secret: MANAGEMENT, identity: { ...identity, launch_nonce: "", bundle_root: "relative" } },
+  }), /invalid managed UI/);
+  await assert.rejects(() => bootUiServer({ ...base, sessionCookieName: "bad\r\nname" }), /invalid UI session cookie/);
 });
 
 test("authority-specific browser cookies do not collide across loopback ports", async () => {
@@ -148,5 +179,27 @@ test("adopt and stop are exact-launch idempotent transitions whose acknowledgeme
     assert.equal((await fetch(url(server, "/__manage/stop"), { method: "POST", headers: managementHeaders })).status, 200);
   } finally {
     await server.close();
+  }
+});
+
+test("lease expiry and stop-before-adopt atomically prevent a later successful adoption", async () => {
+  const expired = await boot();
+  try {
+    assert.equal(expired.management!.expireIfReady(), true);
+    await expired.management!.stopRequested;
+    assert.equal(expired.management!.expireIfReady(), false);
+    assert.equal((await fetch(url(expired, "/__manage/adopt"), { method: "POST", headers: managementHeaders })).status, 409);
+  } finally {
+    await expired.close();
+  }
+
+  const stopped = await boot();
+  try {
+    const response = await fetch(url(stopped, "/__manage/stop"), { method: "POST", headers: managementHeaders });
+    assert.equal(response.status, 200);
+    await stopped.management!.stopRequested;
+    assert.equal((await fetch(url(stopped, "/__manage/adopt"), { method: "POST", headers: managementHeaders })).status, 409);
+  } finally {
+    await stopped.close();
   }
 });

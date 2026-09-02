@@ -9,6 +9,7 @@ import { ui } from "../commands/ui.js";
 import type { UiManagementOptions } from "@superbee/ui-server";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
+import { assertResolvedLocalRouteIdentity, resolveLocalBundleRoute } from "../bundle.js";
 
 const INPUT_MAX_BYTES = 16 * 1024;
 
@@ -23,7 +24,7 @@ function parseInput(raw: string): ManagedUiWorkerInput {
     throw new Error("managed UI startup input has an unsupported shape");
   }
   const authority = value.authority;
-  if (!object(authority) || Object.keys(authority).sort().join(",") !== "actor,bundle_root,key,mode,protocol") {
+  if (!object(authority) || Object.keys(authority).sort().join(",") !== "actor,bundle_root,key,launch_root,mode,protocol") {
     throw new Error("managed UI startup authority has an unsupported shape");
   }
   if (
@@ -33,6 +34,7 @@ function parseInput(raw: string): ManagedUiWorkerInput {
     typeof value.port !== "number" || !Number.isInteger(value.port) || value.port < 0 || value.port > 65535 ||
     authority.mode !== "dir" || authority.protocol !== MANAGED_UI_PROTOCOL ||
     typeof authority.bundle_root !== "string" || !path.isAbsolute(authority.bundle_root) ||
+    typeof authority.launch_root !== "string" || !path.isAbsolute(authority.launch_root) ||
     !(authority.actor === null || (typeof authority.actor === "string" && authority.actor.length > 0 && authority.actor.length <= 1024))
   ) throw new Error("managed UI startup input is invalid");
   const expected = managedUiAuthority(authority.bundle_root, authority.actor ?? undefined);
@@ -52,17 +54,16 @@ async function readStartupInput(): Promise<string> {
   return Buffer.concat(chunks).toString("utf8").trim();
 }
 
-function adoptionLifecycle(handle?: UiServerHandle): Promise<void> {
+async function adoptionLifecycle(handle?: UiServerHandle): Promise<void> {
   if (!handle?.management) return Promise.reject(new Error("managed UI server did not expose its management lifecycle"));
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, MANAGED_UI_STARTUP_LEASE_MS);
-    timer.unref?.();
-    void handle.management!.adopted.then(async () => {
-      clearTimeout(timer);
-      await handle.management!.stopRequested;
-      resolve();
-    });
-  });
+  const timer = setTimeout(() => handle.management!.expireIfReady(), MANAGED_UI_STARTUP_LEASE_MS);
+  timer.unref?.();
+  const first = await Promise.race([
+    handle.management.adopted.then(() => "adopted" as const),
+    handle.management.stopRequested.then(() => "stopping" as const),
+  ]);
+  clearTimeout(timer);
+  if (first === "adopted") await handle.management.stopRequested;
 }
 
 export async function runManagedUiWorker(): Promise<void> {
@@ -76,6 +77,7 @@ export async function runManagedUiWorker(): Promise<void> {
       mode: "dir",
       authority_key: input.authority.key,
       bundle_root: input.authority.bundle_root,
+      launch_root: input.authority.launch_root,
       actor: input.authority.actor,
       launch_nonce: launchNonce,
       pid: process.pid,
@@ -83,10 +85,16 @@ export async function runManagedUiWorker(): Promise<void> {
     },
   };
   let readyWritten = false;
-  const args = ["--dir", input.authority.bundle_root, "--port", String(input.port), "--json"];
+  const route = await resolveLocalBundleRoute(input.authority.launch_root);
+  await assertResolvedLocalRouteIdentity(route);
+  if (route.target.canonicalRoot !== input.authority.bundle_root || route.bundle.root !== input.authority.launch_root) {
+    throw new Error("managed UI launch route changed after controller selection");
+  }
+  const args = ["--dir", input.authority.launch_root, "--port", String(input.port), "--json"];
   if (input.authority.actor !== null) args.push("--actor", input.authority.actor);
   await ui(args, {
     management,
+    localBundle: route.bundle,
     sessionCookieName: `superbee_ui_${input.authority.key.slice(0, 16)}`,
     stdout: (raw) => {
       if (readyWritten) return;

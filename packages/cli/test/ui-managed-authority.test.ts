@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { initBundle, writeDoc } from "@superbee/core";
 
 import {
-  MANAGED_UI_STARTUP_LEASE_MS,
+  MANAGED_UI_PENDING_RECLAIM_MS,
   listManagedUiStatus,
   managedUiAuthority,
   managedUiRecordPath,
@@ -29,6 +29,11 @@ interface FakeService {
   state: "ready" | "adopted" | "stopping";
   activeClients: number;
   available: boolean;
+  stopStatusPolls: number;
+}
+
+function connectionRefused(): TypeError {
+  return Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
 }
 
 function fakeRuntime(home: string): {
@@ -52,6 +57,7 @@ function fakeRuntime(home: string): {
         state: "ready",
         activeClients: 0,
         available: true,
+        stopStatusPolls: 0,
       };
       services.push(service);
       return {
@@ -66,16 +72,22 @@ function fakeRuntime(home: string): {
     fetch: (async (target, init) => {
       const url = new URL(String(target));
       const service = services.find((item) => item.port === Number(url.port));
-      if (!service?.available) return new Response("gone", { status: 503 });
+      if (!service?.available) throw connectionRefused();
       const headers = new Headers(init?.headers);
       assert.equal(headers.get("x-superbee-management-secret"), service.input.management_secret);
       assert.equal(headers.get("x-superbee-launch-nonce"), service.nonce);
       if (url.pathname.endsWith("/status")) {
+        if (service.state === "stopping" && service.stopStatusPolls <= 0) {
+          service.available = false;
+          throw connectionRefused();
+        }
+        if (service.state === "stopping") service.stopStatusPolls -= 1;
         return Response.json({
           protocol: service.input.authority.protocol,
           mode: "dir",
           authority_key: service.input.authority.key,
           bundle_root: service.input.authority.bundle_root,
+          launch_root: service.input.authority.launch_root,
           actor: service.input.authority.actor,
           launch_nonce: service.nonce,
           state: service.state,
@@ -177,6 +189,28 @@ test("concurrent launches converge through the shared cross-process authority lo
   }
 });
 
+test("a valid startup longer than the generic five-second lock wait still converges", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-slow-converge-"));
+  const runtime = fakeRuntime(home);
+  const authority = managedUiAuthority("/canonical/slow-concurrent", "agent");
+  const spawnWorker = runtime.options.spawnWorker!;
+  runtime.options.spawnWorker = async (input) => {
+    await new Promise<void>((resolve) => setTimeout(resolve, 5_200));
+    return spawnWorker(input);
+  };
+  try {
+    const [first, second] = await Promise.all([
+      startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options),
+      startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options),
+    ]);
+    assert.equal(runtime.spawnCount(), 1);
+    assert.deepEqual(new Set([first.state, second.state]), new Set(["started", "reused"]));
+    await stopManagedUi(authority, runtime.options);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("fresh and expired pending records have deterministic interruption recovery", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-pending-"));
   const runtime = fakeRuntime(home);
@@ -195,7 +229,7 @@ test("fresh and expired pending records have deterministic interruption recovery
     await assert.rejects(
       () => startOrReuseManagedUi(authority, "docs/one", undefined, {
         ...runtime.options,
-        now: () => created + MANAGED_UI_STARTUP_LEASE_MS - 1,
+        now: () => created + MANAGED_UI_PENDING_RECLAIM_MS - 1,
       }),
       (error: unknown) => error instanceof CliError && error.code === "TRANSIENT",
     );
@@ -203,7 +237,7 @@ test("fresh and expired pending records have deterministic interruption recovery
 
     const recovered = await startOrReuseManagedUi(authority, "docs/one", undefined, {
       ...runtime.options,
-      now: () => created + MANAGED_UI_STARTUP_LEASE_MS,
+      now: () => created + MANAGED_UI_PENDING_RECLAIM_MS,
     });
     assert.equal(recovered.state, "started");
     assert.equal(runtime.spawnCount(), 1);
@@ -241,7 +275,7 @@ test("ready and adopted child states recover an interrupted parent adoption idem
   }
 });
 
-test("an interrupted stop remains bounded and a dead stopping authority is replaced", async () => {
+test("an interrupted stop is resumed, exit is proven, and only then is the authority replaced", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-stopping-"));
   const runtime = fakeRuntime(home);
   const authority = managedUiAuthority("/canonical/stopping", undefined);
@@ -249,16 +283,38 @@ test("an interrupted stop remains bounded and a dead stopping authority is repla
     const first = await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
     await publishRecord(home, authority, { ...first.record, phase: "stopping" });
     runtime.services[0]!.state = "stopping";
+    runtime.services[0]!.stopStatusPolls = 2;
+    const replacement = await startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options);
+    assert.equal(replacement.state, "started");
+    assert.equal(runtime.spawnCount(), 2);
+    await stopManagedUi(authority, runtime.options);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a transient or rejected status probe preserves the exact record and never starts a duplicate", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-uncertain-"));
+  const runtime = fakeRuntime(home);
+  const authority = managedUiAuthority("/canonical/uncertain", undefined);
+  try {
+    await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
+    const ordinaryFetch = runtime.options.fetch!;
+    let uncertain = true;
+    runtime.options.fetch = (async (...args: Parameters<typeof fetch>) => {
+      if (uncertain && new URL(String(args[0])).pathname.endsWith("/status")) {
+        return new Response("busy", { status: 503 });
+      }
+      return ordinaryFetch(...args);
+    }) as typeof fetch;
     await assert.rejects(
       () => startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options),
       (error: unknown) => error instanceof CliError && error.code === "TRANSIENT",
     );
     assert.equal(runtime.spawnCount(), 1);
-
-    runtime.services[0]!.available = false;
-    const replacement = await startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options);
-    assert.equal(replacement.state, "started");
-    assert.equal(runtime.spawnCount(), 2);
+    assert.equal((await listManagedUiStatus(authority.bundle_root, runtime.options))[0]!.live, "unknown");
+    uncertain = false;
+    assert.equal((await startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options)).state, "reused");
     await stopManagedUi(authority, runtime.options);
   } finally {
     await rm(home, { recursive: true, force: true });
@@ -352,14 +408,34 @@ test("built CLI returns while its managed document remains live, then reuses, re
     assert.equal(second.state, "reused");
     assert.equal(second.url, first.url);
 
+    const literalAbsent = run(["doc", "open", "docs/live", "--dir", bundleRoot, "--actor", "absent"]);
+    assert.equal(literalAbsent.state, "started");
+
     const status = run(["ui", "--status", "--dir", bundleRoot]);
     const instances = status.instances as Array<Record<string, unknown>>;
-    assert.equal(instances.length, 1);
-    assert.equal(instances[0]!.live, true);
+    assert.equal(status.count, 2);
+    assert.equal(status.shown, 2);
+    assert.deepEqual(
+      instances
+        .map((item) => [item.actor, item.actor_present, item.live])
+        .sort((left, right) => Number(left[1]) - Number(right[1])),
+      [[null, false, true], ["absent", true, true]],
+    );
+    const bounded = run(["ui", "--status", "--dir", bundleRoot, "--limit", "1"]);
+    assert.equal(bounded.count, 2);
+    assert.equal(bounded.shown, 1);
 
     const stopped = run(["ui", "--stop", "--dir", bundleRoot]);
     assert.equal(stopped.stopped, true);
     await assert.rejects(() => fetch(String(first.url)));
+    assert.equal(run(["ui", "--stop", "--dir", bundleRoot, "--actor", "absent"]).stopped, true);
+
+    const releasedPort = new URL(String(first.url)).port;
+    const restarted = run(["doc", "open", "docs/live", "--dir", bundleRoot, "--port", releasedPort]);
+    assert.equal(restarted.state, "started");
+    assert.equal(new URL(String(restarted.url)).port, releasedPort);
+    assert.equal((await fetch(String(restarted.url))).status, 200);
+    assert.equal(run(["ui", "--stop", "--dir", bundleRoot]).stopped, true);
   } finally {
     // Best-effort exact-authority cleanup if an assertion failed before the ordinary stop.
     spawnSync(process.execPath, [cli, "ui", "--stop", "--dir", bundleRoot, "--json"], { env, encoding: "utf8", timeout: 5_000 });

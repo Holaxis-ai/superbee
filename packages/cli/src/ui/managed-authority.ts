@@ -21,16 +21,21 @@ import { commandFragment, commandToken, type CommandText } from "../command-text
 export const MANAGED_UI_PROTOCOL = 1;
 export const MANAGED_UI_RECORD_SCHEMA = 1;
 export const MANAGED_UI_STARTUP_LEASE_MS = 15_000;
+export const MANAGED_UI_PENDING_RECLAIM_MS = 20_000;
 const RECORD_PREFIX = "managed-ui-";
 const RECORD_SUFFIX = ".json";
 const RECORD_MAX_BYTES = 32 * 1024;
 const PROBE_TIMEOUT_MS = 2_000;
 const START_TIMEOUT_MS = 10_000;
+const STOP_POLL_MS = 100;
+const STOP_POLL_ATTEMPTS = 50;
+const LIFECYCLE_LOCK_WAIT_MS = 30_000;
 
 export interface ManagedUiAuthority {
   key: string;
   mode: "dir";
   bundle_root: string;
+  launch_root: string;
   actor: string | null;
   protocol: number;
 }
@@ -53,7 +58,7 @@ export interface ManagedUiRecord {
 }
 
 export interface ManagedUiStatus extends ManagedUiRecord {
-  live: boolean;
+  live: boolean | "unknown";
   active_clients?: number;
 }
 
@@ -87,6 +92,7 @@ export interface ManagedUiControllerOptions {
   fetch?: typeof fetch;
   spawnWorker?: (input: ManagedUiWorkerInput) => Promise<ManagedUiWorkerReady>;
   withLock?: <T>(target: string, fn: () => Promise<T>) => Promise<T>;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 function exactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
@@ -102,22 +108,27 @@ function boundedString(value: unknown, max = 4096): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= max;
 }
 
-export function managedUiAuthority(bundleRoot: string, actor: string | undefined): ManagedUiAuthority {
+export function managedUiAuthority(
+  bundleRoot: string,
+  actor: string | undefined,
+  launchRoot: string = bundleRoot,
+): ManagedUiAuthority {
   const tuple = { mode: "dir" as const, bundle_root: bundleRoot, actor: actor ?? null };
   // Protocol compatibility is RECORD state, not slot identity. Keeping it out of the digest lets a
   // new controller discover and deliberately replace/refuse an older authority instead of silently
   // starting a second process beside it.
   const key = createHash("sha256").update(JSON.stringify(tuple)).digest("hex");
-  return { key, ...tuple, protocol: MANAGED_UI_PROTOCOL };
+  return { key, ...tuple, launch_root: launchRoot, protocol: MANAGED_UI_PROTOCOL };
 }
 
 function validateAuthority(value: unknown): ManagedUiAuthority | null {
-  if (!object(value) || !exactKeys(value, ["key", "mode", "bundle_root", "actor", "protocol"])) return null;
+  if (!object(value) || !exactKeys(value, ["key", "mode", "bundle_root", "launch_root", "actor", "protocol"])) return null;
   if (!boundedString(value.key, 64) || !/^[0-9a-f]{64}$/u.test(value.key)) return null;
   if (value.mode !== "dir" || !boundedString(value.bundle_root) || !path.isAbsolute(value.bundle_root)) return null;
+  if (!boundedString(value.launch_root) || !path.isAbsolute(value.launch_root)) return null;
   if (!(value.actor === null || boundedString(value.actor, 1024))) return null;
   if (typeof value.protocol !== "number" || !Number.isSafeInteger(value.protocol) || value.protocol < 1) return null;
-  const expected = managedUiAuthority(value.bundle_root, value.actor ?? undefined);
+  const expected = managedUiAuthority(value.bundle_root, value.actor ?? undefined, value.launch_root);
   return expected.key === value.key ? { ...expected, protocol: value.protocol } : null;
 }
 
@@ -220,34 +231,81 @@ interface Probe {
   mode: "dir";
   authority_key: string;
   bundle_root: string;
+  launch_root: string;
   actor: string | null;
   launch_nonce: string;
   state: ManagedUiPhase;
   active_clients: number;
 }
 
-async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch): Promise<Probe | null> {
-  if (!record.port || !record.launch_nonce) return null;
+type ProbeResult =
+  | { kind: "matched"; probe: Probe }
+  | { kind: "absent" }
+  | { kind: "indeterminate"; reason: string };
+
+function hasConnectionRefused(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  const visit = (value: unknown): boolean => {
+    if (value === null || typeof value !== "object" || seen.has(value)) return false;
+    seen.add(value);
+    if ((value as NodeJS.ErrnoException).code === "ECONNREFUSED") return true;
+    if ("cause" in value && visit((value as { cause?: unknown }).cause)) return true;
+    if ("errors" in value && Array.isArray((value as { errors?: unknown[] }).errors)) {
+      return (value as { errors: unknown[] }).errors.some(visit);
+    }
+    return false;
+  };
+  return visit(error);
+}
+
+async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch): Promise<ProbeResult> {
+  if (!record.port || !record.launch_nonce) return { kind: "indeterminate", reason: "record has no live launch identity" };
   try {
     const response = await boundedFetch(fetchImpl, `http://127.0.0.1:${record.port}/__manage/status`, {
       headers: managementHeaders(record),
     });
-    if (!response.ok) return null;
+    if (!response.ok) return { kind: "indeterminate", reason: `management endpoint returned ${response.status}` };
     const value = await response.json() as Partial<Probe>;
     if (
       value.mode !== "dir" ||
       value.authority_key !== record.authority.key ||
       value.bundle_root !== record.authority.bundle_root ||
+      value.launch_root !== record.authority.launch_root ||
       value.actor !== record.authority.actor ||
       value.launch_nonce !== record.launch_nonce ||
       typeof value.protocol !== "number" ||
       !(value.state === "ready" || value.state === "adopted" || value.state === "stopping") ||
       typeof value.active_clients !== "number"
-    ) return null;
-    return value as Probe;
-  } catch {
-    return null;
+    ) return { kind: "indeterminate", reason: "management endpoint returned a mismatched identity" };
+    return { kind: "matched", probe: value as Probe };
+  } catch (error) {
+    return hasConnectionRefused(error)
+      ? { kind: "absent" }
+      : { kind: "indeterminate", reason: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function probeUncertain(record: ManagedUiRecord, reason: string): CliError {
+  return new CliError("TRANSIENT", `could not prove whether the managed UI is still live: ${reason}`, {
+    help: `${cliInvocation()} ui --status --dir ${commandToken(record.authority.bundle_root)}`,
+  });
+}
+
+async function waitForExactExit(
+  record: ManagedUiRecord,
+  fetchImpl: typeof fetch,
+  sleep: (ms: number) => Promise<void>,
+): Promise<void> {
+  let lastReason = "the listener still answers for the exact launch nonce";
+  for (let attempt = 0; attempt < STOP_POLL_ATTEMPTS; attempt += 1) {
+    const result = await probeRecord(record, fetchImpl);
+    if (result.kind === "absent") return;
+    lastReason = result.kind === "indeterminate" ? result.reason : lastReason;
+    await sleep(STOP_POLL_MS);
+  }
+  throw new CliError("TRANSIENT", `managed UI stop was acknowledged but listener exit is not yet proven: ${lastReason}`, {
+    help: `${cliInvocation()} ui --stop --dir ${commandToken(record.authority.bundle_root)}${actorArgs(record)}`,
+  });
 }
 
 async function managementPost(record: ManagedUiRecord, operation: "adopt" | "stop", fetchImpl: typeof fetch): Promise<void> {
@@ -362,26 +420,35 @@ function pendingRecord(authority: ManagedUiAuthority, now: number): ManagedUiRec
 
 async function recoverOrReuse(
   current: { record: ManagedUiRecord; raw: string },
+  desiredAuthority: ManagedUiAuthority,
   requestedPort: number | undefined,
   now: number,
   fetchImpl: typeof fetch,
   home: string,
+  sleep: (ms: number) => Promise<void>,
 ): Promise<ManagedUiRecord | null> {
   const record = current.record;
   if (record.phase === "pending") {
-    if (now - Date.parse(record.created_at) < MANAGED_UI_STARTUP_LEASE_MS) {
+    if (now - Date.parse(record.created_at) < MANAGED_UI_PENDING_RECLAIM_MS) {
       throw new CliError("TRANSIENT", "managed UI startup is already in progress", {
-        help: `retry ${cliInvocation()} doc open after the bounded startup lease`,
+        help: `retry ${cliInvocation()} doc open after the bounded startup recovery window`,
       });
     }
     await removeExactRecord(record.authority, current.raw, home);
     return null;
   }
-  const probe = await probeRecord(record, fetchImpl);
-  if (!probe) {
+  const result = await probeRecord(record, fetchImpl);
+  if (result.kind === "absent") {
     // The record authorizes only removal of its exact bytes. It never authorizes signaling the PID.
     await removeExactRecord(record.authority, current.raw, home);
     return null;
+  }
+  if (result.kind === "indeterminate") throw probeUncertain(record, result.reason);
+  const probe = result.probe;
+  if (record.authority.launch_root !== desiredAuthority.launch_root) {
+    throw new CliError("CONFLICT", "the managed UI authority is active through a different trusted bundle route", {
+      help: `${cliInvocation()} ui --stop --dir ${commandToken(record.authority.launch_root)}${actorArgs(record)}, then retry`,
+    });
   }
   if (probe.protocol !== MANAGED_UI_PROTOCOL) {
     if (probe.active_clients > 0) {
@@ -390,6 +457,7 @@ async function recoverOrReuse(
       });
     }
     await managementPost(record, "stop", fetchImpl);
+    await waitForExactExit(record, fetchImpl, sleep);
     await removeExactRecord(record.authority, current.raw, home);
     return null;
   }
@@ -401,9 +469,13 @@ async function recoverOrReuse(
     return adopted;
   }
   if (record.phase === "stopping" || probe.state === "stopping") {
-    throw new CliError("TRANSIENT", "managed UI shutdown is still in progress", {
-      help: `retry after ${cliInvocation()} ui --status --dir ${commandToken(record.authority.bundle_root)}`,
-    });
+    await managementPost(record, "stop", fetchImpl);
+    await waitForExactExit(record, fetchImpl, sleep);
+    const exact = await readRecord(record.authority, home);
+    if (exact?.record.operation_id === record.operation_id && exact.record.launch_nonce === record.launch_nonce) {
+      await removeExactRecord(record.authority, exact.raw, home);
+    }
+    return null;
   }
   return record;
 }
@@ -418,12 +490,13 @@ export async function startOrReuseManagedUi(
   const now = options.now ?? Date.now;
   const fetchImpl = options.fetch ?? fetch;
   const spawnWorker = options.spawnWorker ?? defaultSpawnWorker;
-  const withLock = options.withLock ?? ((target, fn) => withFilesystemMutationLock(target, fn));
+  const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const withLock = options.withLock ?? ((target, fn) => withFilesystemMutationLock(target, fn, { waitMs: LIFECYCLE_LOCK_WAIT_MS }));
   await ensureUserStateRoot(home);
   return withLock(managedUiRecordPath(authority, home), async () => {
     const current = await readRecord(authority, home);
     if (current) {
-      const reused = await recoverOrReuse(current, requestedPort, now(), fetchImpl, home);
+      const reused = await recoverOrReuse(current, authority, requestedPort, now(), fetchImpl, home, sleep);
       if (reused) return { state: "reused", authority, record: reused, url: launchUrl(reused, documentId) };
     }
 
@@ -441,14 +514,20 @@ export async function startOrReuseManagedUi(
         port: requestedPort ?? 0,
       });
     } catch (error) {
-      const captured = await readRecord(authority, home);
-      if (captured?.record.operation_id === pending.operation_id) await removeExactRecord(authority, captured.raw, home);
-      throw new CliError("RUNTIME", `could not start managed UI: ${error instanceof Error ? error.message : String(error)}`);
+      // Readiness failure is uncertain: a child may still bind after the parent times out or rejects
+      // malformed output. Keep the exact pending lease so no second authority can start beside it.
+      throw new CliError("RUNTIME", `could not confirm managed UI startup: ${error instanceof Error ? error.message : String(error)}`, {
+        help: `retry after the bounded startup recovery window (${MANAGED_UI_PENDING_RECLAIM_MS} ms)`,
+      });
     }
     const readyRecord = liveRecord(pending, ready, "ready");
     await writeRecord(readyRecord, home);
     const probe = await probeRecord(readyRecord, fetchImpl);
-    if (!probe) throw new CliError("RUNTIME", "managed UI child became ready but failed its authenticated identity probe");
+    if (probe.kind !== "matched") {
+      throw probe.kind === "indeterminate"
+        ? probeUncertain(readyRecord, probe.reason)
+        : new CliError("RUNTIME", "managed UI child became ready but its exact listener is absent");
+    }
     await managementPost(readyRecord, "adopt", fetchImpl);
     const adopted = { ...readyRecord, phase: "adopted" as const };
     await writeRecord(adopted, home);
@@ -469,8 +548,12 @@ export async function listManagedUiStatus(
     const raw = await readUserStateFile(home, path.join(root, name), RECORD_MAX_BYTES);
     const record = parseManagedUiRecord(raw);
     if (record.authority.bundle_root !== bundleRoot) continue;
-    const probe = await probeRecord(record, fetchImpl);
-    statuses.push({ ...record, live: probe !== null, ...(probe ? { active_clients: probe.active_clients } : {}) });
+    const result = await probeRecord(record, fetchImpl);
+    statuses.push({
+      ...record,
+      live: result.kind === "matched" ? true : result.kind === "absent" ? false : "unknown",
+      ...(result.kind === "matched" ? { active_clients: result.probe.active_clients } : {}),
+    });
   }
   return statuses;
 }
@@ -481,29 +564,32 @@ export async function stopManagedUi(
 ): Promise<{ stopped: boolean; authority: ManagedUiAuthority }> {
   const home = options.home ?? homedir();
   const fetchImpl = options.fetch ?? fetch;
-  const withLock = options.withLock ?? ((target, fn) => withFilesystemMutationLock(target, fn));
+  const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const withLock = options.withLock ?? ((target, fn) => withFilesystemMutationLock(target, fn, { waitMs: LIFECYCLE_LOCK_WAIT_MS }));
   await ensureUserStateRoot(home);
   return withLock(managedUiRecordPath(authority, home), async () => {
     const current = await readRecord(authority, home);
     if (!current) return { stopped: false, authority };
     const record = current.record;
     if (record.phase === "pending") {
-      if ((options.now ?? Date.now)() - Date.parse(record.created_at) < MANAGED_UI_STARTUP_LEASE_MS) {
+      if ((options.now ?? Date.now)() - Date.parse(record.created_at) < MANAGED_UI_PENDING_RECLAIM_MS) {
         throw new CliError("TRANSIENT", "managed UI startup is still in progress and has not published a launch authority", {
-          help: `retry ${cliInvocation()} ui --stop after the bounded startup lease`,
+          help: `retry ${cliInvocation()} ui --stop after the bounded startup recovery window`,
         });
       }
       await removeExactRecord(authority, current.raw, home);
       return { stopped: false, authority };
     }
     const probe = await probeRecord(record, fetchImpl);
-    if (!probe) {
+    if (probe.kind === "absent") {
       await removeExactRecord(authority, current.raw, home);
       return { stopped: false, authority };
     }
+    if (probe.kind === "indeterminate") throw probeUncertain(record, probe.reason);
     const stopping = { ...record, phase: "stopping" as const };
     await writeRecord(stopping, home);
     await managementPost(stopping, "stop", fetchImpl);
+    await waitForExactExit(stopping, fetchImpl, sleep);
     const exact = await readRecord(authority, home);
     if (exact?.record.operation_id === record.operation_id && exact.record.launch_nonce === record.launch_nonce) {
       await removeExactRecord(authority, exact.raw, home);

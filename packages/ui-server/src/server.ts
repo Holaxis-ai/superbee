@@ -14,6 +14,7 @@
 // here against the immutable launch before and after each read. Plus an SSE `/events` stream
 // (shell-only) fed by a version-token watcher. See `pages.ts`, `events.ts`, `watch.ts`.
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import path from "node:path";
 import {
   RequestBodyTooLargeError,
   requestFromIncomingMessage,
@@ -125,6 +126,7 @@ export interface UiManagementIdentity {
   mode: "dir";
   authority_key: string;
   bundle_root: string;
+  launch_root: string;
   actor: string | null;
   launch_nonce: string;
   pid: number;
@@ -141,6 +143,8 @@ export interface UiManagementHandle {
   adopted: Promise<void>;
   /** Resolves exactly once after an authenticated controller requests this exact launch stop. */
   stopRequested: Promise<void>;
+  /** Atomically expire an unadopted child. False means adoption or stop already won. */
+  expireIfReady(): boolean;
 }
 
 export type UiServerOptions = CommonUiServerOptions &
@@ -199,8 +203,11 @@ interface UiRuntime {
   shutdown: AbortController;
   management?: {
     state: "ready" | "adopted" | "stopping";
-    adopt: () => void;
-    stop: () => void;
+    reserveAdopt: () => boolean;
+    finishAdopt: () => void;
+    reserveStop: () => boolean;
+    finishStop: () => void;
+    expireIfReady: () => boolean;
     adopted: Promise<void>;
     stopRequested: Promise<void>;
   };
@@ -213,6 +220,23 @@ function jsonError(status: number, code: string, message: string): Response {
   });
 }
 
+function validateManagementOptions(options: UiManagementOptions): void {
+  const identity = options.identity;
+  if (
+    typeof options.secret !== "string" || options.secret.length < 32 || options.secret.length > 256 ||
+    !Number.isSafeInteger(identity.protocol) || identity.protocol < 1 ||
+    identity.mode !== "dir" || !/^[0-9a-f]{64}$/u.test(identity.authority_key) ||
+    typeof identity.bundle_root !== "string" || identity.bundle_root.length === 0 ||
+    identity.bundle_root.length > 4096 || !path.isAbsolute(identity.bundle_root) ||
+    typeof identity.launch_root !== "string" || identity.launch_root.length === 0 ||
+    identity.launch_root.length > 4096 || !path.isAbsolute(identity.launch_root) ||
+    !(identity.actor === null || (typeof identity.actor === "string" && identity.actor.length > 0 && identity.actor.length <= 1024)) ||
+    typeof identity.launch_nonce !== "string" || identity.launch_nonce.length < 16 || identity.launch_nonce.length > 128 ||
+    !Number.isSafeInteger(identity.pid) || identity.pid <= 0 ||
+    typeof identity.started_at !== "string" || !Number.isFinite(Date.parse(identity.started_at))
+  ) throw new Error("invalid managed UI authority configuration");
+}
+
 function managementRuntime(): NonNullable<UiRuntime["management"]> {
   let resolveAdopted!: () => void;
   let resolveStop!: () => void;
@@ -222,15 +246,28 @@ function managementRuntime(): NonNullable<UiRuntime["management"]> {
     state: "ready",
     adopted,
     stopRequested,
-    adopt: () => {
-      if (runtime.state !== "ready") return;
+    reserveAdopt: () => {
+      if (runtime.state === "adopted") return true;
+      if (runtime.state !== "ready") return false;
       runtime.state = "adopted";
+      return true;
+    },
+    finishAdopt: () => {
       resolveAdopted();
     },
-    stop: () => {
-      if (runtime.state === "stopping") return;
+    reserveStop: () => {
+      if (runtime.state === "stopping") return true;
+      runtime.state = "stopping";
+      return true;
+    },
+    finishStop: () => {
+      resolveStop();
+    },
+    expireIfReady: () => {
+      if (runtime.state !== "ready") return false;
       runtime.state = "stopping";
       resolveStop();
+      return true;
     },
   };
   return runtime;
@@ -267,23 +304,28 @@ async function handleManagementRequest(
     return true;
   }
   if (url.pathname === "/__manage/adopt" && req.method === "POST") {
+    if (!runtime.management.reserveAdopt()) {
+      await writeResponseToServerResponse(res, jsonError(409, "CONFLICT", "managed UI launch is already stopping"));
+      return true;
+    }
     const finished = new Promise<void>((resolve) => res.once("finish", resolve));
     await writeResponseToServerResponse(res, new Response(JSON.stringify({
       adopted: true,
       launch_nonce: options.management.identity.launch_nonce,
     }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
     await finished;
-    runtime.management.adopt();
+    runtime.management.finishAdopt();
     return true;
   }
   if (url.pathname === "/__manage/stop" && req.method === "POST") {
+    runtime.management.reserveStop();
     const finished = new Promise<void>((resolve) => res.once("finish", resolve));
     await writeResponseToServerResponse(res, new Response(JSON.stringify({
       stopping: true,
       launch_nonce: options.management.identity.launch_nonce,
     }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
     await finished;
-    runtime.management.stop();
+    runtime.management.finishStop();
     return true;
   }
   await writeResponseToServerResponse(res, jsonError(404, "NOT_FOUND", "unknown managed UI operation"));
@@ -968,6 +1010,10 @@ const CLOSE_DRAIN_WATCHDOG_MS = 5_000;
 
 /** Boot the `ui` command's http listener and resolve once it is listening. */
 export async function bootUiServer(options: UiServerOptions): Promise<UiServerHandle> {
+  if (options.management) validateManagementOptions(options.management);
+  if (options.sessionCookieName !== undefined && !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(options.sessionCookieName)) {
+    throw new Error("invalid UI session cookie name");
+  }
   const sessionSecret = options.sessionSecret ?? mintSessionSecret();
   const launches = new PageLaunchRegistry();
   const authorizations = options.viewAuthorization ?? new SessionViewAuthorizationStore();
@@ -1035,7 +1081,13 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
         port: addr.port,
         token: sessionSecret,
         ...(runtime.management
-          ? { management: { adopted: runtime.management.adopted, stopRequested: runtime.management.stopRequested } }
+          ? {
+              management: {
+                adopted: runtime.management.adopted,
+                stopRequested: runtime.management.stopRequested,
+                expireIfReady: runtime.management.expireIfReady,
+              },
+            }
           : {}),
         close: async () => {
           void runtime.watcher?.stop();
