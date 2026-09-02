@@ -43,7 +43,7 @@ import {
   sessionStartPull,
 } from "../src/commands/session-start.js";
 import { sync } from "../src/commands/sync.js";
-import { resolveBundleKey } from "@superbee/board-git";
+import { BOARD_BRANCH, resolveBundleKey } from "@superbee/board-git";
 import {
   HOOK_TIMEOUT_SECONDS,
   buildOpenCodePluginSource,
@@ -797,6 +797,22 @@ test("defaultLoadBoardStatus: provisioned board reports live counts + cache; boa
   } finally {
     await topo.cleanup();
     await rm(homeB, { recursive: true, force: true });
+  }
+});
+
+test("defaultLoadBoardStatus: standalone board checkout is the provisioned board, not first-contact", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await tempHome();
+  const direct = path.join(topo.dir, "home-root-board");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, direct]);
+    const status = await withHome(homeDir, () => defaultLoadBoardStatus(direct));
+    assert.ok(status && status.state === "provisioned");
+    assert.equal(status.uncommitted, 0);
+    assert.equal(status.unpushed, 0);
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
   }
 });
 
