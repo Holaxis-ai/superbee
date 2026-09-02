@@ -222,18 +222,20 @@ export function guardTruncatedBodyPreview(
   const inv = cliInvocation();
   const help = `${inv} doc read ${commandToken(existing.id)} --body-out <path-outside-bundle>`;
   // A stored body that already carries the generated sentence (written once with the override) is
-  // excused only for a candidate that contains it whole; any other rewrite is refused again no
-  // matter how faithfully the read/edit/write-back recovery is followed. Say so, rather than send
-  // the caller round that loop until they reach for the override by reflex.
+  // excused only for a candidate that contains it whole; any other rewrite that KEEPS the sentence
+  // is refused again no matter how faithfully the read/edit/write-back recovery is followed. Say so,
+  // and name every exit — append, drop the quoted sentence, or the override — rather than send the
+  // caller round that loop until they reach for the override by reflex.
   const storedCarriesNotice = BODY_PREVIEW_TRUNCATION_SIGNATURE.test(existing.body);
   const recovery =
     `Read the COMPLETE body first — '${help} --json' (its receipt carries the version), edit that ` +
     `file, then '${inv} doc update ${commandToken(existing.id)} --body-file <path-outside-bundle> ` +
     `--expected-version <version>'. Pass --accept-truncated-body to write this body deliberately.` +
     (storedCarriesNotice
-      ? ` This document's stored body already carries the generated sentence, so a rewrite that does ` +
-        `not keep the whole stored body is refused every time: append to it instead, or pass ` +
-        `--accept-truncated-body deliberately for this document.`
+      ? ` This document's stored body already carries the generated sentence, so a rewrite that keeps ` +
+        `that sentence but not the whole stored body is refused every time: append to it instead, ` +
+        `remove the quoted sentence from your rewrite, or pass --accept-truncated-body deliberately ` +
+        `for this document.`
       : "");
 
   const notice = firstForeignNotice(existing.body, nextBody);

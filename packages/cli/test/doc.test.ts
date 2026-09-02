@@ -3230,6 +3230,7 @@ test("truncated-preview guard: a stored notice excuses NOTHING but an append —
         assert.equal(err.details?.reason, "preview_marker");
         assert.match(err.message, /already carries the generated sentence/);
         assert.match(err.message, /append to it instead/);
+        assert.match(err.message, /remove the quoted sentence/);
         return true;
       },
     );
@@ -3238,6 +3239,16 @@ test("truncated-preview guard: a stored notice excuses NOTHING but an append —
     // The append is the one excused shape.
     const appended = await runDoc(["update", "docs/a", "--body", `${stored}\nAppended.\n`, "--dir", dir]);
     assert.equal(appended.changed, true);
+
+    // The third exit the refusal names: a rewrite that drops the quoted sentence carries no notice at
+    // all, so it is an ordinary edit and lands with no flag.
+    const current = await storedBody(dir, "docs/a");
+    const withoutNotice = current.replace(noticeB, "(transcript elided)").replace("MORE PROSE.", "LESS PROSE.");
+    assert.equal(BODY_PREVIEW_TRUNCATION_SIGNATURE.test(withoutNotice), false);
+    assert.ok(!withoutNotice.includes(current.trimEnd()), "fixture: a rewrite, not a containing candidate");
+    const rewritten = await runDoc(["update", "docs/a", "--body", withoutNotice, "--dir", dir]);
+    assert.equal(rewritten.changed, true);
+    assert.equal(await storedBody(dir, "docs/a"), `${withoutNotice}\n`);
   } finally {
     await cleanup();
   }
