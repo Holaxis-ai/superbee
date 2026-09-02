@@ -318,7 +318,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "docOpen",
         leaves: [publicLeaf("docOpen", "doc open", one, undefined, DIR_SURFACE)],
         usage: "doc open <id> [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]",
-        summary: "Open one exact authoritative document in the existing rendered browser UI",
+        summary: "Open one exact authoritative document in a reusable managed local browser UI (explicit remote launches remain foreground)",
       },
       {
         id: "docHistory",
@@ -416,6 +416,20 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
       },
       {
+        id: "kindDraft",
+        leaves: [publicLeaf("kindDraft", "kind draft", one, undefined, DIR_SURFACE)],
+        usage: 'kind draft "<Type>" [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        summary:
+          "Draft a Kind for a recurring ungoverned type from its existing instances — read-only until --apply: measures the post-apply warning count, prices promotions, and emits one token-bound apply command",
+      },
+      {
+        id: "kindDismiss",
+        leaves: [publicLeaf("kindDismiss", "kind dismiss", one, undefined, DIR_SURFACE)],
+        usage: 'kind dismiss "<Type>" [--reason <text>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        summary:
+          "Record a deliberate decline of a Kind for an ungoverned type (a declaration-free convention) so no future session re-proposes it; reopen later with 'kind draft'",
+      },
+      {
         id: "recipes",
         leaves: [publicLeaf("recipes", "recipes", zero, 16, DIR_SURFACE)],
         usage: "recipes [--dir <path>] [--remote <url>]",
@@ -447,7 +461,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "ui",
         leaves: [publicLeaf("ui", "ui", zero, 20, DIR_SURFACE)],
-        usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open]",
+        usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open] | ui --status [--dir <path>] [--limit <n>] | ui --stop [--dir <path>] [--actor <name>]",
         summary:
           'Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle\'s docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register — see status\'s legacy_naming finding), and see a live activity feed, the bundle\'s sharing status, and your registered workspaces. The header shows the bundle\'s display name — derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"',
       },

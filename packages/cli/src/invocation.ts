@@ -56,6 +56,7 @@ export function shellArg(value: string): CommandText {
   return renderShellToken(value) as CommandText;
 }
 
+
 /** realpath a path, or undefined if it does not exist / is not resolvable. */
 function realOrUndefined(p: string): string | undefined {
   try {

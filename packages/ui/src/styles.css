@@ -1018,6 +1018,62 @@ body {
   width: 100%;
 }
 
+.doc-refresh-warning {
+  margin-bottom: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--color-signal);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-signal) 8%, var(--surface-card));
+  color: var(--text-secondary);
+}
+
+.doc-refresh-summary,
+.doc-refresh-command {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.doc-refresh-summary p {
+  flex: 1 1 auto;
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.doc-refresh-warning button {
+  border: 1px solid var(--color-signal);
+  border-radius: var(--radius);
+  background: var(--surface-card);
+  color: var(--text-primary);
+  padding: 0.25rem 0.55rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+.doc-refresh-warning button:hover,
+.doc-refresh-warning button:focus-visible {
+  color: var(--color-signal);
+}
+
+.doc-refresh-warning button:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+}
+
+.doc-refresh-command {
+  margin-top: 0.55rem;
+  font-size: 0.78rem;
+}
+
+.doc-refresh-command code {
+  flex: 1 1 20rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
 .doc-head {
   border: 1px solid var(--rule);
   border-radius: var(--radius);

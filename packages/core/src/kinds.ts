@@ -975,8 +975,12 @@ export function freshnessHorizonMs(kind: KindConvention): number | undefined {
   return n * HORIZON_UNIT_MS[unit]!;
 }
 
-/** True when a required-field value counts as "present" (non-empty string / non-empty array / any other defined value). */
-function isPresent(value: unknown): boolean {
+/**
+ * True when a required-field value counts as "present" (non-empty string / non-empty array / any
+ * other defined value). Exported so consumers that must AGREE with validation's presence predicate
+ * (e.g. the CLI's `kind draft` inference) reuse this one authority instead of forking it.
+ */
+export function isPresent(value: unknown): boolean {
   if (value === undefined || value === null) return false;
   if (typeof value === "string") return value.trim() !== "";
   if (Array.isArray(value)) return value.length > 0;
