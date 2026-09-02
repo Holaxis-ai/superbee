@@ -223,7 +223,7 @@ function validateProofCompletionAuthority(program, lifecycle, completionAssertio
       "process.stdout.write(`${JSON.stringify({",
       "    platform: process.platform,",
       '    artifact: "exact installed npm tarball",',
-      '    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "mcp-config-lifecycle"],',
+      '    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "managed-document-lifecycle", "mcp-config-lifecycle"],',
       "  })}\\n`);",
     ].join("\n"),
     "the native proof terminal success payload must retain its reviewed receipt",
@@ -360,6 +360,8 @@ function validateProofTopLevel(program) {
     "configureRepository",
     "proveLocalRemoteSync",
     "proveUiUrlLifecycle",
+    "renderManagedDocumentInEdge",
+    "proveManagedDocumentLifecycle",
     "proveMcpConfigLifecycle",
     "runInstalledPackageProof",
   ];
@@ -499,10 +501,11 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
       { kind: "await", name: "proveCatalogLifecycle", args: [], binding: "{ bundle }" },
       { kind: "await", name: "proveLocalRemoteSync", args: [], binding: "" },
       { kind: "await", name: "proveUiUrlLifecycle", args: ["bundle"], binding: "" },
+      { kind: "await", name: "proveManagedDocumentLifecycle", args: ["bundle"], binding: "" },
       { kind: "await", name: "proveMcpConfigLifecycle", args: [], binding: "" },
       { kind: "return", expression: "installedPackageProofComplete" },
     ],
-    "the installed-package runner must contain only the four awaited lifecycles followed by its completion token",
+    "the installed-package runner must contain only the five awaited lifecycles followed by its completion token",
   );
   const entryTry = validateProofTopLevel(program);
   assert.equal(entryTry?.tryBlock.statements.length, 3, "the native proof entrypoint must gate success on completion");
@@ -539,7 +542,7 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
 
   assert.deepEqual(
     Object.keys(lane.installed_package_scenarios).sort(),
-    ["catalog-lifecycle", "local-remote-sync", "mcp-config-lifecycle", "ui-url-lifecycle"],
+    ["catalog-lifecycle", "local-remote-sync", "managed-document-lifecycle", "mcp-config-lifecycle", "ui-url-lifecycle"],
     "Windows installed-package scenario inventory drifted",
   );
   for (const [scenario, literals] of Object.entries(lane.installed_package_scenarios)) {
@@ -863,15 +866,16 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
     "const { bundle } = await proveCatalogLifecycle();",
     "await proveLocalRemoteSync();",
     "await proveUiUrlLifecycle(bundle);",
+    "await proveManagedDocumentLifecycle(bundle);",
     "await proveMcpConfigLifecycle();",
   ]) {
     assert.throws(
       () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, "")),
-      /four awaited lifecycles/,
+      /five awaited lifecycles/,
     );
     assert.throws(
       () => validateWindowsInstalledProofSemantics(windowsJob, lane, windowsInstalledProof.replace(call, call.replace("await ", "void "))),
-      /four awaited lifecycles/,
+      /five awaited lifecycles/,
     );
   }
   const runnerStart = "async function runInstalledPackageProof() {";
@@ -887,7 +891,7 @@ test("Windows installed-package topology mutations cannot skip lifecycles or wea
         lane,
         windowsInstalledProof.replace(runnerStart, `${runnerStart}\n  ${bypass}`),
       ),
-      /four awaited lifecycles/,
+      /five awaited lifecycles/,
     );
   }
   assert.throws(

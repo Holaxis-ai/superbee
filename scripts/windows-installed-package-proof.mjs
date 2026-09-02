@@ -191,6 +191,111 @@ void probe().catch((error) => {
   await assert.rejects(readFile(uiUrl, "utf8"), /ENOENT/, "clean shutdown must clear the ui-url pointer");
 }
 
+async function renderManagedDocumentInEdge(url, expectedTitle) {
+  const candidates = [
+    process.env["ProgramFiles(x86)"],
+    process.env.ProgramFiles,
+  ].filter(Boolean).map((root) => path.join(root, "Microsoft", "Edge", "Application", "msedge.exe"));
+  let edge;
+  for (const candidate of candidates) {
+    try {
+      await access(candidate);
+      edge = candidate;
+      break;
+    } catch {
+      // Keep looking: GitHub's native Windows image may expose either Program Files root.
+    }
+  }
+  assert.ok(edge, "the native Windows proof requires the runner's installed Microsoft Edge");
+  const profile = path.join(scratch, "managed-edge-profile");
+  await mkdir(profile, { recursive: true });
+  const rendered = await run(edge, [
+    "--headless=new",
+    "--disable-extensions",
+    "--no-first-run",
+    `--user-data-dir=${profile}`,
+    "--virtual-time-budget=5000",
+    "--dump-dom",
+    url,
+  ]);
+  assert.match(rendered.stdout, new RegExp(expectedTitle), "Edge must render the exact managed document");
+}
+
+async function proveManagedDocumentLifecycle(bundle) {
+  // doc open -> parent exit -> exact authority reuse/isolation/convergence -> real Edge render -> exact stop
+  const actors = ["windows-proof", "windows-proof-other", "windows-proof-concurrent"];
+  const managedEnv = { ...commandEnv, PATH: prefix };
+  const managed = (args) => cliJson(args, { env: managedEnv });
+  await cliJson([
+    "doc", "write", "docs/windows-managed-proof", "--type", "Note",
+    "--title", "Windows managed UI proof", "--body", "Managed document content", "--dir", bundle,
+  ]);
+  await cliJson([
+    "doc", "write", "docs/windows-managed-second", "--type", "Note",
+    "--title", "Windows managed UI second document", "--body", "Second managed document", "--dir", bundle,
+  ]);
+
+  let first;
+  try {
+    first = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[0],
+    ]);
+    assert.equal(first.state, "started");
+    assert.match(first.url, /^http:\/\/127\.0\.0\.1:\d+\/\?token=[\w-]+&view=doc&id=docs%2Fwindows-managed-proof$/);
+
+    const afterParentExit = await managed(["ui", "--status", "--dir", bundle]);
+    assert.equal(afterParentExit.count, 1, "the detached managed child must survive the launching parent");
+    assert.equal(afterParentExit.instances[0].phase, "adopted");
+    assert.equal(afterParentExit.instances[0].live, true);
+
+    const reused = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[0],
+    ]);
+    assert.equal(reused.state, "reused");
+    assert.equal(reused.url, first.url);
+
+    const secondDocument = await managed([
+      "doc", "open", "docs/windows-managed-second", "--dir", bundle, "--actor", actors[0],
+    ]);
+    assert.equal(secondDocument.state, "reused");
+    assert.equal(new URL(secondDocument.url).origin, new URL(first.url).origin);
+    assert.notEqual(secondDocument.url, first.url);
+
+    const isolatedActor = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[1],
+    ]);
+    assert.equal(isolatedActor.state, "started");
+    assert.notEqual(new URL(isolatedActor.url).origin, new URL(first.url).origin);
+
+    const concurrent = await Promise.all([
+      managed(["doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[2]]),
+      managed(["doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[2]]),
+    ]);
+    assert.deepEqual(concurrent.map((receipt) => receipt.state).sort(), ["reused", "started"]);
+    assert.equal(concurrent[0].url, concurrent[1].url);
+
+    const converged = await managed(["ui", "--status", "--dir", bundle]);
+    assert.equal(converged.count, 3, "three exact actor authorities must remain after concurrent convergence");
+    assert.ok(converged.instances.every((instance) => instance.phase === "adopted" && instance.live === true));
+
+    await renderManagedDocumentInEdge(first.url, "Windows managed UI proof");
+  } finally {
+    for (const actor of actors) {
+      await managed(["ui", "--stop", "--dir", bundle, "--actor", actor]);
+    }
+  }
+
+  const stopped = await managed(["ui", "--status", "--dir", bundle]);
+  assert.equal(stopped.count, 0, "exact cleanup must leave no managed Windows authority");
+  let listenerClosed = false;
+  try {
+    await fetch(first.url, { signal: AbortSignal.timeout(3000) });
+  } catch {
+    listenerClosed = true;
+  }
+  assert.equal(listenerClosed, true, "the stopped managed listener must no longer answer");
+}
+
 async function proveMcpConfigLifecycle() {
   // mcp install -> mcp status -> mcp config read-back -> mcp uninstall -> absent status
   const config = path.join(appData, "Claude", "claude_desktop_config.json");
@@ -222,6 +327,7 @@ async function runInstalledPackageProof() {
   const { bundle } = await proveCatalogLifecycle();
   await proveLocalRemoteSync();
   await proveUiUrlLifecycle(bundle);
+  await proveManagedDocumentLifecycle(bundle);
   await proveMcpConfigLifecycle();
   return installedPackageProofComplete;
 }
@@ -232,7 +338,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     platform: process.platform,
     artifact: "exact installed npm tarball",
-    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "mcp-config-lifecycle"],
+    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "managed-document-lifecycle", "mcp-config-lifecycle"],
   })}\n`);
 } finally {
   await rm(scratch, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 });
