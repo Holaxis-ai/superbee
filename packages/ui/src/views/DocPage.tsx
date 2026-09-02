@@ -13,7 +13,7 @@
  * Kind-declared chips and the inline edge titles are display-only projections of the bundle's own
  * docs — mechanism in the shell, meaning from the bundle.
  */
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getDoc, listAllHeads, ApiError } from "../api/client.js";
 import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
@@ -32,7 +32,7 @@ function stringField(value: unknown): string | undefined {
 }
 
 function canRetainLastDocument(error: unknown): boolean {
-  return !(error instanceof ApiError) || error.status >= 500;
+  return error instanceof TypeError || (error instanceof ApiError && error.status >= 500);
 }
 
 /** Frontmatter fields the header card shows as chips: kind-DECLARED fields with scalar values (status and friends), excluding the standard identity fields the card already presents. */
@@ -49,6 +49,7 @@ const STANDARD_FIELDS = new Set([
 
 export function DocPage({ docId }: { docId: string }) {
   const queryClient = useQueryClient();
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const docQuery = useQuery({
     queryKey: ["doc", docId],
     queryFn: () => getDoc(docId),
@@ -58,6 +59,7 @@ export function DocPage({ docId }: { docId: string }) {
     queryKey: ["doc-open-command", docId],
     queryFn: () => fetchDocumentOpenCommand(docId),
     retry: false,
+    refetchInterval: false,
   });
   const kindsQuery = useQuery({ queryKey: ["kinds"], queryFn: fetchKinds, refetchInterval: false });
   const backlinksQuery = useQuery({
@@ -80,6 +82,18 @@ export function DocPage({ docId }: { docId: string }) {
       }
     });
   }, [queryClient, docId]);
+
+  useEffect(() => setCopyStatus("idle"), [docId]);
+
+  async function copyOpenCommand(command: string): Promise<void> {
+    try {
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(command);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  }
 
   useEffect(() => {
     return subscribeToResync(() => {
@@ -183,9 +197,9 @@ export function DocPage({ docId }: { docId: string }) {
                 <button
                   type="button"
                   aria-label="Copy document reopen command"
-                  onClick={() => void navigator.clipboard?.writeText(openCommandQuery.data!).catch(() => {})}
+                  onClick={() => void copyOpenCommand(openCommandQuery.data!)}
                 >
-                  Copy
+                  {copyStatus === "copied" ? "Copied" : copyStatus === "failed" ? "Copy failed" : "Copy"}
                 </button>
               </div>
             )}

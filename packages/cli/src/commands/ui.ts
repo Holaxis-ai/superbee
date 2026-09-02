@@ -206,8 +206,8 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     if (!isRenderableToken(id) || !isRenderableToken(source)) return null;
     const sourceFlag = remoteFlag ? "--remote" : "--dir";
     return explicitPort
-      ? `${cliInvocation()} doc open ${commandToken(id)} ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))}`
-      : `${cliInvocation()} doc open ${commandToken(id)} ${sourceFlag} ${commandToken(source)}`;
+      ? `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))} -- ${commandToken(id)}`
+      : `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} -- ${commandToken(id)}`;
   };
   let options: UiServerOptions;
   let rootLabel: string;
