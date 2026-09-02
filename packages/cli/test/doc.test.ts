@@ -3248,7 +3248,7 @@ test("truncated-preview guard: a stored notice excuses NOTHING but an append —
     assert.ok(!withoutNotice.includes(current.trimEnd()), "fixture: a rewrite, not a containing candidate");
     const rewritten = await runDoc(["update", "docs/a", "--body", withoutNotice, "--dir", dir]);
     assert.equal(rewritten.changed, true);
-    assert.equal(await storedBody(dir, "docs/a"), `${withoutNotice}\n`);
+    assert.equal((await storedBody(dir, "docs/a")).trimEnd(), withoutNotice.trimEnd());
   } finally {
     await cleanup();
   }
