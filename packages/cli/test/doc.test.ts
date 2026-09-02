@@ -70,11 +70,12 @@ import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 
 import { doc, type DocCliDeps } from "../src/commands/doc.js";
+import { link } from "../src/commands/link.js";
 import {
   BODY_PREVIEW_TRUNCATION_MARKER,
   BODY_PREVIEW_TRUNCATION_SIGNATURE,
   guardDroppedLinks,
-} from "../src/commands/doc/common.js";
+} from "../src/body-replace-guards.js";
 import { mutateDoc } from "../src/mutate.js";
 import { CliError } from "../src/errors.js";
 import { cliInvocation } from "../src/invocation.js";
@@ -917,8 +918,10 @@ test("mutateDoc overwrite: the historical '--replace-links' shape (a candidate t
     registry,
     strict: false,
     helpOnKindReject: "kinds",
-    // The historical --replace-links candidate: ignores `existing` entirely (no guard call), a
-    // deliberate blind overwrite of frontmatter+body.
+    // The historical --replace-links candidate: ignores `existing` entirely, a deliberate blind
+    // overwrite of frontmatter+body. The link drop is declared to the seam (which enforces the
+    // guard on every caller now) exactly as the verb's flag would declare it.
+    bodyReplace: { replaceLinks: true },
     buildCandidate: () => {
       buildCandidateCalls++;
       return { frontmatter: { type: "Concept", timestamp: T }, body: "Blind overwrite, no links." };
@@ -3080,6 +3083,172 @@ test("truncated-preview guard: does NOT fire on legitimate edits — a short rew
     await writeDoc({ root: dir }, { id: "docs/page3", frontmatter: { type: "Note", title: "P3", timestamp: T }, body: LONG_PAGE_BODY });
     const same = await runDoc(["update", "docs/page3", "--body", stored, "--keep-timestamp", "--dir", dir]);
     assert.equal(same.changed, false);
+  } finally {
+    await cleanup();
+  }
+});
+
+// ── Body-replace guards live in the mutation seam, not in the verbs ────────────────────────────
+//
+// `guardTruncatedBodyPreview` and `guardDroppedLinks` used to be called by each verb's own
+// `buildCandidate` — an opt-in per verb, which is exactly how `promote` shipped without the link
+// guard. `mutateDoc` now enforces both on every attempt's candidate; a verb only declares its
+// posture (`bodyReplace`). The probe below is a caller that never mentions a guard.
+
+test("mutateDoc seam: the body-replace guards fire for a caller that never calls one — a preview slice and a link drop are refused, the stored doc stays byte-identical, and the declared posture opts out", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "mem://seam-guards", backend };
+  await writeDoc(bundle, { id: "docs/long", frontmatter: { type: "Note", title: "Long", timestamp: T }, body: LONG_PAGE_BODY });
+  await writeDoc(bundle, { id: "docs/linked", frontmatter: { type: "Note", title: "Linked", timestamp: T }, body: "Intro.\n\n[x](x.md)\n" });
+  const registry = await loadKinds(bundle);
+  const patch = (id: string, body: string, bodyReplace?: { acceptTruncatedBody?: boolean; replaceLinks?: boolean }) =>
+    mutateDoc({
+      bundle,
+      id,
+      mode: "patch",
+      onAbsent: "fail",
+      registry,
+      strict: false,
+      helpOnKindReject: "kinds",
+      ...(bodyReplace ? { bodyReplace } : {}),
+      // No guard call anywhere in this candidate — the seam must supply it.
+      buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body }),
+      errors: {},
+    });
+
+  // Clause 2 of the preview guard: the stored body's exact preview slice.
+  await assert.rejects(
+    () => patch("docs/long", LONG_PAGE_BODY.slice(0, 1000)),
+    (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.equal(err.code, "USAGE");
+      assert.equal(err.details?.reason, "stored_body_preview");
+      return true;
+    },
+  );
+  assert.equal((await readDoc(bundle, "docs/long")).body, LONG_PAGE_BODY, "the refusal wrote nothing");
+
+  // The link-drop guard, same caller.
+  await assert.rejects(
+    () => patch("docs/linked", "No links here.\n"),
+    (err: unknown) => {
+      assert.ok(err instanceof CliError);
+      assert.equal(err.code, "USAGE");
+      assert.deepEqual(err.details?.dropped_links, [{ to: "docs/x", text: "x" }]);
+      return true;
+    },
+  );
+  assert.equal((await readDoc(bundle, "docs/linked")).body, "Intro.\n\n[x](x.md)\n", "the refusal wrote nothing");
+
+  // An unchanged body is not a replace: no posture needed, neither guard consulted.
+  const same = await patch("docs/linked", "Intro.\n\n[x](x.md)\n");
+  assert.equal(same.changed, false);
+
+  // The declared posture is the only way through, and it is per guard.
+  const dropped = await patch("docs/linked", "No links here.\n", { replaceLinks: true });
+  assert.equal(dropped.doc.body, "No links here.\n");
+  const truncated = await patch("docs/long", LONG_PAGE_BODY.slice(0, 1000), { acceptTruncatedBody: true });
+  assert.equal(truncated.doc.body.length, 1000);
+});
+
+test("truncated-preview guard: a document written deliberately with a preview stays appendable — link add and an edit that keeps the stored notice proceed, while a DIFFERENT notice is still refused", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    const { preview } = await seedLongDoc(dir);
+    await runDoc(["update", "docs/page", "--body", preview, "--accept-truncated-body", "--dir", dir]);
+    const deliberate = await storedBody(dir, "docs/page");
+    assert.ok(BODY_PREVIEW_TRUNCATION_SIGNATURE.test(deliberate), "fixture: the stored body carries the notice");
+
+    // `link add` appends to the body, so the candidate differs from the stored body AND carries the
+    // notice — the stored notice, not a new paste. Before the seam this verb never ran the guard;
+    // now it must run it and still proceed.
+    await writeDoc({ root: dir }, { id: "docs/target", frontmatter: { type: "Note", title: "Target", timestamp: T }, body: "T." });
+    let linkOut = "";
+    await link(["add", "docs/page", "docs/target", "--dir", dir, "--json"], { stdout: (s) => (linkOut += s) });
+    assert.equal((JSON.parse(linkOut) as Record<string, unknown>).changed, true);
+    const linked = await storedBody(dir, "docs/page");
+    assert.ok(linked.startsWith(deliberate.trimEnd()), "the append kept the deliberate preview intact");
+    assert.match(linked, /\[docs\/target\]\(target\.md\)/);
+
+    // An ordinary edit elsewhere in the body that keeps the stored notice is not a paste either.
+    const edited = await runDoc(["update", "docs/page", "--body", `${linked}\nA closing remark.\n`, "--dir", dir]);
+    assert.equal(edited.changed, true);
+
+    // A notice with a DIFFERENT count is a new preview arriving from elsewhere — still refused.
+    await writeDoc({ root: dir }, { id: "docs/other", frontmatter: { type: "Note", title: "Other", timestamp: T }, body: `${LONG_PAGE_BODY}\nA longer tail so the omitted count differs.\n` });
+    const other = await runDoc(["read", "docs/other", "--dir", dir]);
+    assert.equal(other.body_truncated, true);
+    assert.notEqual(BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(String(other.body_preview))![0], BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(linked)![0]);
+    await assert.rejects(
+      () => runDoc(["update", "docs/page", "--body", `${linked}\n${String(other.body_preview)}`, "--dir", dir]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("truncated-preview guard: a stored notice excuses NOTHING but an append — a foreign preview whose count matches a sentence quoted in the stored prose is still refused as a replace (independent review probe)", async () => {
+  const { dir, cleanup } = await makeBundle();
+  try {
+    // docs/b is 1500 chars, so its preview notice reads "... 501 more character(s) are NOT shown".
+    await writeDoc({ root: dir }, { id: "docs/b", frontmatter: { type: "Note", title: "B", timestamp: T }, body: "B".repeat(1500) });
+    const previewB = String((await runDoc(["read", "docs/b", "--dir", dir])).body_preview);
+    const noticeB = BODY_PREVIEW_TRUNCATION_SIGNATURE.exec(previewB)![0];
+
+    // docs/a is a long record whose prose QUOTES that exact sentence (a pasted transcript), written
+    // once through the sanctioned override.
+    const prose = `${"IRREPLACEABLE PROSE. ".repeat(200)}\n\nEvidence transcript:\n${noticeB}\n\n${"MORE PROSE. ".repeat(50)}`;
+    await runDoc(["write", "docs/a", "--type", "Note", "--title", "A", "--body", prose, "--accept-truncated-body", "--dir", dir]);
+    const stored = await storedBody(dir, "docs/a");
+    assert.ok(stored.includes(noticeB));
+
+    // The paste accident, with a FOREIGN preview: a replace, not an append, so the stored sentence
+    // buys it nothing.
+    await assert.rejects(
+      () => runDoc(["update", "docs/a", "--body", previewB, "--dir", dir]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.details?.reason, "preview_marker");
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/a"), stored, "the refusal wrote nothing");
+
+    // A mid-body rewrite that keeps the sentence is not an append either: the pre-excusal posture
+    // (the override, each time) still applies to it — and the refusal SAYS so, because following its
+    // ordinary read/edit/write-back recovery would reproduce the same refusal forever.
+    await assert.rejects(
+      () => runDoc(["update", "docs/a", "--body", stored.replace("MORE PROSE.", "LESS PROSE."), "--dir", dir]),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.details?.reason, "preview_marker");
+        assert.match(err.message, /already carries the generated sentence/);
+        assert.match(err.message, /append to it instead/);
+        assert.match(err.message, /remove the quoted sentence/);
+        return true;
+      },
+    );
+    assert.equal(await storedBody(dir, "docs/a"), stored);
+
+    // The append is the one excused shape.
+    const appended = await runDoc(["update", "docs/a", "--body", `${stored}\nAppended.\n`, "--dir", dir]);
+    assert.equal(appended.changed, true);
+
+    // The third exit the refusal names: a rewrite that drops the quoted sentence carries no notice at
+    // all, so it is an ordinary edit and lands with no flag.
+    const current = await storedBody(dir, "docs/a");
+    const withoutNotice = current.replace(noticeB, "(transcript elided)").replace("MORE PROSE.", "LESS PROSE.");
+    assert.equal(BODY_PREVIEW_TRUNCATION_SIGNATURE.test(withoutNotice), false);
+    assert.ok(!withoutNotice.includes(current.trimEnd()), "fixture: a rewrite, not a containing candidate");
+    const rewritten = await runDoc(["update", "docs/a", "--body", withoutNotice, "--dir", dir]);
+    assert.equal(rewritten.changed, true);
+    assert.equal((await storedBody(dir, "docs/a")).trimEnd(), withoutNotice.trimEnd());
   } finally {
     await cleanup();
   }

@@ -23,7 +23,7 @@ import { serve, type ServerHandle } from "@superbee/server";
 
 import { promote, type PromoteCliDeps } from "../src/commands/promote.js";
 import { doc as docCommand } from "../src/commands/doc.js";
-import { BODY_PREVIEW_TRUNCATION_MARKER } from "../src/commands/doc/common.js";
+import { BODY_PREVIEW_TRUNCATION_MARKER } from "../src/body-replace-guards.js";
 import { pull, type PullCliDeps } from "../src/commands/pull.js";
 import { CliError } from "../src/errors.js";
 import { KNOWN_COMMANDS } from "../src/cli.js";
@@ -600,6 +600,68 @@ test("promote .md: the expect-absent CREATE route is NOT guarded — it has no s
     assert.equal(receipt.route, "doc");
     assert.equal(receipt.id, "docs/fresh");
     assert.ok((await readDoc({ root: dir }, "docs/fresh")).body.includes(BODY_PREVIEW_TRUNCATION_MARKER));
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+// ── The link-drop guard reaches promote through the mutation seam ─────────────────────────────
+
+test("promote .md: REFUSES a file whose body would DROP an outbound link of the EXISTING doc (USAGE, exit 2), leaves the stored body byte-identical, and --replace-links opts in", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const work = await tempDir();
+  try {
+    const seed = path.join(work, "seed.md");
+    const linkedBody = "Intro.\n\n[supports](../concepts/x.md)\n";
+    await writeFile(seed, `---\ntype: Note\ntitle: Linked\n---\n${linkedBody}`);
+    const created = await runPromote([seed, "--doc-key", "docs/linked.md", "--dir", dir]);
+    const stored = (await readDoc({ root: dir }, "docs/linked")).body;
+    assert.match(stored, /\[supports\]/);
+
+    // The pull -> edit -> promote loop, with the edit having removed the link.
+    const edited = path.join(work, "linked.md");
+    await writeFile(edited, "---\ntype: Note\ntitle: Linked\n---\nIntro only.\n");
+    await assert.rejects(
+      () => promote([edited, "--doc-key", "docs/linked.md", "--expected-version", String(created.version), "--dir", dir, "--json"], {}),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.match(err.message, /--replace-links/);
+        assert.equal((err.details?.dropped_links as unknown[]).length, 1);
+        return true;
+      },
+    );
+    assert.equal((await readDoc({ root: dir }, "docs/linked")).body, stored, "the refusal wrote nothing");
+
+    const receipt = await runPromote([
+      edited, "--doc-key", "docs/linked.md", "--expected-version", String(created.version), "--replace-links", "--dir", dir,
+    ]);
+    assert.equal(receipt.route, "doc");
+    assert.equal((await readDoc({ root: dir }, "docs/linked")).body, "Intro only.\n");
+  } finally {
+    await cleanup();
+    await rm(work, { recursive: true, force: true });
+  }
+});
+
+test("promote blob: --replace-links is a USAGE error on the blob route — the same mirror as --accept-truncated-body, never a silent no-op", async () => {
+  const { dir, cleanup } = await makeBundle();
+  const work = await tempDir();
+  try {
+    const file = path.join(work, "report.html");
+    await writeFile(file, "<p>hi</p>");
+    await assert.rejects(
+      () => promote([file, "--doc-key", "artifacts/report.html", "--replace-links", "--dir", dir, "--json"], {}),
+      (err: unknown) => {
+        assert.ok(err instanceof CliError);
+        assert.equal(err.code, "USAGE");
+        assert.equal(err.exitCode, 2);
+        assert.match(err.message, /--replace-links is a doc-route-only option/);
+        return true;
+      },
+    );
   } finally {
     await cleanup();
     await rm(work, { recursive: true, force: true });

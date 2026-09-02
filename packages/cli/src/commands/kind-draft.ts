@@ -25,6 +25,7 @@ import {
   type OkfDocument,
 } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { droppedLinks } from "../body-replace-guards.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
 import { commandFragment, commandQuoted, commandToken, type CommandText } from "../command-text.js";
@@ -250,6 +251,7 @@ export async function kindDraftCommand(
   }
 
   const redraftTarget = plan.redraftOver;
+  let droppedOnRedraft: ReturnType<typeof droppedLinks> = [];
   const result = await mutateDoc({
     // A convention adopted from a recipe source must stay byte-comparable to it, and
     // `sameInstalledDoc` strips `generated.at` but not an engine-seeded `generated.by` - so a
@@ -269,6 +271,11 @@ export async function kindDraftCommand(
     strict: false, // this command WRITES a schema — it never validates one against another
     helpOnKindReject: `${inv} kinds`,
     actor: values.actor?.trim(),
+    // A redraft replaces the dismissal record wholesale by design (appendix O4), so any link its
+    // prose carried goes with it: declared here rather than left to a guard this verb has no flag
+    // for, and DISCLOSED on the receipt below so a permitted drop is never a silent one. The
+    // generated body is never a `doc read` preview, so the preview guard stays enforced.
+    bodyReplace: { replaceLinks: true },
     buildCandidate: (existingDoc, context) => {
       if (context.okfVersion !== plan.okfVersion) {
         throw new CliError(
@@ -292,7 +299,9 @@ export async function kindDraftCommand(
         }
       }
       // Frontmatter AND body wholesale: an accepted redraft replaces the dismissal prose — a
-      // "declined" record must not survive under a now-real schema (design appendix O4).
+      // "declined" record must not survive under a now-real schema (design appendix O4). Computed
+      // per attempt from the version-matched read, like every other read-dependent decision here.
+      droppedOnRedraft = existingDoc ? droppedLinks(bundle, existingDoc, plan.candidateDoc.body) : [];
       return { frontmatter: { ...plan.candidateDoc.frontmatter }, body: plan.candidateDoc.body };
     },
     errors: {
@@ -312,20 +321,21 @@ export async function kindDraftCommand(
 
   const applied = (await loadKinds(bundle)).kinds.get(plan.type);
   const measured = applied ? plan.instances.reduce((total, doc) => total + validateAgainstKind(doc, applied).length, 0) : plan.warnings;
-  stdout(
-    render(
-      {
-        draft: plan.type,
-        applied: true,
-        convention: plan.candidateDoc.id,
-        changed: result.changed,
-        version: result.version,
-        warnings_after_apply: measured,
-        help: [`${inv} kinds`],
-      },
-      resolveMode(values),
-    ),
-  );
+  const receipt: Record<string, unknown> = {
+    draft: plan.type,
+    applied: true,
+    convention: plan.candidateDoc.id,
+    changed: result.changed,
+    version: result.version,
+    warnings_after_apply: measured,
+  };
+  // The O4 wholesale replacement is permitted, not silent: name every outbound link the dismissal
+  // record carried that the accepted schema's body does not, so the caller can re-add it.
+  if (result.changed && droppedOnRedraft.length > 0) {
+    receipt.dropped_links = droppedOnRedraft.map((l) => ({ to: l.to, text: l.text }));
+  }
+  receipt.help = [`${inv} kinds`];
+  stdout(render(receipt, resolveMode(values)));
 }
 
 export async function kindDismissCommand(
