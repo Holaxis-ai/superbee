@@ -269,6 +269,10 @@ export async function kindDraftCommand(
     strict: false, // this command WRITES a schema — it never validates one against another
     helpOnKindReject: `${inv} kinds`,
     actor: values.actor?.trim(),
+    // A redraft replaces the dismissal record wholesale by design (appendix O4), so any link its
+    // prose carried goes with it: declared here rather than left to a guard this verb has no flag
+    // for. The generated body is never a `doc read` preview, so the preview guard stays enforced.
+    bodyReplace: { replaceLinks: true },
     buildCandidate: (existingDoc, context) => {
       if (context.okfVersion !== plan.okfVersion) {
         throw new CliError(

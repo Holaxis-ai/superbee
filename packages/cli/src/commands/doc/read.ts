@@ -25,10 +25,9 @@ import { assertPathOutsidePrivateState } from "../../private-state-bundle-bounda
 import {
   DOC_READ_USAGE,
   type DocCliDeps,
-  attachBodyPreview,
-  BODY_PREVIEW_RESERVED_KEYS,
   readErrorToCliError,
 } from "./common.js";
+import { attachBodyPreview, BODY_PREVIEW_RESERVED_KEYS } from "../../body-replace-guards.js";
 import { MAX_BODY_CHARS, MAX_NODES } from "@superbee/markdown-renderer";
 import { renderDocumentToStaticHtml } from "@superbee/markdown-renderer/static";
 import { assertSafeNonDocumentOutTarget, inBundlePollutionWarning } from "../egress.js";
@@ -320,7 +319,7 @@ async function docReadInner(argv: string[], deps: Partial<DocCliDeps>): Promise<
     rec.head_version = version;
     // AXI §3: never dump a large body to stdout — truncate the preview and point at the byte channel
     // (`doc read <id> --out <file>`), which streams the full raw markdown without touching context.
-    // `attachBodyPreview` (common.ts) owns the truncation identity itself — the `body_preview` key
+    // `attachBodyPreview` (body-replace-guards.ts) owns the truncation identity itself — the `body_preview` key
     // and the in-value marker that make the result unusable as a full body by accident. Both help
     // lines are complete-body channels: `--out` for the whole document, `--body-out` for the
     // body-only edit cycle that ends in `doc update --body-file --expected-version`.
