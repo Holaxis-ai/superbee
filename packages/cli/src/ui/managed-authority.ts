@@ -29,7 +29,9 @@ const PROBE_TIMEOUT_MS = 2_000;
 const START_TIMEOUT_MS = 10_000;
 const STOP_POLL_MS = 100;
 const STOP_EXIT_DEADLINE_MS = 20_000;
-const LIFECYCLE_LOCK_WAIT_MS = 30_000;
+// A recovery can consume one initial probe + stop acknowledgement + the complete bounded exit
+// proof before starting and adopting a replacement. Keep contender wait above that 38s ceiling.
+const LIFECYCLE_LOCK_WAIT_MS = 60_000;
 
 export interface ManagedUiAuthority {
   key: string;

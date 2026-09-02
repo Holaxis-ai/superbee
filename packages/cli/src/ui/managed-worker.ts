@@ -102,9 +102,16 @@ export async function runManagedUiWorkerInput(
   const startupDeadline = Date.parse(input.startup_deadline_at);
   if (now() >= startupDeadline) throw new Error("managed UI startup deadline already expired");
   let deadlineExpired = false;
+  let managementHandle: UiServerHandle["management"] | undefined;
   const deadlineTimer = setTimeout(() => {
-    deadlineExpired = true;
-    terminate(1);
+    if (!managementHandle) {
+      deadlineExpired = true;
+      terminate(1);
+      return;
+    }
+    // Once the listener exists, the server's state machine owns the adoption race. Expiry closes
+    // only a still-ready launch; false means an authenticated adopt/stop already won atomically.
+    deadlineExpired = managementHandle.expireIfReady();
   }, startupDeadline - now());
   deadlineTimer.unref?.();
   const launchNonce = randomUUID();
@@ -146,7 +153,10 @@ export async function runManagedUiWorkerInput(
         started_at: startedAt,
       })}\n`);
     },
-    waitForShutdown: (handle) => adoptionLifecycle(handle, deadlineTimer),
+    waitForShutdown: (handle) => {
+      managementHandle = handle?.management;
+      return adoptionLifecycle(handle, deadlineTimer);
+    },
     openBrowser: () => {},
     writeUrlFile: async () => {},
     clearUrlFile: async () => {},
