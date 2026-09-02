@@ -22,7 +22,7 @@ import {
 import { assertSafeBlobKey, loadKinds, queryEdges, queryHeads, readBundleOkfVersion, type Bundle, type EdgeFilter } from "@superbee/core";
 import { parseRegistration } from "@superbee/core/page";
 import { isAllowedHost } from "./host.js";
-import { checkAuth, mintSessionSecret, sessionCookieHeader } from "./session.js";
+import { checkAuth, constantTimeEqual, mintSessionSecret, sessionCookieHeader } from "./session.js";
 import type { UiAssetHandler } from "./assets.js";
 import { proxyToRemote } from "./proxy.js";
 import { pageCsp } from "./pages.js";
@@ -108,6 +108,8 @@ interface CommonUiServerOptions {
   serveAsset: UiAssetHandler;
   /** Injectable for tests; defaults to a fresh random secret per boot (never reused across runs). */
   sessionSecret?: string;
+  /** Optional authority-specific cookie name; managed local instances use one so ports do not overwrite each other. */
+  sessionCookieName?: string;
   /** Advisory identity recorded by a confirmed local View action. Read-only UI needs no actor. */
   actor?: string;
   /**
@@ -116,6 +118,29 @@ interface CommonUiServerOptions {
    * once without placing trust state in the synced bundle.
    */
   viewAuthorization?: ViewAuthorizationStore;
+}
+
+export interface UiManagementIdentity {
+  protocol: number;
+  mode: "dir";
+  authority_key: string;
+  bundle_root: string;
+  actor: string | null;
+  launch_nonce: string;
+  pid: number;
+  started_at: string;
+}
+
+export interface UiManagementOptions {
+  secret: string;
+  identity: UiManagementIdentity;
+}
+
+export interface UiManagementHandle {
+  /** Resolves exactly once after an authenticated controller adopts this ready child. */
+  adopted: Promise<void>;
+  /** Resolves exactly once after an authenticated controller requests this exact launch stop. */
+  stopRequested: Promise<void>;
 }
 
 export type UiServerOptions = CommonUiServerOptions &
@@ -130,6 +155,8 @@ export type UiServerOptions = CommonUiServerOptions &
         loadSharingSummary?: () => Promise<SharingSummary>;
         /** Consumer-owned registered-workspace rows for the home surface. */
         loadWorkspaces?: () => Promise<WorkspaceSummaryEntry[]>;
+        /** Process management exists only for CLI-owned local instances. */
+        management?: UiManagementOptions;
         remoteBase?: never;
         apiKey?: never;
         watcherBootTimeoutMs?: never;
@@ -146,6 +173,7 @@ export type UiServerOptions = CommonUiServerOptions &
         resolveBundleDisplayName?: never;
         loadSharingSummary?: never;
         loadWorkspaces?: never;
+        management?: never;
       }
   );
 
@@ -154,6 +182,7 @@ export interface UiServerHandle {
   port: number;
   /** The per-run session secret — the `ui` command embeds this as the receipt URL's `?token=`. */
   token: string;
+  management?: UiManagementHandle;
   close(): Promise<void>;
 }
 
@@ -168,6 +197,13 @@ interface UiRuntime {
   sse: SseHub;
   watcher?: WatcherHandle;
   shutdown: AbortController;
+  management?: {
+    state: "ready" | "adopted" | "stopping";
+    adopt: () => void;
+    stop: () => void;
+    adopted: Promise<void>;
+    stopRequested: Promise<void>;
+  };
 }
 
 function jsonError(status: number, code: string, message: string): Response {
@@ -175,6 +211,83 @@ function jsonError(status: number, code: string, message: string): Response {
     status,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
+
+function managementRuntime(): NonNullable<UiRuntime["management"]> {
+  let resolveAdopted!: () => void;
+  let resolveStop!: () => void;
+  const adopted = new Promise<void>((resolve) => { resolveAdopted = resolve; });
+  const stopRequested = new Promise<void>((resolve) => { resolveStop = resolve; });
+  const runtime: NonNullable<UiRuntime["management"]> = {
+    state: "ready",
+    adopted,
+    stopRequested,
+    adopt: () => {
+      if (runtime.state !== "ready") return;
+      runtime.state = "adopted";
+      resolveAdopted();
+    },
+    stop: () => {
+      if (runtime.state === "stopping") return;
+      runtime.state = "stopping";
+      resolveStop();
+    },
+  };
+  return runtime;
+}
+
+async function handleManagementRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  options: UiServerOptions,
+  runtime: UiRuntime,
+  url: URL,
+): Promise<boolean> {
+  if (!url.pathname.startsWith("/__manage/")) return false;
+  if (!options.management || !runtime.management) {
+    await writeResponseToServerResponse(res, jsonError(404, "NOT_FOUND", "managed UI authority is unavailable"));
+    return true;
+  }
+  const supplied = req.headers["x-superbee-management-secret"];
+  if (typeof supplied !== "string" || !constantTimeEqual(supplied, options.management.secret)) {
+    await writeResponseToServerResponse(res, jsonError(403, "FORBIDDEN", "invalid managed UI authority"));
+    return true;
+  }
+  const launchNonce = req.headers["x-superbee-launch-nonce"];
+  if (typeof launchNonce !== "string" || !constantTimeEqual(launchNonce, options.management.identity.launch_nonce)) {
+    await writeResponseToServerResponse(res, jsonError(403, "FORBIDDEN", "invalid managed UI launch"));
+    return true;
+  }
+  if (url.pathname === "/__manage/status" && req.method === "GET") {
+    await writeResponseToServerResponse(res, new Response(JSON.stringify({
+      ...options.management.identity,
+      state: runtime.management.state,
+      active_clients: runtime.sse.size(),
+    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    return true;
+  }
+  if (url.pathname === "/__manage/adopt" && req.method === "POST") {
+    const finished = new Promise<void>((resolve) => res.once("finish", resolve));
+    await writeResponseToServerResponse(res, new Response(JSON.stringify({
+      adopted: true,
+      launch_nonce: options.management.identity.launch_nonce,
+    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    await finished;
+    runtime.management.adopt();
+    return true;
+  }
+  if (url.pathname === "/__manage/stop" && req.method === "POST") {
+    const finished = new Promise<void>((resolve) => res.once("finish", resolve));
+    await writeResponseToServerResponse(res, new Response(JSON.stringify({
+      stopping: true,
+      launch_nonce: options.management.identity.launch_nonce,
+    }), { status: 200, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" } }));
+    await finished;
+    runtime.management.stop();
+    return true;
+  }
+  await writeResponseToServerResponse(res, jsonError(404, "NOT_FOUND", "unknown managed UI operation"));
+  return true;
 }
 
 /** Escape text for interpolation into HTML (the standard `&<>\"'` five). The ONE escape primitive for the serve path — every {@link pageError} message flows through it, because a message on that path can carry remote-originated text (e.g. an upstream failure's error string) and must never reach the iframe as markup. */
@@ -696,6 +809,11 @@ async function handleRequest(
   const origin = `http://${req.headers.host}`;
   const url = new URL(req.url ?? "/", origin);
 
+  // Process management is a separate loopback capability. It is checked before browser-session
+  // auth because a controller never receives the browser token, and a browser never receives the
+  // management secret.
+  if (await handleManagementRequest(req, res, options, runtime, url)) return;
+
   // PAGE BYTES — the second privilege tier. Nonce-gated and SESSION-INDEPENDENT: the sandboxed,
   // opaque-origin iframe that loads this URL holds no session token, and the nonce is its sole
   // capability (minted by the session-authed shell for this one key). The data token does NOT open
@@ -729,6 +847,7 @@ async function handleRequest(
     sessionSecret,
     url.searchParams.get("token"),
     req.headers.cookie ?? null,
+    options.sessionCookieName,
   );
   if (!auth.ok) {
     await writeResponseToServerResponse(
@@ -767,7 +886,9 @@ async function handleRequest(
   // SSE — a long-lived stream written directly on the raw response (never marshaled through
   // `writeResponseToServerResponse`, which finishes the response). Shell-only; pages can't reach it.
   if (url.pathname === "/events" && request.method === "GET") {
-    const cookieHeaders: Record<string, string> = auth.grantsCookie ? { "set-cookie": sessionCookieHeader(sessionSecret) } : {};
+    const cookieHeaders: Record<string, string> = auth.grantsCookie
+      ? { "set-cookie": sessionCookieHeader(sessionSecret, options.sessionCookieName) }
+      : {};
     runtime.sse.add(res, cookieHeaders);
     return;
   }
@@ -809,7 +930,7 @@ async function handleRequest(
     response = new Response(asset.body, { status: asset.status, headers: asset.headers });
   }
 
-  if (auth.grantsCookie) response.headers.append("set-cookie", sessionCookieHeader(sessionSecret));
+  if (auth.grantsCookie) response.headers.append("set-cookie", sessionCookieHeader(sessionSecret, options.sessionCookieName));
   await writeResponseToServerResponse(res, response);
 }
 
@@ -874,6 +995,7 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
         : undefined,
     sse: new SseHub(),
     shutdown: new AbortController(),
+    ...(options.management ? { management: managementRuntime() } : {}),
   };
   runtime.watcher = await bootWatcher(options, runtime.sse);
 
@@ -912,6 +1034,9 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
         host: HOST,
         port: addr.port,
         token: sessionSecret,
+        ...(runtime.management
+          ? { management: { adopted: runtime.management.adopted, stopRequested: runtime.management.stopRequested } }
+          : {}),
         close: async () => {
           void runtime.watcher?.stop();
           runtime.sse.close();

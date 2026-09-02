@@ -87,6 +87,7 @@ test("doc open --help: teaches the exact-document browser path and does not boot
 
 test("doc open verifies and opens one exact document through the existing DocPage route", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-ui-home-"));
   await writeDoc(
     { root: dir },
     { id: "docs/review", frontmatter: { type: "Doc", title: "Review me" }, body: "# Evidence" },
@@ -94,43 +95,56 @@ test("doc open verifies and opens one exact document through the existing DocPag
   try {
     let out = "";
     let opened: string | undefined;
-    let resolveShutdown!: () => void;
-    const shutdown = new Promise<void>((resolve) => {
-      resolveShutdown = resolve;
-    });
-    const run = docOpen(["docs/review", "--dir", dir, "--port", "0", "--json"], {
+    let workerInput: import("../src/ui/managed-authority.js").ManagedUiWorkerInput | undefined;
+    await docOpen(["docs/review", "--dir", dir, "--port", "0", "--json"], {
       stdout: (s) => (out += s),
-      bootUiServer,
-      waitForShutdown: () => shutdown,
       openBrowser: (url) => {
         opened = url;
       },
-      writeUrlFile: async () => {},
-      clearUrlFile: async () => {},
+      managedController: {
+        home,
+        spawnWorker: async (input) => {
+          workerInput = input;
+          return {
+            host: "127.0.0.1",
+            port: 49152,
+            browser_token: "browser-secret",
+            launch_nonce: "launch-one",
+            pid: 42,
+            started_at: "2026-09-01T00:00:00.000Z",
+          };
+        },
+        fetch: (async (target, init) => {
+          const pathname = new URL(String(target)).pathname;
+          if (pathname.endsWith("/status")) {
+            return Response.json({
+              protocol: 1,
+              mode: "dir",
+              authority_key: workerInput!.authority.key,
+              bundle_root: workerInput!.authority.bundle_root,
+              actor: workerInput!.authority.actor,
+              launch_nonce: "launch-one",
+              state: "ready",
+              active_clients: 0,
+            });
+          }
+          assert.equal(init?.method, "POST");
+          return Response.json({ adopted: true, launch_nonce: "launch-one" });
+        }) as typeof fetch,
+      },
     });
-
-    while (!out) await new Promise((resolve) => setTimeout(resolve, 5));
     const receipt = JSON.parse(out);
     const url = new URL(receipt.url);
-    assert.equal(receipt.ui, "listening");
+    assert.equal(receipt.ui, "managed");
+    assert.equal(receipt.state, "started");
     assert.equal(receipt.document, "docs/review");
     assert.equal(url.searchParams.get("view"), "doc");
     assert.equal(url.searchParams.get("id"), "docs/review");
     assert.ok(url.searchParams.get("token"));
     assert.equal(opened, receipt.url, "doc open opens without a redundant --open flag");
-    assert.equal((await fetch(receipt.url)).status, 200);
-    const recoveryUrl = new URL(receipt.url);
-    recoveryUrl.pathname = "/__ui/document-open-command";
-    recoveryUrl.searchParams.set("id", "docs/review");
-    const recoveryResponse = await fetch(recoveryUrl);
-    assert.equal(recoveryResponse.status, 200);
-    const recovery = (await recoveryResponse.json()) as { command: string };
-    assert.match(recovery.command, /doc open --dir .* --port 0 -- docs\/review$/);
-
-    resolveShutdown();
-    await run;
   } finally {
     await cleanup();
+    await rm(home, { recursive: true, force: true });
   }
 });
 
@@ -142,7 +156,7 @@ test("the recovery command keeps an option-shaped document id positional", async
   );
   try {
     let recoveryCommand: string | null | undefined;
-    await docOpen(["--dir", dir, "--port", "0", "--", "--remote"], {
+    await ui(["--dir", dir, "--port", "0", "--actor", "mike"], {
       stdout: () => {},
       bootUiServer: async (options) => {
         recoveryCommand = options.renderDocumentOpenCommand?.("--remote");
@@ -154,7 +168,7 @@ test("the recovery command keeps an option-shaped document id positional", async
       clearUrlFile: async () => {},
     });
 
-    assert.match(recoveryCommand ?? "", /doc open --dir .* --port 0 -- --remote$/);
+    assert.match(recoveryCommand ?? "", /doc open --dir .* --port 0 --actor mike -- --remote$/);
   } finally {
     await cleanup();
   }
