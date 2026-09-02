@@ -94,9 +94,10 @@ a PR run on the same SHA are the same coverage paid twice. One run can satisfy b
 only when the merged SHA equals the validated SHA (fast-forward or a merge queue; the current
 merge-queue posture is recorded in `scripts/ci-lanes.json`).
 
-The finite lane projection below is checked against `scripts/ci-lanes.json`, root package scripts,
-and `.github/workflows/ci-tests.yml`. Change the executable topology first, then update this table in
-the same unit.
+The finite product-validation lane projection below is checked against `scripts/ci-lanes.json`, root
+package scripts, and `.github/workflows/ci-tests.yml`. Change the executable topology first, then
+update this table in the same unit. Hosted security analysis is projected separately below because
+it uploads findings to GitHub code scanning and has a schedule independent of the product gate.
 
 <!-- contributing-ci-lanes:start -->
 | Lane | Local command | CI job | Node |
@@ -110,6 +111,34 @@ the same unit.
 | smoke-node-20 | workflow only | `smoke-node-20` | 20 |
 <!-- contributing-ci-lanes:end -->
 
+CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, a weekly
+schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
+`.github/codeql/codeql-config.yml`; both surfaces are pinned by `scripts/ci-lanes.json` and
+`scripts/workflow-codeql-topology.test.mjs`.
+
+<!-- contributing-codeql-analysis:start -->
+| Analysis | Source scope | Build mode | Query coverage | Threat model |
+| --- | --- | --- | --- | --- |
+| JavaScript/TypeScript | `packages`, `scripts`; excludes dependencies, `dist`, tests, e2e, fixtures | `none` | default + `security-extended` | remote + local (beta) |
+| GitHub Actions | `.github/workflows` | `none` | default + `security-extended` | CodeQL Actions defaults |
+<!-- contributing-codeql-analysis:end -->
+
+`CodeQL required analyses` fails unless both analyses complete successfully. That status proves
+extraction, query execution, and result upload; it does not mean the result contains no alerts.
+Finding-based merge enforcement belongs to GitHub's separate `Require code scanning results`
+ruleset. After the first hosted pull-request and `main` analyses succeed, a human may bind the
+aggregate as an app-sourced required status check and create a default-branch code-scanning ruleset
+in `Evaluate` mode, select CodeQL plus explicit alert thresholds, observe its effect, and only then
+make it Active. Until that hosted settings receipt exists, describe CodeQL as advisory scanning,
+not a merge gate.
+
+Threat models are a beta CodeQL capability. The `local` model is load-bearing for command-line
+arguments, environment values, stdin, filenames, and file content, so inspect CodeQL's hosted tool
+status after initial setup and after relevant CodeQL changes. The built-in queries cover command,
+shell, second-order Git/Hg, and path-injection classes; product tests and review still own generic
+non-shell option injection, containment, symbolic-link, permission, atomicity, and destructive-scope
+invariants.
+
 Minimum iteration lanes by reach:
 
 | Touched surface | Run at minimum |
@@ -117,7 +146,7 @@ Minimum iteration lanes by reach:
 | Package source or tests | `npm run ci:runtime` (native Windows behavior is gated in CI) |
 | `package.json`, `scripts/`, or packaging code | `npm run ci:distribution` and `npm run ci:scripts` |
 | `packages/ui`, `packages/mcp-app`, or embedded browser code | `npm run ci:browser` |
-| Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts` |
+| Workflow topology or `scripts/ci-lanes.json` | `npm run ci:scripts`; for CodeQL-only iteration, start with `node --test scripts/workflow-codeql-topology.test.mjs` |
 | Host-class-dependent tests (case or normalization fixtures, the identity lock) | `npm run ci:aliasing-host` |
 | `.github/workflows/release*.yml` | `npm run ci:scripts` (workflow invariant test), then one rehearsal against a disposable package before first live use |
 
