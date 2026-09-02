@@ -398,9 +398,10 @@ async function defaultSpawnWorker(input: ManagedUiWorkerInput): Promise<ManagedU
 function startupDiagnostic(raw: string, truncated: boolean): string {
   const normalized = raw.replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim();
   if (!normalized) return "";
-  const bounded = normalized.slice(0, START_DIAGNOSTIC_MESSAGE_MAX_CHARS);
-  const suffix = truncated || normalized.length > bounded.length ? "…" : "";
-  return `: ${bounded}${suffix}`;
+  if (!truncated && normalized.length <= START_DIAGNOSTIC_MESSAGE_MAX_CHARS) return `: ${normalized}`;
+  const headChars = Math.floor(START_DIAGNOSTIC_MESSAGE_MAX_CHARS / 2);
+  const tailChars = START_DIAGNOSTIC_MESSAGE_MAX_CHARS - headChars;
+  return `: ${normalized.slice(0, headChars)} … ${normalized.slice(-tailChars)}`;
 }
 
 async function waitForWorkerReady(child: ChildProcess, input: ManagedUiWorkerInput): Promise<ManagedUiWorkerReady> {
