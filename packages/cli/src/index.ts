@@ -16,7 +16,14 @@ if (bareVersion) {
   registerExecutableEntry(fileURLToPath(import.meta.url));
 }
 
-if (!bareVersion && argv[0] === "__update-refresh-v1") {
+if (!bareVersion && argv[0] === "__managed-ui-v1") {
+  // Private managed-listener route. Configuration and both secrets arrive over the child's
+  // bounded stdin pipe, never argv, the process list, browser URL, or public command registry.
+  if (argv.length === 1) {
+    const { runManagedUiWorker } = await import("./ui/managed-worker.js");
+    await runManagedUiWorker();
+  }
+} else if (!bareVersion && argv[0] === "__update-refresh-v1") {
   // Private process route: malformed argv is intentionally silent zero-work. It is absent from
   // public command registries/help and is reachable only through the exact registered entry.
   if (argv.length === 2) {

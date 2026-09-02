@@ -22,11 +22,13 @@
 // token is a CONFLICT (exit 5) whose envelope carries the CURRENT version, so the losing editor can
 // re-`pull` -> re-apply -> re-`promote` without a second discovery round trip.
 //
-// The doc route is a WHOLE-BODY replace, so it carries `doc write`/`doc update`'s truncated-preview
-// guard: promoting a file whose bytes are a `doc read` body preview over an EXISTING doc is refused
-// unless `--accept-truncated-body` opts in. It deliberately does NOT carry the link-drop guard —
-// that guard needs its own `--replace-links` opt-in and a decision about the pull/edit/promote loop,
-// which is a separate claim; a promote that drops outbound links still does so silently.
+// The doc route is a WHOLE-BODY replace, so it carries the same two body-replace guards as `doc
+// write`/`doc update` — `mutateDoc` enforces them on every attempt (body-replace-guards.ts); this
+// verb only declares its opt-outs. Promoting a file whose bytes are a `doc read` body preview over
+// an EXISTING doc is refused unless `--accept-truncated-body` opts in, and a promote that would drop
+// an outbound cross-link the stored body carried is refused unless `--replace-links` opts in. The
+// pull -> edit -> promote loop therefore behaves exactly like read -> edit -> `doc update
+// --body-file`: a deliberate link removal in the edited file is stated once, on the command.
 //
 // A6/A9 context: for a LOCAL `--dir` bundle this is a convenience only — the files ARE the store
 // (local-first) — but routing a `.md` file through the engine still doubles as IMPORT+NORMALIZE
@@ -53,7 +55,6 @@ import { cliInvocation } from "../invocation.js";
 import { readExternalFileBytes, readExternalTextFile } from "../external-file.js";
 import { mutateDoc } from "../mutate.js";
 import { isLegacyPageDoc, LEGACY_PAGE_TYPE_HINT } from "../legacy-page.js";
-import { guardTruncatedBodyPreview } from "./doc/common.js";
 import { commandLiteral, commandToken } from "../command-text.js";
 
 export const PROMOTE_USAGE = `superbee promote — move a local file's bytes into the store (the reverse of 'doc read --out')
@@ -102,6 +103,12 @@ Options:
                             (exit 2) and nothing is written; 'pull --doc-key <key> --out <path>'
                             gets the complete document to edit. The expect-absent CREATE route has
                             no stored body to lose and is never guarded.
+  --replace-links          Doc route only: required when the promoted body would DROP an outbound
+                            cross-link the EXISTING doc's stored body carries (OKF links live in the
+                            body, so a whole-body replace removes any link the new body does not
+                            repeat). Without it such a promote is refused (exit 2) and nothing is
+                            written; keep the link in the file, or pass this to drop it deliberately.
+                            The expect-absent CREATE route is never guarded.
   --dir <path>              Bundle directory (default: discovered from the cwd)
   --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
                             exclusive with --dir; remote access is always explicit)
@@ -130,6 +137,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
           "content-type": { type: "string" },
           "expected-version": { type: "string" },
           "accept-truncated-body": { type: "boolean" },
+          "replace-links": { type: "boolean" },
           strict: { type: "boolean" },
           dir: { type: "string" },
           remote: { type: "string" },
@@ -169,15 +177,17 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
   }
   // The mirror of the guard above, same reason (I9): a route-inapplicable flag is a USAGE error, not
   // a silent no-op. Blobs are opaque bytes that are never parsed, so they have no body to truncate
-  // and nothing for this override to authorize — accepting it would let a caller believe they had
-  // waived a guard that was never going to run.
-  if (!docRoute && values["accept-truncated-body"] !== undefined) {
-    throw new CliError(
-      "USAGE",
-      `--accept-truncated-body is a doc-route-only option; '${key}' does not end in '.md' and routes ` +
-        `through the blob layer, which stores opaque bytes without a document body to truncate`,
-      { help: `${cliInvocation()} promote --help` },
-    );
+  // and no links to drop — nothing for either override to authorize. Accepting one would let a
+  // caller believe they had waived a guard that was never going to run.
+  for (const docOnly of ["accept-truncated-body", "replace-links"] as const) {
+    if (!docRoute && values[docOnly] !== undefined) {
+      throw new CliError(
+        "USAGE",
+        `--${docOnly} is a doc-route-only option; '${key}' does not end in '.md' and routes ` +
+          `through the blob layer, which stores opaque bytes without a document body to guard`,
+        { help: `${cliInvocation()} promote --help` },
+      );
+    }
   }
 
   const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
@@ -195,6 +205,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
         expectedVersion,
         strict: Boolean(values.strict),
         acceptTruncatedBody: Boolean(values["accept-truncated-body"]),
+        replaceLinks: Boolean(values["replace-links"]),
       },
       stdout,
       mode,
@@ -209,7 +220,7 @@ async function promoteDoc(
   file: string,
   key: string,
   bundle: Bundle,
-  opts: { expectedVersion: string | null; strict: boolean; acceptTruncatedBody: boolean },
+  opts: { expectedVersion: string | null; strict: boolean; acceptTruncatedBody: boolean; replaceLinks: boolean },
   stdout: (s: string) => void,
   mode: OutputMode,
   remoteUrl?: string,
@@ -255,15 +266,12 @@ async function promoteDoc(
       strict: opts.strict,
       helpOnKindReject: `${cliInvocation()} kinds`,
       expectedVersion: opts.expectedVersion ?? undefined,
-      // Truncated-preview guard (data loss): the doc route is a WHOLE-BODY replace, so a promoted
-      // file whose bytes are a `doc read` body preview truncates the target exactly as `doc update
-      // --body-file` would. The guard is keyed on `existing`, not on the CAS mode, so it covers the
-      // patch route over a present doc and leaves the expect-absent CREATE route (nothing to lose)
-      // untouched. Inside `buildCandidate`, so it re-evaluates per compare-and-swap attempt.
-      buildCandidate: (existing) => {
-        if (existing) guardTruncatedBodyPreview(existing, body, opts.acceptTruncatedBody);
-        return { frontmatter, body };
-      },
+      // The doc route is a WHOLE-BODY replace: `mutateDoc` guards it exactly as it guards `doc
+      // update --body-file`, keyed on the presence of a stored doc rather than on the CAS mode, so
+      // the patch route over a present doc is covered and the expect-absent CREATE route (nothing
+      // to lose) is untouched.
+      bodyReplace: { acceptTruncatedBody: opts.acceptTruncatedBody, replaceLinks: opts.replaceLinks },
+      buildCandidate: () => ({ frontmatter, body }),
       errors: {
         alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
         staleHead: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
