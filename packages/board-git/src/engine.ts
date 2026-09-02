@@ -15,6 +15,7 @@ import {
   bundleDirNameForProject,
   abortStaleRebase,
   detectStaleRebase,
+  isRecoverableStandaloneBoardCheckout,
   repoTopLevel,
   runGit,
   type DocChange,
@@ -108,6 +109,10 @@ export function healStaleRebaseBeforeProvisioning(dir: string): void {
   try {
     const top = repoTopLevel(dir);
     if (!top) return;
+    if (isRecoverableStandaloneBoardCheckout(top)) {
+      abortStaleRebase(top);
+      return;
+    }
     const candidateBoardPath = path.join(top, bundleDirNameForProject(top));
     if (!existsSync(candidateBoardPath)) return;
     const boardTop = repoTopLevel(candidateBoardPath);

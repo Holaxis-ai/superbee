@@ -447,6 +447,29 @@ test("provision: root OKF bundle on a non-board branch is refused without creati
   }
 });
 
+test("provision: a symlink-mode root index cannot establish standalone board authority", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const root = path.join(topo.dir, "symlink-root-index");
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, root]);
+    const original = await readFile(path.join(root, "index.md"), "utf8");
+    await rm(path.join(root, "index.md"));
+    await writeFile(path.join(root, "root-index-target.md"), original);
+    await symlink("root-index-target.md", path.join(root, "index.md"));
+    git(root, ["add", "-A"]);
+    git(root, ["commit", "-m", "replace root index with symlink"]);
+
+    assert.deepEqual(provisionBoardWorktree(root, { allowLocalBranch: false }), {
+      kind: "local_board",
+      boardPath: root,
+      remoteExists: true,
+    });
+    assert.equal(existsSync(path.join(root, BUNDLE_DIR)), false);
+  } finally {
+    await topo.cleanup();
+  }
+});
+
 test("provision: unpublished root bundle on a local board branch keeps explicit publication authority", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {
@@ -1540,12 +1563,12 @@ test("F2 refusal: an UNRELATED local board branch (foreign root) is never adopte
   }
 });
 
-test("F2 root checkout: the attached board HEAD is accepted without moving during provisioning", async () => {
+test("F2 root checkout: a checked-out board branch without upstream provenance is not adopted", async () => {
   const { topo, oldSha } = await makeAncestorBranchFixture();
   try {
     git(topo.b.root, ["checkout", BOARD_BRANCH]);
     const outcome = provisionBoardWorktree(topo.b.root, { allowLocalBranch: false });
-    assert.deepEqual(outcome, { kind: "already", boardPath: topo.b.root });
+    assert.deepEqual(outcome, { kind: "local_board", boardPath: topo.b.root, remoteExists: true });
     assert.equal(git(topo.b.root, ["rev-parse", "HEAD"]).trim(), oldSha, "HEAD did not move");
     assert.equal(git(topo.b.root, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), BOARD_BRANCH, "still on the branch");
   } finally {

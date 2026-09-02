@@ -24,6 +24,7 @@ import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withIsolatedUserEnv } from "./support/user-env.js";
+import { initBundle } from "@superbee/core";
 
 import {
   buildConvergeMessage,
@@ -651,6 +652,97 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
 
     const again = await runSync(homes[1]!, ["--dir", directB, "--pull-only"]);
     assert.equal(again.out, "sync: already up to date\n");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: standalone checkout without a cached origin ref still reports the docs fetched this run", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(2);
+  const writer = path.join(topo.dir, "root-writer");
+  const reader = path.join(topo.dir, "root-reader-no-cache");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, writer]);
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, reader]);
+    git(reader, ["update-ref", "-d", `refs/remotes/origin/${BOARD_BRANCH}`]);
+
+    await cliDocWrite(writer, "notes/fetched-without-cache", [
+      "--type", "Note", "--title", "Fetched without cache", "--body", "# Arrived\n", "--actor", "claude-tag",
+    ]);
+    const sent = await runSync(homes[0]!, ["--dir", writer]);
+    assert.equal(sent.err, undefined, sent.err?.message);
+
+    const received = await runSync(homes[1]!, ["--dir", reader, "--pull-only"]);
+    assert.equal(received.err, undefined, received.err?.message);
+    assert.match(received.out, /pulled: 1/);
+    assert.match(received.out, /notes\/fetched-without-cache/);
+    assert.match(received.out, /claude-tag/);
+    assert.equal(existsSync(path.join(reader, "notes", "fetched-without-cache.md")), true);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: an unrelated tracked board root cannot acquire publication authority from origin/board", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  const foreign = path.join(topo.dir, "foreign-root-board");
+  try {
+    await mkdir(foreign, { recursive: true });
+    git(foreign, ["init", "-b", BOARD_BRANCH]);
+    await initBundle(foreign);
+    await writeFile(path.join(foreign, "foreign.md"), "foreign history must not publish\n");
+    git(foreign, ["add", "-A"]);
+    git(foreign, ["commit", "-m", "unrelated local board"]);
+    git(foreign, ["remote", "add", "origin", topo.origin]);
+    git(foreign, ["fetch", "origin", `${BOARD_BRANCH}:refs/remotes/origin/${BOARD_BRANCH}`]);
+    git(foreign, ["config", `branch.${BOARD_BRANCH}.remote`, "origin"]);
+    git(foreign, ["config", `branch.${BOARD_BRANCH}.merge`, `refs/heads/${BOARD_BRANCH}`]);
+    const remoteBefore = git(topo.origin, ["rev-parse", BOARD_BRANCH]).trim();
+    const localBefore = git(foreign, ["rev-parse", "HEAD"]).trim();
+
+    const refused = await runSync(homes[0]!, ["--dir", foreign]);
+    assert.equal(refused.err?.code, "CONFLICT");
+    assert.equal(git(topo.origin, ["rev-parse", BOARD_BRANCH]).trim(), remoteBefore);
+    assert.equal(git(foreign, ["rev-parse", "HEAD"]).trim(), localBefore);
+    assert.equal(existsSync(path.join(foreign, BUNDLE_DIR)), false);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: a legitimate standalone checkout heals an interrupted board rebase before routing", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  const upstream = path.join(topo.dir, "root-rebase-upstream");
+  const wedged = path.join(topo.dir, "root-rebase-wedged");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, upstream]);
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, wedged]);
+
+    const upstreamRepo: BoardRepo = { name: "upstream", root: upstream, board: upstream };
+    const wedgedRepo: BoardRepo = { name: "wedged", root: wedged, board: wedged };
+    await modifyBoardDoc(upstreamRepo, "tasks/seed-one", { frontmatter: { actor: "alice" }, body: "# Upstream\n" });
+    commitBoard(upstreamRepo, "upstream divergence");
+    pushBoard(upstreamRepo);
+
+    await modifyBoardDoc(wedgedRepo, "tasks/seed-one", { frontmatter: { actor: "bob" }, body: "# Local\n" });
+    commitBoard(wedgedRepo, "local divergence");
+    const localBefore = git(wedged, ["rev-parse", "HEAD"]).trim();
+    git(wedged, ["fetch", "origin"]);
+    assert.notEqual(gitTry(wedged, ["rebase", `origin/${BOARD_BRANCH}`]).status, 0);
+    const rebasePath = path.resolve(wedged, git(wedged, ["rev-parse", "--git-path", "rebase-merge"]).trim());
+    assert.equal(existsSync(rebasePath), true, "fixture is genuinely mid-rebase");
+
+    const result = await runSync(homes[0]!, ["--dir", wedged, "--pull-only"]);
+    assert.equal(result.err?.code, "CONFLICT", "the healed checkout remains honestly diverged");
+    assert.equal(existsSync(rebasePath), false, "entry recovery clears the interrupted rebase");
+    assert.equal(git(wedged, ["rev-parse", "HEAD"]).trim(), localBefore);
+    assert.equal(existsSync(path.join(wedged, BUNDLE_DIR)), false);
   } finally {
     await cleanup();
     await topo.cleanup();

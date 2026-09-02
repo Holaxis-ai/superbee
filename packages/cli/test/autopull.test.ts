@@ -45,7 +45,7 @@ import {
 import { readCache, readCursor, readSyncState } from "../src/cursor.js";
 import { sync } from "../src/commands/sync.js";
 import { hookInstallHintOnce } from "../src/sync-cli.js";
-import { resolveBundleKey } from "@superbee/board-git";
+import { BOARD_BRANCH, resolveBundleKey } from "@superbee/board-git";
 import { hook, hookInstalled } from "../src/commands/hook.js";
 import { home } from "../src/commands/home.js";
 import { list } from "../src/commands/list.js";
@@ -142,6 +142,28 @@ test("staleness gate: first read pulls (no cache), a fresh cache is served as-is
   } finally {
     await topo.cleanup();
     await rm(homeB, { recursive: true, force: true });
+  }
+});
+
+test("standalone board checkout participates in the same opportunistic pull path", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await tempHome();
+  const direct = path.join(topo.dir, "autopull-root-board");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, direct]);
+    await writeBoardDoc(topo.a, "notes/standalone-autopull", {
+      frontmatter: { type: "Note", title: "Standalone autopull", actor: "alice" },
+      body: "# Arrived\n",
+    });
+    commitBoard(topo.a, "add standalone autopull note");
+    pushBoard(topo.a);
+
+    const outcome = await withHome(homeDir, () => maybeAutoPull(direct, { env: {}, now: at(0) }));
+    assert.equal(outcome, "pulled");
+    assert.equal(existsSync(path.join(direct, "notes", "standalone-autopull.md")), true);
+  } finally {
+    await rm(homeDir, { recursive: true, force: true });
+    await topo.cleanup();
   }
 });
 

@@ -559,7 +559,9 @@ async function baselinePhase(board: SyncBoard): Promise<SyncBaseline> {
   await defaultSyncStore.refreshMarker(board.key);
   const storedCursor = await defaultSyncStore.readCursor(board.key);
   const startHead = currentHead(board.boardPath);
-  const preFetchOriginRef = resolveOriginRef(board.boardPath);
+  const preFetchOriginRef = board.outcome.kind === "already" && board.outcome.originBaseline
+    ? board.outcome.originBaseline
+    : resolveOriginRef(board.boardPath);
   return { storedCursor, startHead, preFetchOriginRef };
 }
 

@@ -519,13 +519,17 @@ function repairedWorktreeIsBoard(boardPath: string, ownerTop: string): boolean {
  * `dir`: the selected conventional directory exists, is ITSELF a worktree root (not a plain directory
  * falling through to the parent repo), and has the `board` branch checked out.
  */
-export function isProvisioned(dir: string): boolean {
+function conventionalProvisionedBoardPath(dir: string): string | null {
   const top = repoTopLevel(dir);
-  if (!top) return false;
+  if (!top) return null;
   const boardPath = path.join(top, bundleDirNameForProject(top));
-  if (!existsSync(boardPath) || !worktreeRootResolvesForOwner(boardPath, top)) return false;
+  if (!existsSync(boardPath) || !worktreeRootResolvesForOwner(boardPath, top)) return null;
   const branch = runGit(boardPath, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  return branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH;
+  return branch.status === 0 && branch.stdout.trim() === BOARD_BRANCH ? boardPath : null;
+}
+
+export function isProvisioned(dir: string): boolean {
+  return conventionalProvisionedBoardPath(dir) !== null;
 }
 
 /**
@@ -534,8 +538,12 @@ export function isProvisioned(dir: string): boolean {
  * an arbitrary repository that happens to use the branch name `board` must never become sync
  * authority merely because an untracked or ordinary prose `index.md` is present in its worktree.
  */
-function hasTrackedBundleRootAtHead(top: string): boolean {
-  const shown = runGit(top, ["show", "HEAD:index.md"]);
+function hasTrackedBundleRootAtRef(top: string, ref: string): boolean {
+  // `git show <ref>:index.md` follows the blob payload regardless of the tree entry's mode.  The
+  // mode check keeps a tracked symlink from impersonating the bundle's regular root index.
+  const entry = runGit(top, ["ls-tree", "-z", ref, "--", "index.md"]);
+  if (entry.status !== 0 || !/^100(?:644|755) blob [0-9a-f]+\tindex\.md\0$/.test(entry.stdout)) return false;
+  const shown = runGit(top, ["show", `${ref}:index.md`]);
   if (shown.status !== 0) return false;
   try {
     const version = parseMarkdown(shown.stdout, "index.md").frontmatter.okf_version;
@@ -543,6 +551,59 @@ function hasTrackedBundleRootAtHead(top: string): boolean {
   } catch {
     return false;
   }
+}
+
+function hasTrackedBundleRootAtHead(top: string): boolean {
+  return hasTrackedBundleRootAtRef(top, "HEAD");
+}
+
+/** Durable provenance for a root clone: the local board branch explicitly tracks origin/board. */
+function boardBranchTracksOrigin(top: string): boolean {
+  const remote = runGit(top, ["config", "--get", `branch.${BOARD_BRANCH}.remote`]);
+  const merge = runGit(top, ["config", "--get", `branch.${BOARD_BRANCH}.merge`]);
+  return remote.status === 0 && remote.stdout.trim() === BOARD_REMOTE &&
+    merge.status === 0 && merge.stdout.trim() === `refs/heads/${BOARD_BRANCH}`;
+}
+
+/** The shared-board histories have a real common ancestor; an unrelated root is never adopted. */
+function standaloneHistoryBase(top: string): string | null {
+  const r = runGit(top, ["merge-base", `refs/heads/${BOARD_BRANCH}`, `refs/remotes/${BOARD_REF}`]);
+  return r.status === 0 && r.stdout.trim().length > 0 ? r.stdout.trim() : null;
+}
+
+/**
+ * Resolve the one supported standalone topology without mutating or touching the network.  This
+ * is deliberately stricter than "branch happens to be named board": the root index is a regular
+ * tracked OKF document, the branch carries explicit upstream provenance, and cached remote
+ * history (when required) is related.  Home, autopull, and provisioning consume this same seam.
+ */
+export function resolveStandaloneBoardCheckout(
+  dir: string,
+  opts: { requireRemoteRef?: boolean } = {},
+): string | null {
+  const top = repoTopLevel(dir);
+  if (!top || currentBranch(top) !== BOARD_BRANCH) return null;
+  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${BOARD_BRANCH}`) || !boardBranchTracksOrigin(top)) return null;
+  const remote = runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]);
+  if (remote.status !== 0) return opts.requireRemoteRef === false ? top : null;
+  return standaloneHistoryBase(top) ? top : null;
+}
+
+/** A crashed standalone rebase whose exact pre-rebase branch still proves shared-board authority. */
+export function isRecoverableStandaloneBoardCheckout(dir: string): boolean {
+  const top = repoTopLevel(dir);
+  if (!top || !detectStaleRebase(top) || !rebaseWasFromBoardBranch(top)) return false;
+  if (!hasTrackedBundleRootAtRef(top, `refs/heads/${BOARD_BRANCH}`) || !boardBranchTracksOrigin(top)) return false;
+  return standaloneHistoryBase(top) !== null;
+}
+
+/** The active board path for read-side consumers: standalone root first, then conventional worktree. */
+export function resolveProvisionedBoardPath(dir: string): string | null {
+  const top = repoTopLevel(dir);
+  if (!top) return null;
+  const standalone = resolveStandaloneBoardCheckout(top);
+  if (standalone) return standalone;
+  return conventionalProvisionedBoardPath(top);
 }
 
 function standaloneRootWrongBranch(top: string, branch: string): BoardGitError {
@@ -579,8 +640,12 @@ export type ProvisionOutcome =
    * "already" case (decisions/board-branch-sync rider 2).
    */
   | { kind: "repaired"; boardPath: string; gitignore?: GitignoreUpdate }
-  /** Already provisioned (or the board branch is already checked out) — idempotent success. */
-  | { kind: "already"; boardPath: string; gitignore?: GitignoreUpdate }
+  /**
+   * Already provisioned (or a proven standalone board checkout) — idempotent success.
+   * `originBaseline` is present only when standalone recognition had to fetch an uncached remote
+   * ref; it preserves the pre-fetch receipt boundary for the command layer.
+   */
+  | { kind: "already"; boardPath: string; gitignore?: GitignoreUpdate; originBaseline?: string }
   /** `dir` is not inside a git repository at all — the caller emits `sync: nothing to sync`. */
   | { kind: "no_repo" }
   /** No local or fetched board ref exists; `remoteState` records whether origin was checked. */
@@ -890,13 +955,19 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   if (rootBranch !== undefined && rootBranch !== BOARD_BRANCH) {
     throw standaloneRootWrongBranch(top, rootBranch);
   }
+  const rootOriginBefore = rootBranch === BOARD_BRANCH
+    ? runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`])
+    : null;
+  const rootCheckout = rootBranch === BOARD_BRANCH
+    ? resolveStandaloneBoardCheckout(top, { requireRemoteRef: false })
+    : null;
   // Match the steady-state linked-worktree fast path: a clone of `board` already carries this
   // explicit remote-tracking ref.  Returning before a network fetch preserves the sync command's
   // pre-fetch baseline, so a later pull can report the exact incoming documents instead of
   // silently advancing the tracking ref during provisioning.
   if (
-    rootBranch === BOARD_BRANCH &&
-    runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status === 0
+    rootCheckout !== null &&
+    rootOriginBefore?.status === 0
   ) {
     return { kind: "already", boardPath: top };
   }
@@ -973,12 +1044,27 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   const hasLocal = localBoard.status === 0;
   const hasRemote = remoteBoard.status === 0 && !remoteBoardKnownAbsent;
   // A root checkout is already the exact worktree the remaining sync phases need.  Require the
-  // fetched remote-tracking board ref as the sharing provenance before granting that authority;
-  // a merely local branch named `board` keeps the existing explicit-establishment refusal.
+  // explicit branch-upstream relationship AND related fetched history before granting that
+  // authority; a merely local or unrelated branch named `board` keeps the existing explicit-
+  // establishment refusal. When this run created the first cached remote ref, carry the proven
+  // merge-base forward so the receipt can still describe what arrived during this fetch.
   if (rootIsBundle && rootBranch === BOARD_BRANCH) {
-    return hasRemote
-      ? { kind: "already", boardPath: top }
-      : { kind: "local_board", boardPath: top, remoteExists: false };
+    const originBaseline = hasRemote && resolveStandaloneBoardCheckout(top) !== null
+      ? standaloneHistoryBase(top)
+      : null;
+    if (originBaseline !== null) {
+      return rootOriginBefore?.status === 0
+        ? { kind: "already", boardPath: top }
+        : { kind: "already", boardPath: top, originBaseline };
+    }
+    return { kind: "local_board", boardPath: top, remoteExists: hasRemote };
+  }
+  // A root checkout that occupies the branch but does not carry a regular tracked OKF root is
+  // neither the supported standalone topology nor available for a conventional linked worktree.
+  // Keep it on the explicit-refusal path; the later worktree-add fallback must never misreport a
+  // nonexistent nested path as an already-provisioned board.
+  if (currentBranch(top) === BOARD_BRANCH) {
+    return { kind: "local_board", boardPath: top, remoteExists: hasRemote };
   }
   const localMatchesRemote =
     hasLocal &&
