@@ -512,19 +512,23 @@ function assertWindowsJob(job, lane) {
     "Windows preflight must run the command-emission contract directly from the CLI working directory",
   );
   const typecheck = "npm run typecheck --workspaces --if-present --ignore-scripts";
-  assert.ok(job.includes(typecheck), "Windows runtime must preserve the complete workspace typecheck");
+  const typecheckStep = [
+    "      - name: Typecheck the complete workspace contract natively",
+    `        run: ${typecheck}`,
+  ].join("\n");
+  assert.ok(job.includes(typecheckStep), "Windows runtime must preserve the complete workspace typecheck");
   const shards = [1, 2, 3, 4].map(
     (index) => `node scripts/run-test-command.mjs node --test --test-shard=${index}/4 --import ./test/ts-loader.mjs './test/*.test.ts'`,
   );
+  const shardSteps = shards.map((shard, index) => [
+    `      - name: Run the CLI runtime contract (shard ${index + 1} of 4)`,
+    "        working-directory: packages/cli",
+    `        run: ${shard}`,
+  ].join("\n"));
   for (const [index, shard] of shards.entries()) {
     assert.equal(job.split(shard).length - 1, 1, `Windows CLI runtime must execute exactly one ${shard}`);
-    const shardStep = [
-      `      - name: Run the CLI runtime contract (shard ${index + 1} of 4)`,
-      "        working-directory: packages/cli",
-      `        run: ${shard}`,
-    ].join("\n");
     assert.ok(
-      job.includes(shardStep),
+      job.includes(shardSteps[index]),
       `Windows CLI shard ${index + 1} must run directly from the CLI working directory`,
     );
   }
@@ -539,21 +543,20 @@ function assertWindowsJob(job, lane) {
     "@superbee/ui-server",
     "@superbee/view-runtime",
   ];
-  const nonCliCommand = job.match(/^ {8}run: npm test --if-present --ignore-scripts (.+)$/m)?.[1];
-  assert.ok(nonCliCommand, "Windows runtime must retain an explicit non-CLI workspace test step");
-  assert.deepEqual(
-    [...nonCliCommand.matchAll(/-w ([^ ]+)/g)].map((match) => match[1]),
-    nonCliWorkspaces,
-    "Windows non-CLI runtime workspace coverage drifted",
-  );
+  const nonCliCommand = `npm test --if-present --ignore-scripts ${nonCliWorkspaces.map((workspace) => `-w ${workspace}`).join(" ")}`;
+  const nonCliStep = [
+    "      - name: Run the non-CLI workspace contracts natively",
+    `        run: ${nonCliCommand}`,
+  ].join("\n");
+  assert.ok(job.includes(nonCliStep), "Windows non-CLI runtime workspace coverage drifted");
   assert.doesNotMatch(job, /run: npm run ci:runtime/, "Windows runtime must remain split into observable failure domains");
   assert.ok(
-    job.indexOf(kindDraftProbe) < job.indexOf(typecheck)
-      && job.indexOf(typecheck) < job.indexOf(shards[0])
-      && job.indexOf(shards[0]) < job.indexOf(shards[1])
-      && job.indexOf(shards[1]) < job.indexOf(shards[2])
-      && job.indexOf(shards[2]) < job.indexOf(shards[3])
-      && job.indexOf(shards[3]) < job.indexOf(nonCliCommand),
+    job.indexOf(kindDraftStep) < job.indexOf(typecheckStep)
+      && job.indexOf(typecheckStep) < job.indexOf(shardSteps[0])
+      && job.indexOf(shardSteps[0]) < job.indexOf(shardSteps[1])
+      && job.indexOf(shardSteps[1]) < job.indexOf(shardSteps[2])
+      && job.indexOf(shardSteps[2]) < job.indexOf(shardSteps[3])
+      && job.indexOf(shardSteps[3]) < job.indexOf(nonCliStep),
     "Windows-sensitive filesystem regressions must fail before the complete workspace contract",
   );
   assert.match(job, /npm run --silent pack:npm-package -- --pack-destination \$env:RUNNER_TEMP/);
@@ -714,6 +717,16 @@ test("Windows proof cannot be reattached to automatic CI or lose its manual trig
 });
 
 test("Windows runtime partition cannot lose its early probe, shards, or workspace coverage", () => {
+  const kindDraftProbe = "node scripts/run-test-command.mjs node --test --import ./test/ts-loader.mjs ./test/kind-draft.test.ts";
+  const kindDraftStep = [
+    "      - name: Run Windows command-output regressions first",
+    "        working-directory: packages/cli",
+    `        run: ${kindDraftProbe}`,
+  ].join("\n");
+  const nonCliStep = [
+    "      - name: Run the non-CLI workspace contracts natively",
+    "        run: npm test --if-present --ignore-scripts -w @superbee/board-git -w @superbee/core -w @superbee/markdown-renderer -w @superbee/mcp-app -w @superbee/publication -w @superbee/server -w @superbee/ui -w @superbee/ui-server -w @superbee/view-runtime",
+  ].join("\n");
   assert.throws(
     () => validateWindowsProofWorkflow(
       windowsWorkflow.replace("--test-shard=4/4", "--test-shard=3/4"),
@@ -743,6 +756,13 @@ test("Windows runtime partition cannot lose its early probe, shards, or workspac
       ),
     ),
     /CLI shard 2 must run directly from the CLI working directory/,
+  );
+  const lateProbeWithCommentDecoy = windowsWorkflow
+    .replace(kindDraftStep, `      # ${kindDraftProbe}`)
+    .replace(nonCliStep, `${nonCliStep}\n${kindDraftStep}`);
+  assert.throws(
+    () => validateWindowsProofWorkflow(lateProbeWithCommentDecoy),
+    /Windows-sensitive filesystem regressions must fail before the complete workspace contract/,
   );
   assert.throws(
     () => validateWindowsProofWorkflow(
