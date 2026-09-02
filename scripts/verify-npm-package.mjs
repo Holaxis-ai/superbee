@@ -53,11 +53,12 @@ const baseExpectedFiles = [
   ...publicationExpectedFiles,
 ];
 
-/** Independently project the native shell argument form the installed CLI must advertise. */
-function expectedShellArgument(value) {
-  if (process.platform === "win32") {
-    const normalized = value.replaceAll("\\", "/");
-    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(normalized) ? normalized : `"${normalized}"`;
+/** Independently project the always-quoted native shell argument the installed CLI must advertise. */
+export function expectedQuotedShellArgument(value, platform = process.platform) {
+  if (platform === "win32") {
+    // Preserve native path bytes. A terminal backslash run must be doubled so it cannot escape the
+    // closing quote under the Windows CRT argv rule.
+    return `"${value.replace(/(\\+)$/, "$1$1")}"`;
   }
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -649,7 +650,7 @@ async function runInstalledProof(spec) {
     }
 
     const discoverySnapshot = await snapshotTree(quickstartProject);
-    const conventionalDirArgument = expectedShellArgument(".superbee");
+    const conventionalDirArgument = expectedQuotedShellArgument(".superbee");
     const noBundleHome = parseJson(
       (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
       `${target.preferred_command} home --json outside a bundle`,
@@ -836,7 +837,7 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(
       appliedRecipes.recipes.find((recipe) => recipe.name === "work-tracking")?.commands,
-      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir ${expectedShellArgument(bundle)}` },
+      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir ${expectedQuotedShellArgument(bundle)}` },
       "an existing local bundle must expose only the actionable add command",
     );
     parseJson(
