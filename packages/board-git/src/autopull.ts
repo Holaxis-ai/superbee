@@ -319,9 +319,9 @@ export async function maybeAutoPull(
 
     // STALE path only (at most once per window per clone): the candidate was an FS-signature
     // guess — verify with real git before any state write or network op that (a) the candidate
-    // IS the conventional board of ITS OWN enclosing repo (a submodule or an unrelated linked
-    // worktree squatting at the name fails here), and (b) it is genuinely provisioned (the
-    // exact active board path proven by the shared topology resolver).
+    // IS the active board of ITS OWN enclosing repo (a submodule, unrelated linked worktree, or
+    // unproven standalone checkout fails here), and (b) it is genuinely provisioned (the exact
+    // active board path is proven by the shared topology resolver).
     const gitTop = repoTopLevel(candidate.top);
     const activeBoardPath = gitTop ? resolveProvisionedBoardPath(gitTop) : null;
     if (!activeBoardPath || realOrSame(activeBoardPath) !== realOrSame(boardPath)) {

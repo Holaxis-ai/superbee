@@ -615,6 +615,10 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
   try {
     git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, directA]);
     git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, directB]);
+    // Standalone authority must not depend on the clone's ambient fetch refspec continuing to
+    // cover board. Provisioning probes/fetches the exact remote ref and transports the prior
+    // cached baseline so receipts remain truthful even under this narrowed configuration.
+    git(directB, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
 
     const clean = await runSync(homes[0]!, ["--dir", directA]);
     assert.equal(clean.err, undefined, clean.err?.message);
@@ -680,6 +684,41 @@ test("sync: standalone checkout without a cached origin ref still reports the do
     assert.match(received.out, /notes\/fetched-without-cache/);
     assert.match(received.out, /claude-tag/);
     assert.equal(existsSync(path.join(reader, "notes", "fetched-without-cache.md")), true);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("sync: standalone checkout cannot recreate a deleted remote board from a stale excluded tracking ref", async () => {
+  const topo = await makeTwoCloneTopology();
+  const { homes, cleanup } = await tempHomes(1);
+  const direct = path.join(topo.dir, "root-stale-excluded-ref");
+  try {
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, direct]);
+    const localHead = git(direct, ["rev-parse", "HEAD"]).trim();
+    git(direct, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+    git(topo.origin, ["update-ref", "-d", `refs/heads/${BOARD_BRANCH}`]);
+    assert.equal(
+      gitTry(direct, ["show-ref", "--verify", `refs/remotes/origin/${BOARD_BRANCH}`]).status,
+      0,
+      "the standalone clone begins with a stale cached tracking ref excluded by its fetch refspec",
+    );
+
+    await cliDocWrite(direct, "notes/remains-private", [
+      "--type", "Note", "--title", "Remains private", "--body", "# Never republish implicitly\n", "--actor", "codex",
+    ]);
+    const refused = await runSync(homes[0]!, ["--dir", direct]);
+    assert.equal(refused.err?.code, "NO_UPSTREAM");
+    assert.match(refused.err?.message ?? "", /bare sync will not.*create origin\/board/);
+    assert.equal(git(direct, ["rev-parse", "HEAD"]).trim(), localHead, "refusal occurs before committing local work");
+    assert.notEqual(
+      gitTry(topo.origin, ["show-ref", "--verify", `refs/heads/${BOARD_BRANCH}`]).status,
+      0,
+      "ordinary sync must not recreate the deleted remote board",
+    );
+    assert.equal(existsSync(path.join(direct, "notes", "remains-private.md")), true);
+    assert.equal(existsSync(path.join(direct, BUNDLE_DIR)), false, "refusal never creates a nested worktree");
   } finally {
     await cleanup();
     await topo.cleanup();

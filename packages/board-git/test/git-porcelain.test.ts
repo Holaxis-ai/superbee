@@ -425,6 +425,31 @@ test("provision: standalone root checkout of tracked origin/board is the board w
   }
 });
 
+test("provision: live remote absence invalidates a standalone root's stale excluded tracking ref", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    const root = path.join(topo.dir, "standalone-stale-ref");
+    git(topo.dir, ["clone", "--no-local", "--branch", BOARD_BRANCH, topo.origin, root]);
+    const localHead = git(root, ["rev-parse", "HEAD"]).trim();
+    git(root, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+    git(topo.origin, ["update-ref", "-d", `refs/heads/${BOARD_BRANCH}`]);
+
+    assert.deepEqual(provisionBoardWorktree(root, { allowLocalBranch: false }), {
+      kind: "local_board",
+      boardPath: root,
+      remoteExists: false,
+    });
+    assert.equal(git(root, ["rev-parse", "HEAD"]).trim(), localHead);
+    assert.notEqual(
+      gitTry(root, ["show-ref", "--verify", `refs/remotes/origin/${BOARD_BRANCH}`]).status,
+      0,
+      "a definitely absent remote branch clears the stale cache instead of authorizing publication",
+    );
+  } finally {
+    await topo.cleanup();
+  }
+});
+
 test("provision: root OKF bundle on a non-board branch is refused without creating a nested checkout", async () => {
   const topo = await makeTwoCloneTopology({ provision: false });
   try {

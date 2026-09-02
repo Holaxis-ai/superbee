@@ -642,8 +642,9 @@ export type ProvisionOutcome =
   | { kind: "repaired"; boardPath: string; gitignore?: GitignoreUpdate }
   /**
    * Already provisioned (or a proven standalone board checkout) — idempotent success.
-   * `originBaseline` is present only when standalone recognition had to fetch an uncached remote
-   * ref; it preserves the pre-fetch receipt boundary for the command layer.
+   * `originBaseline` is present when standalone recognition had to fetch the exact remote ref and
+   * that fetch created or advanced the cached ref; it preserves the pre-fetch receipt boundary for
+   * the command layer.
    */
   | { kind: "already"; boardPath: string; gitignore?: GitignoreUpdate; originBaseline?: string }
   /** `dir` is not inside a git repository at all — the caller emits `sync: nothing to sync`. */
@@ -961,16 +962,14 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   const rootCheckout = rootBranch === BOARD_BRANCH
     ? resolveStandaloneBoardCheckout(top, { requireRemoteRef: false })
     : null;
-  // Match the steady-state linked-worktree fast path: a clone of `board` already carries this
-  // explicit remote-tracking ref.  Returning before a network fetch preserves the sync command's
-  // pre-fetch baseline, so a later pull can report the exact incoming documents instead of
-  // silently advancing the tracking ref during provisioning.
-  if (
-    rootCheckout !== null &&
-    rootOriginBefore?.status === 0
-  ) {
-    return { kind: "already", boardPath: top };
-  }
+  // Preserve a proven cached baseline before the exact live probe below. Standalone recognition
+  // cannot take the conventional early-return path: the clone's configured fetch refspec may no
+  // longer cover `board`, so a stale tracking ref could otherwise authorize an ordinary sync to
+  // recreate a remotely deleted branch. The live probe/fetch below closes that boundary while
+  // this value keeps incoming receipts truthful when the remote merely advanced.
+  const rootCachedBaseline = rootCheckout !== null && rootOriginBefore?.status === 0
+    ? rootOriginBefore.stdout.trim()
+    : null;
   const bundleDir = bundleDirNameForProject(top);
   const boardPath = path.join(top, bundleDir);
   const withIgnoreCoverage = <T extends { boardPath: string }>(outcome: T): T & { gitignore?: GitignoreUpdate } => {
@@ -1049,11 +1048,15 @@ export function provisionBoardWorktree(dir: string, budget: NetworkBudgetOptions
   // establishment refusal. When this run created the first cached remote ref, carry the proven
   // merge-base forward so the receipt can still describe what arrived during this fetch.
   if (rootIsBundle && rootBranch === BOARD_BRANCH) {
-    const originBaseline = hasRemote && resolveStandaloneBoardCheckout(top) !== null
-      ? standaloneHistoryBase(top)
-      : null;
-    if (originBaseline !== null) {
-      return rootOriginBefore?.status === 0
+    const standaloneCheckout = hasRemote ? resolveStandaloneBoardCheckout(top) : null;
+    if (standaloneCheckout !== null) {
+      const fetchedOrigin = remoteBoard.stdout.trim();
+      const originBaseline = rootCachedBaseline !== null && rootCachedBaseline !== fetchedOrigin
+        ? rootCachedBaseline
+        : rootOriginBefore?.status === 0
+          ? null
+          : standaloneHistoryBase(top);
+      return originBaseline === null
         ? { kind: "already", boardPath: top }
         : { kind: "already", boardPath: top, originBaseline };
     }
