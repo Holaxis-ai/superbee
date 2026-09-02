@@ -147,8 +147,9 @@ function matchesPreviewSlice(candidate: string, preview: string): boolean {
  * treat as a paste, if any. EVERY occurrence is checked, not just the first, so a foreign preview
  * appended after a legitimately stored notice is still recognized. A notice is excused only when
  * BOTH hold: the candidate CONTAINS the whole stored body, trailing whitespace aside — an append, a
- * prepend, or a wrap, so nothing stored can be lost — AND the stored body already carries that exact
- * sentence. On any other candidate every notice counts, which is the pre-excusal behavior.
+ * prepend, or a wrap, so nothing stored beyond that whitespace can be lost — AND the stored body
+ * already carries that exact sentence. On any other candidate every notice counts, which is the
+ * pre-excusal behavior.
  */
 function firstForeignNotice(storedBody: string, nextBody: string): string | undefined {
   const preservesStoredBody = nextBody.includes(storedBody.trimEnd());
@@ -183,10 +184,12 @@ function firstForeignNotice(storedBody: string, nextBody: string): string | unde
  * once with the override) patchable by every later field-only update.
  *
  * Clause 1 excuses exactly one shape: a candidate that CONTAINS the whole stored body (trailing
- * whitespace aside) — an append, a prepend, or a wrap. Nothing stored can be lost by such a write, so
- * a notice the stored body already carries verbatim is that notice travelling along, not a new
- * paste — see {@link firstForeignNotice}. The guarantee is therefore "no stored byte is lost", not
- * "no preview is ever persisted": a foreign preview appended to such a document is permitted.
+ * whitespace aside) — an append, a prepend, or a wrap. Nothing stored beyond that trailing whitespace
+ * can be lost by such a write, so a notice the stored body already carries verbatim is that notice
+ * travelling along, not a new paste — see {@link firstForeignNotice}. The guarantee is therefore "no
+ * stored byte beyond trailing whitespace is lost", not "no preview is ever persisted": a foreign
+ * preview appended to such a document is permitted. Containment is byte-exact: a candidate that
+ * differs from the stored body only in line endings or unicode normalization is not excused.
  * That is what keeps a document written once with the override (its stored body legitimately holds
  * the generated sentence) open to `link add`, which has no override flag of its own. A candidate that
  * drops or rewrites any stored byte gets no such excuse: every notice it carries is treated as a
@@ -218,10 +221,20 @@ export function guardTruncatedBodyPreview(
 
   const inv = cliInvocation();
   const help = `${inv} doc read ${commandToken(existing.id)} --body-out <path-outside-bundle>`;
+  // A stored body that already carries the generated sentence (written once with the override) is
+  // excused only for a candidate that contains it whole; any other rewrite is refused again no
+  // matter how faithfully the read/edit/write-back recovery is followed. Say so, rather than send
+  // the caller round that loop until they reach for the override by reflex.
+  const storedCarriesNotice = BODY_PREVIEW_TRUNCATION_SIGNATURE.test(existing.body);
   const recovery =
     `Read the COMPLETE body first — '${help} --json' (its receipt carries the version), edit that ` +
     `file, then '${inv} doc update ${commandToken(existing.id)} --body-file <path-outside-bundle> ` +
-    `--expected-version <version>'. Pass --accept-truncated-body to write this body deliberately.`;
+    `--expected-version <version>'. Pass --accept-truncated-body to write this body deliberately.` +
+    (storedCarriesNotice
+      ? ` This document's stored body already carries the generated sentence, so a rewrite that does ` +
+        `not keep the whole stored body is refused every time: append to it instead, or pass ` +
+        `--accept-truncated-body deliberately for this document.`
+      : "");
 
   const notice = firstForeignNotice(existing.body, nextBody);
   if (notice !== undefined) {

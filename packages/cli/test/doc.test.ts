@@ -3221,12 +3221,15 @@ test("truncated-preview guard: a stored notice excuses NOTHING but an append —
     assert.equal(await storedBody(dir, "docs/a"), stored, "the refusal wrote nothing");
 
     // A mid-body rewrite that keeps the sentence is not an append either: the pre-excusal posture
-    // (the override, each time) still applies to it.
+    // (the override, each time) still applies to it — and the refusal SAYS so, because following its
+    // ordinary read/edit/write-back recovery would reproduce the same refusal forever.
     await assert.rejects(
       () => runDoc(["update", "docs/a", "--body", stored.replace("MORE PROSE.", "LESS PROSE."), "--dir", dir]),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.details?.reason, "preview_marker");
+        assert.match(err.message, /already carries the generated sentence/);
+        assert.match(err.message, /append to it instead/);
         return true;
       },
     );

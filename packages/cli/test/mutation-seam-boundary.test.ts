@@ -5,7 +5,8 @@
  * migration retired — bypasses them. Every such bypass must be listed here with the reason it cannot
  * lose a body byte; a new one fails this test until it is either routed through `mutateDoc` or
  * recorded with its own reason. Same shape as the quoting checker's UNSCANNABLE map: explicit, one
- * reason per entry, growth fails. A text tripwire cannot see an aliased import; that is its limit.
+ * reason per entry, growth fails. A text tripwire cannot see an aliased import or an indirect
+ * reference to the backend; that is its limit.
  */
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -36,8 +37,11 @@ function typeScriptFiles(dir: string): string[] {
     .sort();
 }
 
-/** Core's direct document-write entry points: the mutation service and the unconditional writers. */
-const DIRECT_WRITE_CALL = /\b(mutateDocument|writeDoc|writeDocVersioned|writeDocVersionedForEdition)\s*\(/;
+/**
+ * Core's direct document-write entry points — the mutation service, the unconditional writers, and
+ * the raw backend seam that needs no import at all (`backend` is a public field on `Bundle`).
+ */
+const DIRECT_WRITE_CALL = /\b(mutateDocument|writeDoc|writeDocVersioned|writeDocVersionedForEdition)\s*\(|\bbackend\.write\s*\(/;
 
 test("every CLI writer reaches core's document store through mutateDoc, or is a recorded body-preserving exemption", () => {
   const direct = typeScriptFiles(SRC).filter((file) => DIRECT_WRITE_CALL.test(readFileSync(join(SRC, file), "utf8")));
