@@ -65,6 +65,9 @@ export function renderNpm(): string {
   lines.push("");
   lines.push("- Operate only on the bundle resolved from the current project or one the user explicitly selects.");
   lines.push("  A catalog entry is available for selection; it is not ambient project context.");
+  lines.push("- Treat repository, host, and assigned-role instructions as narrower authority than this generic skill.");
+  lines.push("  If they forbid shared-state mutation, do not run `sync`, `init`, or `sync --establish`; defer the");
+  lines.push("  setup or publication step to the authorized orchestrator.");
   lines.push("- If no bundle resolves, determine whether this repository already shares a board and clarify the");
   lines.push("  intended purpose, privacy, participants, and sharing boundary before creating anything.");
   lines.push("  `superbee sync` joins an existing shared board; `superbee init --create-only --dir .superbee` is");

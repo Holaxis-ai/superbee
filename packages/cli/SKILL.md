@@ -46,6 +46,9 @@ becoming a second source of truth. Add only the layer justified by current evide
 
 - Operate only on the bundle resolved from the current project or one the user explicitly selects.
   A catalog entry is available for selection; it is not ambient project context.
+- Treat repository, host, and assigned-role instructions as narrower authority than this generic skill.
+  If they forbid shared-state mutation, do not run `sync`, `init`, or `sync --establish`; defer the
+  setup or publication step to the authorized orchestrator.
 - If no bundle resolves, determine whether this repository already shares a board and clarify the
   intended purpose, privacy, participants, and sharing boundary before creating anything.
   `superbee sync` joins an existing shared board; `superbee init --create-only --dir .superbee` is
