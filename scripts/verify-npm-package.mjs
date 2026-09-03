@@ -54,11 +54,12 @@ const baseExpectedFiles = [
   ...publicationExpectedFiles,
 ];
 
-/** Independently project the native shell argument form the installed CLI must advertise. */
-function expectedShellArgument(value) {
-  if (process.platform === "win32") {
-    const normalized = value.replaceAll("\\", "/");
-    return /^[A-Za-z0-9_@%+=:,./-]+$/.test(normalized) ? normalized : `"${normalized}"`;
+/** Independently project the always-quoted native shell argument the installed CLI must advertise. */
+export function expectedQuotedShellArgument(value, platform = process.platform) {
+  if (platform === "win32") {
+    // Preserve native path bytes. A terminal backslash run must be doubled so it cannot escape the
+    // closing quote under the Windows CRT argv rule.
+    return `"${value.replace(/(\\+)$/, "$1$1")}"`;
   }
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
@@ -445,6 +446,26 @@ export async function fileSha256(file) {
   return `sha256:${createHash("sha256").update(await readFile(file)).digest("hex")}`;
 }
 
+async function writeOfflineRecipe(root, version, withDetail = false) {
+  await mkdir(path.join(root, "conventions"), { recursive: true });
+  await Promise.all([
+    writeFile(
+      path.join(root, "recipe.md"),
+      `---\ntype: Recipe\nid: offline-proof\ntitle: Offline proof\nversion: "${version}"\nsummary: A definitions-only external recipe used by the installed-package gate.\ncontent_policy: definitions-only\n---\n# Offline proof\n`,
+      "utf8",
+    ),
+    writeFile(
+      path.join(root, "conventions", "offline-record.md"),
+      "---\ntype: Convention\ntitle: Offline Record\ngoverns: Offline Record\npath: offline-records/\n" +
+        "description: A record whose lifecycle is proven without private tooling.\nfields:\n" +
+        "  required: [title]\n" +
+        `  optional: [${withDetail ? "detail" : ""}]\n` +
+        "sections: [Evidence]\n---\n# Offline Record\n",
+      "utf8",
+    ),
+  ]);
+}
+
 /**
  * Two producers, ONE proof. `spec.produce({ scratch, packDir, npmUserConfig, npmCache })` returns
  * `{ tarball, meta }`: either builds+packs a fresh scratch candidate (developer/PR modes) OR
@@ -491,6 +512,13 @@ async function runInstalledProof(spec) {
       process.platform === "win32"
         ? path.join(prefix, "node_modules", ...target.package.directory)
         : path.join(prefix, "lib", "node_modules", ...target.package.directory);
+    for (const privatePackage of ["recipe-studio", "docs-tooling", "docs-projection", "portal-docs"]) {
+      await assert.rejects(
+        stat(path.join(path.dirname(installedRoot), "@superbee", privatePackage)),
+        /ENOENT/,
+        `the installed public proof must run without private @superbee/${privatePackage}`,
+      );
+    }
     const manifest = parseJson(await readFile(path.join(installedRoot, "package.json"), "utf8"), "installed package.json");
     const installedReadme = await readFile(path.join(installedRoot, "README.md"), "utf8");
     assertPackageReadmeMetadata(manifest, installedReadme);
@@ -657,7 +685,7 @@ async function runInstalledProof(spec) {
     }
 
     const discoverySnapshot = await snapshotTree(quickstartProject);
-    const conventionalDirArgument = expectedShellArgument(".superbee");
+    const conventionalDirArgument = expectedQuotedShellArgument(".superbee");
     const noBundleHome = parseJson(
       (await runCli(target.preferred_command, ["--json"], { cwd: quickstartProject })).stdout,
       `${target.preferred_command} home --json outside a bundle`,
@@ -844,7 +872,7 @@ async function runInstalledProof(spec) {
     );
     assert.deepEqual(
       appliedRecipes.recipes.find((recipe) => recipe.name === "work-tracking")?.commands,
-      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir ${expectedShellArgument(bundle)}` },
+      { add_to_bundle: `${target.preferred_command} recipe add work-tracking --dir ${expectedQuotedShellArgument(bundle)}` },
       "an existing local bundle must expose only the actionable add command",
     );
     parseJson(
@@ -936,6 +964,106 @@ async function runInstalledProof(spec) {
       "default Task history",
     );
     assert.ok(taskHistory.versions[0].actor, "local history must expose its backend principal");
+
+    // Public recipe operation must remain complete with every private solution package absent.
+    // The proof authors a plain definitions-only recipe outside the installed package, installs
+    // it through the public CLI, observes non-destructive source drift, applies the exact safe
+    // evolution plan, and then uses the evolved Kind through ordinary document commands.
+    const externalRecipe = path.join(scratch, "external-offline-recipe");
+    await writeOfflineRecipe(externalRecipe, "1.0.0");
+    const externalAdded = parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "recipe", "add", externalRecipe, "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "external recipe add",
+    );
+    assert.equal(externalAdded.recipe, "added");
+    assert.equal(externalAdded.changed, true);
+    assert.equal(externalAdded.id, "offline-proof");
+    parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "new", "Offline Record", "first", "--title", "Offline proof record",
+          "--actor", "package-proof", "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "external recipe instance create",
+    );
+
+    await writeOfflineRecipe(externalRecipe, "2.0.0", true);
+    const drift = parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "recipe", "add", externalRecipe, "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "external recipe drift",
+    );
+    assert.equal(drift.recipe, "source differs");
+    assert.equal(drift.changed, false, "recipe add must never overwrite a drifted installed definition");
+    assert.equal(drift.counts.source_differs, 1);
+    assert.match(String(drift.commands.plan_evolution), /recipe evolve/);
+
+    const evolutionPlan = parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "recipe", "evolve", externalRecipe, "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "external recipe evolution plan",
+    );
+    assert.equal(evolutionPlan.ready, true);
+    assert.equal(evolutionPlan.changed, true);
+    assert.equal(evolutionPlan.counts.updates, 1);
+    assert.equal(evolutionPlan.counts.instances_checked, 1);
+    assert.match(String(evolutionPlan.plan_token), /^sha256:[0-9a-f]{64}$/);
+
+    const evolved = parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "recipe", "evolve", externalRecipe, "--apply", String(evolutionPlan.plan_token),
+          "--actor", "package-proof", "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "external recipe evolution apply",
+    );
+    assert.equal(evolved.recipe, "evolved");
+    assert.equal(evolved.changed, true);
+    assert.equal(evolved.counts.updated, 1);
+
+    const settledEvolution = parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "recipe", "evolve", externalRecipe, "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "external recipe settled evolution",
+    );
+    assert.equal(settledEvolution.ready, true);
+    assert.equal(settledEvolution.changed, false);
+    assert.equal(settledEvolution.counts.unchanged, 1);
+
+    parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "doc", "update", "offline-records/first", "--detail", "Evolved offline",
+          "--actor", "package-proof", "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "evolved external recipe instance update",
+    );
+    const offlineRecord = parseJson(
+      (
+        await runCli(target.preferred_command, [
+          "doc", "read", "offline-records/first", "--dir", bundle, "--json",
+        ])
+      ).stdout,
+      "evolved external recipe instance read",
+    );
+    assert.equal(offlineRecord.detail, "Evolved offline");
+
     // The old edition remains an explicit compatibility path, and reopening it through ordinary
     // init must preserve its declared edition and installed definitions byte for byte.
     const legacyBundle = path.join(scratch, "explicit-legacy-bundle");
@@ -1273,6 +1401,7 @@ async function runInstalledProof(spec) {
       workflow: [
         "quickstart: home -> recipes -> current-format init -> attributed Task create/update -> query/home/status/history",
         "recipes",
+        "external recipe add/drift/evolve",
         "init --create-only",
         "new",
         "doc update",

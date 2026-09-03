@@ -18,8 +18,6 @@ import {
   DOC_WRITE_USAGE,
   type DocCliDeps,
   defaultReadStdin,
-  guardDroppedLinks,
-  guardTruncatedBodyPreview,
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
@@ -134,7 +132,8 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   // `--replace-links` narrows the LINK-DROP guard's own decision ("I accept dropping MY OWN read's
   // links") — it no longer disables the CAS coupling itself (decision: `mutateDoc`'s "overwrite" mode
   // is UNCONDITIONALLY coupled now; see mutate.ts). A full unconditional write is no longer a posture
-  // this verb has access to.
+  // this verb has access to. Both flags are handed to `mutateDoc` as this verb's body-replace
+  // posture; the guards themselves are the seam's to enforce.
   const replaceLinks = Boolean(values["replace-links"]);
   const acceptTruncatedBody = Boolean(values["accept-truncated-body"]);
 
@@ -153,14 +152,13 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
 
   // "overwrite" mode: `mutateDoc` re-reads the CURRENT doc (present or absent) immediately before
   // EACH write attempt and hands it to `buildCandidate` as `fresh` — so every read-dependent decision
-  // below (schema-loss refusal, F1 body-blank refusal, link-drop guard, dropped-fields) evaluates
-  // against a version-matched snapshot on EVERY attempt, never a stale read from before a concurrent
-  // writer's change. These guards must not ride a single upfront peek taken before `mutateDoc`
-  // runs, because a Convention
-  // created concurrently between that peek and the write, or a competing writer filling/racing the
-  // body, could slip past a guard that decided from stale bytes). `--replace-links` still means "I
-  // accept dropping MY OWN read's links" — it disables ONLY `guardDroppedLinks`'s own check below,
-  // never the CAS coupling itself.
+  // below (schema-loss refusal, F1 body-blank refusal, dropped-fields) and the seam's own body-replace
+  // guards evaluate against a version-matched snapshot on EVERY attempt, never a stale read from
+  // before a concurrent writer's change. These guards must not ride a single upfront peek taken
+  // before `mutateDoc` runs, because a Convention created concurrently between that peek and the
+  // write, or a competing writer filling/racing the body, could slip past a guard that decided from
+  // stale bytes. `--replace-links` still means "I accept dropping MY OWN read's links" — it narrows
+  // ONLY the link-drop guard, never the CAS coupling itself.
   if (route) await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
     bundle,
@@ -173,6 +171,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     actor,
     persistActor: true,
     compareTimestamp: values.timestamp !== undefined,
+    bodyReplace: { acceptTruncatedBody, replaceLinks },
     // Board self-attribution (PR C): fires only after a substantive persisted write — never a
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
@@ -213,22 +212,6 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           },
         );
       }
-
-      // Truncated-preview guard (data loss): a full-body replace over an existing doc must not
-      // persist a `doc read` body PREVIEW as though it were the whole body — see
-      // `guardTruncatedBodyPreview`'s own comment for the two identities it keys on.
-      // `--accept-truncated-body` opts in. Ordered BEFORE the link-drop guard because a preview body
-      // also drops links: diagnosing it as a link problem would send the caller to --replace-links,
-      // which authorizes the truncation it was supposed to catch. That ordering only helps WHEN THIS
-      // GUARD FIRES — a near-preview body matching neither identity (say, the preview slice plus one
-      // character) is still only the link guard's concern, and --replace-links authorizes its drop
-      // exactly as it always has.
-      if (fresh) guardTruncatedBodyPreview(fresh, body, acceptTruncatedBody);
-
-      // Link-drop guard (data loss): a full-body replace over an existing doc must not silently drop
-      // outbound cross-links the old body carried — see `guardDroppedLinks`'s own comment for the
-      // exact match rule and why a normal read-modify-write never fires it. `--replace-links` opts in.
-      if (fresh) guardDroppedLinks(bundle, fresh, body, replaceLinks);
 
       // Dropped-frontmatter warning (cold-start study r3): `doc write` replaces the WHOLE document, so
       // an overwrite (e.g. re-running the "same" write, expecting idempotency) silently REGRESSES

@@ -51,14 +51,14 @@
 //     (provisioning stays sync/session-start's job).
 //   • DETECTION IS CHEAP, not just correct: the check runs on EVERY non-triggering
 //     read, so its cost is the tax everyone pays): checks are ordered cheapest-first.
-//     (1) An FS-ONLY pre-gate ({@link findBoardCandidate}: the `.git`-FILE linked-worktree
-//     signature walk — the same structural signal engine.ts's board-interior retarget walk
-//     keys on) locates a provisioned-LOOKING board checkout with ZERO process spawns, so a
+//     (1) An FS-ONLY pre-gate ({@link findBoardCandidate}: either the `.git`-FILE linked-worktree
+//     signature or a standalone root whose `.git/HEAD` names `board`) locates a
+//     provisioned-LOOKING board checkout with ZERO process spawns, so a
 //     non-repo dir, a plain bundle, and an unprovisioned checkout all exit spawn-free.
 //     (2) The bundle-scope check is fs-only too. (3) The state file is read next, so a FRESH
 //     cache proves itself with exactly ONE spawn (`remote get-url` — the state key's remote
 //     component). (4) Only the STALE path — reached at most once per staleness window per clone,
-//     thanks to the attempt throttle — pays the full spawn-level `isProvisioned` verification
+//     thanks to the attempt throttle — pays the full spawn-level active-board-path verification
 //     (which is what tells a genuine board worktree apart from a submodule or an unrelated
 //     worktree that merely shares the `.git`-file signature) before the network pull.
 //   • ONE code path for the state writes: {@link pullBoardAndRecord} below IS session-start's
@@ -70,15 +70,16 @@
 //     lives inside a board-sharing repo must not spend network on the board. `home` (which always
 //     renders the board block) passes {@link AutoPullOptions.requireBoardBundle} = false.
 import path from "node:path";
-import { realpathSync, statSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 
 import {
+  BOARD_BRANCH,
   BUNDLE_DIRS,
   countUncommitted,
   currentHead,
   ffPull,
-  isProvisioned,
   repoTopLevel,
+  resolveProvisionedBoardPath,
   unpushedCount,
   type NetworkBudgetOptions,
 } from "./porcelain.js";
@@ -118,15 +119,27 @@ function hasGitFileSignature(p: string): boolean {
   }
 }
 
+/** Zero-spawn signature for a standalone root currently attached to the board branch. */
+function hasStandaloneBoardSignature(p: string): boolean {
+  try {
+    if (!statSync(path.join(p, ".git")).isDirectory()) return false;
+    if (!statSync(path.join(p, "index.md")).isFile()) return false;
+    return readFileSync(path.join(p, ".git", "HEAD"), "utf8").trim() === `ref: refs/heads/${BOARD_BRANCH}`;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The FS-ONLY pre-gate (module header, "detection is cheap"): walk up from `start` looking for a
- * provisioned-LOOKING board checkout — either an ancestor with a recognized bundle name carrying the
- * `.git`-FILE signature (the caller may stand inside the board worktree, so this retarget is
- * resolved without a spawn), or an ancestor directory whose
- * recognized child whose `.git` is a file (the conventional project-top shape). ZERO process spawns.
+ * provisioned-LOOKING board checkout — either a standalone root whose `.git/HEAD` names `board`,
+ * an ancestor with a recognized bundle name carrying the `.git`-FILE signature (the caller may
+ * stand inside the board worktree, so this retarget is resolved without a spawn), or an ancestor
+ * directory whose recognized child has a `.git` file (the conventional project-top shape). ZERO
+ * process spawns.
  * A hit is a CANDIDATE only — a
  * submodule or an unrelated linked worktree shares this signature — so the STALE path re-verifies
- * with the real spawn-level `isProvisioned` before any state write or network op; the fresh-cache
+ * with the real spawn-level active-board resolver before any state write or network op; the fresh-cache
  * and non-board paths never need the distinction (a false candidate keys a state file that no
  * pull step ever writes, so its cache is always absent and the stale path's verification refuses
  * it before anything observable happens).
@@ -134,6 +147,7 @@ function hasGitFileSignature(p: string): boolean {
 export function findBoardCandidate(start: string): { top: string; boardPath: string } | null {
   let cur = path.resolve(start);
   for (;;) {
+    if (hasStandaloneBoardSignature(cur)) return { top: cur, boardPath: cur };
     if (BUNDLE_DIRS.includes(path.basename(cur) as (typeof BUNDLE_DIRS)[number]) && hasGitFileSignature(cur)) {
       return { top: path.dirname(cur), boardPath: cur };
     }
@@ -305,15 +319,12 @@ export async function maybeAutoPull(
 
     // STALE path only (at most once per window per clone): the candidate was an FS-signature
     // guess — verify with real git before any state write or network op that (a) the candidate
-    // IS the conventional board of ITS OWN enclosing repo (a submodule or an unrelated linked
-    // worktree squatting at the name fails here), and (b) it is genuinely provisioned (the
-    // `board` branch checked out — sync.ts/git.ts's own gate).
+    // IS the active board of ITS OWN enclosing repo (a submodule, unrelated linked worktree, or
+    // unproven standalone checkout fails here), and (b) it is genuinely provisioned (the exact
+    // active board path is proven by the shared topology resolver).
     const gitTop = repoTopLevel(candidate.top);
-    if (
-      !gitTop ||
-      realOrSame(path.join(gitTop, path.basename(boardPath))) !== realOrSame(boardPath) ||
-      !isProvisioned(gitTop)
-    ) {
+    const activeBoardPath = gitTop ? resolveProvisionedBoardPath(gitTop) : null;
+    if (!activeBoardPath || realOrSame(activeBoardPath) !== realOrSame(boardPath)) {
       return "no-board";
     }
 

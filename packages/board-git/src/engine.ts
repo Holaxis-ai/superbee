@@ -15,6 +15,7 @@ import {
   bundleDirNameForProject,
   abortStaleRebase,
   detectStaleRebase,
+  isRecoverableStandaloneBoardCheckout,
   repoTopLevel,
   runGit,
   type DocChange,
@@ -97,10 +98,11 @@ export function retargetBoardInterior(dir: string): string {
  * Sync's step-0 entry self-heal runs before `provisionBoardWorktree`:
  * `isProvisioned` requires the `board` branch checked out, but a REBASE detaches HEAD, so a
  * genuinely-provisioned-but-wedged worktree would misclassify as a stray directory and the refusal
- * would fire before the heal ever ran. The probe touches ONLY a candidate that is (a) its OWN
- * worktree root (`repoTopLevel` resolves back to itself — never a plain subdirectory of the
- * enclosing repo, whose shared git dir an abort would destroy) and (b) a LINKED worktree (a
- * standalone nested repo at the bundle path must never be healed). Best-effort otherwise: any
+ * would fire before the heal ever ran. The probe touches ONLY a candidate proven as either (a) a
+ * standalone root checkout with the exact branch/upstream/index/history authority contract, or
+ * (b) its OWN linked-worktree root (`repoTopLevel` resolves back to itself — never a plain
+ * subdirectory of the enclosing repo, whose shared git dir an abort would destroy). A standalone
+ * nested repo at the conventional bundle path must never be healed. Best-effort otherwise: any
  * other failure is swallowed — a genuine problem resurfaces, classified, from
  * `provisionBoardWorktree` right after.
  */
@@ -108,6 +110,10 @@ export function healStaleRebaseBeforeProvisioning(dir: string): void {
   try {
     const top = repoTopLevel(dir);
     if (!top) return;
+    if (isRecoverableStandaloneBoardCheckout(top)) {
+      abortStaleRebase(top);
+      return;
+    }
     const candidateBoardPath = path.join(top, bundleDirNameForProject(top));
     if (!existsSync(candidateBoardPath)) return;
     const boardTop = repoTopLevel(candidateBoardPath);

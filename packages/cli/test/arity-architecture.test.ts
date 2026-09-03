@@ -105,7 +105,7 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
       .sort(),
     [
       "bundleLocate", "catalogAdd", "catalogList", "catalogResolve", "hookInstall", "hookStatus",
-      "hookUninstall", "indexGenerate", "kindFieldAdd", "kindFieldRemove", "setup",
+      "hookUninstall", "indexGenerate", "kindDismiss", "kindDraft", "kindFieldAdd", "kindFieldRemove", "setup",
       "setupHardenState", "setupMigrateState", "setupQuarantineState", "skillInstall", "skillPath", "skillStatus", "skillUninstall", "viewList",
     ],
   );

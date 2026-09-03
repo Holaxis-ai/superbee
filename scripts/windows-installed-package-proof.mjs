@@ -9,6 +9,8 @@ import { pathToFileURL } from "node:url";
 const execFileAsync = promisify(execFile);
 const entrypoint = process.env.SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT;
 const prefix = process.env.SUPERBEE_WINDOWS_INSTALLED_PREFIX;
+const COMMAND_TIMEOUT_MS = 45_000;
+const SCENARIO_SLOW_MS = 120_000;
 
 assert.equal(process.platform, "win32", "this proof must execute on the native Windows runner");
 assert.ok(entrypoint, "SUPERBEE_WINDOWS_INSTALLED_ENTRYPOINT is required");
@@ -37,7 +39,37 @@ async function run(file, args, options = {}) {
     encoding: "utf8",
     maxBuffer: 16 * 1024 * 1024,
     windowsHide: true,
+    timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
+    killSignal: "SIGKILL",
   });
+}
+
+async function runScenario(name, operation) {
+  const startedAt = Date.now();
+  process.stderr.write(`WINDOWS_PROOF_START ${name}\n`);
+  const slowTimer = setTimeout(() => {
+    process.stderr.write(`WINDOWS_PROOF_SLOW ${name} ${Date.now() - startedAt}ms\n`);
+  }, SCENARIO_SLOW_MS);
+  try {
+    const result = await operation();
+    process.stderr.write(`WINDOWS_PROOF_PASS ${name} ${Date.now() - startedAt}ms\n`);
+    return result;
+  } catch (error) {
+    process.stderr.write(
+      `WINDOWS_PROOF_FAIL ${name} ${Date.now() - startedAt}ms ${String(error?.message ?? error)}\n`,
+    );
+    throw error;
+  } finally {
+    clearTimeout(slowTimer);
+  }
+}
+
+function windowsCaseAlias(value) {
+  const index = [...value].findIndex((character) => /[a-z]/iu.test(character));
+  assert.notEqual(index, -1, `Windows path has no case-varying segment: ${value}`);
+  const character = value[index];
+  const replacement = character === character.toUpperCase() ? character.toLowerCase() : character.toUpperCase();
+  return `${value.slice(0, index)}${replacement}${value.slice(index + 1)}`;
 }
 
 async function cli(args, options = {}) {
@@ -191,6 +223,188 @@ void probe().catch((error) => {
   await assert.rejects(readFile(uiUrl, "utf8"), /ENOENT/, "clean shutdown must clear the ui-url pointer");
 }
 
+async function renderManagedDocumentInChromium(url, expectedTitle) {
+  const driverRoot = process.env.CHROMEWEBDRIVER;
+  assert.ok(driverRoot, "the native Windows proof requires GitHub's matched ChromeDriver");
+  const driver = path.join(driverRoot, "chromedriver.exe");
+  await access(driver);
+  const profile = path.join(scratch, "managed-chromium-profile");
+  await mkdir(profile, { recursive: true });
+  const driverPort = 9515;
+  const driverProcess = spawn(driver, [`--port=${driverPort}`, "--allowed-ips="], {
+    cwd: scratch,
+    env: commandEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  let driverOutput = "";
+  driverProcess.stdout.setEncoding("utf8").on("data", (chunk) => { driverOutput += chunk; });
+  driverProcess.stderr.setEncoding("utf8").on("data", (chunk) => { driverOutput += chunk; });
+  const driverExit = new Promise((resolve) => driverProcess.once("exit", resolve));
+
+  async function webdriver(method, route, body, timeoutMs = 10_000) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${driverPort}${route}`, {
+        method,
+        headers: body === undefined ? undefined : { "content-type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const payload = await response.json();
+      assert.equal(response.ok, true, `${method} ${route} failed: ${JSON.stringify(payload)}`);
+      assert.equal(payload.value?.error, undefined, `${method} ${route} failed: ${JSON.stringify(payload)}`);
+      return payload.value;
+    } catch (error) {
+      throw new Error(`${method} ${route} failed: ${String(error?.message ?? error)}; driver: ${driverOutput}`);
+    }
+  }
+
+  let sessionId;
+  try {
+    const readyDeadline = Date.now() + 10_000;
+    let ready = false;
+    while (!ready && Date.now() < readyDeadline) {
+      try {
+        const status = await webdriver("GET", "/status");
+        ready = status.ready === true;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    }
+    assert.equal(ready, true, `ChromeDriver did not become ready: ${driverOutput}`);
+
+    const session = await webdriver("POST", "/session", {
+      capabilities: {
+        alwaysMatch: {
+          browserName: "chrome",
+          pageLoadStrategy: "eager",
+          "goog:chromeOptions": {
+            args: [
+              "--headless=new",
+              "--disable-background-networking",
+              "--disable-component-update",
+              "--disable-default-apps",
+              "--disable-gpu",
+              "--disable-extensions",
+              "--disable-sync",
+              "--metrics-recording-only",
+              "--no-default-browser-check",
+              "--no-first-run",
+              `--user-data-dir=${profile}`,
+            ],
+          },
+        },
+      },
+    }, 30_000);
+    sessionId = session.sessionId;
+    assert.ok(sessionId, `ChromeDriver did not return a session: ${JSON.stringify(session)}`);
+    await webdriver("POST", `/session/${sessionId}/url`, { url });
+
+    const renderDeadline = Date.now() + 15_000;
+    let source = "";
+    while (Date.now() < renderDeadline) {
+      source = await webdriver("GET", `/session/${sessionId}/source`);
+      if (source.includes(expectedTitle)) break;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.match(source, new RegExp(expectedTitle), "Chromium must render the exact managed document");
+  } finally {
+    if (sessionId) {
+      try {
+        await webdriver("DELETE", `/session/${sessionId}`);
+      } catch {
+        // Driver termination below remains the bounded cleanup authority.
+      }
+    }
+    driverProcess.kill();
+    await Promise.race([
+      driverExit,
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+  }
+}
+
+async function proveManagedDocumentLifecycle(bundle) {
+  // doc open -> parent exit -> exact authority reuse/isolation/convergence -> real Chrome render -> exact stop
+  const actors = ["windows-proof", "windows-proof-other", "windows-proof-concurrent"];
+  const managedEnv = { ...commandEnv, PATH: prefix };
+  const managed = (args) => cliJson(args, { env: managedEnv });
+  await cliJson([
+    "doc", "write", "docs/windows-managed-proof", "--type", "Note",
+    "--title", "Windows managed UI proof", "--body", "Managed document content", "--dir", bundle,
+  ]);
+  await cliJson([
+    "doc", "write", "docs/windows-managed-second", "--type", "Note",
+    "--title", "Windows managed UI second document", "--body", "Second managed document", "--dir", bundle,
+  ]);
+
+  let first;
+  try {
+    first = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[0],
+    ]);
+    assert.equal(first.state, "started");
+    assert.match(first.url, /^http:\/\/127\.0\.0\.1:\d+\/\?token=[\w-]+&view=doc&id=docs%2Fwindows-managed-proof$/);
+
+    const afterParentExit = await managed(["ui", "--status", "--dir", bundle]);
+    assert.equal(afterParentExit.count, 1, "the detached managed child must survive the launching parent");
+    assert.equal(afterParentExit.instances[0].phase, "adopted");
+    assert.equal(afterParentExit.instances[0].live, true);
+
+    const reused = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[0],
+    ]);
+    assert.equal(reused.state, "reused");
+    assert.equal(reused.url, first.url);
+
+    const caseAliased = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", windowsCaseAlias(bundle), "--actor", actors[0],
+    ]);
+    assert.equal(caseAliased.state, "reused", "Windows path casing must not fork an exact authority");
+    assert.equal(caseAliased.url, first.url);
+
+    const secondDocument = await managed([
+      "doc", "open", "docs/windows-managed-second", "--dir", bundle, "--actor", actors[0],
+    ]);
+    assert.equal(secondDocument.state, "reused");
+    assert.equal(new URL(secondDocument.url).origin, new URL(first.url).origin);
+    assert.notEqual(secondDocument.url, first.url);
+
+    const isolatedActor = await managed([
+      "doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[1],
+    ]);
+    assert.equal(isolatedActor.state, "started");
+    assert.notEqual(new URL(isolatedActor.url).origin, new URL(first.url).origin);
+
+    const concurrent = await Promise.all([
+      managed(["doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[2]]),
+      managed(["doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[2]]),
+    ]);
+    assert.deepEqual(concurrent.map((receipt) => receipt.state).sort(), ["reused", "started"]);
+    assert.equal(concurrent[0].url, concurrent[1].url);
+
+    const converged = await managed(["ui", "--status", "--dir", bundle]);
+    assert.equal(converged.count, 3, "three exact actor authorities must remain after concurrent convergence");
+    assert.ok(converged.instances.every((instance) => instance.phase === "adopted" && instance.live === true));
+
+    await renderManagedDocumentInChromium(first.url, "Windows managed UI proof");
+  } finally {
+    for (const actor of actors) {
+      await managed(["ui", "--stop", "--dir", bundle, "--actor", actor]);
+    }
+  }
+
+  const stopped = await managed(["ui", "--status", "--dir", bundle]);
+  assert.equal(stopped.count, 0, "exact cleanup must leave no managed Windows authority");
+  let listenerClosed = false;
+  try {
+    await fetch(first.url, { signal: AbortSignal.timeout(3000) });
+  } catch {
+    listenerClosed = true;
+  }
+  assert.equal(listenerClosed, true, "the stopped managed listener must no longer answer");
+}
+
 async function proveMcpConfigLifecycle() {
   // mcp install -> mcp status -> mcp config read-back -> mcp uninstall -> absent status
   const config = path.join(appData, "Claude", "claude_desktop_config.json");
@@ -219,10 +433,11 @@ async function proveMcpConfigLifecycle() {
 const installedPackageProofComplete = Symbol("installed-package-proof-complete");
 
 async function runInstalledPackageProof() {
-  const { bundle } = await proveCatalogLifecycle();
-  await proveLocalRemoteSync();
-  await proveUiUrlLifecycle(bundle);
-  await proveMcpConfigLifecycle();
+  const { bundle } = await runScenario("catalog-lifecycle", proveCatalogLifecycle);
+  await runScenario("local-remote-sync", proveLocalRemoteSync);
+  await runScenario("ui-url-lifecycle", () => proveUiUrlLifecycle(bundle));
+  await runScenario("managed-document-lifecycle", () => proveManagedDocumentLifecycle(bundle));
+  await runScenario("mcp-config-lifecycle", proveMcpConfigLifecycle);
   return installedPackageProofComplete;
 }
 
@@ -232,7 +447,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     platform: process.platform,
     artifact: "exact installed npm tarball",
-    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "mcp-config-lifecycle"],
+    scenarios: ["catalog-lifecycle", "local-remote-sync", "ui-url-lifecycle", "managed-document-lifecycle", "mcp-config-lifecycle"],
   })}\n`);
 } finally {
   await rm(scratch, { recursive: true, force: true, maxRetries: 20, retryDelay: 150 });

@@ -26,8 +26,6 @@ import {
   DOC_UPDATE_USAGE,
   type DocCliDeps,
   defaultReadStdin,
-  guardDroppedLinks,
-  guardTruncatedBodyPreview,
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
@@ -341,6 +339,10 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     actor,
     persistActor: true,
     expectedVersion: p.expectedVersion?.trim(),
+    // The body-replace guards (truncated preview, link drop) are `mutateDoc`'s to enforce; this
+    // verb only declares its opt-outs. A field-only patch leaves the body unchanged and never
+    // trips either.
+    bodyReplace: { acceptTruncatedBody: p.acceptTruncatedBody, replaceLinks: p.replaceLinks },
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
@@ -365,25 +367,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       if (p.body !== undefined) nextBody = p.body;
       else if (p.bodyFile) nextBody = await readExternalTextFile(p.bodyFile);
       else if (stdinBody !== undefined) nextBody = stdinBody;
-
-      // Truncated-preview guard (data loss): the body replace must not persist a `doc read` body
-      // PREVIEW as though it were the whole body — the incident this guard exists for is exactly an
-      // agent piping `doc read --json`'s truncated preview into this verb. See
-      // `guardTruncatedBodyPreview` for the two identities it keys on and why a field-only patch
-      // (nextBody === existing.body) can never fire it. `--accept-truncated-body` opts in. Ordered
-      // BEFORE the link-drop guard because a preview body also drops links: diagnosing it as a link
-      // problem would send the caller to --replace-links, authorizing the truncation instead. That
-      // ordering only helps WHEN THIS GUARD FIRES — a near-preview body that matches neither
-      // identity (say, the preview slice plus one character) is still only the link guard's concern,
-      // and --replace-links authorizes its drop exactly as it always has.
-      guardTruncatedBodyPreview(existing, nextBody, p.acceptTruncatedBody);
-
-      // Link-drop guard (data loss): a body replace must not silently drop outbound cross-links the
-      // existing body carried — see `guardDroppedLinks`'s own comment for the exact match rule and
-      // why the ordinary read-modify-write cycle never fires it. A no-op re-run of `nextBody ===
-      // existing.body` (field-only patch, or a body flag that repeats the current body) trivially
-      // clears it (no dropped links vs. itself). `--replace-links` opts into the drop.
-      guardDroppedLinks(bundle, existing, nextBody, p.replaceLinks);
 
       // Dynamic kind-field patch (Facet 2): only accepted when a kind governs the RESULT type and
       // declares the field — the ONLY dynamic-field mechanism on this surface (matches `new`'s

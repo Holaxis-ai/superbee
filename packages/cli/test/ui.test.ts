@@ -6,14 +6,16 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServer, type Server } from "node:net";
 import { EventEmitter } from "node:events";
-import type { ChildProcess, spawn as spawnType } from "node:child_process";
+import { spawnSync, type ChildProcess, type spawn as spawnType } from "node:child_process";
 
 import { initBundle, writeDoc } from "@superbee/core";
+import { serve } from "@superbee/server";
 import { defaultOpenBrowser, ui } from "../src/commands/ui.js";
 import { docOpen } from "../src/commands/doc/open.js";
 import { bootUiServer } from "../src/ui/server.js";
@@ -87,6 +89,7 @@ test("doc open --help: teaches the exact-document browser path and does not boot
 
 test("doc open verifies and opens one exact document through the existing DocPage route", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-ui-home-"));
   await writeDoc(
     { root: dir },
     { id: "docs/review", frontmatter: { type: "Doc", title: "Review me" }, body: "# Evidence" },
@@ -94,34 +97,208 @@ test("doc open verifies and opens one exact document through the existing DocPag
   try {
     let out = "";
     let opened: string | undefined;
-    let resolveShutdown!: () => void;
-    const shutdown = new Promise<void>((resolve) => {
-      resolveShutdown = resolve;
-    });
-    const run = docOpen(["docs/review", "--dir", dir, "--port", "0", "--json"], {
+    let workerInput: import("../src/ui/managed-authority.js").ManagedUiWorkerInput | undefined;
+    await docOpen(["docs/review", "--dir", dir, "--port", "0", "--json"], {
       stdout: (s) => (out += s),
-      bootUiServer,
-      waitForShutdown: () => shutdown,
       openBrowser: (url) => {
         opened = url;
       },
-      writeUrlFile: async () => {},
-      clearUrlFile: async () => {},
+      managedController: {
+        home,
+        spawnWorker: async (input) => {
+          workerInput = input;
+          return {
+            host: "127.0.0.1",
+            port: 49152,
+            browser_token: "browser-secret",
+            launch_nonce: "launch-one",
+            pid: 42,
+            started_at: "2026-09-01T00:00:00.000Z",
+          };
+        },
+        fetch: (async (target, init) => {
+          const pathname = new URL(String(target)).pathname;
+          if (pathname.endsWith("/status")) {
+            return Response.json({
+              protocol: 1,
+              mode: "dir",
+              authority_key: workerInput!.authority.key,
+              bundle_root: workerInput!.authority.bundle_root,
+              launch_root: workerInput!.authority.launch_root,
+              actor: workerInput!.authority.actor,
+              launch_nonce: "launch-one",
+              state: "ready",
+              active_clients: 0,
+            });
+          }
+          assert.equal(init?.method, "POST");
+          return Response.json({ adopted: true, launch_nonce: "launch-one" });
+        }) as typeof fetch,
+      },
     });
-
-    while (!out) await new Promise((resolve) => setTimeout(resolve, 5));
     const receipt = JSON.parse(out);
     const url = new URL(receipt.url);
-    assert.equal(receipt.ui, "listening");
+    assert.equal(receipt.ui, "managed");
+    assert.equal(receipt.state, "started");
     assert.equal(receipt.document, "docs/review");
     assert.equal(url.searchParams.get("view"), "doc");
     assert.equal(url.searchParams.get("id"), "docs/review");
     assert.ok(url.searchParams.get("token"));
     assert.equal(opened, receipt.url, "doc open opens without a redundant --open flag");
+    assert.equal(workerInput!.authority.bundle_root, await realpath(dir));
+    assert.equal(workerInput!.authority.launch_root, path.resolve(dir));
+    assert.equal(workerInput!.launch_identity.canonical_root, await realpath(dir));
+    assert.ok(Date.parse(workerInput!.startup_deadline_at) > Date.now());
+  } finally {
+    await cleanup();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("managed worker preserves an indexless project-binding boundary beside an indexed conventional child", async () => {
+  const project = await mkdtemp(path.join(tmpdir(), "superbee-managed-binding-boundary-"));
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-binding-home-"));
+  const cli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
+  await writeDoc(
+    { root: project },
+    { id: "docs/root-only", frontmatter: { type: "Doc", title: "Root only" }, body: "# Root only" },
+  );
+  await initBundle(path.join(project, ".superbee"));
+  await writeFile(path.join(project, ".superbee.json"), JSON.stringify({ bundle: "." }));
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    LOCALAPPDATA: path.join(home, "AppData", "Local"),
+    PATH: "",
+  };
+  try {
+    const opened = spawnSync(process.execPath, [cli, "doc", "open", "docs/root-only", "--json"], {
+      cwd: project,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(opened.status, 0, opened.stderr || opened.stdout);
+    const receipt = JSON.parse(opened.stdout) as { url: string; root: string };
+    assert.equal(receipt.root, await realpath(project));
     assert.equal((await fetch(receipt.url)).status, 200);
 
-    resolveShutdown();
-    await run;
+    const stopped = spawnSync(process.execPath, [cli, "ui", "--stop", "--json"], {
+      cwd: project,
+      env,
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout);
+    assert.equal((JSON.parse(stopped.stdout) as { stopped: boolean }).stopped, true);
+  } finally {
+    spawnSync(process.execPath, [cli, "ui", "--stop", "--json"], { cwd: project, env, encoding: "utf8", timeout: 5_000 });
+    await rm(project, { recursive: true, force: true });
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("managed authority converges canonically while preserving the selected lexical View-approval route", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  const shell = await mkdtemp(path.join(tmpdir(), "superbee-managed-route-"));
+  const alias = path.join(shell, "bundle-alias");
+  const home = path.join(shell, "home");
+  await mkdir(home);
+  await symlink(dir, alias, "dir");
+  await writeDoc({ root: dir }, { id: "docs/route", frontmatter: { type: "Doc", title: "Route" }, body: "# Route" });
+  let input: import("../src/ui/managed-authority.js").ManagedUiWorkerInput | undefined;
+  try {
+    await docOpen(["docs/route", "--dir", alias, "--json"], {
+      stdout: () => {},
+      openBrowser: () => {},
+      managedController: {
+        home,
+        spawnWorker: async (value) => {
+          input = value;
+          return {
+            host: "127.0.0.1",
+            port: 49153,
+            browser_token: "browser-secret",
+            launch_nonce: "launch-route",
+            pid: 43,
+            started_at: "2026-09-01T00:00:00.000Z",
+          };
+        },
+        fetch: (async (target, init) => {
+          if (new URL(String(target)).pathname.endsWith("/status")) {
+            return Response.json({
+              protocol: 1,
+              mode: "dir",
+              authority_key: input!.authority.key,
+              bundle_root: input!.authority.bundle_root,
+              launch_root: input!.authority.launch_root,
+              actor: null,
+              launch_nonce: "launch-route",
+              state: "ready",
+              active_clients: 0,
+            });
+          }
+          assert.equal(init?.method, "POST");
+          return Response.json({ adopted: true, launch_nonce: "launch-route" });
+        }) as typeof fetch,
+      },
+    });
+    assert.equal(input!.authority.bundle_root, await realpath(dir));
+    assert.equal(input!.authority.launch_root, path.resolve(alias));
+  } finally {
+    await cleanup();
+    await rm(shell, { recursive: true, force: true });
+  }
+});
+
+test("explicit remote doc open remains a foreground launch", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  await writeDoc({ root: dir }, { id: "docs/remote", frontmatter: { type: "Doc", title: "Remote" }, body: "# Remote" });
+  const remote = await serve({ bundle: { root: dir }, port: 0 });
+  let waited = false;
+  let mode: string | undefined;
+  try {
+    await docOpen(["docs/remote", "--remote", `http://${remote.host}:${remote.port}`, "--json"], {
+      stdout: () => {},
+      bootUiServer: async (options) => {
+        mode = options.mode;
+        return { host: "127.0.0.1", port: 49154, token: "remote-ui-token", close: async () => {} };
+      },
+      waitForShutdown: async () => { waited = true; },
+      openBrowser: () => {},
+      writeUrlFile: async () => {},
+      clearUrlFile: async () => {},
+    });
+    assert.equal(mode, "remote");
+    assert.equal(waited, true);
+  } finally {
+    await remote.close();
+    await cleanup();
+  }
+});
+
+test("the recovery command keeps an option-shaped document id positional", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  await writeDoc(
+    { root: dir },
+    { id: "--remote", frontmatter: { type: "Doc", title: "Option-shaped id" }, body: "# Safe" },
+  );
+  try {
+    let recoveryCommand: string | null | undefined;
+    await ui(["--dir", dir, "--port", "0", "--actor", "mike"], {
+      stdout: () => {},
+      bootUiServer: async (options) => {
+        recoveryCommand = options.renderDocumentOpenCommand?.("--remote");
+        return { host: "127.0.0.1", port: 49152, token: "test-token", close: async () => {} };
+      },
+      waitForShutdown: async () => {},
+      openBrowser: () => {},
+      writeUrlFile: async () => {},
+      clearUrlFile: async () => {},
+    });
+
+    assert.match(recoveryCommand ?? "", /doc open --dir .* --port 0 --actor mike -- --remote$/);
   } finally {
     await cleanup();
   }
@@ -201,6 +378,18 @@ test("ui --port abc: USAGE (exit 2), not a bare parse crash", async () => {
         assert.equal(err.code, "USAGE");
         return true;
       },
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+test("ui --status rejects actor filtering rather than silently ignoring it", async () => {
+  const { dir, cleanup } = await makeFixtureBundle();
+  try {
+    await assert.rejects(
+      () => ui(["--status", "--dir", dir, "--actor", "mike"]),
+      (error: unknown) => error instanceof CliError && error.code === "USAGE" && /does not accept --actor/.test(error.message),
     );
   } finally {
     await cleanup();

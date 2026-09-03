@@ -12,6 +12,85 @@
     "evidence": "No merge-queue workflow or repository-settings evidence exists at this revision",
     "enablement_requirement": "Set enabled true and add the merge_group trigger before enabling merge queue"
   },
+  "security_analysis": {
+    "workflow": ".github/workflows/codeql.yml",
+    "config": ".github/codeql/codeql-config.yml",
+    "triggers": [
+      "pull_request",
+      "push",
+      "schedule",
+      "workflow_dispatch"
+    ],
+    "schedule": "23 7 * * 1",
+    "concurrency": {
+      "group": "codeql-${{ github.event_name }}-${{ github.ref }}",
+      "cancel_in_progress": "${{ github.event_name == 'pull_request' }}"
+    },
+    "permissions": {
+      "actions": "read",
+      "contents": "read",
+      "security-events": "write"
+    },
+    "action_pins": {
+      "checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "codeql_init": "github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
+      "codeql_analyze": "github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938"
+    },
+    "checkout_persist_credentials": false,
+    "query_suite": "security-extended",
+    "threat_model": "local",
+    "paths": [
+      "packages",
+      "scripts"
+    ],
+    "paths_ignore": [
+      "**/node_modules/**",
+      "**/dist/**",
+      "**/test/**",
+      "**/tests/**",
+      "**/e2e/**",
+      "**/fixtures/**",
+      "**/*.test.*"
+    ],
+    "representative_includes": [
+      "packages/board-git/src/porcelain.ts",
+      "packages/cli/src/args.ts",
+      "packages/core/src/publication-filesystem.ts",
+      "packages/publication/src/generated/publication-snapshot-v1.ts",
+      "scripts/verify-npm-package.mjs"
+    ],
+    "representative_excludes": [
+      "packages/board-git/test/git-porcelain.test.ts",
+      "packages/cli/test/fixtures/quoting-probes/probes.ts",
+      "packages/ui/e2e/harness.ts",
+      "scripts/verify-npm-package.test.mjs"
+    ],
+    "jobs": {
+      "javascript-typescript": {
+        "display_name": "CodeQL JavaScript/TypeScript",
+        "language": "javascript-typescript",
+        "build_mode": "none",
+        "category": "/language:javascript-typescript",
+        "timeout_minutes": 30
+      },
+      "github-actions": {
+        "display_name": "CodeQL GitHub Actions",
+        "language": "actions",
+        "build_mode": "none",
+        "category": "/language:actions",
+        "timeout_minutes": 30
+      },
+      "required": {
+        "display_name": "CodeQL required analyses",
+        "needs": [
+          "javascript-typescript",
+          "github-actions"
+        ],
+        "timeout_minutes": 5
+      }
+    },
+    "merge_enforcement": "human-owned GitHub ruleset after hosted evidence; workflow success proves analysis completion only"
+  },
   "required_jobs": [
     "runtime",
     "aliasing-host",
@@ -105,7 +184,7 @@
       "runtime_node": 22,
       "installed_package_node": 20,
       "installed_package_proof_script": "scripts/windows-installed-package-proof.mjs",
-      "installed_package_proof_sha256": "70939827a176775c914934362998aa91c329edef277be3b1ab5203195987aa37",
+      "installed_package_proof_sha256": "e7044a178fb6d5fcc07cf2a2d523b27b65f6b9d4c9674a4af4f5cf28f9080151",
       "installed_package_proof_digest_update": {
         "command": "node scripts/windows-installed-package-proof-digest.mjs",
         "instructions": "After an intentional review of the proof bytes, run the command and update installed_package_proof_sha256 in this manifest in the same commit."
@@ -124,6 +203,13 @@
           "ui --dir",
           "ui-url observed",
           "ui-url cleared"
+        ],
+        "managed-document-lifecycle": [
+          "doc open",
+          "parent exit",
+          "authority reuse/isolation/convergence",
+          "real Chrome render",
+          "exact stop"
         ],
         "mcp-config-lifecycle": [
           "mcp install",
