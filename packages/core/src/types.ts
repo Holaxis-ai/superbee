@@ -212,6 +212,20 @@ export interface DeleteOptions {
   expectedVersion?: Version;
 }
 
+/** Optional backend capabilities reported without adapter-class inference. */
+export interface StorageCapabilities {
+  /** Whether `versions()` retains more than the current revision. */
+  history?: boolean;
+  /** Whether conditional writes and deletes enforce atomic compare-and-swap. */
+  enforced_cas: boolean;
+  /** Whether blob operations are implemented for real. */
+  blobs: boolean;
+  /** Whether query projection push-down is available. */
+  projections?: boolean;
+  /** Whether server-side backlink traversal is available. */
+  backlinks?: boolean;
+}
+
 /**
  * The storage seam the OKF engine operates over. The engine keeps ALL OKF
  * semantics (id safety, non-empty `type`, link/backlink derivation, freshness);
@@ -357,7 +371,7 @@ export interface StorageBackend {
    *
    * CONTRACT (the backend does not own filter semantics): this is a push-down
    * HINT. A backend MAY over-return (ignore any facet it cannot push server-side); the
-   * ENGINE re-applies the one canonical predicate (`matchesFilter`, `bundle.ts`) to
+   * ENGINE re-applies the one canonical predicate (`matchesFilter`, `engine.ts`) to
    * whatever comes back, so semantics stay in core. A backend MUST NOT under-return for
    * a facet it chooses to honor. A backend that does not implement this method
    * (FilesystemBackend / MemoryBackend — both local to their data, where a head projection
@@ -379,18 +393,7 @@ export interface StorageBackend {
    * pre-existing `instanceof` inference. `FilesystemBackend` self-declares because enforced
    * cross-process CAS and retained history are now intentionally different capabilities.
    */
-  capabilities?(): {
-    /** Whether `versions()` retains more than the current revision. When omitted, legacy adapters preserve the v0 inference from `enforced_cas`. */
-    history?: boolean;
-    /** Whether `write`/`writeBlob`/`writeReserved`'s `expectedVersion` CAS is ENFORCED (atomic, race-proof) rather than best-effort. */
-    enforced_cas: boolean;
-    /** Whether `readBlob`/`writeBlob`/`existsBlob`/`listBlobs` are implemented for real (not a stub). */
-    blobs: boolean;
-    /** Whether `list`/`query` support server-side filter push-down (thin projections). Defaults to `true` when omitted — every adapter today does. */
-    projections?: boolean;
-    /** Whether server-side backlink/graph traversal is available. Defaults to `false` when omitted — deferred to v1 on every adapter today. */
-    backlinks?: boolean;
-  };
+  capabilities?(): StorageCapabilities;
 }
 
 /** Options for {@link initBundle}. */

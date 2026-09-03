@@ -13,6 +13,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "default": "./dist/engine.js"
+    },
     "./kinds": {
       "types": "./dist/kinds.d.ts",
       "default": "./dist/kinds.js"
@@ -44,6 +48,14 @@
     "./query-selection": {
       "types": "./dist/query-selection.d.ts",
       "default": "./dist/query-selection.js"
+    },
+    "./remote": {
+      "types": "./dist/remote.d.ts",
+      "default": "./dist/remote.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "default": "./dist/storage.js"
     }
   },
   "files": [

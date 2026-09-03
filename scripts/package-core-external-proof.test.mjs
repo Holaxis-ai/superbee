@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { build } from "esbuild";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,8 +63,14 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("package.json"));
     assert.ok(paths.includes("dist/index.js"));
     assert.ok(paths.includes("dist/index.d.ts"));
+    assert.ok(paths.includes("dist/engine.js"));
+    assert.ok(paths.includes("dist/engine.d.ts"));
     assert.ok(paths.includes("dist/kinds.js"));
     assert.ok(paths.includes("dist/kinds.d.ts"));
+    assert.ok(paths.includes("dist/remote.js"));
+    assert.ok(paths.includes("dist/remote.d.ts"));
+    assert.ok(paths.includes("dist/storage.js"));
+    assert.ok(paths.includes("dist/storage.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file.startsWith("dist/")));
 
     await writeFile(
@@ -261,11 +268,73 @@ try {
     assert.equal(deep.stdout.trim(), "ERR_PACKAGE_PATH_NOT_EXPORTED");
 
     const installed = path.join(scratch, "node_modules", "@superbee", "core");
+
+    await writeFile(
+      path.join(scratch, "worker-consumer.ts"),
+      `import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
+import {
+  InvalidInputError,
+  VersionConflict,
+  assertSafeConceptId,
+  type OkfDocument,
+  type StorageBackend,
+} from "@superbee/core/storage";
+import { RemoteBackend, RemoteError } from "@superbee/core/remote";
+
+declare const backend: StorageBackend;
+declare const document: OkfDocument;
+export async function exercisePortableCore(): Promise<void> {
+  assertSafeConceptId(document.id);
+  await writeDocVersioned(backend, document);
+  await queryHeads(backend, { type: String(document.frontmatter.type) });
+}
+export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBackend, RemoteError };
+`,
+    );
+    await writeFile(
+      path.join(scratch, "tsconfig.worker.json"),
+      JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2022",
+            lib: ["ES2022", "WebWorker"],
+            types: [],
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            strict: true,
+            noEmit: true,
+            skipLibCheck: false,
+          },
+          include: ["worker-consumer.ts"],
+        },
+        null,
+        2,
+      ),
+    );
+    await run(
+      process.execPath,
+      [path.join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.worker.json"],
+      scratch,
+    );
+    const workerBundle = await build({
+      absWorkingDir: scratch,
+      entryPoints: ["worker-consumer.ts"],
+      bundle: true,
+      platform: "browser",
+      write: false,
+      logLevel: "silent",
+    });
+    assert.equal(workerBundle.errors.length, 0);
+    assert.ok(workerBundle.outputFiles[0].text.includes("RemoteBackend"));
+
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
     assert.equal(installedManifest.private, true);
     assert.deepEqual(installedManifest.files, ["dist"]);
     assert.ok(installedManifest.exports["."]);
     assert.ok(installedManifest.exports["./kinds"]);
+    assert.ok(installedManifest.exports["./engine"]);
+    assert.ok(installedManifest.exports["./remote"]);
+    assert.ok(installedManifest.exports["./storage"]);
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
 

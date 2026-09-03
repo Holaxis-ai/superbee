@@ -25,12 +25,15 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** subpath dist module -> a symbol the bundle must still carry (proves the entry resolved, not an empty file). */
 const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
+  { module: "engine.js", symbol: "writeDocVersioned" },
   { module: "links.js", symbol: "resolveConceptId" },
   { module: "meaningful-change-time.js", symbol: "meaningfulChangeTimeValue" },
   { module: "page.js", symbol: "parseRegistration" },
   { module: "query-filter.js", symbol: "matchesFilter" },
   { module: "query-selection.js", symbol: "applyQuerySelectionFilters" },
   { module: "kinds.js", symbol: "isTerminal" },
+  { module: "remote.js", symbol: "RemoteBackend" },
+  { module: "storage.js", symbol: "assertSafeConceptId" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
