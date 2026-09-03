@@ -10,10 +10,13 @@ import type { Frontmatter } from "./types.js";
  * constructs a Node Buffer while parsing even a string, so it cannot execute in a Worker runtime.
  */
 export function parseLeadingFrontmatter(raw: string, context?: string): Frontmatter {
-  if (!/^---(?:\r?\n|$)/.test(raw)) return {} as Frontmatter;
+  // Match the legacy parser's UTF-8 text behavior without pulling its Buffer-dependent package
+  // into the portable graph. Only a single file-leading BOM is an encoding marker.
+  const input = raw.startsWith("\uFEFF") ? raw.slice(1) : raw;
+  if (!/^---(?:\r?\n|$)/.test(input)) return {} as Frontmatter;
 
-  const firstLineEnd = raw.indexOf("\n");
-  const afterOpening = firstLineEnd === -1 ? "" : raw.slice(firstLineEnd + 1);
+  const firstLineEnd = input.indexOf("\n");
+  const afterOpening = firstLineEnd === -1 ? "" : input.slice(firstLineEnd + 1);
   const closing = /^---\r?$/m.exec(afterOpening);
   if (!closing) {
     throw new MalformedDocumentError(context, new Error("unterminated YAML frontmatter delimiter"));

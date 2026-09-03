@@ -13,7 +13,8 @@ import {
 } from "../src/storage.js";
 import { VersionConflict as LegacyVersionConflict } from "../src/versioning.js";
 import { queryHeads, writeDocVersioned } from "../src/bundle.js";
-import { MalformedDocumentError as LegacyMalformedDocumentError } from "../src/frontmatter.js";
+import { MalformedDocumentError as LegacyMalformedDocumentError, parseMarkdown } from "../src/frontmatter.js";
+import { parseLeadingFrontmatter } from "../src/portable-frontmatter.js";
 import type { EdgeFilter, Link } from "../src/engine.js";
 import type { OkfDocument } from "../src/types.js";
 
@@ -56,4 +57,10 @@ test("portable engine exports its edge contract and shared malformed-document er
   assert.equal(filter.text, link.text);
   assert.equal(EngineMalformedDocumentError, StorageMalformedDocumentError);
   assert.equal(EngineMalformedDocumentError, LegacyMalformedDocumentError);
+});
+
+test("portable root parsing matches legacy behavior for one leading UTF-8 BOM", () => {
+  const raw = "\uFEFF---\nokf_version: '0.2'\ntitle: Root\n---\n# Bundle\n";
+  assert.deepEqual(parseLeadingFrontmatter(raw, "index.md"), parseMarkdown(raw, "index.md").frontmatter);
+  assert.deepEqual(parseLeadingFrontmatter(`\uFEFF${raw}`, "index.md"), {});
 });
