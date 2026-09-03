@@ -180,8 +180,9 @@ boundary; npm's require-2FA/disallow-tokens setting is the boundary.
 
 Agents may prepare a version-bump PR and, when explicitly asked, push the `v<version>` tag that
 starts a release. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any
-other authenticated npm mutation; the human's interactive 2FA approval of the staged bytes is the
-one release gate. Prereleases stage on `next`, stable versions on `latest`, chosen at stage time.
+other authenticated npm mutation unless specifically authorized by Mike, Brian, or another human
+user with release authority; the human's interactive 2FA approval of the staged bytes is the one
+release gate. Prereleases stage on `next`, stable versions on `latest`, chosen at stage time.
 
 Record each release as one `Release` document in the project bundle (`releases/superbee-<version>`)
 with pointers to the workflow run, stage id, tarball digest, GitHub release, current `status`, and
