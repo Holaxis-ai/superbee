@@ -31,6 +31,11 @@
       "contents": "read",
       "security-events": "write"
     },
+    "action_pins": {
+      "checkout": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+      "codeql_init": "github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
+      "codeql_analyze": "github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938"
+    },
     "checkout_persist_credentials": false,
     "query_suite": "security-extended",
     "threat_model": "local",

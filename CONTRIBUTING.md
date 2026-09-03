@@ -119,7 +119,8 @@ it uploads findings to GitHub code scanning and has a schedule independent of th
 CodeQL runs in `.github/workflows/codeql.yml` on pull requests to `main`, pushes to `main`, a weekly
 schedule, and manual dispatch. Its JavaScript/TypeScript configuration is
 `.github/codeql/codeql-config.yml`; both surfaces are pinned by `scripts/ci-lanes.json` and
-`scripts/workflow-codeql-topology.test.mjs`.
+`scripts/workflow-codeql-topology.test.mjs`. Every action in the CodeQL workflow is pinned to a
+full commit SHA because the analysis jobs upload security results and also run unattended.
 
 <!-- contributing-codeql-analysis:start -->
 | Analysis | Source scope | Build mode | Query coverage | Threat model |

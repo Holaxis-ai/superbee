@@ -71,6 +71,11 @@ function validateSecurityManifest(candidate = manifest.security_analysis) {
     contents: "read",
     "security-events": "write",
   });
+  assert.deepEqual(candidate.action_pins, {
+    checkout: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    codeql_init: "github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938",
+    codeql_analyze: "github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938",
+  });
   assert.equal(candidate.checkout_persist_credentials, false);
   assert.equal(candidate.query_suite, "security-extended");
   assert.equal(candidate.threat_model, "local");
@@ -119,12 +124,12 @@ function expectedAnalysisJob(expected, initWith) {
     permissions: manifest.security_analysis.permissions,
     steps: [
       {
-        uses: "actions/checkout@v4",
+        uses: manifest.security_analysis.action_pins.checkout,
         with: { "persist-credentials": manifest.security_analysis.checkout_persist_credentials },
       },
       {
         name: `Initialize ${label} analysis`,
-        uses: "github/codeql-action/init@v4",
+        uses: manifest.security_analysis.action_pins.codeql_init,
         with: {
           languages: expected.language,
           "build-mode": expected.build_mode,
@@ -133,7 +138,7 @@ function expectedAnalysisJob(expected, initWith) {
       },
       {
         name: `Analyze ${label}`,
-        uses: "github/codeql-action/analyze@v4",
+        uses: manifest.security_analysis.action_pins.codeql_analyze,
         with: { category: expected.category },
       },
     ],
@@ -226,11 +231,17 @@ test("CodeQL topology mutations cannot weaken sources, queries, permissions, sco
     workflow.replace("security-events: write", "security-events: read"),
     workflow.replace("      security-events: write", "      security-events: write\n      id-token: write"),
     workflow.replace("      security-events: write", "      security-events: write\n\n      id-token: write"),
+    workflow.replace(manifest.security_analysis.action_pins.checkout, "actions/checkout@v7"),
+    workflow.replace(manifest.security_analysis.action_pins.codeql_init, "github/codeql-action/init@v4"),
+    workflow.replace(manifest.security_analysis.action_pins.codeql_analyze, "github/codeql-action/analyze@v4"),
     workflow.replace(
-      "uses: github/codeql-action/analyze@v4",
-      "uses: attacker/example-action@v1 # uses: github/codeql-action/analyze@v4",
+      `uses: ${manifest.security_analysis.action_pins.codeql_analyze}`,
+      `uses: attacker/example-action@v1 # uses: ${manifest.security_analysis.action_pins.codeql_analyze}`,
     ),
-    workflow.replace("      - uses: actions/checkout@v4", "      - run: echo unsafe\n      - uses: actions/checkout@v4"),
+    workflow.replace(
+      `      - uses: ${manifest.security_analysis.action_pins.checkout}`,
+      `      - run: echo unsafe\n      - uses: ${manifest.security_analysis.action_pins.checkout}`,
+    ),
     workflow.replace("queries: security-extended", "queries: default"),
     workflow.replace("build-mode: none", "build-mode: manual"),
     workflow.replace("  schedule:\n    - cron: \"23 7 * * 1\"\n", ""),
