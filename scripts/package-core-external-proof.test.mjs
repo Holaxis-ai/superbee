@@ -212,15 +212,25 @@ try {
     await writeFile(
       path.join(scratch, "no-buffer-consumer.mjs"),
       `delete globalThis.Buffer;
-const { MalformedDocumentError, readBundleOkfVersion } = await import("@superbee/core/engine");
+const { MalformedDocumentError, readBundleOkfVersion, writeDocVersioned } = await import("@superbee/core/engine");
 if (typeof Buffer !== "undefined") throw new Error("proof must execute without Buffer");
 const backend = {
   readReserved: async () => ({
-    content: "---\\nokf_version: '0.2'\\n---\\n# Packed Worker proof\\n",
+    content: "\\uFEFF---\\nokf_version: '0.2'\\n---\\n# Packed Worker proof\\n",
     version: "proof",
   }),
+  write: async (_id, doc) => {
+    if (doc.frontmatter.timestamp !== undefined) throw new Error("BOM caused v0.1 timestamp fallback");
+    return "sha256:proof";
+  },
 };
 if (await readBundleOkfVersion(backend) !== "0.2") throw new Error("portable version read failed");
+const written = await writeDocVersioned(backend, {
+  id: "packed/bom-proof",
+  frontmatter: { type: "Proof" },
+  body: "v0.2 stays v0.2",
+});
+if (written.doc.frontmatter.timestamp !== undefined) throw new Error("portable engine fell back to v0.1");
 backend.readReserved = async () => ({ content: "---\\nokf_version: [\\n---\\n", version: "bad" });
 try {
   await readBundleOkfVersion(backend);

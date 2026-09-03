@@ -66,12 +66,28 @@ test("core/engine executes bundle-version parsing with no Buffer global", async 
   runInNewContext(result.outputFiles[0]!.text, sandbox);
   const engine = sandbox.SuperbeeEngine as {
     readBundleOkfVersion(backend: unknown): Promise<string | undefined>;
+    writeDocVersioned(
+      backend: unknown,
+      doc: { id: string; frontmatter: Record<string, unknown>; body: string },
+    ): Promise<{ doc: { frontmatter: Record<string, unknown> }; version: string }>;
   };
+  let written: { frontmatter: Record<string, unknown> } | undefined;
   const backend = {
     readReserved: async () => ({
-      content: "---\nokf_version: '0.2'\n---\n# Worker-safe\n",
+      content: "\uFEFF---\nokf_version: '0.2'\n---\n# Worker-safe\n",
       version: "proof",
     }),
+    write: async (_id: string, doc: { frontmatter: Record<string, unknown> }) => {
+      written = doc;
+      return "sha256:proof";
+    },
   };
   assert.equal(await engine.readBundleOkfVersion(backend), "0.2");
+  const resultDoc = await engine.writeDocVersioned(backend, {
+    id: "worker/bom-proof",
+    frontmatter: { type: "Proof" },
+    body: "v0.2 stays v0.2",
+  });
+  assert.equal(resultDoc.doc.frontmatter.timestamp, undefined);
+  assert.equal(written?.frontmatter.timestamp, undefined);
 });
