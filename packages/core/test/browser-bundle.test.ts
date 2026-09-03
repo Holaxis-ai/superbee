@@ -19,6 +19,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -49,3 +50,28 @@ for (const { module, symbol } of BROWSER_SUBPATHS) {
     assert.ok(result.outputFiles[0]!.text.includes(symbol), `${module}: bundled output must carry ${symbol}`);
   });
 }
+
+test("core/engine executes bundle-version parsing with no Buffer global", async () => {
+  const result = await build({
+    entryPoints: [path.resolve(here, "../dist/engine.js")],
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeEngine",
+    write: false,
+    logLevel: "silent",
+  });
+  const sandbox: Record<string, unknown> = {};
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+  const engine = sandbox.SuperbeeEngine as {
+    readBundleOkfVersion(backend: unknown): Promise<string | undefined>;
+  };
+  const backend = {
+    readReserved: async () => ({
+      content: "---\nokf_version: '0.2'\n---\n# Worker-safe\n",
+      version: "proof",
+    }),
+  };
+  assert.equal(await engine.readBundleOkfVersion(backend), "0.2");
+});

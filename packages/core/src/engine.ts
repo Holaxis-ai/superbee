@@ -10,9 +10,10 @@ import {
   normalizeV02DocumentForWrite,
 } from "./document-write-policy.js";
 import { InvalidInputError } from "./errors.js";
-import { isUsableTimestamp, MalformedDocumentError, parseMarkdown } from "./frontmatter.js";
+import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 import { parseLinksFromDoc } from "./links.js";
 import { assertSafeConceptId, isReservedFile, pathFromConceptId } from "./paths.js";
+import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
 import { matchesFilter } from "./query-filter.js";
 import type {
   BlobKey,
@@ -30,6 +31,9 @@ import type {
   VersionInfo,
   WriteOptions,
 } from "./types.js";
+
+export { MalformedDocumentError } from "./frontmatter-contract.js";
+export type { EdgeFilter, Link } from "./types.js";
 
 /** A normalized written document together with the backend version recorded for it. */
 export interface WriteResult {
@@ -52,7 +56,7 @@ export interface QueryOptions {
 export async function readBundleOkfVersion(backend: StorageBackend): Promise<string | undefined> {
   const index = await backend.readReserved("", "index.md");
   if (!index) return undefined;
-  const value = parseMarkdown(index.content, "index.md").frontmatter.okf_version;
+  const value = parseLeadingFrontmatter(index.content, "index.md").okf_version;
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 

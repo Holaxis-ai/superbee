@@ -2,13 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MalformedDocumentError as EngineMalformedDocumentError,
   queryHeads as queryHeadsForBackend,
   writeDocVersioned as writeDocVersionedForBackend,
 } from "../src/engine.js";
 import { MemoryBackend } from "../src/memory-backend.js";
-import { VersionConflict as PortableVersionConflict } from "../src/storage.js";
+import {
+  MalformedDocumentError as StorageMalformedDocumentError,
+  VersionConflict as PortableVersionConflict,
+} from "../src/storage.js";
 import { VersionConflict as LegacyVersionConflict } from "../src/versioning.js";
 import { queryHeads, writeDocVersioned } from "../src/bundle.js";
+import { MalformedDocumentError as LegacyMalformedDocumentError } from "../src/frontmatter.js";
+import type { EdgeFilter, Link } from "../src/engine.js";
 import type { OkfDocument } from "../src/types.js";
 
 async function v02MemoryBackend(): Promise<MemoryBackend> {
@@ -42,4 +48,12 @@ test("portable and legacy engine surfaces preserve one document/query behavior",
 
 test("portable storage and legacy root share the VersionConflict class identity", () => {
   assert.equal(PortableVersionConflict, LegacyVersionConflict);
+});
+
+test("portable engine exports its edge contract and shared malformed-document error", () => {
+  const filter: EdgeFilter = { from: "proof/", to: ["target"], text: "evidence" };
+  const link: Link = { from: "proof/source", to: "target", text: "evidence", href: "../target.md" };
+  assert.equal(filter.text, link.text);
+  assert.equal(EngineMalformedDocumentError, StorageMalformedDocumentError);
+  assert.equal(EngineMalformedDocumentError, LegacyMalformedDocumentError);
 });

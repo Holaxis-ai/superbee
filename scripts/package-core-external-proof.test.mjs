@@ -104,6 +104,12 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
   type StorageBackend,
 } from "@superbee/core";
 import { isTerminal, type KindConvention } from "@superbee/core/kinds";
+import {
+  MalformedDocumentError,
+  type EdgeFilter,
+  type Link,
+} from "@superbee/core/engine";
+import { MalformedDocumentError as StorageMalformedDocumentError } from "@superbee/core/storage";
 
 const document: OkfDocument = { id: "proof", frontmatter: { type: "Proof" }, body: "works" };
 const backends: StorageBackend[] = [
@@ -124,7 +130,10 @@ const kind: KindConvention = {
   },
 };
 const terminal: boolean = isTerminal(kind, { type: "Task", status: "done" });
-void [document, backends, terminal];
+const edgeFilter: EdgeFilter = { from: "proof/", to: ["target"] };
+const link: Link = { from: "proof/source", to: "target", text: "proof", href: "../target.md" };
+const sameMalformedError: boolean = MalformedDocumentError === StorageMalformedDocumentError;
+void [document, backends, terminal, edgeFilter, link, sameMalformedError];
 `,
     );
     await writeFile(
@@ -199,6 +208,29 @@ try {
 `,
     );
     await run(process.execPath, ["consumer.mjs"], scratch);
+
+    await writeFile(
+      path.join(scratch, "no-buffer-consumer.mjs"),
+      `delete globalThis.Buffer;
+const { MalformedDocumentError, readBundleOkfVersion } = await import("@superbee/core/engine");
+if (typeof Buffer !== "undefined") throw new Error("proof must execute without Buffer");
+const backend = {
+  readReserved: async () => ({
+    content: "---\\nokf_version: '0.2'\\n---\\n# Packed Worker proof\\n",
+    version: "proof",
+  }),
+};
+if (await readBundleOkfVersion(backend) !== "0.2") throw new Error("portable version read failed");
+backend.readReserved = async () => ({ content: "---\\nokf_version: [\\n---\\n", version: "bad" });
+try {
+  await readBundleOkfVersion(backend);
+  throw new Error("malformed root was accepted");
+} catch (error) {
+  if (!(error instanceof MalformedDocumentError)) throw error;
+}
+`,
+    );
+    await run(process.execPath, ["no-buffer-consumer.mjs"], scratch);
 
     // N3: the filesystem identity unit is not reachable from the packed package. Each negative
     // consumer must FAIL to typecheck for the named reason, and a runtime deep import must be
