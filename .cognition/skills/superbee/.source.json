@@ -1,0 +1,9 @@
+{
+  "schema": "superbee.generated-agent-skill.v1",
+  "package": "superbee",
+  "source": "packages/cli/src/skill-render.ts",
+  "resource_manifest": "packages/cli/src/distribution-resources.ts",
+  "generated_by": "packages/cli/scripts/gen-skill.mjs",
+  "installed_for": "devin",
+  "discovery_path": ".cognition/skills/superbee"
+}

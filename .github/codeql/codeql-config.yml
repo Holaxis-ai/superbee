@@ -1,0 +1,21 @@
+name: Superbee JavaScript and TypeScript security
+
+# Keep the default high-precision queries and add the broader security set. Local sources matter
+# for a CLI: command-line arguments, environment values, stdin, filenames, and file contents.
+queries:
+  - uses: security-extended
+threat-models: local
+
+# Analyze shipped/runtime packages plus operational build, packaging, migration, and CI scripts.
+# Test harnesses and disposable build output are excluded to keep alerts focused on reachable code.
+paths:
+  - packages
+  - scripts
+paths-ignore:
+  - '**/node_modules/**'
+  - '**/dist/**'
+  - '**/test/**'
+  - '**/tests/**'
+  - '**/e2e/**'
+  - '**/fixtures/**'
+  - '**/*.test.*'

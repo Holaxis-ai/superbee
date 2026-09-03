@@ -1,0 +1,80 @@
+name: CodeQL security
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+# Each analysis job receives only the upload permissions CodeQL needs. The aggregate has none.
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  javascript-typescript:
+    name: CodeQL JavaScript/TypeScript
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize JavaScript/TypeScript analysis
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          config-file: ./.github/codeql/codeql-config.yml
+      - name: Analyze JavaScript/TypeScript
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: /language:javascript-typescript
+
+  github-actions:
+    name: CodeQL GitHub Actions
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize GitHub Actions analysis
+        uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          languages: actions
+          build-mode: none
+          queries: security-extended
+      - name: Analyze GitHub Actions
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+        with:
+          category: /language:actions
+
+  required:
+    name: CodeQL required analyses
+    needs: [javascript-typescript, github-actions]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Reject every non-success or missing CodeQL result
+        env:
+          JAVASCRIPT_TYPESCRIPT_RESULT: ${{ needs.javascript-typescript.result }}
+          GITHUB_ACTIONS_RESULT: ${{ needs.github-actions.result }}
+        run: |
+          test "$JAVASCRIPT_TYPESCRIPT_RESULT" = "success"
+          test "$GITHUB_ACTIONS_RESULT" = "success"

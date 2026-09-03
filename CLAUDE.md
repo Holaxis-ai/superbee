@@ -67,7 +67,7 @@ Your role is defined by the verbs you own, not by what a packet happens to reque
 | Builder | One coherent change, scoped smoke, commit, SHA report | Push, PR, CI dispatch, sync, publish, release assets |
 | Reviewer or QA | Exact-SHA evaluation and named probes | Modify the reviewed SHA, push, sync, publish, release assets |
 | Researcher | Read-only evidence and a durable finding | Repository or external mutations not explicitly authorized |
-| Orchestrator or solo agent | Claim, integrate, bundle sync, one branch push, CI dispatch | Open the PR, merge, or expand human-gated scope without permission |
+| Orchestrator or solo agent | Claim, integrate, bundle sync, one branch push, CI dispatch; open or merge a named PR after explicit human delegation and green required checks | Infer PR, merge, release, deployment, or other external authority from general implementation approval |
 | CI | Authoritative shipping verdict on the pushed SHA | Substitute a result from another SHA |
 | Human | PR and merge gate; product, disclosure, and release decisions | None delegated by implication |
 
@@ -200,8 +200,12 @@ authentication, administration/collaboration UI, or multi-bundle authorization p
 Branch from current `origin/main` on a descriptively named feature branch. Do not push to `main`.
 Do not add AI attribution or `Co-Authored-By` lines to commits.
 
-Agents do not open pull requests. After pushing the feature branch, provide a plain-ASCII,
-paste-ready PR title and description. The human owns the PR and merge gate.
+The human owns the PR and merge gate. Without explicit delegation, agents do not open or merge pull
+requests and must instead provide a plain-ASCII, paste-ready PR title and description after pushing
+the feature branch. A human maintainer may explicitly delegate opening or merging a named branch or
+PR to the orchestrator. The orchestrator may act only after applicable review and required CI checks
+pass. That delegation does not imply release, publication, deployment, permission, or other
+external authority.
 
 When a unit closes:
 
