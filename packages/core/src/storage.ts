@@ -20,6 +20,7 @@ export type {
 } from "./types.js";
 
 export { InvalidInputError } from "./errors.js";
+export { MalformedDocumentError } from "./frontmatter-contract.js";
 export {
   RESERVED_FILENAMES,
   assertSafeBlobKey,

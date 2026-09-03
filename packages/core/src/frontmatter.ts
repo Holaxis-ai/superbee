@@ -9,7 +9,10 @@
 
 import matter from "gray-matter";
 import yaml from "js-yaml";
+import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 import type { Frontmatter } from "./types.js";
+
+export { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 
 const YAML_TIMESTAMP_TAG = "tag:yaml.org,2002:timestamp";
 
@@ -77,33 +80,6 @@ function normalizeFrontmatter(data: Record<string, unknown>): Frontmatter {
 }
 
 /**
- * Thrown by {@link parseMarkdown} when a document's YAML frontmatter cannot be parsed. Carries
- * `context` — the document's id/path when the caller supplied one — so a whole-bundle scan can
- * attribute the corruption to a SPECIFIC document ("malformed frontmatter in 'notes/bad.md': …")
- * instead of surfacing a raw, id-less js-yaml message. `detail` is the underlying parser message
- * (first line only) for compact reporting; the original error is preserved on `.cause`.
- */
-export class MalformedDocumentError extends Error {
-  override readonly name = "MalformedDocumentError";
-  /** The document id/path the malformed content belongs to (when the caller supplied one). */
-  readonly context?: string;
-  /** The underlying parser message, first line only — for compact per-doc reporting. */
-  readonly detail: string;
-
-  constructor(context: string | undefined, cause: unknown) {
-    const detail = ((cause instanceof Error ? cause.message : String(cause)).split("\n")[0] ?? "")
-      .trim();
-    super(
-      `malformed frontmatter${context ? ` in '${context}'` : ""}: ${detail} — ` +
-        `fix the YAML or remove the file`,
-    );
-    if (context !== undefined) this.context = context;
-    this.detail = detail;
-    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
-  }
-}
-
-/**
  * Parse raw markdown into `{ frontmatter, body }`. Missing frontmatter yields `{}`. Malformed YAML
  * throws an attributed {@link MalformedDocumentError} (naming `context` when given).
  *
@@ -158,15 +134,4 @@ export function stringifyWithData(data: Record<string, unknown>, body: string): 
 /** Serialize a concept document's frontmatter + body to OKF-conformant markdown. */
 export function stringifyDoc(frontmatter: Frontmatter, body: string): string {
   return stringifyWithData(frontmatter as Record<string, unknown>, body);
-}
-
-/**
- * THE engine's usable-document-timestamp predicate: a non-empty (post-trim) string. Anything
- * else — absent, empty string, null, or any non-string — is unusable, and the engine write path
- * (`writeDocVersioned`) replaces it with the current time. A consumer that must DISCLOSE that
- * stamping (e.g. the legacy-name migration's `timestamp_added` receipt) reuses this predicate
- * rather than inventing a second definition of "has a timestamp".
- */
-export function isUsableTimestamp(value: unknown): value is string {
-  return typeof value === "string" && value.trim() !== "";
 }
