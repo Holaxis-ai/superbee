@@ -9,6 +9,7 @@ import path from "node:path";
 import { withFilesystemMutationLock } from "@superbee/core";
 
 import { CliError } from "../errors.js";
+import { samePhysicalPath } from "../bundle.js";
 import { currentExecutableRealPath, cliInvocation } from "../invocation.js";
 import {
   ensureUserStateRoot,
@@ -25,6 +26,8 @@ export const MANAGED_UI_PENDING_RECLAIM_MS = 20_000;
 const RECORD_PREFIX = "managed-ui-";
 const RECORD_SUFFIX = ".json";
 const RECORD_MAX_BYTES = 32 * 1024;
+const START_DIAGNOSTIC_MAX_BYTES = 4 * 1024;
+const START_DIAGNOSTIC_MESSAGE_MAX_CHARS = 512;
 const PROBE_TIMEOUT_MS = 2_000;
 const START_TIMEOUT_MS = 10_000;
 const STOP_POLL_MS = 100;
@@ -83,8 +86,8 @@ export interface ManagedUiWorkerInput {
 
 export interface ManagedUiLaunchIdentity {
   canonical_root: string;
-  dev: number;
-  ino: number;
+  dev: string;
+  ino: string;
 }
 
 export interface ManagedUiWorkerReady {
@@ -111,9 +114,9 @@ export async function captureManagedUiLaunchIdentity(authority: ManagedUiAuthori
   if (canonicalRoot !== authority.bundle_root) {
     throw new CliError("CONFLICT", "managed UI launch route changed after controller selection");
   }
-  const metadata = await stat(canonicalRoot);
+  const metadata = await stat(canonicalRoot, { bigint: true });
   if (!metadata.isDirectory()) throw new CliError("CONFLICT", "managed UI launch route is no longer a directory");
-  return { canonical_root: canonicalRoot, dev: metadata.dev, ino: metadata.ino };
+  return { canonical_root: canonicalRoot, dev: metadata.dev.toString(), ino: metadata.ino.toString() };
 }
 
 function exactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
@@ -386,17 +389,31 @@ async function defaultSpawnWorker(input: ManagedUiWorkerInput): Promise<ManagedU
   const child = spawn(process.execPath, [...process.execArgv, entry, "__managed-ui-v1"], {
     detached: true,
     windowsHide: true,
-    stdio: ["pipe", "pipe", "ignore"],
+    // stderr is a private, bounded startup diagnostic channel. It is closed as soon as readiness
+    // arrives, so the adopted worker retains no parent-owned pipe for its long-lived lifecycle.
+    stdio: ["pipe", "pipe", "pipe"],
   });
   return waitForWorkerReady(child, input);
 }
 
+function startupDiagnostic(raw: string, truncated: boolean): string {
+  const normalized = raw.replace(/[\u0000-\u001f\u007f]+/gu, " ").replace(/\s+/gu, " ").trim();
+  if (!normalized) return "";
+  if (!truncated && normalized.length <= START_DIAGNOSTIC_MESSAGE_MAX_CHARS) return `: ${normalized}`;
+  const headChars = Math.floor(START_DIAGNOSTIC_MESSAGE_MAX_CHARS / 2);
+  const tailChars = START_DIAGNOSTIC_MESSAGE_MAX_CHARS - headChars;
+  return `: ${normalized.slice(0, headChars)} … ${normalized.slice(-tailChars)}`;
+}
+
 async function waitForWorkerReady(child: ChildProcess, input: ManagedUiWorkerInput): Promise<ManagedUiWorkerReady> {
-  if (!child.stdin || !child.stdout) throw new Error("managed UI child did not expose its private startup channel");
+  if (!child.stdin || !child.stdout || !child.stderr) throw new Error("managed UI child did not expose its private startup channel");
   const stdout = child.stdout;
+  const stderr = child.stderr;
   child.stdin.end(`${JSON.stringify(input)}\n`);
   return new Promise<ManagedUiWorkerReady>((resolve, reject) => {
     let bytes = "";
+    let diagnostic = "";
+    let diagnosticTruncated = false;
     let settled = false;
     const timer = setTimeout(() => finish(new Error("managed UI child did not become ready in time")), START_TIMEOUT_MS);
     timer.unref?.();
@@ -405,16 +422,30 @@ async function waitForWorkerReady(child: ChildProcess, input: ManagedUiWorkerInp
       settled = true;
       clearTimeout(timer);
       stdout.removeAllListeners();
+      stderr.removeAllListeners();
       child.removeAllListeners("error");
-      child.removeAllListeners("exit");
+      child.removeAllListeners("close");
       stdout.destroy();
+      stderr.destroy();
       child.unref();
       if (error) reject(error);
       else resolve(value!);
     };
     child.once("error", (error) => finish(error));
-    child.once("exit", (code) => finish(new Error(`managed UI child exited before readiness (${code ?? "signal"})`)));
+    child.once("close", (code) => finish(new Error(
+      `managed UI child exited before readiness (${code ?? "signal"})${startupDiagnostic(diagnostic, diagnosticTruncated)}`,
+    )));
     stdout.setEncoding("utf8");
+    stderr.setEncoding("utf8");
+    stderr.on("data", (chunk: string) => {
+      if (diagnostic.length >= START_DIAGNOSTIC_MAX_BYTES) {
+        diagnosticTruncated = true;
+        return;
+      }
+      const remaining = START_DIAGNOSTIC_MAX_BYTES - diagnostic.length;
+      diagnostic += chunk.slice(0, remaining);
+      if (chunk.length > remaining) diagnosticTruncated = true;
+    });
     stdout.on("data", (chunk: string) => {
       bytes += chunk;
       if (bytes.length > RECORD_MAX_BYTES) return finish(new Error("managed UI child readiness exceeded its bound"));
@@ -474,7 +505,7 @@ async function recoverOrReuse(
   }
   if (result.kind === "indeterminate") throw probeUncertain(record, result.reason);
   const probe = result.probe;
-  if (record.authority.launch_root !== desiredAuthority.launch_root) {
+  if (!samePhysicalPath(record.authority.launch_root, desiredAuthority.launch_root)) {
     throw new CliError("CONFLICT", "the managed UI authority is active through a different trusted bundle route", {
       help: `${cliInvocation()} ui --stop --dir ${commandToken(record.authority.launch_root)}${actorArgs(record)}, then retry`,
     });

@@ -80,8 +80,8 @@ import {
   inTreeBehindCount,
   inTreeUnpushedCount,
   inTreeUpstreamSha,
-  isProvisioned,
   repoTopLevel,
+  resolveProvisionedBoardPath,
   resolveInTreeUpstream,
   runGit,
   unpushedCount,
@@ -666,8 +666,9 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
     if (!top) return null;
     const committed = committedBundleAtHead(top);
     const bundleDir = committed?.bundleDir ?? bundleDirNameForProject(top);
-    const boardPath = path.join(top, bundleDir);
-    if (!isProvisioned(top)) {
+    const conventionalBoardPath = path.join(top, bundleDir);
+    const provisionedBoardPath = resolveProvisionedBoardPath(top);
+    if (!provisionedBoardPath) {
       const remoteRefExists =
         runGit(top, ["rev-parse", "--verify", "--quiet", `refs/remotes/${BOARD_REF}`]).status === 0;
       const probed =
@@ -679,7 +680,7 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
       // dead end. The refusal copy is reused verbatim by running channel detection with an
       // INJECTED offline probe (the fetched ref IS the evidence — no network, the offline
       // guarantee holds) and catching the typed refusal it throws.
-      if (remoteRefExists && committed !== null && !hasWorktreeSignature(boardPath)) {
+      if (remoteRefExists && committed !== null && !hasWorktreeSignature(conventionalBoardPath)) {
         try {
           detectBoardChannel(top, { remoteBoardState: () => "exists" });
         } catch (err) {
@@ -695,8 +696,8 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
       // the render's offline guarantee forbids the act-time remote probe, and the mode line it
       // gates is true regardless of what a live probe would add (the folder IS committed on the
       // branch). Mode-SENSITIVE decisions (sync's routing, establish) stay with act-time detection.
-      if (committed !== null && !hasWorktreeSignature(boardPath)) {
-        const key = resolveBundleKey(boardPath);
+      if (committed !== null && !hasWorktreeSignature(conventionalBoardPath)) {
+        const key = resolveBundleKey(conventionalBoardPath);
         const state = await defaultSyncStore.readSyncState(key);
         const upstream = resolveInTreeUpstream(top);
         const sha = upstream.state === "ok" ? inTreeUpstreamSha(top, upstream.config.ref) : null;
@@ -712,6 +713,7 @@ export async function defaultLoadBoardStatus(dir?: string, route?: ResolvedLocal
       }
       return null;
     }
+    const boardPath = provisionedBoardPath;
     const key = resolveBundleKey(boardPath);
     const state = await defaultSyncStore.readSyncState(key);
     let uncommitted: number | null;

@@ -33,10 +33,10 @@ Ownership follows the verb, not the runtime or the task packet.
 | Role | Owns | Does not own |
 | --- | --- | --- |
 | Builder | Implement one claim, run its pre-commit evidence, commit the coherent unit | Push, sync the project bundle, dispatch CI, publish, release, or merge |
-| Orchestrator | Verify commit identity and scope, integrate commits, push once, dispatch CI for the integrated SHA | Re-run valid builder evidence as ceremony or rewrite a builder's commit |
+| Orchestrator | Verify commit identity and scope, integrate commits, push once, dispatch CI for the integrated SHA; open or merge a named PR when a human maintainer explicitly delegates that action | Re-run valid builder evidence as ceremony, rewrite a builder's commit, or infer PR and merge authority from general implementation approval |
 | Reviewer / QA | Inspect the exact target, attack the named risk, and record the result | Move the target while reviewing it or substitute broad reruns for a focused probe |
 | CI | Decide whether the pushed SHA passes the full repository gate | Author policy or repair a failing change |
-| Human maintainer | Open and merge the PR and authorize external or destructive operations | Delegate accountability for the merge gate |
+| Human maintainer | Own the PR and merge gate, explicitly delegate opening or merging a named PR, and authorize external or destructive operations | Delegate release, publication, deployment, or other authority by implication |
 
 A sub-agent commit is the handoff. The orchestrator checks its parent, diff, message, and evidence;
 it does not amend the commit. A void result - missing exit code, a changed tree after the run, or a
@@ -60,7 +60,10 @@ several green commits is new evidence and belongs to CI on the integrated SHA.
 Start from current `origin/main`, not another PR tip. Commit one reviewed unit with a descriptive
 message and no AI-attribution or tool-generated authorship trailers. Do not force-push an open PR
 except for an explicitly coordinated rebase; preserve review deltas as appended commits. The human
-maintainer opens the PR and owns merge.
+maintainer owns the PR and merge gate. An orchestrator may open or merge a named PR only when a
+human maintainer explicitly delegates that action. Delegation is scoped to the named branch or PR,
+requires every applicable review and required CI check to pass, and does not imply release,
+publication, deployment, or other external authority.
 
 After merging another branch into a working branch, re-read generated prose near the change and the
 front-door README. A generator can prove byte agreement; it cannot prove that retained prose is
@@ -75,7 +78,8 @@ search answers.
 
 Every packet that depends on project state names the selected bundle, an actor, exact authorities,
 the phase-boundary Context Note requirement, and prohibited external verbs. A packet cannot grant a
-builder push, sync, CI-dispatch, publish, release, or merge authority.
+builder push, sync, CI-dispatch, publish, release, or merge authority. PR delegation applies only
+to an orchestrator acting under a human maintainer's explicit instruction for a named branch or PR.
 
 ## Checks and CI
 
@@ -87,8 +91,9 @@ Two validations exist, and each needs exactly one run. PR validation (`pull_requ
 proposed change against its base before merge. Release-source validation is the newest recorded
 `CI required lanes` verdict on the exact tagged commit — ordinarily the `push` run on the merged
 `main` commit; `release.yml` consumes that verdict fail-closed instead of rerunning CI. The
-maintainer opens the PR immediately after the branch push so its run starts the pre-merge
-verdict; dispatch `CI tests` on a branch only when no PR will exist promptly, and never
+maintainer or an explicitly delegated orchestrator opens the PR immediately after the branch push
+so its run starts the pre-merge verdict; dispatch `CI tests` on a branch only when no PR will exist
+promptly, and never
 treat a branch dispatch as a serial prerequisite for opening or progressing the PR — a dispatch and
 a PR run on the same SHA are the same coverage paid twice. One run can satisfy both validations
 only when the merged SHA equals the validated SHA (fast-forward or a merge queue; the current
@@ -345,4 +350,5 @@ evidence when the unit closes. Move byte content between repository and bundle w
 
 Bundle writes and code commits are separate delivery channels. Builders write phase-boundary
 context notes but do not sync. The orchestrator reviews and syncs bundle changes; code goes through
-branch, human-owned PR, CI, review, and merge.
+branch, a human-owned PR gate, CI, review, and merge. A human maintainer may explicitly delegate
+opening or merging the named PR without delegating release or deployment authority.

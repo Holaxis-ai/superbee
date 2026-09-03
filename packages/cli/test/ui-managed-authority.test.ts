@@ -20,7 +20,7 @@ import {
 } from "../src/ui/managed-authority.js";
 import { CliError } from "../src/errors.js";
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "../src/user-state.js";
-import { runManagedUiWorkerInput } from "../src/ui/managed-worker.js";
+import { parseManagedUiWorkerInput, runManagedUiWorkerInput } from "../src/ui/managed-worker.js";
 
 interface FakeService {
   input: ManagedUiWorkerInput;
@@ -46,7 +46,7 @@ function fakeRuntime(home: string): {
   let spawns = 0;
   const options: ManagedUiControllerOptions = {
     home,
-    launchIdentity: { canonical_root: "/canonical/fake", dev: 1, ino: 1 },
+    launchIdentity: { canonical_root: "/canonical/fake", dev: "1", ino: "1" },
     spawnWorker: async (input) => {
       spawns += 1;
       // Widen the critical section so concurrent controllers genuinely contend on the shared lock.
@@ -249,10 +249,33 @@ test("fresh and expired pending records have deterministic interruption recovery
   }
 });
 
+test("startup transport preserves exact 64-bit filesystem identities instead of lossy JSON numbers", () => {
+  const canonicalRoot = path.resolve("managed-large-identity");
+  const authority = managedUiAuthority(canonicalRoot, undefined);
+  const input = {
+    schema_version: 1,
+    operation_id: "large-identity",
+    authority,
+    management_secret: "a".repeat(32),
+    startup_deadline_at: "2026-09-02T12:00:00.000Z",
+    launch_identity: {
+      canonical_root: canonicalRoot,
+      dev: "18446744073709551615",
+      ino: "9223372036854775808",
+    },
+    port: 0,
+  } satisfies ManagedUiWorkerInput;
+  assert.deepEqual(parseManagedUiWorkerInput(JSON.stringify(input)), input);
+  assert.throws(
+    () => parseManagedUiWorkerInput(JSON.stringify({ ...input, launch_identity: { ...input.launch_identity, ino: Number.MAX_SAFE_INTEGER + 1 } })),
+    /inode identity is invalid/u,
+  );
+});
+
 test("a child whose pre-listen boot exceeds the absolute operation deadline terminates before pending reclaim", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "superbee-managed-deadline-"));
   const canonicalRoot = await realpath(root);
-  const metadata = await stat(canonicalRoot);
+  const metadata = await stat(canonicalRoot, { bigint: true });
   const authority = managedUiAuthority(canonicalRoot, undefined, root);
   let terminated = false;
   const started = Date.now();
@@ -264,7 +287,7 @@ test("a child whose pre-listen boot exceeds the absolute operation deadline term
         authority,
         management_secret: "a".repeat(32),
         startup_deadline_at: new Date(started + 30).toISOString(),
-        launch_identity: { canonical_root: canonicalRoot, dev: metadata.dev, ino: metadata.ino },
+        launch_identity: { canonical_root: canonicalRoot, dev: metadata.dev.toString(), ino: metadata.ino.toString() },
         port: 0,
       }, {
         terminate: () => { terminated = true; },
