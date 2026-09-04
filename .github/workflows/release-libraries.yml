@@ -94,6 +94,7 @@ jobs:
       - name: Require the CI verdict already recorded on this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: main
         run: |
           set -euo pipefail
           # Release-source validation consumes the newest CI verdict already recorded on this exact
@@ -113,10 +114,10 @@ jobs:
             case "$VERDICT" in
               success) break ;;
               missing|pending) echo "CI required lanes not settled on $GITHUB_SHA yet (attempt $attempt: $VERDICT)"; if [ "$attempt" -lt 16 ]; then sleep 30; fi ;;
-              *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on main before tagging"; exit 1 ;;
+              *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on $SOURCE_REF before tagging"; exit 1 ;;
             esac
           done
-          test "$VERDICT" = "success" || { echo "::error::no successful 'CI required lanes' verdict appeared on $GITHUB_SHA (last state: $VERDICT); wait for the push run on main, then re-push the tag"; exit 1; }
+          test "$VERDICT" = "success" || { echo "::error::no successful 'CI required lanes' verdict appeared on $GITHUB_SHA (last state: $VERDICT); wait for or dispatch CI on $SOURCE_REF, then re-push the tag"; exit 1; }
       - name: Build both runtime libraries
         run: npm run build -w @superbee/core -w @superbee/server
       - name: Pack once and prove the literal pair
