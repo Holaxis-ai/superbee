@@ -5,11 +5,11 @@ import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const execFileAsync = promisify(execFile);
-const usage = "usage: verify-runtime-libraries.mjs <core.tgz> <server.tgz>";
+const coreTarball = path.resolve("out", "superbee-core.tgz");
+const serverTarball = path.resolve("out", "superbee-server.tgz");
 
 function npmInvocation(args) {
   const npmCli = process.env.npm_execpath?.trim();
@@ -26,10 +26,9 @@ async function sha256(file) {
   return createHash("sha256").update(await readFile(file)).digest("hex");
 }
 
-export async function verifyRuntimeLibraries(coreInput, serverInput) {
-  if (!coreInput || !serverInput) throw new Error(usage);
-  const coreTarball = path.resolve(coreInput);
-  const serverTarball = path.resolve(serverInput);
+async function verifyRuntimeLibraries() {
+  assert.equal((await lstat(coreTarball)).isSymbolicLink(), false);
+  assert.equal((await lstat(serverTarball)).isSymbolicLink(), false);
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-runtime-libraries-"));
   try {
     await writeFile(
@@ -105,8 +104,4 @@ export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, Ve
   }
 }
 
-if (process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {
-  const args = process.argv.slice(2);
-  if (args.length !== 2) throw new Error(usage);
-  process.stdout.write(`${JSON.stringify(await verifyRuntimeLibraries(args[0], args[1]), null, 2)}\n`);
-}
+process.stdout.write(`${JSON.stringify(await verifyRuntimeLibraries(), null, 2)}\n`);

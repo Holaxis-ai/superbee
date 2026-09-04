@@ -139,7 +139,7 @@ test("runtime library workflows pin actions and share an isolated release identi
   const contributing = read("CONTRIBUTING.md");
   assert.match(entrypoint, /release-libraries\.yml/);
   assert.match(entrypoint, /libraries\/v<version>/);
-  assert.match(contributing, /verify:runtime-libraries -- <core\.tgz> <server\.tgz>/);
+  assert.match(contributing, /verify:runtime-libraries` consumes the fixed `out\/superbee-core\.tgz`/);
   assert.match(contributing, /NPM_RUNTIME_LIBRARIES_READ_TOKEN/);
 });
 
@@ -152,7 +152,9 @@ test("payload code builds once before a literal two-tarball verification", () =>
   assert.equal((build.match(/npm run build -w @superbee\/core -w @superbee\/server/g) ?? []).length, 1);
   assert.equal((build.match(/npm pack -w @superbee\/core/g) ?? []).length, 1);
   assert.equal((build.match(/npm pack -w @superbee\/server/g) ?? []).length, 1);
-  assert.match(build, /npm run verify:runtime-libraries -- "out\/\$CORE_TGZ" "out\/\$SERVER_TGZ"/);
+  assert.match(build, /mv -- "out\/\$CORE_PACKED" out\/superbee-core\.tgz/);
+  assert.match(build, /mv -- "out\/\$SERVER_PACKED" out\/superbee-server\.tgz/);
+  assert.match(build, /npm run verify:runtime-libraries/);
   assert.doesNotMatch(attest + core + server, /actions\/checkout|npm ci|npm run build|npm pack -w/);
   assert.equal((attest.match(/actions\/attest-build-provenance/g) ?? []).length, 2);
 });
@@ -278,8 +280,10 @@ test("the finalizer proves both registry tarballs against the dedicated source t
   assert.match(job, /server\.dependencies\["@superbee\/core"\], version/);
 });
 
-test("the literal verifier consumes supplied tarballs and never creates replacements", () => {
-  assert.match(verifier, /usage: verify-runtime-libraries\.mjs <core\.tgz> <server\.tgz>/);
+test("the literal verifier consumes fixed tarballs and never creates replacements", () => {
+  assert.match(verifier, /path\.resolve\("out", "superbee-core\.tgz"\)/);
+  assert.match(verifier, /path\.resolve\("out", "superbee-server\.tgz"\)/);
+  assert.doesNotMatch(verifier, /process\.argv/);
   assert.doesNotMatch(verifier, /\["pack"|npm pack|npm run build/);
   assert.match(verifier, /platform: "browser"/);
   assert.match(verifier, /serverManifest\.dependencies\?\.\["@superbee\/core"\]/);

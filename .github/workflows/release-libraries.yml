@@ -126,11 +126,15 @@ jobs:
           mkdir -p out
           npm pack -w @superbee/core --json --pack-destination out > core-pack.json
           npm pack -w @superbee/server --json --pack-destination out > server-pack.json
-          CORE_TGZ="$(node -p 'require("./core-pack.json")[0].filename')"
-          SERVER_TGZ="$(node -p 'require("./server-pack.json")[0].filename')"
+          CORE_PACKED="$(node -p 'require("./core-pack.json")[0].filename')"
+          SERVER_PACKED="$(node -p 'require("./server-pack.json")[0].filename')"
           test "$(node -p 'require("./core-pack.json").length')" = "1"
           test "$(node -p 'require("./server-pack.json").length')" = "1"
-          npm run verify:runtime-libraries -- "out/$CORE_TGZ" "out/$SERVER_TGZ"
+          mv -- "out/$CORE_PACKED" out/superbee-core.tgz
+          mv -- "out/$SERVER_PACKED" out/superbee-server.tgz
+          CORE_TGZ=superbee-core.tgz
+          SERVER_TGZ=superbee-server.tgz
+          npm run verify:runtime-libraries
           {
             echo "core_tgz=$CORE_TGZ"
             echo "server_tgz=$SERVER_TGZ"
