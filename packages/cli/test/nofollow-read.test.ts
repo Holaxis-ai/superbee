@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { constants, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -142,4 +142,22 @@ test("degraded (no O_NOFOLLOW): an ancestor symlink is still honored — the gua
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("readLeafSync is a test seam: no production module imports it", () => {
+  const srcRoot = fileURLToPath(new URL("../src/", import.meta.url));
+  const offenders: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      if (!entry.name.endsWith(".ts") || abs === path.join(srcRoot, "nofollow-read.ts")) continue;
+      if (/\breadLeafSync\b/.test(readFileSync(abs, "utf8"))) offenders.push(path.relative(srcRoot, abs));
+    }
+  };
+  walk(srcRoot);
+  assert.deepEqual(offenders, []);
 });

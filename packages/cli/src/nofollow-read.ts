@@ -11,10 +11,14 @@
 // Ancestor symlinks stay honored (a stowed `~/.claude` is legitimate); the guard is leaf-only,
 // matching the ownership rule the skill and hook commands already state. Where `O_NOFOLLOW` does
 // not exist (Windows), the flag alone would silently stop rejecting links, so the read falls back
-// to `lstat` plus a `dev`/`ino` comparison against the descriptor — the discipline
-// `update-orientation.ts` and `user-state.ts` already use. That fallback narrows the window rather
-// than closing it: the identity check happens after the open, so it detects a swap instead of
-// preventing one.
+// to `lstat` plus a `dev`/`ino` comparison against the descriptor — a read-only subset of the
+// discipline `update-orientation.ts` and `user-state.ts` keep for their read-modify-write cycles,
+// which also re-check identity after the read because they go on to write. That fallback narrows
+// the window rather than closing it: the identity check happens after the open, so it detects a
+// swap instead of preventing one.
+//
+// Those two sites still own their own copy; this module owns the leaf reads whose contents settle
+// ownership or trigger a destructive write, and absorbing the other two is a separate unit.
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 
 /** `missing`: nothing at the path. `unsafe`: a link, a non-regular leaf, or an unreadable one. */
@@ -48,6 +52,10 @@ export function readRegularFileNoFollowSync(filePath: string): NoFollowRead {
 /**
  * The read itself, with the platform's two facts passed in. Exported only so a POSIX runner can
  * exercise the degraded path a Windows host takes; callers use {@link readRegularFileNoFollowSync}.
+ * Passing `hasNoFollow: true` with flags that lack `O_NOFOLLOW` disables the guard, which is why
+ * this is a test seam and not an API.
+ *
+ * @internal
  */
 export function readLeafSync(filePath: string, flags: number, hasNoFollow: boolean): NoFollowRead {
   let expected: { dev: number; ino: number } | null = null;
