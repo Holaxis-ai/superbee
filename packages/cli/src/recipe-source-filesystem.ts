@@ -1,6 +1,10 @@
 // The filesystem acquisition adapter owns traversal and symlink containment. It returns bytes to
 // the distribution-neutral parser and never interprets recipe semantics beyond choosing whether a
 // definitions-only manifest requires a complete file inventory.
+//
+// Containment is decided on the RESOLVED path, so the read names that resolved path too. Reading
+// the unresolved one would resolve the link a second time and could land on a target the
+// containment check never saw; symlinks that stay inside the recipe root remain honored.
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parseMarkdown } from "@superbee/core";
@@ -18,7 +22,7 @@ async function readRecipeDir(root: string): Promise<RecipeFile[]> {
     if (!manifestReal || (manifestReal !== rootReal && !manifestReal.startsWith(rootReal + path.sep))) {
       throw new RecipeUnsafePathSignal("recipe.md");
     }
-    const bytes = await fs.readFile(manifestPath, "utf8");
+    const bytes = await fs.readFile(manifestReal, "utf8");
     files.push({ path: "recipe.md", bytes });
     const { frontmatter } = parseMarkdown(bytes);
     if (frontmatter.content_policy === "definitions-only" || frontmatter.pages !== undefined) {
@@ -67,7 +71,7 @@ async function walkRecipeFiles(
     }
     const stat = await fs.stat(real).catch(() => null);
     if (!stat?.isFile()) throw new RecipeUnsafePathSignal(rel);
-    out.push({ path: rel, bytes: await fs.readFile(abs, "utf8") });
+    out.push({ path: rel, bytes: await fs.readFile(real, "utf8") });
   }
 }
 
@@ -87,7 +91,7 @@ async function walkConventions(dir: string, relPrefix: string, rootReal: string,
     if (!real || (real !== rootReal && !real.startsWith(rootReal + path.sep))) {
       throw new RecipeUnsafePathSignal(rel);
     }
-    out.push({ path: rel, bytes: await fs.readFile(abs, "utf8") });
+    out.push({ path: rel, bytes: await fs.readFile(real, "utf8") });
   }
 }
 

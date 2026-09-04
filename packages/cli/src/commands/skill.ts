@@ -74,6 +74,7 @@ import {
   type PersistentInstallAuthority,
 } from "../install-authority.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
+import { readRegularFileNoFollowSync, readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
 
 export { isSafeManifestEntry };
@@ -342,8 +343,11 @@ function readManifest(dir: string): SkillManifest | undefined | null {
     return undefined;
   }
   if (manifestStats.isSymbolicLink() || !manifestStats.isFile()) return null;
+  const read = readRegularFileTextNoFollowSync(manifestPath);
+  if (read.state === "missing") return undefined;
+  if (read.state === "unsafe") return null;
   try {
-    return parseOwnedSkillManifest(JSON.parse(readFileSync(manifestPath, "utf8")));
+    return parseOwnedSkillManifest(JSON.parse(read.text));
   } catch {
     return null;
   }
@@ -663,18 +667,13 @@ export function skillStatusForDir(
     receiptDigestsMatch = manifest.kind === "legacy" || (manifest.receipt_valid && manifest.file_sha256 !== null);
     for (const relativePath of assets.files) {
       const installedPath = join(dir, ...relativePath.split("/"));
-      let regularFile = false;
-      try {
-        regularFile = lstatSync(installedPath).isFile();
-      } catch {
-        regularFile = false;
-      }
-      if (!regularFile) {
+      const read = readRegularFileNoFollowSync(installedPath);
+      if (read.state !== "present") {
         assetsMatch = false;
         receiptDigestsMatch = false;
         break;
       }
-      const installed = readFileSync(installedPath);
+      const installed = read.bytes;
       const shipped = readFileSync(join(assets.root, relativePath));
       if (!installed.equals(shipped)) assetsMatch = false;
       if (
