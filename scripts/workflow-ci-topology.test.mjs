@@ -9,6 +9,10 @@ import ts from "typescript";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const workflow = readFileSync(path.join(root, ".github", "workflows", "ci-tests.yml"), "utf8");
+const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json"), "utf8"));
+const rootPackage = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
+const mcpAppPackage = JSON.parse(readFileSync(path.join(root, "packages", "mcp-app", "package.json"), "utf8"));
+const uiPackage = JSON.parse(readFileSync(path.join(root, "packages", "ui", "package.json"), "utf8"));
 const windowsWorkflow = readFileSync(
   path.join(root, ".github", "workflows", "windows-installed-package.yml"),
   "utf8",
@@ -18,6 +22,46 @@ const windowsInstalledProofBytes = readFileSync(
   path.join(root, manifest.lanes.windows.installed_package_proof_script),
 );
 const windowsInstalledProof = windowsInstalledProofBytes.toString("utf8");
+
+const PLAYWRIGHT_IMAGE_DIGEST = "sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48";
+const PLAYWRIGHT_VERSION = packageLock.packages["node_modules/playwright-core"]?.version;
+const PLAYWRIGHT_IMAGE = `mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble@${PLAYWRIGHT_IMAGE_DIGEST}`;
+
+const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { constants } from "node:fs";
+          import { access, readFile } from "node:fs/promises";
+          import path from "node:path";
+
+          assert.equal(process.platform, "linux", "the browser container must run Linux");
+          assert.equal(process.arch, "x64", "the browser job is pinned to GitHub's x64 runner");
+          const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+          assert.equal(root, "/ms-playwright", "the baked browser registry path must remain explicit");
+          const manifest = JSON.parse(await readFile("node_modules/playwright-core/browsers.json", "utf8"));
+          const browser = (name) => {
+            const matches = manifest.browsers.filter((entry) => entry.name === name);
+            assert.equal(matches.length, 1, \`Playwright must declare exactly one \${name} artifact\`);
+            assert.equal(matches[0].installByDefault, true, \`\${name} must remain installed by default\`);
+            return matches[0];
+          };
+          const chromium = browser("chromium");
+          const headless = browser("chromium-headless-shell");
+          const ffmpeg = browser("ffmpeg");
+          assert.equal(chromium.revision, headless.revision, "Chromium revisions must stay aligned");
+          const required = [
+            [path.join(root, \`chromium-\${chromium.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
+            [path.join(root, \`chromium-\${chromium.revision}\`, "chrome-linux64", "chrome"), constants.X_OK],
+            [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
+            [path.join(root, \`chromium_headless_shell-\${headless.revision}\`, "chrome-headless-shell-linux64", "chrome-headless-shell"), constants.X_OK],
+            [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "INSTALLATION_COMPLETE"), constants.F_OK],
+            [path.join(root, \`ffmpeg-\${ffmpeg.revision}\`, "ffmpeg-linux"), constants.X_OK],
+          ];
+          for (const [artifact, mode] of required) await access(artifact, mode);
+          NODE`;
 
 function extractJobs(text) {
   const lines = text.split("\n");
@@ -745,7 +789,67 @@ function assertHostExpectations(jobs, candidate) {
   assert.deepEqual(expectations, { runtime: "0", "aliasing-host": "1" }, "both host classes must be pinned");
 }
 
-function validateCiTopology(text, candidate = manifest) {
+function validateBrowserScripts(packages) {
+  const rootCommand = packages.root.scripts["ci:browser"];
+  const commands = [
+    packages.mcpApp.scripts["test:browser"],
+    packages.ui.scripts["e2e:gate"],
+  ];
+  assert.equal(typeof rootCommand, "string", "ci:browser must remain declared");
+  assert.deepEqual(
+    commands.map((command) => command.split(" && ")[0]),
+    ["playwright install chromium", "playwright install chromium"],
+    "browser packages must retain the two reviewed plain install checks",
+  );
+  const reachable = [rootCommand, ...commands].join("\n");
+  assert.equal(
+    (reachable.match(/\bplaywright install\b/g) ?? []).length,
+    2,
+    "the ci:browser chain permits exactly two Playwright install checks",
+  );
+  assert.doesNotMatch(
+    reachable,
+    /\b(?:apt|apt-get)\b|\bplaywright install-deps\b|\bplaywright install[^\n]*(?:--with-deps|--force)|PLAYWRIGHT_BROWSERS_PATH/,
+    "the ci:browser script chain cannot install system dependencies, force downloads, or override the baked registry",
+  );
+}
+
+function validateBrowserJob(job, packages) {
+  assert.equal(packageLock.packages["node_modules/playwright"]?.version, PLAYWRIGHT_VERSION);
+  assert.equal(packageLock.packages["node_modules/@playwright/test"]?.version, PLAYWRIGHT_VERSION);
+  assert.match(
+    job,
+    new RegExp(`^ {4}container:\\n {6}image: ${PLAYWRIGHT_IMAGE}\\n {6}options: --ipc=host$`, "m"),
+    "browser job must use the reviewed immutable Playwright image",
+  );
+  assert.equal(
+    (job.match(/^ {4}container:\s*$/gm) ?? []).length,
+    1,
+    "browser job must declare one container",
+  );
+  assert.match(
+    job,
+    /^ {4}env:\n {6}PLAYWRIGHT_BROWSERS_PATH: \/ms-playwright$/m,
+    "browser job must expose the baked registry at the reviewed path",
+  );
+  assert.ok(job.includes(BROWSER_PREFLIGHT), "browser job must fail closed on every baked artifact");
+  assert.ok(
+    job.indexOf(BROWSER_PREFLIGHT) < job.indexOf("      - run: npm run ci:browser"),
+    "browser preflight must precede the browser suites",
+  );
+  assert.doesNotMatch(
+    job,
+    /\b(?:apt|apt-get)\b|\bplaywright install(?:-deps)?\b|--with-deps|--force/,
+    "browser workflow must not perform runtime installation",
+  );
+  validateBrowserScripts(packages);
+}
+
+function validateCiTopology(
+  text,
+  candidate = manifest,
+  browserPackages = { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage },
+) {
   const jobs = extractJobs(text);
   assert.deepEqual(
     [...candidate.required_jobs].sort(),
@@ -760,6 +864,7 @@ function validateCiTopology(text, candidate = manifest) {
   assert.match(jobs.runtime, /node-version: \[22, 26\]/);
   assert.match(jobs.runtime, /run: npm run ci:runtime/);
   assert.match(jobs["aliasing-host"], /node-version: 26/);
+  assert.match(text, /^permissions:\n {2}contents: read$/m, "required CI must retain read-only contents permission");
   assertHostExpectations(jobs, candidate);
   for (const [job, script] of [
     ["distribution", "ci:distribution"],
@@ -769,6 +874,7 @@ function validateCiTopology(text, candidate = manifest) {
     assert.match(jobs[job], /node-version: 26/);
     assert.match(jobs[job], new RegExp(`run: npm run ${script.replace(":", "\\:")}`));
   }
+  validateBrowserJob(jobs.browser, browserPackages);
   assertSmokeJob(jobs["smoke-node-20"], candidate.lanes["smoke-node-20"]);
   assert.doesNotMatch(text, /^\s*paths(?:-ignore)?:/m, "required workflow cannot skip based on paths");
   assert.equal(
@@ -805,6 +911,44 @@ test("CI runs every automatic lane unconditionally and keeps Windows proof manua
   validateCiTopology(workflow);
   validateWindowsProofWorkflow(windowsWorkflow);
   assert.equal(extractJobs(workflow).windows, undefined, "ordinary CI must not define the Windows proof job");
+});
+
+test("browser CI pins a complete no-download Playwright environment", () => {
+  const jobs = validateCiTopology(workflow);
+  validateBrowserJob(jobs.browser, { root: rootPackage, mcpApp: mcpAppPackage, ui: uiPackage });
+});
+
+test("browser container and reachable install-policy mutations fail closed", () => {
+  for (const [name, changed, error] of [
+    ["digest", workflow.replace(PLAYWRIGHT_IMAGE_DIGEST, `${PLAYWRIGHT_IMAGE_DIGEST.slice(0, -1)}0`), /immutable Playwright image/],
+    ["tag", workflow.replace(`v${PLAYWRIGHT_VERSION}-noble`, "v1.61.0-noble"), /immutable Playwright image/],
+    ["ipc", workflow.replace("options: --ipc=host", "options: --init"), /immutable Playwright image/],
+    ["registry", workflow.replace("PLAYWRIGHT_BROWSERS_PATH: /ms-playwright", "PLAYWRIGHT_BROWSERS_PATH: /tmp/browsers"), /baked registry/],
+    ["chromium marker", workflow.replace('`chromium-${chromium.revision}`, "INSTALLATION_COMPLETE"', '`chromium-${chromium.revision}`'), /every baked artifact/],
+    ["headless executable", workflow.replace('"chrome-headless-shell-linux64", "chrome-headless-shell"', '"chrome-headless-shell-linux64"'), /every baked artifact/],
+    ["ffmpeg marker", workflow.replace('`ffmpeg-${ffmpeg.revision}`, "INSTALLATION_COMPLETE"', '`ffmpeg-${ffmpeg.revision}`'), /every baked artifact/],
+    ["ffmpeg executable", workflow.replace('`ffmpeg-${ffmpeg.revision}`, "ffmpeg-linux"', '`ffmpeg-${ffmpeg.revision}`'), /every baked artifact/],
+    ["workflow install", workflow.replace("      - run: npm run ci:browser", "      - run: playwright install --with-deps chromium\n      - run: npm run ci:browser"), /runtime installation/],
+  ]) {
+    assert.throws(() => validateCiTopology(changed), error, name);
+  }
+
+  const forced = structuredClone(mcpAppPackage);
+  forced.scripts["test:browser"] = forced.scripts["test:browser"].replace(
+    "playwright install chromium",
+    "playwright install chromium --force",
+  );
+  assert.throws(
+    () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: forced, ui: uiPackage }),
+    /plain install checks/,
+  );
+
+  const extra = structuredClone(uiPackage);
+  extra.scripts["e2e:gate"] += " && playwright install chromium";
+  assert.throws(
+    () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: mcpAppPackage, ui: extra }),
+    /exactly two Playwright install checks/,
+  );
 });
 
 test("canonical and legacy compatibility contexts are identical fail-closed aggregators", () => {
