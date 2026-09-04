@@ -73,10 +73,12 @@ jobs:
             echo "version=$V"
             echo "dist_tag=$T"
             echo "tgz=superbee-$V.tgz"
+            echo "source_ref=$SOURCE_REF"
           } >> "$GITHUB_OUTPUT"
       - name: Require the CI verdict already recorded on this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ steps.meta.outputs.source_ref }}
         run: |
           set -euo pipefail
           # Release-source validation consumes the newest CI verdict already recorded on this exact
