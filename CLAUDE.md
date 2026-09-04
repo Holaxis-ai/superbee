@@ -178,8 +178,8 @@ repository setting is on). Read those two files; do not reconstruct a procedure 
 
 The synchronized restricted runtime libraries use `.github/workflows/release-libraries.yml` and
 `.github/workflows/release-libraries-finalize.yml` under the separate `libraries/v<version>` tag
-identity. The first `0.1.0` pair is the named human bootstrap because npm staging cannot create a
-package; later versions stage core and server separately. These package `prepublishOnly` refusals
+identity. The first `0.1.0` set is the named human bootstrap because npm staging cannot create a
+package; later versions stage core, server, and bundle-transfer separately. These package `prepublishOnly` refusals
 are ergonomics tripwires, not boundaries; npm's require-2FA/disallow-tokens setting is the
 boundary.
 

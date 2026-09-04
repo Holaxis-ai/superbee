@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://getsuperbee.com/schemas/bundle-transfer-manifest-v1.schema.json",
+  "title": "Superbee bundle transfer manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "schema_version", "source", "okf", "documents", "reserved", "blobs", "counts", "content_digest", "manifest_digest"],
+  "properties": {
+    "schema": { "const": "https://getsuperbee.com/schemas/bundle-transfer-manifest-v1.schema.json" },
+    "schema_version": { "const": 1 },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["authority_id", "kind", "revision"],
+          "properties": {
+            "authority_id": { "$ref": "#/$defs/sourceAuthorityId" },
+            "kind": { "const": "filesystem" },
+            "revision": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind"],
+              "properties": { "kind": { "const": "filesystem" } }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["authority_id", "kind", "revision"],
+          "properties": {
+            "authority_id": { "$ref": "#/$defs/sourceAuthorityId" },
+            "kind": { "const": "git" },
+            "revision": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["kind", "provider", "requested_ref", "commit", "tree", "root"],
+              "properties": {
+                "kind": { "const": "git" },
+                "provider": { "const": "github" },
+                "requested_ref": { "const": "refs/heads/board" },
+                "commit": { "$ref": "#/$defs/gitObject" },
+                "tree": { "$ref": "#/$defs/gitObject" },
+                "root": { "const": "" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "okf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["edition", "root_index_version"],
+      "properties": {
+        "edition": { "type": "string", "minLength": 1, "maxLength": 32 },
+        "root_index_version": { "$ref": "#/$defs/version" }
+      }
+    },
+    "documents": { "type": "array", "maxItems": 20000, "items": { "$ref": "#/$defs/document" } },
+    "reserved": { "type": "array", "maxItems": 20000, "items": { "$ref": "#/$defs/reserved" } },
+    "blobs": { "type": "array", "maxItems": 20000, "items": { "$ref": "#/$defs/blob" } },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["documents", "reserved", "blobs", "unique_objects", "unique_bytes"],
+      "properties": {
+        "documents": { "$ref": "#/$defs/count" },
+        "reserved": { "$ref": "#/$defs/count" },
+        "blobs": { "$ref": "#/$defs/count" },
+        "unique_objects": { "$ref": "#/$defs/count" },
+        "unique_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 }
+      }
+    },
+    "content_digest": { "$ref": "#/$defs/digest" },
+    "manifest_digest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "sourceAuthorityId": { "type": "string", "pattern": "^src_[0-9a-f]{32}$" },
+    "gitObject": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "version": { "$ref": "#/$defs/digest" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 20000 },
+    "object": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "size"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" },
+        "size": { "type": "integer", "minimum": 0, "maximum": 33554432 }
+      }
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "object"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/version" },
+        "object": { "$ref": "#/$defs/object" }
+      }
+    },
+    "reserved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dir", "name", "version", "object"],
+      "properties": {
+        "dir": { "type": "string" },
+        "name": { "enum": ["index.md", "log.md"] },
+        "version": { "$ref": "#/$defs/version" },
+        "object": { "$ref": "#/$defs/object" }
+      }
+    },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "version", "content_type", "object"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "version": { "$ref": "#/$defs/version" },
+        "content_type": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "object": { "$ref": "#/$defs/object" }
+      }
+    }
+  }
+}

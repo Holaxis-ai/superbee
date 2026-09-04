@@ -1,0 +1,41 @@
+{
+  "name": "@superbee/bundle-transfer",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Exact-byte portable bundle transfer artifact contract and Node capture adapters.",
+  "license": "Apache-2.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "default": "./dist/node/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --import ../core/test/ts-loader.mjs ./test/*.test.ts",
+    "prepublishOnly": "node -e \"console.error('@superbee/bundle-transfer is released by .github/workflows/release-libraries.yml; do not run npm publish here'); process.exit(1)\""
+  },
+  "dependencies": {
+    "@superbee/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.4.0"
+  }
+}

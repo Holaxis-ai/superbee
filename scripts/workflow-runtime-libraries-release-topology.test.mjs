@@ -67,10 +67,12 @@ function runSourceGuard({ currentVersion, priorTag, mainMatches = true, depth = 
   mkdirSync(path.join(source, "scripts"), { recursive: true });
   mkdirSync(path.join(source, "packages", "core"), { recursive: true });
   mkdirSync(path.join(source, "packages", "server"), { recursive: true });
+  mkdirSync(path.join(source, "packages", "bundle-transfer"), { recursive: true });
   writeFileSync(path.join(source, "scripts", "strict-semver.mjs"), read("scripts/strict-semver.mjs"));
   const manifest = `${JSON.stringify({ version: currentVersion }, null, 2)}\n`;
   writeFileSync(path.join(source, "packages", "core", "package.json"), manifest);
   writeFileSync(path.join(source, "packages", "server", "package.json"), manifest);
+  writeFileSync(path.join(source, "packages", "bundle-transfer", "package.json"), manifest);
   git(source, ["add", "."]);
   git(source, ["commit", "--quiet", "-m", "current"]);
   const currentSha = git(source, ["rev-parse", "HEAD"]);
@@ -104,13 +106,17 @@ function runSourceGuard({ currentVersion, priorTag, mainMatches = true, depth = 
   return result;
 }
 
-test("core and server form one restricted exact-version release set", () => {
+test("core, server, and bundle-transfer form one restricted exact-version release set", () => {
   const core = JSON.parse(read("packages/core/package.json"));
   const server = JSON.parse(read("packages/server/package.json"));
+  const bundleTransfer = JSON.parse(read("packages/bundle-transfer/package.json"));
   assert.match(core.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/);
   assert.equal(server.version, core.version);
+  assert.equal(bundleTransfer.version, core.version);
   assert.equal(server.dependencies["@superbee/core"], core.version);
-  for (const manifest of [core, server]) {
+  assert.equal(bundleTransfer.dependencies["@superbee/core"], core.version);
+  assert.deepEqual(Object.keys(bundleTransfer.exports).sort(), [".", "./node"]);
+  for (const manifest of [core, server, bundleTransfer]) {
     assert.equal(manifest.private, undefined);
     assert.deepEqual(manifest.publishConfig, {
       access: "restricted",
@@ -139,26 +145,27 @@ test("runtime library workflows pin actions and share an isolated release identi
   const contributing = read("CONTRIBUTING.md");
   assert.match(entrypoint, /release-libraries\.yml/);
   assert.match(entrypoint, /libraries\/v<version>/);
-  assert.match(contributing, /verify:runtime-libraries -- <core\.tgz> <server\.tgz>/);
+  assert.match(contributing, /verify:runtime-libraries -- <core\.tgz> <server\.tgz> <bundle-transfer\.tgz>/);
   assert.match(contributing, /NPM_RUNTIME_LIBRARIES_READ_TOKEN/);
 });
 
-test("payload code builds once before a literal two-tarball verification", () => {
-  const { build, attest, stage_core: core, stage_server: server } = jobs(release);
-  assert.ok(build && attest && core && server);
+test("payload code builds once before a literal three-tarball verification", () => {
+  const { build, attest, stage_core: core, stage_server: server, stage_bundle_transfer: bundleTransfer } = jobs(release);
+  assert.ok(build && attest && core && server && bundleTransfer);
   assert.match(build, /^ {4}permissions:\n {6}contents: read\n {6}checks: read$/m);
   assert.match(build, /actions\/checkout@[0-9a-f]{40} # v7\.0\.1\n {8}with:\n {10}fetch-depth: 0/);
   assert.doesNotMatch(build, /id-token: write|environment: release|secrets\./);
-  assert.equal((build.match(/npm run build -w @superbee\/core -w @superbee\/server/g) ?? []).length, 1);
+  assert.equal((build.match(/npm run build -w @superbee\/core -w @superbee\/server -w @superbee\/bundle-transfer/g) ?? []).length, 1);
   assert.equal((build.match(/npm pack -w @superbee\/core/g) ?? []).length, 1);
   assert.equal((build.match(/npm pack -w @superbee\/server/g) ?? []).length, 1);
-  assert.match(build, /npm run verify:runtime-libraries -- "out\/\$CORE_TGZ" "out\/\$SERVER_TGZ"/);
-  assert.doesNotMatch(attest + core + server, /actions\/checkout|npm ci|npm run build|npm pack -w/);
-  assert.equal((attest.match(/actions\/attest-build-provenance/g) ?? []).length, 2);
+  assert.equal((build.match(/npm pack -w @superbee\/bundle-transfer/g) ?? []).length, 1);
+  assert.match(build, /npm run verify:runtime-libraries -- "out\/\$CORE_TGZ" "out\/\$SERVER_TGZ" "out\/\$BUNDLE_TRANSFER_TGZ"/);
+  assert.doesNotMatch(attest + core + server + bundleTransfer, /actions\/checkout|npm ci|npm run build|npm pack -w/);
+  assert.equal((attest.match(/actions\/attest-build-provenance/g) ?? []).length, 3);
 });
 
 test("release source and first-version boundaries fail closed", () => {
-  const { build, attest, stage_core: core, stage_server: server } = jobs(release);
+  const { build, attest, stage_core: core, stage_server: server, stage_bundle_transfer: bundleTransfer } = jobs(release);
   assert.match(build, /git\/ref\/heads\/main/);
   assert.match(build, /test "\$GITHUB_SHA" = "\$MAIN_SHA"/);
   assert.match(build, /git fetch --force --no-tags origin '\+refs\/tags\/libraries\/v\*:refs\/tags\/libraries\/v\*'/);
@@ -175,8 +182,10 @@ test("release source and first-version boundaries fail closed", () => {
   assert.match(build, /if \[ "\$V" = "0\.1\.0" \]; then BOOTSTRAP=true/);
   assert.match(core, /if: needs\.build\.outputs\.bootstrap != 'true'/);
   assert.match(server, /needs\.build\.outputs\.bootstrap != 'true'/);
+  assert.match(bundleTransfer, /needs\.build\.outputs\.bootstrap != 'true'/);
   assert.match(attest, /npm publish \\\"\.\/\$CORE_TGZ\\\" --access restricted --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
   assert.match(attest, /npm publish \\\"\.\/\$SERVER_TGZ\\\" --access restricted --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
+  assert.match(attest, /npm publish \\\"\.\/\$BUNDLE_TRANSFER_TGZ\\\" --access restricted --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
 });
 
 test("the exact source guard allows only current-main channel advancement", () => {
@@ -237,8 +246,10 @@ test("the bootstrap instructions override an ambient npm tag", () => {
       V: "0.1.0",
       CORE_TGZ: "superbee-core-0.1.0.tgz",
       SERVER_TGZ: "superbee-server-0.1.0.tgz",
+      BUNDLE_TRANSFER_TGZ: "superbee-bundle-transfer-0.1.0.tgz",
       CORE_SHA: "core-sha",
       SERVER_SHA: "server-sha",
+      BUNDLE_TRANSFER_SHA: "bundle-transfer-sha",
       DIST_TAG: "latest",
       GITHUB_STEP_SUMMARY: summary,
       npm_config_tag: "ambient-danger",
@@ -246,14 +257,14 @@ test("the bootstrap instructions override an ambient npm tag", () => {
   });
   assert.equal(result.status, 0, result.stderr);
   const text = readFileSync(summary, "utf8");
-  assert.equal((text.match(/--tag "latest"/g) ?? []).length, 2);
+  assert.equal((text.match(/--tag "latest"/g) ?? []).length, 3);
   assert.doesNotMatch(text, /ambient-danger/);
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("later releases stage core and server separately behind the existing environment", () => {
-  const { stage_core: core, stage_server: server } = jobs(release);
-  for (const job of [core, server]) {
+test("later releases stage all libraries separately behind the existing environment", () => {
+  const { stage_core: core, stage_server: server, stage_bundle_transfer: bundleTransfer } = jobs(release);
+  for (const job of [core, server, bundleTransfer]) {
     assert.match(job, /^ {4}environment: release$/m);
     assert.match(job, /id-token: write/);
     assert.match(job, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --provenance --json/);
@@ -261,26 +272,32 @@ test("later releases stage core and server separately behind the existing enviro
   }
   assert.match(core, /sha256sum "out\/\$\{\{ needs\.build\.outputs\.core_tgz \}\}"[\s\S]*needs\.build\.outputs\.core_sha256/);
   assert.match(server, /sha256sum "out\/\$\{\{ needs\.build\.outputs\.server_tgz \}\}"[\s\S]*needs\.build\.outputs\.server_sha256/);
+  assert.match(bundleTransfer, /sha256sum "out\/\$\{\{ needs\.build\.outputs\.bundle_transfer_tgz \}\}"[\s\S]*needs\.build\.outputs\.bundle_transfer_sha256/);
   assert.match(server, /needs: \[build, attest, stage_core\]/);
-  assert.match(server, /npm stage approve \$CORE_STAGE/);
-  assert.match(server, /npm stage approve \$SERVER_STAGE/);
+  assert.match(bundleTransfer, /needs: \[build, attest, stage_core, stage_server\]/);
+  assert.match(bundleTransfer, /npm stage approve \$CORE_STAGE/);
+  assert.match(bundleTransfer, /npm stage approve \$SERVER_STAGE/);
+  assert.match(bundleTransfer, /npm stage approve \$BUNDLE_TRANSFER_STAGE/);
 });
 
-test("the finalizer proves both registry tarballs against the dedicated source tag", () => {
+test("the finalizer proves all registry tarballs against the dedicated source tag", () => {
   const { finalize: job } = jobs(finalize);
   assert.ok(job);
   assert.match(job, /^ {4}permissions:\n {6}contents: read$/m);
   assert.match(job, /registry-url: "https:\/\/registry\.npmjs\.org"/);
   assert.match(job, /npm pack "@superbee\/core@\$V"/);
   assert.match(job, /npm pack "@superbee\/server@\$V"/);
-  assert.equal((job.match(/gh attestation verify/g) ?? []).length, 2);
-  assert.equal((job.match(/--source-ref "refs\/tags\/libraries\/v\$V"/g) ?? []).length, 2);
+  assert.match(job, /npm pack "@superbee\/bundle-transfer@\$V"/);
+  assert.equal((job.match(/gh attestation verify/g) ?? []).length, 3);
+  assert.equal((job.match(/--source-ref "refs\/tags\/libraries\/v\$V"/g) ?? []).length, 3);
   assert.match(job, /server\.dependencies\["@superbee\/core"\], version/);
+  assert.match(job, /bundleTransfer\.dependencies\["@superbee\/core"\], version/);
 });
 
 test("the literal verifier consumes supplied tarballs and never creates replacements", () => {
-  assert.match(verifier, /usage: verify-runtime-libraries\.mjs <core\.tgz> <server\.tgz>/);
+  assert.match(verifier, /usage: verify-runtime-libraries\.mjs <core\.tgz> <server\.tgz> <bundle-transfer\.tgz>/);
   assert.doesNotMatch(verifier, /\["pack"|npm pack|npm run build/);
   assert.match(verifier, /platform: "browser"/);
   assert.match(verifier, /serverManifest\.dependencies\?\.\["@superbee\/core"\]/);
+  assert.match(verifier, /bundleTransferManifest\.dependencies\?\.\["@superbee\/core"\]/);
 });

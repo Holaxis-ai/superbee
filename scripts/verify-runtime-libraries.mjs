@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
 const execFileAsync = promisify(execFile);
-const usage = "usage: verify-runtime-libraries.mjs <core.tgz> <server.tgz>";
+const usage = "usage: verify-runtime-libraries.mjs <core.tgz> <server.tgz> <bundle-transfer.tgz>";
 
 function npmInvocation(args) {
   const npmCli = process.env.npm_execpath?.trim();
@@ -26,10 +26,11 @@ async function sha256(file) {
   return createHash("sha256").update(await readFile(file)).digest("hex");
 }
 
-export async function verifyRuntimeLibraries(coreInput, serverInput) {
-  if (!coreInput || !serverInput) throw new Error(usage);
+export async function verifyRuntimeLibraries(coreInput, serverInput, bundleTransferInput) {
+  if (!coreInput || !serverInput || !bundleTransferInput) throw new Error(usage);
   const coreTarball = path.resolve(coreInput);
   const serverTarball = path.resolve(serverInput);
+  const bundleTransferTarball = path.resolve(bundleTransferInput);
   const scratch = await mkdtemp(path.join(tmpdir(), "superbee-runtime-libraries-"));
   try {
     await writeFile(
@@ -41,6 +42,7 @@ export async function verifyRuntimeLibraries(coreInput, serverInput) {
         dependencies: {
           "@superbee/core": `file:${coreTarball}`,
           "@superbee/server": `file:${serverTarball}`,
+          "@superbee/bundle-transfer": `file:${bundleTransferTarball}`,
         },
       }, null, 2)}\n`,
     );
@@ -50,23 +52,35 @@ export async function verifyRuntimeLibraries(coreInput, serverInput) {
     );
 
     const scope = path.join(scratch, "node_modules", "@superbee");
-    const [coreManifest, serverManifest] = await Promise.all([
+    const [coreManifest, serverManifest, bundleTransferManifest] = await Promise.all([
       readFile(path.join(scope, "core", "package.json"), "utf8").then(JSON.parse),
       readFile(path.join(scope, "server", "package.json"), "utf8").then(JSON.parse),
+      readFile(path.join(scope, "bundle-transfer", "package.json"), "utf8").then(JSON.parse),
     ]);
     assert.equal((await lstat(path.join(scope, "core"))).isSymbolicLink(), false);
     assert.equal((await lstat(path.join(scope, "server"))).isSymbolicLink(), false);
+    assert.equal((await lstat(path.join(scope, "bundle-transfer"))).isSymbolicLink(), false);
     assert.equal(coreManifest.name, "@superbee/core");
     assert.equal(serverManifest.name, "@superbee/server");
+    assert.equal(bundleTransferManifest.name, "@superbee/bundle-transfer");
     assert.equal(coreManifest.private, undefined);
     assert.equal(serverManifest.private, undefined);
+    assert.equal(bundleTransferManifest.private, undefined);
     assert.equal(coreManifest.version, serverManifest.version, "library versions must stay synchronized");
+    assert.equal(coreManifest.version, bundleTransferManifest.version, "library versions must stay synchronized");
     assert.equal(
       serverManifest.dependencies?.["@superbee/core"],
       coreManifest.version,
       "server must depend on the exact matching core version",
     );
-    for (const manifest of [coreManifest, serverManifest]) {
+    assert.equal(
+      bundleTransferManifest.dependencies?.["@superbee/core"],
+      coreManifest.version,
+      "bundle-transfer must depend on the exact matching core version",
+    );
+    assert.deepEqual(Object.keys(bundleTransferManifest.exports).sort(), [".", "./node"]);
+    assert.ok((await lstat(path.join(scope, "bundle-transfer", "schema", "bundle-transfer-manifest-v1.schema.json"))).isFile());
+    for (const manifest of [coreManifest, serverManifest, bundleTransferManifest]) {
       assert.deepEqual(manifest.publishConfig, {
         access: "restricted",
         registry: "https://registry.npmjs.org/",
@@ -80,7 +94,8 @@ export async function verifyRuntimeLibraries(coreInput, serverInput) {
 import { VersionConflict } from "@superbee/core/storage";
 import { RemoteBackend } from "@superbee/core/remote";
 import { createRouter, resolveWireRequest } from "@superbee/server/router";
-export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteBackend };
+import { canonicalTransferJson, validateBundleTransferManifest } from "@superbee/bundle-transfer";
+export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteBackend, canonicalTransferJson, validateBundleTransferManifest };
 `,
     );
     const result = await build({
@@ -94,11 +109,24 @@ export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, Ve
     });
     assert.equal(result.errors.length, 0);
     assert.ok(result.outputFiles[0].text.includes("resolveWireRequest"));
+    assert.doesNotMatch(result.outputFiles[0].text, /node:(?:fs|path|crypto|child_process)/);
+
+    await writeFile(
+      path.join(scratch, "node-consumer.mjs"),
+      `import { captureFilesystemBundle, readBundleTransferArtifactDirectory } from "@superbee/bundle-transfer/node";
+if (typeof captureFilesystemBundle !== "function" || typeof readBundleTransferArtifactDirectory !== "function") throw new Error("node subpath missing");
+`,
+    );
+    await execFileAsync(process.execPath, ["node-consumer.mjs"], {
+      cwd: scratch,
+      maxBuffer: 10 * 1024 * 1024,
+    });
 
     return {
       version: coreManifest.version,
       core: { path: coreTarball, sha256: await sha256(coreTarball) },
       server: { path: serverTarball, sha256: await sha256(serverTarball) },
+      bundleTransfer: { path: bundleTransferTarball, sha256: await sha256(bundleTransferTarball) },
     };
   } finally {
     await rm(scratch, { recursive: true, force: true });
@@ -107,6 +135,6 @@ export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, Ve
 
 if (process.argv[1] && path.resolve(fileURLToPath(import.meta.url)) === path.resolve(process.argv[1])) {
   const args = process.argv.slice(2);
-  if (args.length !== 2) throw new Error(usage);
-  process.stdout.write(`${JSON.stringify(await verifyRuntimeLibraries(args[0], args[1]), null, 2)}\n`);
+  if (args.length !== 3) throw new Error(usage);
+  process.stdout.write(`${JSON.stringify(await verifyRuntimeLibraries(args[0], args[1], args[2]), null, 2)}\n`);
 }
