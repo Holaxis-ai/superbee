@@ -33,6 +33,10 @@
     "./publication/bridge": {
       "types": "./dist/publication/bridge-entry.d.ts",
       "default": "./dist/publication-bridge.mjs"
+    },
+    "./bundle-descriptor": {
+      "types": "./dist/bundle-descriptor/index.d.ts",
+      "default": "./dist/bundle-descriptor.mjs"
     }
   },
   "files": [
@@ -62,6 +66,7 @@
   "devDependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@superbee/board-git": "*",
+    "@superbee/bundle-descriptor": "*",
     "@superbee/core": "*",
     "@superbee/markdown-renderer": "*",
     "@superbee/mcp-app": "*",

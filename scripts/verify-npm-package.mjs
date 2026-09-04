@@ -43,6 +43,13 @@ const publicationExpectedFiles = [
   "dist/publication/snapshot-backend.d.ts",
   "dist/publication/types.d.ts",
 ];
+const bundleDescriptorExpectedFiles = [
+  "dist/bundle-descriptor.mjs",
+  "dist/bundle-descriptor/generated/bundle-descriptor-v1.d.ts",
+  "dist/bundle-descriptor/index.d.ts",
+  "dist/bundle-descriptor/schema.d.ts",
+  "dist/bundle-descriptor/schema/bundle-descriptor-v1.schema.json",
+];
 const baseExpectedFiles = [
   "LICENSE",
   "NOTICE",
@@ -51,6 +58,7 @@ const baseExpectedFiles = [
   SUCCESSOR_ARTIFACT,
   "package.json",
   ...publicationExpectedFiles,
+  ...bundleDescriptorExpectedFiles,
 ];
 
 /** Independently project the always-quoted native shell argument the installed CLI must advertise. */
@@ -303,9 +311,9 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
     expectedArtifact === SUCCESSOR_ARTIFACT
-      ? ["dist/publication-bridge.mjs", "dist/publication.mjs", expectedArtifact].sort()
+      ? ["dist/bundle-descriptor.mjs", "dist/publication-bridge.mjs", "dist/publication.mjs", expectedArtifact].sort()
       : [expectedArtifact],
-    "the tarball must carry the declared executable and the two declared publication subpath bundles",
+    "the tarball must carry the declared executable and declared public subpath bundles",
   );
   assert.equal(manifest.name, target.package.name);
   // NOTICE must be listed explicitly: npm ships LICENSE regardless of files[], but NOTICE only
@@ -320,6 +328,10 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
     assert.deepEqual(manifest.exports?.["./publication/bridge"], {
       types: "./dist/publication/bridge-entry.d.ts",
       default: "./dist/publication-bridge.mjs",
+    });
+    assert.deepEqual(manifest.exports?.["./bundle-descriptor"], {
+      types: "./dist/bundle-descriptor/index.d.ts",
+      default: "./dist/bundle-descriptor.mjs",
     });
   }
   // Scoped packages default to restricted at publish time — the manifest must pin public.
@@ -547,6 +559,23 @@ async function runInstalledProof(spec) {
       assert.deepEqual(snapshot.manifest.documents.map((row) => row.id), ["note"]);
       assert.match(snapshot.manifest.snapshotDigest, /^sha256:[0-9a-f]{64}$/);
       await snapshot.close();
+
+      const bundleDescriptor = await import(
+        pathToFileURL(path.join(installedRoot, "dist", "bundle-descriptor.mjs")).href
+      );
+      assert.equal(
+        bundleDescriptor.BUNDLE_DESCRIPTOR_V1,
+        "https://getsuperbee.com/schemas/bundle-descriptor/v1",
+      );
+      assert.equal(
+        bundleDescriptor.BUNDLE_DESCRIPTOR_SCHEMA_V1.$schema,
+        "https://json-schema.org/draft/2020-12/schema",
+      );
+      assert.deepEqual(
+        Object.keys(bundleDescriptor.BUNDLE_DESCRIPTOR_SCHEMA_V1.properties).sort(),
+        ["bundleId", "name", "purpose", "schema"],
+      );
+      assert.equal(Object.isFrozen(bundleDescriptor.BUNDLE_DESCRIPTOR_SCHEMA_V1.$defs), true);
     }
 
     // The shipped skill assets are byte-identical to the repo-committed generated ones (which
