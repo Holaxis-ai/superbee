@@ -40,6 +40,19 @@ export type BundleKeySource =
   | { remoteUrl: string; subpath: string; checkoutRoot: string }
   | { root: string };
 
+/** Edge trimming runs as a scan: an unanchored `/\/+$/` backtracks quadratically on long input. */
+function trimTrailing(value: string, char: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === char) end -= 1;
+  return value.slice(0, end);
+}
+
+function trimLeading(value: string, char: string): string {
+  let start = 0;
+  while (start < value.length && value[start] === char) start += 1;
+  return value.slice(start);
+}
+
 /**
  * Light, lossless-in-spirit normalization so trivially-equivalent URL spellings key together.
  * Known caveats (recorded on tasks/sync-cursor-store): ssh-vs-https spellings of one repo still
@@ -50,17 +63,15 @@ export type BundleKeySource =
  * the same checkout across a `repo`↔`repo.git` remote flip, which IS the same bundle.
  */
 function normalizeRemoteUrl(url: string): string {
-  let u = url.trim().replace(/\/+$/, "");
+  let u = trimTrailing(url.trim(), "/");
   if (u.endsWith(".git")) u = u.slice(0, -".git".length);
   return u;
 }
 
 function normalizeSubpath(subpath: string): string {
-  return subpath
-    .trim()
-    .replace(/^\.\//, "")
-    .replace(/^\/+/, "")
-    .replace(/\/+$/, "");
+  const trimmed = subpath.trim();
+  const relative = trimmed.startsWith("./") ? trimmed.slice(2) : trimmed;
+  return trimTrailing(trimLeading(relative, "/"), "/");
 }
 
 /**
