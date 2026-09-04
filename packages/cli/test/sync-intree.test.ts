@@ -172,6 +172,7 @@ test("in-tree: --establish refuses under an INDETERMINATE detection (tracked arm
       cause_certainty: "best-effort",
       possible_causes: ["url", "authentication", "visibility", "repository-read"],
     });
+    assert.doesNotMatch(`${est.err?.message} ${est.err?.help}`, /sync --establish|create (?:a|the|another|it) (?:remote )?repository/i);
 
     // Bare sync under the same indeterminate state falls through to the provisioning machine's
     // reviewed remote-unknown guidance — byte-identical to before PR C, exit 0, never a guess.

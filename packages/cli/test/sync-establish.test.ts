@@ -1082,7 +1082,50 @@ test("establish refusal: unreachable origin classifies TRANSIENT", async () => {
       cause_certainty: "best-effort",
       possible_causes: ["network"],
     });
-    assert.doesNotMatch(`${err?.message} ${err?.help}`, /create (?:a|the|another) repository|sync --establish.*publish/i);
+    assert.doesNotMatch(`${err?.message} ${err?.help}`, /create (?:a|the|another) repository|sync --establish/i);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("ambiguous Repository not found preflight diagnoses access without routing to establishment", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  const uploadPack = path.join(topo.dir, "private-upload-pack.sh");
+  try {
+    await initPlainBundleDir(topo.a);
+    const indexBefore = readFileSync(path.join(topo.a.board, "index.md"), "utf8");
+    const headBefore = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
+    await writeFile(
+      uploadPack,
+      "#!/bin/sh\necho 'ERROR: Repository not found.' >&2\necho 'fatal: Could not read from remote repository.' >&2\nexit 128\n",
+    );
+    await chmod(uploadPack, 0o755);
+    git(topo.a.root, ["config", "remote.origin.uploadpack", uploadPack]);
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root, "--json"]);
+    assert.equal(err?.code, "AUTH_REQUIRED");
+    assert.equal(err?.exitCode, 4);
+    assert.equal(err?.details?.op, "fetch");
+    assert.equal(err?.details?.best_effort, true);
+    assert.deepEqual(err?.details?.sharing, {
+      operation: "establish-preflight",
+      remote_repository: "unknown",
+      remote_board: "unknown",
+      repository_creation: "external-if-absent",
+      required_authority: "repository-read-or-visibility",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["url", "authentication", "visibility", "repository-read"],
+    });
+    const copy = `${err?.message} ${err?.help}`;
+    assert.match(copy, /confirm the repository is visible and determine whether origin\/board exists/);
+    assert.doesNotMatch(copy, /create (?:a|the|another|it) (?:remote )?repository|sync --establish/i);
+    assert.equal(readFileSync(path.join(topo.a.board, "index.md"), "utf8"), indexBefore);
+    assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), headBefore);
+    assert.notEqual(gitTry(topo.a.root, ["show-ref", "--verify", "refs/heads/board"]).status, 0);
+    assert.equal(existsSync(establishMarkerPath(topo.a.root)), false);
   } finally {
     await cleanup();
     await topo.cleanup();

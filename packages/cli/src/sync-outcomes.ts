@@ -189,7 +189,9 @@ function sharingFailureCopy(
       : "verify the exact 'origin' URL, active HTTPS/SSH identity, repository visibility, and repository Read access";
     return {
       message,
-      help: `${cause}; re-run ${inv} sync --establish only after that condition changes`,
+      help:
+        `${cause}; after access is restored, confirm the repository is visible and determine ` +
+        `whether origin/${BOARD_BRANCH} exists before choosing a sharing action`,
     };
   }
   if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {

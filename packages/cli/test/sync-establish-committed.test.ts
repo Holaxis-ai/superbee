@@ -874,6 +874,7 @@ test("a network fetch failure preserves TRANSIENT classification and refuses bef
         cause_certainty: "best-effort",
         possible_causes: ["network"],
       });
+      assert.doesNotMatch(`${err?.message} ${err?.help}`, /sync --establish|create (?:a|the|another|it) (?:remote )?repository/i);
     }
     assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), preHead);
     assert.equal(
@@ -908,6 +909,7 @@ test("an access-shaped committed fetch failure remains AUTH_REQUIRED and mutates
       possible_causes: ["url", "authentication", "visibility", "repository-read"],
     });
     assert.doesNotMatch(`${err?.message} ${err?.help}`, /repository (?:is )?(?:missing|absent)|create (?:a|the) repository/i);
+    assert.doesNotMatch(`${err?.message} ${err?.help}`, /sync --establish/i);
     assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), preHead);
     assert.notEqual(gitTry(topo.a.root, ["show-ref", "--verify", "refs/heads/board"]).status, 0);
     assert.equal(existsSync(committedMarkerPath(topo.a.root)), false);

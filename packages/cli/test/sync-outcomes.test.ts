@@ -472,3 +472,26 @@ test("permission-aware sharing adapter preserves the CliError contract and emits
     assert.equal(sharing.cause_certainty === undefined, sharing.possible_causes === undefined, row.name);
   }
 });
+
+test("establishment preflight copy stops at diagnosis while repository and board state remain unknown", () => {
+  const rows = [
+    {
+      error: new CliError("AUTH_REQUIRED", "denied", { details: { op: "fetch", best_effort: true } }),
+      diagnosis: "verify the exact 'origin' URL, active HTTPS/SSH identity, repository visibility, and repository Read access",
+    },
+    {
+      error: new CliError("TRANSIENT", "offline", { details: { op: "fetch", retryable: true } }),
+      diagnosis: "verify the network and exact 'origin' URL",
+    },
+  ];
+
+  for (const row of rows) {
+    const mapped = withSharingDetails(row.error, { operation: "establish-preflight" }, INV);
+    assert.equal(
+      mapped.help,
+      `${row.diagnosis}; after access is restored, confirm the repository is visible and determine ` +
+        "whether origin/board exists before choosing a sharing action",
+    );
+    assert.doesNotMatch(`${mapped.message} ${mapped.help}`, /sync --establish|create (?:a|the|another|it) (?:remote )?repository/i);
+  }
+});
