@@ -8,7 +8,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, symlink } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, symlink, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -741,3 +741,67 @@ test("resolveRecipe: a recipe.md symlink escaping the recipe root is rejected", 
     await rm(outsideTarget, { recursive: true, force: true });
   }
 });
+
+// The three leaf outcomes of reading over one descriptor. The escape cases above pin what must be
+// refused; these pin what must NOT be, and keep the two refusals that are not escapes legible.
+
+test("resolveRecipe: a symlink that stays inside the recipe root is read, not refused", async () => {
+  const dir = await tempDir();
+  try {
+    await mkdir(path.join(dir, "conventions"), { recursive: true });
+    await mkdir(path.join(dir, "shared"), { recursive: true });
+    await writeFile(path.join(dir, "recipe.md"), VALID_MANIFEST.bytes);
+    await writeFile(path.join(dir, "shared", "term.md"), VALID_TERM.bytes);
+    await symlink(path.join(dir, "shared", "term.md"), path.join(dir, "conventions", "term.md"));
+
+    const result = await resolveRecipe(dir);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.recipe.docs[0]!.id, "conventions/term");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveRecipe: an in-root symlink to a directory is refused as a non-regular file, not as an escape", async () => {
+  const dir = await tempDir();
+  try {
+    await mkdir(path.join(dir, "conventions"), { recursive: true });
+    await mkdir(path.join(dir, "shared"), { recursive: true });
+    await writeFile(path.join(dir, "recipe.md"), VALID_MANIFEST.bytes);
+    await symlink(path.join(dir, "shared"), path.join(dir, "conventions", "term.md"));
+
+    const result = await resolveRecipe(dir);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error.code, "RECIPE_UNSAFE_PATH");
+    assert.match(result.error.message, /not a regular file/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test(
+  "resolveRecipe: an unreadable file says so instead of blaming a symlink",
+  { skip: process.platform === "win32" || process.getuid?.() === 0 ? "needs POSIX permissions as a non-root user" : false },
+  async () => {
+    const dir = await tempDir();
+    try {
+      await mkdir(path.join(dir, "conventions"), { recursive: true });
+      await writeFile(path.join(dir, "recipe.md"), VALID_MANIFEST.bytes);
+      const term = path.join(dir, "conventions", "term.md");
+      await writeFile(term, VALID_TERM.bytes);
+      await chmod(term, 0o000);
+
+      const result = await resolveRecipe(dir);
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.equal(result.error.code, "RECIPE_UNSAFE_PATH");
+      assert.match(result.error.message, /permissions/);
+      assert.doesNotMatch(result.error.message, /symlink/);
+    } finally {
+      await chmod(path.join(dir, "conventions", "term.md"), 0o600).catch(() => {});
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+);

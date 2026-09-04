@@ -9,9 +9,13 @@
 // descriptor rather than from a second path lookup, so the bytes are the file that was verified.
 //
 // Ancestor symlinks stay honored (a stowed `~/.claude` is legitimate); the guard is leaf-only,
-// matching the ownership rule the skill and hook commands already state. `O_NOFOLLOW` does not
-// exist on Windows, where the flag degrades to 0 and this is exactly the previous read.
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+// matching the ownership rule the skill and hook commands already state. Where `O_NOFOLLOW` does
+// not exist (Windows), the flag alone would silently stop rejecting links, so the read falls back
+// to `lstat` plus a `dev`/`ino` comparison against the descriptor — the discipline
+// `update-orientation.ts` and `user-state.ts` already use. That fallback narrows the window rather
+// than closing it: the identity check happens after the open, so it detects a swap instead of
+// preventing one.
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 
 /** `missing`: nothing at the path. `unsafe`: a link, a non-regular leaf, or an unreadable one. */
 export type NoFollowRead =
@@ -19,18 +23,50 @@ export type NoFollowRead =
   | { state: "unsafe" }
   | { state: "present"; bytes: Buffer };
 
+// `O_NONBLOCK` is load-bearing, not tidiness: opening a FIFO for reading blocks until a writer
+// appears, so a leaf swapped for a pipe would hang the CLI forever, before `isFile()` ever runs.
 const READ_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+
+const HAS_NOFOLLOW = (constants.O_NOFOLLOW ?? 0) !== 0;
+
+/** The pre-open leaf identity the fallback compares against; `null` means "refuse". */
+function leafIdentity(filePath: string): { dev: number; ino: number } | "missing" | null {
+  try {
+    const leaf = lstatSync(filePath);
+    if (!leaf.isFile()) return null;
+    return { dev: leaf.dev, ino: leaf.ino };
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : null;
+  }
+}
 
 /** Reads a regular file's bytes, refusing a symlink at the leaf. Never throws for filesystem state. */
 export function readRegularFileNoFollowSync(filePath: string): NoFollowRead {
+  return readLeafSync(filePath, READ_FLAGS, HAS_NOFOLLOW);
+}
+
+/**
+ * The read itself, with the platform's two facts passed in. Exported only so a POSIX runner can
+ * exercise the degraded path a Windows host takes; callers use {@link readRegularFileNoFollowSync}.
+ */
+export function readLeafSync(filePath: string, flags: number, hasNoFollow: boolean): NoFollowRead {
+  let expected: { dev: number; ino: number } | null = null;
+  if (!hasNoFollow) {
+    const identity = leafIdentity(filePath);
+    if (identity === null) return { state: "unsafe" };
+    if (identity === "missing") return { state: "missing" };
+    expected = identity;
+  }
   let descriptor: number;
   try {
-    descriptor = openSync(filePath, READ_FLAGS);
+    descriptor = openSync(filePath, flags);
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? { state: "missing" } : { state: "unsafe" };
   }
   try {
-    if (!fstatSync(descriptor).isFile()) return { state: "unsafe" };
+    const opened = fstatSync(descriptor);
+    if (!opened.isFile()) return { state: "unsafe" };
+    if (expected && (opened.dev !== expected.dev || opened.ino !== expected.ino)) return { state: "unsafe" };
     return { state: "present", bytes: readFileSync(descriptor) };
   } catch {
     return { state: "unsafe" };
