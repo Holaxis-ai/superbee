@@ -370,7 +370,16 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.ok(workerBundle.outputFiles[0].text.includes("RemoteBackend"));
 
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
-    assert.equal(installedManifest.private, true);
+    const sourceManifest = JSON.parse(
+      await readFile(path.join(repoRoot, "packages", "core", "package.json"), "utf8"),
+    );
+    assert.equal(installedManifest.private, undefined);
+    assert.equal(installedManifest.version, sourceManifest.version);
+    assert.deepEqual(installedManifest.publishConfig, {
+      access: "restricted",
+      registry: "https://registry.npmjs.org/",
+    });
+    assert.match(installedManifest.scripts.prepublishOnly, /process\.exit\(1\)/);
     assert.deepEqual(installedManifest.files, ["dist"]);
     assert.ok(installedManifest.exports["."]);
     assert.ok(installedManifest.exports["./kinds"]);

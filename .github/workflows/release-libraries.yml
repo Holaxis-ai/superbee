@@ -1,0 +1,248 @@
+name: Release runtime libraries (build once, stage separately)
+
+# `libraries/v<version>` is independent of the public CLI's `v<version>` release identity. The
+# credential-free job builds and packs both libraries once. Later jobs only move those exact bytes.
+on:
+  push:
+    tags: ["libraries/v*"]
+
+permissions: {}
+
+concurrency:
+  group: runtime-libraries-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build and prove both libraries once
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      dist_tag: ${{ steps.meta.outputs.dist_tag }}
+      bootstrap: ${{ steps.meta.outputs.bootstrap }}
+      core_tgz: ${{ steps.pack.outputs.core_tgz }}
+      server_tgz: ${{ steps.pack.outputs.server_tgz }}
+      core_sha256: ${{ steps.pack.outputs.core_sha256 }}
+      server_sha256: ${{ steps.pack.outputs.server_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Resolve the synchronized version from the libraries tag
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REL="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)" \
+            || { echo "::error::cannot compare $GITHUB_SHA with main"; exit 1; }
+          case "$REL" in identical|behind) ;; *) echo "::error::tag commit $GITHUB_SHA is not on main (compare status: $REL)"; exit 1 ;; esac
+          CORE_V="$(node -p 'require("./packages/core/package.json").version')"
+          SERVER_V="$(node -p 'require("./packages/server/package.json").version')"
+          test "$CORE_V" = "$SERVER_V" || { echo "::error::core $CORE_V and server $SERVER_V are not synchronized"; exit 1; }
+          V="$CORE_V"
+          test "libraries/v$V" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME does not match library version $V"; exit 1; }
+          case "$V" in *-*) T=next ;; *) T=latest ;; esac
+          if [ "$V" = "0.1.0" ]; then BOOTSTRAP=true; else BOOTSTRAP=false; fi
+          {
+            echo "version=$V"
+            echo "dist_tag=$T"
+            echo "bootstrap=$BOOTSTRAP"
+          } >> "$GITHUB_OUTPUT"
+      - name: Require the CI verdict already recorded on this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 16); do
+            VERDICT="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20required%20lanes&filter=latest&per_page=100" \
+              --jq '([.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last) as $r
+                | if $r == null then "missing"
+                  elif $r.status != "completed" then "pending"
+                  elif $r.conclusion == "success" then "success"
+                  else "concluded:" + ($r.conclusion // "unknown") end')" \
+              || { echo "::error::cannot query check runs for $GITHUB_SHA; refusing to build without the CI verdict"; exit 1; }
+            case "$VERDICT" in
+              success) break ;;
+              missing|pending) echo "CI required lanes not settled on $GITHUB_SHA yet (attempt $attempt: $VERDICT)"; if [ "$attempt" -lt 16 ]; then sleep 30; fi ;;
+              *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on main before tagging"; exit 1 ;;
+            esac
+          done
+          test "$VERDICT" = "success" || { echo "::error::no successful CI required lanes verdict appeared on $GITHUB_SHA"; exit 1; }
+      - name: Build both runtime libraries
+        run: npm run build -w @superbee/core -w @superbee/server
+      - name: Pack once and prove the literal pair
+        id: pack
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          npm pack -w @superbee/core --json --pack-destination out > core-pack.json
+          npm pack -w @superbee/server --json --pack-destination out > server-pack.json
+          CORE_TGZ="$(node -p 'require("./core-pack.json")[0].filename')"
+          SERVER_TGZ="$(node -p 'require("./server-pack.json")[0].filename')"
+          test "$(node -p 'require("./core-pack.json").length')" = "1"
+          test "$(node -p 'require("./server-pack.json").length')" = "1"
+          npm run verify:runtime-libraries -- "out/$CORE_TGZ" "out/$SERVER_TGZ"
+          {
+            echo "core_tgz=$CORE_TGZ"
+            echo "server_tgz=$SERVER_TGZ"
+            echo "core_sha256=$(sha256sum "out/$CORE_TGZ" | cut -d' ' -f1)"
+            echo "server_sha256=$(sha256sum "out/$SERVER_TGZ" | cut -d' ' -f1)"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: runtime-libraries-${{ steps.meta.outputs.version }}
+          path: out/*.tgz
+          if-no-files-found: error
+          retention-days: 90
+
+  attest:
+    name: attest the exact library pair
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-libraries-${{ needs.build.outputs.version }}
+          path: out
+      - name: Re-hash both retained artifacts
+        run: |
+          set -euo pipefail
+          test "$(sha256sum "out/${{ needs.build.outputs.core_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.core_sha256 }}"
+          test "$(sha256sum "out/${{ needs.build.outputs.server_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.server_sha256 }}"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/${{ needs.build.outputs.core_tgz }}
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: out/${{ needs.build.outputs.server_tgz }}
+      - name: Print the one-time bootstrap gate
+        if: needs.build.outputs.bootstrap == 'true'
+        env:
+          V: ${{ needs.build.outputs.version }}
+          CORE_TGZ: ${{ needs.build.outputs.core_tgz }}
+          SERVER_TGZ: ${{ needs.build.outputs.server_tgz }}
+          CORE_SHA: ${{ needs.build.outputs.core_sha256 }}
+          SERVER_SHA: ${{ needs.build.outputs.server_sha256 }}
+        run: |
+          {
+            echo "## Human bootstrap required for the first restricted library release"
+            echo ""
+            echo "npm staging cannot create a new package. Download this run's retained artifact, verify the two digests, then a human maintainer may publish core followed by server with interactive 2FA:"
+            echo ""
+            echo "- $CORE_TGZ: \`$CORE_SHA\`"
+            echo "- $SERVER_TGZ: \`$SERVER_SHA\`"
+            echo ""
+            echo '```sh'
+            echo "npm publish \"./$CORE_TGZ\" --access restricted --ignore-scripts"
+            echo "npm publish \"./$SERVER_TGZ\" --access restricted --ignore-scripts"
+            echo "gh workflow run release-libraries-finalize.yml -f version=$V"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  stage_core:
+    name: stage core on npm (OIDC)
+    if: needs.build.outputs.bootstrap != 'true'
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      stage_id: ${{ steps.stage.outputs.stage_id }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-libraries-${{ needs.build.outputs.version }}
+          path: out
+      - name: Re-hash the core bytes about to be staged
+        run: |
+          test "$(sha256sum "out/${{ needs.build.outputs.core_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.core_sha256 }}"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          registry-url: "https://registry.npmjs.org"
+      - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund
+      - name: Stage the exact core tarball
+        id: stage
+        env:
+          TGZ: ${{ needs.build.outputs.core_tgz }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --provenance --json --loglevel verbose > stage.json
+          STAGE_ID="$(node -e '
+            const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
+            const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
+            const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
+          ')"
+          echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
+
+  stage_server:
+    name: stage server on npm (OIDC)
+    if: ${{ always() && needs.build.outputs.bootstrap != 'true' && needs.attest.result == 'success' && needs.stage_core.result == 'success' }}
+    needs: [build, attest, stage_core]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: runtime-libraries-${{ needs.build.outputs.version }}
+          path: out
+      - name: Re-hash the server bytes about to be staged
+        run: |
+          test "$(sha256sum "out/${{ needs.build.outputs.server_tgz }}" | cut -d' ' -f1)" = "${{ needs.build.outputs.server_sha256 }}"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          registry-url: "https://registry.npmjs.org"
+      - run: npm install --global npm@11.15.0 --ignore-scripts --no-audit --no-fund
+      - name: Stage the exact server tarball
+        id: stage
+        env:
+          TGZ: ${{ needs.build.outputs.server_tgz }}
+          DIST_TAG: ${{ needs.build.outputs.dist_tag }}
+        run: |
+          set -euo pipefail
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --provenance --json --loglevel verbose > stage.json
+          STAGE_ID="$(node -e '
+            const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
+            const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
+            const id = find(value); if (!id) process.exit(1); process.stdout.write(id);
+          ')"
+          echo "stage_id=$STAGE_ID" >> "$GITHUB_OUTPUT"
+      - name: Print the two human npm gates
+        env:
+          V: ${{ needs.build.outputs.version }}
+          CORE_STAGE: ${{ needs.stage_core.outputs.stage_id }}
+          SERVER_STAGE: ${{ steps.stage.outputs.stage_id }}
+        run: |
+          {
+            echo "## @superbee/core and @superbee/server are staged separately"
+            echo ""
+            echo "Inspect and approve core first, then server. Each approval requires the human's npm 2FA."
+            echo ""
+            echo '```sh'
+            echo "npm stage approve $CORE_STAGE"
+            echo "npm stage approve $SERVER_STAGE"
+            echo "gh workflow run release-libraries-finalize.yml -f version=$V"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

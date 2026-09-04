@@ -247,11 +247,20 @@ assert.deepEqual([...readBlob.bytes], [...bytes]);
     const installedManifest = JSON.parse(
       await readFile(path.join(installedServer, "package.json"), "utf8"),
     );
-    assert.equal(installedManifest.private, true);
+    const sourceManifest = JSON.parse(
+      await readFile(path.join(repoRoot, "packages", "server", "package.json"), "utf8"),
+    );
+    assert.equal(installedManifest.private, undefined);
+    assert.equal(installedManifest.version, sourceManifest.version);
+    assert.deepEqual(installedManifest.publishConfig, {
+      access: "restricted",
+      registry: "https://registry.npmjs.org/",
+    });
+    assert.match(installedManifest.scripts.prepublishOnly, /process\.exit\(1\)/);
     assert.deepEqual(installedManifest.files, ["dist"]);
     assert.ok(installedManifest.exports["."]);
     assert.ok(installedManifest.exports["./router"]);
-    assert.equal(installedManifest.dependencies["@superbee/core"], "*");
+    assert.equal(installedManifest.dependencies["@superbee/core"], installedManifest.version);
 
     const installedFiles = await filesUnder(installedServer);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
