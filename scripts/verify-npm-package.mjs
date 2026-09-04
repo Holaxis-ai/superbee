@@ -266,7 +266,9 @@ fs.mkdir = async function instrumentedMkdir(requested, options) {
 }
 
 export function sanitizedNpmEnvironment(source, userConfig, cache) {
-  const env = {};
+  // Null-prototype: a `__proto__` entry in the source environment would otherwise hit the
+  // prototype setter instead of becoming an own property, silently dropping it from the spread.
+  const env = Object.create(null);
   for (const [key, value] of Object.entries(source)) {
     if (!key.toLowerCase().startsWith("npm_config_")) env[key] = value;
   }
