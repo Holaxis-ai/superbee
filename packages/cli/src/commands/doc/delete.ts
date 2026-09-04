@@ -22,6 +22,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
           "expected-version": { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -67,7 +68,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   id = await resolveConceptIdCliArgument(bundle, rawId);
 
   // Belt-and-suspenders after `.md` ambiguity resolution and any future resolver changes.
@@ -96,7 +97,7 @@ export async function docDelete(argv: string[], deps: Partial<DocCliDeps>): Prom
         },
       );
     }
-    throw classifyBundleError(err, values.remote);
+    throw classifyBundleError(err, values.remote, values.bundle);
   }
 
   // AXI P6: deleting an ABSENT id is SUCCESS (deleted:false), never NOT_FOUND — exit 0 either way.

@@ -131,12 +131,16 @@ test("the web adapter preserves the retired remote helper's non-success-as-absen
   });
   const bundle: Bundle = {
     root: origin,
-    backend: new RemoteBackend({ baseUrl: origin, bundle: "default", maxRetries: 0 }),
+    backend: new RemoteBackend({ baseUrl: origin, bundleId: "bnd_00000000000000000000000000000000", maxRetries: 0 }),
   };
   const server = await bootUiServer({
     mode: "remote",
     bundle,
-    remoteBase: origin,
+    remote: {
+      baseUrl: origin,
+      origin: new URL(origin).origin,
+      bundleId: "bnd_00000000000000000000000000000000",
+    },
     sessionSecret: SECRET,
     renderDocument: ({ body }) => ({ html: body, bounded: false }),
     serveAsset: () => ({

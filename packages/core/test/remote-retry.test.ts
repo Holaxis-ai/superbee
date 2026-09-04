@@ -31,7 +31,7 @@ function scripted(steps: Step[]): { impl: (r: Request) => Promise<Response>; sta
 }
 
 function backend(impl: (r: Request) => Promise<Response>, maxRetries?: number): RemoteBackend {
-  return new RemoteBackend({ baseUrl: "http://x", bundle: "default", fetchImpl: impl, maxRetries });
+  return new RemoteBackend({ baseUrl: "http://x", bundleId: "bnd_00000000000000000000000000000000", fetchImpl: impl, maxRetries });
 }
 
 const ERR500: Step = { status: 500, body: JSON.stringify({ error: { code: "RUNTIME", message: "D1_ERROR: storage caused object to be reset" } }) };

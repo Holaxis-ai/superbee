@@ -1319,18 +1319,22 @@ test("--remote: new + kinds against a served bundle, parity with the same operat
     const url = `http://${handle.host}:${handle.port}`;
     try {
       const localKinds = await runJson(kinds, ["--dir", localDir]);
-      const remoteKinds = await runJson(kinds, ["--remote", url]);
+      const remoteKinds = await runJson(kinds, ["--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remoteKinds, localKinds);
 
       const localNew = await runJson(newCommand, ["Context Note", "n1", "--title", "N1", "--dir", localDir]);
-      const remoteNew = await runJson(newCommand, ["Context Note", "n1", "--title", "N1", "--remote", url]);
+      const remoteNew = await runJson(newCommand, ["Context Note", "n1", "--title", "N1", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remoteNew.id, localNew.id);
       assert.equal(remoteNew.kind, localNew.kind);
       await assert.rejects(
-        () => newCommand(["Context Note", "missing", "--remote", url]),
+        () => newCommand(["Context Note", "missing", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]),
         (err: unknown) => {
           assert.ok(err instanceof CliError);
-          assert.ok(err.help?.endsWith(`superbee new ${shellArg("Context Note")} --help --remote ${shellArg(url)}`));
+          assert.ok(
+            err.help?.endsWith(
+              `superbee new ${shellArg("Context Note")} --help --remote ${shellArg(url)} --bundle ${shellArg("bnd_00000000000000000000000000000000")}`,
+            ),
+          );
           return true;
         },
       );

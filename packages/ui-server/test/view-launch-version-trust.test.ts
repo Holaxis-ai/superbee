@@ -123,7 +123,7 @@ async function lyingUpstream(): Promise<{ origin: string; serve(html: string): v
 function remoteBundle(origin: string): Bundle {
   return {
     root: origin,
-    backend: new RemoteBackend({ baseUrl: origin, bundle: "default", maxRetries: 0 }),
+    backend: new RemoteBackend({ baseUrl: origin, bundleId: "bnd_00000000000000000000000000000000", maxRetries: 0 }),
   };
 }
 
@@ -132,7 +132,11 @@ test("launch identity is the host's own hash, not the version the upstream asser
   try {
     const server = await bootUiServer({
       mode: "remote",
-      remoteBase: upstream.origin,
+      remote: {
+        baseUrl: upstream.origin,
+        origin: new URL(upstream.origin).origin,
+        bundleId: "bnd_00000000000000000000000000000000",
+      },
       bundle: remoteBundle(upstream.origin),
       sessionSecret: SECRET,
       renderDocument,
@@ -168,7 +172,11 @@ test("a pinned upstream version cannot hold a launch current across a byte swap"
   try {
     const server = await bootUiServer({
       mode: "remote",
-      remoteBase: upstream.origin,
+      remote: {
+        baseUrl: upstream.origin,
+        origin: new URL(upstream.origin).origin,
+        bundleId: "bnd_00000000000000000000000000000000",
+      },
       bundle: remoteBundle(upstream.origin),
       sessionSecret: SECRET,
       renderDocument,
@@ -210,7 +218,11 @@ test("an approval for the honest bytes does not admit substituted bytes under th
     const authorizations = new SessionViewAuthorizationStore();
     const server = await bootUiServer({
       mode: "remote",
-      remoteBase: upstream.origin,
+      remote: {
+        baseUrl: upstream.origin,
+        origin: new URL(upstream.origin).origin,
+        bundleId: "bnd_00000000000000000000000000000000",
+      },
       bundle: remoteBundle(upstream.origin),
       sessionSecret: SECRET,
       renderDocument,

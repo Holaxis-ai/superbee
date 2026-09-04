@@ -40,7 +40,7 @@ import { doc } from "../src/commands/doc.js";
 import { link } from "../src/commands/link.js";
 import { toExit } from "../src/errors.js";
 import { API_KEY_ENV_VAR, SUPERBEE_API_KEY_ENV_VAR, resolveApiKeyEnv } from "../src/bundle.js";
-import { saveApiKeyForOrigin } from "../src/credentials.js";
+import { saveApiKeyForRemote } from "../src/credentials.js";
 
 const REMOTE_URL = "http://gate-test.local";
 const CORRECT_KEY = "correct-worker-api-key";
@@ -129,8 +129,8 @@ async function withApiKeyEnvs<T>(
 
 /**
  * Redirect `os.homedir()`'s resolution to `home` for the duration of `run` — `credentials.ts`'s
- * `getApiKeyForOrigin`/`saveApiKeyForOrigin` accept an optional `home` param, but `bundle.ts`'s
- * `openRemoteBundle` calls `getApiKeyForOrigin(origin)` WITHOUT one (real usage always wants the
+ * `getApiKeyForRemote`/`saveApiKeyForRemote` accept an optional `home` param, but `bundle.ts`'s
+ * selection calls `getApiKeyForRemote(origin, bundleId)` WITHOUT one (real usage always wants the
  * real home dir), so the only way to point it at an isolated temp dir from a test is to redirect
  * the env vars `os.homedir()` itself reads (`HOME` on POSIX). Node re-reads these on every call
  * (no caching), so this is safe to toggle per-test.
@@ -171,7 +171,7 @@ test("--remote against a gated handler: wrong API key -> AUTH_REQUIRED, exit 4, 
   const router = await freshRouter();
   await withApiKeyEnv("totally-wrong-key", () =>
     withGatedFetch(gate(router, CORRECT_KEY), async () => {
-      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--json"], {}));
+      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
       assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
@@ -184,7 +184,7 @@ test("--remote against a gated handler: MISSING API key (env unset, no credentia
   const router = await freshRouter();
   await withApiKeyEnv(undefined, () =>
     withGatedFetch(gate(router, CORRECT_KEY), async () => {
-      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--json"], {}));
+      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
       assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
@@ -197,7 +197,7 @@ test("--remote against a gated handler: server-side fail-closed 500 (unconfigure
   const router = await freshRouter();
   await withApiKeyEnv("doesnt-matter-gate-fails-closed", () =>
     withGatedFetch(gate(router, undefined), async () => {
-      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--json"], {}));
+      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
       assert.equal(exitCode, 1);
       assert.equal(envelope.error.code, "RUNTIME");
     }),
@@ -209,7 +209,7 @@ test("--remote against a gated handler: the CORRECT API key (via AGENTSTATE_LITE
   await withApiKeyEnv(CORRECT_KEY, () =>
     withGatedFetch(gate(router, CORRECT_KEY), async () => {
       let out = "";
-      await list(["--remote", REMOTE_URL, "--json"], { stdout: (s: string) => (out += s) });
+      await list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: (s: string) => (out += s) });
       const parsed = JSON.parse(out) as { count: number };
       assert.equal(parsed.count, 1);
     }),
@@ -220,7 +220,7 @@ test("--remote against a gated handler, via a command WITH its own catch-all (do
   const router = await freshRouter();
   await withApiKeyEnv("totally-wrong-key", () =>
     withGatedFetch(gate(router, CORRECT_KEY), async () => {
-      const { exitCode, envelope } = await exitOf(() => doc(["read", "concepts/alpha", "--remote", REMOTE_URL, "--json"], {}));
+      const { exitCode, envelope } = await exitOf(() => doc(["read", "concepts/alpha", "--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
       assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
@@ -233,7 +233,7 @@ test("--remote against a gated handler, via `link list` (graph-query-v0's queryE
   const router = await freshRouter();
   await withApiKeyEnv("totally-wrong-key", () =>
     withGatedFetch(gate(router, CORRECT_KEY), async () => {
-      const { exitCode, envelope } = await exitOf(() => link(["list", "--remote", REMOTE_URL, "--json"], {}));
+      const { exitCode, envelope } = await exitOf(() => link(["list", "--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
       assert.equal(exitCode, 4);
       assert.equal(envelope.error.code, "AUTH_REQUIRED");
       assert.match(envelope.error.help ?? "", /SUPERBEE_API_KEY=<key>/);
@@ -256,13 +256,13 @@ test("--remote: AGENTSTATE_LITE_API_KEY (env) beats a stored credentials-file ke
     // carries a DIFFERENT key that the gate would reject — so the command succeeding is only
     // possible if bundle.ts's `openRemoteBundle` actually preferred the env var over the file.
     const origin = new URL(REMOTE_URL).origin;
-    await saveApiKeyForOrigin(origin, "credentials-file-key-should-NOT-be-sent", home);
+    await saveApiKeyForRemote(origin, "bnd_00000000000000000000000000000000", "credentials-file-key-should-NOT-be-sent", home);
 
     await withHomeEnv(home, () =>
       withApiKeyEnv(CORRECT_KEY, () =>
         withGatedFetch(gate(router, CORRECT_KEY), async () => {
           let out = "";
-          await list(["--remote", REMOTE_URL, "--json"], { stdout: (s: string) => (out += s) });
+          await list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: (s: string) => (out += s) });
           const parsed = JSON.parse(out) as { count: number };
           assert.equal(
             parsed.count,
@@ -302,13 +302,13 @@ test("--remote: SUPERBEE_API_KEY env alias beats a stored credentials-file key f
   const home = await mkdtemp(path.join(tmpdir(), "agentstate-lite-superbee-envkey-test-"));
   try {
     const origin = new URL(REMOTE_URL).origin;
-    await saveApiKeyForOrigin(origin, "credentials-file-key-should-NOT-be-sent", home);
+    await saveApiKeyForRemote(origin, "bnd_00000000000000000000000000000000", "credentials-file-key-should-NOT-be-sent", home);
 
     await withHomeEnv(home, () =>
       withApiKeyEnvs({ [API_KEY_ENV_VAR]: undefined, [SUPERBEE_API_KEY_ENV_VAR]: CORRECT_KEY }, () =>
         withGatedFetch(gate(router, CORRECT_KEY), async () => {
           let out = "";
-          await list(["--remote", REMOTE_URL, "--json"], { stdout: (s: string) => (out += s) });
+          await list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: (s: string) => (out += s) });
           const parsed = JSON.parse(out) as { count: number };
           assert.equal(parsed.count, 1);
         }),
@@ -325,7 +325,7 @@ test("--remote: a response stripped of BOTH version headers (the production find
     // doc read (commands/doc.ts) has its OWN classifyBundleError catch-all — proves the
     // command-local closure point maps VERSION_MISSING to RUNTIME, complementing the
     // toExit-fallback coverage the other tests in this file already give `list`.
-    const { exitCode, envelope } = await exitOf(() => doc(["read", "concepts/alpha", "--remote", REMOTE_URL, "--json"], {}));
+    const { exitCode, envelope } = await exitOf(() => doc(["read", "concepts/alpha", "--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
     assert.equal(exitCode, 1);
     assert.equal(envelope.error.code, "RUNTIME");
     assert.match(envelope.error.message, /neither an X-Version nor an ETag/);
@@ -358,7 +358,7 @@ test("--remote: a 403 role-denial on doc write keeps its FORBIDDEN code through 
       // is the request the gate forbids. mutateDoc's classify (overwrite mode) must delegate to
       // classifyBundleError so the server's FORBIDDEN survives instead of collapsing to USAGE.
       const { exitCode, envelope } = await exitOf(() =>
-        doc(["write", "concepts/fresh-doc", "--type", "Concept", "--title", "t", "--body", "b", "--remote", REMOTE_URL, "--json"], {}),
+        doc(["write", "concepts/fresh-doc", "--type", "Concept", "--title", "t", "--body", "b", "--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}),
       );
       assert.equal(exitCode, 2); // FORBIDDEN maps to exit 2 (least-wrong; re-auth would not grant a role)
       assert.equal(envelope.error.code, "FORBIDDEN"); // NOT "USAGE" — the code the fix preserves
@@ -382,7 +382,7 @@ function unknownCode4xx(): (req: Request) => Promise<Response> {
 test("--remote: an unknown wire code on a 5xx (INTERNAL_ERROR) -> RUNTIME, exit 1 — never USAGE (P1 fix round 2)", async () => {
   await withApiKeyEnv(CORRECT_KEY, () =>
     withGatedFetch(unknownCode5xx(), async () => {
-      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--json"], {}));
+      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
       assert.equal(exitCode, 1);
       assert.equal(envelope.error.code, "RUNTIME");
       assert.match(envelope.error.message, /unexpected condition/);
@@ -393,7 +393,7 @@ test("--remote: an unknown wire code on a 5xx (INTERNAL_ERROR) -> RUNTIME, exit 
 test("--remote: an unknown wire code on a 4xx (UNPROCESSABLE, 422) -> USAGE, exit 2 — the adjudicated attested-client-fault rule", async () => {
   await withApiKeyEnv(CORRECT_KEY, () =>
     withGatedFetch(unknownCode4xx(), async () => {
-      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--json"], {}));
+      const { exitCode, envelope } = await exitOf(() => list(["--remote", REMOTE_URL, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}));
       assert.equal(exitCode, 2);
       assert.equal(envelope.error.code, "USAGE");
       assert.match(envelope.error.message, /understood but rejected/);

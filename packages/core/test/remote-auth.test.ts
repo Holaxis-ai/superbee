@@ -19,16 +19,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
+import { InvalidInputError } from "../src/errors.js";
 
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 }
 
+test("RemoteBackend rejects non-canonical bundle aliases before constructing a request", () => {
+  assert.throws(
+    () => new RemoteBackend({ baseUrl: "https://worker.example", bundleId: "default" as never }),
+    (err: unknown) => err instanceof InvalidInputError && /invalid bundle id/.test(err.message),
+  );
+});
+
 test("RemoteBackend: authToken is sent as Authorization: Bearer <token> on every request", async () => {
   const seenAuth: (string | null)[] = [];
   const remote = new RemoteBackend({
     baseUrl: "http://auth.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     authToken: "secret-token",
     fetchImpl: async (req: Request) => {
       seenAuth.push(req.headers.get("Authorization"));
@@ -46,7 +54,7 @@ test("RemoteBackend: no Authorization header is sent when authToken is not confi
   let seenAuth: string | null | undefined;
   const remote = new RemoteBackend({
     baseUrl: "http://noauth.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async (req: Request) => {
       seenAuth = req.headers.get("Authorization");
       return jsonResponse(200, { docs: [], next_cursor: null });
@@ -61,7 +69,7 @@ test("RemoteBackend: authToken is merged onto caller-supplied headers, not overw
   let seen: { auth: string | null; contentType: string | null } | undefined;
   const remote = new RemoteBackend({
     baseUrl: "http://merge.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     authToken: "tok",
     fetchImpl: async (req: Request) => {
       seen = { auth: req.headers.get("Authorization"), contentType: req.headers.get("content-type") };
@@ -76,7 +84,7 @@ test("RemoteBackend: authToken is merged onto caller-supplied headers, not overw
 test("RemoteBackend: a 401 with an AUTH_REQUIRED envelope surfaces as a RemoteError carrying that code + status", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://gated.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       jsonResponse(401, { error: { code: "AUTH_REQUIRED", message: "missing or invalid API key" } }),
   });
@@ -93,7 +101,7 @@ test("RemoteBackend: a 401 with an AUTH_REQUIRED envelope surfaces as a RemoteEr
 test("RemoteBackend: a 500 with a RUNTIME envelope surfaces as a RemoteError carrying that code + status (the misclassification this unit closes)", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://broken.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => jsonResponse(500, { error: { code: "RUNTIME", message: "something broke server-side" } }),
   });
 
@@ -108,7 +116,7 @@ test("RemoteBackend: a 500 with a RUNTIME envelope surfaces as a RemoteError car
 test("RemoteBackend: a 400 USAGE envelope surfaces as a RemoteError with code USAGE, status 400", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://bad-input.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => jsonResponse(400, { error: { code: "USAGE", message: "bad request" } }),
   });
 
@@ -129,7 +137,7 @@ test("RemoteBackend: a malformed/absent envelope falls back to a status-derived 
   for (const [status, expectedCode] of cases) {
     const remote = new RemoteBackend({
       baseUrl: "http://malformed.local",
-      bundle: "test",
+      bundleId: "bnd_11111111111111111111111111111111",
       fetchImpl: async () => new Response("not json", { status }),
     });
     await assert.rejects(() => remote.list(), (err: unknown) => {
@@ -144,7 +152,7 @@ test("RemoteBackend: a malformed/absent envelope falls back to a status-derived 
 test("RemoteBackend: 404 and 412 mapping is UNCHANGED by the RemoteError addition (still ENOENT-shaped / VersionConflict, never RemoteError)", async () => {
   const notFound = new RemoteBackend({
     baseUrl: "http://x.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => new Response(null, { status: 404 }),
   });
   await assert.rejects(() => notFound.read("missing"), (err: unknown) => {
@@ -155,7 +163,7 @@ test("RemoteBackend: 404 and 412 mapping is UNCHANGED by the RemoteError additio
 
   const conflict = new RemoteBackend({
     baseUrl: "http://x.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       jsonResponse(412, { error: { code: "VERSION_CONFLICT", message: "stale", details: { expected: "a", actual: "b" } } }),
   });

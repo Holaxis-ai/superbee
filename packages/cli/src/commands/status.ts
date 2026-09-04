@@ -62,7 +62,7 @@ import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../bundle-name.js";
 export const STATUS_USAGE = `superbee status — read-only whole-bundle health report (bundle lint)
 
 Usage:
-  superbee status [--limit <n>] [--dir <path> | --remote <url>]
+  superbee status [--limit <n>] [--dir <path> | --remote <url> --bundle <bundle_id>]
 
 Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared conventions/,
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
@@ -164,6 +164,7 @@ Options:
   --limit <n>             Cap each finding category's row list to <n> rows (default: 20; 0 = unlimited)
   --dir <path>            Bundle directory (default: discovered from the cwd)
   --remote <url>          Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                          (mutually exclusive with --dir; remote access is always explicit)
   --json                  Emit compact JSON instead of TOON
   -h, --help              Show this help
@@ -269,6 +270,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
           limit: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -290,7 +292,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     limit = Number(raw);
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
   if (!remote) await (deps.autoPull ?? maybeAutoPull)(values.dir);
   const bundle = await openBundle(values.dir, remote);

@@ -89,6 +89,7 @@ Options:
                        result reports \`shown\` alongside the total \`count\`.
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                        (mutually exclusive with --dir; remote access is always explicit)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help
@@ -117,7 +118,8 @@ const LIST_OPTIONS = {
   open: { type: "boolean" },
   limit: { type: "string" },
   dir: { type: "string" },
-  remote: { type: "string" },
+          remote: { type: "string" },
+          bundle: { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -228,7 +230,7 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
     .map((f) => f.trim())
     .filter((f) => f && !DEFAULT_KEYS.has(f));
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   // Opportunistic board freshness (autopull.ts): a LOCAL read of a provisioned board checkout
   // whose awareness cache has gone stale runs the time-boxed ff-only pull FIRST, so this very
   // read serves fresh state. Silent, fail-soft, detection-gated (never provisions), and skipped

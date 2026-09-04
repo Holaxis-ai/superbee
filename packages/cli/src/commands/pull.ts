@@ -83,6 +83,7 @@ Options:
   --out -               Stream raw bytes to stdout; receipt -> stderr
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle (mutually
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                          exclusive with --dir; remote access is always explicit)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
@@ -105,14 +106,14 @@ interface PullResult {
   fields: Record<string, unknown>;
 }
 
-async function pullDoc(bundle: Bundle, key: string, remoteUrl?: string): Promise<PullResult> {
+async function pullDoc(bundle: Bundle, key: string, remoteUrl?: string, remoteBundleId?: string): Promise<PullResult> {
   const canonicalPath = key.slice(0, -3) + ".md";
   const id = conceptIdFromPath(canonicalPath);
   let result: Awaited<ReturnType<typeof readDocVersioned>>;
   try {
     result = await readDocVersioned(bundle, id);
   } catch (err) {
-    throw readErrorToCliError(err, id, remoteUrl);
+    throw readErrorToCliError(err, id, remoteUrl, remoteBundleId);
   }
   const raw = stringifyDoc(result.doc.frontmatter, result.doc.body);
   const bytes = Buffer.from(raw, "utf8");
@@ -128,12 +129,12 @@ async function pullDoc(bundle: Bundle, key: string, remoteUrl?: string): Promise
   };
 }
 
-async function pullBlob(bundle: Bundle, key: string, remoteUrl?: string): Promise<PullResult> {
+async function pullBlob(bundle: Bundle, key: string, remoteUrl?: string, remoteBundleId?: string): Promise<PullResult> {
   let result: Awaited<ReturnType<typeof readBlob>>;
   try {
     result = await readBlob(bundle, key);
   } catch (err) {
-    throw classifyBundleError(err, remoteUrl);
+    throw classifyBundleError(err, remoteUrl, remoteBundleId);
   }
   if (result === null) {
     throw new CliError("NOT_FOUND", `no blob at key '${key}'`, {
@@ -174,6 +175,7 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
           out: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -202,13 +204,15 @@ export async function pull(argv: string[], deps: Partial<PullCliDeps> = {}): Pro
   // through a plain 0644 write, and brick every later private-state command — reached by a READ.
   if (out !== "-") assertPathOutsidePrivateState(path.resolve(out));
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const mode: OutputMode = resolveMode(values);
   const streamMode = out === "-";
   const docRoute = isDocRouteKey(key);
 
   const runToTarget = async (): Promise<void> => {
-    const result = docRoute ? await pullDoc(bundle, key, values.remote) : await pullBlob(bundle, key, values.remote);
+    const result = docRoute
+      ? await pullDoc(bundle, key, values.remote, values.bundle)
+      : await pullBlob(bundle, key, values.remote, values.bundle);
     const receipt: Record<string, unknown> = { pull: "read", key, ...result.fields, out };
 
     // A10: pull's receipt hints a ready-to-paste `promote --expected-version <token>` with the

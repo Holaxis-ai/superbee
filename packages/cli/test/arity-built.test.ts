@@ -339,7 +339,7 @@ test("surplus remote list performs zero HTTP requests or connections", async () 
   const address = server.address();
   assert.ok(address && typeof address === "object");
   const scratch = mkdtempSync(join(tmpdir(), "aslite-arity-network-"));
-  const child = spawn(process.execPath, [CLI, "list", SURPLUS, "--remote", `http://127.0.0.1:${address.port}`], { cwd: scratch, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [CLI, "list", SURPLUS, "--remote", `http://127.0.0.1:${address.port}`, "--bundle", "bnd_00000000000000000000000000000000"], { cwd: scratch, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
   child.stdout.setEncoding("utf8").on("data", (chunk) => { stdout += chunk; });

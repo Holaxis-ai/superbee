@@ -26,7 +26,9 @@ import {
   isReservedFile,
   pathFromConceptId,
   stripETagWrapper,
+  isCanonicalBundleId,
   type BlobKey,
+  type BundleId,
   type ConceptId,
   type DeleteOptions,
   type Frontmatter,
@@ -169,8 +171,7 @@ function versionHeaders(version: Version): Record<string, string> {
   return { "X-Version": version, ETag: `"${version}"` };
 }
 
-/** Immutable hosted bundle id: 16 random bytes rendered as lowercase hexadecimal. */
-export type BundleId = `bnd_${string}`;
+export type { BundleId } from "@superbee/core/storage";
 
 /** Access needed before a registered endpoint may dispatch. */
 export type WireAccessClass = "public" | "read" | "write";
@@ -361,11 +362,7 @@ export class WireRequestResolutionError extends Error {
   }
 }
 
-const BUNDLE_ID_RE = /^bnd_[0-9a-f]{32}$/;
-
-export function isCanonicalBundleId(value: string): value is BundleId {
-  return BUNDLE_ID_RE.test(value);
-}
+export { isCanonicalBundleId };
 
 function literalSpecificity(path: string): number {
   return path.split("/").filter((segment) => segment !== "" && !segment.startsWith("{")).length;

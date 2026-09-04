@@ -1,7 +1,7 @@
 // `superbee serve [--dir <path>] [--host <h>] [--port <p>]` — boot the reference
 // wire-protocol server (`@superbee/server`) over a local bundle.
 //
-// With `serve` running, `--remote <url>` on every
+// With `serve` running, `--remote <url> --bundle <bundle_id>` on every
 // other bundle command (doc/list/link/status) talks to it over `docs/WIRE-PROTOCOL.md` v0 —
 // the complete remote loop (CLI -> HTTP -> engine) on one machine, zero cloud infra.
 //
@@ -43,7 +43,7 @@ Options:
   -h, --help            Show this help
 
 Connect a client once this is running:
-  superbee list --remote http://127.0.0.1:<port>
+  superbee list --remote http://127.0.0.1:<port> --bundle <bundle_id>
 
 Caveat: concurrent writes to the same target across local clients and processes are serialized.
 A process crash can leave a runtime lock that fails closed until inspected and removed.
@@ -128,7 +128,7 @@ export async function serve(argv: string[], deps: Partial<ServeCliDeps> = {}): P
         auth: "none (v0 reference server; loopback-only default — see docs/WIRE-PROTOCOL.md)",
         concurrency:
           "lossless per target across same-user local processes; a crash-leftover lock fails closed until inspected and removed",
-        help: [`${cliInvocation()} list --remote ${commandToken(url)}`],
+        help: [`${cliInvocation()} list --remote ${commandToken(url)} --bundle <bundle_id>`],
       },
       resolveMode(values),
     ),

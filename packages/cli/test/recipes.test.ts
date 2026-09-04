@@ -2164,16 +2164,16 @@ test("--remote: recipe add against a served bundle, idempotent parity with the s
     const url = `http://${handle.host}:${handle.port}`;
     try {
       const localAdd = await runJson(recipe, ["add", "context-notes", "--dir", localDir]);
-      const remoteAdd = await runJson(recipe, ["add", "context-notes", "--remote", url]);
+      const remoteAdd = await runJson(recipe, ["add", "context-notes", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remoteAdd.changed, true);
       assert.equal(localAdd.id, remoteAdd.id);
 
       // Second add over --remote is a changed:false no-op, same as local.
-      const remoteAddAgain = await runJson(recipe, ["add", "context-notes", "--remote", url]);
+      const remoteAddAgain = await runJson(recipe, ["add", "context-notes", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remoteAddAgain.changed, false);
 
       const localRecipes = await runJson(recipes, ["--dir", localDir]);
-      const remoteRecipes = await runJson(recipes, ["--remote", url]);
+      const remoteRecipes = await runJson(recipes, ["--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remoteRecipes.count, localRecipes.count);
       const remoteRows = remoteRecipes.recipes as Array<Record<string, unknown>>;
       const localRows = localRecipes.recipes as Array<Record<string, unknown>>;
@@ -2182,10 +2182,10 @@ test("--remote: recipe add against a served bundle, idempotent parity with the s
         localRows.map(({ commands: _, ...row }) => row),
       );
       assert.deepEqual(remoteRows[0]!.commands, {
-        add_to_bundle: `${cliInvocation()} recipe add context-notes --remote ${shellArg(url)}`,
+        add_to_bundle: `${cliInvocation()} recipe add context-notes --remote ${shellArg(url)} --bundle 'bnd_00000000000000000000000000000000'`,
       });
       assert.deepEqual(remoteRecipes.help, [
-        `${cliInvocation()} recipe add <name-or-path> --remote ${shellArg(url)}`,
+        `${cliInvocation()} recipe add <name-or-path> --remote ${shellArg(url)} --bundle 'bnd_00000000000000000000000000000000'`,
       ]);
     } finally {
       await handle.close();
@@ -2209,7 +2209,7 @@ test("--remote: recipe evolve plans and applies through the same state-bound CAS
     const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
     const url = `http://${handle.host}:${handle.port}`;
     try {
-      const plan = await runJson(recipe, ["evolve", "context-notes", "--remote", url]);
+      const plan = await runJson(recipe, ["evolve", "context-notes", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(plan.ready, true);
       assert.equal(plan.changed, true);
       assert.equal((plan.counts as Record<string, unknown>).updates, 1);
@@ -2219,7 +2219,7 @@ test("--remote: recipe evolve plans and applies through the same state-bound CAS
       );
 
       const applied = await runJson(recipe, [
-        "evolve", "context-notes", "--apply", String(plan.plan_token), "--remote", url,
+        "evolve", "context-notes", "--apply", String(plan.plan_token), "--remote", url, "--bundle", "bnd_00000000000000000000000000000000",
       ]);
       assert.equal(applied.recipe, "evolved");
       assert.equal(applied.changed, true);
@@ -2239,13 +2239,13 @@ test("--remote: portable recipe installs and rechecks its Page pair through the 
     const handle: ServerHandle = await serve({ bundle: { root: remoteDir }, port: 0 });
     const url = `http://${handle.host}:${handle.port}`;
     try {
-      const first = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--remote", url]);
+      const first = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(first.changed, true);
       const pages = first.pages as Array<Record<string, unknown>>;
       assert.equal(pages[0]!.entry_changed, true);
       assert.equal(pages[0]!.registry_changed, true);
 
-      const second = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--remote", url]);
+      const second = await runJson(recipe, ["add", REVIEW_WORKFLOW_RECIPE, "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(second.changed, false);
       const secondPages = second.pages as Array<Record<string, unknown>>;
       assert.equal(secondPages[0]!.entry_changed, false);

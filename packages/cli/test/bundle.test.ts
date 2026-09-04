@@ -297,15 +297,45 @@ test("resolveProjectBinding: a missing, empty, or non-string 'bundle' field is a
 
 // ── resolveRemoteFlag: precedence matrix ────────────────────────────────────
 
-test("resolveRemoteFlag precedence: an explicit --remote flag wins outright over dirFlag, env, AND a URL project binding", async () => {
+test("resolveRemoteFlag requires one exact --remote + --bundle pair", async () => {
+  await assert.rejects(
+    () => resolveRemoteFlag("https://worker.example", undefined, undefined),
+    (err: unknown) => err instanceof CliError && err.code === "USAGE" && /requires --bundle/.test(err.message),
+  );
+  await assert.rejects(
+    () => resolveRemoteFlag(undefined, undefined, "bnd_11111111111111111111111111111111"),
+    (err: unknown) => err instanceof CliError && err.code === "USAGE" && /requires --remote/.test(err.message),
+  );
+  for (const invalid of ["default", "bnd_ABCDEFABCDEFABCDEFABCDEFABCDEFAB", "bnd_1234"]) {
+    await assert.rejects(
+      () => resolveRemoteFlag("https://worker.example", undefined, invalid),
+      (err: unknown) => err instanceof CliError && err.code === "USAGE" && /invalid bundle id/.test(err.message),
+    );
+  }
+
+  const selected = await resolveRemoteFlag(
+    "https://worker.example/path/",
+    undefined,
+    "bnd_11111111111111111111111111111111",
+  );
+  assert.deepEqual(selected, {
+    baseUrl: "https://worker.example/path",
+    origin: "https://worker.example",
+    bundleId: "bnd_11111111111111111111111111111111",
+  });
+});
+
+test("resolveRemoteFlag rejects an explicit remote combined with an explicit directory", async () => {
   const dir = await tempDir();
   const prior = process.env.AGENTSTATE_LITE_REMOTE;
   try {
     await writeBinding(dir, "http://binding.example");
     process.env.AGENTSTATE_LITE_REMOTE = "http://env.example";
     await inDir(dir, async () => {
-      const resolved = await resolveRemoteFlag("http://explicit.example", "/some/dir");
-      assert.equal(resolved, "http://explicit.example");
+      await assert.rejects(
+        () => resolveRemoteFlag("http://explicit.example", "/some/dir", "bnd_11111111111111111111111111111111"),
+        (err: unknown) => err instanceof CliError && err.code === "USAGE",
+      );
     });
   } finally {
     if (prior === undefined) delete process.env.AGENTSTATE_LITE_REMOTE;
@@ -321,7 +351,7 @@ test("resolveRemoteFlag precedence: an explicit --dir suppresses BOTH the env de
     await writeBinding(dir, "http://binding.example");
     process.env.AGENTSTATE_LITE_REMOTE = "http://env.example";
     await inDir(dir, async () => {
-      const resolved = await resolveRemoteFlag(undefined, "/some/explicit/dir");
+      const resolved = await resolveRemoteFlag(undefined, "/some/explicit/dir", undefined);
       assert.equal(resolved, undefined);
     });
   } finally {
@@ -338,7 +368,7 @@ test("resolveRemoteFlag: legacy AGENTSTATE_LITE_REMOTE is a deterministic migrat
     await writeBinding(dir, "http://binding.example");
     process.env.AGENTSTATE_LITE_REMOTE = "http://env.example";
     await inDir(dir, async () => {
-      await assert.rejects(() => resolveRemoteFlag(undefined, undefined), (err: unknown) => {
+      await assert.rejects(() => resolveRemoteFlag(undefined, undefined, undefined), (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");
         assert.match(err.message, /AGENTSTATE_LITE_REMOTE ambient remote selection is retired/);
@@ -361,7 +391,7 @@ test("resolveRemoteFlag: SUPERBEE_REMOTE is not an ambient remote binding", asyn
     delete process.env.AGENTSTATE_LITE_REMOTE;
     process.env.SUPERBEE_REMOTE = "http://env.example";
     await inDir(dir, async () => {
-      const resolved = await resolveRemoteFlag(undefined, undefined);
+      const resolved = await resolveRemoteFlag(undefined, undefined, undefined);
       assert.equal(resolved, undefined);
     });
   } finally {
@@ -379,7 +409,7 @@ test("resolveRemoteFlag: even a blank-but-present legacy env value errors instea
   try {
     process.env.AGENTSTATE_LITE_REMOTE = "   ";
     await inDir(dir, async () => {
-      await assert.rejects(() => resolveRemoteFlag(undefined, undefined), (err: unknown) => {
+      await assert.rejects(() => resolveRemoteFlag(undefined, undefined, undefined), (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");
         assert.match(err.help ?? "", /--remote <url>/);
@@ -400,7 +430,7 @@ test("resolveRemoteFlag: a reached URL project binding errors instead of activat
     delete process.env.AGENTSTATE_LITE_REMOTE;
     await writeBinding(dir, "http://binding.example");
     await inDir(dir, async () => {
-      await assert.rejects(() => resolveRemoteFlag(undefined, undefined), (err: unknown) => {
+      await assert.rejects(() => resolveRemoteFlag(undefined, undefined, undefined), (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");
         assert.match(err.message, /pass --remote http:\/\/binding\.example explicitly/);
@@ -421,7 +451,7 @@ test("resolveRemoteFlag: a directory-type binding is NOT a remote value — reso
     delete process.env.AGENTSTATE_LITE_REMOTE;
     await writeBinding(dir, "./somewhere");
     await inDir(dir, async () => {
-      const resolved = await resolveRemoteFlag(undefined, undefined);
+      const resolved = await resolveRemoteFlag(undefined, undefined, undefined);
       assert.equal(resolved, undefined);
     });
   } finally {
@@ -439,7 +469,7 @@ test("resolveRemoteFlag: a malformed binding file throws USAGE ONLY when actuall
     await writeRawBinding(dir, "not json at all");
     await inDir(dir, async () => {
       await assert.rejects(
-        () => resolveRemoteFlag(undefined, undefined),
+        () => resolveRemoteFlag(undefined, undefined, undefined),
         (err: unknown) => {
           assert.ok(err instanceof CliError);
           assert.equal(err.code, "USAGE");
@@ -447,7 +477,7 @@ test("resolveRemoteFlag: a malformed binding file throws USAGE ONLY when actuall
         },
       );
       // An explicit --dir suppresses the (malformed) binding SILENTLY — no throw at all.
-      const resolved = await resolveRemoteFlag(undefined, "/anything");
+      const resolved = await resolveRemoteFlag(undefined, "/anything", undefined);
       assert.equal(resolved, undefined);
     });
   } finally {

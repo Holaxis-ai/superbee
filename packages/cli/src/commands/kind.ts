@@ -68,6 +68,7 @@ Options:
   --reason <text>       Record why the Kind was declined ('dismiss' only)
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
   --actor <name>        Attribute this write
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
@@ -128,6 +129,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
           reason: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           actor: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
@@ -253,7 +255,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
     }
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const [registry, okfVersion] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
   const target = registry.kinds.get(kindName);
   if (!target) {

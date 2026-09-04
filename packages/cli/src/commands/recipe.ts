@@ -26,7 +26,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPE_USAGE = `superbee recipe — apply a recipe to this bundle
 
 Usage:
-  superbee recipe add <name-or-path> [--dir <path>] [--remote <url>]
+  superbee recipe add <name-or-path> [--dir <path>] [--remote <url> --bundle <bundle_id>]
   superbee recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [options]
 
 Applies a recipe's definitions to the bundle. <name-or-path> is a built-in name (e.g.
@@ -54,6 +54,7 @@ active View assets, or artifacts omitted from the source.
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                          (mutually exclusive with --dir; remote access is always explicit)
   --apply <plan-token>  Apply the exact ready token returned by 'recipe evolve' (evolve only)
   --actor <name>        Attribute evolved convention writes (evolve only)
@@ -89,6 +90,7 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
         options: {
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           apply: { type: "string" },
           actor: { type: "string" },
           json: { type: "boolean" },
@@ -120,12 +122,12 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   if (!loaded.ok) {
     throw new CliError("USAGE", loaded.error.message, { help: `${cliInvocation()} recipes` });
   }
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   const bundle = await openBundle(values.dir, remote);
   const target: CommandText = values.dir !== undefined
     ? commandFragment` --dir ${commandQuoted(values.dir)}`
     : remote !== undefined
-      ? commandFragment` --remote ${commandQuoted(remote)}`
+      ? commandFragment` --remote ${commandQuoted(values.remote!)} --bundle ${commandQuoted(values.bundle!)}`
       : commandLiteral("");
   const planCommand = `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
   const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
@@ -161,6 +163,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
         options: {
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -185,7 +188,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     throw new CliError("USAGE", loaded.error.message, { help: `${cliInvocation()} recipes` });
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   const bundle = await openBundle(values.dir, remote);
   const result = await applyRecipe(bundle, loaded.recipe);
 
@@ -221,7 +224,7 @@ async function recipeAdd(argv: string[], stdout: (s: string) => void): Promise<v
     const target: CommandText = values.dir !== undefined
       ? commandFragment` --dir ${commandQuoted(values.dir)}`
       : remote !== undefined
-        ? commandFragment` --remote ${commandQuoted(remote)}`
+        ? commandFragment` --remote ${commandQuoted(values.remote!)} --bundle ${commandQuoted(values.bundle!)}`
         : commandLiteral("");
     receipt.commands = { plan_evolution: `${cliInvocation()} recipe evolve ${commandQuoted(ref)}${target}` };
   }

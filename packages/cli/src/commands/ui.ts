@@ -1,4 +1,4 @@
-// `superbee ui [--dir <path> | --remote <url>] [--port <n>] [--open]` — boot the local
+// `superbee ui [--dir <path> | --remote <url> --bundle <bundle_id>] [--port <n>] [--open]` — boot the local
 // web UI (plans/ui-v1.md rev 3.2): the SPA plus a same-origin `/v0/*` surface, either the
 // reference router mounted in-process over a local bundle (`--dir`) or a reverse proxy onto a
 // deployed remote (`--remote`) with conditional Bearer injection. The SPA never knows which.
@@ -23,11 +23,8 @@ import {
   resolveLocalBundleRoute,
   resolveLocalBundleTarget,
   resolveRemoteFlag,
-  resolveApiKeyEnv,
 } from "../bundle.js";
 import { resolveConceptIdCliArgument } from "../concept-id.js";
-import { normalizeServer } from "../config.js";
-import { getApiKeyForOrigin } from "../credentials.js";
 import { bootUiServer as bootUiServerDefault, type UiServerHandle, type UiServerOptions } from "../ui/server.js";
 import { writeUiUrlFile, clearUiUrlFile } from "../ui/url-file.js";
 import { CliError } from "../errors.js";
@@ -51,7 +48,7 @@ import {
 export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: read its docs as rendered pages (cross-links, backlinks), launch its registered Views (type: View docs framed sandboxed with live updates; legacy type: Page docs are not registered — 'status' lists them and the migrate-legacy-view-names script renames them in place), and see live activity, sharing status, and your workspaces
 
 Usage:
-  superbee ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
+  superbee ui [--dir <path> | --remote <url> --bundle <bundle_id>] [--port <n>] [--actor <name>] [--open]
   superbee ui --status [--dir <path>] [--limit <n>]
   superbee ui --stop [--dir <path>] [--actor <name>]
 
@@ -59,6 +56,7 @@ Options:
   --dir <path>          Bundle directory (default: discovered from the cwd) — mounts the
                          reference router in-process
   --remote <url>         Reverse-proxy /v0/* to a deployed remote instead (explicit only)
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
   --port <p>            Port to bind (default: 0 — an OS-assigned ephemeral port)
   --actor <name>        Advisory identity for human-confirmed local View actions. Precedence:
                          --actor > SUPERBEE_ACTOR > AGENTSTATE_LITE_ACTOR (legacy) > absent.
@@ -160,6 +158,7 @@ type UiEntry = { kind: "launcher" } | { kind: "document" };
 const UI_PARSE_OPTIONS = {
   dir: { type: "string" },
   remote: { type: "string" },
+  bundle: { type: "string" },
   port: { type: "string" },
   actor: { type: "string" },
   open: { type: "boolean" },
@@ -174,6 +173,7 @@ interface ParsedUiArgs {
   values: {
     dir?: string;
     remote?: string;
+    bundle?: string;
     port?: string;
     actor?: string;
     open?: boolean;
@@ -212,7 +212,7 @@ export async function openDocumentUi(argv: string[], deps: Partial<UiCliDeps> = 
     (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(DOC_OPEN_USAGE);
     return;
   }
-  const remoteFlag = await resolveRemoteFlag(parsed.values.remote, parsed.values.dir);
+  const remoteFlag = await resolveRemoteFlag(parsed.values.remote, parsed.values.dir, parsed.values.bundle);
   if (remoteFlag !== undefined) {
     await runUi(parsed, deps, { kind: "document" });
     return;
@@ -275,7 +275,9 @@ async function runManagedUiControl(
   deps: Partial<UiCliDeps>,
 ): Promise<void> {
   if (values.status && values.stop) throw new CliError("USAGE", "--status and --stop are mutually exclusive");
-  if (values.remote !== undefined) throw new CliError("USAGE", "managed UI status and stop are local-only; --remote remains foreground");
+  if (values.remote !== undefined || values.bundle !== undefined) {
+    throw new CliError("USAGE", "managed UI status and stop are local-only; --remote and --bundle apply only to foreground UI");
+  }
   if (values.port !== undefined || values.open || positionals.length > 0) {
     throw new CliError("USAGE", "ui --status/--stop accept only their documented --dir, --actor, --limit, and --json options");
   }
@@ -345,48 +347,33 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     port = Number(raw);
   }
 
-  const remoteFlag = await resolveRemoteFlag(values.remote, values.dir);
+  const remoteFlag = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} ${commandWords(commandPath)} --actor <name>` });
   const renderDocumentOpenCommand = (id: string): string | null => {
-    const source = remoteFlag ?? bundle.root;
-    if (!isRenderableToken(id) || !isRenderableToken(source)) return null;
-    const sourceFlag = remoteFlag ? "--remote" : "--dir";
+    if (!isRenderableToken(id)) return null;
+    if (remoteFlag && (!isRenderableToken(remoteFlag.baseUrl) || !isRenderableToken(remoteFlag.bundleId))) return null;
+    if (!remoteFlag && !isRenderableToken(bundle.root)) return null;
+    const sourceArgs = remoteFlag
+      ? commandFragment`--remote ${commandToken(remoteFlag.baseUrl)} --bundle ${commandToken(remoteFlag.bundleId)}`
+      : commandFragment`--dir ${commandToken(bundle.root)}`;
     const actorFlag = actor === undefined
       ? commandFragment``
       : commandFragment` --actor ${commandToken(actor)}`;
     return explicitPort
-      ? `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)} --port ${commandToken(String(port))}${actorFlag} -- ${commandToken(id)}`
-      : `${cliInvocation()} doc open ${sourceFlag} ${commandToken(source)}${actorFlag} -- ${commandToken(id)}`;
+      ? commandFragment`${cliInvocation()} doc open ${sourceArgs} --port ${commandToken(String(port))}${actorFlag} -- ${commandToken(id)}`
+      : commandFragment`${cliInvocation()} doc open ${sourceArgs}${actorFlag} -- ${commandToken(id)}`;
   };
   let options: UiServerOptions;
   let rootLabel: string;
   let bundle: Bundle;
 
   if (remoteFlag) {
-    if (values.dir) {
-      throw new CliError("USAGE", "--remote and --dir are mutually exclusive", {
-        help: `${cliInvocation()} ${commandWords(commandPath)} --remote <url>`,
-      });
-    }
-    let base: string;
-    let origin: string;
-    try {
-      const resolved = normalizeServer(remoteFlag);
-      base = resolved.base;
-      origin = resolved.resource;
-    } catch (err) {
-      throw new CliError("USAGE", err instanceof Error ? err.message : String(err), {
-        help: `${cliInvocation()} ${commandWords(commandPath)} --remote http://127.0.0.1:4818`,
-      });
-    }
-    const envKey = resolveApiKeyEnv();
-    const apiKey = envKey || (await getApiKeyForOrigin(origin));
     // Registered Views, kind/edge reads, and the trusted bridge share the SAME semantic
     // RemoteBackend bundle every other engine-aware command uses over --remote; the SPA's /v0
     // transport path stays the raw proxy.
     bundle = await openBundle(undefined, remoteFlag);
-    options = { mode: "remote", port, remoteBase: base, apiKey, bundle, actor, renderDocumentOpenCommand };
-    rootLabel = base;
+    options = { mode: "remote", port, remote: remoteFlag, bundle, actor, renderDocumentOpenCommand };
+    rootLabel = bundle.root;
   } else {
     bundle = deps.localBundle ?? await openBundle(values.dir);
     const router = createRouter(bundle);
@@ -410,7 +397,7 @@ async function runUi({ values, positionals }: ParsedUiArgs, deps: Partial<UiCliD
     try {
       await readDocVersioned(bundle, resolvedDocumentId);
     } catch (error) {
-      throw readErrorToCliError(error, resolvedDocumentId, values.remote);
+      throw readErrorToCliError(error, resolvedDocumentId, values.remote, values.bundle);
     }
   }
 

@@ -20,6 +20,7 @@ export interface UiConfig {
   mode: string;
   remoteUrl: string | null;
   root: string | null;
+  bundleId?: string | null;
   name: string;
   sharing: SharingSummary | null;
   workspaces: WorkspaceSummaryEntry[];

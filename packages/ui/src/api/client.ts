@@ -1,7 +1,7 @@
 /**
  * Hand-written typed API client for the wire-protocol v0 surface, called same-origin against
  * whichever server the `ui` command is proxying/mounting (`--dir` in-process router, or
- * `--remote` reverse proxy — the SPA never knows which, plans/ui-v1.md rev 3.2).
+ * `--remote` reverse proxy. The SPA receives only the selected bundle id, never the remote API key.
  *
  * Every route is bundle-scoped (`BASE` below) — see `types.ts`'s ROUTE-SHAPE NOTE. Mutations
  * (anything but GET/HEAD) carry `X-Requested-With` unconditionally: the `ui` server's session
@@ -10,8 +10,17 @@
  */
 import type { DocHead, ListDocsResponse, ReadDocResponse, WireErrorEnvelope, WriteDocResponse } from "./types.js";
 
-const BUNDLE = "default";
-const BASE = `/v0/bundles/${BUNDLE}`;
+let bundleId = "default";
+
+/** Configure the one wire target before the SPA mounts; local mode retains its legacy alias. */
+export function configureWireBundleId(value: string | null | undefined): void {
+  if (value === null || value === undefined) {
+    bundleId = "default";
+    return;
+  }
+  if (!/^bnd_[0-9a-f]{32}$/u.test(value)) throw new Error("invalid remote bundle id in UI configuration");
+  bundleId = value;
+}
 /** Default page size the router honors when `limit` is omitted (`DEFAULT_LIST_LIMIT`, router.ts). */
 const LIST_LIMIT = 50;
 
@@ -71,7 +80,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<{
   if (options.ifMatch !== undefined) headers["If-Match"] = options.ifMatch;
   if (method !== "GET" && method !== "HEAD") headers["X-Requested-With"] = "superbee-ui";
 
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`/v0/bundles/${bundleId}${path}`, {
     method,
     headers,
     credentials: "same-origin",

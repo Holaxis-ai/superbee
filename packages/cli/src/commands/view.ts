@@ -11,7 +11,7 @@ import { render, resolveMode } from "../output.js";
 export const VIEW_USAGE = `superbee view — inspect durable bundle Views
 
 Usage:
-  superbee view list [--limit <n>] [--dir <path> | --remote <url>]
+  superbee view list [--limit <n>] [--dir <path> | --remote <url> --bundle <bundle_id>]
 
 Lists the same registered durable Views used by the web launcher and MCP list_views tool. Rows are
 sorted by stable View id and include the declared access and optional presentation hint.
@@ -20,6 +20,7 @@ Options:
   --limit <n>          Cap rows (default: 100; 0 = unlimited)
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help
 `;
@@ -37,7 +38,8 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
       options: {
         limit: { type: "string" },
         dir: { type: "string" },
-        remote: { type: "string" },
+          remote: { type: "string" },
+          bundle: { type: "string" },
         json: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -70,7 +72,7 @@ export async function view(argv: string[], deps: Partial<ViewCliDeps> = {}): Pro
     limit = Number(raw);
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   if (!remote) await (deps.autoPull ?? maybeAutoPull)(values.dir);
   const catalog = await listViewCatalog(await openBundle(values.dir, remote));
   const rows = limit === 0 ? catalog.entries : catalog.entries.slice(0, limit);

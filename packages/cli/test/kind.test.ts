@@ -481,7 +481,7 @@ test("kind field: a competing writer's field-add (a DIFFERENT field) lands betwe
   const server = await bootServerOverBundle(bundle);
   try {
     let out = "";
-    await kind(["field", "Context Note", "add", "field-a", "--remote", server.url, "--json"], { stdout: (s) => (out += s) });
+    await kind(["field", "Context Note", "add", "field-a", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: (s) => (out += s) });
     const result = JSON.parse(out) as Record<string, unknown>;
     assert.equal(result.changed, true);
 
@@ -524,7 +524,7 @@ test("kind field: a competing 'doc update'-style title edit lands between our re
   const server = await bootServerOverBundle(bundle);
   try {
     let out = "";
-    await kind(["field", "Context Note", "add", "field-c", "--remote", server.url, "--json"], { stdout: (s) => (out += s) });
+    await kind(["field", "Context Note", "add", "field-c", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: (s) => (out += s) });
     const result = JSON.parse(out) as Record<string, unknown>;
     assert.equal(result.changed, true);
 
@@ -577,7 +577,7 @@ test("kind field: a competing writer renames the convention's 'governs' between 
   try {
     await assert.rejects(
       () =>
-        kind(["field", "Context Note", "add", "field-d", "--remote", server.url, "--json"], { stdout: () => {} }),
+        kind(["field", "Context Note", "add", "field-d", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: () => {} }),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "STALE_HEAD");

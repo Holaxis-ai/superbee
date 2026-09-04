@@ -235,10 +235,14 @@ test("access-only registry doc (remote mode): the inline serve-time revalidation
   try {
     const server = await bootUiServer({
       mode: "remote",
-      remoteBase: remoteOrigin,
+      remote: {
+        baseUrl: remoteOrigin,
+        origin: new URL(remoteOrigin).origin,
+        bundleId: "bnd_00000000000000000000000000000000",
+      },
       bundle: {
         root: remoteOrigin,
-        backend: new RemoteBackend({ baseUrl: remoteOrigin, bundle: "default", maxRetries: 0 }),
+        backend: new RemoteBackend({ baseUrl: remoteOrigin, bundleId: "bnd_00000000000000000000000000000000", maxRetries: 0 }),
       },
       sessionSecret: SECRET,
       renderDocument,

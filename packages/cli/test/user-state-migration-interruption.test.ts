@@ -27,7 +27,10 @@ import {
 import { migrateUserState, type UserStateMigrationHooks } from "../src/user-state-migration.js";
 
 const CATALOG = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
-const CREDENTIALS = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "carried" } } })}\n`;
+const CREDENTIALS = `${JSON.stringify({
+  schema: 2,
+  remotes: { "https://worker.example": { bundles: { bnd_00000000000000000000000000000000: { api_key: "carried" } } } },
+})}\n`;
 const JOURNAL_FILE_NAME = ".migration.json";
 const AUTHORIZATION_DIR_NAME = "view-authorizations";
 // A record in the nested store, so every row exercises the directory `writeNoReplace` creates on

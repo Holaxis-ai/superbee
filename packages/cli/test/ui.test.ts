@@ -259,7 +259,7 @@ test("explicit remote doc open remains a foreground launch", async () => {
   let waited = false;
   let mode: string | undefined;
   try {
-    await docOpen(["docs/remote", "--remote", `http://${remote.host}:${remote.port}`, "--json"], {
+    await docOpen(["docs/remote", "--remote", `http://${remote.host}:${remote.port}`, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {
       stdout: () => {},
       bootUiServer: async (options) => {
         mode = options.mode;
@@ -418,7 +418,7 @@ test("ui --dir x --remote y: USAGE — mutually exclusive, same as every other r
   try {
     await assert.rejects(
       () =>
-        ui(["--dir", dir, "--remote", "http://127.0.0.1:4818"], {
+        ui(["--dir", dir, "--remote", "http://127.0.0.1:4818", "--bundle", "bnd_00000000000000000000000000000000"], {
           bootUiServer,
           waitForShutdown: () => Promise.resolve(),
           openBrowser: () => {},

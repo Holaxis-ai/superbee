@@ -36,7 +36,7 @@ function remoteBundle(): Bundle {
     root: "wire://okf-v0.2-fixture",
     backend: new RemoteBackend({
       baseUrl: "http://wire.local",
-      bundle: "fixture",
+      bundleId: "bnd_33333333333333333333333333333333",
       fetchImpl: router,
     }),
   };

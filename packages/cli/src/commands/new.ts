@@ -101,6 +101,7 @@ Kind, and is also the deliberate full-replacement path for an existing document.
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                          (mutually exclusive with --dir; remote access is always explicit)
   --actor <name>         Attribute this write using the bundle's compatible advisory field, used
                          by per-doc sync receipts and version history for a persisting backend.
@@ -157,7 +158,8 @@ function hasOwn(record: object, key: PropertyKey): boolean {
  */
 const NEW_CONTROL_OPTIONS = {
   dir: { type: "string" },
-  remote: { type: "string" },
+          remote: { type: "string" },
+          bundle: { type: "string" },
   actor: { type: "string" },
   link: { type: "string", multiple: true },
   body: { type: "string" },
@@ -359,6 +361,7 @@ function renderKindHelp(
     `  --no-prefix      Use <id> verbatim (skip the auto path prefix above)\n` +
     `  --dir <path>     Bundle directory (default: discovered from the cwd)\n` +
     `  --remote <url>   Talk to a wire-protocol server instead of a local bundle\n` +
+    `  --bundle <id>    Select the exact hosted bundle (requires --remote)\n` +
     `  --json           Emit compact JSON instead of TOON\n` +
     `  -h, --help       Show this help\n`
   );
@@ -390,13 +393,14 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
 
   const preDir = controlFlagValue(pre.values.dir, "dir");
   const preRemote = controlFlagValue(pre.values.remote, "remote");
+  const preBundle = controlFlagValue(pre.values.bundle, "bundle");
   // `--help` must work anywhere: if the bundle can't be opened, fall back to the generic reference
   // rather than erroring on a bundle lookup the user didn't ask to perform.
   let bundle;
   let route: ResolvedLocalRoute | undefined;
   let attribution: ReturnType<typeof boardAttributionForRoute> = { kind: "none" };
   try {
-    const remote = await resolveRemoteFlag(preRemote, preDir);
+    const remote = await resolveRemoteFlag(preRemote, preDir, preBundle);
     route = remote === undefined ? await resolveLocalBundleRoute(preDir) : undefined;
     bundle = route?.bundle ?? await openBundle(preDir, remote);
     attribution = route ? boardAttributionForRoute(route) : { kind: "none" };
@@ -611,13 +615,14 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     mode: "create-only",
     registry,
     remoteUrl: remote,
+    remoteBundleId: preBundle,
     strict: true,
     helpOnKindReject:
       `${cliInvocation()} new ${commandQuoted(kind.governs)} --help` +
       (preDir !== undefined
         ? ` --dir ${commandQuoted(preDir)}`
         : preRemote !== undefined
-          ? ` --remote ${commandQuoted(preRemote)}`
+          ? ` --remote ${commandQuoted(preRemote)} --bundle ${commandQuoted(preBundle!)}`
           : ""),
     actor,
     persistActor: true,
@@ -704,7 +709,12 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       });
     }
     try {
-      const added = await addLink(bundle, saved.id, target, { text: type, remoteUrl: remote, actor });
+      const added = await addLink(bundle, saved.id, target, {
+        text: type,
+        remoteUrl: remote,
+        remoteBundleId: preBundle,
+        actor,
+      });
       finalVersion = added.version;
       if (added.warnings) warnings.push(...added.warnings);
       linkResults.push({
@@ -716,7 +726,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
       });
       satisfiedOutboundTypes.add(type);
     } catch (err) {
-      const classified = classifyBundleError(err, remote);
+      const classified = classifyBundleError(err, remote, preBundle);
       linkResults.push({
         type,
         target,

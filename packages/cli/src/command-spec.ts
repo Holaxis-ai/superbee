@@ -284,7 +284,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "status",
         leaves: [publicLeaf("status", "status", zero, 18, DIR_SURFACE)],
-        usage: "status [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "status [--limit <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Read-only bundle health report (kind lint, unresolved links, orphans, staleness, graph lints)",
       },
     ],
@@ -296,47 +296,47 @@ export const CLI_COMMAND_GROUPS = [
         id: "docWrite",
         leaves: [publicLeaf("docWrite", "doc write", one, 4, DIR_BODY_FILE_SURFACE)],
         usage:
-          "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Write a generic OKF concept document",
       },
       {
         id: "docUpdate",
         leaves: [publicLeaf("docUpdate", "doc update", one, undefined, DIR_BODY_FILE_DYNAMIC_SURFACE)],
         usage:
-          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {
         id: "docRead",
         leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_DOC_READ_SURFACE)],
         usage:
-          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url>]",
+          "doc read <id> [--out (<path> | -) | --body-out (<path> | -) | --rendered-out (<path> | -) | --field <name>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary:
           "Read a doc, export its raw markdown/body/canonical rendered HTML, or print one raw field for scripting",
       },
       {
         id: "docOpen",
         leaves: [publicLeaf("docOpen", "doc open", one, undefined, DIR_SURFACE)],
-        usage: "doc open <id> [--dir <path> | --remote <url>] [--port <n>] [--actor <name>]",
+        usage: "doc open <id> [--dir <path> | --remote <url> --bundle <bundle_id>] [--port <n>] [--actor <name>]",
         summary: "Open one exact authoritative document in a reusable managed local browser UI (explicit remote launches remain foreground)",
       },
       {
         id: "docHistory",
         leaves: [publicLeaf("docHistory", "doc history", one, undefined, DIR_SURFACE)],
-        usage: "doc history <id> [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "doc history <id> [--limit <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary:
           "Show a doc's version history (newest first, capped at 20 by default — --limit 0 for all; a history-keeping backend returns the full attributed chain, a local bundle just the current revision) — the tokens for --expected-version",
       },
       {
         id: "docDelete",
         leaves: [publicLeaf("docDelete", "doc delete", one, undefined, DIR_SURFACE)],
-        usage: "doc delete <id> [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "doc delete <id> [--expected-version <v>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Hard-delete a doc (idempotent: absent -> deleted:false, exit 0)",
       },
       {
         id: "list",
         leaves: [listLeaf, publicAlias("query", "query", listLeaf, 11)],
-        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "list [--type <t>] [--tag <t>] [--field <k=v>] [--prefix <p>] [--open] [--limit <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary:
           "Query concepts newest-first by meaningful change time (alias: query) — a comma in --field's value is set membership (OR); --open excludes terminal instances (declared kinds only)",
       },
@@ -348,7 +348,7 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("linkList", "link list", zero, undefined, DIR_SURFACE),
         ],
         usage:
-          "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url>]",
+          "link (add <from> <to> [--text <t>] [--actor <n>] | show <id> [--limit <n>] [--text <t>] | list [--from <id|prefix/>] [--to <id|prefix/>] [--text <t>] [--limit <n>]) [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary:
           "Add a cross-link, show a concept's links + backlinks, or query the whole bundle's derived edge list filtered by from/to (id or prefix/, repeatable/union) and exact-match text",
       },
@@ -360,31 +360,31 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "artifactCreate",
         leaves: [publicLeaf("artifactCreate", "artifact create", one, 13, DIR_INGRESS_FILE_SURFACE)],
-        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--dir <path>] [--remote <url>]",
+        usage: "artifact create <file> --title <title> [--description <text>] [--supersedes <id>] [--actor <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Produce a shareable output (HTML) a human can view: one command promotes the bytes and writes the type:Artifact record",
       },
       {
         id: "promote",
         leaves: [publicLeaf("promote", "promote", one, 5, DIR_INGRESS_FILE_SURFACE)],
-        usage: "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "promote <file> --doc-key <key> [--content-type <mime>] [--expected-version <v>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Move a local file's bytes into the store (a .md key routes through the engine; else a blob)",
       },
       {
         id: "pull",
         leaves: [publicLeaf("pull", "pull", zero, 6, DIR_OUT_SURFACE)],
-        usage: "pull --doc-key <key> --out (<path> | -) [--dir <path>] [--remote <url>]",
+        usage: "pull --doc-key <key> --out (<path> | -) [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Pull a doc's canonical form or a blob's raw bytes out of the store (the reverse of promote)",
       },
       {
         id: "blobs",
         leaves: [publicLeaf("blobs", "blobs", zero, 7, DIR_SURFACE)],
-        usage: "blobs [--prefix <p>] [--limit <n>] [--dir <path>] [--remote <url>]",
+        usage: "blobs [--prefix <p>] [--limit <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "List the store's blob (non-document) keys (documents are listed by 'list'/'query')",
       },
       {
         id: "delete",
         leaves: [publicLeaf("delete", "delete", zero, 8, DIR_SURFACE)],
-        usage: "delete --doc-key <key> [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        usage: "delete --doc-key <key> [--expected-version <v>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Hard-delete a doc or blob by key (idempotent: absent -> deleted:false, exit 0)",
       },
     ],
@@ -396,14 +396,14 @@ export const CLI_COMMAND_GROUPS = [
         id: "new",
         leaves: [publicLeaf("new", "new", two, 12, DIR_BODY_FILE_SURFACE)],
         usage:
-          'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>] [--remote <url>]',
+          'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>] [--remote <url> --bundle <bundle_id>]',
         summary:
           "Create a new instance of a bundle-declared kind — initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step",
       },
       {
         id: "kinds",
         leaves: [publicLeaf("kinds", "kinds", zero, 14, DIR_SURFACE)],
-        usage: "kinds [--dir <path>] [--remote <url>]",
+        usage: "kinds [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "List the kind conventions this bundle declares (purpose, described fields, exact required body headings, typed-link vocabulary, horizon)",
       },
       {
@@ -412,39 +412,39 @@ export const CLI_COMMAND_GROUPS = [
           publicLeaf("kindFieldAdd", "kind field add", two, 15, DIR_SURFACE),
           publicLeaf("kindFieldRemove", "kind field remove", two, undefined, DIR_SURFACE),
         ],
-        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--dir <path>] [--remote <url>]',
+        usage: 'kind field "<Kind>" (add <name> [--required] [--values <a,b,c>] | remove <name>) [--dir <path>] [--remote <url> --bundle <bundle_id>]',
         summary: "Edit a kind's schema — add/remove a declared field or enum value on its convention (idempotent)",
       },
       {
         id: "kindDraft",
         leaves: [publicLeaf("kindDraft", "kind draft", one, undefined, DIR_SURFACE)],
-        usage: 'kind draft "<Type>" [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        usage: 'kind draft "<Type>" [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url> --bundle <bundle_id>]',
         summary:
           "Draft a Kind for a recurring ungoverned type from its existing instances — read-only until --apply: measures the post-apply warning count, prices promotions, and emits one token-bound apply command",
       },
       {
         id: "kindDismiss",
         leaves: [publicLeaf("kindDismiss", "kind dismiss", one, undefined, DIR_SURFACE)],
-        usage: 'kind dismiss "<Type>" [--reason <text>] [--actor <name>] [--dir <path>] [--remote <url>]',
+        usage: 'kind dismiss "<Type>" [--reason <text>] [--actor <name>] [--dir <path>] [--remote <url> --bundle <bundle_id>]',
         summary:
           "Record a deliberate decline of a Kind for an ungoverned type (a declaration-free convention) so no future session re-proposes it; reopen later with 'kind draft'",
       },
       {
         id: "recipes",
         leaves: [publicLeaf("recipes", "recipes", zero, 16, DIR_SURFACE)],
-        usage: "recipes [--dir <path>] [--remote <url>]",
+        usage: "recipes [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Browse built-in recipes before or after init; with a bundle, also show whether each is already applied",
       },
       {
         id: "recipeAdd",
         leaves: [publicLeaf("recipeAdd", "recipe add", one, 17, DIR_RECIPE_ROOT_SURFACE)],
-        usage: "recipe add <name-or-path> [--dir <path>] [--remote <url>]",
+        usage: "recipe add <name-or-path> [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Apply a recipe's content-free definitions — Kinds plus optional declared References and Views — idempotently",
       },
       {
         id: "recipeEvolve",
         leaves: [publicLeaf("recipeEvolve", "recipe evolve", one, undefined, DIR_RECIPE_ROOT_SURFACE)],
-        usage: "recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url>]",
+        usage: "recipe evolve <name-or-path> [--apply <plan-token>] [--actor <name>] [--dir <path>] [--remote <url> --bundle <bundle_id>]",
         summary: "Plan an additive convention evolution, then apply target heads with exact-version CAS",
       },
     ],
@@ -461,7 +461,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "ui",
         leaves: [publicLeaf("ui", "ui", zero, 20, DIR_SURFACE)],
-        usage: "ui [--dir <path> | --remote <url>] [--port <p>] [--open] | ui --status [--dir <path>] [--limit <n>] | ui --stop [--dir <path>] [--actor <name>]",
+        usage: "ui [--dir <path> | --remote <url> --bundle <bundle_id>] [--port <p>] [--open] | ui --status [--dir <path>] [--limit <n>] | ui --stop [--dir <path>] [--actor <name>]",
         summary:
           'Boot the local web UI over the bundle (same origin, loopback-only): READ the bundle\'s docs as rendered pages (frontmatter, cross-links you can follow, derived backlinks), LAUNCH its registered Views (type: View docs framed in sandboxed iframes with live updates; legacy Page-typed docs no longer register — see status\'s legacy_naming finding), and see a live activity feed, the bundle\'s sharing status, and your registered workspaces. The header shows the bundle\'s display name — derived from the project folder unless set explicitly: doc write docs/bundle --type "Bundle Name" --title "<name>"',
       },
@@ -479,7 +479,7 @@ export const CLI_COMMAND_GROUPS = [
       {
         id: "viewList",
         leaves: [publicLeaf("viewList", "view list", zero, 27, DIR_SURFACE)],
-        usage: "view list [--limit <n>] [--dir <path> | --remote <url>]",
+        usage: "view list [--limit <n>] [--dir <path> | --remote <url> --bundle <bundle_id>]",
         summary: "List the bundle's registered durable Views from the same catalog used by the web launcher and MCP list_views",
       },
       {

@@ -77,10 +77,10 @@ test("built CLI: explicit --dir suppresses the legacy env and stays local", asyn
 test("built CLI: empty explicit target flags preserve presence and never fall through to ambient or discovered state", async () => {
   const cwd = await mkdtemp(path.join(tmpdir(), "aslite-local-only-empty-flags-"));
   try {
-    for (const remoteArgs of [["--remote", ""], ["--remote="]]) {
+    for (const remoteArgs of [["--remote", "", "--bundle", "bnd_00000000000000000000000000000000"], ["--remote="]]) {
       const result = await run(["list", ...remoteArgs, "--json"], cwd);
       assert.equal(result.code, 2);
-      assert.match(result.stdout, /remote URL is required|invalid (?:server|remote) URL/i);
+      assert.match(result.stdout, /remote URL is required|invalid (?:server|remote) URL|--remote requires --bundle/i);
       assert.doesNotMatch(result.stdout, /AGENTSTATE_LITE_REMOTE ambient|no OKF bundle found/);
     }
 
@@ -146,7 +146,7 @@ test("built CLI: explicit --remote suppresses the legacy env and completes a rea
   try {
     handle = await serve({ bundle: { root: sampleBundle }, port: 0 });
     const remote = `http://${handle.host}:${handle.port}`;
-    const result = await run(["list", "--remote", remote, "--json"], repoRoot);
+    const result = await run(["list", "--remote", remote, "--bundle", "bnd_00000000000000000000000000000000", "--json"], repoRoot);
     assert.equal(result.code, 0, result.stderr || result.stdout);
     assert.equal((JSON.parse(result.stdout) as { count: number }).count, 4);
   } finally {

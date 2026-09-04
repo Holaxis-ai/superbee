@@ -36,7 +36,7 @@ async function harnesses(): Promise<Harness[]> {
   const router = createRouter(serverBundle);
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
-    bundle: "okf-v02",
+    bundleId: "bnd_22222222222222222222222222222222",
     fetchImpl: router,
   });
 

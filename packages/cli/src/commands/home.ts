@@ -39,7 +39,9 @@
 // triggers it, and neither does ANY session-start-driven render — session-start passes a defined
 // `deps.boardPull` on EVERY path, including its no-repo/no-board/pull-threw ones, precisely so
 // its own budget race stays the only network bound in that flow (test-pinned). Home still NEVER
-// provisions and still exits 0 in every case. (2) eligible default TOON may synchronously inspect
+// provisions and still exits 0 in every ordinary render case. Explicitly contradictory or
+// incomplete remote-selection flags fail closed before rendering. (2) eligible default TOON may
+// synchronously inspect
 // private cached update state and launch one DETACHED worker; the render awaits neither its npm
 // request nor child close. JSON and suppressor paths bypass that owner entirely.
 //
@@ -58,6 +60,8 @@ import {
   openBundle,
   resolveLocalBundleRoute,
   resolveProjectBinding,
+  resolveRemoteFlag,
+  type RemoteSelection,
   type ResolvedLocalRoute,
 } from "../bundle.js";
 import {
@@ -110,7 +114,7 @@ import {
 export const HOME_USAGE = `superbee home — render the local orientation view
 
 Usage:
-  superbee home [--dir <path> | --remote <url>] [--json] [--no-update-check]
+  superbee home [--dir <path> | --remote <url> --bundle <bundle_id>] [--json] [--no-update-check]
 
 Default TOON output may display a previously validated latest-track release notice and launch one
 detached refresh at most once per 24-hour attempt window. Rendering never waits for npm. The fixed
@@ -123,7 +127,8 @@ requirement; current, absent, unmanaged, conflicting, or unreadable installs sta
 
 Options:
   --dir <path>       Orient from this local directory
-  --remote <url>     Show offline guidance for this explicit remote
+  --remote <url>     Show offline guidance for this explicit remote (requires --bundle)
+  --bundle <id>      Select the exact hosted bundle (requires --remote)
   --json             Emit stable compact JSON; suppress npm release notices and refresh only
   --no-update-check  Disable both cached notice display and detached refresh for this run
   -h, --help         Show this help
@@ -134,6 +139,7 @@ ASLITE_NO_UPDATE_CHECK, NO_UPDATE_NOTIFIER, or CI.
 
 const HOME_OPTIONS = {
   remote: { type: "string" },
+  bundle: { type: "string" },
   dir: { type: "string" },
   json: { type: "boolean" },
   "no-update-check": { type: "boolean" },
@@ -786,7 +792,7 @@ export function buildHomeView(
     targetDir?: string;
   },
   summary?: BundleSummary | UnreadableBundle | ConflictedBundle | null,
-  remote?: string,
+  remote?: RemoteSelection,
   binding?: HomeBindingNote,
   bindingError?: string,
   board?: { block?: string | Record<string, unknown>; firstContact?: string },
@@ -816,13 +822,14 @@ export function buildHomeView(
     // the agent at the commands that DO read the remote. Resolves the #6 gap where the canonical
     // `superbee --remote <url>` invocation errored instead of orienting.
     const remoteBlock: Record<string, unknown> = {
-      url: remote,
+      url: remote.baseUrl,
+      bundle_id: remote.bundleId,
       help: [
-        `${inv} list --remote ${commandToken(remote)}`,
-        `${inv} status --remote ${commandToken(remote)}`,
+        `${inv} list --remote ${commandToken(remote.baseUrl)} --bundle ${commandToken(remote.bundleId)}`,
+        `${inv} status --remote ${commandToken(remote.baseUrl)} --bundle ${commandToken(remote.bundleId)}`,
       ],
     };
-    if (binding && binding.target === remote) remoteBlock.via = binding.file;
+    if (binding && binding.target === remote.baseUrl) remoteBlock.via = binding.file;
     view.remote = remoteBlock;
   } else if (summary && "conflict" in summary) {
     view.bundle = {
@@ -957,7 +964,9 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   // local view (home NEVER throws). `--remote <url>` scopes the view to a remote (offline: a pointer
   // + next-steps, NOT a fetch — the every-session hook payload must stay cheap); `--dir <path>`
   // summarizes THAT directory's bundle instead of the CWD.
-  let remote: string | undefined;
+  let remote: RemoteSelection | undefined;
+  let remoteValue: string | undefined;
+  let bundleValue: string | undefined;
   let dir: string | undefined;
   // Keep the binding-selected bundle path distinct from `dir`: the latter is also the board
   // ingress selector. Replacing it with the concrete binding target would make later helpers
@@ -968,7 +977,8 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
   let helpMode = false;
   try {
     const parsed = parseHomeArgs(argv);
-    remote = parsed.values.remote;
+    remoteValue = parsed.values.remote;
+    bundleValue = parsed.values.bundle;
     explicitDir = parsed.values.dir;
     dir = explicitDir;
     summaryDir = explicitDir;
@@ -976,6 +986,12 @@ export async function home(argv: string[], deps: Partial<HomeDeps> = {}): Promis
     helpMode = Boolean(parsed.values.help);
   } catch {
     /* ignore — fall back to the bare local view */
+  }
+  // Explicit remote selection is a security boundary, not a fail-soft orientation hint. Validate
+  // the exact pair before any local discovery; this remains filesystem-only and never dials the
+  // remote. Ordinary zero-arg SessionStart rendering is unchanged.
+  if (remoteValue !== undefined || bundleValue !== undefined) {
+    remote = await resolveRemoteFlag(remoteValue, explicitDir, bundleValue);
   }
   if (helpMode) {
     stdout(HOME_USAGE);

@@ -193,7 +193,7 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *    translate it (NOT_FOUND with the id, USAGE for a missing `promote` source file) before it
  *    ever reaches this fallback — context-free, ENOENT is just a failed syscall.
  */
-export function classifyBundleError(err: unknown, remoteUrl?: string): CliError {
+export function classifyBundleError(err: unknown, remoteUrl?: string, remoteBundleId?: string): CliError {
   if (err instanceof CliError) return err;
   if (isBoardGitError(err)) return cliErrorFromBoardGit(err);
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);
@@ -207,8 +207,9 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
     if (err.code === "AUTH_REQUIRED") {
       return new CliError("AUTH_REQUIRED", err.message, {
         help:
-          `set SUPERBEE_API_KEY=<key> and retry the same command against --remote ${remoteUrl ? commandToken(remoteUrl) : commandLiteral("<url>")}; ` +
-          "an already-provisioned stored per-origin credential is also accepted",
+          `set SUPERBEE_API_KEY=<key> and retry the same command against --remote ${remoteUrl ? commandToken(remoteUrl) : commandLiteral("<url>")} ` +
+          `--bundle ${remoteBundleId ? commandToken(remoteBundleId) : commandLiteral("<bundle_id>")}; ` +
+          "an already-provisioned stored credential for the exact origin and bundle is also accepted",
       });
     }
     if (err.code === "RUNTIME" || err.code === "VERSION_MISSING") {

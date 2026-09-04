@@ -112,6 +112,8 @@ export type {
 // tests. No CF/D1/production deployment is implied by its presence.
 export { RemoteBackend, RemoteError } from "./remote-backend.js";
 export type { FetchLike, RemoteBackendOptions } from "./remote-backend.js";
+export { isCanonicalBundleId } from "./bundle-id.js";
+export type { BundleId } from "./bundle-id.js";
 
 // Versioning / attribution primitives shared by every adapter: the content-addressed
 // version token, a default actor, and the typed compare-and-swap conflict error.

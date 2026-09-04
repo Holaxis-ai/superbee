@@ -63,6 +63,7 @@ import { commandQuoted, commandToken } from "../command-text.js";
 const LINK_COMMON_OPTIONS = `Common options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                        (mutually exclusive with --dir; remote access is always explicit)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help`;
@@ -198,7 +199,7 @@ function docType(doc: OkfDocument): string {
  */
 async function lintLinkType(
   bundle: Bundle,
-  args: { sourceType: string; text: string; to: string; remoteUrl?: string },
+  args: { sourceType: string; text: string; to: string; remoteUrl?: string; remoteBundleId?: string },
   registry: KindRegistry,
 ): Promise<ValidationWarning[]> {
   const declarations = collectLinkDeclarations(registry);
@@ -216,7 +217,7 @@ async function lintLinkType(
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
         targetResolved = false;
       } else {
-        throw classifyBundleError(err, args.remoteUrl);
+        throw classifyBundleError(err, args.remoteUrl, args.remoteBundleId);
       }
     }
     const matched = exact.find((d) => d.governs === args.sourceType) ?? exact[0]!;
@@ -356,6 +357,8 @@ export interface AddLinkOptions {
   /** Threaded into `classifyBundleError` so a `--remote` mutation's AUTH_REQUIRED carries a
    * copy-pastable hint (mirrors every other bundle-mutating command). */
   remoteUrl?: string;
+  /** Exact hosted bundle paired with remoteUrl for emitted recovery guidance. */
+  remoteBundleId?: string;
   /** Advisory attribution, already resolved at the CLI boundary. */
   actor?: string;
 }
@@ -428,6 +431,7 @@ export async function addLink(
     strict: false,
     helpOnKindReject: `${cliInvocation()} kinds`,
     remoteUrl: opts.remoteUrl,
+    remoteBundleId: opts.remoteBundleId,
     actor: opts.actor,
     persistActor: true,
     maxAttempts: LINK_ADD_MAX_ATTEMPTS,
@@ -475,6 +479,7 @@ export async function addLink(
         text,
         to: normalizedTo,
         remoteUrl: opts.remoteUrl,
+        remoteBundleId: opts.remoteBundleId,
       }, postWriteRegistry);
       const absent = await targetAbsentWarning(bundle, normalizedTo, opts.remoteUrl);
       if (absent) warnings.push(absent);
@@ -514,6 +519,7 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
           actor: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -535,13 +541,14 @@ async function linkAdd(argv: string[], stdout: (s: string) => void): Promise<voi
   }
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} link add ${commandToken(from)} ${commandToken(to)} --actor <name>` });
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const mode = resolveMode(values);
 
   const result = await addLink(bundle, from, to, {
     text: values.text,
     keepTimestamp: values["keep-timestamp"],
     remoteUrl: values.remote,
+    remoteBundleId: values.bundle,
     actor,
   });
 
@@ -588,6 +595,7 @@ async function linkShow(
           text: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -640,7 +648,7 @@ async function linkShow(
   const impossibleExactId = rawId.endsWith("/");
   let id = impossibleExactId ? rawId : conceptIdFromCliArgument(rawId);
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   // Opportunistic board freshness (autopull.ts): silent, fail-soft, detection-gated — see list.ts.
   if (!remote) await (autoPull ?? maybeAutoPull)(values.dir);
   const bundle = await openBundle(values.dir, remote);
@@ -656,7 +664,7 @@ async function linkShow(
       outbound = parseLinks(bundle, source).map((l) => ({ to: l.to, text: l.text, href: l.href }));
     } catch (err) {
       if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") {
-        throw classifyBundleError(err, values.remote);
+        throw classifyBundleError(err, values.remote, values.bundle);
       }
       // ENOENT: no document at this id YET. NOT an error — a concept can be CITED before it is written
       // (backlinks are derived over the whole bundle and stay meaningful). Report `exists:false` so an
@@ -741,6 +749,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
           limit: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -795,7 +804,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
     limit = Number(raw);
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
 
   const resolveSelector = async (raw: string): Promise<string> => {
     if (raw.endsWith("/")) return `${conceptIdFromCliArgument(raw.replace(/\/+$/, ""))}/`;
@@ -819,7 +828,7 @@ async function linkList(argv: string[], stdout: (s: string) => void): Promise<vo
   try {
     scopedEdges = await queryEdges(bundle, scopeFilter);
   } catch (err) {
-    throw classifyBundleError(err, values.remote);
+    throw classifyBundleError(err, values.remote, values.bundle);
   }
 
   const edges = textFilter !== undefined ? scopedEdges.filter((e) => e.text === textFilter) : scopedEdges;

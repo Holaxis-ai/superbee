@@ -906,11 +906,11 @@ test("A8 acceptance (REMOTE, canonical demo per A12): the SAME edit-iterate loop
       // --- blob half: promote -> pull -> edit -> promote --expected-version -> GET serves NEW bytes ---
       const file = path.join(work, "report.html");
       await writeFile(file, "<html>v1 remote</html>");
-      const promoted1 = await runPromote([file, "--doc-key", "artifacts/report.html", "--remote", server.url]);
+      const promoted1 = await runPromote([file, "--doc-key", "artifacts/report.html", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       const v1 = promoted1.version as string;
 
       const pulledOut = path.join(work, "pulled.html");
-      const pulled = await runPull(["--doc-key", "artifacts/report.html", "--out", pulledOut, "--remote", server.url]);
+      const pulled = await runPull(["--doc-key", "artifacts/report.html", "--out", pulledOut, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(pulled.version, v1);
 
       await writeFile(pulledOut, "<html>v2 remote edited</html>");
@@ -921,7 +921,7 @@ test("A8 acceptance (REMOTE, canonical demo per A12): the SAME edit-iterate loop
         "--expected-version",
         v1,
         "--remote",
-        server.url,
+        server.url, "--bundle", "bnd_00000000000000000000000000000000",
       ]);
       const v2 = promoted2.version as string;
       assert.notEqual(v2, v1);
@@ -949,7 +949,7 @@ test("A8 acceptance (REMOTE, canonical demo per A12): the SAME edit-iterate loop
               "--expected-version",
               v1,
               "--remote",
-              server.url,
+              server.url, "--bundle", "bnd_00000000000000000000000000000000",
               "--json",
             ],
             {},
@@ -965,7 +965,7 @@ test("A8 acceptance (REMOTE, canonical demo per A12): the SAME edit-iterate loop
       // --- .md half: promote rides PUT /docs, never /blobs (I8) ---
       const mdFile = path.join(work, "spec.md");
       await writeFile(mdFile, "---\ntype: Spec\ntitle: Remote spec\n---\n\nRemote body.\n");
-      const docPromoted = await runPromote([mdFile, "--doc-key", "specs/remote.md", "--remote", server.url]);
+      const docPromoted = await runPromote([mdFile, "--doc-key", "specs/remote.md", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(docPromoted.route, "doc");
 
       const docRes = await fetch(`${server.url}/v0/bundles/default/docs/specs/remote`);
@@ -1036,7 +1036,7 @@ test("an explicit --remote flag wins outright over a BOGUS AGENTSTATE_LITE_REMOT
       // The env value is BOGUS (nothing listens there) — if the flag did not win, this
       // would fail with a transport RUNTIME error, not succeed.
       process.env.AGENTSTATE_LITE_REMOTE = "http://127.0.0.1:1";
-      const p = await runPromote([file, "--doc-key", "artifacts/x.txt", "--remote", server.url]);
+      const p = await runPromote([file, "--doc-key", "artifacts/x.txt", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(p.promote, "written");
     } finally {
       await server.close();
@@ -1095,7 +1095,7 @@ test("an EXPLICIT --remote together with an EXPLICIT --dir remains a USAGE confl
     const file = path.join(work, "x.txt");
     await writeFile(file, "hello");
     await assert.rejects(
-      () => promote([file, "--doc-key", "artifacts/x.txt", "--dir", dir, "--remote", "http://127.0.0.1:4818", "--json"], {}),
+      () => promote([file, "--doc-key", "artifacts/x.txt", "--dir", dir, "--remote", "http://127.0.0.1:4818", "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");

@@ -40,10 +40,11 @@
 // bindings are consumed by `openBundle`'s cwd-discovery fallback, which keeps bare commands local.
 //
 // API-key sourcing for an explicitly gated remote: `openRemoteBundle` sources a bearer token for
-// the resolved remote's ORIGIN in priority order — (1) the `AGENTSTATE_LITE_API_KEY` env var
+// the resolved remote's exact origin-and-bundle pair in priority order — (1) the
+// `AGENTSTATE_LITE_API_KEY` env var
 // (a session-wide override, no credentials-file write needed for scripts/CI), then (2) the
-// already-provisioned origin-keyed entry stored (`credentials.ts`'s
-// `getApiKeyForOrigin`). Neither is required: the reference `serve()` ignores the
+// already-provisioned exact entry stored (`credentials.ts`'s `getApiKeyForRemote`). Neither is
+// required: the reference `serve()` ignores the
 // `Authorization` header entirely (no auth enforced there), so an ungated local bundle works
 // exactly as before with no key configured.
 import { BUNDLE_DIR, BUNDLE_DIRS, LEGACY_BUNDLE_DIR, resolveBundleKey } from "@superbee/board-git";
@@ -54,15 +55,17 @@ import {
   RemoteBackend,
   RemoteError,
   VersionConflict,
+  isCanonicalBundleId,
   withFilesystemMutationLock,
   type Bundle,
+  type BundleId,
   type FetchLike,
   type FilesystemMutationLockOptions,
 } from "@superbee/core";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
 import { normalizeServer } from "./config.js";
-import { getApiKeyForOrigin } from "./credentials.js";
+import { getApiKeyForRemote } from "./credentials.js";
 import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
@@ -317,7 +320,7 @@ function parseProjectBinding(file: string, raw: string): ProjectBinding {
     throw new CliError(
       "USAGE",
       `project binding ${file} cannot use ${uriIntent.detail}; URL bindings no longer activate remotes — pass --remote ${commandToken(remote)} explicitly or replace "bundle" with a filesystem path`,
-      { help: `${cliInvocation()} <command> --remote ${commandToken(remote)}` },
+      { help: `${cliInvocation()} <command> --remote ${commandToken(remote)} --bundle <bundle_id>` },
     );
   }
   return { file, target: path.resolve(path.dirname(file), value) };
@@ -455,44 +458,38 @@ export function resolveApiKeyEnv(env: Readonly<Record<string, string | undefined
 /**
  * Resolve a `--remote <url>` bundle: a `RemoteBackend` wired to the wire-protocol v0 reference
  * server, using the same http(s) URL discipline `config.ts`'s `normalizeServer` applies to
- * remote credential lookup (a malformed/non-http(s) URL is a USAGE error, exit 2). The bundle-path segment
- * is a fixed `"default"` — the single-bundle reference router ignores it; meaningful only for a
- * future multi-bundle deployment (no `--bundle` flag exists yet; out of scope).
+ * remote credential lookup (a malformed/non-http(s) URL is a USAGE error, exit 2). The required
+ * canonical bundle id is retained in the selection and every wire request.
  *
  * Sources a bearer `authToken` for the resolved origin: `SUPERBEE_API_KEY` or legacy
- * `AGENTSTATE_LITE_API_KEY` env var first, else an already-provisioned origin-keyed
+ * `AGENTSTATE_LITE_API_KEY` env var first, else an already-provisioned exact origin-and-bundle
  * credentials-file entry. If both environment variables are set to different non-empty values,
  * resolution fails before any request and does not print either secret. Neither
  * is required — an ungated bundle (the reference `serve()`) ignores the header either way.
  */
-async function openRemoteBundle(remoteFlag: string): Promise<Bundle> {
-  let base: string;
-  let origin: string;
-  try {
-    const resolved = normalizeServer(remoteFlag);
-    base = resolved.base;
-    origin = resolved.resource;
-  } catch (err) {
-    throw new CliError("USAGE", err instanceof Error ? err.message : String(err), {
-      help: `${cliInvocation()} <command> --remote http://127.0.0.1:4818`,
-    });
-  }
-  const envKey = resolveApiKeyEnv();
-  const authToken = envKey || (await getApiKeyForOrigin(origin));
+export interface RemoteSelection {
+  readonly baseUrl: string;
+  readonly origin: string;
+  readonly bundleId: BundleId;
+  readonly apiKey?: string;
+}
+
+async function openRemoteBundle(selection: RemoteSelection): Promise<Bundle> {
   const backend = new RemoteBackend({
-    baseUrl: base,
-    bundle: "default",
-    fetchImpl: wrapTransportErrors(base),
-    authToken,
+    baseUrl: selection.baseUrl,
+    bundleId: selection.bundleId,
+    fetchImpl: wrapTransportErrors(selection.baseUrl),
+    authToken: selection.apiKey,
   });
-  return { root: base, backend };
+  return { root: `${selection.baseUrl}/v0/bundles/${selection.bundleId}`, backend };
 }
 
 /** Retired remote-default environment variable, retained only for an actionable migration error. */
 export const REMOTE_ENV_VAR = "AGENTSTATE_LITE_REMOTE";
 
 /**
- * Resolve the effective `--remote` value. Only an explicit flag can return a URL. An explicit
+ * Resolve the effective remote selection. Only an explicit `--remote` plus canonical `--bundle`
+ * pair can return a target. An explicit
  * `--dir` wins locally. With neither flag, a present legacy `AGENTSTATE_LITE_REMOTE` is rejected
  * with migration guidance, and a reached project binding is parsed solely to reject malformed or
  * URL-valued bindings before local discovery consumes a valid path binding.
@@ -504,21 +501,58 @@ export const REMOTE_ENV_VAR = "AGENTSTATE_LITE_REMOTE";
  * `openBundle` directly with a raw `values.remote` — except `init` (explicitly rejects `--remote`,
  * no create-bundle endpoint exists) and `serve` (always boots over a LOCAL bundle; picking up an
  * ambient remote default there would be actively wrong, not a convenience), which must NOT call this.
- * `home`'s local dashboard read is a THIRD such exception, for the same reason it already skips the
- * env default (see the module header's URL-binding note).
+ * `home` validates through this function while keeping its remote orientation read offline.
  */
 export async function resolveRemoteFlag(
   remoteFlag: string | undefined,
   dirFlag: string | undefined,
-): Promise<string | undefined> {
-  if (remoteFlag !== undefined) return remoteFlag;
-  if (dirFlag !== undefined) return undefined; // explicit --dir wins over legacy ambient state
+  bundleFlag: string | undefined,
+): Promise<RemoteSelection | undefined> {
+  if (remoteFlag !== undefined && dirFlag !== undefined) {
+    throw new CliError("USAGE", "--remote and --dir are mutually exclusive", {
+      help: `${cliInvocation()} <command> --remote <url> --bundle <bundle_id>`,
+    });
+  }
+  if (remoteFlag === undefined && bundleFlag !== undefined) {
+    throw new CliError("USAGE", "--bundle requires --remote", {
+      help: `${cliInvocation()} <command> --remote <url> --bundle <bundle_id>`,
+    });
+  }
+  if (remoteFlag !== undefined && bundleFlag === undefined) {
+    throw new CliError("USAGE", "--remote requires --bundle <bundle_id>", {
+      help: `${cliInvocation()} <command> --remote ${commandToken(remoteFlag)} --bundle <bundle_id>`,
+    });
+  }
+  if (remoteFlag !== undefined) {
+    if (!isCanonicalBundleId(bundleFlag!)) {
+      throw new CliError("USAGE", `invalid bundle id '${bundleFlag}'`, {
+        help: "bundle ids have the form bnd_ followed by 32 lowercase hexadecimal characters",
+      });
+    }
+    let resolved: ReturnType<typeof normalizeServer>;
+    try {
+      resolved = normalizeServer(remoteFlag);
+    } catch (err) {
+      throw new CliError("USAGE", err instanceof Error ? err.message : String(err), {
+        help: `${cliInvocation()} <command> --remote http://127.0.0.1:4818 --bundle ${commandToken(bundleFlag!)}`,
+      });
+    }
+    const envKey = resolveApiKeyEnv();
+    const storedKey = envKey ? undefined : await getApiKeyForRemote(resolved.resource, bundleFlag!);
+    return {
+      baseUrl: resolved.base,
+      origin: resolved.resource,
+      bundleId: bundleFlag!,
+      ...(envKey || storedKey ? { apiKey: envKey || storedKey } : {}),
+    };
+  }
+  if (dirFlag !== undefined) return undefined;
   if (process.env[REMOTE_ENV_VAR] !== undefined) {
     const legacy = process.env[REMOTE_ENV_VAR]?.trim();
     throw new CliError(
       "USAGE",
       `${REMOTE_ENV_VAR} ambient remote selection is retired; pass --remote <url> explicitly`,
-      { help: `${cliInvocation()} <command> --remote ${legacy ? commandToken(legacy) : commandLiteral("<url>")}` },
+      { help: `${cliInvocation()} <command> --remote ${legacy ? commandToken(legacy) : commandLiteral("<url>")} --bundle <bundle_id>` },
     );
   }
   await resolveProjectBinding();
@@ -1571,16 +1605,10 @@ export function boardAttributionForRoute(route: ResolvedLocalRoute): BoardAttrib
  * Callers pass `remoteFlag` through {@link resolveRemoteFlag} first, so any truthy value here is an
  * explicit `--remote` flag and the mutual-exclusion error below is unambiguous.
  */
-export async function openBundle(dirFlag: string | undefined, remoteFlag?: string): Promise<Bundle> {
-  if (remoteFlag !== undefined) {
-    if (dirFlag !== undefined) {
-      throw new CliError(
-        "USAGE",
-        "--remote and --dir are mutually exclusive",
-        { help: `${cliInvocation()} <command> --remote <url>` },
-      );
-    }
-    return openRemoteBundle(remoteFlag);
+export async function openBundle(dirFlag: string | undefined, remote?: RemoteSelection): Promise<Bundle> {
+  if (remote !== undefined) {
+    if (dirFlag !== undefined) throw new TypeError("resolved remote selection cannot be combined with --dir");
+    return openRemoteBundle(remote);
   }
   const route = await resolveLocalBundleRoute(dirFlag);
   await assertResolvedLocalRouteIdentity(route);

@@ -17,7 +17,7 @@ import { cliInvocation } from "../invocation.js";
 export const BLOBS_USAGE = `superbee blobs — list the store's blob (non-document) keys
 
 Usage:
-  superbee blobs [--prefix <p>] [--limit <n>] [--dir <path> | --remote <url>]
+  superbee blobs [--prefix <p>] [--limit <n>] [--dir <path> | --remote <url> --bundle <bundle_id>]
 
 Blobs are opaque byte artifacts (generated HTML, images, …) addressed by key — the non-'.md' half
 of the store that 'promote'/'pull'/'delete --doc-key' operate on individually. This lists their
@@ -29,6 +29,7 @@ Options:
                   reports 'shown' alongside the total 'count'.
   --dir <path>    Bundle directory (default: discovered from the cwd)
   --remote <url>  Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                   (mutually exclusive with --dir; remote access is always explicit)
   --json          Emit compact JSON instead of TOON
   -h, --help      Show this help
@@ -50,6 +51,7 @@ export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): P
           limit: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -75,7 +77,7 @@ export async function blobs(argv: string[], deps: Partial<BlobsCliDeps> = {}): P
     limit = Number(raw);
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const keys = (await listBlobs(bundle, values.prefix?.trim() || undefined)).slice().sort();
 
   const total = keys.length;

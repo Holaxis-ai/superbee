@@ -45,6 +45,7 @@ import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
 import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
 import { VersionConflict, stripETagWrapper } from "./version-transport.js";
+import { isCanonicalBundleId, type BundleId } from "./bundle-id.js";
 import type {
   BlobKey,
   ConceptId,
@@ -83,8 +84,8 @@ export type FetchLike = (request: Request) => Promise<Response>;
 export interface RemoteBackendOptions {
   /** Base URL of the wire-protocol server, e.g. `http://127.0.0.1:4021`. A trailing slash is tolerated. */
   baseUrl: string;
-  /** Bundle name segment in the `/v0/bundles/{bundle}/…` path. */
-  bundle: string;
+  /** Exact immutable bundle id in the `/v0/bundles/{bundle_id}/…` path. */
+  bundleId: BundleId;
   /** Transport override; defaults to the global `fetch` (Node >= 20). Tests inject a router directly. */
   fetchImpl?: FetchLike;
   /**
@@ -225,14 +226,17 @@ function encodeBlobKey(key: BlobKey): string {
  */
 export class RemoteBackend implements StorageBackend {
   private readonly baseUrl: string;
-  private readonly bundle: string;
+  private readonly bundleId: BundleId;
   private readonly fetchImpl: FetchLike;
   private readonly authToken?: string;
   private readonly maxRetries: number;
 
   constructor(options: RemoteBackendOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.bundle = options.bundle;
+    if (!isCanonicalBundleId(options.bundleId)) {
+      throw new InvalidInputError(`invalid bundle id '${options.bundleId}'`);
+    }
+    this.bundleId = options.bundleId;
     this.fetchImpl = options.fetchImpl ?? ((request: Request) => globalThis.fetch(request));
     this.authToken = options.authToken;
     this.maxRetries = options.maxRetries ?? 3;
@@ -240,7 +244,7 @@ export class RemoteBackend implements StorageBackend {
 
   /** Build the absolute URL for a bundle-relative wire path (e.g. `/docs/concepts/x`). */
   private url(bundleRelativePath: string): string {
-    return `${this.baseUrl}/v0/bundles/${encodeURIComponent(this.bundle)}${bundleRelativePath}`;
+    return `${this.baseUrl}/v0/bundles/${this.bundleId}${bundleRelativePath}`;
   }
 
   private async send(bundleRelativePath: string, init: RequestInit = {}): Promise<Response> {

@@ -1356,7 +1356,7 @@ test("wire: loadKinds over a RemoteBackend bundle equals a local bundle (router-
   const router = createRouter(serverBundle);
   const remoteBundle: Bundle = {
     root: "wire://kinds-client",
-    backend: new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router }),
+    backend: new RemoteBackend({ baseUrl: "http://wire.local", bundleId: "bnd_11111111111111111111111111111111", fetchImpl: router }),
   };
 
   const localBundle: Bundle = { root: "mem://kinds-wire-local", backend: new MemoryBackend() };

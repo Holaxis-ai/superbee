@@ -42,7 +42,7 @@ export function bootUiServer(options: UiServerOptions): Promise<UiServerHandle> 
   }
   return bootUiServerRuntime({
     ...options,
-    viewAuthorization: new LocalViewAuthorizationStore(options.remoteBase),
+    viewAuthorization: new LocalViewAuthorizationStore(`${options.remote.origin}/${options.remote.bundleId}`),
     renderDocument: renderDocumentToStaticHtml,
     serveAsset: serveEmbeddedUiAsset,
   });

@@ -1,11 +1,10 @@
 // Credential persistence inside the platform-native private user-state root.
 //
 // Token VALUES are never logged. The home directory is injectable so unit tests can point at a temp
-// dir. The on-disk field SHAPE stays compatible with holaxis-agentstate `packages/cli/src/credentials.ts`
-// (same field names, same atomic temp-file-then-rename write with 0600/0700 perms), but the FILE is
+// dir. The on-disk schema is version 2 and keys authority by exact origin-and-bundle pair. The FILE is
 // deliberately SEPARATE — `okf-config.json`, NOT canonical AgentState's `credentials.json` — so
 // Superbee never overwrites (nor reads as its own) the canonical AgentState CLI's OAuth credential
-// on the same machine. What Superbee stores: per-origin `--remote` API keys (`remotes`) only — the
+// on the same machine. What Superbee stores: exact-target `--remote` API keys (`remotes`) only — the
 // OAuth/PKCE/loopback flow AND the legacy `login --token` bearer store (`server`/`access_token`) are
 // both gone; the live remote auth is a per-origin API key against a gated wire-protocol deployment.
 //
@@ -17,19 +16,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { readUserStateFile, userStateDir, writeUserStateFileAtomic0600 } from "./user-state.js";
+import { isCanonicalBundleId, type BundleId } from "@superbee/core/storage";
 
 export interface Credentials {
-  /**
-   * Per-origin API keys for an explicitly gated `--remote <url>`, keyed by the remote's ORIGIN
-   * (`new URL(remoteUrl).origin`, e.g. `https://my-worker.example.workers.dev`) — origin-keyed
-   * from birth (a recorded design commitment: a single-slot shape would break the moment a
-   * caller talks to more than one gated remote, e.g. a staging + a production deployment).
-   * Provisioned outside the default CLI; read by `bundle.ts`'s `--remote`
-   * resolution to source the `RemoteBackend` `authToken`. This is the SOLE credential shape — the
-   * legacy `server`/`access_token` bearer fields were removed (the live remote auth is a per-origin
-   * API key, not a stored bearer token).
-   */
-  remotes?: Record<string, { api_key: string }>;
+  schema: 2;
+  remotes: Record<string, { bundles: Record<BundleId, { api_key: string }> }>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -42,7 +33,36 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
   return actual.length === sorted.length && actual.every((key, index) => key === sorted[index]);
 }
 
-/** Exact historical disk contract accepted by the explicit one-shot migration. */
+function isCredentials(value: unknown): value is Credentials {
+  if (!isRecord(value) || !hasExactKeys(value, ["schema", "remotes"]) || value.schema !== 2 || !isRecord(value.remotes)) {
+    return false;
+  }
+  for (const [origin, remote] of Object.entries(value.remotes)) {
+    try {
+      if (new URL(origin).origin !== origin) return false;
+    } catch {
+      return false;
+    }
+    if (
+      !isRecord(remote)
+      || !hasExactKeys(remote, ["bundles"])
+      || !isRecord(remote.bundles)
+      || Object.keys(remote.bundles).length === 0
+    ) return false;
+    for (const [bundleId, entry] of Object.entries(remote.bundles)) {
+      if (
+        !isCanonicalBundleId(bundleId)
+        || !isRecord(entry)
+        || !hasExactKeys(entry, ["api_key"])
+        || typeof entry.api_key !== "string"
+        || entry.api_key.length === 0
+      ) return false;
+    }
+  }
+  return Object.keys(value.remotes).length > 0;
+}
+
+/** Exact current disk contract accepted by the explicit one-shot private-state migration. */
 export function assertMigratableCredentials(raw: string): void {
   let value: unknown;
   try {
@@ -50,26 +70,7 @@ export function assertMigratableCredentials(raw: string): void {
   } catch {
     throw new Error("legacy credentials are not valid JSON");
   }
-  if (!isRecord(value) || !hasExactKeys(value, ["remotes"]) || !isRecord(value.remotes)) {
-    throw new Error("legacy credentials do not use the supported origin-keyed schema");
-  }
-  for (const [origin, entry] of Object.entries(value.remotes)) {
-    let url: URL;
-    try {
-      url = new URL(origin);
-    } catch {
-      throw new Error("legacy credentials contain an invalid remote origin");
-    }
-    if (
-      url.origin !== origin
-      || !isRecord(entry)
-      || !hasExactKeys(entry, ["api_key"])
-      || typeof entry.api_key !== "string"
-      || entry.api_key.length === 0
-    ) {
-      throw new Error("legacy credentials contain an unsupported remote entry");
-    }
-  }
+  if (!isCredentials(value)) throw new Error("credentials do not use the supported schema 2 origin-and-bundle shape");
 }
 
 export const CRED_FILE_NAME = "okf-config.json";
@@ -106,50 +107,58 @@ export async function loadCredentials(
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw err;
   }
-  let parsed: Credentials;
+  let parsed: unknown;
   try {
-    parsed = JSON.parse(raw) as Credentials;
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object") return null;
-  // Valid iff it carries at least one origin-keyed `remotes` entry — a file
-  // with none is unusable for anything this module's callers do, and routes to the clean "not logged
-  // in" path instead of surfacing a raw low-level error downstream.
-  const hasRemotes =
-    parsed.remotes !== undefined && parsed.remotes !== null && Object.keys(parsed.remotes).length > 0;
-  if (!hasRemotes) return null;
-  return parsed;
+  return isCredentials(parsed) ? parsed : null;
 }
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
 }
 
-/** Look up a stored API key for `origin` (`new URL(remoteUrl).origin`), or `undefined` if none stored. */
-export async function getApiKeyForOrigin(
+/** Look up a stored API key for the exact `(origin, bundleId)` target. */
+export async function getApiKeyForRemote(
   origin: string,
+  bundleId: BundleId,
   home: string = homedir(),
 ): Promise<string | undefined> {
   const creds = await loadCredentials(home);
-  const key = creds?.remotes?.[origin]?.api_key;
+  const key = creds?.remotes[origin]?.bundles[bundleId]?.api_key;
   return isNonEmptyString(key) ? key : undefined;
 }
 
 /**
- * Persist an API key for `origin`, MERGING with (never clobbering) any existing credentials
- * file — every OTHER origin's stored key survives. Non-default provisioning integrations are the
+ * Persist an API key for `(origin, bundleId)`, MERGING with (never clobbering) any existing
+ * credentials file — every other target's stored key survives. Provisioning integrations are the
  * writers.
  */
-export async function saveApiKeyForOrigin(
+export async function saveApiKeyForRemote(
   origin: string,
+  bundleId: BundleId,
   apiKey: string,
   home: string = homedir(),
 ): Promise<void> {
-  const existing = (await loadCredentials(home)) ?? {};
+  if (!isCanonicalBundleId(bundleId)) throw new Error(`invalid bundle id '${bundleId}'`);
+  const normalizedOrigin = new URL(origin).origin;
+  if (normalizedOrigin !== origin) throw new Error(`remote origin must be canonical: ${origin}`);
+  if (!isNonEmptyString(apiKey)) throw new Error("API key must be non-empty");
+  const existing = await loadCredentials(home);
+  const existingRemote = existing?.remotes[origin];
   const next: Credentials = {
-    ...existing,
-    remotes: { ...(existing.remotes ?? {}), [origin]: { api_key: apiKey } },
+    schema: 2,
+    remotes: {
+      ...(existing?.remotes ?? {}),
+      [origin]: {
+        bundles: {
+          ...(existingRemote?.bundles ?? {}),
+          [bundleId]: { api_key: apiKey },
+        },
+      },
+    },
   };
   await saveCredentials(next, home);
 }

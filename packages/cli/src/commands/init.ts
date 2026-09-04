@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { initBundle, loadKinds, resolveOkfAuthoringVersion } from "@superbee/core";
-import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, withCreateOnlyTarget } from "../bundle.js";
+import { assertPlainInitTarget, assertResolvedLocalRouteIdentity, resolveLocalBundleRoute, resolveProjectBinding, resolveRemoteFlag, withCreateOnlyTarget } from "../bundle.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -84,6 +84,7 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
           // Declared (not just left to error out generically) so a misdirected `init --remote`
           // gets the SPECIFIC message below instead of parseArgs's generic unknown-option text.
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -95,7 +96,9 @@ export async function init(argv: string[], deps: Partial<InitCliDeps> = {}): Pro
     stdout(INIT_USAGE);
     return;
   }
-  if (values.remote) {
+  if (values.remote !== undefined || values.bundle !== undefined) {
+    const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
+    if (!remote) throw new TypeError("explicit remote selector did not resolve");
     throw new CliError(
       "USAGE",
       "the wire protocol has no create-bundle endpoint; run init on the server's directory",

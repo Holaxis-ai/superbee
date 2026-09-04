@@ -6,6 +6,16 @@
 // proxy, not the remote); the error path builds a FRESH envelope and never echoes the outbound
 // request's own headers (a failure must not become a header-reflection channel for the key).
 
+import { resolveWireRequest, WireRequestResolutionError } from "@superbee/server/router";
+import type { BundleId } from "@superbee/core/storage";
+
+export interface RemoteUiTarget {
+  readonly baseUrl: string;
+  readonly origin: string;
+  readonly bundleId: BundleId;
+  readonly apiKey?: string;
+}
+
 const HOP_BY_HOP = new Set([
   "connection",
   "keep-alive",
@@ -46,22 +56,42 @@ function freshErrorResponse(status: number, code: string, message: string): Resp
 }
 
 /**
- * Proxy one `/v0/*` request to `remoteBase`. `apiKey` is the stored key for the remote's
- * origin, if any (`undefined` for a keyless target, e.g. the local reference `serve()` used by
+ * Proxy one `/v0/*` request to an exact remote target. `apiKey` is the stored key for its exact
+ * origin-and-bundle pair, if any (`undefined` for a keyless target, e.g. reference `serve()` used by
  * the E2E harness) — its presence alone decides whether `Authorization` is set at all.
  * `signal` is the ui server's shutdown signal: at close(), in-flight upstream requests are
  * ABORTED rather than awaited (a slow remote must not stall shutdown; the remote owns its own
  * write coherence).
  */
-export async function proxyToRemote(request: Request, remoteBase: string, apiKey: string | undefined, signal?: AbortSignal): Promise<Response> {
+export async function proxyToRemote(request: Request, remote: RemoteUiTarget, signal?: AbortSignal): Promise<Response> {
+  let baseUrl: URL;
+  try {
+    baseUrl = new URL(remote.baseUrl);
+  } catch {
+    return freshErrorResponse(500, "RUNTIME", "remote UI target is invalid");
+  }
+  if (baseUrl.origin !== remote.origin) {
+    return freshErrorResponse(500, "RUNTIME", "remote UI target origin does not match its base URL");
+  }
+  let resolved;
+  try {
+    resolved = resolveWireRequest(request);
+  } catch (error) {
+    if (error instanceof WireRequestResolutionError) return freshErrorResponse(error.status, error.code, error.message);
+    return freshErrorResponse(400, "USAGE", error instanceof Error ? error.message : String(error));
+  }
+  if (resolved.scope === "bundle" && resolved.bundleId !== remote.bundleId) {
+    return freshErrorResponse(404, "NOT_FOUND", "remote bundle route is not available");
+  }
   const incomingUrl = new URL(request.url);
-  const target = new URL(remoteBase + incomingUrl.pathname + incomingUrl.search);
+  const target = new URL(remote.baseUrl + incomingUrl.pathname + incomingUrl.search);
   // The local per-run session `?token=` is OUR trust boundary, not the remote's — never forward
   // it (it would otherwise leak into the remote's access logs for no reason).
   target.searchParams.delete("token");
 
   const headers = copyHeaders(request.headers, { dropCookie: true });
-  if (apiKey) headers.set("authorization", `Bearer ${apiKey}`);
+  const credentialed = resolved.scope === "bundle" && remote.apiKey !== undefined;
+  if (credentialed) headers.set("authorization", `Bearer ${remote.apiKey}`);
   else headers.delete("authorization");
 
   const method = request.method;
@@ -70,9 +100,12 @@ export async function proxyToRemote(request: Request, remoteBase: string, apiKey
 
   let upstream: Response;
   try {
-    upstream = await fetch(new Request(target, { method, headers, body: bodyBytes, signal }));
+    upstream = await fetch(new Request(target, { method, headers, body: bodyBytes, signal, redirect: "manual" }));
   } catch (err) {
-    return freshErrorResponse(502, "RUNTIME", `could not reach remote ${remoteBase} (${err instanceof Error ? err.message : String(err)})`);
+    return freshErrorResponse(502, "RUNTIME", `could not reach remote ${remote.baseUrl} (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (credentialed && upstream.status >= 300 && upstream.status < 400) {
+    return freshErrorResponse(502, "RUNTIME", "credentialed remote request refused an upstream redirect");
   }
 
   return new Response(upstream.body, {

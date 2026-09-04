@@ -32,7 +32,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 test("read(): a response with NEITHER X-Version NOR ETag throws a loud RemoteError(VERSION_MISSING), never silently returns version: ''", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://stripped.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     // Simulates the production finding: the edge stripped BOTH version headers.
     fetchImpl: async () => jsonResponse(200, { id: "x", frontmatter: { type: "T" }, body: "b" }),
   });
@@ -48,7 +48,7 @@ test("read(): a response with NEITHER X-Version NOR ETag throws a loud RemoteErr
 test("readReserved(): a response with NEITHER version header throws VERSION_MISSING, never a silent ''", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://stripped.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => jsonResponse(200, { content: "# Log\n" }),
   });
 
@@ -62,7 +62,7 @@ test("readReserved(): a response with NEITHER version header throws VERSION_MISS
 test("readBlob(): a response with NEITHER version header throws VERSION_MISSING, never a silent ''", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://stripped.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": "application/octet-stream" } }),
   });
@@ -80,7 +80,7 @@ test("write(): expectedVersion: '' throws BEFORE sending a request (never emits 
   let sent = false;
   const remote = new RemoteBackend({
     baseUrl: "http://guard.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => {
       sent = true;
       return jsonResponse(200, { version: TOKEN });
@@ -98,7 +98,7 @@ test("writeReserved(): expectedVersion: '' throws BEFORE sending a request", asy
   let sent = false;
   const remote = new RemoteBackend({
     baseUrl: "http://guard.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => {
       sent = true;
       return jsonResponse(200, { version: TOKEN });
@@ -116,7 +116,7 @@ test("writeBlob(): expectedVersion: '' throws BEFORE sending a request", async (
   let sent = false;
   const remote = new RemoteBackend({
     baseUrl: "http://guard.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => {
       sent = true;
       return jsonResponse(200, { version: TOKEN });
@@ -133,7 +133,7 @@ test("writeBlob(): expectedVersion: '' throws BEFORE sending a request", async (
 test("write(): expectedVersion: null (expect-absent) and a real token both still work — the guard targets ONLY the empty string", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://guard.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async (req: Request) => {
       assert.equal(req.headers.get("If-None-Match"), "*");
       return jsonResponse(201, { version: TOKEN });
@@ -148,7 +148,7 @@ test("write(): expectedVersion: null (expect-absent) and a real token both still
 test("read(): a response with ONLY a properly quoted ETag (no X-Version) parses the bare token via fallback", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://quoted.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       jsonResponse(200, { id: "x", frontmatter: { type: "T" }, body: "b" }, { ETag: `"${TOKEN}"` }),
   });
@@ -160,7 +160,7 @@ test("read(): a response with ONLY a properly quoted ETag (no X-Version) parses 
 test("read/readMany keep route-owned identity when a foreign payload reports different ids", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://identity.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async (req: Request) => {
       if (req.url.endsWith("/docs:read-many")) {
         return jsonResponse(
@@ -191,7 +191,7 @@ test("read/readMany keep route-owned identity when a foreign payload reports dif
 test("readMany rejects a response whose result count cannot satisfy the positional identity contract", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://identity.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => jsonResponse(200, { results: [] }),
   });
   await assert.rejects(
@@ -203,7 +203,7 @@ test("readMany rejects a response whose result count cannot satisfy the position
 test("readBlob(): a response with ONLY a quoted ETag parses correctly", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://quoted.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       new Response(new Uint8Array([1, 2, 3]), {
         status: 200,
@@ -220,7 +220,7 @@ test("readBlob(): a response with ONLY a quoted ETag parses correctly", async ()
 test("read(): a response with ONLY a WEAK ETag (W/\"sha256:...\", no X-Version) parses the bare token via fallback", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://weak.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       jsonResponse(200, { id: "x", frontmatter: { type: "T" }, body: "b" }, { ETag: `W/"${TOKEN}"` }),
   });
@@ -232,7 +232,7 @@ test("read(): a response with ONLY a WEAK ETag (W/\"sha256:...\", no X-Version) 
 test("readReserved(): a response with ONLY a weak ETag parses correctly", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://weak.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => jsonResponse(200, { content: "# Log\n" }, { ETag: `W/"${TOKEN}"` }),
   });
 
@@ -246,7 +246,7 @@ test("read(): X-Version wins over a DIFFERENT ETag value when both are present (
   const otherToken = "sha256:" + "b".repeat(64);
   const remote = new RemoteBackend({
     baseUrl: "http://priority.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       jsonResponse(
         200,
@@ -262,7 +262,7 @@ test("read(): X-Version wins over a DIFFERENT ETag value when both are present (
 test("read(): a legacy BARE (unquoted) ETag with no X-Version still parses correctly (backward compatible with an unpatched/older server)", async () => {
   const remote = new RemoteBackend({
     baseUrl: "http://legacy.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () =>
       jsonResponse(200, { id: "x", frontmatter: { type: "T" }, body: "b" }, { ETag: TOKEN }),
   });
@@ -274,7 +274,7 @@ test("RemoteBackend rejects noncanonical concept aliases before URL construction
   let calls = 0;
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: async () => {
       calls++;
       return new Response(null, { status: 500 });

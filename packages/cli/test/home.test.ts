@@ -38,6 +38,7 @@ import {
   type HomeRow,
   type UnreadableBundle,
 } from "../src/commands/home.js";
+import { CliError } from "../src/errors.js";
 import { cliVersion } from "../src/build-identity.js";
 import { addCatalogEntry } from "../src/catalog.js";
 import { canonicalUserStateDir, USER_STATE_MARKER_BYTES } from "../src/user-state.js";
@@ -683,12 +684,27 @@ test("A1.8 home omits hosted credential identity while an explicit remote still 
   assert.equal(local.auth, undefined);
   assert.equal(local.remotes, undefined);
 
-  const scoped = buildHomeView(BASE_DEPS, null, "https://ex.workers.dev");
+  const scoped = buildHomeView(BASE_DEPS, null, {
+    baseUrl: "https://ex.workers.dev",
+    origin: "https://ex.workers.dev",
+    bundleId: "bnd_11111111111111111111111111111111",
+  });
   assert.equal(scoped.auth, undefined);
   assert.deepEqual((scoped.remote as Record<string, unknown>).help, [
-    `${INVOKE} list --remote https://ex.workers.dev`,
-    `${INVOKE} status --remote https://ex.workers.dev`,
+    `${INVOKE} list --remote https://ex.workers.dev --bundle bnd_11111111111111111111111111111111`,
+    `${INVOKE} status --remote https://ex.workers.dev --bundle bnd_11111111111111111111111111111111`,
   ]);
+});
+
+test("home validates the same exact remote selection pair as every remote-capable command", async () => {
+  await assert.rejects(
+    () => home(["--remote", "https://ex.workers.dev", "--json"]),
+    (err: unknown) => err instanceof CliError && /requires --bundle/.test(err.message),
+  );
+  await assert.rejects(
+    () => home(["--bundle", "bnd_11111111111111111111111111111111", "--json"]),
+    (err: unknown) => err instanceof CliError && /requires --remote/.test(err.message),
+  );
 });
 
 test("A1.10 unreadable bundle (present but a doc failed to read): status:unreadable, NOT the init hint", () => {

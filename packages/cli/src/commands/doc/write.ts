@@ -47,6 +47,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           actor: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -122,7 +123,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     frontmatter.timestamp = ts;
   }
 
-  const remote = await resolveRemoteFlag(values.remote, values.dir);
+  const remote = await resolveRemoteFlag(values.remote, values.dir, values.bundle);
   const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
   const bundle = route?.bundle ?? await openBundle(values.dir, remote);
   if (route) await assertResolvedLocalRouteIdentity(route);
@@ -166,6 +167,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     mode: "overwrite",
     registry,
     remoteUrl: values.remote,
+    remoteBundleId: values.bundle,
     strict: Boolean(values.strict),
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,

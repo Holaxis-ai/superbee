@@ -120,7 +120,7 @@ const backend: StorageBackend = new MemoryBackend();
 const router = createRouterForBackend(backend);
 const remote = new RemoteBackend({
   baseUrl: "http://wire.external",
-  bundle: "proof",
+  bundleId: "bnd_00112233445566778899aabbccddeeff",
   fetchImpl: router,
   maxRetries: 0,
 });
@@ -186,7 +186,7 @@ const backend = new MemoryBackend();
 const router = createRouterForBackend(backend);
 const remote = new RemoteBackend({
   baseUrl: "http://wire.external",
-  bundle: "proof",
+  bundleId: "bnd_00112233445566778899aabbccddeeff",
   fetchImpl: router,
   maxRetries: 0,
 });

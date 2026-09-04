@@ -226,7 +226,7 @@ test("path categories are defensively capped while preserving their total", asyn
 
 test("index generate is local-only and rejects --remote at parse time", async () => {
   await assert.rejects(
-    () => indexCommand(["generate", "--remote", "https://example.invalid"]),
+    () => indexCommand(["generate", "--remote", "https://example.invalid", "--bundle", "bnd_00000000000000000000000000000000"]),
     (error: unknown) => error instanceof CliError && error.code === "USAGE",
   );
 });

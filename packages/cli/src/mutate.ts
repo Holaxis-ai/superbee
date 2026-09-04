@@ -61,6 +61,7 @@ export interface MutateDocOptions {
   maxAttempts?: number;
   compareTimestamp?: boolean;
   remoteUrl?: string;
+  remoteBundleId?: string;
   actor?: string;
   persistActor?: boolean;
   expectedVersion?: Version;
@@ -135,7 +136,7 @@ async function translateMutationError(error: unknown, opts: MutateDocOptions): P
     }
     throw opts.errors.staleHead?.(error) ?? new CliError("STALE_HEAD", error.message);
   }
-  throw classifyBundleError(error, opts.remoteUrl);
+  throw classifyBundleError(error, opts.remoteUrl, opts.remoteBundleId);
 }
 
 export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {

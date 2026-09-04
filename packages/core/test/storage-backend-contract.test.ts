@@ -46,7 +46,7 @@ function remoteFixture(): BackendFixture {
   return {
     backend: new RemoteBackend({
       baseUrl: "http://wire.local",
-      bundle: "contract",
+      bundleId: "bnd_44444444444444444444444444444444",
       fetchImpl: router,
       maxRetries: 0,
     }),
@@ -102,13 +102,13 @@ const PEER_CONTRACTS: AtomicBackendContractOptions[] = [
       const peers: StorageBackend[] = [
         new RemoteBackend({
           baseUrl: "http://wire.local",
-          bundle: "contract",
+          bundleId: "bnd_44444444444444444444444444444444",
           fetchImpl: router,
           maxRetries: 0,
         }),
         new RemoteBackend({
           baseUrl: "http://wire.local",
-          bundle: "contract",
+          bundleId: "bnd_44444444444444444444444444444444",
           fetchImpl: router,
           maxRetries: 0,
         }),

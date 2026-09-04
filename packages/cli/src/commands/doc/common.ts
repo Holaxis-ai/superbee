@@ -10,6 +10,7 @@ import { cliInvocation } from "../../invocation.js";
 const COMMON_OPTIONS = `Common options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                        (mutually exclusive with --dir; remote access is always explicit)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help`;
@@ -55,6 +56,7 @@ managed UI per exact bundle + actor. Explicit remote launches stay in the foregr
 Options:
   --dir <path>         Bundle directory (default: discovered from the cwd)
   --remote <url>       Display a document from an explicit remote bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                        (mutually exclusive with --dir; remote access is always explicit)
   --port <p>           Require this port for a new managed UI (default: OS-assigned and then reused)
   --actor <name>       Advisory identity for any later human-confirmed View actions in this UI
@@ -465,7 +467,7 @@ export async function defaultReadStdin(): Promise<StdinReadResult> {
 }
 
 /** Map a filesystem ENOENT (missing concept file) to NOT_FOUND; classify anything else via `classifyBundleError`. */
-export function readErrorToCliError(err: unknown, id: string, remoteUrl?: string): CliError {
+export function readErrorToCliError(err: unknown, id: string, remoteUrl?: string, remoteBundleId?: string): CliError {
   if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
     return new CliError("NOT_FOUND", `no concept document at id '${id}'`, {
       help: `${cliInvocation()} list`,
@@ -474,5 +476,5 @@ export function readErrorToCliError(err: unknown, id: string, remoteUrl?: string
   // A corrupt document (unparseable YAML) → RUNTIME (exit 1), not the USAGE default: handled
   // centrally in classifyBundleError so read/write/update/history/link all agree (a valid
   // invocation hitting bad stored data is not a usage error).
-  return classifyBundleError(err, remoteUrl);
+  return classifyBundleError(err, remoteUrl, remoteBundleId);
 }

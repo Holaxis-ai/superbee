@@ -221,12 +221,12 @@ test("delete --doc-key --remote: round-trip parity with the same operation run l
     const server = await bootServer(remoteDir);
     try {
       const localDoc = await runDelete(["--doc-key", "concepts/a.md", "--dir", localDir]);
-      const remoteDoc = await runDelete(["--doc-key", "concepts/a.md", "--remote", server.url]);
+      const remoteDoc = await runDelete(["--doc-key", "concepts/a.md", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remoteDoc.deleted, localDoc.deleted);
       assert.equal(remoteDoc.deleted, true);
 
       const localBlob = await runDelete(["--doc-key", "artifacts/b.bin", "--dir", localDir]);
-      const remoteBlob = await runDelete(["--doc-key", "artifacts/b.bin", "--remote", server.url]);
+      const remoteBlob = await runDelete(["--doc-key", "artifacts/b.bin", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remoteBlob.deleted, localBlob.deleted);
       assert.equal(remoteBlob.deleted, true);
 

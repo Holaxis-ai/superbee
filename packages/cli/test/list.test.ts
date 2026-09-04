@@ -224,7 +224,7 @@ test("list orders meaningful change time newest-first after filters and before l
 
     const handle: ServerHandle = await serve({ bundle, port: 0 });
     try {
-      const remote = await runJson(["--type", "Context Note", "--limit", "0", "--remote", `http://${handle.host}:${handle.port}`]);
+      const remote = await runJson(["--type", "Context Note", "--limit", "0", "--remote", `http://${handle.host}:${handle.port}`, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remote, local);
     } finally {
       await handle.close();
@@ -469,7 +469,7 @@ test("--field over --remote: same result set as --dir against a live serve()", a
     const url = `http://${handle.host}:${handle.port}`;
     try {
       const local = await runJson(["--type", "Task", "--field", "status=todo", "--dir", dir]);
-      const remote = await runJson(["--type", "Task", "--field", "status=todo", "--remote", url]);
+      const remote = await runJson(["--type", "Task", "--field", "status=todo", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remote, local);
     } finally {
       await handle.close();
@@ -566,7 +566,7 @@ test("--field comma-OR over --remote: same result set as --dir (reader-side post
     const url = `http://${handle.host}:${handle.port}`;
     try {
       const local = await runJson(["--type", "Task", "--field", "status=todo,doing", "--dir", dir]);
-      const remote = await runJson(["--type", "Task", "--field", "status=todo,doing", "--remote", url]);
+      const remote = await runJson(["--type", "Task", "--field", "status=todo,doing", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remote, local);
     } finally {
       await handle.close();
@@ -678,7 +678,7 @@ test("--open over --remote: same result set as --dir against a live serve() (the
     const url = `http://${handle.host}:${handle.port}`;
     try {
       const local = await runJson(["--type", "Task", "--open", "--dir", dir]);
-      const remote = await runJson(["--type", "Task", "--open", "--remote", url]);
+      const remote = await runJson(["--type", "Task", "--open", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remote, local);
     } finally {
       await handle.close();

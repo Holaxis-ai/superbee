@@ -56,6 +56,7 @@ Options:
   --supersedes <id>     Mark a prior artifact superseded and link this one 'supersedes' it
   --dir <path>          Operate on a local bundle at <path>
   --remote <url>        Operate on a remote bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
   --actor <name>        Attribute the write to <name>
   --json                TOON/JSON receipt
   -h, --help            Show this help`;
@@ -65,7 +66,8 @@ const ARTIFACT_CREATE_OPTIONS = {
   description: { type: "string" },
   supersedes: { type: "string" },
   dir: { type: "string" },
-  remote: { type: "string" },
+          remote: { type: "string" },
+          bundle: { type: "string" },
   actor: { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
@@ -151,7 +153,7 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   const actor = resolveActor(values.actor as string | undefined, {
     help: `${cliInvocation()} artifact create <file> --title <title> --actor <name>`,
   });
-  const remote = await resolveRemoteFlag(remoteUrl, dir);
+  const remote = await resolveRemoteFlag(remoteUrl, dir, values.bundle as string | undefined);
   const route = remote === undefined ? await resolveLocalBundleRoute(dir) : undefined;
   const bundle: Bundle = route?.bundle ?? await openBundle(dir, remote);
   const attribution: BoardAttribution = route ? boardAttributionForRoute(route) : { kind: "none" };

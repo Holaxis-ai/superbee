@@ -19,7 +19,10 @@ import { canonicalUserStateDir, legacyUserStateDir, supersededUserStateDirs } fr
 import { inspectUserStateMigration, migrateUserState } from "../src/user-state-migration.js";
 
 const CATALOG = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
-const CREDENTIALS = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "carried" } } })}\n`;
+const CREDENTIALS = `${JSON.stringify({
+  schema: 2,
+  remotes: { "https://worker.example": { bundles: { bnd_00000000000000000000000000000000: { api_key: "carried" } } } },
+})}\n`;
 const WINDOWS = process.platform === "win32";
 const directoryLinkType: "dir" | "junction" = WINDOWS ? "junction" : "dir";
 const sourceExit = (display: string, detailed = false): string => WINDOWS

@@ -1389,7 +1389,7 @@ test("--remote: status against a served bundle is identical to the same bundle r
     const handle: ServerHandle = await serve({ bundle: { root: dir } as Bundle, port: 0 });
     try {
       const url = `http://${handle.host}:${handle.port}`;
-      const remote = await runJson(["--remote", url]);
+      const remote = await runJson(["--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       // Every field is deterministic EXCEPT `stale_docs[].age_ms`, which is `now - timestamp`
       // recomputed at each invocation's own instant — the two calls run moments apart, so the
       // raw ms values legitimately differ. Compare those separately (both exceed the horizon,

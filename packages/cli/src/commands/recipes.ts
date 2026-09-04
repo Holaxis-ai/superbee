@@ -32,7 +32,7 @@ import { commandFragment, commandLiteral, commandQuoted, commandToken, type Comm
 export const RECIPES_USAGE = `superbee recipes — browse built-in recipes before or after init
 
 Usage:
-  superbee recipes [--dir <path>] [--remote <url>]
+  superbee recipes [--dir <path>] [--remote <url> --bundle <bundle_id>]
 
 A recipe is a folder ('recipe.md' manifest + 'conventions/*.md' docs) that 'recipe add
 <name-or-path>' installs onto a bundle in one shot — idempotently (re-adding an already-applied
@@ -49,6 +49,7 @@ into.
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                          (mutually exclusive with --dir; remote access is always explicit)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
@@ -66,11 +67,12 @@ export interface RecipesCliDeps {
 interface RecipeCommandTarget {
   dir?: string;
   remote?: string;
+  bundle?: string;
 }
 
 function commandTargetSuffix(target: RecipeCommandTarget): CommandText {
   if (target.dir !== undefined) return commandFragment` --dir ${commandQuoted(target.dir)}`;
-  if (target.remote !== undefined) return commandFragment` --remote ${commandQuoted(target.remote)}`;
+  if (target.remote !== undefined) return commandFragment` --remote ${commandQuoted(target.remote)} --bundle ${commandQuoted(target.bundle!)}`;
   return commandLiteral("");
 }
 
@@ -116,13 +118,13 @@ export function recipeInventoryRow(
  * honest "nothing has been created here yet" state becomes an inventory-only success.
  */
 async function optionalBundle(
-  values: { dir?: string; remote?: string },
+  values: { dir?: string; remote?: string; bundle?: string },
   deps: Pick<
     RecipesCliDeps,
     "cwd" | "openBundle" | "resolveRemoteFlag" | "resolveProjectBinding" | "findBundleRoot"
   >,
 ): Promise<Bundle | undefined> {
-  const remote = await deps.resolveRemoteFlag(values.remote, values.dir);
+  const remote = await deps.resolveRemoteFlag(values.remote, values.dir, values.bundle);
   if (values.dir !== undefined || remote !== undefined) {
     return deps.openBundle(values.dir, remote);
   }
@@ -154,6 +156,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
         options: {
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -190,7 +193,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
         loaded.recipe,
         appliedIds === undefined ? null : isRecipeApplied(loaded.recipe, appliedIds),
         inv,
-        { dir: values.dir, remote: values.remote },
+        { dir: values.dir, remote: values.remote, bundle: values.bundle },
         drift,
       ),
     );
@@ -199,6 +202,7 @@ export async function recipes(argv: string[], deps: Partial<RecipesCliDeps> = {}
   const addHelp = `${inv} recipe add <name-or-path>${commandTargetSuffix({
     dir: values.dir,
     remote: values.remote,
+    bundle: values.bundle,
   })}`;
   const help =
     values.remote !== undefined || appliedIds !== undefined

@@ -78,12 +78,12 @@ test("new \"Context Note\" + doc read --remote: round-trip parity with the same 
     try {
       const createArgs = ["Context Note", "c1", "--title", "c1", "--timestamp", T];
       const localCreate = await runJson(newCommand, [...createArgs, "--dir", localDir]);
-      const remoteCreate = await runJson(newCommand, [...createArgs, "--remote", server.url]);
+      const remoteCreate = await runJson(newCommand, [...createArgs, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remoteCreate.id, localCreate.id);
       assert.equal(remoteCreate.timestamp, localCreate.timestamp);
 
       const localRead = await runJson(doc, ["read", localCreate.id as string, "--dir", localDir]);
-      const remoteRead = await runJson(doc, ["read", remoteCreate.id as string, "--remote", server.url]);
+      const remoteRead = await runJson(doc, ["read", remoteCreate.id as string, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remoteRead, localRead);
     } finally {
       await server.close();
@@ -109,12 +109,12 @@ test("list --remote: count + default 4-field schema + --fields hatch, parity wit
     const server = await bootServer(remoteDir);
     try {
       const localList = await runJson(list, ["--dir", localDir]);
-      const remoteList = await runJson(list, ["--remote", server.url]);
+      const remoteList = await runJson(list, ["--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remoteList, localList);
       assert.equal(remoteList.count, 2);
 
       const localFields = await runJson(list, ["--dir", localDir, "--fields", "tags"]);
-      const remoteFields = await runJson(list, ["--remote", server.url, "--fields", "tags"]);
+      const remoteFields = await runJson(list, ["--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--fields", "tags"]);
       assert.deepEqual(remoteFields, localFields);
     } finally {
       await server.close();
@@ -134,15 +134,15 @@ test("link add --remote: idempotent (changed:false, exit 0) on re-add", async ()
     await writeDoc(bundle, { id: "b", frontmatter: { type: "Concept", title: "B", timestamp: T }, body: "B" });
     const server = await bootServer(dir);
     try {
-      const first = await runJson(link, ["add", "a", "b", "--remote", server.url]);
+      const first = await runJson(link, ["add", "a", "b", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(first.changed, true);
       assert.equal(first.link, "added");
 
-      const second = await runJson(link, ["add", "a", "b", "--remote", server.url]);
+      const second = await runJson(link, ["add", "a", "b", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(second.changed, false);
       assert.equal(second.link, "exists");
 
-      const shown = await runJson(link, ["show", "a", "--remote", server.url]);
+      const shown = await runJson(link, ["show", "a", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(shown.outbound_count, 1);
     } finally {
       await server.close();
@@ -165,17 +165,17 @@ test("link show --text --remote: backlink text + exact-match filtering are IDENT
     const server = await bootServer(remoteDir);
     try {
       await link(["add", "citer", "hub", "--text", "prereq", "--dir", localDir, "--json"], { stdout: () => {} });
-      await link(["add", "citer", "hub", "--text", "prereq", "--remote", server.url, "--json"], { stdout: () => {} });
+      await link(["add", "citer", "hub", "--text", "prereq", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: () => {} });
 
       const localShown = await runJson(link, ["show", "hub", "--text", "prereq", "--dir", localDir]);
-      const remoteShown = await runJson(link, ["show", "hub", "--text", "prereq", "--remote", server.url]);
+      const remoteShown = await runJson(link, ["show", "hub", "--text", "prereq", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remoteShown, localShown);
       assert.equal(remoteShown.backlink_count, 1);
       assert.deepEqual(remoteShown.backlinks, [{ from: "citer", text: "prereq" }]);
 
       // A filter matching nothing is the same definitive empty state over both transports.
       const localEmpty = await runJson(link, ["show", "hub", "--text", "no-match", "--dir", localDir]);
-      const remoteEmpty = await runJson(link, ["show", "hub", "--text", "no-match", "--remote", server.url]);
+      const remoteEmpty = await runJson(link, ["show", "hub", "--text", "no-match", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.deepEqual(remoteEmpty, localEmpty);
       assert.equal(remoteEmpty.backlink_count, 0);
     } finally {
@@ -206,7 +206,7 @@ test("doc read --out --remote: canonical re-serialization is byte-identical to a
       // it hit real test stdout — doc's default stdout falls back to process.stdout.write.
       const captureStdout = { stdout: (_s: string) => {} };
       await doc(["read", "concepts/x", "--out", localOut, "--dir", dir], captureStdout);
-      await doc(["read", "concepts/x", "--out", remoteOut, "--remote", server.url], captureStdout);
+      await doc(["read", "concepts/x", "--out", remoteOut, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"], captureStdout);
       const localBytes = await readFile(localOut);
       const remoteBytes = await readFile(remoteOut);
       assert.deepEqual(remoteBytes, localBytes);
@@ -243,14 +243,14 @@ test("multi-writer convergence: N concurrent `link add`s to the SAME source doc 
   const server = await bootServerOverBundle(bundle);
   try {
     const results = await Promise.all(
-      targets.map((t) => runJson(link, ["add", "hub", t, "--remote", server.url])),
+      targets.map((t) => runJson(link, ["add", "hub", t, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"])),
     );
     for (const r of results) {
       assert.equal(r.changed, true, `expected ${r.to as string} to land`);
       assert.equal(r.link, "added");
     }
 
-    const shown = await runJson(link, ["show", "hub", "--remote", server.url]);
+    const shown = await runJson(link, ["show", "hub", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
     assert.equal(shown.outbound_count, targets.length);
     const linked = new Set((shown.outbound as Array<{ to: string }>).map((l) => l.to));
     for (const t of targets) assert.ok(linked.has(t), `${t} missing from converged outbound set`);
@@ -281,14 +281,14 @@ test("multi-writer convergence over FilesystemBackend: N concurrent `link add`s 
     const server = await bootServer(dir);
     try {
       const results = await Promise.all(
-        targets.map((t) => runJson(link, ["add", "hub", t, "--remote", server.url])),
+        targets.map((t) => runJson(link, ["add", "hub", t, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"])),
       );
       for (const r of results) {
         assert.equal(r.changed, true, `expected ${r.to as string} to land`);
         assert.equal(r.link, "added");
       }
 
-      const shown = await runJson(link, ["show", "hub", "--remote", server.url]);
+      const shown = await runJson(link, ["show", "hub", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(shown.outbound_count, targets.length);
       const linked = new Set((shown.outbound as Array<{ to: string }>).map((l) => l.to));
       for (const t of targets) assert.ok(linked.has(t), `${t} missing from converged outbound set`);
@@ -302,7 +302,7 @@ test("multi-writer convergence over FilesystemBackend: N concurrent `link add`s 
 
 test("--remote: an unreachable server maps to exit 1 RUNTIME with a serve hint, not a raw TypeError/USAGE misclassification", async () => {
   await assert.rejects(
-    () => list(["--remote", "http://127.0.0.1:1", "--json"], {}),
+    () => list(["--remote", "http://127.0.0.1:1", "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}),
     (err: unknown) => {
       assert.ok(err instanceof CliError, `expected a CliError, got ${String(err)}`);
       assert.equal(err.code, "RUNTIME");
@@ -315,7 +315,7 @@ test("--remote: an unreachable server maps to exit 1 RUNTIME with a serve hint, 
 
 test("--remote + --dir together: USAGE (exit 2)", async () => {
   await assert.rejects(
-    () => list(["--remote", "http://127.0.0.1:4818", "--dir", "/nonexistent", "--json"], {}),
+    () => list(["--remote", "http://127.0.0.1:4818", "--bundle", "bnd_00000000000000000000000000000000", "--dir", "/nonexistent", "--json"], {}),
     (err: unknown) => {
       assert.ok(err instanceof CliError);
       assert.equal(err.code, "USAGE");
@@ -327,7 +327,7 @@ test("--remote + --dir together: USAGE (exit 2)", async () => {
 
 test("init --remote: USAGE (exit 2) with the specific no-create-bundle-endpoint message", async () => {
   await assert.rejects(
-    () => init(["--remote", "http://127.0.0.1:4818", "--json"], {}),
+    () => init(["--remote", "http://127.0.0.1:4818", "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}),
     (err: unknown) => {
       assert.ok(err instanceof CliError);
       assert.equal(err.code, "USAGE");
@@ -340,7 +340,7 @@ test("init --remote: USAGE (exit 2) with the specific no-create-bundle-endpoint 
 
 test("malformed --remote URL: USAGE (exit 2)", async () => {
   await assert.rejects(
-    () => list(["--remote", "not-a-url", "--json"], {}),
+    () => list(["--remote", "not-a-url", "--bundle", "bnd_00000000000000000000000000000000", "--json"], {}),
     (err: unknown) => {
       assert.ok(err instanceof CliError);
       assert.equal(err.code, "USAGE");

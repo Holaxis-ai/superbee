@@ -123,7 +123,7 @@ test("bundle locate: unavailable targets and remote intent fail instead of choos
       (err: unknown) => err instanceof CliError && err.code === "NOT_FOUND",
     );
     await assert.rejects(
-      () => bundleCommand(["locate", "--remote", "http://example.test", "--json"], { cwd: () => dir }),
+      () => bundleCommand(["locate", "--remote", "http://example.test", "--bundle", "bnd_00000000000000000000000000000000", "--json"], { cwd: () => dir }),
       (err: unknown) => err instanceof CliError && err.code === "USAGE",
     );
   } finally {

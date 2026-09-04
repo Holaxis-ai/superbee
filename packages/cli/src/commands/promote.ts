@@ -111,6 +111,7 @@ Options:
                             The expect-absent CREATE route is never guarded.
   --dir <path>              Bundle directory (default: discovered from the cwd)
   --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                             exclusive with --dir; remote access is always explicit)
   --json                    Emit compact JSON instead of TOON
   -h, --help                Show this help
@@ -141,6 +142,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
           strict: { type: "boolean" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -190,7 +192,7 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
     }
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const mode = resolveMode(values);
   // I9: promote v1 supports token-CAS only via --expected-version; omitting it means EXPECT-ABSENT
   // create (null), never an unconditional last-writer-wins overwrite.
@@ -210,10 +212,11 @@ export async function promote(argv: string[], deps: Partial<PromoteCliDeps> = {}
       stdout,
       mode,
       values.remote,
+      values.bundle,
     );
     return;
   }
-  await promoteBlob(file, key, bundle, { expectedVersion, contentType: values["content-type"] }, stdout, mode, values.remote);
+  await promoteBlob(file, key, bundle, { expectedVersion, contentType: values["content-type"] }, stdout, mode, values.remote, values.bundle);
 }
 
 async function promoteDoc(
@@ -224,6 +227,7 @@ async function promoteDoc(
   stdout: (s: string) => void,
   mode: OutputMode,
   remoteUrl?: string,
+  remoteBundleId?: string,
 ): Promise<void> {
   let raw: string;
   try {
@@ -263,6 +267,7 @@ async function promoteDoc(
       onAbsent: "create",
       registry,
       remoteUrl,
+      remoteBundleId,
       strict: opts.strict,
       helpOnKindReject: `${cliInvocation()} kinds`,
       expectedVersion: opts.expectedVersion ?? undefined,
@@ -273,12 +278,12 @@ async function promoteDoc(
       bodyReplace: { acceptTruncatedBody: opts.acceptTruncatedBody, replaceLinks: opts.replaceLinks },
       buildCandidate: () => ({ frontmatter, body }),
       errors: {
-        alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
-        staleHead: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
+        alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl, remoteBundleId),
+        staleHead: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl, remoteBundleId),
       },
     });
   } catch (err) {
-    throw promoteWriteErrorToCliError(err, key, file, remoteUrl);
+    throw promoteWriteErrorToCliError(err, key, file, remoteUrl, remoteBundleId);
   }
 
   const receipt: Record<string, unknown> = {
@@ -307,6 +312,7 @@ async function promoteBlob(
   stdout: (s: string) => void,
   mode: OutputMode,
   remoteUrl?: string,
+  remoteBundleId?: string,
 ): Promise<void> {
   let bytes: Buffer;
   try {
@@ -319,7 +325,7 @@ async function promoteBlob(
   try {
     version = await writeBlob(bundle, key, bytes, opts.contentType, { expectedVersion: opts.expectedVersion });
   } catch (err) {
-    throw promoteWriteErrorToCliError(err, key, file, remoteUrl);
+    throw promoteWriteErrorToCliError(err, key, file, remoteUrl, remoteBundleId);
   }
 
   const receipt: Record<string, unknown> = {
@@ -355,7 +361,7 @@ function promoteFileReadError(err: unknown, file: string): CliError {
  * `new` uses; a stale explicit token maps to `STALE_HEAD` — both are exit 5 (CONFLICT), but the
  * `code` and message differ so an agent (or a human) understands WHICH happened.
  */
-function promoteWriteErrorToCliError(err: unknown, key: string, file: string, remoteUrl?: string): CliError {
+function promoteWriteErrorToCliError(err: unknown, key: string, file: string, remoteUrl?: string, remoteBundleId?: string): CliError {
   if (err instanceof CliError) return err;
   if (err instanceof VersionConflict) {
     const current = err.actual;
@@ -384,5 +390,5 @@ function promoteWriteErrorToCliError(err: unknown, key: string, file: string, re
   // Anything else lands on the one boundary: a typed InvalidInputError (reserved-id, unsafe-id,
   // empty type) → USAGE, a RemoteError by ITS code (AUTH_REQUIRED/FORBIDDEN/…), an unexpected
   // failure → RUNTIME.
-  return classifyBundleError(err, remoteUrl);
+  return classifyBundleError(err, remoteUrl, remoteBundleId);
 }

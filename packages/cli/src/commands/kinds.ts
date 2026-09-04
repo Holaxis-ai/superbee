@@ -22,7 +22,7 @@ import { cliInvocation } from "../invocation.js";
 export const KINDS_USAGE = `superbee kinds — list the kind conventions declared by this bundle
 
 Usage:
-  superbee kinds [--dir <path>] [--remote <url>]
+  superbee kinds [--dir <path>] [--remote <url> --bundle <bundle_id>]
 
 A kind convention is a plain OKF doc (type: Convention) under conventions/ declaring a document
 kind's purpose, required/optional fields and their descriptions, allowed enum values, typed-link vocabulary, expected body
@@ -79,6 +79,7 @@ output), never a silent no-op. See 'superbee doc read conventions/context-note' 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                          (mutually exclusive with --dir; remote access is always explicit)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
@@ -134,6 +135,7 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
         options: {
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -146,7 +148,7 @@ export async function kinds(argv: string[], deps: Partial<KindsCliDeps> = {}): P
     return;
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const [registry, okfVersion] = await Promise.all([
     loadKinds(bundle),
     readBundleOkfVersion(bundle),

@@ -43,6 +43,7 @@ const DOC_UPDATE_VALUE_FLAGS = new Set([
   "body-file",
   "dir",
   "remote",
+  "bundle",
   "expected-version",
   "actor",
 ]);
@@ -60,6 +61,7 @@ interface ParsedDocUpdateArgs {
   json: boolean;
   dir?: string;
   remote?: string;
+  bundle?: string;
   keepTimestamp: boolean;
   strict: boolean;
   replaceLinks: boolean;
@@ -117,6 +119,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
           "body-file": { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           "expected-version": { type: "string" },
           actor: { type: "string" },
           tag: { type: "string", multiple: true },
@@ -207,6 +210,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
     json: Boolean(rawValues.json),
     dir: std.dir,
     remote: std.remote,
+    bundle: std.bundle,
     keepTimestamp: Boolean(rawValues["keep-timestamp"]),
     strict: Boolean(rawValues.strict),
     replaceLinks: Boolean(rawValues["replace-links"]),
@@ -304,7 +308,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
 
-  const remote = await resolveRemoteFlag(p.remote, p.dir);
+  const remote = await resolveRemoteFlag(p.remote, p.dir, p.bundle);
   const route = remote === undefined ? await resolveLocalBundleRoute(p.dir) : undefined;
   const bundle = route?.bundle ?? await openBundle(p.dir, remote);
   if (route) await assertResolvedLocalRouteIdentity(route);
@@ -334,6 +338,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     onAbsent: "fail",
     registry,
     remoteUrl: p.remote,
+    remoteBundleId: p.bundle,
     strict,
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor,

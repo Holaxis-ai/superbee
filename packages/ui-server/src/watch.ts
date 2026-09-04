@@ -11,9 +11,6 @@ import { watch as fsWatch, type FSWatcher } from "node:fs";
 import { listBlobs, readBlob, queryHeads, type Bundle } from "@superbee/core";
 import { PAGE_BLOB_PREFIXES } from "./pages.js";
 
-/** The single-bundle reference router's bundle segment (mirrors the SPA client's `BUNDLE`). */
-const REMOTE_BUNDLE = "default";
-
 /** A point-in-time map of every doc id -> version and every page-blob key -> version. */
 export interface Snapshot {
   docs: Map<string, string>;
@@ -81,32 +78,6 @@ export async function snapshotBundle(bundle: Bundle): Promise<Snapshot> {
   return { docs, blobs };
 }
 
-/**
- * Snapshot a remote over the wire: doc heads via the `GET /docs?fields=frontmatter` projection,
- * paginated to exhaustion. Remote page-blob hot-reload is a LABELED follow-up (v0 ships live DOC
- * updates over `--remote`; blob-change hot-reload stays local-mode only), so `blobs` is empty here.
- * `signal` cancels an in-flight request — the watcher aborts it on `stop()` instead of leaving a
- * dangling fetch past shutdown.
- */
-export async function snapshotRemote(base: string, apiKey?: string, signal?: AbortSignal): Promise<Snapshot> {
-  const docs = new Map<string, string>();
-  const headers: Record<string, string> = {};
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-  let cursor: string | undefined;
-  do {
-    const url = new URL(`${base}/v0/bundles/${REMOTE_BUNDLE}/docs`);
-    url.searchParams.set("fields", "frontmatter");
-    url.searchParams.set("limit", "200");
-    if (cursor) url.searchParams.set("cursor", cursor);
-    const res = await fetch(url, { headers, signal });
-    if (!res.ok) throw new Error(`remote snapshot failed with status ${res.status}`);
-    const body = (await res.json()) as { docs: { id: string; version: string }[]; next_cursor: string | null };
-    for (const d of body.docs) docs.set(d.id, d.version);
-    cursor = body.next_cursor ?? undefined;
-  } while (cursor);
-  return { docs, blobs: new Map() };
-}
-
 export interface WatcherHandle {
   stop: () => Promise<void>;
 }
@@ -116,55 +87,26 @@ interface CommonWatcherOptions {
   onError?: (err: unknown) => void;
 }
 
-/**
- * Bound on `--remote` mode's boot-time INITIAL snapshot fetch: `startWatcher` is awaited directly by
- * `bootUiServer`, and a dead/unreachable upstream left this fetch on undici's default (~300s) timeout
- * — a hung remote hung the entire `ui` boot. Exported so a test can assert on the exact bound rather
- * than a magic number duplicated at the call site; `bootTimeoutMs` on `WatcherOptions` overrides it
- * (a test seam — production callers get this default).
- */
-export const DEFAULT_REMOTE_BOOT_TIMEOUT_MS = 5_000;
+export type WatcherOptions = CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number };
 
-export type WatcherOptions =
-  | (CommonWatcherOptions & { mode: "dir"; bundle: Bundle; debounceMs?: number })
-  | (CommonWatcherOptions & {
-      mode: "remote";
-      remoteBase: string;
-      apiKey?: string;
-      pollMs?: number;
-      /** Override {@link DEFAULT_REMOTE_BOOT_TIMEOUT_MS} for the boot-time initial snapshot only — never the ongoing poll. */
-      bootTimeoutMs?: number;
-    });
-
-async function takeSnapshot(opts: WatcherOptions, signal?: AbortSignal): Promise<Snapshot> {
-  return opts.mode === "dir" ? snapshotBundle(opts.bundle) : snapshotRemote(opts.remoteBase, opts.apiKey, signal);
+async function takeSnapshot(opts: WatcherOptions): Promise<Snapshot> {
+  return snapshotBundle(opts.bundle);
 }
 
 /**
  * Start watching for changes, emitting a {@link ChangeEvent} to `opts.onChange` whenever a doc or
- * page blob's version token moves. `--dir` uses `fs.watch` recursively (debounced) with a 2s poll
- * fallback if the platform rejects a recursive watch; `--remote` polls on a fixed interval. Awaits
- * a baseline snapshot before resolving, so the first change is diffed against real state.
+ * page blob's version token moves. This entry point is deliberately local-only: it uses `fs.watch`
+ * recursively (debounced) with a 2s poll fallback if the platform rejects a recursive watch. It
+ * awaits a baseline snapshot before resolving, so the first change is diffed against real state.
  *
- * Snapshot runs are SERIALIZED (tasks/ui-pages-spike P1 — remote concurrency): two overlapping
- * runs could complete out of order — the LATER-started (fresher) one lands first, then the
- * earlier (staler) one both emits a regression delta AND poisons `last` with the older state, so
- * the next tick re-emits the same change (the observed C -> B -> C). A tick that fires while a
- * run is in flight marks a rerun instead of overlapping; `stop()` aborts any in-flight remote
- * request and suppresses every later emission.
+ * Snapshot runs are serialized. A filesystem event received while a run is active schedules one
+ * catch-up run instead of overlapping it, and `stop()` suppresses every later emission.
  */
 export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle> {
-  const aborter = new AbortController();
-  // Only the BOOT-time initial snapshot is time-boxed — `--dir` mode never leaves the process
-  // (no bound needed), and `--remote` mode's ONGOING polls already recover on their own schedule
-  // (a stuck poll just means the next tick tries again); it is specifically the unbounded FIRST
-  // fetch, awaited synchronously by `bootUiServer`, that could hang boot forever. On timeout,
-  // `takeSnapshot` throws and `startWatcher`'s own promise rejects — the caller (`bootWatcher` in
-  // server.ts) already treats any boot-time throw as a best-effort watcher failure: log to stderr,
-  // resolve the UI boot WITHOUT a watcher rather than hang it.
-  const bootSignal =
-    opts.mode === "remote" ? AbortSignal.timeout(opts.bootTimeoutMs ?? DEFAULT_REMOTE_BOOT_TIMEOUT_MS) : aborter.signal;
-  let last = await takeSnapshot(opts, bootSignal);
+  if ((opts as { mode: string }).mode !== "dir") {
+    throw new Error("remote bundle watching is not supported; remote targets are read on demand");
+  }
+  let last = await takeSnapshot(opts);
   let stopped = false;
   let running = false;
   let rerun = false;
@@ -179,7 +121,7 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     try {
       do {
         rerun = false;
-        const next = await takeSnapshot(opts, aborter.signal);
+        const next = await takeSnapshot(opts);
         if (stopped) return;
         const change = diffSnapshots(last, next);
         last = next;
@@ -192,55 +134,41 @@ export async function startWatcher(opts: WatcherOptions): Promise<WatcherHandle>
     }
   };
 
-  if (opts.mode === "dir") {
-    const debounceMs = opts.debounceMs ?? 150;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const trigger = (): void => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = undefined;
-        void emitDiff();
-      }, debounceMs);
-      timer.unref?.();
-    };
+  const debounceMs = opts.debounceMs ?? 150;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const trigger = (): void => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      timer = undefined;
+      void emitDiff();
+    }, debounceMs);
+    timer.unref?.();
+  };
 
-    let watcher: FSWatcher | undefined;
-    let pollFallback: ReturnType<typeof setInterval> | undefined;
-    const startPollFallback = (): void => {
-      if (pollFallback) return;
-      pollFallback = setInterval(() => void emitDiff(), 2000);
-      pollFallback.unref?.();
-    };
-    try {
-      watcher = fsWatch(opts.bundle.root, { recursive: true }, () => trigger());
-      watcher.on("error", () => {
-        watcher?.close();
-        watcher = undefined;
-        startPollFallback();
-      });
-    } catch {
+  let watcher: FSWatcher | undefined;
+  let pollFallback: ReturnType<typeof setInterval> | undefined;
+  const startPollFallback = (): void => {
+    if (pollFallback) return;
+    pollFallback = setInterval(() => void emitDiff(), 2000);
+    pollFallback.unref?.();
+  };
+  try {
+    watcher = fsWatch(opts.bundle.root, { recursive: true }, () => trigger());
+    watcher.on("error", () => {
+      watcher?.close();
+      watcher = undefined;
       startPollFallback();
-    }
-
-    return {
-      stop: async () => {
-        stopped = true;
-        if (timer) clearTimeout(timer);
-        watcher?.close();
-        if (pollFallback) clearInterval(pollFallback);
-        aborter.abort();
-      },
-    };
+    });
+  } catch {
+    startPollFallback();
   }
 
-  const pollMs = opts.pollMs ?? 3000;
-  const timer = setInterval(() => void emitDiff(), pollMs);
-  timer.unref?.();
   return {
     stop: async () => {
       stopped = true;
-      clearInterval(timer);
-      aborter.abort(); // cancel any in-flight snapshot request — nothing dangles past shutdown
+      if (timer) clearTimeout(timer);
+      watcher?.close();
+      if (pollFallback) clearInterval(pollFallback);
     },
   };
 }

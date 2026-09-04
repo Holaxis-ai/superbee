@@ -32,6 +32,7 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
           limit: { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -64,13 +65,13 @@ export async function docHistory(argv: string[], deps: Partial<DocCliDeps>): Pro
     limit = Number(raw);
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   id = await resolveConceptIdCliArgument(bundle, rawId);
   let versions: VersionInfo[];
   try {
     versions = await docVersions(bundle, id);
   } catch (err) {
-    throw readErrorToCliError(err, id, values.remote);
+    throw readErrorToCliError(err, id, values.remote, values.bundle);
   }
 
   if (versions.length === 0) {

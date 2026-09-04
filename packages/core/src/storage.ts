@@ -32,3 +32,5 @@ export {
   toPosix,
 } from "./paths.js";
 export { VersionConflict, stripETagWrapper } from "./version-transport.js";
+export { isCanonicalBundleId } from "./bundle-id.js";
+export type { BundleId } from "./bundle-id.js";

@@ -26,6 +26,7 @@ import { isAllowedHost } from "./host.js";
 import { checkAuth, constantTimeEqual, mintSessionSecret, sessionCookieHeader } from "./session.js";
 import type { UiAssetHandler } from "./assets.js";
 import { proxyToRemote } from "./proxy.js";
+import type { RemoteUiTarget } from "./proxy.js";
 import { pageCsp } from "./pages.js";
 import {
   BridgeService,
@@ -57,7 +58,7 @@ const HOST = "127.0.0.1";
  * HERE as a plain data shape — ui-server owns the vocabulary; the CLI maps its board-channel
  * detection into it (the import-direction test forbids even type-only CLI/board-git imports).
  * The SPA owns the WORDS; this enum owns the states. `hosted` is the one state this runtime
- * derives itself (remote mode, from `remoteBase` — no injection involved).
+ * derives itself (remote mode, from the selected remote target — no injection involved).
  */
 export type SharingStateKind =
   | "private"
@@ -94,7 +95,7 @@ interface CommonUiServerOptions {
   port?: number;
   /**
    * REQUIRED in both modes: the semantic bundle used by View launch, catalog, bridge, and
-   * engine-level reads. Remote mode supplies a RemoteBackend-backed bundle over `remoteBase`;
+   * engine-level reads. Remote mode supplies a RemoteBackend-backed bundle over its exact target;
    * the SPA's `/v0/*` data path still stays the reverse proxy.
    */
   bundle: Bundle;
@@ -163,16 +164,11 @@ export type UiServerOptions = CommonUiServerOptions &
         management?: UiManagementOptions;
         remoteBase?: never;
         apiKey?: never;
-        watcherBootTimeoutMs?: never;
       }
     | {
         mode: "remote";
-        /** The target origin's normalized base URL. */
-        remoteBase: string;
-        /** Stored API key for that origin, if any. */
-        apiKey?: string;
-        /** Override the remote watcher's boot-time initial-snapshot timeout. */
-        watcherBootTimeoutMs?: number;
+        /** One server-private exact remote target, selected once by the CLI. */
+        remote: RemoteUiTarget;
         router?: never;
         resolveBundleDisplayName?: never;
         loadSharingSummary?: never;
@@ -487,6 +483,7 @@ async function configData(options: UiServerOptions): Promise<{
   mode: "dir" | "remote";
   remoteUrl: string | null;
   root: string | null;
+  bundleId: string | null;
   name: string;
   sharing: SharingSummary | null;
   workspaces: WorkspaceSummaryEntry[];
@@ -498,15 +495,16 @@ async function configData(options: UiServerOptions): Promise<{
         : "bundle"
       : (() => {
           try {
-            return new URL(options.remoteBase!).host;
+            return new URL(options.remote.baseUrl).host;
           } catch {
-            return options.remoteBase ?? "remote";
+            return options.remote.baseUrl;
           }
         })();
   return {
     mode: options.mode,
-    remoteUrl: options.mode === "remote" ? (options.remoteBase ?? null) : null,
-    root: options.mode === "dir" ? options.bundle.root : options.remoteBase,
+    remoteUrl: options.mode === "remote" ? options.remote.baseUrl : null,
+    root: options.mode === "dir" ? options.bundle.root : options.remote.baseUrl,
+    bundleId: options.mode === "remote" ? options.remote.bundleId : null,
     name,
     sharing: await sharingSummary(options),
     workspaces: await workspacesSummary(options),
@@ -541,7 +539,7 @@ function documentOpenCommandResponse(options: UiServerOptions, url: URL): Respon
 }
 
 /**
- * The trust chip's state. Remote mode is derived HERE (`hosted` off remoteBase); dir mode is the
+ * The trust chip's state. Remote mode is derived HERE (`hosted` off the private target); dir mode is the
  * consumer's injected classification (absent loader = no claim, `null`). A THROWING loader is
  * `unavailable`, never a fabricated "private" — a wrong "private" and a wrong "shared" are the
  * same trust bug (designs/home-surface, the truth-table rules).
@@ -550,9 +548,9 @@ async function sharingSummary(options: UiServerOptions): Promise<SharingSummary 
   if (options.mode === "remote") {
     let host: string;
     try {
-      host = new URL(options.remoteBase!).host;
+      host = new URL(options.remote.baseUrl).host;
     } catch {
-      host = options.remoteBase ?? "remote";
+      host = options.remote.baseUrl;
     }
     return { kind: "hosted", remote: host, as_of: new Date().toISOString() };
   }
@@ -966,7 +964,7 @@ async function handleRequest(
     response =
       options.mode === "dir"
         ? await options.router!(request)
-        : await proxyToRemote(request, options.remoteBase!, options.apiKey, runtime.shutdown.signal);
+        : await proxyToRemote(request, options.remote, runtime.shutdown.signal);
   } else {
     const asset = options.serveAsset(url.pathname, request.headers.get("accept-encoding"));
     response = new Response(asset.body, { status: asset.status, headers: asset.headers });
@@ -989,16 +987,8 @@ async function bootWatcher(options: UiServerOptions, sse: SseHub): Promise<Watch
     process.stderr.write(`[ui watcher] ${err instanceof Error ? err.message : String(err)}\n`);
   };
   try {
-    return options.mode === "dir"
-      ? await startWatcher({ mode: "dir", bundle: options.bundle!, onChange, onError })
-      : await startWatcher({
-          mode: "remote",
-          remoteBase: options.remoteBase!,
-          apiKey: options.apiKey,
-          bootTimeoutMs: options.watcherBootTimeoutMs,
-          onChange,
-          onError,
-        });
+    if (options.mode === "remote") return undefined;
+    return await startWatcher({ mode: "dir", bundle: options.bundle, onChange, onError });
   } catch (err) {
     onError(err);
     return undefined;

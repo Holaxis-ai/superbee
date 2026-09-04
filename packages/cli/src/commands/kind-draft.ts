@@ -47,16 +47,17 @@ import { materializeRecipeForEdition } from "../recipes.js";
 export interface KindDraftFlags extends OutputFlags {
   dir?: string;
   remote?: string;
+  bundle?: string;
   actor?: string;
   apply?: string;
   reason?: string;
 }
 
 /** The `--dir`/`--remote` echo every emitted command carries (offers/recipes rows' pattern). */
-function targetSuffix(values: Pick<KindDraftFlags, "dir" | "remote">): CommandText {
+function targetSuffix(values: Pick<KindDraftFlags, "dir" | "remote" | "bundle">): CommandText {
   let suffix = commandFragment``;
   if (values.dir !== undefined) suffix = commandFragment`${suffix} --dir ${commandToken(values.dir)}`;
-  if (values.remote !== undefined) suffix = commandFragment`${suffix} --remote ${commandToken(values.remote)}`;
+  if (values.remote !== undefined) suffix = commandFragment`${suffix} --remote ${commandToken(values.remote)} --bundle ${commandToken(values.bundle!)}`;
   return suffix;
 }
 
@@ -196,7 +197,7 @@ export async function kindDraftCommand(
 ): Promise<void> {
   const inv = cliInvocation();
   const suffix = targetSuffix(values);
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const plan = await prepareDraftPlan(bundle, type);
 
   if (values.apply === undefined) {
@@ -345,7 +346,7 @@ export async function kindDismissCommand(
 ): Promise<void> {
   const inv = cliInvocation();
   const suffix = targetSuffix(values);
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const [registry, okfVersionRead] = await Promise.all([loadKinds(bundle), readBundleOkfVersion(bundle)]);
   const okfVersion = okfVersionRead ?? "0.1";
   const existing = registry.kinds.get(type);

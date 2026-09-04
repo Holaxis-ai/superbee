@@ -195,7 +195,7 @@ test("new --link: a post-write advisory-lint failure preserves success and the t
   const handle = await serve({ bundle, port: 0 });
   const url = `http://${handle.host}:${handle.port}`;
   try {
-    await runJson(newCommand, ["Task", "source", "--title", "Source", "--remote", url]);
+    await runJson(newCommand, ["Task", "source", "--title", "Source", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
     const result = await runJson(newCommand, [
       "Task",
       "review",
@@ -204,7 +204,7 @@ test("new --link: a post-write advisory-lint failure preserves success and the t
       "--link",
       "depends on=tasks/source",
       "--remote",
-      url,
+      url, "--bundle", "bnd_00000000000000000000000000000000",
     ]);
 
     const finalHead = await readDocVersioned(bundle, "tasks/review");
@@ -258,7 +258,7 @@ test("new --link: one resolved actor consistently attributes both create and lin
   const url = `http://${handle.host}:${handle.port}`;
   try {
     await withActorEnv(" env-new ", async () => {
-      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--remote", url]);
+      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
       await runJson(newCommand, [
         "Task",
         "t2",
@@ -267,7 +267,7 @@ test("new --link: one resolved actor consistently attributes both create and lin
         "--link",
         "depends on=tasks/t1",
         "--remote",
-        url,
+        url, "--bundle", "bnd_00000000000000000000000000000000",
       ]);
       await runJson(newCommand, [
         "Task",
@@ -279,7 +279,7 @@ test("new --link: one resolved actor consistently attributes both create and lin
         "--actor",
         "flag-new",
         "--remote",
-        url,
+        url, "--bundle", "bnd_00000000000000000000000000000000",
       ]);
     });
     assert.equal((await readDoc(bundle, "tasks/t2")).frontmatter.actor, "env-new");
@@ -668,7 +668,7 @@ test("--remote: new --link against a served bundle, parity with the same operati
     const url = `http://${handle.host}:${handle.port}`;
     try {
       await runJson(newCommand, ["Task", "t1", "--title", "T1", "--dir", localDir]);
-      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--remote", url]);
+      await runJson(newCommand, ["Task", "t1", "--title", "T1", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000"]);
 
       const localResult = await runJson(newCommand, [
         "Task",
@@ -688,7 +688,7 @@ test("--remote: new --link against a served bundle, parity with the same operati
         "--link",
         "depends on=tasks/t1",
         "--remote",
-        url,
+        url, "--bundle", "bnd_00000000000000000000000000000000",
       ]);
       assert.equal(remoteResult.id, localResult.id);
       assert.deepEqual(remoteResult.links, localResult.links);

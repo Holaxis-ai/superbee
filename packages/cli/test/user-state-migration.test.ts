@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { loadCredentials, saveApiKeyForOrigin } from "../src/credentials.js";
+import { loadCredentials, saveApiKeyForRemote } from "../src/credentials.js";
 import { CliError } from "../src/errors.js";
 import {
   canonicalUserStateDir,
@@ -25,6 +25,11 @@ import { isolatedUserEnv } from "./support/user-env.js";
 const BUILT_CLI = resolve(dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 const POSIX_MODE_AUTHORITY = process.platform !== "win32";
 const directoryLinkType: "dir" | "junction" = process.platform === "win32" ? "junction" : "dir";
+const BUNDLE_ID = "bnd_00000000000000000000000000000000";
+const credentialsBytes = (origin: string, apiKey: string): string => `${JSON.stringify({
+  schema: 2,
+  remotes: { [origin]: { bundles: { [BUNDLE_ID]: { api_key: apiKey } } } },
+})}\n`;
 
 async function home(): Promise<string> {
   return mkdtemp(join(tmpdir(), "superbee-user-state-"));
@@ -77,11 +82,11 @@ test("ordinary Superbee state is canonical-only and initializes an exact private
   try {
     const legacy = legacyUserStateDir(root);
     await mkdir(legacy, { mode: 0o700 });
-    await writeLegacy(join(legacy, "okf-config.json"), `${JSON.stringify({ remotes: { "https://old.example": { api_key: "old" } } })}\n`);
+    await writeLegacy(join(legacy, "okf-config.json"), credentialsBytes("https://old.example", "old"));
 
     assert.equal(await loadCredentials(root), null, "ordinary reads never fall back to legacy state");
-    await saveApiKeyForOrigin("https://new.example", "new", root);
-    assert.equal((await loadCredentials(root))?.remotes?.["https://new.example"]?.api_key, "new");
+    await saveApiKeyForRemote("https://new.example", BUNDLE_ID, "new", root);
+    assert.equal((await loadCredentials(root))?.remotes?.["https://new.example"]?.bundles[BUNDLE_ID]?.api_key, "new");
     assert.equal((await loadCredentials(root))?.remotes?.["https://old.example"], undefined);
     assert.equal(await readUserStateMarker(root), USER_STATE_MARKER_BYTES);
     if (POSIX_MODE_AUTHORITY) {
@@ -167,8 +172,8 @@ test("migration draws from an ORDERED source list, so every superseded root is c
     const authorizationSource = sources.at(-1)!;
 
     const catalog = `${JSON.stringify({ schema_version: 1, entries: [] })}\n`;
-    const winning = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "from-bridge" } } })}\n`;
-    const losing = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "from-superseded" } } })}\n`;
+    const winning = credentialsBytes("https://worker.example", "from-bridge");
+    const losing = credentialsBytes("https://worker.example", "from-superseded");
     const authorization = JSON.stringify({
       bundle: "/bundles/planning",
       subject: {
@@ -249,7 +254,10 @@ test("one-shot migration copies only validated durable records, preserves legacy
     await chmod(authorizations, 0o700);
 
     const catalog = `${JSON.stringify({ schema_version: 1, entries: [] }, null, 2)}\n`;
-    const credentials = `${JSON.stringify({ remotes: { "https://worker.example": { api_key: "secret" } } }, null, 2)}\n`;
+    const credentials = `${JSON.stringify({
+      schema: 2,
+      remotes: { "https://worker.example": { bundles: { [BUNDLE_ID]: { api_key: "secret" } } } },
+    }, null, 2)}\n`;
     const authorization = JSON.stringify({
       bundle: "/bundles/planning",
       subject: {

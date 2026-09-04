@@ -83,7 +83,7 @@ test("RemoteBackend retries a router-classified runtime failure and succeeds", a
   const router = createRouterForBackend(backend);
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
-    bundle: "default",
+    bundleId: "bnd_00000000000000000000000000000000",
     fetchImpl: router,
     maxRetries: 1,
   });

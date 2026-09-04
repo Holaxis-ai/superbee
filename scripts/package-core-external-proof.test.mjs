@@ -115,7 +115,7 @@ const document: OkfDocument = { id: "proof", frontmatter: { type: "Proof" }, bod
 const backends: StorageBackend[] = [
   new FilesystemBackend("."),
   new MemoryBackend(),
-  new RemoteBackend({ baseUrl: "http://127.0.0.1:1", bundle: "default", maxRetries: 0 }),
+  new RemoteBackend({ baseUrl: "http://127.0.0.1:1", bundleId: "bnd_00112233445566778899aabbccddeeff", maxRetries: 0 }),
 ];
 const kind: KindConvention = {
   id: "conventions/task",
@@ -189,7 +189,7 @@ try {
 
   const remote = new RemoteBackend({
     baseUrl: "http://external-proof.invalid",
-    bundle: "default",
+    bundleId: "bnd_00112233445566778899aabbccddeeff",
     maxRetries: 0,
     fetchImpl: async () => new Response(null, { status: 404 }),
   });

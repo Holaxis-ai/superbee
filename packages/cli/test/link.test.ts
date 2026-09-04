@@ -282,7 +282,7 @@ test("link add: environment attribution reaches local+remote content/history; a 
     await withActorEnv(" env-link ", async () => {
       assert.equal((await linkAdd(local.dir, ["concepts/a", "concepts/b"])).changed, true);
       let out = "";
-      await link(["add", "concepts/a", "concepts/b", "--remote", url, "--json"], {
+      await link(["add", "concepts/a", "concepts/b", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {
         stdout: (s) => (out += s),
       });
       assert.equal((JSON.parse(out) as { changed: boolean }).changed, true);
@@ -296,7 +296,7 @@ test("link add: environment attribution reaches local+remote content/history; a 
     let noOpOut = "";
     await withActorEnv("ignored-env", () =>
       link(
-        ["add", "concepts/a", "concepts/b", "--actor", "flag-must-not-rewrite", "--remote", url, "--json"],
+        ["add", "concepts/a", "concepts/b", "--actor", "flag-must-not-rewrite", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000", "--json"],
         { stdout: (s) => (noOpOut += s) },
       ),
     );
@@ -697,7 +697,7 @@ test("link add: target-existence honesty is LOCAL-bundle only — a --remote lin
   }) as typeof fetch;
   try {
     let out = "";
-    await link(["add", "concepts/a", "concepts/ghost", "--remote", url, "--json"], {
+    await link(["add", "concepts/a", "concepts/ghost", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {
       stdout: (s) => (out += s),
     });
     const result = JSON.parse(out) as Record<string, unknown>;
@@ -719,7 +719,7 @@ test("link add: target-existence honesty is LOCAL-bundle only — a --remote lin
     });
     requestCount = 0;
     let out2 = "";
-    await link(["add", "concepts/a", "concepts/b", "--remote", url, "--json"], {
+    await link(["add", "concepts/a", "concepts/b", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {
       stdout: (s) => (out2 += s),
     });
     assert.equal(requestCount, requestsForAbsentTarget, "no extra HTTP request for an absent vs. present target");
@@ -1295,7 +1295,7 @@ test("link list --text zero-match over --remote: exactly ONE round trip (2 HTTP 
     }) as typeof fetch;
     try {
       let out = "";
-      await link(["list", "--text", "no-such-text", "--remote", url, "--json"], { stdout: (s) => (out += s) });
+      await link(["list", "--text", "no-such-text", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: (s) => (out += s) });
       const result = JSON.parse(out) as Record<string, unknown>;
       assert.equal(result.count, 0);
       assert.ok((result.help as string[])?.some((h) => matchesNoLinks(h, "no-such-text")));
@@ -1350,7 +1350,7 @@ test("link list over --remote: same result set as --dir against a live serve() (
     try {
       const local = await linkList(dir, ["--to", "tasks/"]);
       let out = "";
-      await link(["list", "--to", "tasks/", "--remote", url, "--json"], { stdout: (s) => (out += s) });
+      await link(["list", "--to", "tasks/", "--remote", url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], { stdout: (s) => (out += s) });
       const remote = JSON.parse(out);
       assert.deepEqual(remote, local);
     } finally {

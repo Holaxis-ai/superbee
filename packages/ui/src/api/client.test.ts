@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getDoc, listAllHeads, listHeadsPage, putDoc } from "./client.js";
+import { ApiError, configureWireBundleId, getDoc, listAllHeads, listHeadsPage, putDoc } from "./client.js";
 
 function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
@@ -9,8 +9,22 @@ describe("client", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    configureWireBundleId(null);
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
+  });
+
+  it("uses the exact hosted bundle id configured at boot", async () => {
+    configureWireBundleId("bnd_11111111111111111111111111111111");
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { count: 0, docs: [], next_cursor: null }));
+    await listHeadsPage({ type: "Task" });
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe("/v0/bundles/bnd_11111111111111111111111111111111/docs?fields=frontmatter&limit=50&type=Task");
+  });
+
+  it("rejects a non-canonical hosted bundle id before any wire request", () => {
+    expect(() => configureWireBundleId("default")).toThrow(/invalid remote bundle id/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   afterEach(() => {

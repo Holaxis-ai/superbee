@@ -48,7 +48,7 @@ import type {
 function freshWireBundle(): Bundle {
   const serverBackend = new ServerMemoryBackend();
   const router = createRouter({ root: "mem://wire-server", backend: serverBackend });
-  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router });
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundleId: "bnd_11111111111111111111111111111111", fetchImpl: router });
   return { root: "wire://client", backend: remote };
 }
 
@@ -435,7 +435,7 @@ test("wire: X-Agent round-trips alongside X-Actor — router reads it into optio
   assert.ok(!("agent" in controlVersionsBody.versions[0]!), "no X-Agent sent -> no agent key in the wire JSON");
 
   // RemoteBackend.versions() parses `agent` through into VersionInfo.agent.
-  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router });
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundleId: "bnd_11111111111111111111111111111111", fetchImpl: router });
   const agentedVersions = await remote.versions("concepts/agented");
   assert.equal(agentedVersions.length, 1);
   assert.equal(agentedVersions[0]!.actor, "root");

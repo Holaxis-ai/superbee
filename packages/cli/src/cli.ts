@@ -168,6 +168,7 @@ function isGlobalOnlyHomeInvocation(argv: string[]): boolean {
       args: argv,
       options: {
         remote: { type: "string" },
+        bundle: { type: "string" },
         dir: { type: "string" },
         json: { type: "boolean" },
         "no-update-check": { type: "boolean" },
@@ -203,6 +204,7 @@ export function hoistLeadingGlobalFlags(argv: string[]): string[] | null {
       allowPositionals: true,
       options: {
         remote: { type: "string" },
+        bundle: { type: "string" },
         dir: { type: "string" },
         json: { type: "boolean" },
         "no-update-check": { type: "boolean" },

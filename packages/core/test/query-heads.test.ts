@@ -131,7 +131,7 @@ function recordingWireBundle(serverBackend: StorageBackend = new ServerMemoryBac
   };
   const remote = new RemoteBackend({
     baseUrl: "http://wire.local",
-    bundle: "test",
+    bundleId: "bnd_11111111111111111111111111111111",
     fetchImpl: transport,
   });
   return {

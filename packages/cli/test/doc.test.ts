@@ -360,7 +360,7 @@ test("doc write --remote: an identical repeat is changed:false and does not appe
       "--timestamp",
       T,
       "--remote",
-      server.url,
+      server.url, "--bundle", "bnd_00000000000000000000000000000000",
     ];
     const first = await runDoc(args);
     const repeated = await runDoc(args.map((arg) => arg === T ? "2026-07-01T00:00:00Z" : arg));
@@ -979,7 +979,7 @@ test("doc write F1 guard: re-evaluated on EVERY attempt — a competing writer f
   try {
     await assert.rejects(
       () =>
-        doc(["write", "a", "--type", "Concept", "--remote", server.url, "--json"], {
+        doc(["write", "a", "--type", "Concept", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {
           stdout: () => {},
           readStdin: async () => undefined,
         }),
@@ -1032,7 +1032,7 @@ test("doc write schema-loss guard: re-evaluated on EVERY attempt — a competing
   try {
     await assert.rejects(
       () =>
-        doc(["write", "conventions/widget", "--type", "Concept", "--remote", server.url, "--json"], {
+        doc(["write", "conventions/widget", "--type", "Concept", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {
           stdout: () => {},
           readStdin: async () => undefined,
         }),
@@ -1076,7 +1076,7 @@ test("doc write dropped_fields: re-evaluated on EVERY attempt — a competing wr
 
   const server = await bootServerOverBundle(bundle);
   try {
-    const result = await runDoc(["write", "a", "--type", "Concept", "--remote", server.url]);
+    const result = await runDoc(["write", "a", "--type", "Concept", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
     assert.equal(result.doc, "written");
     // BOTH fields are reported dropped — 'priority' (added by the competing writer, AFTER our stale
     // peek would have been taken) as well as 'status' (present from the start).
@@ -1143,7 +1143,7 @@ test("doc write: AGENTSTATE_LITE_ACTOR fallback reaches frontmatter and remote v
   const server = await bootServerOverBundle(bundle);
   try {
     await withActorEnv(" env-user ", async () => {
-      await runDoc(["write", "concepts/env", "--type", "Concept", "--body", "env", "--remote", server.url]);
+      await runDoc(["write", "concepts/env", "--type", "Concept", "--body", "env", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       await runDoc([
         "write",
         "concepts/flag",
@@ -1154,7 +1154,7 @@ test("doc write: AGENTSTATE_LITE_ACTOR fallback reaches frontmatter and remote v
         "--actor",
         "flag-user",
         "--remote",
-        server.url,
+        server.url, "--bundle", "bnd_00000000000000000000000000000000",
       ]);
     });
     assert.equal((await readDoc(bundle, "concepts/env")).frontmatter.actor, "env-user");
@@ -1755,7 +1755,7 @@ test("doc update: status transition via a kind-declared --<field> flag over --re
   });
   const server = await bootServerOverBundle(bundle);
   try {
-    const result = await runDoc(["update", "tasks/x", "--status", "done", "--remote", server.url]);
+    const result = await runDoc(["update", "tasks/x", "--status", "done", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
     assert.equal(result.doc, "updated");
     assert.equal(result.changed, true);
 
@@ -2153,7 +2153,7 @@ test("doc update: CAS retry — N concurrent updates to the SAME doc through one
     const results = await Promise.all(
       writers.map(async (w) => {
         let out = "";
-        await doc(["update", "shared", "--title", w, "--remote", server.url, "--json"], {
+        await doc(["update", "shared", "--title", w, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--json"], {
           stdout: (s) => (out += s),
           readStdin: async () => undefined,
         });
@@ -2392,7 +2392,7 @@ test("doc update: ambient actor attributes a substantive patch but never manufac
     await withActorEnv("bob", async () => {
       const before = await readDocVersioned(bundle, "tasks/x");
       const historyBefore = await docVersions(bundle, "tasks/x");
-      const noOp = await runDoc(["update", "tasks/x", "--title", "X", "--remote", server.url]);
+      const noOp = await runDoc(["update", "tasks/x", "--title", "X", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(noOp.changed, false);
       const afterNoOp = await readDocVersioned(bundle, "tasks/x");
       assert.equal(afterNoOp.version, before.version);
@@ -2400,11 +2400,11 @@ test("doc update: ambient actor attributes a substantive patch but never manufac
       assert.equal((await docVersions(bundle, "tasks/x")).length, historyBefore.length);
 
       await assert.rejects(
-        () => runDoc(["update", "tasks/x", "--remote", server.url]),
+        () => runDoc(["update", "tasks/x", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]),
         (err: unknown) => err instanceof CliError && err.code === "USAGE" && /at least one field/.test(err.message),
       );
 
-      const changed = await runDoc(["update", "tasks/x", "--title", "Y", "--remote", server.url]);
+      const changed = await runDoc(["update", "tasks/x", "--title", "Y", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(changed.changed, true);
     });
     const saved = await readDoc(bundle, "tasks/x");
@@ -2421,7 +2421,7 @@ test("doc update --actor over --remote: succeeds AND persists actor into frontma
     await writeDoc({ root: dir }, { id: "tasks/x", frontmatter: { type: "Task", title: "X", status: "todo", timestamp: T }, body: "" });
     const server = await bootServerOverBundle({ root: dir });
     try {
-      const result = await runDoc(["update", "tasks/x", "--status", "done", "--actor", "alice", "--remote", server.url]);
+      const result = await runDoc(["update", "tasks/x", "--status", "done", "--actor", "alice", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(result.doc, "updated");
       assert.equal(result.changed, true);
       // Reviewer issue 3: the server IS filesystem-backed over `dir`, so remote-path frontmatter
@@ -2453,13 +2453,13 @@ test("doc history --remote: a revision recorded WITH agent renders both actor an
 
   const server = await bootServerOverBundle(bundle);
   try {
-    const agented = await runDoc(["history", "concepts/agented", "--remote", server.url]);
+    const agented = await runDoc(["history", "concepts/agented", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
     const agentedVersions = agented.versions as Array<{ actor: string; agent?: string }>;
     assert.equal(agentedVersions.length, 1);
     assert.equal(agentedVersions[0]!.actor, "root");
     assert.equal(agentedVersions[0]!.agent, "collab-3");
 
-    const unagented = await runDoc(["history", "concepts/unagented", "--remote", server.url]);
+    const unagented = await runDoc(["history", "concepts/unagented", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
     const unagentedVersions = unagented.versions as Array<{ actor: string; agent?: string }>;
     assert.equal(unagentedVersions.length, 1);
     assert.equal(unagentedVersions[0]!.actor, "root");
@@ -2488,8 +2488,8 @@ test("doc history over --remote against serve() (no auth, a HISTORY-KEEPING back
   await writeDoc(bundle, { id: "concepts/x", frontmatter: { type: "Concept", timestamp: T }, body: "one" });
   const server = await bootServerOverBundle(bundle);
   try {
-    await runDoc(["update", "concepts/x", "--title", "X", "--actor", "collab-3", "--remote", server.url]);
-    const result = await runDoc(["history", "concepts/x", "--remote", server.url]);
+    await runDoc(["update", "concepts/x", "--title", "X", "--actor", "collab-3", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
+    const result = await runDoc(["history", "concepts/x", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
     const versions = result.versions as Array<{ actor: string; agent?: string }>;
     assert.equal(versions[0]!.actor, "collab-3", "no auth -> --actor is still recorded as the plain actor");
     assert.ok(!("agent" in versions[0]!), "no auth means no withActor split -> agent stays absent");
@@ -2518,7 +2518,7 @@ test("doc history --limit: default caps a long chain at 20, reports the TRUE tot
   await writeNVersions(bundle, "concepts/many", 25);
   const server = await bootServerOverBundle(bundle);
   try {
-    const result = await runDoc(["history", "concepts/many", "--remote", server.url]);
+    const result = await runDoc(["history", "concepts/many", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
     assert.equal(result.count, 25, "count reports the TRUE total (all versions), not the shown page (a)");
     assert.equal(result.shown, 20, "default cap is 20 (b, shown count)");
     assert.equal((result.versions as unknown[]).length, 20, "the page itself is capped to 20 rows");
@@ -2537,7 +2537,7 @@ test("doc history --limit 0: the all-escape returns every version, uncapped, wit
   await writeNVersions(bundle, "concepts/many", 25);
   const server = await bootServerOverBundle(bundle);
   try {
-    const result = await runDoc(["history", "concepts/many", "--remote", server.url, "--limit", "0"]);
+    const result = await runDoc(["history", "concepts/many", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--limit", "0"]);
     assert.equal(result.count, 25);
     assert.equal((result.versions as unknown[]).length, 25, "--limit 0 returns ALL versions (d)");
     assert.equal(result.shown, undefined, "nothing was truncated, so no shown field leaks in");
@@ -2551,7 +2551,7 @@ test("doc history --limit <n>: an explicit in-between limit shows exactly n rows
   await writeNVersions(bundle, "concepts/many", 25);
   const server = await bootServerOverBundle(bundle);
   try {
-    const result = await runDoc(["history", "concepts/many", "--remote", server.url, "--limit", "10"]);
+    const result = await runDoc(["history", "concepts/many", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--limit", "10"]);
     assert.equal(result.count, 25);
     assert.equal(result.shown, 10);
     const versions = result.versions as Array<{ timestamp: string }>;
@@ -2571,7 +2571,7 @@ test("doc history --limit: a non-integer value is a clean USAGE error (exit 2) c
     for (const bad of ["abc", "1.5", ""]) {
       await assert.rejects(
         () =>
-          doc(["history", "concepts/one", "--remote", server.url, "--limit", bad, "--json"], {
+          doc(["history", "concepts/one", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--limit", bad, "--json"], {
             readStdin: async () => undefined,
           }),
         (err: unknown) => {
@@ -2596,7 +2596,7 @@ test("doc history --limit: a NEGATIVE value is still a clean USAGE error (exit 2
     for (const bad of ["-1", "-20"]) {
       await assert.rejects(
         () =>
-          doc(["history", "concepts/one", "--remote", server.url, "--limit", bad, "--json"], {
+          doc(["history", "concepts/one", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--limit", bad, "--json"], {
             readStdin: async () => undefined,
           }),
         (err: unknown) => {
@@ -2618,7 +2618,7 @@ test("doc history --limit 0 is treated as the all-escape, not an error: exits 0 
   const server = await bootServerOverBundle(bundle);
   try {
     let out = "";
-    await doc(["history", "concepts/one", "--remote", server.url, "--limit", "0", "--json"], {
+    await doc(["history", "concepts/one", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000", "--limit", "0", "--json"], {
       stdout: (s) => (out += s),
       readStdin: async () => undefined,
     });
@@ -3432,7 +3432,7 @@ test("doc read --field over --remote: parity with the identical field read local
         readStdin: async () => undefined,
       });
       let remoteOut = "";
-      await doc(["read", "concepts/a", "--field", "title", "--remote", server.url], {
+      await doc(["read", "concepts/a", "--field", "title", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"], {
         stdout: (s) => (remoteOut += s),
         readStdin: async () => undefined,
       });
@@ -3583,7 +3583,7 @@ test("doc read --body-out - keeps stdout body-only and has local/remote parity",
         return { body: Buffer.concat(chunks), receipt: JSON.parse(stderrOut) as Record<string, unknown> };
       };
       const local = await capture(["--dir", dir]);
-      const remote = await capture(["--remote", server.url]);
+      const remote = await capture(["--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(local.body.toString("utf8"), (await readDoc({ root: dir }, "concepts/a")).body);
       assert.deepEqual(remote.body, local.body);
       assert.equal(remote.receipt.version, local.receipt.version);
@@ -3726,7 +3726,7 @@ test("doc read --rendered-out - keeps stdout HTML-only with local/remote parity"
         return { html: Buffer.concat(chunks).toString("utf8"), receipt: JSON.parse(stderrOut) as Record<string, unknown> };
       };
       const local = await capture(["--dir", dir]);
-      const remote = await capture(["--remote", server.url]);
+      const remote = await capture(["--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(local.html, "<div data-aslite-rendered-document=\"\"><p><strong>Rendered.</strong></p></div>");
       assert.equal(remote.html, local.html);
       assert.equal(remote.receipt.version, local.receipt.version);
@@ -4046,7 +4046,7 @@ test("doc read F3: a --remote bundle never carries the warning (bundle.root is a
     const server = await bootServerOverBundle({ root: dir });
     try {
       const out = path.join(outDir, "remote-copy.md");
-      const result = await runDoc(["read", "concepts/a", "--out", out, "--remote", server.url]);
+      const result = await runDoc(["read", "concepts/a", "--out", out, "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(result.doc, "read");
       assert.equal("warning" in result, false);
     } finally {
@@ -4196,7 +4196,7 @@ test("doc delete --remote: round-trip parity with the same operation run locally
     const server = await bootServerOverBundle({ root: remoteDir });
     try {
       const local = await runDoc(["delete", "concepts/a", "--dir", localDir]);
-      const remote = await runDoc(["delete", "concepts/a", "--remote", server.url]);
+      const remote = await runDoc(["delete", "concepts/a", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(remote.deleted, local.deleted);
       assert.equal(remote.deleted, true);
 
@@ -4205,7 +4205,7 @@ test("doc delete --remote: round-trip parity with the same operation run locally
 
       // Idempotent absent-delete parity too.
       const localAbsent = await runDoc(["delete", "concepts/a", "--dir", localDir]);
-      const remoteAbsent = await runDoc(["delete", "concepts/a", "--remote", server.url]);
+      const remoteAbsent = await runDoc(["delete", "concepts/a", "--remote", server.url, "--bundle", "bnd_00000000000000000000000000000000"]);
       assert.equal(localAbsent.deleted, false);
       assert.equal(remoteAbsent.deleted, false);
     } finally {

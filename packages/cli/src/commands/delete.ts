@@ -52,6 +52,7 @@ Options:
                             token is a CONFLICT, exit 5; omit for an unconditional delete)
   --dir <path>              Bundle directory (default: discovered from the cwd)
   --remote <url>            Talk to a wire-protocol server instead of a local bundle (mutually
+  --bundle <bundle_id> Select the exact hosted bundle (requires --remote)
                             exclusive with --dir; remote access is always explicit)
   --json                    Emit compact JSON instead of TOON
   -h, --help                Show this help
@@ -78,6 +79,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
           "expected-version": { type: "string" },
           dir: { type: "string" },
           remote: { type: "string" },
+          bundle: { type: "string" },
           json: { type: "boolean" },
           help: { type: "boolean", short: "h" },
         },
@@ -110,7 +112,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
     );
   }
 
-  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir));
+  const bundle = await openBundle(values.dir, await resolveRemoteFlag(values.remote, values.dir, values.bundle));
   const mode: OutputMode = resolveMode(values);
   const expectedVersion = rawExpected?.trim();
   const docRoute = isDocRouteKey(key);
@@ -128,7 +130,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
       deleted = await deleteBlob(bundle, key, expectedVersion ? { expectedVersion } : undefined);
     }
   } catch (err) {
-    throw deleteErrorToCliError(err, key, values.remote);
+    throw deleteErrorToCliError(err, key, values.remote, values.bundle);
   }
 
   // AXI P6: deleting an ABSENT key is SUCCESS (deleted:false), never NOT_FOUND — exit 0 either way.
@@ -143,7 +145,7 @@ export async function deleteCommand(argv: string[], deps: Partial<DeleteCliDeps>
 }
 
 /** Map a delete failure to a structured CliError, mirroring `promote`'s error-classification posture. */
-function deleteErrorToCliError(err: unknown, key: string, remoteUrl?: string): CliError {
+function deleteErrorToCliError(err: unknown, key: string, remoteUrl?: string, remoteBundleId?: string): CliError {
   if (err instanceof CliError) return err;
   if (err instanceof VersionConflict) {
     return new CliError(
@@ -158,5 +160,5 @@ function deleteErrorToCliError(err: unknown, key: string, remoteUrl?: string): C
   }
   // Anything else lands on the one boundary: a typed InvalidInputError (reserved-id,
   // unsafe-id) → USAGE, a RemoteError by ITS code, an unexpected failure → RUNTIME.
-  return classifyBundleError(err, remoteUrl);
+  return classifyBundleError(err, remoteUrl, remoteBundleId);
 }
