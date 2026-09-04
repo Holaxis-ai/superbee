@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,9 @@ const packageLock = JSON.parse(readFileSync(path.join(root, "package-lock.json")
 const rootPackage = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
 const mcpAppPackage = JSON.parse(readFileSync(path.join(root, "packages", "mcp-app", "package.json"), "utf8"));
 const uiPackage = JSON.parse(readFileSync(path.join(root, "packages", "ui", "package.json"), "utf8"));
+const workspacePackages = readdirSync(path.join(root, "packages"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => JSON.parse(readFileSync(path.join(root, "packages", entry.name, "package.json"), "utf8")));
 const windowsWorkflow = readFileSync(
   path.join(root, ".github", "workflows", "windows-installed-package.yml"),
   "utf8",
@@ -791,17 +794,77 @@ function assertHostExpectations(jobs, candidate) {
 
 function validateBrowserScripts(packages) {
   const rootCommand = packages.root.scripts["ci:browser"];
-  const commands = [
-    packages.mcpApp.scripts["test:browser"],
-    packages.ui.scripts["e2e:gate"],
-  ];
+  const mcpCommand = packages.mcpApp.scripts["test:browser"];
+  const uiCommand = packages.ui.scripts["e2e:gate"];
   assert.equal(typeof rootCommand, "string", "ci:browser must remain declared");
-  assert.deepEqual(
-    commands.map((command) => command.split(" && ")[0]),
-    ["playwright install chromium", "playwright install chromium"],
-    "browser packages must retain the two reviewed plain install checks",
+  assert.equal(
+    mcpCommand,
+    "playwright install chromium && playwright test --config playwright.config.ts",
+    "MCP browser coverage must retain its complete reviewed command",
   );
-  const reachable = [rootCommand, ...commands].join("\n");
+  assert.equal(
+    uiCommand,
+    "playwright install chromium && playwright test e2e/pages.spec.ts e2e/security.spec.ts e2e/personal-task-system.spec.ts --project=chromium",
+    "UI browser coverage must retain its complete reviewed command",
+  );
+
+  const packageByName = new Map(workspacePackages.map((pkg) => [pkg.name, pkg]));
+  for (const pkg of [packages.root, packages.mcpApp, packages.ui]) packageByName.set(pkg.name, pkg);
+  const completed = new Set();
+  const active = new Set();
+  const reachableCommands = [];
+
+  const visit = (pkg, scriptName) => {
+    const key = `${pkg.name}:${scriptName}`;
+    assert.equal(active.has(key), false, `ci:browser script cycle reached ${key}`);
+    if (completed.has(key)) return;
+    active.add(key);
+    for (const candidate of [`pre${scriptName}`, scriptName, `post${scriptName}`]) {
+      const command = pkg.scripts?.[candidate];
+      if (candidate === scriptName) assert.equal(typeof command, "string", `missing reachable npm script ${key}`);
+      if (typeof command !== "string") continue;
+      reachableCommands.push({ packageName: pkg.name, scriptName: candidate, command });
+      assert.doesNotMatch(command, /\|\||[;\n]/, `reachable npm script ${pkg.name}:${candidate} must remain statically traceable`);
+      for (const segment of command.split(/\s*&&\s*/)) {
+        if (!/\bnpm\s+run\b/.test(segment)) continue;
+        assert.match(segment, /^npm\s+run\s+/, `reachable npm invocation must start its command segment: ${segment}`);
+        const tokens = segment.trim().split(/\s+/);
+        const nestedScript = tokens[2];
+        assert.ok(nestedScript && !nestedScript.startsWith("-"), `reachable npm invocation must name its script: ${segment}`);
+        const workspaces = [];
+        for (let index = 3; index < tokens.length; index += 1) {
+          const token = tokens[index];
+          if (token === "--") break;
+          if (token === "-w" || token === "--workspace") {
+            const workspace = tokens[++index];
+            assert.ok(workspace, `workspace flag must name its target: ${segment}`);
+            workspaces.push(workspace);
+            continue;
+          }
+          if (token.startsWith("--workspace=")) {
+            workspaces.push(token.slice("--workspace=".length));
+            continue;
+          }
+          assert.fail(`unsupported reachable npm-run argument ${token}: ${segment}`);
+        }
+        const targets = workspaces.length > 0
+          ? workspaces.map((name) => {
+              const target = packageByName.get(name);
+              assert.ok(target, `reachable npm script names unknown workspace ${name}`);
+              return target;
+            })
+          : [pkg];
+        for (const target of targets) visit(target, nestedScript);
+      }
+    }
+    active.delete(key);
+    completed.add(key);
+  };
+
+  visit(packages.root, "ci:browser");
+  const reachable = reachableCommands.map(({ packageName, scriptName, command }) => {
+    return `${packageName}:${scriptName}: ${command}`;
+  }).join("\n");
   assert.equal(
     (reachable.match(/\bplaywright install\b/g) ?? []).length,
     2,
@@ -817,10 +880,15 @@ function validateBrowserScripts(packages) {
 function validateBrowserJob(job, packages) {
   assert.equal(packageLock.packages["node_modules/playwright"]?.version, PLAYWRIGHT_VERSION);
   assert.equal(packageLock.packages["node_modules/@playwright/test"]?.version, PLAYWRIGHT_VERSION);
-  assert.match(
-    job,
-    new RegExp(`^ {4}container:\\n {6}image: ${PLAYWRIGHT_IMAGE}\\n {6}options: --ipc=host$`, "m"),
-    "browser job must use the reviewed immutable Playwright image",
+  assert.deepEqual(
+    [...job.matchAll(/^ {6}image: (.+)$/gm)].map((match) => match[1]),
+    [PLAYWRIGHT_IMAGE],
+    "browser job must use the byte-exact reviewed immutable Playwright image",
+  );
+  assert.deepEqual(
+    [...job.matchAll(/^ {6}options: (.+)$/gm)].map((match) => match[1]),
+    ["--ipc=host"],
+    "browser job must use the exact reviewed container option",
   );
   assert.equal(
     (job.match(/^ {4}container:\s*$/gm) ?? []).length,
@@ -922,7 +990,7 @@ test("browser container and reachable install-policy mutations fail closed", () 
   for (const [name, changed, error] of [
     ["digest", workflow.replace(PLAYWRIGHT_IMAGE_DIGEST, `${PLAYWRIGHT_IMAGE_DIGEST.slice(0, -1)}0`), /immutable Playwright image/],
     ["tag", workflow.replace(`v${PLAYWRIGHT_VERSION}-noble`, "v1.61.0-noble"), /immutable Playwright image/],
-    ["ipc", workflow.replace("options: --ipc=host", "options: --init"), /immutable Playwright image/],
+    ["ipc", workflow.replace("options: --ipc=host", "options: --init"), /exact reviewed container option/],
     ["registry", workflow.replace("PLAYWRIGHT_BROWSERS_PATH: /ms-playwright", "PLAYWRIGHT_BROWSERS_PATH: /tmp/browsers"), /baked registry/],
     ["chromium marker", workflow.replace('`chromium-${chromium.revision}`, "INSTALLATION_COMPLETE"', '`chromium-${chromium.revision}`'), /every baked artifact/],
     ["headless executable", workflow.replace('"chrome-headless-shell-linux64", "chrome-headless-shell"', '"chrome-headless-shell-linux64"'), /every baked artifact/],
@@ -940,14 +1008,29 @@ test("browser container and reachable install-policy mutations fail closed", () 
   );
   assert.throws(
     () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: forced, ui: uiPackage }),
-    /plain install checks/,
+    /complete reviewed command/,
   );
 
   const extra = structuredClone(uiPackage);
   extra.scripts["e2e:gate"] += " && playwright install chromium";
   assert.throws(
     () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: mcpAppPackage, ui: extra }),
-    /exactly two Playwright install checks/,
+    /complete reviewed command/,
+  );
+
+  const nested = structuredClone(rootPackage);
+  nested.scripts.prebuild = "npm run browser-environment";
+  nested.scripts["browser-environment"] = "apt-get update";
+  assert.throws(
+    () => validateCiTopology(workflow, manifest, { root: nested, mcpApp: mcpAppPackage, ui: uiPackage }),
+    /cannot install system dependencies/,
+  );
+
+  const hooked = structuredClone(mcpAppPackage);
+  hooked.scripts["pretest:browser"] = "playwright install chromium --force";
+  assert.throws(
+    () => validateCiTopology(workflow, manifest, { root: rootPackage, mcpApp: hooked, ui: uiPackage }),
+    /exactly two Playwright install checks|force downloads/,
   );
 });
 
