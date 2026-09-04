@@ -16,7 +16,7 @@ test("proxy transport failures do not expose upstream exception details", async 
     );
     const text = await response.text();
     assert.equal(response.status, 502);
-    assert.match(text, /could not reach the remote bundle server/);
+    assert.match(text, /could not reach remote bundle server/);
     assert.doesNotMatch(text, /SECRET_PROXY_SENTINEL|private\/proxy\/path/);
   } finally {
     globalThis.fetch = originalFetch;

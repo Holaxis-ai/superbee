@@ -72,7 +72,7 @@ export async function proxyToRemote(request: Request, remoteBase: string, apiKey
   try {
     upstream = await fetch(new Request(target, { method, headers, body: bodyBytes, signal }));
   } catch {
-    return freshErrorResponse(502, "RUNTIME", "could not reach the remote bundle server");
+    return freshErrorResponse(502, "RUNTIME", "could not reach remote bundle server");
   }
 
   return new Response(upstream.body, {
