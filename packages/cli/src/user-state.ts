@@ -406,8 +406,7 @@ export async function hasExactUserStateMarker(root: string, input?: UserStateInp
   return (await inspectUserStateMarker(root, input)).recognized;
 }
 
-/** Atomic 0600 write inside a caller-validated private directory. */
-export async function writeFileAtomic0600(
+async function publishFileAtomic0600(
   dir: string,
   fileName: string,
   content: string,
@@ -415,14 +414,6 @@ export async function writeFileAtomic0600(
   input?: UserStateInput,
 ): Promise<void> {
   const policy = resolveUserStatePolicy(input);
-  try {
-    await mkdir(dir, { recursive: true, mode: DIR_MODE });
-  } catch (error) {
-    if (errno(error) !== "EEXIST") throw error;
-  }
-  await assertRealDirectory(dir);
-  if (policy.containment === "posix-owner-mode") await chmod(dir, DIR_MODE);
-
   const file = join(dir, fileName);
   const temporary = join(dir, `.${fileName}.${randomBytes(8).toString("hex")}.tmp`);
   const handle = await open(temporary, "wx", FILE_MODE);
@@ -442,6 +433,25 @@ export async function writeFileAtomic0600(
     await unlink(temporary).catch(() => {});
     throw error;
   }
+}
+
+/** Atomic 0600 write inside a caller-validated private directory. */
+export async function writeFileAtomic0600(
+  dir: string,
+  fileName: string,
+  content: string,
+  options: { beforeCommit?: () => boolean | Promise<boolean> } = {},
+  input?: UserStateInput,
+): Promise<void> {
+  const policy = resolveUserStatePolicy(input);
+  try {
+    await mkdir(dir, { recursive: true, mode: DIR_MODE });
+  } catch (error) {
+    if (errno(error) !== "EEXIST") throw error;
+  }
+  await assertRealDirectory(dir);
+  if (policy.containment === "posix-owner-mode") await chmod(dir, DIR_MODE);
+  await publishFileAtomic0600(dir, fileName, content, options, input);
 }
 
 /**
@@ -735,6 +745,28 @@ export async function inspectCanonicalUserStateRootDetail(
 
 export async function inspectCanonicalUserStateRoot(input: UserStateInput = homedir()): Promise<UserStateRootState> {
   return (await inspectCanonicalUserStateRootDetail(input)).state;
+}
+
+async function assertCanonicalUserStateRootReady(input: UserStateInput): Promise<void> {
+  if (await inspectCanonicalUserStateRoot(input) !== "ready") {
+    throw new Error("canonical Superbee user-state root is not owned by this product");
+  }
+}
+
+/** @internal Atomic write for callers that already completed root initialization and hold another lock. */
+export async function writeReadyUserStateFileAtomic0600(
+  input: UserStateInput,
+  fileName: string,
+  content: string,
+): Promise<void> {
+  const root = canonicalUserStateDir(input);
+  await assertCanonicalUserStateRootReady(input);
+  await publishFileAtomic0600(root, fileName, content, {
+    beforeCommit: async () => {
+      await assertCanonicalUserStateRootReady(input);
+      return true;
+    },
+  }, input);
 }
 
 function missingStateError(file: string): NodeJS.ErrnoException {

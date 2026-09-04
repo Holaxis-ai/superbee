@@ -7,7 +7,7 @@ import { resolveLocalBundleTarget, samePhysicalPath } from "./bundle.js";
 import { credentialsDir } from "./credentials.js";
 import { CliError } from "./errors.js";
 import { cliInvocation } from "./invocation.js";
-import { ensureUserStateRoot, readUserStateFile, resolveUserStatePolicy, writeFileAtomic0600 } from "./user-state.js";
+import { ensureUserStateRoot, readUserStateFile, resolveUserStatePolicy, writeReadyUserStateFileAtomic0600 } from "./user-state.js";
 import { commandToken } from "./command-text.js";
 
 export const CATALOG_FILE_NAME = "catalog.json";
@@ -302,9 +302,9 @@ async function mutateCatalog<T>(
         schema_version: CATALOG_SCHEMA_VERSION,
         entries: [...result.next.entries].sort((a, b) => a.label.localeCompare(b.label)),
       };
-      // acquireCatalogLock completed root initialization before creating catalog.lock. Reusing the
-      // ensure-first writer here would invert that order by reacquiring the initialization lease.
-      await writeFileAtomic0600(catalogDir(home), CATALOG_FILE_NAME, JSON.stringify(next, null, 2) + "\n", {}, home);
+      // Root initialization completed before catalog.lock. Reassert ownership without initializing
+      // here so publication stays fail-closed without introducing the inverse lock edge.
+      await writeReadyUserStateFileAtomic0600(home, CATALOG_FILE_NAME, JSON.stringify(next, null, 2) + "\n");
     }
     return { value: result.value, changed: result.changed };
   } finally {

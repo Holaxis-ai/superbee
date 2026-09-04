@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, statSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
@@ -189,6 +189,33 @@ test("catalog mutation cannot acquire the initialization lease under catalog.loc
     assert.equal((await loadCatalog(f.home)).entries[0]?.label, "one");
   } finally {
     if (planted) await rm(initializationLock, { recursive: true, force: true });
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("catalog mutation refuses a root replaced after catalog.lock acquisition", async () => {
+  const f = await fixture();
+  const stateRoot = await ensureUserStateRoot(f.home);
+  const displacedRoot = `${stateRoot}.displaced`;
+  const sentinelPath = path.join(stateRoot, "foreign-sentinel");
+  const sentinel = Buffer.from([0x00, 0xff, 0x53, 0x42, 0x7f]);
+  try {
+    await assert.rejects(
+      () => addCatalogEntry("one", f.first, {
+        home: f.home,
+        createId: () => {
+          assert.equal(statSync(catalogLockPath(f.home)).isFile(), true, "catalog.lock must already be held");
+          renameSync(stateRoot, displacedRoot);
+          mkdirSync(stateRoot, { mode: 0o700 });
+          writeFileSync(sentinelPath, sentinel, { mode: 0o600 });
+          return id("1");
+        },
+      }),
+      /not owned by this product/,
+    );
+    assert.deepEqual(await readFile(sentinelPath), sentinel);
+    assert.deepEqual(await readdir(stateRoot), ["foreign-sentinel"]);
+  } finally {
     await rm(f.root, { recursive: true, force: true });
   }
 });
