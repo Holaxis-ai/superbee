@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -40,6 +42,57 @@ function runBody(text, stepName) {
     body.push(line.slice(10));
   }
   return body.join("\n");
+}
+
+function git(cwd, args) {
+  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+  assert.equal(result.status, 0, `git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function runSourceGuard({ currentVersion, priorTag, mainMatches = true }) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "runtime-library-source-guard-"));
+  mkdirSync(path.join(dir, "scripts"), { recursive: true });
+  mkdirSync(path.join(dir, "packages", "core"), { recursive: true });
+  mkdirSync(path.join(dir, "packages", "server"), { recursive: true });
+  writeFileSync(path.join(dir, "scripts", "strict-semver.mjs"), read("scripts/strict-semver.mjs"));
+  git(dir, ["init", "--quiet"]);
+  git(dir, ["config", "user.email", "proof@example.test"]);
+  git(dir, ["config", "user.name", "proof"]);
+  writeFileSync(path.join(dir, "prior"), "prior\n");
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "--quiet", "-m", "prior"]);
+  const priorSha = git(dir, ["rev-parse", "HEAD"]);
+  if (priorTag) git(dir, ["tag", priorTag]);
+  const manifest = `${JSON.stringify({ version: currentVersion }, null, 2)}\n`;
+  writeFileSync(path.join(dir, "packages", "core", "package.json"), manifest);
+  writeFileSync(path.join(dir, "packages", "server", "package.json"), manifest);
+  git(dir, ["add", "."]);
+  git(dir, ["commit", "--quiet", "-m", "current"]);
+  const currentSha = git(dir, ["rev-parse", "HEAD"]);
+  const step = path.join(dir, "source-step.sh");
+  const output = path.join(dir, "output");
+  writeFileSync(step, runBody(release, "Resolve the synchronized version from the libraries tag"));
+  const wrapper = [
+    'gh() { printf "%s\\n" "$MAIN_SHA"; }',
+    'git() { if [ "${1:-}" = "fetch" ]; then return 0; fi; command git "$@"; }',
+    'source "$SOURCE_STEP"',
+  ].join("\n");
+  const result = spawnSync("bash", ["-c", wrapper], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GITHUB_REPOSITORY: "example/repository",
+      GITHUB_SHA: currentSha,
+      GITHUB_REF_NAME: `libraries/v${currentVersion}`,
+      GITHUB_OUTPUT: output,
+      MAIN_SHA: mainMatches ? currentSha : priorSha,
+      SOURCE_STEP: step,
+    },
+  });
+  rmSync(dir, { recursive: true, force: true });
+  return result;
 }
 
 test("core and server form one restricted exact-version release set", () => {
@@ -96,7 +149,11 @@ test("payload code builds once before a literal two-tarball verification", () =>
 
 test("release source and first-version boundaries fail closed", () => {
   const { build, attest, stage_core: core, stage_server: server } = jobs(release);
-  assert.match(build, /compare\/main\.\.\.\$GITHUB_SHA/);
+  assert.match(build, /git\/ref\/heads\/main/);
+  assert.match(build, /test "\$GITHUB_SHA" = "\$MAIN_SHA"/);
+  assert.match(build, /git fetch --force --no-tags origin '\+refs\/tags\/libraries\/v\*:refs\/tags\/libraries\/v\*'/);
+  assert.match(build, /git tag --merged "\$GITHUB_SHA" --list 'libraries\/v\*'/);
+  assert.match(build, /compareStrictSemver\(current, prior\)/);
   assert.match(build, /check-runs\?check_name=CI%20required%20lanes&filter=latest&per_page=100/);
   assert.match(build, /select\(\.app\.slug == "github-actions"\)/);
   assert.match(build, /test "\$VERDICT" = "success" \|\| \{[^\n]*exit 1; \}/);
@@ -108,8 +165,62 @@ test("release source and first-version boundaries fail closed", () => {
   assert.match(build, /if \[ "\$V" = "0\.1\.0" \]; then BOOTSTRAP=true/);
   assert.match(core, /if: needs\.build\.outputs\.bootstrap != 'true'/);
   assert.match(server, /needs\.build\.outputs\.bootstrap != 'true'/);
-  assert.match(attest, /npm publish \\\"\.\/\$CORE_TGZ\\\" --access restricted --ignore-scripts/);
-  assert.match(attest, /npm publish \\\"\.\/\$SERVER_TGZ\\\" --access restricted --ignore-scripts/);
+  assert.match(attest, /npm publish \\\"\.\/\$CORE_TGZ\\\" --access restricted --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
+  assert.match(attest, /npm publish \\\"\.\/\$SERVER_TGZ\\\" --access restricted --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
+});
+
+test("the exact source guard allows only current-main channel advancement", () => {
+  const advance = runSourceGuard({ currentVersion: "0.1.1", priorTag: "libraries/v0.1.0" });
+  assert.equal(advance.status, 0, advance.stderr + advance.stdout);
+
+  const oldMain = runSourceGuard({ currentVersion: "0.1.1", priorTag: "libraries/v0.1.0", mainMatches: false });
+  assert.notEqual(oldMain.status, 0);
+  assert.match(oldMain.stderr + oldMain.stdout, /must be tagged from current main/);
+
+  const latestRegression = runSourceGuard({ currentVersion: "0.1.0", priorTag: "libraries/v0.1.1" });
+  assert.notEqual(latestRegression.status, 0);
+  assert.match(latestRegression.stderr + latestRegression.stdout, /would not advance latest/);
+
+  const nextRegression = runSourceGuard({ currentVersion: "0.2.0-pre.1", priorTag: "libraries/v0.2.0-pre.2" });
+  assert.notEqual(nextRegression.status, 0);
+  assert.match(nextRegression.stderr + nextRegression.stdout, /would not advance next/);
+
+  const otherChannel = runSourceGuard({ currentVersion: "0.2.0-pre.1", priorTag: "libraries/v9.0.0" });
+  assert.equal(otherChannel.status, 0, otherChannel.stderr + otherChannel.stdout);
+
+  const buildMetadataHyphen = runSourceGuard({ currentVersion: "0.2.0+build-hyphen", priorTag: "libraries/v0.1.9" });
+  assert.equal(buildMetadataHyphen.status, 0, buildMetadataHyphen.stderr + buildMetadataHyphen.stdout);
+
+  const malformed = runSourceGuard({ currentVersion: "0.1.1", priorTag: "libraries/vnot-semver" });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr + malformed.stdout, /protected release tag .* invalid version/);
+});
+
+test("the bootstrap instructions override an ambient npm tag", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "runtime-library-bootstrap-"));
+  const step = path.join(dir, "bootstrap-step.sh");
+  const summary = path.join(dir, "summary");
+  writeFileSync(step, runBody(release, "Print the one-time bootstrap gate"));
+  const result = spawnSync("bash", [step], {
+    cwd: dir,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      V: "0.1.0",
+      CORE_TGZ: "superbee-core-0.1.0.tgz",
+      SERVER_TGZ: "superbee-server-0.1.0.tgz",
+      CORE_SHA: "core-sha",
+      SERVER_SHA: "server-sha",
+      DIST_TAG: "latest",
+      GITHUB_STEP_SUMMARY: summary,
+      npm_config_tag: "ambient-danger",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const text = readFileSync(summary, "utf8");
+  assert.equal((text.match(/--tag "latest"/g) ?? []).length, 2);
+  assert.doesNotMatch(text, /ambient-danger/);
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test("later releases stage core and server separately behind the existing environment", () => {
