@@ -22,7 +22,7 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { isMainModule } from "../../scripts/is-main-module.mjs";
-import { buildCliBundle, buildPublicationBundle } from "./scripts/build-bundle.mjs";
+import { buildBundleDescriptorBundle, buildCliBundle, buildPublicationBundle } from "./scripts/build-bundle.mjs";
 import { prepareCliBundleInputs } from "./scripts/prepare-bundle-inputs.mjs";
 import { FUNCTIONAL_VERSION_FLOOR } from "./scripts/functional-version-floor.mjs";
 
@@ -31,6 +31,7 @@ const r = (p) => resolve(here, p);
 const outfile = r("dist/superbee.mjs");
 const publicationOutfile = r("dist/publication.mjs");
 const publicationBridgeOutfile = r("dist/publication-bridge.mjs");
+const bundleDescriptorOutfile = r("dist/bundle-descriptor.mjs");
 const execFileAsync = promisify(execFile);
 
 async function copyDeclarationTree(source, destination) {
@@ -57,6 +58,21 @@ async function buildPublicationTypes() {
   await cp(
     r("../publication/schema/publication-snapshot-v1.schema.json"),
     r("dist/publication/schema/publication-snapshot-v1.schema.json"),
+  );
+}
+
+async function buildBundleDescriptorTypes() {
+  const repoRoot = r("../..");
+  const tsc = r("../../node_modules/typescript/bin/tsc");
+  await execFileAsync(process.execPath, [tsc, "--project", r("../bundle-descriptor/tsconfig.json")], {
+    cwd: repoRoot,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  await copyDeclarationTree(r("../bundle-descriptor/dist"), r("dist/bundle-descriptor"));
+  await mkdir(r("dist/bundle-descriptor/schema"), { recursive: true });
+  await cp(
+    r("../bundle-descriptor/schema/bundle-descriptor-v1.schema.json"),
+    r("dist/bundle-descriptor/schema/bundle-descriptor-v1.schema.json"),
   );
 }
 
@@ -88,7 +104,9 @@ export async function buildCli(artifactChannel, { source, packageIdentity, updat
   await Promise.all([
     buildPublicationBundle(publicationOutfile),
     buildPublicationBundle(publicationBridgeOutfile, "bridge"),
+    buildBundleDescriptorBundle(bundleDescriptorOutfile),
     buildPublicationTypes(),
+    buildBundleDescriptorTypes(),
   ]);
   // The bin must be directly executable via its shebang (npm sets +x on install, but keep it correct
   // in the tarball and for direct `./dist/superbee.mjs` runs).

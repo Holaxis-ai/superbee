@@ -208,3 +208,17 @@ export async function buildPublicationBundle(outfile, surface = "full") {
     logLevel: "info",
   });
 }
+
+/** Bundle the stable `superbee/bundle-descriptor` subpath with zero runtime dependencies. */
+export async function buildBundleDescriptorBundle(outfile) {
+  await build({
+    absWorkingDir: pkgRoot,
+    entryPoints: [r("../bundle-descriptor/src/index.ts")],
+    outfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
+    logLevel: "info",
+  });
+}

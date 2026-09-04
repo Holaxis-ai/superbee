@@ -168,6 +168,11 @@ settings — sync only ever appends commits to it.
 
 ## How it works
 
+Tools that need a small, portable bundle identity can import the versioned JSON Schema and
+TypeScript contract from `superbee/bundle-descriptor`. The contract describes a bundle but grants
+no access or authority; see
+[Bundle Descriptor v1](https://github.com/Holaxis-ai/superbee/blob/main/packages/bundle-descriptor/README.md).
+
 - **Every concept is a typed markdown document.** One required frontmatter field — `type` — plus
   whatever fields its schema declares. New concepts are new types, not new subsystems. Byte-exact
   artifacts such as View HTML live as blobs referenced by those documents.

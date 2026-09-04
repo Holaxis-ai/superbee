@@ -46,6 +46,10 @@ const manifest = {
       types: "./dist/publication/bridge-entry.d.ts",
       default: "./dist/publication-bridge.mjs",
     },
+    "./bundle-descriptor": {
+      types: "./dist/bundle-descriptor/index.d.ts",
+      default: "./dist/bundle-descriptor.mjs",
+    },
   },
   publishConfig: { access: "public" },
   devDependencies: { local: "*" },
@@ -276,6 +280,11 @@ test("the expected tarball set is the fixed base plus the references tree", () =
     "NOTICE",
     "README.md",
     "SKILL.md",
+    "dist/bundle-descriptor.mjs",
+    "dist/bundle-descriptor/generated/bundle-descriptor-v1.d.ts",
+    "dist/bundle-descriptor/index.d.ts",
+    "dist/bundle-descriptor/schema.d.ts",
+    "dist/bundle-descriptor/schema/bundle-descriptor-v1.schema.json",
     "dist/publication-bridge.mjs",
     "dist/publication.mjs",
     "dist/publication/bridge-entry.d.ts",
@@ -344,14 +353,14 @@ test("the npm package contract rejects surface and runtime dependency drift", ()
   );
 });
 
-test("the npm package contract rejects an undeclared fourth .mjs artifact even when the file set matches", () => {
+test("the npm package contract rejects an undeclared fifth .mjs artifact even when the file set matches", () => {
   const smuggled = [...referenceFiles, "scripts/helper.mjs"];
   const smuggledReceipt = {
     files: [...receipt.files, { path: "references/scripts/helper.mjs" }],
   };
   assert.throws(
     () => assertPackageContract(smuggledReceipt, manifest, smuggled),
-    /declared executable.*publication subpath bundles/,
+    /declared executable.*public subpath bundles/,
   );
 });
 

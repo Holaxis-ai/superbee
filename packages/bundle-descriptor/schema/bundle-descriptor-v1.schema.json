@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://getsuperbee.com/schemas/bundle-descriptor/v1",
+  "title": "Superbee Bundle Descriptor v1",
+  "description": "A bundle's minimal, portable self-description. This contract conveys no access, authority, ownership, lifecycle, policy, routing, or resolution claims.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "bundleId", "name", "purpose"],
+  "properties": {
+    "schema": {
+      "const": "https://getsuperbee.com/schemas/bundle-descriptor/v1"
+    },
+    "bundleId": {
+      "$ref": "#/$defs/bundleId"
+    },
+    "name": {
+      "$ref": "#/$defs/displayText",
+      "type": "string",
+      "maxLength": 120
+    },
+    "purpose": {
+      "$ref": "#/$defs/displayText",
+      "type": "string",
+      "maxLength": 500
+    }
+  },
+  "$defs": {
+    "bundleId": {
+      "description": "A stable authority-qualified identity. The publisher controls the first segment; directory policy owns collision handling.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,62}(?:\\.[a-z0-9][a-z0-9_-]{0,62})+$"
+    },
+    "displayText": {
+      "description": "Untrusted display text. Presenters must still escape it for their output context.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?=.*\\S)[^\\u0000-\\u001F\\u007F-\\u009F\\u061C\\u200E-\\u200F\\u202A-\\u202E\\u2066-\\u2069]+$"
+    }
+  }
+}
