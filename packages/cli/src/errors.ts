@@ -179,7 +179,8 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
  *  - `RemoteError` -> by ITS server-derived `code`: AUTH_REQUIRED -> exit 4 with an
  *    `SUPERBEE_API_KEY` fixing hint; RUNTIME and VERSION_MISSING (a 5xx, or an
  *    intermediary stripping the version header — retry/report, not a caller mistake) -> RUNTIME
- *    (1); FORBIDDEN -> FORBIDDEN (USAGE's exit 2, distinct code — re-authenticating grants no
+ *    (1); REDIRECT_REFUSED is likewise a remote protocol failure, not caller input; FORBIDDEN ->
+ *    FORBIDDEN (USAGE's exit 2, distinct code — re-authenticating grants no
  *    role); NOT_FOUND -> NOT_FOUND (6); LAST_ADMIN -> LAST_ADMIN (CONFLICT's exit 5). An
  *    UNRECOGNIZED code falls back by HTTP STATUS, never blindly to USAGE: `RATE_LIMITED`/429
  *    -> TRANSIENT (1) with `details.retryable: true` — attested
@@ -212,7 +213,7 @@ export function classifyBundleError(err: unknown, remoteUrl?: string, remoteBund
           "an already-provisioned stored credential for the exact origin and bundle is also accepted",
       });
     }
-    if (err.code === "RUNTIME" || err.code === "VERSION_MISSING") {
+    if (err.code === "RUNTIME" || err.code === "VERSION_MISSING" || err.code === "REDIRECT_REFUSED") {
       return new CliError("RUNTIME", err.message);
     }
     if (err.code === "FORBIDDEN") {

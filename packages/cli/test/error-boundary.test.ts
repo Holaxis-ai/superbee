@@ -70,6 +70,7 @@ const MATRIX: MatrixRow[] = [
   // Remote 5xx / stripped version header -> RUNTIME, exit 1.
   { name: "RemoteError RUNTIME (5xx) -> exit 1", make: () => new RemoteError("500", "RUNTIME", 500), code: "RUNTIME", exit: 1 },
   { name: "RemoteError VERSION_MISSING -> RUNTIME", make: () => new RemoteError("no version header", "VERSION_MISSING", 200), code: "RUNTIME", exit: 1 },
+  { name: "RemoteError REDIRECT_REFUSED -> RUNTIME", make: () => new RemoteError("redirect refused", "REDIRECT_REFUSED", 307), code: "RUNTIME", exit: 1 },
   // Remaining pinned wire codes.
   { name: "RemoteError FORBIDDEN -> FORBIDDEN (exit 2)", make: () => new RemoteError("403", "FORBIDDEN", 403), code: "FORBIDDEN", exit: 2 },
   { name: "RemoteError NOT_FOUND -> exit 6", make: () => new RemoteError("404", "NOT_FOUND", 404), code: "NOT_FOUND", exit: 6 },

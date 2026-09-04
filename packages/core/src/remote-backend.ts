@@ -268,13 +268,27 @@ export class RemoteBackend implements StorageBackend {
     // strings/bytes, so reusable — no consumed-stream hazard).
     for (let attempt = 0; ; attempt++) {
       try {
-        const res = await this.fetchImpl(new Request(url, init));
+        // Redirects are never part of the wire protocol. Keep them visible to this authority
+        // boundary instead of letting Fetch follow one and replay a bearer token or mutation body
+        // to a different URL. This applies with and without credentials so every remote transport
+        // has one deterministic fail-closed policy.
+        const res = await this.fetchImpl(new Request(url, { ...init, redirect: "manual" }));
+        if (res.status >= 300 && res.status < 400) {
+          throw new RemoteError(
+            `wire request refused redirect response with status ${res.status}`,
+            "REDIRECT_REFUSED",
+            res.status,
+          );
+        }
         if (RETRIABLE_STATUS.has(res.status) && attempt < this.maxRetries) {
           await delay(retryDelayMs(attempt));
           continue;
         }
         return res;
       } catch (err) {
+        // A redirect is a terminal protocol/auth failure, not a transient transport failure.
+        // Retrying it would merely repeat the credential exposure attempt.
+        if (err instanceof RemoteError && err.code === "REDIRECT_REFUSED") throw err;
         if (attempt < this.maxRetries) {
           await delay(retryDelayMs(attempt));
           continue;

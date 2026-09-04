@@ -17,6 +17,8 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 
 import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
 import { InvalidInputError } from "../src/errors.js";
@@ -79,6 +81,51 @@ test("RemoteBackend: authToken is merged onto caller-supplied headers, not overw
 
   await remote.write("x", { id: "x", frontmatter: { type: "T" }, body: "b" });
   assert.deepEqual(seen, { auth: "Bearer tok", contentType: "application/json" });
+});
+
+test("RemoteBackend refuses a live redirect without resending its bearer, retrying, or accepting redirected data", async () => {
+  const requests: Array<{ url: string; authorization: string | undefined }> = [];
+  const server = createServer((req, res) => {
+    requests.push({ url: req.url ?? "", authorization: req.headers.authorization });
+    if (req.url?.endsWith("/docs")) {
+      res.writeHead(307, {
+        location: "/redirected",
+        "content-type": "application/json",
+      });
+      // Even a redirect response shaped like a successful list must never be parsed as data.
+      res.end(JSON.stringify({ docs: [{ id: "redirect-payload", version: "forged" }], next_cursor: null }));
+      return;
+    }
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ docs: [{ id: "followed-payload", version: "forged" }], next_cursor: null }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  const remote = new RemoteBackend({
+    baseUrl: `http://127.0.0.1:${address.port}`,
+    bundleId: "bnd_11111111111111111111111111111111",
+    authToken: "redirect-secret",
+    maxRetries: 3,
+  });
+
+  try {
+    await assert.rejects(() => remote.list(), (err: unknown) => {
+      assert.ok(err instanceof RemoteError);
+      assert.equal(err.code, "REDIRECT_REFUSED");
+      assert.equal(err.status, 307);
+      assert.match(err.message, /refused redirect/);
+      return true;
+    });
+    assert.deepEqual(requests, [{
+      url: "/v0/bundles/bnd_11111111111111111111111111111111/docs",
+      authorization: "Bearer redirect-secret",
+    }]);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => err ? reject(err) : resolve()));
+  }
 });
 
 test("RemoteBackend: a 401 with an AUTH_REQUIRED envelope surfaces as a RemoteError carrying that code + status", async () => {
