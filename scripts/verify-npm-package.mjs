@@ -55,6 +55,7 @@ const baseExpectedFiles = [
   "NOTICE",
   "README.md",
   "SKILL.md",
+  "superbee.skill.zip",
   SUCCESSOR_ARTIFACT,
   "package.json",
   ...publicationExpectedFiles,
@@ -306,7 +307,7 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
     expectedArtifact === SUCCESSOR_ARTIFACT
       ? expectedTarballFiles(referenceFiles)
       : ["LICENSE", "NOTICE", "README.md", "SKILL.md", expectedArtifact, "package.json", ...referenceFiles.map((relative) => `references/${relative}`)].sort(),
-    "the npm tarball must contain only the CLI, manifest, README, LICENSE, NOTICE, SKILL.md, and references/",
+    "the npm tarball must contain only the CLI, manifest, README, LICENSE, NOTICE, the source and portable Skill artifacts, and references/",
   );
   assert.deepEqual(
     tarballFiles.filter((file) => file.endsWith(".mjs")),
@@ -318,7 +319,7 @@ export function assertPackageContract(receipt, manifest, referenceFiles, target 
   assert.equal(manifest.name, target.package.name);
   // NOTICE must be listed explicitly: npm ships LICENSE regardless of files[], but NOTICE only
   // when named, and Apache-2.0 section 4(d) requires the notice to travel with the distribution.
-  assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references", "NOTICE"]);
+  assert.deepEqual(manifest.files, ["dist", "SKILL.md", "references", "superbee.skill.zip", "NOTICE"]);
   assert.deepEqual(manifest.bin, target.bins);
   if (target.id === "superbee") {
     assert.deepEqual(manifest.exports?.["./publication"], {
@@ -586,6 +587,13 @@ async function runInstalledProof(spec) {
       assert.ok(installed.equals(committed), `${relative} in the installed package differs from the committed copy`);
     }
     const installedSkill = await readFile(path.join(installedRoot, "SKILL.md"), "utf8");
+    const installedPortableSkill = await readFile(path.join(installedRoot, "superbee.skill.zip"));
+    assert.ok(installedPortableSkill.length > 22, "the installed package must carry a non-empty portable Skill archive");
+    assert.equal(installedPortableSkill.readUInt32LE(0), 0x04034b50, "the portable Skill archive must be ZIP bytes");
+    assert.ok(
+      installedPortableSkill.equals(await readFile(path.join(committedSkillRoot, "superbee.skill.zip"))),
+      "the installed portable Skill archive must match the committed generated archive",
+    );
     assert.ok(
       !installedSkill.includes("npx -y agentstate-lite"),
       "the installed SKILL.md must not use the retired npm coordinate",
@@ -1147,6 +1155,8 @@ async function runInstalledProof(spec) {
     assert.match(normalizedInstalledReadme, /do not need WSL/i);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);
+    assert.match(normalizedInstalledReadme, /superbee skill path --json/);
+    assert.match(normalizedInstalledReadme, /OpenCode.*\.claude\/skills/s);
 
     const setupBeforeIntegrations = parseJson(
       (
@@ -1230,6 +1240,15 @@ async function runInstalledProof(spec) {
     assert.equal(skillStatus.skill.hosts.codex.state, "installed");
     assert.equal(skillStatus.skill.hosts.claude_code.canonical.state, "installed");
     assert.equal(skillStatus.skill.hosts.claude_code.legacy.state, "absent");
+
+    const skillPath = parseJson(
+      (await runCli(target.preferred_command, ["skill", "path", "--json"], { cwd: project })).stdout,
+      "skill path",
+    );
+    assert.equal(skillPath.skill.archive, path.join(installedRoot, "superbee.skill.zip"));
+    assert.match(skillPath.skill.archive_sha256, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(skillPath.skill.format, "zip");
+    assert.equal(skillPath.skill.root, "superbee");
 
     // Follow the installed SKILL.md's own $REFS instruction from the project ROOT: the host
     // reports the skill base dir; REFS = <base>/references, and $REFS/<dest> resolves from any cwd.

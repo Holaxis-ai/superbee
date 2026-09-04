@@ -1,12 +1,13 @@
 // Generate the eager SKILL.md from src/skill-render.ts and sync its focused `references/` folder
-// from the inventory in src/distribution-resources.ts. The npm package and the repository-root
-// Devin discovery copy are projections of the same source and resource manifest.
+// from the inventory in src/distribution-resources.ts. The npm package, the repository-root
+// Devin discovery copy, and the portable archive are projections of the same source and resource
+// manifest.
 //
 // AXI §7 "single source of truth": exact command syntax stays in the live CLI's help rather than a
 // copied Skill manual. The npm package is the only executable distribution authority.
 //
-//   node scripts/gen-skill.mjs           → (re)write both generated skill targets
-//   node scripts/gen-skill.mjs --check   → exit 1 if either target is stale
+//   node scripts/gen-skill.mjs           → (re)write both skill targets and superbee.skill.zip
+//   node scripts/gen-skill.mjs --check   → exit 1 if any generated Skill asset is stale
 //
 // src/skill-render.ts (which transitively pulls in reference.ts + src/distribution-resources.ts) is pure
 // data + pure projections (no runtime imports), so we bundle it in-memory with esbuild and import
@@ -23,6 +24,8 @@ const skillRenderTs = resolve(here, "../src/skill-render.ts");
 const repoRoot = resolve(here, "../../..");
 
 const packageSkillRoot = resolve(here, "..");
+const archivePath = resolve(packageSkillRoot, "superbee.skill.zip");
+const ARCHIVE_ROOT = "superbee";
 const devinSkillRoot = resolve(repoRoot, ".cognition/skills/superbee");
 const devinSourceReceipt = `${JSON.stringify(
   {
@@ -185,6 +188,79 @@ async function syncTarget(target, content, resources) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Portable archive — a deterministic STORE-only ZIP whose root is the complete `superbee/` Skill
+// directory. STORE avoids a runtime dependency and makes archive bytes a direct, inspectable
+// projection of SKILL.md and the resource inventory. ZIP readers create nested directories from
+// the entry names, but an explicit root entry keeps import UIs that inspect directory entries happy.
+// ---------------------------------------------------------------------------------------------
+
+function crc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function zipEntry(name, bytes, offset) {
+  const nameBytes = Buffer.from(name, "utf8");
+  const crc = crc32(bytes);
+  const local = Buffer.alloc(30);
+  local.writeUInt32LE(0x04034b50, 0);
+  local.writeUInt16LE(20, 4);
+  // Deterministic minimum valid DOS timestamp: 1980-01-01 00:00:00. A zero date encodes
+  // month/day zero and is tolerated by some readers but is not a valid ZIP date.
+  local.writeUInt16LE(0x0021, 12);
+  local.writeUInt32LE(crc, 14);
+  local.writeUInt32LE(bytes.length, 18);
+  local.writeUInt32LE(bytes.length, 22);
+  local.writeUInt16LE(nameBytes.length, 26);
+
+  const central = Buffer.alloc(46);
+  central.writeUInt32LE(0x02014b50, 0);
+  central.writeUInt16LE(20, 4);
+  central.writeUInt16LE(20, 6);
+  central.writeUInt16LE(0x0021, 14);
+  central.writeUInt32LE(crc, 16);
+  central.writeUInt32LE(bytes.length, 20);
+  central.writeUInt32LE(bytes.length, 24);
+  central.writeUInt16LE(nameBytes.length, 28);
+  central.writeUInt32LE(name.endsWith("/") ? 0x10 : 0, 38);
+  central.writeUInt32LE(offset, 42);
+  return { local: Buffer.concat([local, nameBytes, bytes]), central: Buffer.concat([central, nameBytes]) };
+}
+
+function createZip(entries) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const { name, bytes } of entries) {
+    const entry = zipEntry(name, bytes, offset);
+    locals.push(entry.local);
+    centrals.push(entry.central);
+    offset += entry.local.length;
+  }
+  const centralBytes = Buffer.concat(centrals);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralBytes.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, centralBytes, end]);
+}
+
+async function archiveBytes(content, resources) {
+  const entries = [{ name: `${ARCHIVE_ROOT}/`, bytes: Buffer.alloc(0) }];
+  entries.push({ name: `${ARCHIVE_ROOT}/SKILL.md`, bytes: Buffer.from(content) });
+  for (const { src, dest } of [...resources].sort((a, b) => a.dest.localeCompare(b.dest))) {
+    entries.push({ name: `${ARCHIVE_ROOT}/references/${dest}`, bytes: await readFile(resolve(repoRoot, src)) });
+  }
+  return createZip(entries);
+}
+
+// ---------------------------------------------------------------------------------------------
 
 function parseArgs(argv) {
   if (argv.length > 1 || (argv.length === 1 && argv[0] !== "--check")) {
@@ -198,6 +274,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { renderNpm, NPM_RESOURCES } = await loadSkillRender();
   const content = renderNpm();
   const resources = NPM_RESOURCES;
+  const expectedArchive = await archiveBytes(content, resources);
 
   if (checkOnly) {
     const problems = [];
@@ -206,12 +283,17 @@ export async function main(argv = process.argv.slice(2)) {
         problems.push(`${target.label}: ${problem}`);
       }
     }
+    const currentArchive = await readFile(archivePath).catch(() => null);
+    if (currentArchive === null || !currentArchive.equals(expectedArchive)) {
+      problems.push(`portable skill archive: ${archivePath} is stale or missing`);
+    }
     if (problems.length > 0) {
       for (const problem of problems) console.error(problem);
       console.error("run `node scripts/gen-skill.mjs` to regenerate.");
       process.exit(1);
     }
     for (const target of targets) console.log(`${target.skillPath} is up to date.`);
+    console.log(`${archivePath} is up to date.`);
   } else {
     for (const target of targets) {
       await syncTarget(target, content, resources);
@@ -219,6 +301,8 @@ export async function main(argv = process.argv.slice(2)) {
       console.log(`synced ${target.referencesDir}`);
       if (target.receipt) console.log(`wrote ${target.receipt.path}`);
     }
+    await writeFile(archivePath, expectedArchive);
+    console.log(`wrote ${archivePath}`);
   }
 }
 

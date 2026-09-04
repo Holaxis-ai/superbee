@@ -60,6 +60,22 @@ test("OpenCode treats the managed Claude-compatible Skill as a required host cap
     "the Superbee Agent Skill is absent from OpenCode's Claude-compatible discovery path");
 });
 
+test("Claude Desktop setup advertises the portable archive without making it a required action", () => {
+  const plan = buildSetupPlan(input({ host: "claude-desktop" }));
+  assert.deepEqual(
+    plan.capabilities.find((capability) => capability.id === "skill"),
+    {
+      id: "skill",
+      requirement: "not_applicable",
+      state: "not_applicable",
+      reason: "Claude Desktop imports Skills through its own user-directed flow; run `superbee skill path` to locate this package's portable archive",
+      command: "superbee skill path",
+    },
+  );
+  assert.equal(plan.status, "ready");
+  assert.equal(plan.next, undefined);
+});
+
 test("mutating setup actions are argv-based and declare their approval scope", () => {
   const migration = next(buildSetupPlan(input({
     state: { state: "migratable", reason: "validated legacy operational state is ready to migrate", records: 2 },

@@ -27,6 +27,7 @@ import {
   isSafeManifestEntry,
   legacySkillTargets,
   resolveSkillAssets,
+  resolveSkillArchive,
   skill,
   skillRefreshScopes,
   skillStatusForDir,
@@ -54,6 +55,7 @@ function makeDistribution(root: string, version = "9.9.9", files: Record<string,
     mkdirSync(path.dirname(target), { recursive: true });
     writeFileSync(target, content);
   }
+  writeFileSync(path.join(root, "superbee.skill.zip"), "portable archive\n");
   return path.join(root, "dist", "superbee.mjs");
 }
 
@@ -160,6 +162,53 @@ test("skill install (project scope): assets + manifest land in BOTH host folders
   assert.equal(again.skill.hosts.claude_code.changed, false);
   assert.equal(again.skill.hosts.codex.changed, false);
   assertSameTree(before, treeSnapshot(path.join(cwd, ".claude")));
+});
+
+test("skill path reports the package-contained portable archive without changing host folders", async () => {
+  const { base, executable } = scratch();
+  const cwd = path.join(base, "project");
+  mkdirSync(cwd, { recursive: true });
+
+  const archive = resolveSkillArchive(executable);
+  assert.equal(archive.path, path.join(base, "pkg", "superbee.skill.zip"));
+  assert.equal(archive.format, "zip");
+  assert.equal(archive.root, "superbee");
+  assert.match(archive.sha256, /^sha256:[0-9a-f]{64}$/);
+
+  const priorHome = process.env.HOME;
+  const priorUserProfile = process.env.USERPROFILE;
+  process.env.HOME = base;
+  process.env.USERPROFILE = base;
+  try {
+    const receipt = await runSkill(["path"], { cwd, executable });
+    assert.equal(receipt.skill.action, "path");
+    assert.equal(receipt.skill.archive, archive.path, "structured output keeps a home-contained path absolute");
+    assert.ok(path.isAbsolute(receipt.skill.archive));
+    assert.equal(receipt.skill.archive_sha256, archive.sha256);
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    if (priorUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = priorUserProfile;
+  }
+  assert.equal(existsSync(path.join(cwd, ".claude")), false);
+  assert.equal(existsSync(path.join(cwd, ".codex")), false);
+});
+
+test("skill path fails with reinstall guidance when the running package has no portable archive", async () => {
+  const { base, executable } = scratch();
+  rmSync(path.join(base, "pkg", "superbee.skill.zip"));
+
+  await assert.rejects(
+    () => runSkill(["path"], { executable }),
+    (error: unknown) => {
+      assert.ok(error instanceof CliError);
+      assert.equal(error.code, "RUNTIME");
+      assert.match(error.message, /carries no portable Skill archive/);
+      assert.match(error.help ?? "", /reinstall the released superbee package/);
+      return true;
+    },
+  );
 });
 
 test("skill refresh scopes reuse managed-byte classification and self-clear after reinstall", async () => {
@@ -1162,11 +1211,11 @@ test("a NON-EMPTY directory at a manifested path: structured refusal, nested con
   assert.equal(existsSync(path.join(cwd, ".codex", "skills", "superbee")), false);
 });
 
-test("skill usage errors: missing/unknown subcommand and bad scope are USAGE, not runtime", async () => {
+test("skill usage errors: missing/unknown subcommand, bad scope, and path scope are USAGE, not runtime", async () => {
   const { base, executable } = scratch();
   const cwd = path.join(base, "project");
   mkdirSync(cwd, { recursive: true });
-  for (const argv of [[], ["frobnicate"], ["install", "--scope", "galaxy"]]) {
+  for (const argv of [[], ["frobnicate"], ["install", "--scope", "galaxy"], ["path", "--scope", "user"]]) {
     await assert.rejects(
       () => runSkill(argv, { cwd, executable }),
       (err: unknown) => err instanceof CliError && err.code === "USAGE",
