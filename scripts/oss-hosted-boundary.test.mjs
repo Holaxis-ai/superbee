@@ -106,17 +106,31 @@ test("OSS build and lockfile carry no hosted deployment dependency", async () =>
   );
 });
 
-// This source-only gate owns generic wire package placement. Runtime registration is proved by
-// the CLI command-spec relational tests rather than by pinning a dispatch implementation spelling.
+// This source-only gate owns generic wire package placement and the public/legacy split. Runtime
+// registration is proved by the server and CLI relational tests rather than by pinning handlers.
 test("generic wire source authorities remain public after hosted extraction", async () => {
-  const [remoteBackend, router, serveCommand] = await Promise.all([
+  const [remoteBackend, router, legacyRouter, serverIndex, serverPackage, serveCommand] = await Promise.all([
     readFile(path.join(root, "packages/core/src/remote-backend.ts"), "utf8"),
     readFile(path.join(root, "packages/server/src/router.ts"), "utf8"),
+    readFile(path.join(root, "packages/server/src/legacy-router.ts"), "utf8"),
+    readFile(path.join(root, "packages/server/src/index.ts"), "utf8"),
+    readFile(path.join(root, "packages/server/package.json"), "utf8").then(JSON.parse),
     readFile(path.join(root, "packages/cli/src/commands/serve.ts"), "utf8"),
   ]);
 
   assert.match(remoteBackend, /export class RemoteBackend/);
-  assert.match(router, /export function createRouterForBackend/);
+  assert.match(router, /from ["']@superbee\/core\/storage["']/);
+  assert.match(router, /from ["']@superbee\/core\/engine["']/);
+  assert.match(router, /export function resolveWireRequest/);
+  assert.match(router, /export function createRouter/);
+  assert.doesNotMatch(router, /from ["']@superbee\/core["']/);
+  assert.match(legacyRouter, /export function createRouterForBackend/);
+  assert.match(legacyRouter, /new FilesystemBackend/);
+  assert.match(serverIndex, /from ["']\.\/legacy-router\.js["']/);
+  assert.deepEqual(serverPackage.exports["./router"], {
+    types: "./dist/router.d.ts",
+    default: "./dist/router.js",
+  });
   assert.match(serveCommand, /export\s+(?:async\s+)?function\s+serve\s*\(/);
   assert.match(serveCommand, /from\s+["']@superbee\/server["']/);
 });
