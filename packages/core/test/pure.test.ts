@@ -99,6 +99,7 @@ test("links: extractMarkdownLinks stays linear on hostile input and resumes at l
   assert.deepEqual(extractMarkdownLinks(`${"[\\".repeat(100_000)}tail`), []);
   assert.deepEqual(extractMarkdownLinks(`${"[](!".repeat(100_000)}tail`), []);
   assert.deepEqual(extractMarkdownLinks("[outer](bad [inner](ok))"), [{ text: "inner", href: "ok" }]);
+  assert.deepEqual(extractMarkdownLinks("[bad] xx [good](ok)"), [{ text: "good", href: "ok" }]);
   assert.deepEqual(extractMarkdownLinks("[empty]() [space](not allowed.md) [good](/good.md)"), [
     { text: "good", href: "/good.md" },
   ]);

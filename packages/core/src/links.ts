@@ -84,34 +84,54 @@ export function isExternalHref(href: string): boolean {
 /** Extract every non-image markdown link from a body, in document order. */
 export function extractMarkdownLinks(body: string): RawLink[] {
   const out: RawLink[] = [];
-  let open = -1;
-  for (let cursor = 0; cursor < body.length; cursor++) {
-    if (body[cursor] === "[") {
-      if (open < 0) open = cursor;
-      continue;
-    }
-    if (open < 0 || body[cursor] !== "]" || body[cursor + 1] !== "(") continue;
+  let textOpen = -1;
+  let afterClose: { open: number; close: number } | undefined;
+  let hrefFirst: { open: number; close: number; hrefStart: number } | undefined;
+  let hrefRest: { open: number; close: number; hrefStart: number } | undefined;
 
-    const hrefStart = cursor + 2;
-    let hrefEnd = hrefStart;
-    while (
-      hrefEnd < body.length &&
-      body[hrefEnd] !== ")" &&
-      body[hrefEnd]?.trim() !== ""
-    ) {
-      hrefEnd++;
+  for (let cursor = 0; cursor < body.length; cursor++) {
+    const char = body[cursor]!;
+
+    // This is a constant-state simulation of the former
+    // /\[([^\]]*)\]\(([^)\s]+)\)/g expression. Keeping only the earliest
+    // candidate in each state preserves the regex's leftmost-first behavior
+    // without backtracking over hostile input.
+    if (hrefRest) {
+      if (char === ")") {
+        if (hrefRest.open === 0 || body[hrefRest.open - 1] !== "!") {
+          out.push({
+            text: body.slice(hrefRest.open + 1, hrefRest.close),
+            href: body.slice(hrefRest.hrefStart, cursor),
+          });
+        }
+        textOpen = -1;
+        afterClose = undefined;
+        hrefFirst = undefined;
+        hrefRest = undefined;
+        continue;
+      }
+      if (char.trim() === "") hrefRest = undefined;
     }
-    if (hrefEnd >= body.length) break;
-    if (body[hrefEnd] !== ")" || hrefEnd === hrefStart) {
-      cursor = hrefEnd;
-      open = -1;
-      continue;
+
+    if (hrefFirst) {
+      if (char !== ")" && char.trim() !== "" && !hrefRest) {
+        hrefRest = hrefFirst;
+      }
+      hrefFirst = undefined;
     }
-    if (open === 0 || body[open - 1] !== "!") {
-      out.push({ text: body.slice(open + 1, cursor), href: body.slice(hrefStart, hrefEnd) });
+
+    if (afterClose) {
+      if (char === "(") {
+        hrefFirst = { ...afterClose, hrefStart: cursor + 1 };
+      }
+      afterClose = undefined;
     }
-    cursor = hrefEnd;
-    open = -1;
+
+    if (textOpen >= 0 && char === "]") {
+      afterClose = { open: textOpen, close: cursor };
+      textOpen = -1;
+    }
+    if (char === "[" && textOpen < 0) textOpen = cursor;
   }
   return out;
 }
