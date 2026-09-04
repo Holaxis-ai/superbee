@@ -553,6 +553,16 @@ function routeLabel(resource: WireResource): string {
   return label;
 }
 
+/** Fetch requires every HEAD response to be bodyless, including host- and runtime-generated errors. */
+function responseForMethod(isHead: boolean, response: Response): Response {
+  if (!isHead) return response;
+  return new Response(null, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 /**
  * The sole raw URL/method boundary. Inner dispatch receives only a registered endpoint, its
  * decoded-shape input, and query parameters; ordinary handler additions cannot make an undeclared
@@ -562,25 +572,27 @@ function registeredWireRouter(
   dispatch: (req: Request, registered: RegisteredWireRequest) => Promise<Response>,
 ): (req: Request) => Promise<Response> {
   return async function handle(req: Request): Promise<Response> {
-    let url: URL;
-    try {
-      url = new URL(req.url);
-    } catch {
-      return errorResponse(400, "USAGE", "invalid request URL");
-    }
+    const isHead = req.method === "HEAD";
+    let response: Response;
+    let url!: URL;
 
     try {
+      try {
+        url = new URL(req.url);
+      } catch {
+        throw new WireRequestResolutionError(400, "USAGE", "invalid request URL");
+      }
       const resolved = resolvePathAndMethod(url.pathname, url.searchParams, req.method);
-      return await dispatch(req, { resolved });
+      response = await dispatch(req, { resolved });
     } catch (err) {
       if (err instanceof WireRequestResolutionError) {
         const message = err.status === 404 ? `no route for ${url.pathname}` : err.message;
-        return req.method === "HEAD"
-          ? new Response(null, { status: err.status })
-          : errorResponse(err.status, err.code, message);
+        response = errorResponse(err.status, err.code, message);
+      } else {
+        response = errorFromCaught(err);
       }
-      return errorFromCaught(err);
     }
+    return responseForMethod(isHead, response);
   };
 }
 

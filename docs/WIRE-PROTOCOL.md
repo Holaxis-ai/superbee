@@ -32,6 +32,11 @@ not make the reference server enforce it. A gated deployment owns the meaning of
   percent escapes, encoded slash or backslash, and empty or repeated bundle segments before the
   trusted context resolver can run. `GET /v0/capabilities` is deployment-scoped and bypasses that
   resolver and storage.
+- `resolveWireRequest(Request)` governs the normalized `pathname` exposed by the Fetch/WHATWG URL
+  API. An adapter that can inspect an HTTP request-target before URL normalization may enforce
+  stricter raw-target rules separately. The Fetch router does not reconstruct raw bytes that the
+  platform no longer exposes; encoded slash/backslash and malformed bundle tokens remain visible
+  in the normalized path and are rejected.
 - Document IDs and blob keys may contain `/`; clients encode each segment independently. Every
   route validates decoded IDs/keys before backend access. Document IDs cannot address reserved
   `index.md` or `log.md`; blob keys cannot end in `.md` and reject absolute, traversal, and

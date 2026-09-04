@@ -79,11 +79,20 @@ test("resolver rejects aliases, uppercase ids, percent escapes, encoded slash, a
     "/v0/bundles/bnd_00112233445566778899AABBCCDDEEFF/docs",
     "/v0/bundles/bnd_00112233445566778899aabbccddee%66f/docs",
     "/v0/bundles/bnd_00112233445566778899aabbccdd%2Feeff/docs",
+    "/v0/bundles/bnd_00112233445566778899aabbccdd%5Ceeff/docs",
     "/v0/bundles//docs",
     `/v0/bundles/${BUNDLE_A}//docs`,
   ]) {
     assertResolutionError(path, path === `/v0/bundles/${BUNDLE_A}//docs` ? 404 : 400);
   }
+});
+
+test("resolveWireRequest governs the normalized Fetch path while encoded separators remain rejectable", () => {
+  const normalized = request(`/v0/bundles/${BUNDLE_A}\\docs`);
+  assert.equal(new URL(normalized.url).pathname, `/v0/bundles/${BUNDLE_A}/docs`);
+  assert.equal(resolveWireRequest(normalized).endpointId, "docs-list");
+  assertResolutionError("/v0/bundles/bnd_00112233445566778899aabbccdd%2Feeff/docs");
+  assertResolutionError("/v0/bundles/bnd_00112233445566778899aabbccdd%5Ceeff/docs");
 });
 
 test("route rejection fails before context or backend resolution", async () => {
@@ -161,4 +170,117 @@ test("deployment capabilities bypass context and backend resolution", async () =
   assert.equal(response.status, 200);
   assert.equal(contextCalls, 0);
   assert.deepEqual(await response.json(), { history: true, ...CAPABILITIES });
+});
+
+test("HEAD resolution failures are bodyless and retain the shaped error status and headers", async () => {
+  const router = createRouter({
+    capabilities: CAPABILITIES,
+    resolveContext: () => {
+      throw new Error("must not run");
+    },
+  });
+  const response = await router(
+    request("/v0/bundles/bnd_00112233445566778899aabbccdd%2Feeff/docs/concepts/a", { method: "HEAD" }),
+  );
+  assert.equal(response.status, 400);
+  assert.equal(response.statusText, "");
+  assert.match(response.headers.get("content-type") ?? "", /^application\/json/);
+  assert.equal(await response.text(), "");
+});
+
+test("HEAD context denials are bodyless while preserving host status, status text, and headers", async () => {
+  const router = createRouter({
+    capabilities: CAPABILITIES,
+    resolveContext: () =>
+      new Response("private denial detail", {
+        status: 404,
+        statusText: "Bundle Hidden",
+        headers: { "content-type": "application/problem+json", "x-denial-class": "hidden" },
+      }),
+  });
+  const response = await router(request(`/v0/bundles/${BUNDLE_A}/docs/concepts/a`, { method: "HEAD" }));
+  assert.equal(response.status, 404);
+  assert.equal(response.statusText, "Bundle Hidden");
+  assert.equal(response.headers.get("content-type"), "application/problem+json");
+  assert.equal(response.headers.get("x-denial-class"), "hidden");
+  assert.equal(await response.text(), "");
+});
+
+test("HEAD backend/runtime failures are bodyless for document and blob routes", async () => {
+  class FailingBackend extends MemoryBackend {
+    override async read(..._args: Parameters<MemoryBackend["read"]>): ReturnType<MemoryBackend["read"]> {
+      throw new Error("document storage unavailable");
+    }
+
+    override async readBlob(..._args: Parameters<MemoryBackend["readBlob"]>): ReturnType<MemoryBackend["readBlob"]> {
+      throw new Error("blob storage unavailable");
+    }
+  }
+
+  const backend = new FailingBackend();
+  const router = createRouter({
+    capabilities: CAPABILITIES,
+    resolveContext: () => ({ backend, attribution: { actor: "principal_7" } }),
+  });
+  for (const path of [
+    `/v0/bundles/${BUNDLE_A}/docs/concepts/a`,
+    `/v0/bundles/${BUNDLE_A}/blobs/assets/a.bin`,
+  ]) {
+    const response = await router(request(path, { method: "HEAD" }));
+    assert.equal(response.status, 500, path);
+    assert.match(response.headers.get("content-type") ?? "", /^application\/json/, path);
+    assert.equal(await response.text(), "", path);
+  }
+});
+
+test("successful and missing document/blob HEAD responses remain bodyless with their headers", async () => {
+  const backend = new MemoryBackend();
+  const docVersion = await backend.write("concepts/present", {
+    id: "concepts/present",
+    frontmatter: { type: "Concept" },
+    body: "present",
+  });
+  const blobVersion = await backend.writeBlob(
+    "assets/present.bin",
+    new Uint8Array([1, 2, 3]),
+    "application/octet-stream",
+  );
+  const router = createRouter({
+    capabilities: CAPABILITIES,
+    resolveContext: () => ({ backend, attribution: { actor: "principal_7" } }),
+  });
+
+  const cases = [
+    {
+      path: `/v0/bundles/${BUNDLE_A}/docs/concepts/present`,
+      status: 200,
+      version: docVersion,
+      contentType: undefined,
+    },
+    {
+      path: `/v0/bundles/${BUNDLE_A}/docs/concepts/missing`,
+      status: 404,
+      version: undefined,
+      contentType: undefined,
+    },
+    {
+      path: `/v0/bundles/${BUNDLE_A}/blobs/assets/present.bin`,
+      status: 200,
+      version: blobVersion,
+      contentType: "application/octet-stream",
+    },
+    {
+      path: `/v0/bundles/${BUNDLE_A}/blobs/assets/missing.bin`,
+      status: 404,
+      version: undefined,
+      contentType: undefined,
+    },
+  ];
+  for (const expected of cases) {
+    const response = await router(request(expected.path, { method: "HEAD" }));
+    assert.equal(response.status, expected.status, expected.path);
+    assert.equal(await response.text(), "", expected.path);
+    assert.equal(response.headers.get("x-version") ?? undefined, expected.version, expected.path);
+    assert.equal(response.headers.get("content-type") ?? undefined, expected.contentType, expected.path);
+  }
 });
