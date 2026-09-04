@@ -65,6 +65,7 @@ import {
   parseMarkdown,
 } from "@superbee/core";
 import { BoardGitError, classifyGitError, isBoardGitError, type GitFailure } from "./errors.js";
+import { normalizeGitLexicalPath } from "./git-path.js";
 
 /** The dedicated branch that carries ONLY the bundle (its root IS the bundle root). */
 export const BOARD_BRANCH = "board";
@@ -361,7 +362,11 @@ export function identityFlags(dir: string, actor?: string): string[] {
 // ── repo/worktree discovery ───────────────────────────────────────────────────
 
 export type RepoTopLevelProbe =
-  | { kind: "repo"; top: string }
+  | {
+      kind: "repo";
+      /** Host-native lexical spelling; not a realpath or evidence of filesystem identity. */
+      top: string;
+    }
   | { kind: "not_repo" }
   | { kind: "unavailable"; reason: string };
 
@@ -377,7 +382,9 @@ function hasEnclosingGitMarker(dir: string): boolean {
 
 /**
  * Evidence-preserving repository discovery for callers that must distinguish a plain folder from
- * broken Git plumbing. A marker plus a failed probe is indeterminate, never "not a repo".
+ * broken Git plumbing. A marker plus a failed probe is indeterminate, never "not a repo". An
+ * accepted non-empty top level is lexically normalized to host-native spelling; it is not
+ * realpathed and is not evidence of filesystem identity.
  */
 export function probeRepoTopLevel(dir: string): RepoTopLevelProbe {
   if (!existsSync(dir)) {
@@ -396,7 +403,7 @@ export function probeRepoTopLevel(dir: string): RepoTopLevelProbe {
   }
   const top = r.stdout.trim();
   return top.length > 0
-    ? { kind: "repo", top }
+    ? { kind: "repo", top: normalizeGitLexicalPath(top, path) }
     : { kind: "unavailable", reason: "git repository discovery returned an empty top level" };
 }
 

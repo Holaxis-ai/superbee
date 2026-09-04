@@ -40,6 +40,16 @@ function run(home: string, args: string[]): Promise<ChildResult> {
   });
 }
 
+function childDiagnostics(results: readonly ChildResult[]): string {
+  return results
+    .map((result, index) => [
+      `child ${index}: status=${result.status}`,
+      `stdout:\n${result.stdout || "<empty>"}`,
+      `stderr:\n${result.stderr || "<empty>"}`,
+    ].join("\n"))
+    .join("\n\n");
+}
+
 test("built CLI: concurrent catalog writers preserve every distinct registration", async () => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-process-")));
   try {
@@ -55,10 +65,14 @@ test("built CLI: concurrent catalog writers preserve every distinct registration
     const results = await Promise.all(
       bundles.map((bundle, index) => run(home, ["catalog", "add", `workspace-${index}`, "--dir", bundle, "--json"])),
     );
-    assert.deepEqual(results.map((result) => result.status), Array(8).fill(0));
+    assert.deepEqual(
+      results.map((result) => result.status),
+      Array(8).fill(0),
+      childDiagnostics(results),
+    );
 
     const listed = await run(home, ["catalog", "list", "--json"]);
-    assert.equal(listed.status, 0);
+    assert.equal(listed.status, 0, childDiagnostics([listed]));
     const receipt = JSON.parse(listed.stdout) as { count: number; entries: Array<{ label: string }> };
     assert.equal(receipt.count, 8);
     assert.deepEqual(
@@ -83,12 +97,16 @@ test("built CLI: racing labels for one path produces one winner and one stable c
       run(home, ["catalog", "add", "alpha", "--dir", bundle, "--json"]),
       run(home, ["catalog", "add", "beta", "--dir", bundle, "--json"]),
     ]);
-    assert.deepEqual(results.map((result) => result.status).sort((a, b) => a - b), [0, 5]);
+    assert.deepEqual(
+      results.map((result) => result.status).sort((a, b) => a - b),
+      [0, 5],
+      childDiagnostics(results),
+    );
     const loser = results.find((result) => result.status === 5)!;
     assert.match(loser.stdout, /ALREADY_EXISTS/);
 
     const listed = await run(home, ["catalog", "list", "--json"]);
-    assert.equal(JSON.parse(listed.stdout).count, 1);
+    assert.equal(JSON.parse(listed.stdout).count, 1, childDiagnostics([listed]));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
