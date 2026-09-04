@@ -11,6 +11,22 @@ import { parseMarkdown } from "@superbee/core";
 import { parseRecipeFiles, type RecipeFile, type RecipeSource } from "./recipe-parser.js";
 import { expandRecipePath, looksLikeRecipePath } from "./recipe-ref.js";
 
+/**
+ * Reads a containment-approved path over ONE descriptor: the regular-file decision and the bytes
+ * come from the same open file, so no second lookup can land somewhere the check never saw.
+ * `null` when the leaf is not a regular file, which every caller turns into an unsafe-path refusal.
+ */
+async function readContainedFile(real: string): Promise<string | null> {
+  const handle = await fs.open(real, "r").catch(() => null);
+  if (!handle) return null;
+  try {
+    if (!(await handle.stat()).isFile()) return null;
+    return await handle.readFile("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
 async function readRecipeDir(root: string): Promise<RecipeFile[]> {
   const files: RecipeFile[] = [];
   const rootReal = await fs.realpath(root);
@@ -22,7 +38,8 @@ async function readRecipeDir(root: string): Promise<RecipeFile[]> {
     if (!manifestReal || (manifestReal !== rootReal && !manifestReal.startsWith(rootReal + path.sep))) {
       throw new RecipeUnsafePathSignal("recipe.md");
     }
-    const bytes = await fs.readFile(manifestReal, "utf8");
+    const bytes = await readContainedFile(manifestReal);
+    if (bytes === null) throw new RecipeUnsafePathSignal("recipe.md");
     files.push({ path: "recipe.md", bytes });
     const { frontmatter } = parseMarkdown(bytes);
     if (frontmatter.content_policy === "definitions-only" || frontmatter.pages !== undefined) {
@@ -69,9 +86,9 @@ async function walkRecipeFiles(
     if (!real || (real !== rootReal && !real.startsWith(rootReal + path.sep))) {
       throw new RecipeUnsafePathSignal(rel);
     }
-    const stat = await fs.stat(real).catch(() => null);
-    if (!stat?.isFile()) throw new RecipeUnsafePathSignal(rel);
-    out.push({ path: rel, bytes: await fs.readFile(real, "utf8") });
+    const bytes = await readContainedFile(real);
+    if (bytes === null) throw new RecipeUnsafePathSignal(rel);
+    out.push({ path: rel, bytes });
   }
 }
 
@@ -91,7 +108,9 @@ async function walkConventions(dir: string, relPrefix: string, rootReal: string,
     if (!real || (real !== rootReal && !real.startsWith(rootReal + path.sep))) {
       throw new RecipeUnsafePathSignal(rel);
     }
-    out.push({ path: rel, bytes: await fs.readFile(real, "utf8") });
+    const bytes = await readContainedFile(real);
+    if (bytes === null) throw new RecipeUnsafePathSignal(rel);
+    out.push({ path: rel, bytes });
   }
 }
 
