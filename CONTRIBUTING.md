@@ -195,6 +195,13 @@ zero-runtime-dependency boundary, and offline create/query journey. `npm run che
 superbee` proves that the generated npm Agent Skill bytes match their source. Release publication
 has a separate action-time contract; passing either check does not authorize publishing.
 
+`npm run verify:runtime-libraries -- <core.tgz> <server.tgz>` consumes an already-packed pair and
+proves synchronized restricted metadata, the exact server-to-core dependency, and a Worker-safe
+external consumer. It never builds or repacks the supplied artifacts. The dedicated
+`libraries/v<version>` workflow is the only automated release path for that pair.
+Its finalizer receives only `NPM_RUNTIME_LIBRARIES_READ_TOKEN`, a granular read-only token scoped to
+the two restricted packages; build and staging jobs never receive that credential.
+
 ## OKF compatibility
 
 Superbee preserves the edition declared by an existing bundle. New bundles default to OKF v0.2;
