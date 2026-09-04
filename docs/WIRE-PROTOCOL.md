@@ -156,7 +156,7 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 These are current limitations, not promises that a client may paper over:
 
 1. The Node package-root reference adapter remains single-backend and does not select among
-   bundles. Multi-bundle selection belongs to the Worker-safe subpath's host context resolver.
+   bundles. Explicit bundle selection belongs to the Worker-safe subpath's host context resolver.
 2. A document whose final path segment is literally `versions` is ambiguous with the history
    subresource.
 3. There is no original-document-byte endpoint. Canonical JSON reconstruction is the only remote

@@ -169,7 +169,7 @@ function versionHeaders(version: Version): Record<string, string> {
   return { "X-Version": version, ETag: `"${version}"` };
 }
 
-/** Immutable hosted bundle id: 16 random bytes rendered as lowercase hexadecimal. */
+/** Canonical remote bundle id: 16 random bytes rendered as lowercase hexadecimal. */
 export type BundleId = `bnd_${string}`;
 
 /** Access needed before a registered endpoint may dispatch. */
@@ -732,7 +732,7 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
 
     // HEAD-FIRST scan (this route only ever projects frontmatter — bodies never leave it),
     // via core's ONE `queryHeads` implementation: it prefers the backend's optional
-    // push-down (a hosted adapter can answer from its head index without reading bodies),
+    // push-down (an indexed adapter can answer without reading bodies),
     // re-applies the canonical `matchesFilter` to whatever came back, and falls back to
     // the delete-tolerant `list` + batch-read walk for every other backend (a doc deleted
     // mid-scan is SKIPPED, not a scan-failing 404 — the server half of STATUS item 33; a

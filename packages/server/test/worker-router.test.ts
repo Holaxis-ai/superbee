@@ -75,7 +75,7 @@ test("registry is the endpoint, method, template, and access-class authority", (
 test("resolver rejects aliases, uppercase ids, percent escapes, encoded slash, and malformed segments", () => {
   for (const path of [
     "/v0/bundles/default/docs",
-    "/v0/bundles/customer-label/docs",
+    "/v0/bundles/human-readable-alias/docs",
     "/v0/bundles/bnd_00112233445566778899AABBCCDDEEFF/docs",
     "/v0/bundles/bnd_00112233445566778899aabbccddee%66f/docs",
     "/v0/bundles/bnd_00112233445566778899aabbccdd%2Feeff/docs",
