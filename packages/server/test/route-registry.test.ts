@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { MemoryBackend } from "@superbee/core";
-import { createRouterForBackend, WIRE_ENDPOINTS } from "../src/router.js";
+import { createRouterForBackend } from "../src/legacy-router.js";
+import { WIRE_ENDPOINTS } from "../src/router.js";
 
 function concretePath(path: string): string {
   return path
