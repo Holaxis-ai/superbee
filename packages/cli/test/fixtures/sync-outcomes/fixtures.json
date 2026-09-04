@@ -21,7 +21,7 @@
       "key": "ff.no-upstream.unlinked",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: NO_UPSTREAM\n  message: the board branch isn't linked to a remote — there is nothing to pull from or push to (a local-only board is a supported mode; sharing needs a remote 'board' branch)\n  help: \"if a teammate already shares this project's board, make sure your `origin` remote points at the SAME repository they pushed the `board` branch to; if nobody has started sharing this project's board yet, run `aslite sync --establish` to start — until then a local-only board is a supported mode: every local command keeps working, and nothing leaves this machine\"\n"
+      "bytes": "error:\n  code: NO_UPSTREAM\n  message: the board branch isn't linked to a remote — there is nothing to pull from or push to (a local-only board is a supported mode; sharing needs a remote 'board' branch)\n  help: \"if a teammate already shares this project's board, point `origin` at that SAME existing repository and run `aslite sync` to join. For a first share, the remote repository must already exist; Superbee does not create it. Connect the existing repository, or, only when its absence is confirmed, create it outside Superbee if authorized or ask an authorized owner/teammate to create it and grant access. Then verify the repository is visible and `origin/board` is absent before explicitly running `aslite sync --establish`. Until then, local-only is supported: every local command works and nothing leaves this machine\"\n"
     },
     {
       "key": "ff.auth",
@@ -78,6 +78,18 @@
       "bytes": "error:\n  code: RUNTIME\n  message: \"sync's pull step failed for an unclassified reason (mystery-reason) — re-run, or run without --pull-only\"\n"
     },
     {
+      "key": "establish.local-git-missing",
+      "variant": "default",
+      "kind": "envelope",
+      "bytes": "error:\n  code: RUNTIME\n  message: \"establish needs the intended local project Git repository; any local bundle remains local and usable, and GitHub has not been checked\"\n  details:\n    sharing:\n      operation: establish-preflight\n      remote_repository: unknown\n      remote_board: unknown\n      repository_creation: external-if-absent\n      local_work: preserved\n  help: \"enter or initialize the intended local project repository, then verify its remote before sharing\"\n"
+    },
+    {
+      "key": "establish.origin-unconfigured",
+      "variant": "default",
+      "kind": "envelope",
+      "bytes": "error:\n  code: RUNTIME\n  message: \"this repository has no 'origin' remote. Superbee publishes 'board' only into an existing remote repository; it does not create that repository. Connect the exact existing repository, or, only when its absence is confirmed, create it outside Superbee if authorized or ask an authorized owner/teammate to create it and grant access\"\n  details:\n    sharing:\n      operation: establish-preflight\n      remote_repository: unknown\n      remote_board: unknown\n      repository_creation: external-if-absent\n      local_work: preserved\n  help: \"git remote add origin <url>  # after the remote repository exists, then re-run aslite sync --establish\"\n"
+    },
+    {
       "key": "sync.local-board.remote-exists",
       "variant": "default",
       "kind": "envelope",
@@ -87,7 +99,7 @@
       "key": "sync.local-board.unpublished",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: NO_UPSTREAM\n  message: a local 'board' branch exists but has not been explicitly adopted or published — bare sync will not check it out or create origin/board\n  help: aslite sync --establish\n"
+      "bytes": "error:\n  code: NO_UPSTREAM\n  message: a local 'board' branch exists but has not been explicitly adopted or published — bare sync will not check it out or create origin/board. The remote repository must already exist; Superbee never creates it\n  help: \"after the existing repository is visible and origin/board is confirmed absent, run aslite sync --establish with explicit publication consent; repository creation permission is irrelevant for that existing repository\"\n"
     },
     {
       "key": "in-tree.sync-refusal",
@@ -99,7 +111,7 @@
       "key": "in-tree.sync-refusal",
       "variant": "no-origin",
       "kind": "envelope",
-      "bytes": "error:\n  code: USAGE\n  message: \"this board rides your code branch — '.superbee/' is committed with the code, so a full sync would have to publish the code branch itself; share board changes with your normal git commit/push, run 'aslite sync --pull-only' to fetch-and-report incoming board changes, or this repo has no 'origin' remote yet — run 'git remote add origin <url>', then 'aslite sync --establish' to move the board to a dedicated 'board' branch\"\n  details:\n    path: /repo/.superbee\n    state: in-tree\n  help: git remote add origin <url>\n"
+      "bytes": "error:\n  code: USAGE\n  message: \"this board rides your code branch — '.superbee/' is committed with the code, so a full sync would have to publish the code branch itself; share board changes with your normal git commit/push, run 'aslite sync --pull-only' to fetch-and-report incoming board changes, or this repo has no 'origin' remote yet — Superbee does not create remote repositories; connect an existing repository, or only after absence is confirmed create one outside Superbee if authorized (otherwise ask an authorized owner or teammate). Then run 'git remote add origin <url>'\"\n  details:\n    path: /repo/.superbee\n    state: in-tree\n  help: git remote add origin <url>\n"
     },
     {
       "key": "in-tree.show-incoming.no-basis",
@@ -429,7 +441,7 @@
       "key": "sync.full.no-upstream",
       "variant": "default",
       "kind": "envelope",
-      "bytes": "error:\n  code: NO_UPSTREAM\n  message: the local board has not been published — bare sync never creates origin/board; run 'aslite sync --establish' to publish it explicitly\n  help: aslite sync --establish\n"
+      "bytes": "error:\n  code: NO_UPSTREAM\n  message: \"the existing remote repository has no origin/board; repository creation permission is irrelevant, and bare sync never creates it — run aslite sync --establish only with explicit publication consent\"\n  help: \"with explicit publication consent, repository-specific push capability, and branch-create policy clearance, run aslite sync --establish; the push is the decisive write test\"\n"
     },
     {
       "key": "show-incoming.no-upstream",

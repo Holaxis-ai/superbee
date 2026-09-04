@@ -61,7 +61,7 @@ import {
   writeAwarenessCache,
 } from "./converge.js";
 import { showIncoming } from "./show-incoming.js";
-import { ffSwallowToError, syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
+import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
 import { CliError, asHandled, cliErrorFromBoardGit, toExit } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -82,6 +82,14 @@ Usage:
   superbee sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
   superbee sync --establish [--yes] [--dir <path>] [--json]
   superbee sync --show-incoming <id> [--out <file> | --body-out <file>] [--dir <path>] [--json]
+
+Before first publication, check whether the intended remote repository exists, then whether
+origin/board exists. Superbee does not create the remote repository. If the repository is
+confirmed absent, create it outside Superbee if authorized or ask an authorized owner/teammate;
+if it exists and origin/board is confirmed absent, --establish needs explicit consent,
+repository-specific push capability, and branch-create policy clearance. If origin/board exists,
+plain sync joins it. If either remote fact is unknown, diagnose URL, network, identity,
+visibility, and repository Read access; do not establish.
 
 Shares this repo's board (\`.superbee\`, or an existing legacy \`.agentstate-lite\`, kept on its own \`board\` branch) with your
 teammates: ordinary sync commits pending local doc changes, pulls theirs, and pushes yours without
@@ -206,9 +214,10 @@ export const SYNC_LOCAL_ONLY_MESSAGE =
 export function syncLocalOnlyNote(inv: CommandPrefix): string {
   return (
     "a supported mode: every local command works, and your board changes stay on this machine " +
-    `(sync committed nothing). To share the board with teammates, run \`${inv} sync --establish\` ` +
-    "— it publishes the board as a 'board' branch on the repo's 'origin' remote (add one first " +
-    "if the repo has none); teammates then just run sync."
+    `(sync committed nothing). The existing remote repository is visible and has no board branch, ` +
+    "so repository creation permission is irrelevant. With explicit publication consent, " +
+    `repository-specific push capability, and branch-create policy clearance, run \`${inv} sync --establish\`; ` +
+    "the push is the decisive write test. Teammates then use sync to join."
   );
 }
 
@@ -219,7 +228,10 @@ export function syncRemoteStateUnknownNote(inv: CommandPrefix, hasLocalBundle: b
   const local = hasLocalBundle
     ? "your local bundle remains usable and sync committed nothing. "
     : "sync changed nothing. ";
-  return local + `Retry \`${inv} sync\` when origin is available; a shared board may already exist.`;
+  return local +
+    "The repository and board remain unknown: verify the exact origin URL, network, active " +
+    `HTTPS/SSH identity, visibility, and repository Read access, then retry \`${inv} sync\`. ` +
+    "A shared board may already exist; do not establish while its state is unknown.";
 }
 
 // ── the in-tree board (read-side mode) ─────────────────────────────────────────
@@ -663,10 +675,11 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     push(board.boardPath);
     return ahead;
   } catch (err) {
-    const classified = toCliError(err, "push");
+    const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
     const warning = pushFailureMessage(classified);
     const partial = buildPushFailurePartial(
       board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
+      classified.details,
     );
     run.stdout(render(partial, run.mode));
     await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);

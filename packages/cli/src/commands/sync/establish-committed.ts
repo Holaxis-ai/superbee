@@ -29,6 +29,7 @@ import {
   createRemovalCommit,
   currentBranch,
   fetchOrigin,
+  fetchOriginRequired,
   folderTreeAtHead,
   committedBundleAtHead,
   type BundleDirName,
@@ -48,9 +49,9 @@ import {
   treeOf,
   writeGitDirMarker,
 } from "@superbee/board-git";
-import { CliError } from "../../errors.js";
+import { classifyBundleError } from "../../errors.js";
 import { render, type OutputMode } from "../../output.js";
-import { syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
+import { syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
 import type { EstablishOutcome } from "./establish.js";
 import type { CommandPrefix } from "../../command-text.js";
 
@@ -257,7 +258,17 @@ function executeCommittedEstablishment(
   const { branch, bundleDir } = plan;
   const boardSha = plan.reuseBoardSha ?? createBoardRootCommit(top, treeSha, branch);
   writeGitDirMarker(top, COMMITTED_MARKER_KEY, boardSha);
-  pushBoardUpstream(top);
+  try {
+    pushBoardUpstream(top);
+  } catch (err) {
+    const fetched = fetchOrigin(top);
+    const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
+    throw withSharingDetails(
+      classifyBundleError(err),
+      { operation: "create-board", remote_board: fetched ? (remoteCommit ? "exists-confirmed" : "absent-confirmed") : "unknown" },
+      inv,
+    );
+  }
   const removalSha = createRemovalCommit(top, removalCommitMessage(inv, branch, bundleDir), bundleDir);
   mustGit(top, ["branch", CLEANUP_BRANCH, removalSha]);
   clearGitDirMarker(top, COMMITTED_MARKER_KEY);
@@ -282,7 +293,14 @@ export async function establishCommitted(
   stdout: (s: string) => void,
 ): Promise<EstablishOutcome> {
   const { tree: treeSha, bundleDir } = committed;
-  const fetchOk = fetchOrigin(top);
+  let fetchOk = false;
+  let fetchError: unknown;
+  try {
+    fetchOriginRequired(top);
+    fetchOk = true;
+  } catch (err) {
+    fetchError = err;
+  }
 
   // IDEMPOTENCE FIRST: a board branch on origin means the establishment already happened (here,
   // on a teammate's clone, or in an interrupted run that got at least as far as the push) — exit
@@ -296,13 +314,7 @@ export async function establishCommitted(
   // fail after mutating local refs), and proceeding on a stale view of origin is exactly the hole
   // that lets a teammate's board commit go unseen.
   if (!fetchOk) {
-    throw new CliError(
-      "TRANSIENT",
-      `establish refused: could not reach '${BOARD_REMOTE}' — the committed-folder case verifies ` +
-        `freshness against the remote and must push the board branch, neither of which can happen ` +
-        `offline; get online, then re-run`,
-      { details: { retryable: true } },
-    );
+    throw withSharingDetails(classifyBundleError(fetchError), { operation: "establish-preflight" }, inv);
   }
 
   const plan = guardCommittedPreconditions(top, inv, treeSha, bundleDir);

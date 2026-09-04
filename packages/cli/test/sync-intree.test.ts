@@ -160,8 +160,18 @@ test("in-tree: --establish refuses under an INDETERMINATE detection (tracked arm
   try {
     git(topo.a.root, ["remote", "set-url", "origin", path.join(topo.dir, "gone.git")]);
     const est = await runSync(h, ["--establish", "--yes", "--dir", topo.a.root]);
-    assert.equal(est.err?.code, "TRANSIENT", "establish fails closed when origin cannot be checked");
-    assert.match(est.err!.message, /could not reach 'origin'/);
+    assert.equal(est.err?.code, "AUTH_REQUIRED", "establish preserves the best-effort access classification");
+    assert.match(est.err!.message, /could not verify 'origin'/);
+    assert.deepEqual(est.err!.details?.sharing, {
+      operation: "establish-preflight",
+      remote_repository: "unknown",
+      remote_board: "unknown",
+      repository_creation: "external-if-absent",
+      required_authority: "repository-read-or-visibility",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["url", "authentication", "visibility", "repository-read"],
+    });
 
     // Bare sync under the same indeterminate state falls through to the provisioning machine's
     // reviewed remote-unknown guidance — byte-identical to before PR C, exit 0, never a guess.

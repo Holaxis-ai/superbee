@@ -154,6 +154,13 @@ export function classifyGitError(f: GitFailure): BoardGitError {
       { details: { op, retryable: true, reason: "non-fast-forward" } },
     );
   }
+  if (op === "push" && (/\[remote rejected\]/i.test(text) || /pre-receive hook declined/i.test(text))) {
+    return new BoardGitError(
+      "RUNTIME",
+      "the remote rejected the board push; a remote policy, branch rule, or server-side hook may be responsible",
+      { details: { op, reason: "remote-rejected", best_effort: true } },
+    );
+  }
   if (
     /'origin' does not appear to be a git repository/i.test(text) ||
     /No such remote:? '?origin'?/i.test(text) ||

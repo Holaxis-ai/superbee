@@ -9,7 +9,7 @@ import { existsSync, lstatSync, readdirSync, renameSync, rmSync } from "node:fs"
 import path from "node:path";
 
 import { resolveProjectBinding } from "../../bundle.js";
-import { CliError } from "../../errors.js";
+import { CliError, classifyBundleError } from "../../errors.js";
 import {
   BOARD_BRANCH,
   BOARD_REF,
@@ -47,7 +47,7 @@ import {
 import { defaultSyncStore } from "../../cursor.js";
 import { render, type OutputMode } from "../../output.js";
 import { hookInstallHintOnce, type SyncCliDeps } from "../../sync-cli.js";
-import { syncOutcomeError } from "../../sync-outcomes.js";
+import { syncOutcomeError, withSharingDetails } from "../../sync-outcomes.js";
 import { clearStaleCommittedMarker, establishCommitted } from "./establish-committed.js";
 import { assertBundleOutsidePrivateState } from "../../private-state-bundle-boundary.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
@@ -277,13 +277,29 @@ function readGreenfieldState(top: string): GreenfieldState {
 }
 
 /** Push the snapshot commit; tolerate a raced push origin can explain, then re-verify origin/board LIVE. */
-function pushAndConfirmRemote(top: string, sha: string): string | undefined {
+function pushAndConfirmRemote(top: string, sha: string, inv: CommandPrefix): string | undefined {
   try {
     pushBoardCommit(top, sha);
   } catch (err) {
-    if (!fetchOrigin(top) || !refCommit(top, `refs/remotes/${BOARD_REF}`)) throw err;
+    const fetched = fetchOrigin(top);
+    const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
+    if (!fetched || !remoteCommit) {
+      throw withSharingDetails(
+        classifyBundleError(err),
+        { operation: "create-board", remote_board: fetched ? "absent-confirmed" : "unknown" },
+        inv,
+      );
+    }
   }
-  fetchOriginRequired(top);
+  try {
+    fetchOriginRequired(top);
+  } catch (err) {
+    throw withSharingDetails(
+      classifyBundleError(err),
+      { operation: "create-board", remote_board: "unknown" },
+      inv,
+    );
+  }
   return refCommit(top, `refs/remotes/${BOARD_REF}`);
 }
 
@@ -330,8 +346,26 @@ async function publishLocalBoardBranch(
   if (!existsSync(indexPath) || lstatSync(indexPath).isSymbolicLink() || !lstatSync(indexPath).isFile()) {
     throw new CliError("RUNTIME", `the local '${BOARD_BRANCH}' worktree is not a valid bundle (root index.md missing)`);
   }
-  pushBoardUpstream(boardPath);
-  fetchOriginRequired(top);
+  try {
+    pushBoardUpstream(boardPath);
+  } catch (err) {
+    const fetched = fetchOrigin(top);
+    const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
+    throw withSharingDetails(
+      classifyBundleError(err),
+      { operation: "create-board", remote_board: fetched ? (remoteCommit ? "exists-confirmed" : "absent-confirmed") : "unknown" },
+      inv,
+    );
+  }
+  try {
+    fetchOriginRequired(top);
+  } catch (err) {
+    throw withSharingDetails(
+      classifyBundleError(err),
+      { operation: "create-board", remote_board: "unknown" },
+      inv,
+    );
+  }
   const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
   if (!remoteCommit) throw new CliError("RUNTIME", "board push succeeded but origin/board could not be verified");
   const conversion: ConversionResult = {
@@ -360,7 +394,7 @@ async function resumeInterruptedEstablishment(
 
   let remoteCommit = st.remoteCommit;
   if (!remoteCommit) {
-    remoteCommit = pushAndConfirmRemote(top, marker);
+    remoteCommit = pushAndConfirmRemote(top, marker, inv);
   }
   if (!remoteCommit || !isAncestor(top, marker, remoteCommit)) {
     throw new CliError(
@@ -385,7 +419,7 @@ async function publishGreenfieldBoard(
 
   const snapshot = snapshotBundleCommit(top, boardPath);
   writeGitDirMarker(top, ESTABLISH_MARKER_KEY, snapshot.sha);
-  const remoteCommit = pushAndConfirmRemote(top, snapshot.sha);
+  const remoteCommit = pushAndConfirmRemote(top, snapshot.sha, inv);
   if (!remoteCommit || !isAncestor(top, snapshot.sha, remoteCommit)) {
     throw new CliError(
       "CONFLICT",
@@ -405,14 +439,10 @@ export async function establishBoard(
 ): Promise<EstablishOutcome> {
   const top = repoTopLevel(dir);
   if (!top) {
-    throw new CliError("RUNTIME", "not inside a git repository — establish needs a repo with an 'origin' remote");
+    throw syncOutcomeError("establish.local-git-missing", {});
   }
   if (runGit(top, ["remote", "get-url", BOARD_REMOTE]).status !== 0) {
-    throw new CliError(
-      "RUNTIME",
-      `this repository has no '${BOARD_REMOTE}' remote — establish needs one to publish the board`,
-      { help: `git remote add ${BOARD_REMOTE} <url>  # then re-run ${inv} sync --establish` },
-    );
+    throw syncOutcomeError("establish.origin-unconfigured", { inv });
   }
 
   // The COMMITTED-FOLDER case routes structurally, before any network op: a selected conventional
@@ -424,7 +454,11 @@ export async function establishBoard(
     assertBundleOutsidePrivateState(path.join(top, committed.bundleDir));
     return establishCommitted(top, inv, mode, Boolean(opts.yes), committed, stdout);
   }
-  fetchOriginRequired(top);
+  try {
+    fetchOriginRequired(top);
+  } catch (err) {
+    throw withSharingDetails(classifyBundleError(err), { operation: "establish-preflight" }, inv);
+  }
   // The committed-case crash marker outlives its machinery once the folder leaves HEAD:
   // `alreadyShared`'s clear arms are unreachable from here, so a marker whose story is
   // DEFINITIVELY over is cleared now — against the LIVE fetch just guaranteed above.

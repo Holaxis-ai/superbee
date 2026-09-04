@@ -18,6 +18,7 @@ import {
   SYNC_OUTCOMES,
   SYNC_OUTCOME_LINES,
   ffSwallowToError,
+  withSharingDetails,
   syncOutcomeError,
   syncOutcomeLine,
   type SyncOutcomeKey,
@@ -26,7 +27,7 @@ import {
 import { showIncomingInTreeNoBasis } from "../src/commands/sync.js";
 import { CLEANUP_BRANCH } from "../src/commands/sync-establish.js";
 import { buildBoardBlock } from "../src/commands/home.js";
-import { toEnvelope, type CliError } from "../src/errors.js";
+import { CliError, toEnvelope } from "../src/errors.js";
 import { renderErrorEnvelope } from "../src/output.js";
 import { boardWindowGuidance, preShareWindowError, type StatusRow } from "@superbee/board-git";
 import { makeLocalBoardTop, makePlainTop, makeRemnantTop, type OutcomeState } from "./sync-outcome-states.js";
@@ -113,6 +114,10 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
       "ff.detached-head#default": () => ffSwallowToError("detached-head", INV),
       "ff.not-a-repo#default": () => ffSwallowToError("not-a-repo", INV),
       "ff.unclassified#default": () => ffSwallowToError("mystery-reason", INV),
+      "establish.local-git-missing#default": () =>
+        syncOutcomeError("establish.local-git-missing", {}),
+      "establish.origin-unconfigured#default": () =>
+        syncOutcomeError("establish.origin-unconfigured", { inv: INV }),
       "sync.local-board.remote-exists#default": () => syncOutcomeError("sync.local-board.remote-exists", { inv: INV }),
       "sync.local-board.unpublished#default": () => syncOutcomeError("sync.local-board.unpublished", { inv: INV }),
       "in-tree.sync-refusal#origin": () =>
@@ -304,5 +309,166 @@ test("sync-outcome agreement: every row renders byte-identical to its pre-refact
     await plainTop.cleanup();
     await localBoardTop.cleanup();
     await remnantTop.cleanup();
+  }
+});
+
+test("permission-aware sharing adapter preserves the CliError contract and emits only locked projections", () => {
+  const rows = [
+    {
+      name: "preflight access",
+      error: new CliError("AUTH_REQUIRED", "denied", {
+        details: { op: "fetch", best_effort: true, future: "preserved", sharing: { stale: true } },
+        help: "original help",
+        handled: true,
+      }),
+      context: { operation: "establish-preflight" as const },
+      expected: {
+        operation: "establish-preflight",
+        remote_repository: "unknown",
+        remote_board: "unknown",
+        repository_creation: "external-if-absent",
+        required_authority: "repository-read-or-visibility",
+        local_work: "preserved",
+        cause_certainty: "best-effort",
+        possible_causes: ["url", "authentication", "visibility", "repository-read"],
+      },
+    },
+    {
+      name: "preflight network",
+      error: new CliError("TRANSIENT", "offline", { details: { op: "fetch", retryable: true } }),
+      context: { operation: "establish-preflight" as const },
+      expected: {
+        operation: "establish-preflight",
+        remote_repository: "unknown",
+        remote_board: "unknown",
+        repository_creation: "external-if-absent",
+        local_work: "preserved",
+        cause_certainty: "best-effort",
+        possible_causes: ["network"],
+      },
+    },
+    {
+      name: "create access",
+      error: new CliError("AUTH_REQUIRED", "denied", { details: { op: "push", best_effort: true } }),
+      context: { operation: "create-board" as const, remote_board: "absent-confirmed" as const },
+      expected: {
+        operation: "create-board",
+        remote_repository: "exists-confirmed",
+        remote_board: "absent-confirmed",
+        repository_creation: "irrelevant",
+        required_authority: "repository-write-and-board-create-policy",
+        local_work: "preserved",
+        cause_certainty: "best-effort",
+        possible_causes: ["authentication", "repository-write", "branch-policy"],
+      },
+    },
+    {
+      name: "create provider-neutral rejection",
+      error: new CliError("RUNTIME", "rejected", {
+        details: { op: "push", reason: "remote-rejected", best_effort: true },
+      }),
+      context: { operation: "create-board" as const, remote_board: "absent-confirmed" as const },
+      expected: {
+        operation: "create-board",
+        remote_repository: "exists-confirmed",
+        remote_board: "absent-confirmed",
+        repository_creation: "irrelevant",
+        required_authority: "repository-write-and-board-create-policy",
+        local_work: "preserved",
+        cause_certainty: "best-effort",
+        possible_causes: ["repository-write", "branch-policy"],
+      },
+    },
+    {
+      name: "create transport uncertainty",
+      error: new CliError("TRANSIENT", "offline", { details: { op: "push", retryable: true } }),
+      context: { operation: "create-board" as const, remote_board: "unknown" as const },
+      expected: {
+        operation: "create-board",
+        remote_repository: "exists-confirmed",
+        remote_board: "unknown",
+        repository_creation: "irrelevant",
+        local_work: "preserved",
+        cause_certainty: "best-effort",
+        possible_causes: ["network"],
+      },
+    },
+    {
+      name: "update access",
+      error: new CliError("AUTH_REQUIRED", "denied", { details: { op: "push", best_effort: true } }),
+      context: { operation: "update-board" as const },
+      expected: {
+        operation: "update-board",
+        remote_repository: "exists-confirmed",
+        remote_board: "exists-confirmed",
+        repository_creation: "irrelevant",
+        required_authority: "repository-write-and-board-update-policy",
+        local_work: "committed",
+        cause_certainty: "best-effort",
+        possible_causes: ["authentication", "repository-write", "branch-policy"],
+      },
+    },
+    {
+      name: "update provider-neutral rejection",
+      error: new CliError("RUNTIME", "rejected", {
+        details: { op: "push", reason: "remote-rejected", best_effort: true },
+      }),
+      context: { operation: "update-board" as const },
+      expected: {
+        operation: "update-board",
+        remote_repository: "exists-confirmed",
+        remote_board: "exists-confirmed",
+        repository_creation: "irrelevant",
+        required_authority: "repository-write-and-board-update-policy",
+        local_work: "committed",
+        cause_certainty: "best-effort",
+        possible_causes: ["repository-write", "branch-policy"],
+      },
+    },
+    {
+      name: "update network",
+      error: new CliError("TRANSIENT", "offline", { details: { op: "push", retryable: true } }),
+      context: { operation: "update-board" as const },
+      expected: {
+        operation: "update-board",
+        remote_repository: "exists-confirmed",
+        remote_board: "exists-confirmed",
+        repository_creation: "irrelevant",
+        local_work: "committed",
+        cause_certainty: "best-effort",
+        possible_causes: ["network"],
+      },
+    },
+    {
+      name: "update race",
+      error: new CliError("TRANSIENT", "raced", {
+        details: { op: "push", retryable: true, reason: "non-fast-forward" },
+      }),
+      context: { operation: "update-board" as const },
+      expected: {
+        operation: "update-board",
+        remote_repository: "exists-confirmed",
+        remote_board: "exists-confirmed",
+        repository_creation: "irrelevant",
+        local_work: "committed",
+      },
+    },
+  ];
+
+  for (const row of rows) {
+    const mapped = withSharingDetails(row.error, row.context);
+    assert.notStrictEqual(mapped, row.error, row.name);
+    assert.equal(mapped.code, row.error.code, row.name);
+    assert.equal(mapped.exitCode, row.error.exitCode, row.name);
+    assert.equal(mapped.handled, row.error.handled, row.name);
+    assert.equal(mapped.message, row.error.message, row.name);
+    assert.equal(mapped.help, row.error.help, row.name);
+    assert.equal(mapped.details?.op, row.error.details?.op, row.name);
+    assert.equal(mapped.details?.future, row.error.details?.future, row.name);
+    assert.deepEqual(mapped.details?.sharing, row.expected, row.name);
+    assert.deepEqual(Object.keys(mapped.details?.sharing as object), Object.keys(row.expected), row.name);
+    assert.notEqual((mapped.details?.sharing as { remote_repository: string }).remote_repository, "absent-confirmed", row.name);
+    const sharing = mapped.details?.sharing as { cause_certainty?: string; possible_causes?: string[] };
+    assert.equal(sharing.cause_certainty === undefined, sharing.possible_causes === undefined, row.name);
   }
 });

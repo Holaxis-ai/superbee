@@ -88,6 +88,15 @@ test("classifyGitError produces BoardGitError (never CliError) — the tier's ow
   assert.equal(err.code, "GIT_MISSING");
 });
 
+test("remote-rejected classifier details survive the one BoardGitError adapter verbatim", () => {
+  const classified = new BoardGitError("RUNTIME", "remote rejected", {
+    details: { op: "push", reason: "remote-rejected", best_effort: true },
+  });
+  const mapped = cliErrorFromBoardGit(classified);
+  assert.equal(mapped.code, "RUNTIME");
+  assert.deepEqual(mapped.details, { op: "push", reason: "remote-rejected", best_effort: true });
+});
+
 test("isBoardGitError: STRUCTURAL detection — a dual-load twin passes, non-board errors do not", () => {
   assert.ok(isBoardGitError(new BoardGitError("GIT_BUSY", "locked")));
   // The dual-load hazard: a structurally identical instance from a second copy of the module

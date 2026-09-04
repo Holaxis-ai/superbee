@@ -87,12 +87,19 @@ without requiring an ordinary-use migration.
 The conventional `.superbee/` folder at the project root is discovered with zero
 config (the way git finds `.git`) — every command after setup runs bare from anywhere in
 the project tree. A bundle stays local until `sync --establish` explicitly shares it on the
-repository's dedicated `board` branch.
+repository's dedicated `board` branch. The remote repository must already exist: Superbee creates
+and pushes only the `board` branch, never the GitHub repository that contains it.
 
 Existing `.agentstate-lite/` bundles and `.agentstate.json` bindings continue to work with
 Superbee; no migration is required. When the first task needs a roadmap, run
-`superbee recipe add roadmap`. To share the local bundle, run `superbee sync --establish`; that
-explicit step creates the remote `board` branch, and teammates then use ordinary `superbee sync`.
+`superbee recipe add roadmap`. Before sharing, determine whether the intended remote repository
+exists, then whether `origin/board` exists. A confirmed-missing repository is created outside
+Superbee by an authorized account/organization actor (or by an authorized teammate who then grants
+access). For an existing repository with no `board`, repository-creation authority is irrelevant:
+with explicit consent, repository-specific push capability, and branch-create policy clearance,
+run `superbee sync --establish`. If `origin/board` already exists, join with ordinary
+`superbee sync` instead. A failed remote check leaves both facts unknown; diagnose URL, network,
+HTTPS/SSH identity, visibility, and repository Read access before any establishment attempt.
 If valid `.superbee/` and `.agentstate-lite/` bundles exist at the same project level, Superbee
 reports a conflict and refuses to choose; move the bundle you do not intend to use outside the
 project before retrying.
@@ -132,9 +139,9 @@ superbee sync                          # ordinary shared-board updates — commi
                                        # pulls theirs, pushes; leaves code files untouched
 ```
 
-`init` always makes a LOCAL bundle; `sync` is the verb that establishes or joins a SHARED
-one. `sync --establish` is the one-time, explicit act that turns this project's local
-bundle into a shared board (a `board` branch on the repo's remote) — never automatic, so
+`init` always makes a LOCAL bundle; `sync` joins or updates a SHARED one, while
+`sync --establish` is the one-time, explicit act that turns this project's local bundle into a
+shared board (a `board` branch in an already-existing `origin` repository) — never automatic, so
 a bare `sync` never silently publishes a bundle nobody asked to share. Once a board
 exists (here or on a teammate's clone), plain `sync` is everyone's setup AND ongoing verb:
 a fresh clone's first `sync` provisions the board from origin; a project with a local

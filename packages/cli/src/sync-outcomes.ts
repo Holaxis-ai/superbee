@@ -6,8 +6,8 @@
 // `existingDirRefusal` — thrown inside @superbee/board-git) stay the construction sites for
 // their states; their rows COMPOSE the factories so the agreement suite
 // (`test/sync-outcomes.test.ts`) can enumerate every row against the pre-refactor rendered-byte
-// fixtures (`test/fixtures/sync-outcomes/`). Behavior is BYTE-FROZEN, today's copy inconsistencies
-// included — copy improvements are follow-up work, never folded into this table.
+// fixtures (`test/fixtures/sync-outcomes/`). Deliberate copy changes update the owning row and its
+// fixture together; unrelated rows remain byte-frozen.
 //
 // Rows carry a `code` (CliErrorCode) and NEVER an exit: the exit derives solely through errors.ts's
 // one CODE_EXIT mapping when the CliError is constructed.
@@ -31,10 +31,13 @@ import { commandQuoted, commandToken, type CommandPrefix } from "./command-text.
 /** Route a missing upstream to either the existing shared repo or explicit first publication. */
 export function upstreamHelp(inv: CommandPrefix): string {
   return (
-    `if a teammate already shares this project's board, make sure your \`origin\` remote points at ` +
-    `the SAME repository they pushed the \`board\` branch to; if nobody has started sharing this ` +
-    `project's board yet, run \`${inv} sync --establish\` to start — until then a local-only ` +
-    `board is a supported mode: every local command keeps working, and nothing leaves this machine`
+    `if a teammate already shares this project's board, point \`origin\` at that SAME existing ` +
+    `repository and run \`${inv} sync\` to join. For a first share, the remote repository must ` +
+    `already exist; Superbee does not create it. Connect the existing repository, or, only when ` +
+    `its absence is confirmed, create it outside Superbee if authorized or ask an authorized ` +
+    `owner/teammate to create it and grant access. Then verify the repository is visible and ` +
+    `\`origin/board\` is absent before explicitly running \`${inv} sync --establish\`. Until then, ` +
+    `local-only is supported: every local command works and nothing leaves this machine`
   );
 }
 
@@ -50,14 +53,181 @@ export function syncInTreeRefusalMessage(
 ): string {
   const establishRemedy = hasOrigin
     ? `run '${inv} sync --establish' to move the board to a dedicated '${BOARD_BRANCH}' branch`
-    : `this repo has no '${BOARD_REMOTE}' remote yet — run 'git remote add ${BOARD_REMOTE} <url>', ` +
-      `then '${inv} sync --establish' to move the board to a dedicated '${BOARD_BRANCH}' branch`;
+    : `this repo has no '${BOARD_REMOTE}' remote yet — Superbee does not create remote repositories; ` +
+      `connect an existing repository, or only after absence is confirmed create one outside ` +
+      `Superbee if authorized (otherwise ask an authorized owner or teammate). Then run ` +
+      `'git remote add ${BOARD_REMOTE} <url>'`;
   return (
     `this board rides your code branch — '${bundleDir}/' is committed with the code, so a full ` +
     `sync would have to publish the code branch itself; share board changes with your normal git ` +
     `commit/push, run '${inv} sync --pull-only' to fetch-and-report incoming board changes, or ` +
     `${establishRemedy}`
   );
+}
+
+export type SharingOperation = "establish-preflight" | "create-board" | "update-board";
+export type SharingRemoteState = "unknown" | "exists-confirmed" | "absent-confirmed";
+export type SharingRepositoryCreation = "external-if-absent" | "irrelevant";
+export type SharingRequiredAuthority =
+  | "repository-read-or-visibility"
+  | "repository-write-and-board-create-policy"
+  | "repository-write-and-board-update-policy";
+export type SharingLocalWork = "preserved" | "committed";
+export type SharingPossibleCause =
+  | "url"
+  | "network"
+  | "authentication"
+  | "visibility"
+  | "repository-read"
+  | "repository-write"
+  | "branch-policy";
+
+export interface SharingDetails {
+  operation: SharingOperation;
+  remote_repository: SharingRemoteState;
+  remote_board: SharingRemoteState;
+  repository_creation: SharingRepositoryCreation;
+  required_authority?: SharingRequiredAuthority;
+  local_work: SharingLocalWork;
+  cause_certainty?: "best-effort";
+  possible_causes?: SharingPossibleCause[];
+}
+
+export type SharingContext =
+  | { operation: "establish-preflight" }
+  | { operation: "create-board"; remote_board: SharingRemoteState }
+  | { operation: "update-board" };
+
+const LOCAL_ESTABLISH_PREFLIGHT: SharingDetails = {
+  operation: "establish-preflight",
+  remote_repository: "unknown",
+  remote_board: "unknown",
+  repository_creation: "external-if-absent",
+  local_work: "preserved",
+};
+
+function sharingDetailsFor(err: CliError, context: SharingContext): SharingDetails {
+  if (context.operation === "establish-preflight") {
+    if (err.code === "AUTH_REQUIRED") {
+      return {
+        operation: LOCAL_ESTABLISH_PREFLIGHT.operation,
+        remote_repository: LOCAL_ESTABLISH_PREFLIGHT.remote_repository,
+        remote_board: LOCAL_ESTABLISH_PREFLIGHT.remote_board,
+        repository_creation: LOCAL_ESTABLISH_PREFLIGHT.repository_creation,
+        required_authority: "repository-read-or-visibility",
+        local_work: LOCAL_ESTABLISH_PREFLIGHT.local_work,
+        cause_certainty: "best-effort",
+        possible_causes: ["url", "authentication", "visibility", "repository-read"],
+      };
+    }
+    if (err.code === "TRANSIENT") {
+      return {
+        ...LOCAL_ESTABLISH_PREFLIGHT,
+        cause_certainty: "best-effort",
+        possible_causes: ["network"],
+      };
+    }
+    return { ...LOCAL_ESTABLISH_PREFLIGHT };
+  }
+
+  const isUpdate = context.operation === "update-board";
+  const base: SharingDetails = {
+    operation: context.operation,
+    remote_repository: "exists-confirmed",
+    remote_board: isUpdate ? "exists-confirmed" : context.remote_board,
+    repository_creation: "irrelevant",
+    local_work: isUpdate ? "committed" : "preserved",
+  };
+  if (err.code === "AUTH_REQUIRED") {
+    return {
+      operation: base.operation,
+      remote_repository: base.remote_repository,
+      remote_board: base.remote_board,
+      repository_creation: base.repository_creation,
+      required_authority: isUpdate
+        ? "repository-write-and-board-update-policy"
+        : "repository-write-and-board-create-policy",
+      local_work: base.local_work,
+      cause_certainty: "best-effort",
+      possible_causes: ["authentication", "repository-write", "branch-policy"],
+    };
+  }
+  if (err.details?.reason === "remote-rejected") {
+    return {
+      operation: base.operation,
+      remote_repository: base.remote_repository,
+      remote_board: base.remote_board,
+      repository_creation: base.repository_creation,
+      required_authority: isUpdate
+        ? "repository-write-and-board-update-policy"
+        : "repository-write-and-board-create-policy",
+      local_work: base.local_work,
+      cause_certainty: "best-effort",
+      possible_causes: ["repository-write", "branch-policy"],
+    };
+  }
+  if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
+    return { ...base, cause_certainty: "best-effort", possible_causes: ["network"] };
+  }
+  return base;
+}
+
+function sharingFailureCopy(
+  err: CliError,
+  context: SharingContext,
+  inv: CommandPrefix | undefined,
+): { message: string; help: string | undefined } {
+  if (inv === undefined || context.operation === "update-board") {
+    return { message: err.message, help: err.help };
+  }
+  if (context.operation === "establish-preflight") {
+    const message =
+      "the local bundle remains available, but Git could not verify 'origin'; the remote " +
+      "repository and board states remain unknown";
+    const cause = err.code === "TRANSIENT"
+      ? "verify the network and exact 'origin' URL"
+      : "verify the exact 'origin' URL, active HTTPS/SSH identity, repository visibility, and repository Read access";
+    return {
+      message,
+      help: `${cause}; re-run ${inv} sync --establish only after that condition changes`,
+    };
+  }
+  if (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
+    return {
+      message:
+        "the local bundle remains available, but the remote outcome of creating origin/board " +
+        "could not be verified",
+      help:
+        `verify connectivity and whether origin/${BOARD_BRANCH} now exists before choosing ` +
+        `${inv} sync or ${inv} sync --establish`,
+    };
+  }
+  const providerReason = err.details?.reason === "remote-rejected"
+    ? "A remote policy, branch rule, or server-side hook may be responsible. "
+    : "Git could not reliably distinguish among an identity problem, missing repository-specific Write access, and a rule that blocks board creation. ";
+  return {
+    message:
+      `the local bundle remains available, but the remote did not accept creation of origin/${BOARD_BRANCH}; ` +
+      "nothing was published",
+    help:
+      providerReason +
+      `Verify the active HTTPS/SSH identity, repository-specific Write access, and branch-create ` +
+      `policy; re-run ${inv} sync --establish only after one of those conditions changes`,
+  };
+}
+
+/** Add the one reserved sharing projection without changing codes, exits, handled state, or prior details. */
+export function withSharingDetails(
+  err: CliError,
+  context: SharingContext,
+  inv?: CommandPrefix,
+): CliError {
+  const copy = sharingFailureCopy(err, context, inv);
+  return new CliError(err.code, copy.message, {
+    details: { ...err.details, sharing: sharingDetailsFor(err, context) },
+    ...(copy.help !== undefined ? { help: copy.help } : {}),
+    handled: err.handled,
+  });
 }
 
 /** `--show-incoming` (branch mode) reads only the last fetched remote ref, never fetches implicitly. */
@@ -269,15 +439,24 @@ export const SYNC_OUTCOMES = {
     code: "NO_UPSTREAM",
     message: () =>
       `a local '${BOARD_BRANCH}' branch exists but has not been explicitly adopted or published — ` +
-      `bare sync will not check it out or create origin/${BOARD_BRANCH}`,
-    help: (p) => `${p.inv} sync --establish`,
+      `bare sync will not check it out or create origin/${BOARD_BRANCH}. The remote repository ` +
+      `must already exist; Superbee never creates it`,
+    help: (p) =>
+      `after the existing repository is visible and origin/${BOARD_BRANCH} is confirmed absent, ` +
+      `run ${p.inv} sync --establish with explicit publication consent; repository creation ` +
+      `permission is irrelevant for that existing repository`,
   }),
   // Full sync's own no_upstream arm (the rebase step's decision table) — same state as
   // `ff.no-upstream.unpublished` (`--pull-only`'s translation), so it uses the same copy.
   "sync.full.no-upstream": row<{ inv: CommandPrefix }>({
     code: "NO_UPSTREAM",
-    message: (p) => boardNotPublishedMessage(p.inv),
-    help: (p) => `${p.inv} sync --establish`,
+    message: (p) =>
+      `the existing remote repository has no origin/${BOARD_BRANCH}; repository creation ` +
+      `permission is irrelevant, and bare sync never creates it — run ${p.inv} sync --establish ` +
+      `only with explicit publication consent`,
+    help: (p) =>
+      `with explicit publication consent, repository-specific push capability, and branch-create ` +
+      `policy clearance, run ${p.inv} sync --establish; the push is the decisive write test`,
   }),
 
   // The in-tree board's write refusal + the viewer's no-comparison-basis refusal.
@@ -300,6 +479,27 @@ export const SYNC_OUTCOMES = {
     code: "NO_UPSTREAM",
     message: () => SHOW_INCOMING_NO_UPSTREAM,
     help: (p) => `on a shared board, run ${p.inv} sync --pull-only once to fetch origin/board, then re-run --show-incoming`,
+  }),
+
+  "establish.local-git-missing": row<Record<string, never>>({
+    code: "RUNTIME",
+    message: () =>
+      "establish needs the intended local project Git repository; any local bundle remains " +
+      "local and usable, and GitHub has not been checked",
+    help: () =>
+      "enter or initialize the intended local project repository, then verify its remote before sharing",
+    details: () => ({ sharing: { ...LOCAL_ESTABLISH_PREFLIGHT } }),
+  }),
+  "establish.origin-unconfigured": row<{ inv: CommandPrefix }>({
+    code: "RUNTIME",
+    message: () =>
+      `this repository has no '${BOARD_REMOTE}' remote. Superbee publishes '${BOARD_BRANCH}' only ` +
+      "into an existing remote repository; it does not create that repository. Connect the exact " +
+      "existing repository, or, only when its absence is confirmed, create it outside Superbee if " +
+      "authorized or ask an authorized owner/teammate to create it and grant access",
+    help: (p) =>
+      `git remote add ${BOARD_REMOTE} <url>  # after the remote repository exists, then re-run ${p.inv} sync --establish`,
+    details: () => ({ sharing: { ...LOCAL_ESTABLISH_PREFLIGHT } }),
   }),
 
   // establish's refusal arms (committed-folder preconditions + the greenfield namespace guard).

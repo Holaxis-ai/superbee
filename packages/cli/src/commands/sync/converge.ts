@@ -49,12 +49,34 @@ export const PUSH_FAIL_SAFETY_MESSAGE =
   "committed to the board locally — your work is saved. The push failed (offline or auth); " +
   "re-run sync when you're back online or your access is restored.";
 
+export const PUSH_FAIL_ACCESS_MESSAGE =
+  "committed to the board locally — your work is saved. The remote did not accept the update " +
+  "to origin/board. Verify the active HTTPS/SSH identity, repository-specific Write access, and " +
+  "board-update policy; re-run sync only after one of those conditions changes.";
+
+export const PUSH_FAIL_NETWORK_MESSAGE =
+  "committed to the board locally — your work is saved. The update to origin/board could not " +
+  "reach the remote; re-run sync after connectivity changes.";
+
 /**
  * The push-failure warning: auth and connectivity failures get the exact generic safety string;
  * a non-fast-forward retry and other classifications keep the same safety-first framing with
  * their actionable message appended.
  */
 export function pushFailureMessage(err: CliError): string {
+  const sharing = err.details?.sharing as { operation?: unknown } | undefined;
+  const isUpdatePush = sharing?.operation === "update-board";
+  if (isUpdatePush && err.code === "AUTH_REQUIRED") return PUSH_FAIL_ACCESS_MESSAGE;
+  if (isUpdatePush && err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward") {
+    return PUSH_FAIL_NETWORK_MESSAGE;
+  }
+  if (isUpdatePush && err.details?.reason === "remote-rejected") {
+    return (
+      "committed to the board locally — your work is saved. The remote rejected the update to " +
+      "origin/board; a remote policy, branch rule, or server-side hook may be responsible. " +
+      "Verify repository-specific Write access and update policy, then re-run sync only after a condition changes."
+    );
+  }
   const genericConnectivityFailure =
     err.code === "AUTH_REQUIRED" || (err.code === "TRANSIENT" && err.details?.reason !== "non-fast-forward");
   if (genericConnectivityFailure) return PUSH_FAIL_SAFETY_MESSAGE;
@@ -441,12 +463,14 @@ function assignCounts(
 export function buildPushFailurePartial(
   outcome: ProvisionOutcome, warning: string, commitDocs: CommitResult["docs"],
   originDelta: DocChange[], limit: number, reanchorNote?: string,
+  details?: Record<string, unknown>,
 ): Record<string, unknown> {
   const partial: Record<string, unknown> = { warning };
   const announcement = provisionAnnouncement(outcome);
   if (announcement) Object.assign(partial, announcement);
   assignCounts(partial, commitDocs, 0, originDelta, limit);
   if (reanchorNote) partial.note = reanchorNote;
+  if (details) partial.details = details;
   return partial;
 }
 

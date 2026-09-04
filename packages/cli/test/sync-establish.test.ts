@@ -22,7 +22,7 @@ import path from "node:path";
 import { withIsolatedUserEnv } from "./support/user-env.js";
 
 import { initBundle } from "@superbee/core";
-import { sync, SYNC_LOCAL_ONLY_MESSAGE, syncLocalOnlyNote } from "../src/commands/sync.js";
+import { sync, SYNC_LOCAL_ONLY_MESSAGE, SYNC_USAGE, syncLocalOnlyNote } from "../src/commands/sync.js";
 import { init } from "../src/commands/init.js";
 import { recipe } from "../src/commands/recipe.js";
 import { list } from "../src/commands/list.js";
@@ -52,6 +52,17 @@ import {
 } from "../../board-git/test/git-harness.js";
 
 const INV = cliInvocation();
+
+test("SYNC_USAGE keeps the repository-before-board permission preflight concise and explicit", () => {
+  const repository = SYNC_USAGE.indexOf("remote repository");
+  const board = SYNC_USAGE.indexOf("origin/board");
+  assert.ok(repository >= 0 && board > repository);
+  assert.match(SYNC_USAGE, /Superbee does not create the remote repository/);
+  assert.match(SYNC_USAGE, /repository-specific push capability.*branch-create policy/is);
+  assert.match(SYNC_USAGE, /If origin\/board exists.*join/is);
+  assert.match(SYNC_USAGE, /unknown.*do not establish/is);
+  assert.doesNotMatch(SYNC_USAGE, /gh repo create|all-repository access/i);
+});
 
 // ── scaffolding (mirrors sync.test.ts / sync-establish-committed.test.ts) ─────
 
@@ -641,6 +652,19 @@ test("push rejection preserves the classified auth error and leaves the source, 
 
     const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(err?.code, "AUTH_REQUIRED");
+    assert.match(err?.message ?? "", /local bundle remains available/);
+    assert.match(err?.message ?? "", /nothing was published/);
+    assert.doesNotMatch(err?.message ?? "", /repository creat/i);
+    assert.deepEqual(err?.details?.sharing, {
+      operation: "create-board",
+      remote_repository: "exists-confirmed",
+      remote_board: "absent-confirmed",
+      repository_creation: "irrelevant",
+      required_authority: "repository-write-and-board-create-policy",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["authentication", "repository-write", "branch-policy"],
+    });
     assert.equal(readFileSync(path.join(topo.a.board, "notes", "hello.md"), "utf8"), sourceBefore);
     assert.equal(git(topo.a.root, ["diff", "--cached", "--name-only"]), "");
     assert.notEqual(gitTry(topo.a.root, ["show-ref", "--verify", `refs/heads/${BOARD_BRANCH}`]).status, 0);
@@ -651,6 +675,42 @@ test("push rejection preserves the classified auth error and leaves the source, 
     const resumed = await runSyncJson(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(resumed.established, ESTABLISH_DONE);
     assert.equal(existsSync(path.join(topo.a.board, "notes", "hello.md")), true);
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
+test("generic remote rejection during first publication stays provider-neutral and recoverable", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initPlainBundleDir(topo.a);
+    const sourceBefore = readFileSync(path.join(topo.a.board, "index.md"), "utf8");
+    const hook = path.join(topo.a.root, ".git", "hooks", "pre-push");
+    await writeFile(hook, "#!/bin/sh\necho '! [remote rejected] board -> board (pre-receive hook declined)' >&2\nexit 1\n");
+    await chmod(hook, 0o755);
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root, "--json"]);
+    assert.equal(err?.code, "RUNTIME");
+    assert.equal(err?.details?.reason, "remote-rejected");
+    assert.equal(err?.details?.best_effort, true);
+    assert.deepEqual(err?.details?.sharing, {
+      operation: "create-board",
+      remote_repository: "exists-confirmed",
+      remote_board: "absent-confirmed",
+      repository_creation: "irrelevant",
+      required_authority: "repository-write-and-board-create-policy",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["repository-write", "branch-policy"],
+    });
+    assert.match(`${err?.message} ${err?.help}`, /remote policy, branch rule, or server-side hook may be responsible/i);
+    assert.doesNotMatch(`${err?.message} ${err?.help}`, /GitHub ruleset|repository creat(?:ion|e)/i);
+    assert.equal(readFileSync(path.join(topo.a.board, "index.md"), "utf8"), sourceBefore);
+    assert.equal(git(topo.a.root, ["diff", "--cached", "--name-only"]), "");
+    assert.notEqual(gitTry(topo.origin, ["show-ref", "--verify", `refs/heads/${BOARD_BRANCH}`]).status, 0);
+    assert.equal(existsSync(establishMarkerPath(topo.a.root)), true, "recovery marker remains after rejected push");
   } finally {
     await cleanup();
     await topo.cleanup();
@@ -858,7 +918,16 @@ test("establish refusals: no git repo at all, and a repo with no origin remote",
     try {
       const { err } = await runSync(home, ["--establish", "--dir", plain]);
       assert.equal(err?.code, "RUNTIME");
-      assert.match(err?.message ?? "", /not inside a git repository/);
+      assert.match(err?.message ?? "", /local bundle remains local and usable/);
+      assert.match(err?.message ?? "", /GitHub has not been checked/);
+      assert.deepEqual(err?.details?.sharing, {
+        operation: "establish-preflight",
+        remote_repository: "unknown",
+        remote_board: "unknown",
+        repository_creation: "external-if-absent",
+        local_work: "preserved",
+      });
+      assert.doesNotMatch(err?.message ?? "", /permission|absent|missing/i);
     } finally {
       await rm(plain, { recursive: true, force: true });
     }
@@ -872,8 +941,18 @@ test("establish refusals: no git repo at all, and a repo with no origin remote",
       const { err } = await runSync(home, ["--establish", "--dir", noOrigin]);
       assert.equal(err?.code, "RUNTIME");
       assert.match(err?.message ?? "", /origin/);
+      assert.match(err?.message ?? "", /does not create that repository/);
+      assert.match(err?.message ?? "", /authorized owner\/teammate/);
       // The remoteless dead end is remedied, not just named: the actionable next step.
       assert.match(err?.help ?? "", /git remote add origin <url>/);
+      assert.match(err?.help ?? "", /after the remote repository exists/);
+      assert.deepEqual(err?.details?.sharing, {
+        operation: "establish-preflight",
+        remote_repository: "unknown",
+        remote_board: "unknown",
+        repository_creation: "external-if-absent",
+        local_work: "preserved",
+      });
     } finally {
       await rm(noOrigin, { recursive: true, force: true });
     }
@@ -993,6 +1072,17 @@ test("establish refusal: unreachable origin classifies TRANSIENT", async () => {
     git(topo.a.root, ["remote", "set-url", "origin", "https://127.0.0.1:1/nope.git"]);
     const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
     assert.equal(err?.code, "TRANSIENT");
+    assert.match(err?.message ?? "", /remote repository and board states remain unknown/);
+    assert.deepEqual(err?.details?.sharing, {
+      operation: "establish-preflight",
+      remote_repository: "unknown",
+      remote_board: "unknown",
+      repository_creation: "external-if-absent",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["network"],
+    });
+    assert.doesNotMatch(`${err?.message} ${err?.help}`, /create (?:a|the|another) repository|sync --establish.*publish/i);
   } finally {
     await cleanup();
     await topo.cleanup();

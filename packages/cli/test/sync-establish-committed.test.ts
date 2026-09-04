@@ -31,8 +31,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rename, rm, writeFile } from "node:fs/promises";
-import { existsSync, writeFileSync } from "node:fs";
+import { chmod, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { withIsolatedUserEnv } from "./support/user-env.js";
@@ -854,17 +854,26 @@ test("behind-origin on NON-board commits does not block establishment (the board
   }
 });
 
-test("a dead fetch refuses the committed case outright (offline = no freshness, and the push would fail anyway)", async () => {
+test("a network fetch failure preserves TRANSIENT classification and refuses before committed-case mutation", async () => {
   const topo = await makeCommittedFolderTopology();
   const { home, cleanup } = await tempHome();
   try {
-    git(topo.a.root, ["remote", "set-url", "origin", path.join(topo.dir, "nonexistent.git")]);
+    git(topo.a.root, ["remote", "set-url", "origin", "https://127.0.0.1:1/nonexistent.git"]);
     const preHead = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
     for (const argv of [["--establish", "--yes"], ["--establish"]]) {
       const { err } = await runSync(home, [...argv, "--dir", topo.a.root, "--json"]);
       assert.equal(err?.code, "TRANSIENT", argv.join(" "));
-      assert.match(err!.message, /establish refused: could not reach 'origin'/);
+      assert.match(err!.message, /remote repository and board states remain unknown/);
       assert.equal((err!.details as { retryable: boolean }).retryable, true);
+      assert.deepEqual(err!.details?.sharing, {
+        operation: "establish-preflight",
+        remote_repository: "unknown",
+        remote_board: "unknown",
+        repository_creation: "external-if-absent",
+        local_work: "preserved",
+        cause_certainty: "best-effort",
+        possible_causes: ["network"],
+      });
     }
     assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), preHead);
     assert.equal(
@@ -872,6 +881,74 @@ test("a dead fetch refuses the committed case outright (offline = no freshness, 
       true,
       "nothing mutated offline",
     );
+  } finally {
+    await topo.cleanup();
+    await cleanup();
+  }
+});
+
+test("an access-shaped committed fetch failure remains AUTH_REQUIRED and mutates no ref or marker", async () => {
+  const topo = await makeCommittedFolderTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    git(topo.a.root, ["remote", "set-url", "origin", path.join(topo.dir, "private-or-missing.git")]);
+    const preHead = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
+    const { err } = await runSync(home, ["--establish", "--yes", "--dir", topo.a.root, "--json"]);
+    assert.equal(err?.code, "AUTH_REQUIRED");
+    assert.equal(err?.exitCode, 4);
+    assert.equal(err?.details?.best_effort, true);
+    assert.deepEqual(err?.details?.sharing, {
+      operation: "establish-preflight",
+      remote_repository: "unknown",
+      remote_board: "unknown",
+      repository_creation: "external-if-absent",
+      required_authority: "repository-read-or-visibility",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["url", "authentication", "visibility", "repository-read"],
+    });
+    assert.doesNotMatch(`${err?.message} ${err?.help}`, /repository (?:is )?(?:missing|absent)|create (?:a|the) repository/i);
+    assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), preHead);
+    assert.notEqual(gitTry(topo.a.root, ["show-ref", "--verify", "refs/heads/board"]).status, 0);
+    assert.equal(existsSync(committedMarkerPath(topo.a.root)), false);
+  } finally {
+    await topo.cleanup();
+    await cleanup();
+  }
+});
+
+test("generic remote rejection during committed establishment preserves the local recovery state", async () => {
+  const topo = await makeCommittedFolderTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    const preHead = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
+    const sourceBefore = readFileSync(path.join(topo.a.root, BUNDLE_DIR, "index.md"), "utf8");
+    const hook = path.join(topo.a.root, ".git", "hooks", "pre-push");
+    await writeFile(hook, "#!/bin/sh\necho '! [remote rejected] board -> board (pre-receive hook declined)' >&2\nexit 1\n");
+    await chmod(hook, 0o755);
+
+    const { err } = await runSync(home, ["--establish", "--yes", "--dir", topo.a.root, "--json"]);
+    assert.equal(err?.code, "RUNTIME");
+    assert.equal(err?.details?.reason, "remote-rejected");
+    assert.equal(err?.details?.best_effort, true);
+    assert.deepEqual(err?.details?.sharing, {
+      operation: "create-board",
+      remote_repository: "exists-confirmed",
+      remote_board: "absent-confirmed",
+      repository_creation: "irrelevant",
+      required_authority: "repository-write-and-board-create-policy",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["repository-write", "branch-policy"],
+    });
+    assert.match(`${err?.message} ${err?.help}`, /remote policy, branch rule, or server-side hook may be responsible/i);
+    assert.doesNotMatch(`${err?.message} ${err?.help}`, /GitHub ruleset|repository creat(?:ion|e)/i);
+    assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), preHead, "source branch stays put");
+    assert.equal(readFileSync(path.join(topo.a.root, BUNDLE_DIR, "index.md"), "utf8"), sourceBefore);
+    assert.equal(git(topo.a.root, ["diff", "--cached", "--name-only"]), "");
+    assert.equal(gitTry(topo.a.root, ["show-ref", "--verify", "refs/heads/board"]).status, 0, "root snapshot remains locally");
+    assert.notEqual(gitTry(topo.origin, ["show-ref", "--verify", "refs/heads/board"]).status, 0);
+    assert.equal(existsSync(committedMarkerPath(topo.a.root)), true, "marker preserves crash recovery provenance");
   } finally {
     await topo.cleanup();
     await cleanup();
