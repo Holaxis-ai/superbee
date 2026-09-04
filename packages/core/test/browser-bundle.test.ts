@@ -19,18 +19,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
 import { build } from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
 /** subpath dist module -> a symbol the bundle must still carry (proves the entry resolved, not an empty file). */
 const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
+  { module: "engine.js", symbol: "writeDocVersioned" },
   { module: "links.js", symbol: "resolveConceptId" },
   { module: "meaningful-change-time.js", symbol: "meaningfulChangeTimeValue" },
   { module: "page.js", symbol: "parseRegistration" },
   { module: "query-filter.js", symbol: "matchesFilter" },
   { module: "query-selection.js", symbol: "applyQuerySelectionFilters" },
   { module: "kinds.js", symbol: "isTerminal" },
+  { module: "remote.js", symbol: "RemoteBackend" },
+  { module: "storage.js", symbol: "assertSafeConceptId" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
@@ -46,3 +50,44 @@ for (const { module, symbol } of BROWSER_SUBPATHS) {
     assert.ok(result.outputFiles[0]!.text.includes(symbol), `${module}: bundled output must carry ${symbol}`);
   });
 }
+
+test("core/engine executes bundle-version parsing with no Buffer global", async () => {
+  const result = await build({
+    entryPoints: [path.resolve(here, "../dist/engine.js")],
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeEngine",
+    write: false,
+    logLevel: "silent",
+  });
+  const sandbox: Record<string, unknown> = {};
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+  const engine = sandbox.SuperbeeEngine as {
+    readBundleOkfVersion(backend: unknown): Promise<string | undefined>;
+    writeDocVersioned(
+      backend: unknown,
+      doc: { id: string; frontmatter: Record<string, unknown>; body: string },
+    ): Promise<{ doc: { frontmatter: Record<string, unknown> }; version: string }>;
+  };
+  let written: { frontmatter: Record<string, unknown> } | undefined;
+  const backend = {
+    readReserved: async () => ({
+      content: "\uFEFF---\nokf_version: '0.2'\n---\n# Worker-safe\n",
+      version: "proof",
+    }),
+    write: async (_id: string, doc: { frontmatter: Record<string, unknown> }) => {
+      written = doc;
+      return "sha256:proof";
+    },
+  };
+  assert.equal(await engine.readBundleOkfVersion(backend), "0.2");
+  const resultDoc = await engine.writeDocVersioned(backend, {
+    id: "worker/bom-proof",
+    frontmatter: { type: "Proof" },
+    body: "v0.2 stays v0.2",
+  });
+  assert.equal(resultDoc.doc.frontmatter.timestamp, undefined);
+  assert.equal(written?.frontmatter.timestamp, undefined);
+});

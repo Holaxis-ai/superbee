@@ -48,7 +48,8 @@ test("launch translation does not disguise a real storage failure as an unknown 
     (error) => {
       assert.ok(error instanceof RegisteredViewLaunchError);
       assert.equal(error.code, "VIEW_REGISTRY_READ_FAILED");
-      assert.equal(error.message, storageFailure.message);
+      assert.equal(error.message, "the View registration could not be read");
+      assert.equal(error.message.includes(storageFailure.message), false);
       assert.equal(error.storageCause, storageFailure);
       return true;
     },

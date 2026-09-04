@@ -44,7 +44,7 @@
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
 import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
-import { VersionConflict, stripETagWrapper } from "./versioning.js";
+import { VersionConflict, stripETagWrapper } from "./version-transport.js";
 import type {
   BlobKey,
   ConceptId,

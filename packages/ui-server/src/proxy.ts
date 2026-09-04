@@ -71,8 +71,8 @@ export async function proxyToRemote(request: Request, remoteBase: string, apiKey
   let upstream: Response;
   try {
     upstream = await fetch(new Request(target, { method, headers, body: bodyBytes, signal }));
-  } catch (err) {
-    return freshErrorResponse(502, "RUNTIME", `could not reach remote ${remoteBase} (${err instanceof Error ? err.message : String(err)})`);
+  } catch {
+    return freshErrorResponse(502, "RUNTIME", "could not reach remote bundle server");
   }
 
   return new Response(upstream.body, {

@@ -37,6 +37,7 @@ export type {
   FreshnessResult,
   ReservedFilename,
   StorageBackend,
+  StorageCapabilities,
   Version,
   ReadResult,
   ReservedReadResult,

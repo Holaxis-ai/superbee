@@ -379,8 +379,7 @@ async function servePageBytes(
  */
 function mintFailureResponse(options: UiServerOptions, registryId: string, error: unknown): Response {
   if (error instanceof ViewNotFoundError) {
-    const detail = error.storageCause instanceof Error ? error.storageCause.message : error.message;
-    return jsonError(404, "RUNTIME", detail);
+    return jsonError(404, "RUNTIME", error.message);
   }
   if (error instanceof RegisteredViewLaunchError) {
     switch (error.code) {
@@ -408,7 +407,7 @@ function mintFailureResponse(options: UiServerOptions, registryId: string, error
         return jsonError(403, "FORBIDDEN", error.message);
     }
   }
-  return jsonError(500, "RUNTIME", error instanceof Error ? error.message : String(error));
+  return jsonError(500, "RUNTIME", "the View could not be launched");
 }
 
 async function handleMint(req: Request, runtime: UiRuntime, options: UiServerOptions): Promise<Response> {
@@ -430,8 +429,8 @@ async function handleMint(req: Request, runtime: UiRuntime, options: UiServerOpt
   if (!registryId && legacyKey) {
     try {
       assertSafeBlobKey(legacyKey);
-    } catch (error) {
-      return jsonError(400, "USAGE", error instanceof Error ? error.message : String(error));
+    } catch {
+      return jsonError(400, "USAGE", "the View entry key is invalid");
     }
     const matches: string[] = [];
     try {
@@ -440,8 +439,8 @@ async function handleMint(req: Request, runtime: UiRuntime, options: UiServerOpt
         const registration = parseRegistration(head.id, head.frontmatter);
         if (registration?.entry === legacyKey) matches.push(registration.id);
       }
-    } catch (error) {
-      return jsonError(502, "RUNTIME", `could not read the View registry (${error instanceof Error ? error.message : String(error)})`);
+    } catch {
+      return jsonError(502, "RUNTIME", "could not read the View registry");
     }
     registryId = matches.sort()[0] ?? "";
     if (!registryId) return jsonError(403, "FORBIDDEN", `'${legacyKey}' is not the entry of any valid registered View`);
@@ -559,10 +558,10 @@ async function sharingSummary(options: UiServerOptions): Promise<SharingSummary 
   if (!options.loadSharingSummary) return null;
   try {
     return await options.loadSharingSummary();
-  } catch (err) {
+  } catch {
     return {
       kind: "unavailable",
-      reason: err instanceof Error ? err.message : String(err),
+      reason: "sharing status could not be loaded",
       as_of: new Date().toISOString(),
     };
   }
@@ -619,11 +618,11 @@ async function viewsResponse(options: UiServerOptions): Promise<Response> {
       status: 200,
       headers: { "content-type": "application/json; charset=utf-8" },
     });
-  } catch (error) {
+  } catch {
     return jsonError(
       502,
       "RUNTIME",
-      `could not read the View catalog (${error instanceof Error ? error.message : String(error)})`,
+      "could not read the View catalog",
     );
   }
 }
@@ -658,8 +657,8 @@ async function edgesResponse(options: UiServerOptions, url: URL): Promise<Respon
   let links: Awaited<ReturnType<typeof queryEdges>>;
   try {
     links = await queryEdges(options.bundle, filter);
-  } catch (err) {
-    return jsonError(502, "RUNTIME", `could not read the bundle's edges (${err instanceof Error ? err.message : String(err)})`);
+  } catch {
+    return jsonError(502, "RUNTIME", "could not read the bundle's edges");
   }
   const edges = links.map((l) => ({ from: l.from, to: l.to, text: l.text }));
   return new Response(JSON.stringify({ edges, count: edges.length }), {
@@ -1052,12 +1051,12 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
     // operator deleted right after close()).
     const inFlight = new Set<Promise<void>>();
     const server = createServer((req, res) => {
-      const handled = handleRequest(req, res, options, runtime, sessionSecret).catch((err: unknown) => {
+      const handled = handleRequest(req, res, options, runtime, sessionSecret).catch(() => {
         // Best-effort: the response may already be severed (shutdown's closeAllConnections) — a
         // throwing fallback here would surface as an unhandled rejection, not a served error.
         try {
           res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-          res.end(JSON.stringify({ error: { code: "RUNTIME", message: err instanceof Error ? err.message : String(err) } }));
+          res.end(JSON.stringify({ error: { code: "RUNTIME", message: "internal server error" } }));
         } catch {
           res.destroy();
         }

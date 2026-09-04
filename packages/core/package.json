@@ -1,7 +1,6 @@
 {
   "name": "@superbee/core",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
   "description": "OKF store engine — bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
   "license": "Apache-2.0",
@@ -12,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./engine": {
+      "types": "./dist/engine.d.ts",
+      "default": "./dist/engine.js"
     },
     "./kinds": {
       "types": "./dist/kinds.d.ts",
@@ -44,16 +47,29 @@
     "./query-selection": {
       "types": "./dist/query-selection.d.ts",
       "default": "./dist/query-selection.js"
+    },
+    "./remote": {
+      "types": "./dist/remote.d.ts",
+      "default": "./dist/remote.js"
+    },
+    "./storage": {
+      "types": "./dist/storage.d.ts",
+      "default": "./dist/storage.js"
     }
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "https://registry.npmjs.org/"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
-    "mutation": "stryker run"
+    "mutation": "stryker run",
+    "prepublishOnly": "node -e \"console.error('@superbee/core is released by .github/workflows/release-libraries.yml; do not run npm publish here'); process.exit(1)\""
   },
   "dependencies": {
     "gray-matter": "^4.0.3",

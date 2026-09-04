@@ -26,7 +26,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { createRouter, createRouterForBackend } from "../src/router.js";
+import { createRouter, createRouterForBackend } from "../src/legacy-router.js";
 
 async function json(res: Response): Promise<unknown> {
   return res.json();
