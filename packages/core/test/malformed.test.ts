@@ -3,11 +3,8 @@
  * parsed must NEVER take down a whole-bundle scan with a raw, id-less parser error, and it must
  * parse DETERMINISTICALLY (identical bytes → identical outcome regardless of parse order).
  *
- * The determinism test is the important one: gray-matter caches the parsed file keyed by input,
- * populated with the UNPARSED file BEFORE parsing and only when no options are passed — so a second
- * parse of malformed content would silently return `{ data: {} }` instead of re-throwing. This
- * order-dependent footgun is exactly what {@link parseMarkdown}'s `matter(raw, {})` closes; if a
- * future edit drops the options object, `firstParseThrows`/`secondParseThrows` below diverge.
+ * The determinism test is the important one: identical malformed bytes must never change outcome
+ * because of parser-global state or caching.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -34,6 +31,7 @@ test("parseMarkdown throws an attributed MalformedDocumentError on bad YAML", ()
       assert.match(err.message, /malformed frontmatter in 'notes\/bad\.md'/);
       assert.match(err.message, /fix the YAML or remove the file/);
       assert.ok(err.detail.length > 0, "detail carries the underlying parser message");
+      assert.ok(err.cause instanceof Error);
       return true;
     },
   );
@@ -53,20 +51,20 @@ test("parseMarkdown rejects an opening frontmatter delimiter without a closing d
       assert.ok(err instanceof MalformedDocumentError);
       assert.equal(err.context, "notes/unterminated.md");
       assert.match(err.detail, /unterminated YAML frontmatter delimiter/);
+      assert.ok(err.cause instanceof Error);
       return true;
     },
   );
 });
 
-test("parseMarkdown is DETERMINISTIC on malformed input — not order-dependent (gray-matter cache)", () => {
-  // The regression: without the options object, the first parse throws but the second returns
-  // `{ data: {} }` from gray-matter's input cache. Every repeat must throw identically.
+test("parseMarkdown is deterministic on repeated malformed input", () => {
+  // Every repeat must throw identically regardless of parser-global state.
   for (let i = 0; i < 5; i++) {
     assert.throws(() => parseMarkdown(MALFORMED), MalformedDocumentError, `parse #${i} must throw`);
   }
 });
 
-test("well-formed documents are unaffected by the options object", () => {
+test("well-formed documents retain parsed frontmatter and body", () => {
   const { frontmatter, body } = parseMarkdown(WELL_FORMED);
   assert.equal(frontmatter.type, "Concept");
   assert.equal(frontmatter.title, "Good");

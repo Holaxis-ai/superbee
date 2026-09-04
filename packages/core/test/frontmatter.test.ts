@@ -92,3 +92,34 @@ body
   const numeric = parseMarkdown("---\ntype: Note\ntimestamp: 1720915200000\n---\n");
   assert.equal(numeric.frontmatter.timestamp, new Date(1720915200000).toISOString());
 });
+
+test("parseMarkdown treats non-exact format markers as body-only text", () => {
+  const raw = "---javascript\n({ type: 'NotYaml' })\n---\nbody\n";
+  assert.deepEqual(parseMarkdown(raw), { frontmatter: {}, body: raw });
+});
+
+test("parseMarkdown preserves exact body text after LF, CRLF, mixed, blank, and EOF closes", () => {
+  const cases = [
+    ["---\ntype: Note\n---\nbody\n", "body\n"],
+    ["---\r\ntype: Note\r\n---\r\nbody\r\n", "body\r\n"],
+    ["---\r\ntype: Note\n---\r\nbody\n", "body\n"],
+    ["---\ntype: Note\n---\n\nbody", "\nbody"],
+    ["---\ntype: Note\n---", ""],
+  ] as const;
+  for (const [raw, expectedBody] of cases) {
+    assert.equal(parseMarkdown(raw).body, expectedBody, JSON.stringify(raw));
+  }
+});
+
+test("parseMarkdown preserves its historical non-mapping YAML outcomes", () => {
+  assert.deepEqual(parseMarkdown("---\nscalar\n---\nbody"), {
+    frontmatter: { 0: "s", 1: "c", 2: "a", 3: "l", 4: "a", 5: "r" },
+    body: "body",
+  });
+  assert.deepEqual(parseMarkdown("---\n- one\n- two\n---\nbody"), {
+    frontmatter: { 0: "one", 1: "two" },
+    body: "body",
+  });
+  assert.deepEqual(parseMarkdown("---\nnull\n---\nbody"), { frontmatter: {}, body: "body" });
+  assert.deepEqual(parseMarkdown("---\n---\nbody"), { frontmatter: {}, body: "body" });
+});

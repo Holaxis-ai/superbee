@@ -64,3 +64,28 @@ test("portable root parsing matches legacy behavior for one leading UTF-8 BOM", 
   assert.deepEqual(parseLeadingFrontmatter(raw, "index.md"), parseMarkdown(raw, "index.md").frontmatter);
   assert.deepEqual(parseLeadingFrontmatter(`\uFEFF${raw}`, "index.md"), {});
 });
+
+test("portable and legacy parsers agree on non-exact opening classification", () => {
+  const normalized = "---yaml\nokf_version: '0.2'\n---\n# Bundle\n";
+  const raw = `\uFEFF${normalized}`;
+  assert.deepEqual(parseLeadingFrontmatter(raw, "index.md"), {});
+  assert.deepEqual(parseMarkdown(raw, "index.md"), { frontmatter: {}, body: normalized });
+});
+
+test("portable root parsing preserves its historical non-mapping validation", () => {
+  for (const raw of ["---\nscalar\n---\nbody", "---\n- one\n- two\n---\nbody"]) {
+    assert.throws(
+      () => parseLeadingFrontmatter(raw, "index.md"),
+      (error: unknown) => {
+        assert.ok(error instanceof EngineMalformedDocumentError);
+        assert.equal(error.context, "index.md");
+        assert.equal(error.detail, "YAML frontmatter must be a mapping");
+        assert.ok(error.cause instanceof TypeError);
+        return true;
+      },
+      JSON.stringify(raw),
+    );
+  }
+  assert.deepEqual(parseLeadingFrontmatter("---\nnull\n---\nbody", "index.md"), {});
+  assert.deepEqual(parseLeadingFrontmatter("---\n---\nbody", "index.md"), {});
+});
