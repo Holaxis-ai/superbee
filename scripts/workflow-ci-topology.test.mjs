@@ -826,13 +826,13 @@ function validateBrowserScripts(packages) {
       reachableCommands.push({ packageName: pkg.name, scriptName: candidate, command });
       assert.doesNotMatch(command, /\|\||[;\n]/, `reachable npm script ${pkg.name}:${candidate} must remain statically traceable`);
       for (const segment of command.split(/\s*&&\s*/)) {
-        if (!/\bnpm\s+run\b/.test(segment)) continue;
-        assert.match(segment, /^npm\s+run\s+/, `reachable npm invocation must start its command segment: ${segment}`);
+        if (!/(?:^|\s)npm(?:\s|$)/.test(segment)) continue;
+        assert.match(segment, /^npm(?:\s|$)/, `reachable npm invocation must start its command segment: ${segment}`);
         const tokens = segment.trim().split(/\s+/);
-        const nestedScript = tokens[2];
-        assert.ok(nestedScript && !nestedScript.startsWith("-"), `reachable npm invocation must name its script: ${segment}`);
         const workspaces = [];
-        for (let index = 3; index < tokens.length; index += 1) {
+        let sawRun = false;
+        let nestedScript;
+        for (let index = 1; index < tokens.length; index += 1) {
           const token = tokens[index];
           if (token === "--") break;
           if (token === "-w" || token === "--workspace") {
@@ -845,8 +845,18 @@ function validateBrowserScripts(packages) {
             workspaces.push(token.slice("--workspace=".length));
             continue;
           }
+          if (!sawRun && (token === "run" || token === "run-script")) {
+            sawRun = true;
+            continue;
+          }
+          if (sawRun && nestedScript === undefined && !token.startsWith("-")) {
+            nestedScript = token;
+            continue;
+          }
           assert.fail(`unsupported reachable npm-run argument ${token}: ${segment}`);
         }
+        assert.equal(sawRun, true, `reachable npm invocation must use run or run-script: ${segment}`);
+        assert.ok(nestedScript, `reachable npm invocation must name its script: ${segment}`);
         const targets = workspaces.length > 0
           ? workspaces.map((name) => {
               const target = packageByName.get(name);
@@ -1023,6 +1033,15 @@ test("browser container and reachable install-policy mutations fail closed", () 
   nested.scripts["browser-environment"] = "apt-get update";
   assert.throws(
     () => validateCiTopology(workflow, manifest, { root: nested, mcpApp: mcpAppPackage, ui: uiPackage }),
+    /cannot install system dependencies/,
+  );
+
+  const alternateRoot = structuredClone(rootPackage);
+  const alternateUi = structuredClone(uiPackage);
+  alternateRoot.scripts.prebuild = "npm --workspace @superbee/ui run browser-environment";
+  alternateUi.scripts["browser-environment"] = "apt-get update";
+  assert.throws(
+    () => validateCiTopology(workflow, manifest, { root: alternateRoot, mcpApp: mcpAppPackage, ui: alternateUi }),
     /cannot install system dependencies/,
   );
 
