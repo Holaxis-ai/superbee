@@ -36,8 +36,9 @@ not make the reference server enforce it. A gated deployment owns the meaning of
   API. An adapter that can inspect an HTTP request-target before URL normalization may enforce
   stricter raw-target rules separately. The Fetch router does not reconstruct raw bytes that the
   platform no longer exposes. Encoded separators and malformed bundle tokens that survive
-  normalization are rejected; normalized-away dot forms still fail closed because their resulting
-  paths do not produce a canonical registered route.
+  normalization are rejected. Normalized-away dot forms are outside this router's observable
+  boundary and can become a canonical route (for example, `/bundles/./bnd_.../docs`); rejecting
+  their raw spelling requires an upstream adapter with request-target access.
 - Document IDs and blob keys may contain `/`; clients encode each segment independently. Every
   route validates decoded IDs/keys before backend access. Document IDs cannot address reserved
   `index.md` or `log.md`; blob keys cannot end in `.md` and reject absolute, traversal, and
