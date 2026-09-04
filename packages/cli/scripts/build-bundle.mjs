@@ -134,6 +134,8 @@ export async function buildCliBundle(outfile, options) {
       "jsonc-parser": r("../../node_modules/jsonc-parser/lib/esm/main.js"),
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
+      "@superbee/core/engine": r("../core/src/engine.ts"),
+      "@superbee/core/storage": r("../core/src/storage.ts"),
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),

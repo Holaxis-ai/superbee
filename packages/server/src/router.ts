@@ -18,28 +18,25 @@
  */
 
 import {
-  FilesystemBackend,
   InvalidInputError,
-  MemoryBackend,
   VersionConflict,
   assertSafeBlobKey,
   assertSafeConceptId,
   assertSafeReservedDir,
   isReservedFile,
-  queryHeads,
   pathFromConceptId,
   stripETagWrapper,
-  writeDocVersioned,
   type BlobKey,
-  type Bundle,
   type ConceptId,
   type DeleteOptions,
   type Frontmatter,
   type ReservedFilename,
   type StorageBackend,
+  type StorageCapabilities,
   type Version,
   type WriteOptions,
-} from "@superbee/core";
+} from "@superbee/core/storage";
+import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
 
 /** Default page size for `GET /docs` when `limit` is not supplied. */
 const DEFAULT_LIST_LIMIT = 50;
@@ -133,7 +130,7 @@ function errorFromCaught(err: unknown): Response {
  * form now that the router's OWN responses are correctly quoted (see `versionHeaders` below), so
  * parsing tolerates both wrapped and bare forms rather than requiring the bare one.
  */
-function writeOptionsFromHeaders(req: Request): WriteOptions {
+function writeOptionsFromRequest(req: Request, attribution: TrustedAttribution): WriteOptions {
   const options: WriteOptions = {};
   if (req.headers.get("If-None-Match") === "*") {
     options.expectedVersion = null;
@@ -141,19 +138,14 @@ function writeOptionsFromHeaders(req: Request): WriteOptions {
     const ifMatch = req.headers.get("If-Match");
     if (ifMatch !== null) options.expectedVersion = stripETagWrapper(ifMatch);
   }
-  const actor = req.headers.get("X-Actor");
-  if (actor) options.actor = actor;
-  // `X-Agent` is manufactured ONLY by the auth'd worker's `withActor` (never sent by the CLI
-  // directly, never forgeable by a client past that gate) — absent here on `serve` (no auth,
-  // no `withActor`), so `options.agent` stays undefined there, correctly.
-  const agent = req.headers.get("X-Agent");
-  if (agent) options.agent = agent;
+  options.actor = attribution.actor;
+  if (attribution.agent !== undefined) options.agent = attribution.agent;
   return options;
 }
 
 /**
  * Read `If-Match` off a request into the seam's `DeleteOptions.expectedVersion` — the delete
- * counterpart to {@link writeOptionsFromHeaders}, deliberately narrower: no `If-None-Match: *`
+ * counterpart to {@link writeOptionsFromRequest}, deliberately narrower: no `If-None-Match: *`
  * branch (expect-absent is meaningless for a delete — there is no "create" reading of removing
  * something that isn't there) and no `X-Actor` (a delete records no new revision to attribute).
  * Quote/weak-prefix-tolerant via {@link stripETagWrapper}, same as `If-Match` on a write.
@@ -177,7 +169,11 @@ function versionHeaders(version: Version): Record<string, string> {
   return { "X-Version": version, ETag: `"${version}"` };
 }
 
-const BUNDLE_PATH_RE = /^\/v0\/bundles\/([^/]+)\/(.*)$/;
+/** Immutable hosted bundle id: 16 random bytes rendered as lowercase hexadecimal. */
+export type BundleId = `bnd_${string}`;
+
+/** Access needed before a registered endpoint may dispatch. */
+export type WireAccessClass = "public" | "read" | "write";
 
 /**
  * The complete public route/method registry for the reference router. Runtime dispatch consumes
@@ -185,105 +181,352 @@ const BUNDLE_PATH_RE = /^\/v0\/bundles\/([^/]+)\/(.*)$/;
  * route cannot become reachable without entering the documented agreement surface.
  */
 export const WIRE_ENDPOINTS = [
-  { id: "capabilities", resource: "capabilities", method: "GET", path: "/v0/capabilities" },
-  { id: "docs-list", resource: "docs", method: "GET", path: "/v0/bundles/{bundle}/docs" },
+  {
+    id: "capabilities",
+    resource: "capabilities",
+    method: "GET",
+    path: "/v0/capabilities",
+    accessClass: "public",
+  },
+  {
+    id: "docs-list",
+    resource: "docs",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/docs",
+    accessClass: "read",
+  },
   {
     id: "docs-read-many",
     resource: "docs-read-many",
     method: "POST",
     path: "/v0/bundles/{bundle}/docs:read-many",
+    accessClass: "read",
   },
-  { id: "doc-read", resource: "doc", method: "GET", path: "/v0/bundles/{bundle}/docs/{id...}" },
-  { id: "doc-write", resource: "doc", method: "PUT", path: "/v0/bundles/{bundle}/docs/{id...}" },
-  { id: "doc-head", resource: "doc", method: "HEAD", path: "/v0/bundles/{bundle}/docs/{id...}" },
-  { id: "doc-delete", resource: "doc", method: "DELETE", path: "/v0/bundles/{bundle}/docs/{id...}" },
+  {
+    id: "doc-read",
+    resource: "doc",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/docs/{id...}",
+    accessClass: "read",
+  },
+  {
+    id: "doc-write",
+    resource: "doc",
+    method: "PUT",
+    path: "/v0/bundles/{bundle}/docs/{id...}",
+    accessClass: "write",
+  },
+  {
+    id: "doc-head",
+    resource: "doc",
+    method: "HEAD",
+    path: "/v0/bundles/{bundle}/docs/{id...}",
+    accessClass: "read",
+  },
+  {
+    id: "doc-delete",
+    resource: "doc",
+    method: "DELETE",
+    path: "/v0/bundles/{bundle}/docs/{id...}",
+    accessClass: "write",
+  },
   {
     id: "doc-versions",
     resource: "doc-versions",
     method: "GET",
     path: "/v0/bundles/{bundle}/docs/{id...}/versions",
+    accessClass: "read",
   },
   {
     id: "reserved-read",
     resource: "reserved",
     method: "GET",
     path: "/v0/bundles/{bundle}/reserved/{name}",
+    accessClass: "read",
   },
   {
     id: "reserved-write",
     resource: "reserved",
     method: "PUT",
     path: "/v0/bundles/{bundle}/reserved/{name}",
+    accessClass: "write",
   },
-  { id: "blobs-list", resource: "blobs", method: "GET", path: "/v0/bundles/{bundle}/blobs" },
-  { id: "blob-read", resource: "blob", method: "GET", path: "/v0/bundles/{bundle}/blobs/{key...}" },
-  { id: "blob-write", resource: "blob", method: "PUT", path: "/v0/bundles/{bundle}/blobs/{key...}" },
-  { id: "blob-head", resource: "blob", method: "HEAD", path: "/v0/bundles/{bundle}/blobs/{key...}" },
+  {
+    id: "blobs-list",
+    resource: "blobs",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/blobs",
+    accessClass: "read",
+  },
+  {
+    id: "blob-read",
+    resource: "blob",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/blobs/{key...}",
+    accessClass: "read",
+  },
+  {
+    id: "blob-write",
+    resource: "blob",
+    method: "PUT",
+    path: "/v0/bundles/{bundle}/blobs/{key...}",
+    accessClass: "write",
+  },
+  {
+    id: "blob-head",
+    resource: "blob",
+    method: "HEAD",
+    path: "/v0/bundles/{bundle}/blobs/{key...}",
+    accessClass: "read",
+  },
   {
     id: "blob-delete",
     resource: "blob",
     method: "DELETE",
     path: "/v0/bundles/{bundle}/blobs/{key...}",
+    accessClass: "write",
   },
 ] as const;
 
 type WireResource = (typeof WIRE_ENDPOINTS)[number]["resource"];
+export type WireEndpointId = (typeof WIRE_ENDPOINTS)[number]["id"];
 type WireEndpoint = (typeof WIRE_ENDPOINTS)[number];
 
-interface ResourceMatch {
-  resource: WireResource;
-  value?: string;
-}
+type TemplateParams = Record<string, string>;
 
-interface RegisteredWireRequest {
-  endpoint: WireEndpoint;
-  match: ResourceMatch;
+export type ResolvedWireResource =
+  | { kind: "capabilities" }
+  | { kind: "docs" }
+  | { kind: "docs-read-many" }
+  | { kind: "doc"; id: ConceptId }
+  | { kind: "doc-versions"; id: ConceptId }
+  | { kind: "reserved"; dir: string; name: ReservedFilename }
+  | { kind: "blobs" }
+  | { kind: "blob"; key: BlobKey };
+
+interface ResolvedWireRouteBase {
+  endpointId: WireEndpointId;
+  accessClass: WireAccessClass;
+  resource: ResolvedWireResource;
   searchParams: URLSearchParams;
 }
 
-/** Resolve pathname shapes independently from methods; the registry above owns allowed pairs. */
-function matchWireResources(pathname: string): ResourceMatch[] {
-  if (pathname === "/v0/capabilities") return [{ resource: "capabilities" }];
-
-  const match = BUNDLE_PATH_RE.exec(pathname);
-  if (!match) return [];
-  const rest = match[2] ?? "";
-
-  if (rest === "docs") return [{ resource: "docs" }];
-  if (rest === "docs:read-many") return [{ resource: "docs-read-many" }];
-  if (rest.startsWith("docs/")) {
-    const tail = rest.slice("docs/".length);
-    // GET gives the history sub-resource priority. Other declared member methods retain the
-    // documented ambiguity for a doc id whose own final segment is literally "versions".
-    return tail.endsWith("/versions")
-      ? [
-          { resource: "doc-versions", value: tail.slice(0, -"/versions".length) },
-          { resource: "doc", value: tail },
-        ]
-      : [{ resource: "doc", value: tail }];
-  }
-  if (rest.startsWith("reserved/")) {
-    return [{ resource: "reserved", value: rest.slice("reserved/".length) }];
-  }
-  if (rest === "blobs") return [{ resource: "blobs" }];
-  if (rest.startsWith("blobs/")) return [{ resource: "blob", value: rest.slice("blobs/".length) }];
-  return [];
+/** A deployment-scoped route never causes context or backend resolution. */
+export interface ResolvedDeploymentWireRoute extends ResolvedWireRouteBase {
+  scope: "deployment";
+  endpointId: "capabilities";
+  accessClass: "public";
+  resource: { kind: "capabilities" };
 }
 
-function resolveWireEndpoint(
-  resources: readonly ResourceMatch[],
-  method: string,
-): { endpoint: WireEndpoint; match: ResourceMatch } | undefined {
-  for (const match of resources) {
-    const endpoint = WIRE_ENDPOINTS.find((row) => row.resource === match.resource && row.method === method);
-    if (endpoint) return { endpoint, match };
+/** A bundle-scoped route carries the one canonical bundle selection used by all later stages. */
+export interface ResolvedBundleWireRoute extends ResolvedWireRouteBase {
+  scope: "bundle";
+  bundleId: BundleId;
+  accessClass: "read" | "write";
+}
+
+export type ResolvedWireRoute = ResolvedDeploymentWireRoute | ResolvedBundleWireRoute;
+
+/** Attribution supplied by the trusted host after authentication, never by public request headers. */
+export interface TrustedAttribution {
+  actor: string;
+  agent?: string;
+}
+
+/** The host's one-shot authorization result, including a backend already bound to `route.bundleId`. */
+export interface TrustedRouterContext {
+  backend: StorageBackend;
+  attribution: TrustedAttribution;
+}
+
+export interface RouterOptions {
+  capabilities: StorageCapabilities;
+  resolveContext(
+    request: Request,
+    route: ResolvedBundleWireRoute,
+  ): TrustedRouterContext | Response | Promise<TrustedRouterContext | Response>;
+}
+
+/** Typed resolution failure retained as a stable host-side rejection seam. */
+export class WireRequestResolutionError extends Error {
+  readonly status: 400 | 404;
+  readonly code: "USAGE" | "NOT_FOUND";
+
+  constructor(status: 400 | 404, code: "USAGE" | "NOT_FOUND", message: string) {
+    super(message);
+    this.name = "WireRequestResolutionError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const BUNDLE_ID_RE = /^bnd_[0-9a-f]{32}$/;
+
+export function isCanonicalBundleId(value: string): value is BundleId {
+  return BUNDLE_ID_RE.test(value);
+}
+
+function literalSpecificity(path: string): number {
+  return path.split("/").filter((segment) => segment !== "" && !segment.startsWith("{")).length;
+}
+
+/** Match a registry template without decoding route parameters. */
+function matchTemplate(template: string, pathname: string): TemplateParams | undefined {
+  const templateSegments = template.split("/");
+  const pathSegments = pathname.split("/");
+  const params: TemplateParams = {};
+  let pathIndex = 0;
+
+  for (let templateIndex = 0; templateIndex < templateSegments.length; templateIndex++, pathIndex++) {
+    const expected = templateSegments[templateIndex]!;
+    const actual = pathSegments[pathIndex];
+    if (expected.startsWith("{") && expected.endsWith("...}")) {
+      const suffixLength = templateSegments.length - templateIndex - 1;
+      const captureEnd = pathSegments.length - suffixLength;
+      if (actual === undefined || actual === "" || captureEnd <= pathIndex) return undefined;
+      params[expected.slice(1, -4)] = pathSegments.slice(pathIndex, captureEnd).join("/");
+      pathIndex = captureEnd - 1;
+      continue;
+    }
+    if (actual === undefined) return undefined;
+    if (expected.startsWith("{") && expected.endsWith("}")) {
+      if (actual === "") return undefined;
+      params[expected.slice(1, -1)] = actual;
+    } else if (expected !== actual) {
+      return undefined;
+    }
+  }
+  return pathIndex === pathSegments.length ? params : undefined;
+}
+
+function resourceFromMatch(
+  resource: WireResource,
+  params: TemplateParams,
+  searchParams: URLSearchParams,
+): ResolvedWireResource {
+  switch (resource) {
+    case "capabilities":
+      return { kind: "capabilities" };
+    case "docs":
+      return { kind: "docs" };
+    case "docs-read-many":
+      return { kind: "docs-read-many" };
+    case "doc": {
+      const id = decodeId(params.id!);
+      assertValidDocId(id);
+      return { kind: "doc", id };
+    }
+    case "doc-versions": {
+      const id = decodeId(params.id!);
+      assertValidDocId(id);
+      return { kind: "doc-versions", id };
+    }
+    case "reserved": {
+      const name = params.name!;
+      if (name !== "index.md" && name !== "log.md") {
+        throw new InvalidInputError(`reserved file name must be index.md or log.md, got '${name}'`);
+      }
+      const dir = searchParams.get("dir") ?? "";
+      assertSafeReservedDir(dir);
+      return { kind: "reserved", dir, name };
+    }
+    case "blobs":
+      return { kind: "blobs" };
+    case "blob": {
+      const key = decodeBlobKey(params.key!);
+      assertSafeBlobKey(key);
+      return { kind: "blob", key };
+    }
+  }
+}
+
+function invalidBundleFromPath(pathname: string): WireRequestResolutionError | undefined {
+  const prefix = "/v0/bundles/";
+  if (!pathname.startsWith(prefix)) return undefined;
+  const rawBundle = pathname.slice(prefix.length).split("/", 1)[0] ?? "";
+  if (!isCanonicalBundleId(rawBundle)) {
+    return new WireRequestResolutionError(400, "USAGE", `invalid bundle id '${rawBundle}'`);
   }
   return undefined;
 }
 
-function unsupportedMethodResponse(method: string, match: ResourceMatch): Response {
+function resolvePathAndMethod(pathname: string, searchParams: URLSearchParams, method: string): ResolvedWireRoute {
+  const bundleError = invalidBundleFromPath(pathname);
+  if (bundleError) throw bundleError;
+
+  const shapeMatches = WIRE_ENDPOINTS.flatMap((endpoint) => {
+    const params = matchTemplate(endpoint.path, pathname);
+    return params ? [{ endpoint, params }] : [];
+  });
+  if (shapeMatches.length === 0) {
+    throw new WireRequestResolutionError(404, "NOT_FOUND", `no route for ${pathname}`);
+  }
+
+  const methodMatches = shapeMatches
+    .filter(({ endpoint }) => endpoint.method === method)
+    .sort((a, b) => literalSpecificity(b.endpoint.path) - literalSpecificity(a.endpoint.path));
+  const selected = methodMatches[0];
+  if (!selected) {
+    throw new WireRequestResolutionError(
+      400,
+      "USAGE",
+      `unsupported method ${method} for ${routeLabel(shapeMatches[0]!.endpoint.resource)}`,
+    );
+  }
+
+  try {
+    const resource = resourceFromMatch(selected.endpoint.resource, selected.params, searchParams);
+    if (selected.endpoint.id === "capabilities") {
+      return {
+        scope: "deployment",
+        endpointId: "capabilities",
+        accessClass: "public",
+        resource: { kind: "capabilities" },
+        searchParams,
+      };
+    }
+    const bundleId = selected.params.bundle!;
+    if (!isCanonicalBundleId(bundleId)) {
+      throw new WireRequestResolutionError(400, "USAGE", `invalid bundle id '${bundleId}'`);
+    }
+    return {
+      scope: "bundle",
+      bundleId,
+      endpointId: selected.endpoint.id,
+      accessClass: selected.endpoint.accessClass,
+      resource,
+      searchParams,
+    } as ResolvedBundleWireRoute;
+  } catch (error) {
+    if (error instanceof WireRequestResolutionError) throw error;
+    if (error instanceof InvalidInputError) {
+      throw new WireRequestResolutionError(400, "USAGE", error.message);
+    }
+    throw error;
+  }
+}
+
+/** Resolve route identity, canonical bundle selection, decoded resource, and access once. */
+export function resolveWireRequest(request: Request): ResolvedWireRoute {
+  const { url: requestUrl, method } = request;
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    throw new WireRequestResolutionError(400, "USAGE", "invalid request URL");
+  }
+  const { pathname, searchParams } = url;
+  return resolvePathAndMethod(pathname, searchParams, method);
+}
+
+interface RegisteredWireRequest {
+  resolved: ResolvedWireRoute;
+}
+
+function routeLabel(resource: WireResource): string {
   let label: string;
-  switch (match.resource) {
+  switch (resource) {
     case "docs":
       label = "/docs";
       break;
@@ -307,7 +550,7 @@ function unsupportedMethodResponse(method: string, match: ResourceMatch): Respon
       label = "/v0/capabilities";
       break;
   }
-  return errorResponse(400, "USAGE", `unsupported method ${method} for ${label}`);
+  return label;
 }
 
 /**
@@ -326,50 +569,31 @@ function registeredWireRouter(
       return errorResponse(400, "USAGE", "invalid request URL");
     }
 
-    const resources = matchWireResources(url.pathname);
-    if (resources.length === 0) return errorResponse(404, "NOT_FOUND", `no route for ${url.pathname}`);
-    const resolved = resolveWireEndpoint(resources, req.method);
-    if (!resolved) return unsupportedMethodResponse(req.method, resources[0]!);
-
     try {
-      return await dispatch(req, { ...resolved, searchParams: url.searchParams });
+      const resolved = resolvePathAndMethod(url.pathname, url.searchParams, req.method);
+      return await dispatch(req, { resolved });
     } catch (err) {
+      if (err instanceof WireRequestResolutionError) {
+        const message = err.status === 404 ? `no route for ${url.pathname}` : err.message;
+        return req.method === "HEAD"
+          ? new Response(null, { status: err.status })
+          : errorResponse(err.status, err.code, message);
+      }
       return errorFromCaught(err);
     }
   };
 }
 
 /**
- * Build the fetch-style router directly over an explicit `backend` — no `Bundle`-shape
- * fallback to `new FilesystemBackend(...)`. This is the edge-runtime entry point: {@link
- * createRouter} falls back to constructing a `FilesystemBackend` when `bundle.backend` is
- * absent (needed by the reference server's local `--dir` support, `serve.ts`), and that
- * fallback imports `node:fs`. A non-Node host supplies its backend explicitly and calls this
- * function so a tree-shaking bundler can omit the filesystem path.
+ * Build the fetch-style router for Worker runtimes. Bundle routes resolve context exactly once
+ * after canonical route resolution; deployment capabilities bypass context and storage entirely.
  */
-export function createRouterForBackend(backend: StorageBackend): (req: Request) => Promise<Response> {
-  return buildRouter(backend);
+export function createRouter(options: RouterOptions): (req: Request) => Promise<Response> {
+  return buildRouter(options);
 }
 
-/**
- * Build the fetch-style router for `bundle`. The router is single-bundle (it closes
- * over the one `Bundle` it was constructed with); the `{bundle}` path segment is
- * accepted syntactically (any value) but not used to select among multiple bundles —
- * see `docs/WIRE-PROTOCOL.md` deviations for the multi-bundle open question.
- */
-export function createRouter(bundle: Bundle): (req: Request) => Promise<Response> {
-  return buildRouter(bundle.backend ?? new FilesystemBackend(bundle.root));
-}
-
-function buildRouter(backend: StorageBackend): (req: Request) => Promise<Response> {
-  // `writeDocVersioned` (the engine API `handleWriteDoc` routes doc writes through, so
-  // server-side OKF enforcement is free) takes a `Bundle`, not a bare `StorageBackend` — this
-  // synthesizes the minimal `Bundle` shape it needs. `root` is never read when `backend` is
-  // set (core's `backendFor` only falls back to `new FilesystemBackend(bundle.root)` when
-  // `bundle.backend` is absent), so an empty string is a safe, inert placeholder here.
-  const bundle: Bundle = { root: "", backend };
-
-  async function handleReadDoc(id: ConceptId): Promise<Response> {
+function buildRouter(options: RouterOptions): (req: Request) => Promise<Response> {
+  async function handleReadDoc(backend: StorageBackend, id: ConceptId): Promise<Response> {
     assertValidDocId(id);
     try {
       const { doc, version } = await backend.read(id);
@@ -380,7 +604,7 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     }
   }
 
-  async function handleHeadDoc(id: ConceptId): Promise<Response> {
+  async function handleHeadDoc(backend: StorageBackend, id: ConceptId): Promise<Response> {
     // HEAD responses carry no body regardless of status (including a validation
     // rejection) — caught locally rather than falling through to the JSON-enveloped
     // catch-all.
@@ -398,7 +622,12 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     }
   }
 
-  async function handleWriteDoc(id: ConceptId, req: Request): Promise<Response> {
+  async function handleWriteDoc(
+    backend: StorageBackend,
+    attribution: TrustedAttribution,
+    id: ConceptId,
+    req: Request,
+  ): Promise<Response> {
     let payload: { frontmatter?: Frontmatter; body?: string };
     try {
       payload = (await req.json()) as { frontmatter?: Frontmatter; body?: string };
@@ -411,13 +640,13 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     if (payload.body !== undefined && typeof payload.body !== "string") {
       return errorResponse(400, "USAGE", "request body field body must be a string when present");
     }
-    const options = writeOptionsFromHeaders(req);
+    const writeOptions = writeOptionsFromRequest(req, attribution);
     const result = await writeDocVersioned(
-      bundle,
+      backend,
       { id, frontmatter: payload.frontmatter, body: payload.body ?? "" },
-      options,
+      writeOptions,
     );
-    const status = options.expectedVersion === null ? 201 : 200;
+    const status = writeOptions.expectedVersion === null ? 201 : 200;
     return jsonResponse(status, { version: result.version }, versionHeaders(result.version));
   }
 
@@ -430,20 +659,20 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
    * { deleted }` unconditionally — never a `404`, matching the wire's absence-is-success
    * contract (AXI P6).
    */
-  async function handleDeleteDoc(id: ConceptId, req: Request): Promise<Response> {
+  async function handleDeleteDoc(backend: StorageBackend, id: ConceptId, req: Request): Promise<Response> {
     assertValidDocId(id);
     const options = deleteOptionsFromHeaders(req);
     const deleted = await backend.delete(id, options);
     return jsonResponse(200, { deleted });
   }
 
-  async function handleVersions(id: ConceptId): Promise<Response> {
+  async function handleVersions(backend: StorageBackend, id: ConceptId): Promise<Response> {
     assertValidDocId(id);
     const history = await backend.versions(id);
     return jsonResponse(200, { versions: history });
   }
 
-  async function handleReadMany(req: Request): Promise<Response> {
+  async function handleReadMany(backend: StorageBackend, req: Request): Promise<Response> {
     let payload: { ids?: unknown };
     try {
       payload = (await req.json()) as { ids?: unknown };
@@ -479,7 +708,7 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  async function handleList(searchParams: URLSearchParams): Promise<Response> {
+  async function handleList(backend: StorageBackend, searchParams: URLSearchParams): Promise<Response> {
     const prefix = searchParams.get("prefix") ?? undefined;
     const type = searchParams.get("type") ?? undefined;
     const tags = searchParams.getAll("tag");
@@ -496,10 +725,9 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     // the delete-tolerant `list` + batch-read walk for every other backend (a doc deleted
     // mid-scan is SKIPPED, not a scan-failing 404 — the server half of STATUS item 33; a
     // MALFORMED doc still fails loudly, since quarantining it over the wire needs a
-    // `skipped` response shape — recorded as an open question). The synthetic `bundle`
-    // above is the same one `writeDocVersioned` already routes through — the router
-    // deliberately does NOT re-implement the prefer-else-fallback dance itself.
-    const heads = await queryHeads(bundle, { prefix, type, tags });
+    // `skipped` response shape — recorded as an open question). The router deliberately
+    // does NOT re-implement the prefer-else-fallback dance itself.
+    const heads = await queryHeads(backend, { prefix, type, tags });
 
     const count = heads.length;
     let page = heads;
@@ -528,14 +756,24 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     return jsonResponse(200, { count, docs, next_cursor: nextCursor });
   }
 
-  async function handleReadReserved(dir: string, name: ReservedFilename): Promise<Response> {
+  async function handleReadReserved(
+    backend: StorageBackend,
+    dir: string,
+    name: ReservedFilename,
+  ): Promise<Response> {
     assertSafeReservedDir(dir);
     const result = await backend.readReserved(dir, name);
     if (result === null) return errorResponse(404, "NOT_FOUND", `no reserved file '${name}' at dir '${dir}'`);
     return jsonResponse(200, { content: result.content }, versionHeaders(result.version));
   }
 
-  async function handleWriteReserved(dir: string, name: ReservedFilename, req: Request): Promise<Response> {
+  async function handleWriteReserved(
+    backend: StorageBackend,
+    attribution: TrustedAttribution,
+    dir: string,
+    name: ReservedFilename,
+    req: Request,
+  ): Promise<Response> {
     assertSafeReservedDir(dir);
     let payload: { content?: unknown };
     try {
@@ -546,9 +784,9 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     if (typeof payload.content !== "string") {
       return errorResponse(400, "USAGE", "request body must include a content: string field");
     }
-    const options = writeOptionsFromHeaders(req);
-    const version = await backend.writeReserved(dir, name, payload.content, options);
-    const status = options.expectedVersion === null ? 201 : 200;
+    const writeOptions = writeOptionsFromRequest(req, attribution);
+    const version = await backend.writeReserved(dir, name, payload.content, writeOptions);
+    const status = writeOptions.expectedVersion === null ? 201 : 200;
     return jsonResponse(status, { version }, versionHeaders(version));
   }
 
@@ -564,7 +802,7 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
   // request/response body (`req.arrayBuffer()` / a `Uint8Array` `Response` body),
   // never JSON — B1: no `Buffer` anywhere in this module, so it stays edge-runtime compatible.
 
-  async function handleReadBlob(key: BlobKey): Promise<Response> {
+  async function handleReadBlob(backend: StorageBackend, key: BlobKey): Promise<Response> {
     assertSafeBlobKey(key);
     const result = await backend.readBlob(key);
     if (result === null) return errorResponse(404, "NOT_FOUND", `no blob '${key}'`);
@@ -574,7 +812,7 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  async function handleHeadBlob(key: BlobKey): Promise<Response> {
+  async function handleHeadBlob(backend: StorageBackend, key: BlobKey): Promise<Response> {
     // Bodiless on EVERY status, including a validation rejection — mirrors handleHeadDoc.
     try {
       assertSafeBlobKey(key);
@@ -589,26 +827,31 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  async function handleWriteBlob(key: BlobKey, req: Request): Promise<Response> {
+  async function handleWriteBlob(
+    backend: StorageBackend,
+    attribution: TrustedAttribution,
+    key: BlobKey,
+    req: Request,
+  ): Promise<Response> {
     assertSafeBlobKey(key);
     const bytes = new Uint8Array(await req.arrayBuffer());
     const contentTypeHeader = req.headers.get("content-type");
     const contentType = contentTypeHeader && contentTypeHeader.trim() !== "" ? contentTypeHeader : undefined;
-    const options = writeOptionsFromHeaders(req);
-    const version = await backend.writeBlob(key, bytes, contentType, options);
-    const status = options.expectedVersion === null ? 201 : 200;
+    const writeOptions = writeOptionsFromRequest(req, attribution);
+    const version = await backend.writeBlob(key, bytes, contentType, writeOptions);
+    const status = writeOptions.expectedVersion === null ? 201 : 200;
     return jsonResponse(status, { version }, versionHeaders(version));
   }
 
   /** `DELETE /blobs/{key}`, mirroring `handleDeleteDoc` exactly (`assertSafeBlobKey` rejects `.md`/traversal keys before the backend is ever called). */
-  async function handleDeleteBlob(key: BlobKey, req: Request): Promise<Response> {
+  async function handleDeleteBlob(backend: StorageBackend, key: BlobKey, req: Request): Promise<Response> {
     assertSafeBlobKey(key);
     const options = deleteOptionsFromHeaders(req);
     const deleted = await backend.deleteBlob(key, options);
     return jsonResponse(200, { deleted });
   }
 
-  async function handleListBlobs(searchParams: URLSearchParams): Promise<Response> {
+  async function handleListBlobs(backend: StorageBackend, searchParams: URLSearchParams): Promise<Response> {
     // Mirrors handleList's prefix/limit/cursor pagination shape (B2) — no type/tag
     // filters (blobs carry no frontmatter to filter on), and rows are bare keys.
     const prefix = searchParams.get("prefix") ?? undefined;
@@ -633,16 +876,7 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
   }
 
   function handleCapabilities(): Response {
-    // Prefer a backend's own declaration; the fallback preserves compatibility for adapters
-    // written before capabilities() existed. History and CAS are independent: the filesystem
-    // now enforces CAS across processes but intentionally retains only its current revision.
-    const declared = backend.capabilities?.();
-    const caps = declared ?? {
-      enforced_cas: backend instanceof MemoryBackend,
-      blobs: true, // v0.1 — PUT/GET/HEAD /blobs/{key} + GET /blobs (list)
-      projections: true,
-      backlinks: false, // deferred to v1 (docs/WIRE-PROTOCOL.md)
-    };
+    const caps = options.capabilities;
     return jsonResponse(200, {
       history: caps.history ?? caps.enforced_cas,
       enforced_cas: caps.enforced_cas,
@@ -652,45 +886,57 @@ function buildRouter(backend: StorageBackend): (req: Request) => Promise<Respons
     });
   }
 
-  return registeredWireRouter(async (req, { endpoint, match, searchParams }) => {
-    switch (endpoint.id) {
+  return registeredWireRouter(async (req, { resolved }) => {
+    if (resolved.scope === "deployment") return handleCapabilities();
+
+    const context = await options.resolveContext(req, resolved);
+    if (context instanceof Response) return context;
+    const { backend, attribution } = context;
+    switch (resolved.endpointId) {
       case "capabilities":
-        return handleCapabilities();
+        throw new Error("deployment route reached bundle dispatch");
       case "docs-list":
-        return await handleList(searchParams);
+        return await handleList(backend, resolved.searchParams);
       case "docs-read-many":
-        return await handleReadMany(req);
+        return await handleReadMany(backend, req);
       case "doc-versions":
-        return await handleVersions(decodeId(match.value!));
+        return await handleVersions(backend, (resolved.resource as { kind: "doc-versions"; id: ConceptId }).id);
       case "doc-read":
-        return await handleReadDoc(decodeId(match.value!));
+        return await handleReadDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id);
       case "doc-write":
-        return await handleWriteDoc(decodeId(match.value!), req);
+        return await handleWriteDoc(
+          backend,
+          attribution,
+          (resolved.resource as { kind: "doc"; id: ConceptId }).id,
+          req,
+        );
       case "doc-head":
-        return await handleHeadDoc(decodeId(match.value!));
+        return await handleHeadDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id);
       case "doc-delete":
-        return await handleDeleteDoc(decodeId(match.value!), req);
-      case "reserved-read":
+        return await handleDeleteDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id, req);
+      case "reserved-read": {
+        const resource = resolved.resource as { kind: "reserved"; dir: string; name: ReservedFilename };
+        return await handleReadReserved(backend, resource.dir, resource.name);
+      }
       case "reserved-write": {
-        const name = match.value!;
-        if (name !== "index.md" && name !== "log.md") {
-          return errorResponse(400, "USAGE", `reserved file name must be index.md or log.md, got '${name}'`);
-        }
-        const dir = searchParams.get("dir") ?? "";
-        return endpoint.id === "reserved-read"
-          ? await handleReadReserved(dir, name)
-          : await handleWriteReserved(dir, name, req);
+        const resource = resolved.resource as { kind: "reserved"; dir: string; name: ReservedFilename };
+        return await handleWriteReserved(backend, attribution, resource.dir, resource.name, req);
       }
       case "blobs-list":
-        return await handleListBlobs(searchParams);
+        return await handleListBlobs(backend, resolved.searchParams);
       case "blob-read":
-        return await handleReadBlob(decodeBlobKey(match.value!));
+        return await handleReadBlob(backend, (resolved.resource as { kind: "blob"; key: BlobKey }).key);
       case "blob-write":
-        return await handleWriteBlob(decodeBlobKey(match.value!), req);
+        return await handleWriteBlob(
+          backend,
+          attribution,
+          (resolved.resource as { kind: "blob"; key: BlobKey }).key,
+          req,
+        );
       case "blob-head":
-        return await handleHeadBlob(decodeBlobKey(match.value!));
+        return await handleHeadBlob(backend, (resolved.resource as { kind: "blob"; key: BlobKey }).key);
       case "blob-delete":
-        return await handleDeleteBlob(decodeBlobKey(match.value!), req);
+        return await handleDeleteBlob(backend, (resolved.resource as { kind: "blob"; key: BlobKey }).key, req);
     }
   });
 }

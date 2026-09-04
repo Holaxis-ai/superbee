@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import { MemoryBackend, RemoteBackend, type ConceptId } from "@superbee/core";
 
-import { createRouterForBackend } from "../src/router.js";
+import { createRouterForBackend } from "../src/legacy-router.js";
 
 type ErrorEnvelope = { error: { code: string; message: string } };
 

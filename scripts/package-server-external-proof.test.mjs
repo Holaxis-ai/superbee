@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { build } from "esbuild";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -64,6 +65,8 @@ test("packed server installs, typechecks, and round-trips through packaged core 
     assert.ok(serverPaths.includes("package.json"));
     assert.ok(serverPaths.includes("dist/index.js"));
     assert.ok(serverPaths.includes("dist/index.d.ts"));
+    assert.ok(serverPaths.includes("dist/legacy-router.js"));
+    assert.ok(serverPaths.includes("dist/legacy-router.d.ts"));
     assert.ok(serverPaths.includes("dist/router.js"));
     assert.ok(serverPaths.includes("dist/router.d.ts"));
     assert.ok(serverPaths.includes("dist/serve.js"));
@@ -107,6 +110,11 @@ import {
   createRouterForBackend,
   type ServerHandle,
 } from "@superbee/server";
+import {
+  createRouter as createWorkerRouter,
+  resolveWireRequest,
+  type ResolvedBundleWireRoute,
+} from "@superbee/server/router";
 
 const backend: StorageBackend = new MemoryBackend();
 const router = createRouterForBackend(backend);
@@ -124,7 +132,17 @@ const document: OkfDocument = {
 const version: Promise<Version> = remote.write(document.id, document);
 const response: Promise<Response> = router(new Request("http://wire.external/v0/capabilities"));
 const handle: ServerHandle | undefined = undefined;
-void [version, response, handle];
+const resolved = resolveWireRequest(
+  new Request("http://wire.external/v0/bundles/bnd_00112233445566778899aabbccddeeff/docs"),
+);
+const workerRouter = createWorkerRouter({
+  capabilities: { enforced_cas: true, blobs: true },
+  resolveContext: (_request, route: ResolvedBundleWireRoute) => ({
+    backend,
+    attribution: { actor: route.bundleId },
+  }),
+});
+void [version, response, handle, resolved, workerRouter];
 `,
     );
     await writeFile(
@@ -232,6 +250,7 @@ assert.deepEqual([...readBlob.bytes], [...bytes]);
     assert.equal(installedManifest.private, true);
     assert.deepEqual(installedManifest.files, ["dist"]);
     assert.ok(installedManifest.exports["."]);
+    assert.ok(installedManifest.exports["./router"]);
     assert.equal(installedManifest.dependencies["@superbee/core"], "*");
 
     const installedFiles = await filesUnder(installedServer);
@@ -243,10 +262,23 @@ assert.deepEqual([...readBlob.bytes], [...bytes]);
         const specifier = match[1];
         assert.ok(!/(^|\/)src(?:\/|$)/.test(specifier), `${file} imports source path ${specifier}`);
         if (specifier.startsWith("@superbee/")) {
-          assert.equal(specifier, "@superbee/core", `${file} imports workspace package ${specifier}`);
+          assert.ok(
+            ["@superbee/core", "@superbee/core/engine", "@superbee/core/storage"].includes(specifier),
+            `${file} imports workspace package ${specifier}`,
+          );
         }
       }
     }
+
+    const workerBundle = await build({
+      entryPoints: [path.join(installedServer, "dist", "router.js")],
+      bundle: true,
+      platform: "browser",
+      write: false,
+      logLevel: "silent",
+    });
+    assert.equal(workerBundle.errors.length, 0);
+    assert.ok(workerBundle.outputFiles[0].text.includes("resolveWireRequest"));
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

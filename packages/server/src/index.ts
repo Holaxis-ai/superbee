@@ -8,7 +8,8 @@
  * @packageDocumentation
  */
 
-export { createRouter, createRouterForBackend, WIRE_ENDPOINTS } from "./router.js";
+export { createRouter, createRouterForBackend } from "./legacy-router.js";
+export { WIRE_ENDPOINTS } from "./router.js";
 export {
   RequestBodyTooLargeError,
   serve,
