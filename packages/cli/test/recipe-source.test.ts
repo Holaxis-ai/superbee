@@ -805,3 +805,21 @@ test(
     }
   },
 );
+
+test("resolveRecipe: a dangling in-root symlink says the path does not resolve, not that it escapes", async () => {
+  const dir = await tempDir();
+  try {
+    await mkdir(path.join(dir, "conventions"), { recursive: true });
+    await writeFile(path.join(dir, "recipe.md"), VALID_MANIFEST.bytes);
+    await symlink(path.join(dir, "gone.md"), path.join(dir, "conventions", "term.md"));
+
+    const result = await resolveRecipe(dir);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.error.code, "RECIPE_UNSAFE_PATH");
+    assert.match(result.error.message, /does not resolve/);
+    assert.doesNotMatch(result.error.message, /escaping/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { constants, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
   readLeafSync,
@@ -71,10 +72,21 @@ test("a FIFO at the leaf is refused without blocking on a writer that never come
   const dir = workspace();
   try {
     const fifo = path.join(dir, "manifest.json");
-    // `O_NONBLOCK`'s reason to exist: without it this open parks forever waiting for a writer, so
-    // the test hangs instead of failing. Timing out IS the regression signal here.
     execFileSync("mkfifo", [fifo]);
-    assert.deepEqual(readRegularFileNoFollowSync(fifo), { state: "unsafe" });
+    // `O_NONBLOCK`'s reason to exist: without it this open parks forever waiting for a writer. Run
+    // it in a child under a timeout so dropping the flag FAILS the suite instead of hanging it.
+    const probe = execFileSync(
+      process.execPath,
+      [
+        "--import",
+        fileURLToPath(new URL("./ts-loader.mjs", import.meta.url)),
+        "-e",
+        `import("${new URL("../src/nofollow-read.ts", import.meta.url).href}").then((m) =>` +
+          ` process.stdout.write(m.readRegularFileNoFollowSync(${JSON.stringify(fifo)}).state));`,
+      ],
+      { timeout: 15_000, encoding: "utf8" },
+    );
+    assert.equal(probe, "unsafe");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

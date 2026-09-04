@@ -52,10 +52,7 @@ async function readRecipeDir(root: string): Promise<RecipeFile[]> {
   const manifestPath = path.join(root, "recipe.md");
   const manifestStat = await fs.stat(manifestPath).catch(() => null);
   if (manifestStat?.isFile()) {
-    const manifestReal = await fs.realpath(manifestPath).catch(() => null);
-    if (!manifestReal || (manifestReal !== rootReal && !manifestReal.startsWith(rootReal + path.sep))) {
-      throw new RecipeUnsafePathSignal("recipe.md");
-    }
+    const manifestReal = await containedRealpath(manifestPath, rootReal, "recipe.md");
     const read = await readContainedFile(manifestReal);
     if ("refusal" in read) throw new RecipeUnsafePathSignal("recipe.md", read.refusal);
     const bytes = read.text;
@@ -101,10 +98,7 @@ async function walkRecipeFiles(
       continue;
     }
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-    const real = await fs.realpath(abs).catch(() => null);
-    if (!real || (real !== rootReal && !real.startsWith(rootReal + path.sep))) {
-      throw new RecipeUnsafePathSignal(rel);
-    }
+    const real = await containedRealpath(abs, rootReal, rel);
     const read = await readContainedFile(real);
     if ("refusal" in read) throw new RecipeUnsafePathSignal(rel, read.refusal);
     out.push({ path: rel, bytes: read.text });
@@ -123,17 +117,28 @@ async function walkConventions(dir: string, relPrefix: string, rootReal: string,
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
     if (!rel.endsWith(".md")) continue;
 
-    const real = await fs.realpath(abs).catch(() => null);
-    if (!real || (real !== rootReal && !real.startsWith(rootReal + path.sep))) {
-      throw new RecipeUnsafePathSignal(rel);
-    }
+    const real = await containedRealpath(abs, rootReal, rel);
     const read = await readContainedFile(real);
     if ("refusal" in read) throw new RecipeUnsafePathSignal(rel, read.refusal);
     out.push({ path: rel, bytes: read.text });
   }
 }
 
-type RecipeRefusal = "symlink-escape" | "dot-entry" | "irregular" | "unreadable";
+/**
+ * Resolves a leaf and proves it stays under the recipe root. A path that will not resolve at all
+ * is its own refusal: a dangling link escapes nothing, and saying it does sends the author looking
+ * for a containment problem that is not there.
+ */
+async function containedRealpath(abs: string, rootReal: string, rel: string): Promise<string> {
+  const real = await fs.realpath(abs).catch(() => null);
+  if (!real) throw new RecipeUnsafePathSignal(rel, "unresolvable");
+  if (real !== rootReal && !real.startsWith(rootReal + path.sep)) {
+    throw new RecipeUnsafePathSignal(rel, "symlink-escape");
+  }
+  return real;
+}
+
+type RecipeRefusal = "symlink-escape" | "unresolvable" | "dot-entry" | "irregular" | "unreadable";
 
 class RecipeUnsafePathSignal extends Error {
   rel: string;
@@ -155,6 +160,8 @@ function refusalMessage(ref: string, err: RecipeUnsafePathSignal): string {
       return `recipe folder '${ref}' contains a file that could not be opened for reading (check its permissions): '${err.rel}'`;
     case "symlink-escape":
       return `recipe folder '${ref}' contains a symlink escaping the recipe root: '${err.rel}'`;
+    case "unresolvable":
+      return `recipe folder '${ref}' contains a path that does not resolve, most often a symlink whose target is gone: '${err.rel}'`;
   }
 }
 
