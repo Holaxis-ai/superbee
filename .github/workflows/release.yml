@@ -45,11 +45,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # The tag must point at reviewed source: a commit that is already on protected main.
-          REL="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)" || { echo "::error::cannot compare $GITHUB_SHA with main"; exit 1; }
-          case "$REL" in identical|behind) ;; *) echo "::error::tag commit $GITHUB_SHA is not on main (compare status: $REL); tag a merged commit"; exit 1 ;; esac
           V="$(node -p 'require("./packages/cli/package.json").version')"
           test "v$V" = "$GITHUB_REF_NAME" || { echo "::error::tag $GITHUB_REF_NAME does not match packages/cli version $V"; exit 1; }
+          # Prereleases are tagged from protected main. A stable promotion may instead use the
+          # version-only commit on release/<stable-version>, based on a retained prerelease tag;
+          # its exact CI verdict below remains mandatory. No other branch can feed staging.
+          case "$V" in
+            *-*) SOURCE_REF=main ;;
+            *) SOURCE_REF="release/$V" ;;
+          esac
+          REL="$(gh api "repos/$GITHUB_REPOSITORY/compare/$SOURCE_REF...$GITHUB_SHA" --jq .status)" || { echo "::error::cannot compare $GITHUB_SHA with $SOURCE_REF"; exit 1; }
+          case "$REL" in identical|behind) ;; *) echo "::error::tag commit $GITHUB_SHA is not on $SOURCE_REF (compare status: $REL)"; exit 1 ;; esac
           case "$V" in *-*) T=next ;; *) T=latest ;; esac
           # npm applies the staged dist-tag unconditionally on approval, so a version below the
           # tag's current value would move it backwards. Refuse here, before anything is built,
@@ -67,10 +73,12 @@ jobs:
             echo "version=$V"
             echo "dist_tag=$T"
             echo "tgz=superbee-$V.tgz"
+            echo "source_ref=$SOURCE_REF"
           } >> "$GITHUB_OUTPUT"
       - name: Require the CI verdict already recorded on this exact commit
         env:
           GH_TOKEN: ${{ github.token }}
+          SOURCE_REF: ${{ steps.meta.outputs.source_ref }}
         run: |
           set -euo pipefail
           # Release-source validation consumes the newest CI verdict already recorded on this exact
@@ -90,10 +98,10 @@ jobs:
             case "$VERDICT" in
               success) break ;;
               missing|pending) echo "CI required lanes not settled on $GITHUB_SHA yet (attempt $attempt: $VERDICT)"; if [ "$attempt" -lt 16 ]; then sleep 30; fi ;;
-              *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on main before tagging"; exit 1 ;;
+              *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on $SOURCE_REF before tagging"; exit 1 ;;
             esac
           done
-          test "$VERDICT" = "success" || { echo "::error::no successful 'CI required lanes' verdict appeared on $GITHUB_SHA (last state: $VERDICT); wait for the push run on main, then re-push the tag"; exit 1; }
+          test "$VERDICT" = "success" || { echo "::error::no successful 'CI required lanes' verdict appeared on $GITHUB_SHA (last state: $VERDICT); wait for or dispatch CI on $SOURCE_REF, then re-push the tag"; exit 1; }
       - name: Build the npm-package bundle from this exact clean checkout
         # Through npm on purpose: the build rebuilds the embedded UI with the running npm.
         run: npm run build:npm-package -w superbee

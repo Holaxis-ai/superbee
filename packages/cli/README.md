@@ -48,19 +48,17 @@ Ubuntu, or Docker. On Windows, Superbee keeps per-user operational state under
 
 Superbee currently has two npm release channels:
 
-- `latest` is the stable channel selected by bare `superbee`. Its current release predates native
-  Windows support.
-- `next` is the prerelease channel. It contains the current native-Windows build.
+- `latest` is the stable channel selected by bare `superbee`, including native Windows support.
+- `next` is the prerelease channel for future release candidates.
 
-Install the current prerelease on Windows:
+Install Superbee on Windows:
 
 ```powershell
-npm install -g superbee@next
+npm install -g superbee
 superbee.cmd setup
 ```
 
-On macOS or Linux, the stable channel remains available with `npm install -g superbee`. To test the
-same prerelease as Windows, install `superbee@next` instead.
+On macOS or Linux, install it with `npm install -g superbee` and then run `superbee setup`.
 
 After installation, ask your AI agent to run `superbee setup` (`superbee.cmd setup` when invoking
 the Windows shim explicitly). Setup walks the agent through Agent Skill, SessionStart hook, and MCP
