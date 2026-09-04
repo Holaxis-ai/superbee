@@ -251,7 +251,7 @@ test("persistent markerless root remains foreign after bounded initialization", 
   const { root: scratch, home } = await scratchHome("superbee-user-state-persistent-");
   try {
     const stateRoot = canonicalUserStateDir(home);
-    await mkdir(stateRoot);
+    await mkdir(stateRoot, { recursive: true });
     const sentinel = path.join(stateRoot, "sentinel.txt");
     await writeFile(sentinel, "preserve me\n");
     const before = await readdir(stateRoot);
