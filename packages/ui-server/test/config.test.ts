@@ -95,6 +95,29 @@ test("the session-gated document recovery endpoint returns only the consumer-ren
   }
 });
 
+test("the top-level HTTP fallback never exposes thrown diagnostics", async () => {
+  const server = await bootDir({
+    serveAsset: () => {
+      const error = new Error("SECRET_HTTP_SENTINEL /private/http/path");
+      error.stack = `SECRET_STACK_SENTINEL\n${error.stack ?? ""}`;
+      throw error;
+    },
+  });
+  try {
+    const response = await fetch(`http://${server.host}:${server.port}/explode`, {
+      headers: { cookie: `aslite_ui_session=${SECRET}` },
+    });
+    const text = await response.text();
+    assert.equal(response.status, 500);
+    assert.deepEqual(JSON.parse(text), { error: { code: "RUNTIME", message: "internal server error" } });
+    assert.equal(text.includes("SECRET_HTTP_SENTINEL"), false);
+    assert.equal(text.includes("SECRET_STACK_SENTINEL"), false);
+    assert.equal(text.includes("/private/http/path"), false);
+  } finally {
+    await server.close();
+  }
+});
+
 test("a THROWING sharing loader reads as unavailable with the reason — never a fabricated private", async () => {
   const server = await bootDir({
     loadSharingSummary: async () => {
@@ -108,7 +131,8 @@ test("a THROWING sharing loader reads as unavailable with the reason — never a
     const config = await fetchConfig(server);
     const sharing = config.sharing as SharingSummary;
     assert.equal(sharing.kind, "unavailable");
-    assert.match(String(sharing.reason), /git exploded/);
+    assert.equal(sharing.reason, "sharing status could not be loaded");
+    assert.equal(sharing.reason.includes("git exploded"), false);
     assert.ok(sharing.as_of, "unavailable still carries as_of");
     assert.deepEqual(config.workspaces, [], "a throwing workspaces loader is an empty list");
   } finally {

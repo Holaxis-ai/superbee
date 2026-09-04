@@ -75,10 +75,6 @@ export interface RawLink {
   href: string;
 }
 
-// Non-image markdown links: `[text](href)` where href has no spaces. The image
-// form `![alt](src)` is filtered out by checking the char preceding `[`.
-const MD_LINK_RE = /\[([^\]]*)\]\(([^)\s]+)\)/g;
-
 /** True for links that never become concept edges (external / mail / in-page anchors). */
 export function isExternalHref(href: string): boolean {
   const h = href.trim();
@@ -88,10 +84,34 @@ export function isExternalHref(href: string): boolean {
 /** Extract every non-image markdown link from a body, in document order. */
 export function extractMarkdownLinks(body: string): RawLink[] {
   const out: RawLink[] = [];
-  for (const m of body.matchAll(MD_LINK_RE)) {
-    // Skip image links: `![alt](src)`.
-    if (typeof m.index === "number" && m.index > 0 && body[m.index - 1] === "!") continue;
-    out.push({ text: m[1] ?? "", href: m[2] ?? "" });
+  let open = -1;
+  for (let cursor = 0; cursor < body.length; cursor++) {
+    if (body[cursor] === "[") {
+      if (open < 0) open = cursor;
+      continue;
+    }
+    if (open < 0 || body[cursor] !== "]" || body[cursor + 1] !== "(") continue;
+
+    const hrefStart = cursor + 2;
+    let hrefEnd = hrefStart;
+    while (
+      hrefEnd < body.length &&
+      body[hrefEnd] !== ")" &&
+      body[hrefEnd]?.trim() !== ""
+    ) {
+      hrefEnd++;
+    }
+    if (hrefEnd >= body.length) break;
+    if (body[hrefEnd] !== ")" || hrefEnd === hrefStart) {
+      cursor = hrefEnd;
+      open = -1;
+      continue;
+    }
+    if (open === 0 || body[open - 1] !== "!") {
+      out.push({ text: body.slice(open + 1, cursor), href: body.slice(hrefStart, hrefEnd) });
+    }
+    cursor = hrefEnd;
+    open = -1;
   }
   return out;
 }

@@ -76,7 +76,7 @@ test("the web adapter preserves the established registered-View failure contract
     const unknown = await mint(server, "views-registry/unknown");
     assert.equal(unknown.status, 404);
     assert.equal(unknown.error.code, "RUNTIME");
-    assert.match(unknown.error.message ?? "", /no concept document 'views-registry\/unknown'/);
+    assert.equal(unknown.error.message, "No registered View with ID 'views-registry/unknown'.");
 
     const invalid = await mint(server, "views-registry/invalid");
     assert.equal(invalid.status, 403);

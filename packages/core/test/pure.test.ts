@@ -95,6 +95,27 @@ test("links: extractMarkdownLinks skips images, keeps text links", () => {
   ]);
 });
 
+test("links: extractMarkdownLinks stays linear on hostile input and resumes at later links", () => {
+  assert.deepEqual(extractMarkdownLinks(`${"[\\".repeat(100_000)}tail`), []);
+  assert.deepEqual(extractMarkdownLinks(`${"[](!".repeat(100_000)}tail`), []);
+  assert.deepEqual(extractMarkdownLinks("[outer](bad [inner](ok))"), [{ text: "inner", href: "ok" }]);
+  assert.deepEqual(extractMarkdownLinks("[empty]() [space](not allowed.md) [good](/good.md)"), [
+    { text: "good", href: "/good.md" },
+  ]);
+});
+
+test("links: extractMarkdownLinks retains the established valid-link grammar", () => {
+  assert.deepEqual(
+    extractMarkdownLinks("[outer[inner](a(b)c) [multi\nline](two) ![image](ignored) [a](one)[b](two)"),
+    [
+      { text: "outer[inner", href: "a(b" },
+      { text: "multi\nline", href: "two" },
+      { text: "a", href: "one" },
+      { text: "b", href: "two" },
+    ],
+  );
+});
+
 test("links: resolveConceptId handles absolute, relative, parent, anchors, external", () => {
   assert.equal(resolveConceptId("tables/events", "/references/metrics/m.md"), "references/metrics/m");
   assert.equal(resolveConceptId("tables/events", "./users.md"), "tables/users");

@@ -114,12 +114,12 @@ function errorFromCaught(err: unknown): Response {
     return errorResponse(412, "VERSION_CONFLICT", err.message, { expected: err.expected, actual: err.actual });
   }
   if (isEnoent(err)) {
-    return errorResponse(404, "NOT_FOUND", err instanceof Error ? err.message : "not found");
+    return errorResponse(404, "NOT_FOUND", "document or blob not found");
   }
   if (err instanceof InvalidInputError) {
     return errorResponse(400, "USAGE", err.message);
   }
-  return errorResponse(500, "RUNTIME", err instanceof Error ? err.message : String(err));
+  return errorResponse(500, "RUNTIME", "internal server error");
 }
 
 /**
@@ -702,8 +702,8 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     for (const id of ids) {
       try {
         assertValidDocId(id);
-      } catch (err) {
-        return errorResponse(400, "USAGE", err instanceof Error ? err.message : `invalid id '${id}'`, { id });
+      } catch {
+        return errorResponse(400, "USAGE", `invalid document id '${id}'`, { id });
       }
     }
 

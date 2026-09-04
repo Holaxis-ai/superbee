@@ -348,7 +348,7 @@ export async function mintActiveViewLaunch(
     }
     throw new RegisteredViewLaunchError(
       "VIEW_REGISTRY_READ_FAILED",
-      error instanceof Error ? error.message : String(error),
+      "the View registration could not be read",
       registryId,
       undefined,
       error,
@@ -368,7 +368,7 @@ export async function mintActiveViewLaunch(
   } catch (error) {
     throw new RegisteredViewLaunchError(
       "VIEW_ENTRY_READ_FAILED",
-      error instanceof Error ? error.message : String(error),
+      "the View entry could not be read",
       registryId,
       registration.entry,
       error,
@@ -393,10 +393,10 @@ export async function mintActiveViewLaunch(
   let admitted: ReturnType<typeof admitActiveView>;
   try {
     admitted = admitActiveView(blob.bytes, blob.contentType);
-  } catch (error) {
+  } catch {
     throw new RegisteredViewLaunchError(
       "VIEW_ADMISSION_REJECTED",
-      error instanceof Error ? error.message : String(error),
+      "the View entry must be bounded UTF-8 text/html",
       registryId,
       registration.entry,
     );
@@ -764,8 +764,8 @@ export class TrustedActionService {
     let action: DocumentSetFieldAction;
     try {
       action = parseDocumentSetFieldAction(rawAction);
-    } catch (error) {
-      return rejected(error instanceof Error ? error.message : String(error));
+    } catch {
+      return rejected("the action request is invalid");
     }
     if (["type", "timestamp", "actor"].includes(action.field)) return rejected(`field '${action.field}' is shell-managed and cannot be proposed`);
     if (
@@ -781,7 +781,7 @@ export class TrustedActionService {
       target = await readDocVersioned(this.bundle, action.docId);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return rejected(`document '${action.docId}' does not exist`);
-      return { status: "failed", action: "document.set-field", message: error instanceof Error ? error.message : String(error) };
+      return { status: "failed", action: "document.set-field", message: "the target document could not be read" };
     }
     if (target.version !== action.expectedVersion) {
       return {
@@ -801,8 +801,8 @@ export class TrustedActionService {
         loadKinds(this.bundle),
         readBundleOkfVersion(this.bundle),
       ]);
-    } catch (error) {
-      return { status: "failed", action: "document.set-field", message: error instanceof Error ? error.message : String(error) };
+    } catch {
+      return { status: "failed", action: "document.set-field", message: "the governing Kind could not be read" };
     }
     const targetType = String(target.doc.frontmatter.type ?? "");
     const kind = registry.kinds.get(targetType);
@@ -856,8 +856,8 @@ export class TrustedActionService {
     let kindVersion: Version;
     try {
       kindVersion = (await readDocVersioned(this.bundle, kind.id)).version;
-    } catch (error) {
-      return { status: "failed", action: "document.set-field", message: error instanceof Error ? error.message : String(error) };
+    } catch {
+      return { status: "failed", action: "document.set-field", message: "the governing Kind version could not be read" };
     }
 
     this.sweepExpired();
@@ -1014,12 +1014,12 @@ export class TrustedActionService {
         return { status: "conflict", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, expectedVersion: pending.action.expectedVersion, actualVersion: null };
       }
       if (error instanceof KindConformanceError) {
-        return { status: "rejected", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error.message };
+        return { status: "rejected", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: "the document no longer conforms to its governing Kind" };
       }
       if (error instanceof ActionBundleEditionChanged) {
-        return { status: "revoked", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error.message };
+        return { status: "revoked", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: "the bundle OKF edition changed" };
       }
-      return { status: "failed", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: error instanceof Error ? error.message : String(error) };
+      return { status: "failed", action: "document.set-field", docId: pending.action.docId, field: pending.action.field, message: "the trusted action could not be committed" };
     }
   }
 

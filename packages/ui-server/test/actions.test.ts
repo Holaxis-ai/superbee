@@ -186,6 +186,32 @@ test("trusted action: target races conflict and changed View bytes revoke withou
   assert.equal((await readDocVersioned(changedView.bundle, "tasks/alpha")).doc.frontmatter.status, "todo");
 });
 
+test("trusted action: unexpected storage diagnostics never cross the action response boundary", async () => {
+  const state = await fixture();
+  const target = await readDocVersioned(state.bundle, "tasks/alpha");
+  const backend = state.bundle.backend!;
+  const originalRead = backend.read.bind(backend);
+  Object.defineProperty(backend, "read", {
+    configurable: true,
+    value: async (id: string) => {
+      if (id === "tasks/alpha") throw new Error("SECRET_ACTION_SENTINEL /private/action/path");
+      return originalRead(id);
+    },
+  });
+
+  const result = await state.service.prepare(state.launch.launchId, {
+    kind: "document.set-field",
+    docId: "tasks/alpha",
+    field: "status",
+    value: "done",
+    expectedVersion: target.version,
+  });
+  assert.equal(result.status, "failed");
+  assert.equal(result.message, "the target document could not be read");
+  assert.equal(JSON.stringify(result).includes("SECRET_ACTION_SENTINEL"), false);
+  assert.equal(JSON.stringify(result).includes("/private/action/path"), false);
+});
+
 test("trusted action: View bytes changing after the first commit check revoke before mutation", async () => {
   const state = await fixture();
   const base = new PageActionLaunchAuthority(

@@ -14,7 +14,7 @@ type ErrorEnvelope = { error: { code: string; message: string } };
 
 class RuntimeFailingBackend extends MemoryBackend {
   override async read(_id: ConceptId): ReturnType<MemoryBackend["read"]> {
-    throw new Error("storage unavailable");
+    throw new Error("SECRET_STACK_SENTINEL /private/internal/path");
   }
 }
 
@@ -34,7 +34,7 @@ test("unknown backend failures are 500 RUNTIME, not 400 USAGE", async () => {
 
   assert.equal(res.status, 500);
   assert.deepEqual((await res.json()) as ErrorEnvelope, {
-    error: { code: "RUNTIME", message: "storage unavailable" },
+    error: { code: "RUNTIME", message: "internal server error" },
   });
 });
 
