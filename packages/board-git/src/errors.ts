@@ -112,7 +112,7 @@ function hasRejectedReason(text: string, reasons: readonly string[]): boolean {
     const lower = line.toLowerCase();
     const marker = lower.indexOf("[rejected]");
     if (marker === -1) continue;
-    if (reasons.some((reason) => lower.indexOf(`(${reason})`, marker) !== -1)) return true;
+    if (reasons.some((reason) => lower.indexOf(`(${reason.toLowerCase()})`, marker) !== -1)) return true;
   }
   return false;
 }
@@ -124,10 +124,19 @@ function hasUnmergeableOriginRef(text: string): boolean {
     const at = lower.indexOf(suffix);
     if (at <= 0) continue;
     const ref = lower.slice(0, at);
-    const start = ref.lastIndexOf("origin/");
-    if (start === -1) continue;
-    const candidate = ref.slice(start);
-    if (candidate.length > "origin/".length && !/\s/.test(candidate)) return true;
+    // A ref name carries no whitespace, so only the run after the last space can be one; inside
+    // that run EVERY `origin/` start is a candidate (the regex this replaced tried each in turn,
+    // so `origin/aorigin/` matched on its earlier start). Searching the run forward keeps this
+    // one linear pass rather than one suffix scan per candidate.
+    let runStart = 0;
+    for (let i = ref.length - 1; i >= 0; i -= 1) {
+      if (/\s/.test(ref[i] as string)) {
+        runStart = i + 1;
+        break;
+      }
+    }
+    const start = ref.indexOf("origin/", runStart);
+    if (start !== -1 && ref.length - start > "origin/".length) return true;
   }
   return false;
 }

@@ -38,6 +38,13 @@ test("splitSections still names a heading and its section", () => {
   });
 });
 
+test("a trailing bare '#' heading is content, not an empty-named section", () => {
+  // Decided, not incidental: `#` followed only by blanks at end of input used to open a junk
+  // `""` section, because the old capture accepted a space as the heading name. Requiring a
+  // non-space name folds the orphan marker back into the section it trails.
+  assert.deepEqual(splitSections("# Summary\ntext\n\n# \t\n"), { Summary: "text\n\n#" });
+});
+
 test("RemoteBackend base-URL normalization stays linear on a run of trailing separators", () => {
   const baseUrl = `https://example.invalid${"/".repeat(SIZE)}`;
   const took = elapsedMs(() => {

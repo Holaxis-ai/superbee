@@ -67,3 +67,22 @@ test("classifyGitError still recognizes the real non-fast-forward and unmergeabl
   });
   assert.equal(unmergeable.code, "NO_UPSTREAM");
 });
+
+test("classifyGitError matches the rejection reason and the ref case-insensitively", () => {
+  const shouted = classifyGitError({
+    args: ["push"],
+    status: 1,
+    stdout: "",
+    stderr: " ! [REJECTED]        board -> board (Non-Fast-Forward)",
+  });
+  assert.equal(shouted.code, "TRANSIENT");
+
+  // An earlier `origin/` start still wins, as it did under the regex form.
+  const nested = classifyGitError({
+    args: ["merge"],
+    status: 1,
+    stdout: "",
+    stderr: "merge: origin/aorigin/ - not something we can merge",
+  });
+  assert.equal(nested.code, "NO_UPSTREAM");
+});
