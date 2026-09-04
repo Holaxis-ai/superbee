@@ -36,6 +36,7 @@ const execFileAsync = promisify(execFile);
 const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const authorityPattern = /^src_[0-9a-f]{32}$/u;
 const gitObjectPattern = /^[0-9a-f]{40}$/u;
+const gitTreeMetadataPattern = /^(100644|100755) blob ([0-9a-f]{40})$/u;
 
 interface CapturedFile {
   relative: string;
@@ -259,7 +260,8 @@ async function git(repository: string, args: readonly string[], encoding: "utf8"
       }
     }
     env.GIT_CONFIG_NOSYSTEM = "1";
-    const result = await execFileAsync("git", ["-C", repository, ...args], {
+    env.GIT_NO_REPLACE_OBJECTS = "1";
+    const result = await execFileAsync("git", ["--no-replace-objects", "-C", repository, ...args], {
       encoding: encoding === "buffer" ? "buffer" : "utf8",
       env,
       maxBuffer: 40 * 1024 * 1024,
@@ -271,34 +273,80 @@ async function git(repository: string, args: readonly string[], encoding: "utf8"
   }
 }
 
+function gitObjectId(bytes: Uint8Array, subject: string): string {
+  if (bytes.byteLength !== 40 || bytes.some((byte) => !(
+    (byte >= 0x30 && byte <= 0x39) || (byte >= 0x61 && byte <= 0x66)
+  ))) {
+    throw new BundleTransferError("INVALID_SOURCE", `${subject} must be a canonical lowercase Git SHA-1 object id`);
+  }
+  return Buffer.from(bytes).toString("ascii");
+}
+
+async function assertGitObjectType(repository: string, objectId: string, expected: "commit" | "tree" | "blob"): Promise<void> {
+  const actual = String(await git(repository, ["cat-file", "-t", objectId])).trim();
+  if (actual !== expected) {
+    throw new BundleTransferError("INVALID_SOURCE", `Git source object must be ${expected}`, { subject: objectId });
+  }
+}
+
 async function gitRefIdentity(repository: string): Promise<{ commit: string; tree: string }> {
-  const commit = String(await git(repository, ["rev-parse", "--verify", "refs/heads/board^{commit}"])).trim();
-  const tree = String(await git(repository, ["rev-parse", "--verify", `${commit}^{tree}`])).trim();
-  if (!gitObjectPattern.test(commit) || !gitObjectPattern.test(tree)) throw new BundleTransferError("INVALID_SOURCE", "Git SHA-1 object ids must be canonical lowercase hexadecimal");
+  const commit = String(await git(repository, ["rev-parse", "--verify", "refs/heads/board"])).trim();
+  if (!gitObjectPattern.test(commit)) throw new BundleTransferError("INVALID_SOURCE", "Git SHA-1 object ids must be canonical lowercase hexadecimal");
+  await assertGitObjectType(repository, commit, "commit");
+  const commitBytes = await git(repository, ["cat-file", "commit", commit], "buffer") as Buffer;
+  const firstLineEnd = commitBytes.indexOf(0x0a);
+  if (firstLineEnd !== 45 || !commitBytes.subarray(0, 5).equals(Buffer.from("tree ", "ascii"))) {
+    throw new BundleTransferError("INVALID_SOURCE", "Git commit object does not begin with one exact tree identity", { subject: commit });
+  }
+  const tree = gitObjectId(commitBytes.subarray(5, firstLineEnd), "Git commit tree");
+  await assertGitObjectType(repository, tree, "tree");
   return { commit, tree };
 }
 
-async function captureGitFiles(repository: string, commit: string, retainBytes: boolean): Promise<CapturedFile[]> {
-  const listing = await git(repository, ["ls-tree", "-r", "-z", "--full-tree", commit], "buffer") as Buffer;
-  const rows = listing.toString("utf8").split("\0").filter(Boolean);
+function parseGitTreeListing(listing: Buffer): Array<{ mode: string; objectId: string; relative: string }> {
+  if (listing.byteLength !== 0 && listing[listing.byteLength - 1] !== 0) {
+    throw new BundleTransferError("INVALID_SOURCE", "Git tree inventory is not NUL terminated");
+  }
+  const rows: Array<{ mode: string; objectId: string; relative: string }> = [];
+  let offset = 0;
+  while (offset < listing.byteLength) {
+    const end = listing.indexOf(0, offset);
+    if (end === -1 || end === offset) throw new BundleTransferError("INVALID_SOURCE", "Git tree inventory is malformed");
+    const row = listing.subarray(offset, end);
+    const tab = row.indexOf(0x09);
+    if (tab < 0 || tab === row.byteLength - 1) throw new BundleTransferError("INVALID_SOURCE", "Git tree inventory is malformed");
+    const metadataBytes = row.subarray(0, tab);
+    if (metadataBytes.some((byte) => byte > 0x7f)) throw new BundleTransferError("INVALID_SOURCE", "Git tree metadata is not ASCII");
+    const match = gitTreeMetadataPattern.exec(metadataBytes.toString("ascii"));
+    if (!match) throw new BundleTransferError("INVALID_SOURCE", "Git source contains a symlink, submodule, tree, or special entry");
+    let relative: string;
+    try {
+      relative = decoder.decode(row.subarray(tab + 1));
+    } catch (error) {
+      throw new BundleTransferError("INVALID_SOURCE", "Git source paths must be strict UTF-8", { cause: error });
+    }
+    rows.push({ mode: match[1]!, objectId: match[2]!, relative });
+    offset = end + 1;
+  }
+  return rows;
+}
+
+async function captureGitFiles(repository: string, tree: string, retainBytes: boolean): Promise<CapturedFile[]> {
+  const listing = await git(repository, ["ls-tree", "-r", "-z", "--full-tree", tree], "buffer") as Buffer;
+  const rows = parseGitTreeListing(listing);
   const files: CapturedFile[] = [];
   const unique = new Map<string, { size: number; bytes?: Uint8Array }>();
   let uniqueBytes = 0;
-  for (const row of rows) {
-    const match = /^(\d{6}) ([a-z]+) ([0-9a-f]{40})\t([\s\S]+)$/u.exec(row);
-    if (!match) throw new BundleTransferError("INVALID_SOURCE", "Git tree inventory is malformed");
-    const [, mode, type, objectId, relative] = match;
-    if (relative!.split("/").some((segment) => segment.startsWith("."))) continue;
-    if (type !== "blob" || (mode !== "100644" && mode !== "100755")) {
-      throw new BundleTransferError("INVALID_SOURCE", "Git source contains a symlink, submodule, or special entry", { subject: relative });
-    }
+  for (const { mode, objectId, relative } of rows) {
+    if (relative.split("/").some((segment) => segment.startsWith("."))) continue;
     if (files.length >= BUNDLE_TRANSFER_LIMITS_V1.maxRows) throw new BundleTransferError("LIMIT_EXCEEDED", "the Git source contains too many rows");
-    const sizeText = String(await git(repository, ["cat-file", "-s", objectId!])).trim();
+    await assertGitObjectType(repository, objectId, "blob");
+    const sizeText = String(await git(repository, ["cat-file", "-s", objectId])).trim();
     const size = Number(sizeText);
     if (!Number.isSafeInteger(size) || size < 0 || size > BUNDLE_TRANSFER_LIMITS_V1.maxObjectBytes) {
       throw new BundleTransferError("LIMIT_EXCEEDED", "a Git source object exceeds the per-object limit", { subject: relative });
     }
-    let bytes: Uint8Array<ArrayBufferLike> = new Uint8Array(await git(repository, ["cat-file", "blob", objectId!], "buffer") as Buffer);
+    let bytes: Uint8Array<ArrayBufferLike> = new Uint8Array(await git(repository, ["cat-file", "blob", objectId], "buffer") as Buffer);
     if (bytes.byteLength !== size) throw sourceChanged("Git object size changed during capture");
     const objectDigest = blobVersion(bytes);
     const existing = unique.get(objectDigest);
@@ -312,7 +360,7 @@ async function captureGitFiles(repository: string, commit: string, retainBytes: 
       if (uniqueBytes > BUNDLE_TRANSFER_LIMITS_V1.maxUniqueBytes) throw new BundleTransferError("LIMIT_EXCEEDED", "unique Git source bytes exceed the artifact limit");
       unique.set(objectDigest, { size: bytes.byteLength, ...(retainBytes ? { bytes } : {}) });
     }
-    files.push({ relative: relative!, bytes: retainBytes ? bytes : new Uint8Array(), identity: `${mode}:${objectId}`, digest: objectDigest });
+    files.push({ relative, bytes: retainBytes ? bytes : new Uint8Array(), identity: `${mode}:${objectId}`, digest: objectDigest });
   }
   files.sort((left, right) => Buffer.from(left.relative).compare(Buffer.from(right.relative)));
   return files;
@@ -336,8 +384,8 @@ export async function captureGitBundle(options: CaptureGitBundleOptionsV1): Prom
     try {
       const first = await gitRefIdentity(options.repository);
       if (options.expectedCommit !== undefined && first.commit !== options.expectedCommit) throw sourceChanged("Git authority ref does not equal the expected commit");
-      const firstFiles = await captureGitFiles(options.repository, first.commit, false);
-      const secondFiles = await captureGitFiles(options.repository, first.commit, true);
+      const firstFiles = await captureGitFiles(options.repository, first.tree, false);
+      const secondFiles = await captureGitFiles(options.repository, first.tree, true);
       const second = await gitRefIdentity(options.repository);
       if (first.commit !== second.commit || first.tree !== second.tree || !sameFileBytes(firstFiles, secondFiles)) {
         throw sourceChanged("Git source changed between bounded inventories");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
-import { chmod, link, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { execFile, spawn } from "node:child_process";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -17,6 +17,7 @@ import {
   digestTransferBytes,
   validateBundleTransferManifest,
   verifyBundleTransferArtifact,
+  type BundleTransferArtifactV1,
   type BundleTransferSnapshotV1,
   type SourceAuthorityId,
 } from "../src/index.js";
@@ -30,6 +31,22 @@ import {
 const execFileAsync = promisify(execFile);
 const authority = "src_00112233445566778899aabbccddeeff" as SourceAuthorityId;
 const encoder = new TextEncoder();
+
+async function gitWithInput(cwd: string, args: readonly string[], input: Uint8Array): Promise<Buffer> {
+  return await new Promise<Buffer>((resolve, reject) => {
+    const child = spawn("git", args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(stdout));
+      else reject(new Error(`git ${args[0]} failed (${code}): ${Buffer.concat(stderr).toString("utf8")}`));
+    });
+    child.stdin.end(input);
+  });
+}
 
 async function version(bytes: Uint8Array): Promise<Version> {
   return await digestTransferBytes(bytes) as Version;
@@ -201,6 +218,63 @@ test("Git capture reads the immutable board commit tree, not dirty checkout byte
   }
 });
 
+test("Git capture ignores local replacement refs and reads the requested commit object", async () => {
+  const root = await fixture();
+  try {
+    await execFileAsync("git", ["init", "--quiet", "--initial-branch=board"], { cwd: root });
+    await execFileAsync("git", ["config", "user.email", "proof@example.test"], { cwd: root });
+    await execFileAsync("git", ["config", "user.name", "proof"], { cwd: root });
+    await execFileAsync("git", ["add", "."], { cwd: root });
+    await execFileAsync("git", ["commit", "--quiet", "-m", "source A"], { cwd: root });
+    const commitA = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+    const treeA = (await execFileAsync("git", ["rev-parse", `${commitA}^{tree}`], { cwd: root })).stdout.trim();
+
+    await writeFile(path.join(root, "docs", "note.md"), "---\ntype: Note\n---\n# Replacement B\n");
+    await execFileAsync("git", ["add", "."], { cwd: root });
+    await execFileAsync("git", ["commit", "--quiet", "-m", "replacement B"], { cwd: root });
+    const commitB = (await execFileAsync("git", ["rev-parse", "HEAD"], { cwd: root })).stdout.trim();
+    await execFileAsync("git", ["replace", commitA, commitB], { cwd: root });
+    await execFileAsync("git", ["update-ref", "refs/heads/board", commitA], { cwd: root });
+
+    const poisonedTree = (await execFileAsync("git", ["rev-parse", `${commitA}^{tree}`], { cwd: root })).stdout.trim();
+    assert.notEqual(poisonedTree, treeA, "the fixture must prove ordinary Git object lookup is poisoned");
+    const artifact = await captureGitBundle({ repository: root, sourceAuthorityId: authority, expectedCommit: commitA });
+    assert.equal(artifact.manifest.source.revision.commit, commitA);
+    assert.equal(artifact.manifest.source.revision.tree, treeA);
+    const row = artifact.manifest.documents.find((entry) => entry.id === "docs/note")!;
+    assert.deepEqual(artifact.objects.get(row.object.digest), encoder.encode("---\ntype: Note\n---\n# Note\r\n"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Git capture rejects non-UTF-8 path bytes before path admission", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-transfer-git-path-"));
+  try {
+    await execFileAsync("git", ["init", "--quiet", "--initial-branch=board"], { cwd: root });
+    await execFileAsync("git", ["config", "user.email", "proof@example.test"], { cwd: root });
+    await execFileAsync("git", ["config", "user.name", "proof"], { cwd: root });
+    const rootBlob = (await gitWithInput(root, ["hash-object", "-w", "--stdin"], encoder.encode("---\nokf_version: '0.2'\n---\n# Bundle\n"))).toString("ascii").trim();
+    const badBlob = (await gitWithInput(root, ["hash-object", "-w", "--stdin"], encoder.encode("---\ntype: Note\n---\n# Invalid path\n"))).toString("ascii").trim();
+    const treeInput = Buffer.concat([
+      Buffer.from(`100644 blob ${badBlob}\tbad`, "ascii"),
+      Buffer.from([0xff]),
+      Buffer.from(".md\0", "ascii"),
+      Buffer.from(`100644 blob ${rootBlob}\tindex.md\0`, "ascii"),
+    ]);
+    const tree = (await gitWithInput(root, ["mktree", "-z"], treeInput)).toString("ascii").trim();
+    const commit = (await execFileAsync("git", ["commit-tree", tree, "-m", "invalid path"], { cwd: root })).stdout.trim();
+    await execFileAsync("git", ["update-ref", "refs/heads/board", commit], { cwd: root });
+
+    await assert.rejects(
+      () => captureGitBundle({ repository: root, sourceAuthorityId: authority, expectedCommit: commit, maxAttempts: 1 }),
+      (error: unknown) => error instanceof BundleTransferError && error.code === "INVALID_SOURCE" && /strict UTF-8/.test(error.message),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("physical artifact writer and reader enforce exact closed POSIX layout and permissions", { skip: process.platform === "win32" }, async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "superbee-transfer-artifact-"));
   await chmod(parent, 0o700);
@@ -231,6 +305,57 @@ test("physical artifact writer and reader enforce exact closed POSIX layout and 
     await rm(hard);
     await chmod(object, 0o644);
     await assert.rejects(() => readBundleTransferArtifactDirectory(destination), /mode/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("artifact writer rejects malformed and extra map keys before creating any filesystem result", { skip: process.platform === "win32" }, async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "superbee-transfer-writer-input-"));
+  await chmod(parent, 0o700);
+  const destination = path.join(parent, "artifact");
+  const escaped = path.join(path.dirname(parent), `${path.basename(parent)}-escaped-object`);
+  try {
+    const artifact = await createBundleTransferArtifact(await snapshot());
+    const malformedObjects = new Map(artifact.objects) as Map<unknown, Uint8Array>;
+    malformedObjects.set(`sha256:../../../../${path.basename(escaped)}`, Uint8Array.of(1));
+    await assert.rejects(
+      () => writeBundleTransferArtifactDirectory(destination, { manifest: artifact.manifest, objects: malformedObjects as BundleTransferArtifactV1["objects"] }),
+      (error: unknown) => error instanceof BundleTransferError && error.code === "INVALID_ARTIFACT" && /canonical SHA-256/.test(error.message),
+    );
+    await assert.rejects(() => lstat(escaped), (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT");
+    assert.deepEqual(await readdir(parent), []);
+
+    const extraObjects = new Map(artifact.objects);
+    extraObjects.set(`sha256:${"0".repeat(64)}`, new Uint8Array());
+    await assert.rejects(
+      () => writeBundleTransferArtifactDirectory(destination, { manifest: artifact.manifest, objects: extraObjects }),
+      (error: unknown) => error instanceof BundleTransferError && error.code === "OBJECT_MISMATCH" && /equal the manifest digest set/.test(error.message),
+    );
+    assert.deepEqual(await readdir(parent), []);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+    await rm(escaped, { force: true });
+  }
+});
+
+test("artifact writer owns an exact snapshot before asynchronous verification", { skip: process.platform === "win32" }, async () => {
+  const parent = await mkdtemp(path.join(tmpdir(), "superbee-transfer-writer-snapshot-"));
+  await chmod(parent, 0o700);
+  const destination = path.join(parent, "artifact");
+  try {
+    const artifact = await createBundleTransferArtifact(await snapshot());
+    const expectedManifest = structuredClone(artifact.manifest);
+    const expectedObjects = new Map([...artifact.objects].map(([digest, bytes]) => [digest, bytes.slice()]));
+    const writing = writeBundleTransferArtifactDirectory(destination, artifact);
+    artifact.manifest.documents[0]!.id = "mutated-after-call";
+    for (const bytes of artifact.objects.values()) bytes.fill(0x7f);
+    (artifact.objects as Map<unknown, unknown>).clear();
+    await writing;
+
+    const read = await readBundleTransferArtifactDirectory(destination);
+    assert.deepEqual(read.manifest, expectedManifest);
+    for (const [digest, bytes] of expectedObjects) assert.deepEqual(read.objects.get(digest), bytes);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

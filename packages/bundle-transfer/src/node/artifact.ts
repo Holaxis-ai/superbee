@@ -8,9 +8,58 @@ import { BundleTransferError } from "../errors.js";
 import { validateBundleTransferManifest, verifyBundleTransferArtifact } from "../manifest.js";
 import { BUNDLE_TRANSFER_LIMITS_V1, type BundleTransferArtifactV1, type Sha256Digest } from "../types.js";
 
+const digestPattern = /^sha256:[0-9a-f]{64}$/u;
+
 function objectPath(root: string, digest: Sha256Digest): string {
   const hex = digest.slice("sha256:".length);
   return path.join(root, "objects", "sha256", hex.slice(0, 2), hex.slice(2));
+}
+
+function snapshotWriterInput(artifact: BundleTransferArtifactV1): { manifest: unknown; objects: Map<Sha256Digest, Uint8Array> } {
+  if (typeof artifact !== "object" || artifact === null || Array.isArray(artifact)) {
+    throw new BundleTransferError("INVALID_ARTIFACT", "writer input must be an object");
+  }
+  const prototype = Object.getPrototypeOf(artifact);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new BundleTransferError("INVALID_ARTIFACT", "writer input must be a plain object");
+  }
+  if (Object.getOwnPropertySymbols(artifact).length !== 0) {
+    throw new BundleTransferError("INVALID_ARTIFACT", "writer input has unknown symbol fields");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(artifact);
+  const keys = Object.keys(descriptors).sort();
+  if (keys.length !== 2 || keys[0] !== "manifest" || keys[1] !== "objects") {
+    throw new BundleTransferError("INVALID_ARTIFACT", "writer input has missing or unknown fields");
+  }
+  for (const descriptor of Object.values(descriptors)) {
+    if (!descriptor.enumerable || descriptor.get || descriptor.set) {
+      throw new BundleTransferError("INVALID_ARTIFACT", "writer input may not use hidden fields or accessors");
+    }
+  }
+
+  // Canonicalization is also a synchronous, closed deep copy. Nothing caller-owned remains live
+  // across the first asynchronous digest or filesystem operation.
+  const manifestBytes = canonicalTransferJsonBytes(descriptors.manifest!.value);
+  const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(manifestBytes)) as unknown;
+  const sourceObjects = descriptors.objects!.value as unknown;
+  if (!(sourceObjects instanceof Map) || Object.getPrototypeOf(sourceObjects) !== Map.prototype
+    || Reflect.ownKeys(sourceObjects).length !== 0) {
+    throw new BundleTransferError("INVALID_ARTIFACT", "writer objects must be an exact Map");
+  }
+  const objects = new Map<Sha256Digest, Uint8Array>();
+  for (const [key, value] of Map.prototype.entries.call(sourceObjects) as IterableIterator<[unknown, unknown]>) {
+    if (typeof key !== "string" || !digestPattern.test(key)) {
+      throw new BundleTransferError("INVALID_ARTIFACT", "writer object key is not a canonical SHA-256 digest");
+    }
+    if (!(value instanceof Uint8Array)
+      || (typeof SharedArrayBuffer !== "undefined" && value.buffer instanceof SharedArrayBuffer)) {
+      throw new BundleTransferError("INVALID_ARTIFACT", "writer object bytes must be an owned Uint8Array", { subject: key });
+    }
+    const owned = new Uint8Array(value.byteLength);
+    owned.set(value);
+    objects.set(key as Sha256Digest, owned);
+  }
+  return { manifest, objects };
 }
 
 async function assertDirectory(target: string, ownerOnly = true): Promise<void> {
@@ -140,6 +189,17 @@ export async function readBundleTransferArtifactDirectory(root: string): Promise
 export async function writeBundleTransferArtifactDirectory(destination: string, artifact: BundleTransferArtifactV1): Promise<void> {
   requirePosix();
   if (!path.isAbsolute(destination)) throw new BundleTransferError("INVALID_ARTIFACT", "artifact destination must be absolute");
+  const snapshot = snapshotWriterInput(artifact);
+  const manifest = await verifyBundleTransferArtifact(snapshot.manifest, async (digest) => {
+    const bytes = snapshot.objects.get(digest);
+    if (!bytes) throw new BundleTransferError("OBJECT_MISMATCH", "artifact object is missing from the writer input", { subject: digest });
+    return bytes;
+  });
+  const expected = new Set<Sha256Digest>();
+  for (const row of [...manifest.documents, ...manifest.reserved, ...manifest.blobs]) expected.add(row.object.digest);
+  if (snapshot.objects.size !== expected.size || [...snapshot.objects.keys()].some((digest) => !expected.has(digest))) {
+    throw new BundleTransferError("OBJECT_MISMATCH", "writer object inventory must equal the manifest digest set exactly");
+  }
   const parent = path.dirname(destination);
   await assertDirectory(parent, false);
   const canonicalParent = await realpath(parent);
@@ -153,13 +213,9 @@ export async function writeBundleTransferArtifactDirectory(destination: string, 
   try {
     await mkdir(path.join(partial, "objects"), { mode: 0o700 });
     await mkdir(path.join(partial, "objects", "sha256"), { mode: 0o700 });
-    const manifest = await verifyBundleTransferArtifact(artifact.manifest, async (digest) => {
-      const bytes = artifact.objects.get(digest);
-      if (!bytes) throw new BundleTransferError("OBJECT_MISMATCH", "artifact object is missing from the writer input", { subject: digest });
-      return bytes;
-    });
     const fanouts = new Set<string>();
-    for (const [digest, bytes] of artifact.objects) {
+    for (const digest of expected) {
+      const bytes = snapshot.objects.get(digest)!;
       const hex = digest.slice("sha256:".length);
       const fanout = hex.slice(0, 2);
       if (!fanouts.has(fanout)) {
