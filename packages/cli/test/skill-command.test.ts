@@ -19,7 +19,9 @@ import {
   rmSync,
   symlinkSync,
 } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import {
@@ -1173,3 +1175,35 @@ test("skill usage errors: missing/unknown subcommand and bad scope are USAGE, no
     );
   }
 });
+
+test(
+  "a FIFO where an owned asset belongs converges to the shipped file instead of blocking the install",
+  { skip: process.platform === "win32" ? "mkfifo is POSIX-only" : false },
+  async () => {
+    const { base, executable } = scratch();
+    const cwd = path.join(base, "project");
+    await runSkill(["install"], { cwd, executable });
+    const dir = path.join(cwd, ".claude", "skills", "superbee");
+    const asset = path.join(dir, "SKILL.md");
+    rmSync(asset);
+    execFileSync("mkfifo", [asset]);
+
+    // In-process this second install would wait forever for a writer on that pipe, so the timeout
+    // has to belong to a process the test can outlive: a hang here fails, it does not hang the run.
+    execFileSync(
+      process.execPath,
+      [
+        "--import",
+        fileURLToPath(new URL("./ts-loader.mjs", import.meta.url)),
+        "-e",
+        `import("${new URL("../src/commands/skill.ts", import.meta.url).href}").then((m) =>` +
+          ` m.skill(["install", "--json"], { cwd: ${JSON.stringify(cwd)}, env: {},` +
+          ` executable: ${JSON.stringify(executable)}, stdout: () => {} }));`,
+      ],
+      { timeout: 20_000 },
+    );
+
+    assert.equal(lstatSync(asset).isFile(), true);
+    assert.equal(readFileSync(asset, "utf8"), ASSET_FILES["SKILL.md"]);
+  },
+);
