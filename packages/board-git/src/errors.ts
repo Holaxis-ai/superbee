@@ -103,6 +103,36 @@ function firstGitLine(f: GitFailure): string {
 }
 
 /**
+ * Both git-output probes below scan lines instead of matching a regex with a `.*` or `\S+` gap
+ * between two literals: that shape backtracks quadratically on the long stderr a large fetch or
+ * push can produce.
+ */
+function hasRejectedReason(text: string, reasons: readonly string[]): boolean {
+  for (const line of text.split("\n")) {
+    const lower = line.toLowerCase();
+    const marker = lower.indexOf("[rejected]");
+    if (marker === -1) continue;
+    if (reasons.some((reason) => lower.indexOf(`(${reason})`, marker) !== -1)) return true;
+  }
+  return false;
+}
+
+function hasUnmergeableOriginRef(text: string): boolean {
+  const suffix = " - not something we can merge";
+  for (const line of text.split("\n")) {
+    const lower = line.toLowerCase();
+    const at = lower.indexOf(suffix);
+    if (at <= 0) continue;
+    const ref = lower.slice(0, at);
+    const start = ref.lastIndexOf("origin/");
+    if (start === -1) continue;
+    const candidate = ref.slice(start);
+    if (candidate.length > "origin/".length && !/\s/.test(candidate)) return true;
+  }
+  return false;
+}
+
+/**
  * Classify one failed git invocation into a `BoardGitError` — the ONE chokepoint between raw git
  * and the structured surface: no raw git strand ever reaches stdout; every failure lands typed.
  * Matching prefers STABLE signals (spawn errno, `index.lock`, ref names) over localized prose
@@ -145,7 +175,7 @@ export function classifyGitError(f: GitFailure): BoardGitError {
   }
   if (
     op === "push" &&
-    (/\[rejected\].*\((?:fetch first|non-fast-forward)\)/i.test(text) ||
+    (hasRejectedReason(text, ["fetch first", "non-fast-forward"]) ||
       /Updates were rejected because (?:the remote contains work|the tip of your current branch is behind)/i.test(text))
   ) {
     return new BoardGitError(
@@ -158,7 +188,7 @@ export function classifyGitError(f: GitFailure): BoardGitError {
     /'origin' does not appear to be a git repository/i.test(text) ||
     /No such remote:? '?origin'?/i.test(text) ||
     /invalid upstream ['"]?origin\//i.test(text) ||
-    /origin\/[^\s]+ - not something we can merge/i.test(text) ||
+    hasUnmergeableOriginRef(text) ||
     /couldn'?t find remote ref/i.test(text) ||
     /src refspec [^\s]+ does not match any/i.test(text)
   ) {
