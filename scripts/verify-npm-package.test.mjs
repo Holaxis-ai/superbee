@@ -388,6 +388,18 @@ test("npm subprocesses discard inherited lifecycle, workspace, prefix, and bin s
   });
 });
 
+test("a '__proto__' environment entry is carried as an own property, never as a prototype write", () => {
+  const clean = sanitizedNpmEnvironment(
+    // Computed key: a literal `__proto__:` is the prototype-setter syntax, not an own property.
+    { ["__proto__"]: "inherited", PATH: "/runtime/bin" },
+    "/isolated/npmrc",
+    null,
+  );
+  assert.equal(Object.getPrototypeOf(clean), Object.prototype);
+  assert.equal(Object.getOwnPropertyDescriptor(clean, "__proto__")?.value, "inherited");
+  assert.equal(({}).__proto__, Object.prototype);
+});
+
 test("package proof modes separate dirty-tree verification from strict release construction", () => {
   assert.deepEqual(verificationPolicy("local"), { mode: "local", artifactChannel: "local-dev" });
   assert.deepEqual(verificationPolicy("release"), { mode: "release", artifactChannel: "npm-package" });

@@ -1,15 +1,16 @@
 /**
- * Markdown + YAML frontmatter (de)serialization via `gray-matter`.
+ * Markdown + YAML frontmatter parsing and gray-matter-compatible serialization.
  *
- * This is the ONLY module that touches the YAML layer; every other module works
- * with the already-parsed {@link Frontmatter}/body shapes. gray-matter delimits
- * frontmatter with `---` lines (OKF §4.1) and preserves unknown keys on
- * round-trip (OKF v0.1 §9 / v0.2 §11 permissive consumption).
+ * This is the full-document YAML parse/serialize surface; every other module works with the
+ * already-parsed {@link Frontmatter}/body shapes. The runtime-neutral root-marker reader shares
+ * the same exact delimiter splitter. Unknown keys are preserved on round-trip (OKF v0.1 §9 /
+ * v0.2 §11 permissive consumption).
  */
 
 import matter from "gray-matter";
 import yaml from "js-yaml";
 import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
+import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
 
 export { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
@@ -83,35 +84,24 @@ function normalizeFrontmatter(data: Record<string, unknown>): Frontmatter {
  * Parse raw markdown into `{ frontmatter, body }`. Missing frontmatter yields `{}`. Malformed YAML
  * throws an attributed {@link MalformedDocumentError} (naming `context` when given).
  *
- * Passing parser options bypasses gray-matter's input cache. Without options, gray-matter can cache
- * a still-unparsed file before YAML parsing, causing a later parse of the same malformed bytes to
- * return empty data instead of throwing again. The custom YAML engine also preserves timestamp-like
- * scalars as strings so date-only values retain their original semantic shape.
+ * The shared splitter recognizes only exact OKF delimiters, and the fixed YAML engine preserves
+ * timestamp-like scalars as strings so date-only values retain their original semantic shape.
  */
 export function parseMarkdown(
   raw: string,
   context?: string,
 ): { frontmatter: Frontmatter; body: string } {
-  // An exact opening delimiter asserts that the document has YAML frontmatter. gray-matter accepts
-  // a missing closing delimiter when the remaining bytes happen to be valid YAML (Markdown heading
-  // lines are YAML comments), then returns an empty body. That is lossy ambiguity, not a successful
-  // parse: every caller must see the same attributed malformed-document result before it can read,
-  // export, or rewrite a body that silently disappeared.
-  if (/^---(?:\r?\n|$)/.test(raw)) {
-    const firstLineEnd = raw.indexOf("\n");
-    const afterOpening = firstLineEnd === -1 ? "" : raw.slice(firstLineEnd + 1);
-    if (!/^---\r?$/m.test(afterOpening)) {
-      throw new MalformedDocumentError(context, new Error("unterminated YAML frontmatter delimiter"));
-    }
-  }
+  const split = splitLeadingFrontmatter(raw, context);
+  if (!("yamlSource" in split)) return { frontmatter: {} as Frontmatter, body: split.body };
+
   let parsed;
   try {
-    parsed = matter(raw, { engines: { yaml: yamlEngine } });
+    parsed = yamlEngine.parse(split.yamlSource);
   } catch (err) {
     throw new MalformedDocumentError(context, err);
   }
-  const frontmatter = normalizeFrontmatter((parsed.data ?? {}) as Record<string, unknown>);
-  return { frontmatter, body: parsed.content };
+  const frontmatter = normalizeFrontmatter(parsed as Record<string, unknown>);
+  return { frontmatter, body: split.body };
 }
 
 /** Match the exact body shape emitted by the document serializer. */

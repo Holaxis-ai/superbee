@@ -74,6 +74,7 @@ import {
   type PersistentInstallAuthority,
 } from "../install-authority.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
+import { readRegularFileNoFollowSync, readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
 
 export { isSafeManifestEntry };
@@ -342,8 +343,11 @@ function readManifest(dir: string): SkillManifest | undefined | null {
     return undefined;
   }
   if (manifestStats.isSymbolicLink() || !manifestStats.isFile()) return null;
+  const read = readRegularFileTextNoFollowSync(manifestPath);
+  if (read.state === "missing") return undefined;
+  if (read.state === "unsafe") return null;
   try {
-    return parseOwnedSkillManifest(JSON.parse(readFileSync(manifestPath, "utf8")));
+    return parseOwnedSkillManifest(JSON.parse(read.text));
   } catch {
     return null;
   }
@@ -499,8 +503,11 @@ function installIntoDir(
     atomicWriteFileSync(manifestPath, content);
     changed = true;
   };
-  const currentManifest =
-    !isSymlink(manifestPath) && existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : undefined;
+  const readManifestText = (): string | undefined => {
+    const read = readRegularFileTextNoFollowSync(manifestPath);
+    return read.state === "present" ? read.text : undefined;
+  };
+  const currentManifest = readManifestText();
   // Steady state (current == final) and resumed-upgrade state (current == transitional) skip this
   // write; anything else (fresh install, v1 manifest, symlinked/hand-edited manifest) gets the
   // transitional content, which for a fresh install IS the final content (union == asset set).
@@ -515,9 +522,15 @@ function installIntoDir(
     // a dest that is a directory is EMPTY here (non-empty ones were refused above) and converges.
     const destIsLink = isSymlink(destPath);
     const destIsDir = !destIsLink && isDirectory(destPath);
-    const current = !destIsLink && !destIsDir && existsSync(destPath) ? readFileSync(destPath) : undefined;
-    if (destIsLink || destIsDir || current === undefined || !bytes.equals(current)) {
-      if (destIsLink) rmSync(destPath, { force: true });
+    // Everything else is read through the descriptor guard, which also settles the question a path
+    // read cannot ask: a FIFO or device at the destination is refused rather than opened, where
+    // `readFileSync` would wait forever for a writer that is not coming. Such a leaf is drift in a
+    // tool-owned folder, so it converges the same way a link does — removed, then written.
+    const read = destIsLink || destIsDir ? undefined : readRegularFileNoFollowSync(destPath);
+    const destIsIrregular = read?.state === "unsafe";
+    const current = read?.state === "present" ? read.bytes : undefined;
+    if (destIsLink || destIsDir || destIsIrregular || current === undefined || !bytes.equals(current)) {
+      if (destIsLink || destIsIrregular) rmSync(destPath, { force: true });
       if (destIsDir) rmdirSync(destPath);
       atomicWriteFileSync(destPath, bytes);
       changed = true;
@@ -531,7 +544,7 @@ function installIntoDir(
     }
   }
   // FINAL manifest: exactly the asset set — written only now that the disk matches it.
-  const manifestAfterConverge = existsSync(manifestPath) ? readFileSync(manifestPath, "utf8") : undefined;
+  const manifestAfterConverge = readManifestText();
   if (manifestAfterConverge !== finalManifest) {
     writeManifest(finalManifest);
   }
@@ -663,18 +676,13 @@ export function skillStatusForDir(
     receiptDigestsMatch = manifest.kind === "legacy" || (manifest.receipt_valid && manifest.file_sha256 !== null);
     for (const relativePath of assets.files) {
       const installedPath = join(dir, ...relativePath.split("/"));
-      let regularFile = false;
-      try {
-        regularFile = lstatSync(installedPath).isFile();
-      } catch {
-        regularFile = false;
-      }
-      if (!regularFile) {
+      const read = readRegularFileNoFollowSync(installedPath);
+      if (read.state !== "present") {
         assetsMatch = false;
         receiptDigestsMatch = false;
         break;
       }
-      const installed = readFileSync(installedPath);
+      const installed = read.bytes;
       const shipped = readFileSync(join(assets.root, relativePath));
       if (!installed.equals(shipped)) assetsMatch = false;
       if (
