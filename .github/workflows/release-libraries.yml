@@ -61,6 +61,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Release-source validation consumes the newest CI verdict already recorded on this exact
+          # commit — ordinarily the push-to-main run; a rerun or manual dispatch of the same
+          # workflow counts equally — and never reruns CI. The newest repository-workflow check run
+          # named after the canonical required context decides. A pending or not-yet-visible verdict
+          # is polled briefly (a full CI run takes ~6 minutes); a failed, missing, or unqueryable
+          # verdict refuses fail-closed: never stage bytes whose source CI cannot vouch for.
           for attempt in $(seq 1 16); do
             VERDICT="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/check-runs?check_name=CI%20required%20lanes&filter=latest&per_page=100" \
               --jq '([.check_runs[] | select(.app.slug == "github-actions")] | sort_by(.started_at) | last) as $r
@@ -75,7 +81,7 @@ jobs:
               *) echo "::error::CI required lanes on $GITHUB_SHA is '$VERDICT'; fix CI on main before tagging"; exit 1 ;;
             esac
           done
-          test "$VERDICT" = "success" || { echo "::error::no successful CI required lanes verdict appeared on $GITHUB_SHA"; exit 1; }
+          test "$VERDICT" = "success" || { echo "::error::no successful 'CI required lanes' verdict appeared on $GITHUB_SHA (last state: $VERDICT); wait for the push run on main, then re-push the tag"; exit 1; }
       - name: Build both runtime libraries
         run: npm run build -w @superbee/core -w @superbee/server
       - name: Pack once and prove the literal pair

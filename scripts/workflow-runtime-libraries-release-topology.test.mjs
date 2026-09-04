@@ -8,6 +8,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => readFileSync(path.join(root, file), "utf8");
 const release = read(".github/workflows/release-libraries.yml");
 const finalize = read(".github/workflows/release-libraries-finalize.yml");
+const cliRelease = read(".github/workflows/release.yml");
 const verifier = read("scripts/verify-runtime-libraries.mjs");
 
 function jobs(text) {
@@ -26,6 +27,19 @@ function jobs(text) {
     }
   }
   return Object.fromEntries(Object.entries(found).map(([name, linesForJob]) => [name, linesForJob.join("\n")]));
+}
+
+function runBody(text, stepName) {
+  const start = text.indexOf(`- name: ${stepName}`);
+  assert.notEqual(start, -1, `${stepName} must exist`);
+  const run = text.indexOf("run: |", start);
+  assert.notEqual(run, -1, `${stepName} must have a run block`);
+  const body = [];
+  for (const line of text.slice(text.indexOf("\n", run) + 1).split("\n")) {
+    if (line !== "" && !line.startsWith("          ")) break;
+    body.push(line.slice(10));
+  }
+  return body.join("\n");
 }
 
 test("core and server form one restricted exact-version release set", () => {
@@ -86,6 +100,11 @@ test("release source and first-version boundaries fail closed", () => {
   assert.match(build, /check-runs\?check_name=CI%20required%20lanes&filter=latest&per_page=100/);
   assert.match(build, /select\(\.app\.slug == "github-actions"\)/);
   assert.match(build, /test "\$VERDICT" = "success" \|\| \{[^\n]*exit 1; \}/);
+  assert.equal(
+    runBody(release, "Require the CI verdict already recorded on this exact commit"),
+    runBody(cliRelease, "Require the CI verdict already recorded on this exact commit"),
+    "the runtime-library release inherits the empirically tested CLI verdict gate verbatim",
+  );
   assert.match(build, /if \[ "\$V" = "0\.1\.0" \]; then BOOTSTRAP=true/);
   assert.match(core, /if: needs\.build\.outputs\.bootstrap != 'true'/);
   assert.match(server, /needs\.build\.outputs\.bootstrap != 'true'/);
