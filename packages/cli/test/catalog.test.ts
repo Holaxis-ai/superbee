@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle } from "@superbee/core";
+import { filesystemMutationLockPath, initBundle } from "@superbee/core";
 
 import {
   addCatalogEntry,
@@ -16,7 +17,7 @@ import {
   resolveCatalogEntry,
 } from "../src/catalog.js";
 import { CliError } from "../src/errors.js";
-import { ensureUserStateRoot } from "../src/user-state.js";
+import { canonicalUserStateDir, ensureUserStateRoot } from "../src/user-state.js";
 
 async function fixture(): Promise<{ root: string; home: string; first: string; second: string }> {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), "agentstate-lite-catalog-test-")));
@@ -151,6 +152,69 @@ test("concurrent in-process additions serialize without a lost update", async ()
       addCatalogEntry("two", f.second, { home: f.home, createId: () => id("2") }),
     ]);
     assert.deepEqual((await loadCatalog(f.home)).entries.map((entry) => entry.label), ["one", "two"]);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("catalog mutation cannot acquire the initialization lease under catalog.lock", async () => {
+  const f = await fixture();
+  const stateRoot = await ensureUserStateRoot(f.home);
+  assert.equal(stateRoot, canonicalUserStateDir(f.home));
+  const initializationLock = filesystemMutationLockPath(stateRoot, stateRoot);
+  let planted = false;
+  try {
+    const added = await addCatalogEntry("one", f.first, {
+      home: f.home,
+      createId: () => {
+        assert.equal(statSync(catalogLockPath(f.home)).isFile(), true, "catalog.lock must already be held");
+        mkdirSync(path.dirname(initializationLock), { recursive: true, mode: 0o700 });
+        mkdirSync(initializationLock, { mode: 0o700 });
+        planted = true;
+        writeFileSync(
+          path.join(initializationLock, "owner.json"),
+          `${JSON.stringify({
+            pid: process.pid,
+            hostname: hostname(),
+            created_at_ms: Date.now(),
+            token: "catalog-order-sentinel",
+            target: stateRoot,
+          })}\n`,
+          { mode: 0o600 },
+        );
+        return id("1");
+      },
+    });
+    assert.equal(added.changed, true);
+    assert.equal((await loadCatalog(f.home)).entries[0]?.label, "one");
+  } finally {
+    if (planted) await rm(initializationLock, { recursive: true, force: true });
+    await rm(f.root, { recursive: true, force: true });
+  }
+});
+
+test("catalog mutation refuses a root replaced after catalog.lock acquisition", async () => {
+  const f = await fixture();
+  const stateRoot = await ensureUserStateRoot(f.home);
+  const displacedRoot = `${stateRoot}.displaced`;
+  const sentinelPath = path.join(stateRoot, "foreign-sentinel");
+  const sentinel = Buffer.from([0x00, 0xff, 0x53, 0x42, 0x7f]);
+  try {
+    await assert.rejects(
+      () => addCatalogEntry("one", f.first, {
+        home: f.home,
+        createId: () => {
+          assert.equal(statSync(catalogLockPath(f.home)).isFile(), true, "catalog.lock must already be held");
+          renameSync(stateRoot, displacedRoot);
+          mkdirSync(stateRoot, { mode: 0o700 });
+          writeFileSync(sentinelPath, sentinel, { mode: 0o600 });
+          return id("1");
+        },
+      }),
+      /not owned by this product/,
+    );
+    assert.deepEqual(await readFile(sentinelPath), sentinel);
+    assert.deepEqual(await readdir(stateRoot), ["foreign-sentinel"]);
   } finally {
     await rm(f.root, { recursive: true, force: true });
   }
