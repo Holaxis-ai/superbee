@@ -202,6 +202,13 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Scanned rather than `/\/+$/`-replaced, whose unanchored start backtracks quadratically. */
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === "/") end -= 1;
+  return value.slice(0, end);
+}
+
 /** URL-encode a concept id's path segments individually, preserving `/` as the separator. */
 function encodeId(id: ConceptId): string {
   return id
@@ -231,7 +238,7 @@ export class RemoteBackend implements StorageBackend {
   private readonly maxRetries: number;
 
   constructor(options: RemoteBackendOptions) {
-    this.baseUrl = options.baseUrl.replace(/\/+$/, "");
+    this.baseUrl = trimTrailingSlashes(options.baseUrl);
     this.bundle = options.bundle;
     this.fetchImpl = options.fetchImpl ?? ((request: Request) => globalThis.fetch(request));
     this.authToken = options.authToken;
