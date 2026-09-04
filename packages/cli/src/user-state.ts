@@ -37,6 +37,7 @@ import {
 import { homedir } from "node:os";
 import path, { dirname, isAbsolute, join, relative, sep } from "node:path";
 
+import { withFilesystemMutationLock } from "@superbee/core";
 import { staticBuildIdentity } from "./build-identity.js";
 
 /**
@@ -492,10 +493,18 @@ function ensureStateRootGitignoreSync(root: string, input?: UserStateInput): voi
   }
 }
 
-async function initializeCanonicalRoot(root: string, input?: UserStateInput): Promise<void> {
-  const policy = resolveUserStatePolicy(input);
-  const parent = dirname(root);
-  await ensureParentDirectory(parent);
+interface UserStateRootInitializationHooks {
+  /** @internal Deterministic child-process barrier after root creation and before ownership commit. */
+  readonly beforeMarkerPublication?: () => void | Promise<void>;
+  /** @internal Forces lock placement in the exclusion test; production always uses the default. */
+  readonly lockRoot?: string;
+}
+
+async function publishCanonicalRoot(
+  root: string,
+  input: UserStateInput | undefined,
+  hooks: UserStateRootInitializationHooks,
+): Promise<void> {
   let created = false;
   try {
     await mkdir(root, { mode: DIR_MODE });
@@ -506,20 +515,32 @@ async function initializeCanonicalRoot(root: string, input?: UserStateInput): Pr
   await assertRealDirectory(root);
   if (created) {
     try {
+      await hooks.beforeMarkerPublication?.();
       await writeFileAtomic0600(root, USER_STATE_MARKER_FILE_NAME, USER_STATE_MARKER_BYTES, {}, input);
     } catch (error) {
       await rmdir(root).catch(() => {});
       throw error;
     }
   }
-  if (!created) {
-    // A second process may observe the exclusively-created directory before its owner publishes
-    // the tiny marker. Bound that ordinary first-write race without adopting a persistent
-    // marker-less directory: after ~250 ms it is still a conflict requiring setup inspection.
-    for (let attempt = 0; attempt < 50 && !(await hasExactUserStateMarker(root, input)); attempt += 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 5));
-    }
+  const marker = await inspectUserStateMarker(root, input);
+  if (!marker.recognized) {
+    throw new Error("canonical Superbee user-state root is not owned by this product");
   }
+}
+
+async function initializeCanonicalRoot(
+  root: string,
+  input?: UserStateInput,
+  hooks: UserStateRootInitializationHooks = {},
+): Promise<void> {
+  const policy = resolveUserStatePolicy(input);
+  const parent = dirname(root);
+  await ensureParentDirectory(parent);
+  const lockOptions = hooks.lockRoot === undefined
+    ? { portableRoot: root }
+    : { portableRoot: root, lockRoot: hooks.lockRoot };
+  await withFilesystemMutationLock(root, () => publishCanonicalRoot(root, input, hooks), lockOptions);
+
   const marker = await inspectUserStateMarker(root, input);
   if (!marker.recognized) {
     throw new Error("canonical Superbee user-state root is not owned by this product");
@@ -553,6 +574,20 @@ export async function ensureUserStateRoot(input: UserStateInput = homedir()): Pr
   return root;
 }
 
+/** @internal Test-only entry point for deterministic initialization publication barriers. */
+export async function ensureUserStateRootForTest(
+  input: UserStateInput,
+  hooks: UserStateRootInitializationHooks,
+): Promise<string> {
+  const packageName = staticBuildIdentity().package.name;
+  if (packageName === LEGACY_BRIDGE_PACKAGE_NAME) {
+    throw new Error("the canonical-root initialization seam is unavailable to the legacy bridge");
+  }
+  const root = userStateDirForPackage(input, packageName);
+  await initializeCanonicalRoot(root, input, hooks);
+  return root;
+}
+
 function ensureRealDirectorySync(directory: string): void {
   const status = lstatSync(directory);
   if (status.isSymbolicLink() || !status.isDirectory()) {
@@ -578,7 +613,10 @@ function writeMarkerExclusiveSync(root: string, input?: UserStateInput): void {
   }
 }
 
-/** Synchronous twin used only by the synchronous update-cache lease authority. */
+/**
+ * Non-concurrent synchronous test boundary. Production sources do not call this helper, and it
+ * deliberately makes no cross-process initialization guarantee; callers must serialize its use.
+ */
 export function ensureUserStateRootSync(input: UserStateInput = homedir()): string {
   const packageName = staticBuildIdentity().package.name;
   const policy = resolveUserStatePolicy(input);
