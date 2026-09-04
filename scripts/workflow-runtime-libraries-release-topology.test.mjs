@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => readFileSync(path.join(root, file), "utf8");
@@ -50,36 +50,45 @@ function git(cwd, args) {
   return result.stdout.trim();
 }
 
-function runSourceGuard({ currentVersion, priorTag, mainMatches = true }) {
-  const dir = mkdtempSync(path.join(os.tmpdir(), "runtime-library-source-guard-"));
-  mkdirSync(path.join(dir, "scripts"), { recursive: true });
-  mkdirSync(path.join(dir, "packages", "core"), { recursive: true });
-  mkdirSync(path.join(dir, "packages", "server"), { recursive: true });
-  writeFileSync(path.join(dir, "scripts", "strict-semver.mjs"), read("scripts/strict-semver.mjs"));
-  git(dir, ["init", "--quiet"]);
-  git(dir, ["config", "user.email", "proof@example.test"]);
-  git(dir, ["config", "user.name", "proof"]);
-  writeFileSync(path.join(dir, "prior"), "prior\n");
-  git(dir, ["add", "."]);
-  git(dir, ["commit", "--quiet", "-m", "prior"]);
-  const priorSha = git(dir, ["rev-parse", "HEAD"]);
-  if (priorTag) git(dir, ["tag", priorTag]);
+function runSourceGuard({ currentVersion, priorTag, mainMatches = true, depth = "full" }) {
+  const fixture = mkdtempSync(path.join(os.tmpdir(), "runtime-library-source-guard-"));
+  const source = path.join(fixture, "source");
+  const remote = path.join(fixture, "remote.git");
+  const checkout = path.join(fixture, "checkout");
+  mkdirSync(source);
+  git(source, ["init", "--quiet", "--initial-branch=main"]);
+  git(source, ["config", "user.email", "proof@example.test"]);
+  git(source, ["config", "user.name", "proof"]);
+  writeFileSync(path.join(source, "prior"), "prior\n");
+  git(source, ["add", "."]);
+  git(source, ["commit", "--quiet", "-m", "prior"]);
+  const priorSha = git(source, ["rev-parse", "HEAD"]);
+  if (priorTag) git(source, ["tag", priorTag]);
+  mkdirSync(path.join(source, "scripts"), { recursive: true });
+  mkdirSync(path.join(source, "packages", "core"), { recursive: true });
+  mkdirSync(path.join(source, "packages", "server"), { recursive: true });
+  writeFileSync(path.join(source, "scripts", "strict-semver.mjs"), read("scripts/strict-semver.mjs"));
   const manifest = `${JSON.stringify({ version: currentVersion }, null, 2)}\n`;
-  writeFileSync(path.join(dir, "packages", "core", "package.json"), manifest);
-  writeFileSync(path.join(dir, "packages", "server", "package.json"), manifest);
-  git(dir, ["add", "."]);
-  git(dir, ["commit", "--quiet", "-m", "current"]);
-  const currentSha = git(dir, ["rev-parse", "HEAD"]);
-  const step = path.join(dir, "source-step.sh");
-  const output = path.join(dir, "output");
+  writeFileSync(path.join(source, "packages", "core", "package.json"), manifest);
+  writeFileSync(path.join(source, "packages", "server", "package.json"), manifest);
+  git(source, ["add", "."]);
+  git(source, ["commit", "--quiet", "-m", "current"]);
+  const currentSha = git(source, ["rev-parse", "HEAD"]);
+  git(source, ["tag", `libraries/v${currentVersion}`]);
+  git(fixture, ["clone", "--quiet", "--bare", source, remote]);
+  const cloneArgs = ["clone", "--quiet"];
+  if (depth === "shallow") cloneArgs.push("--depth=1", "--branch", `libraries/v${currentVersion}`);
+  cloneArgs.push(pathToFileURL(remote).href, checkout);
+  git(fixture, cloneArgs);
+  const step = path.join(checkout, "source-step.sh");
+  const output = path.join(checkout, "output");
   writeFileSync(step, runBody(release, "Resolve the synchronized version from the libraries tag"));
   const wrapper = [
     'gh() { printf "%s\\n" "$MAIN_SHA"; }',
-    'git() { if [ "${1:-}" = "fetch" ]; then return 0; fi; command git "$@"; }',
     'source "$SOURCE_STEP"',
   ].join("\n");
   const result = spawnSync("bash", ["-c", wrapper], {
-    cwd: dir,
+    cwd: checkout,
     encoding: "utf8",
     env: {
       ...process.env,
@@ -91,7 +100,7 @@ function runSourceGuard({ currentVersion, priorTag, mainMatches = true }) {
       SOURCE_STEP: step,
     },
   });
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(fixture, { recursive: true, force: true });
   return result;
 }
 
@@ -138,6 +147,7 @@ test("payload code builds once before a literal two-tarball verification", () =>
   const { build, attest, stage_core: core, stage_server: server } = jobs(release);
   assert.ok(build && attest && core && server);
   assert.match(build, /^ {4}permissions:\n {6}contents: read\n {6}checks: read$/m);
+  assert.match(build, /actions\/checkout@[0-9a-f]{40} # v7\.0\.1\n {8}with:\n {10}fetch-depth: 0/);
   assert.doesNotMatch(build, /id-token: write|environment: release|secrets\./);
   assert.equal((build.match(/npm run build -w @superbee\/core -w @superbee\/server/g) ?? []).length, 1);
   assert.equal((build.match(/npm pack -w @superbee\/core/g) ?? []).length, 1);
@@ -194,6 +204,24 @@ test("the exact source guard allows only current-main channel advancement", () =
   const malformed = runSourceGuard({ currentVersion: "0.1.1", priorTag: "libraries/vnot-semver" });
   assert.notEqual(malformed.status, 0);
   assert.match(malformed.stderr + malformed.stdout, /protected release tag .* invalid version/);
+});
+
+test("full ancestry is load-bearing because a depth-1 tag-only fetch hides the prior release", () => {
+  // This recreates actions/checkout's default depth=1 at the current release tag. The workflow's
+  // own tag-ref fetch obtains the prior tag object, but the shallow boundary still prevents Git
+  // from recognizing that prior commit as merged. That old topology therefore accepts a regression.
+  const shallow = runSourceGuard({
+    currentVersion: "0.1.0",
+    priorTag: "libraries/v0.1.1",
+    depth: "shallow",
+  });
+  assert.equal(shallow.status, 0, `depth-1 mutant unexpectedly saw the hidden prior tag: ${shallow.stderr}`);
+
+  // `fetch-depth: 0` restores the current-main ancestry before the exact same committed step runs,
+  // so the reachable prior release is visible and the regression is refused.
+  const restored = runSourceGuard({ currentVersion: "0.1.0", priorTag: "libraries/v0.1.1" });
+  assert.notEqual(restored.status, 0);
+  assert.match(restored.stderr + restored.stdout, /would not advance latest/);
 });
 
 test("the bootstrap instructions override an ambient npm tag", () => {
