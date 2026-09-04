@@ -314,10 +314,13 @@ const IDENTITY_FALLBACK_ACTOR = "superbee";
 
 /** Lowercase; any run of non `[a-z0-9.-]` collapses to one `-`; trimmed of leading/trailing `-`. */
 function slugifyActor(actor: string): string {
-  const slug = actor
-    .toLowerCase()
-    .replace(/[^a-z0-9.-]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const collapsed = actor.toLowerCase().replace(/[^a-z0-9.-]+/g, "-");
+  // Scanned rather than trimmed with `/^-+|-+$/`, whose unanchored branch backtracks quadratically.
+  let start = 0;
+  let end = collapsed.length;
+  while (start < end && collapsed[start] === "-") start += 1;
+  while (end > start && collapsed[end - 1] === "-") end -= 1;
+  const slug = collapsed.slice(start, end);
   return slug.length > 0 ? slug : IDENTITY_FALLBACK_ACTOR;
 }
 
