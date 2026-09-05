@@ -2,6 +2,8 @@ name: Release runtime libraries (build once, stage separately)
 
 # `libraries/v<version>` is independent of the public CLI's `v<version>` release identity. The
 # credential-free job builds and packs both libraries once. Later jobs only move those exact bytes.
+# npm provenance supports public packages only. The restricted pair retains GitHub build
+# attestations, which the registry finalizer verifies against the dedicated source tag.
 on:
   push:
     tags: ["libraries/v*"]
@@ -231,7 +233,7 @@ jobs:
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --provenance --json --loglevel verbose > stage.json
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access restricted --provenance=false --json --loglevel verbose > stage.json
           STAGE_ID="$(node -e '
             const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
             const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
@@ -269,7 +271,7 @@ jobs:
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --provenance --json --loglevel verbose > stage.json
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access restricted --provenance=false --json --loglevel verbose > stage.json
           STAGE_ID="$(node -e '
             const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
             const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;

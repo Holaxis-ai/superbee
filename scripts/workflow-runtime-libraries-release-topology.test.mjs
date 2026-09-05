@@ -258,7 +258,7 @@ test("later releases stage core and server separately behind the existing enviro
   for (const job of [core, server]) {
     assert.match(job, /^ {4}environment: release$/m);
     assert.match(job, /id-token: write/);
-    assert.match(job, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --provenance --json/);
+    assert.match(job, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --access restricted --provenance=false --json/);
     assert.doesNotMatch(job, /npm publish|npm dist-tag/);
   }
   assert.match(core, /sha256sum "out\/\$\{\{ needs\.build\.outputs\.core_tgz \}\}"[\s\S]*needs\.build\.outputs\.core_sha256/);
@@ -266,6 +266,34 @@ test("later releases stage core and server separately behind the existing enviro
   assert.match(server, /needs: \[build, attest, stage_core\]/);
   assert.match(server, /npm stage approve \$CORE_STAGE/);
   assert.match(server, /npm stage approve \$SERVER_STAGE/);
+});
+
+test("both literal stage steps retain private access without unsupported npm provenance", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "runtime-library-stage-options-"));
+  try {
+    for (const name of ["core", "server"]) {
+      const step = path.join(dir, "stage-step.sh");
+      const argsFile = path.join(dir, "args");
+      const outputFile = path.join(dir, "output");
+      writeFileSync(step, runBody(release, `Stage the exact ${name} tarball`));
+      const result = spawnSync("bash", ["-c", [
+        'npm() { printf "%s\\n" "$@" > "$ARGS_OUT"; printf \'{"stageId":"test-stage"}\\n\'; }',
+        'source "$SOURCE_STEP"',
+      ].join("\n")], {
+        cwd: dir,
+        encoding: "utf8",
+        env: { ...process.env, SOURCE_STEP: step, ARGS_OUT: argsFile,
+          GITHUB_OUTPUT: outputFile, TGZ: `superbee-${name}.tgz`, DIST_TAG: "latest",
+          npm_config_access: "public", npm_config_provenance: "true" },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(readFileSync(argsFile, "utf8").trim().split("\n"), [
+        "stage", "publish", `./out/superbee-${name}.tgz`, "--tag", "latest",
+        "--access", "restricted", "--provenance=false", "--json", "--loglevel", "verbose",
+      ]);
+      assert.match(readFileSync(outputFile, "utf8"), /^stage_id=test-stage$/m);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("the finalizer proves both registry tarballs against the dedicated source tag", () => {
