@@ -77,9 +77,10 @@ async function verifyRuntimeLibraries() {
       path.join(scratch, "worker-entry.js"),
       `import { writeDocVersioned } from "@superbee/core/engine";
 import { VersionConflict } from "@superbee/core/storage";
+import { parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType } from "@superbee/core/document-codec";
 import { RemoteBackend } from "@superbee/core/remote";
 import { createRouter, resolveWireRequest } from "@superbee/server/router";
-export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteBackend };
+export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteBackend, parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType };
 `,
     );
     const result = await build({
@@ -89,10 +90,25 @@ export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, Ve
       platform: "browser",
       format: "esm",
       write: false,
+      metafile: true,
       logLevel: "silent",
     });
     assert.equal(result.errors.length, 0);
     assert.ok(result.outputFiles[0].text.includes("resolveWireRequest"));
+    assert.ok(Object.keys(result.metafile.inputs).every((name) => !name.includes("gray-matter")));
+    await writeFile(path.join(scratch, "worker-bundle.mjs"), result.outputFiles[0].text);
+    await execFileAsync(process.execPath, ["--input-type=module", "-e", `
+import assert from "node:assert/strict";
+globalThis.Buffer = undefined;
+const { runtime } = await import("./worker-bundle.mjs");
+const doc = runtime.parseMarkdown("\\uFEFF---\\ntype: Note\\ndate: 2026-09-04\\n---\\nbody\\n");
+assert.equal(doc.frontmatter.date, "2026-09-04");
+assert.equal(doc.body, "body\\n");
+const raw = runtime.stringifyDoc(doc.frontmatter, doc.body);
+assert.deepEqual(runtime.parseMarkdown(raw), doc);
+assert.match(await runtime.versionFromBytes(new TextEncoder().encode(raw)), /^sha256:[a-f0-9]{64}$/);
+assert.equal(runtime.resolveContentType("image.svg"), "image/svg+xml");
+`], { cwd: scratch });
 
     return {
       version: coreManifest.version,
