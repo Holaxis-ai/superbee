@@ -46,7 +46,18 @@
 // `getApiKeyForOrigin`). Neither is required: the reference `serve()` ignores the
 // `Authorization` header entirely (no auth enforced there), so an ungated local bundle works
 // exactly as before with no key configured.
-import { BUNDLE_DIR, BUNDLE_DIRS, LEGACY_BUNDLE_DIR, resolveBundleKey } from "@superbee/board-git";
+import {
+  BOARD_BRANCH,
+  BOARD_REF,
+  BOARD_REMOTE,
+  BUNDLE_DIR,
+  BUNDLE_DIRS,
+  LEGACY_BUNDLE_DIR,
+  bundleDirNameForProject,
+  repoTopLevel,
+  resolveBundleKey,
+  runGit,
+} from "@superbee/board-git";
 import { constants, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import {
@@ -528,7 +539,7 @@ export async function resolveRemoteFlag(
 async function canonicalDirectoryRoot(
   root: string,
   notFoundMessage: string,
-  help: string,
+  help: string | (() => Promise<string>),
 ): Promise<string> {
   try {
     const [canonicalRoot, info] = await Promise.all([fs.realpath(root), fs.stat(root)]);
@@ -537,7 +548,7 @@ async function canonicalDirectoryRoot(
   } catch {
     // The target may have disappeared between selection and canonicalization. Keep that race in
     // the same user-facing class as an initially missing target rather than leaking a raw fs error.
-    throw new CliError("NOT_FOUND", notFoundMessage, { help });
+    throw new CliError("NOT_FOUND", notFoundMessage, { help: typeof help === "string" ? help : await help() });
   }
 }
 
@@ -1348,7 +1359,7 @@ export async function resolveLocalBundleTarget(
     const canonicalRoot = await canonicalDirectoryRoot(
       binding.target,
       `no local bundle directory at ${binding.target} — from project binding ${binding.file}`,
-      `${cliInvocation()} init --create-only --dir ${commandToken(binding.target)}`,
+      () => absentBindingTargetHelp(binding),
     );
     assertBundleOutsidePrivateState(canonicalRoot);
     return {
@@ -1374,6 +1385,80 @@ export async function resolveLocalBundleTarget(
   );
   assertBundleOutsidePrivateState(canonicalRoot);
   return { root: discovered, canonicalRoot, selectedBy: "discovery" };
+}
+
+/**
+ * The repository top whose conventional board path a binding names, or null for every other
+ * binding. Only this shape lets sync run the ordinary provisioning and establishment flow: the
+ * checkout that carries the binding file is the exact project that flow already operates on, so
+ * following it never redirects sync to a different project.
+ */
+export async function ownConventionalBoardRoot(binding: ProjectBinding): Promise<string | null> {
+  const top = await ownConventionalBindingRoot(binding);
+  if (!top || path.basename(binding.target) !== bundleDirNameForProject(top)) return null;
+  return top;
+}
+
+/** Prove the binding names a direct conventional child, without choosing a creation path. */
+async function ownConventionalBindingRoot(binding: ProjectBinding): Promise<string | null> {
+  const target = path.resolve(binding.target);
+  if (!BUNDLE_DIRS.includes(path.basename(target) as (typeof BUNDLE_DIRS)[number])) return null;
+  const lexicalParent = path.dirname(target);
+  const lexicalAnchor = path.resolve(path.dirname(binding.file));
+  // Physical equality alone admits descendant symlinks that loop back to the checkout. Those
+  // routes are local-only in the binding resolver, so they must never acquire provisioning rights.
+  if (!lexicalBindingAnchors(lexicalAnchor).some((anchor) => samePhysicalPath(lexicalParent, anchor))) return null;
+  let parent: string;
+  let bindingDir: string;
+  try {
+    [parent, bindingDir] = await Promise.all([fs.realpath(path.dirname(target)), fs.realpath(path.dirname(binding.file))]);
+  } catch {
+    return null;
+  }
+  if (!samePhysicalPath(parent, bindingDir)) return null;
+  try {
+    // A symlinked conventional target is a redirect, never the checkout's own board path.
+    if ((await fs.lstat(target)).isSymbolicLink()) return null;
+  } catch (err) {
+    // Only absence is a fresh clone; unreadable or invalid entries do not establish ownership.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
+  }
+  const top = repoTopLevel(bindingDir);
+  if (!top) return null;
+  let physicalTop: string;
+  try {
+    physicalTop = await fs.realpath(top);
+  } catch {
+    return null;
+  }
+  if (!samePhysicalPath(parent, physicalTop)) return null;
+  return top;
+}
+
+/** A board this checkout already shares (or fetched) exists locally as a board ref; sync provisions it. */
+function hasKnownBoardRef(top: string): boolean {
+  return [`refs/remotes/${BOARD_REF}`, `refs/heads/${BOARD_BRANCH}`].some(
+    (ref) => runGit(top, ["rev-parse", "--verify", "--quiet", ref]).status === 0,
+  );
+}
+
+/**
+ * Recovery for a binding whose target is missing. A fresh clone of a project that already shares
+ * its board is the common case, and `init --create-only` there would create a divergent bundle;
+ * point at `sync`, which materializes the existing board at exactly the bound path.
+ */
+async function absentBindingTargetHelp(binding: ProjectBinding): Promise<string> {
+  const top = await ownConventionalBindingRoot(binding);
+  // An origin without a cached board ref may be offline or fetched with a restricted refspec.
+  // Reads stay offline; sync owns determining whether that remote already shares a board.
+  if (top && (hasKnownBoardRef(top) || runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0)) {
+    const bundleDir = bundleDirNameForProject(top);
+    if (path.basename(binding.target) === bundleDir) return `${cliInvocation()} sync`;
+    // Fresh checkouts use the canonical name; legacy creation is reserved for establish recovery.
+    // Keep the exact binding authoritative until the user explicitly corrects its absent target.
+    return `set "bundle" in ${commandToken(binding.file)} to "${bundleDir}", then run ${cliInvocation()} sync`;
+  }
+  return `${cliInvocation()} init --create-only --dir ${commandToken(binding.target)}`;
 }
 
 function bindingPathConflict(target: LocalBundleTarget, message: string): CliError {
