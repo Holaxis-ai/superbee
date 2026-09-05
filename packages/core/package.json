@@ -1,6 +1,6 @@
 {
   "name": "@superbee/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "OKF store engine — bundle I/O, cross-links, derived backlinks, freshness, and versioned writes.",
   "license": "Apache-2.0",

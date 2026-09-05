@@ -1,6 +1,6 @@
 {
   "name": "@superbee/server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Wire-protocol v0 REFERENCE server: a Web-standard fetch(Request)->Response router over the OKF engine (docs/WIRE-PROTOCOL.md), plus a thin node:http bootstrap. Local-first, no auth (loopback-only default). A reference implementation, not a production deployment.",
   "license": "Apache-2.0",
@@ -31,6 +31,6 @@
     "prepublishOnly": "node -e \"console.error('@superbee/server is released by .github/workflows/release-libraries.yml; do not run npm publish here'); process.exit(1)\""
   },
   "dependencies": {
-    "@superbee/core": "0.1.0"
+    "@superbee/core": "0.1.1"
   }
 }
