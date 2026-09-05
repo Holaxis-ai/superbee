@@ -7,7 +7,6 @@
  * v0.2 §11 permissive consumption).
  */
 
-import matter from "gray-matter";
 import yaml from "js-yaml";
 import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
@@ -111,14 +110,11 @@ export function normalizeDocumentBodyForStorage(body: string): string {
 
 /** Serialize an arbitrary YAML-mapping + body to OKF markdown (used for reserved files). */
 export function stringifyWithData(data: Record<string, unknown>, body: string): string {
-  const engines = (matter as typeof matter & {
-    engines: { yaml: { stringify(value: object): string } };
-  }).engines;
-  const yaml = engines.yaml.stringify(data).trim();
+  const dumped = yaml.safeDump(data).trim();
   const content = body ?? "";
   const newline = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
-  if (yaml === "{}") return normalizeDocumentBodyForStorage(content);
-  return `---\n${newline(yaml)}---\n${normalizeDocumentBodyForStorage(content)}`;
+  if (dumped === "{}") return normalizeDocumentBodyForStorage(content);
+  return `---\n${newline(dumped)}---\n${normalizeDocumentBodyForStorage(content)}`;
 }
 
 /** Serialize a concept document's frontmatter + body to OKF-conformant markdown. */
