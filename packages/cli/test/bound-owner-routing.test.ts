@@ -19,10 +19,20 @@ import { init } from "../src/commands/init.js";
 import { home } from "../src/commands/home.js";
 import { list } from "../src/commands/list.js";
 import { sessionStart, sessionStartPull } from "../src/commands/session-start.js";
-import { sync } from "../src/commands/sync.js";
+import { SYNC_LOCAL_ONLY_MESSAGE, sync } from "../src/commands/sync.js";
 import { resolveBundleKey } from "@superbee/board-git";
 import { canonicalUserStateDir } from "../src/user-state.js";
-import { boardHead, git, gitTry, isMidRebase, makeCommittedFolderTopology, makeTwoCloneTopology, wedgeMidRebase } from "../../board-git/test/git-harness.js";
+import {
+  boardHead,
+  git,
+  gitTry,
+  initPlainBundleDir,
+  isMidRebase,
+  makeCommittedFolderTopology,
+  makeGreenfieldTopology,
+  makeTwoCloneTopology,
+  wedgeMidRebase,
+} from "../../board-git/test/git-harness.js";
 
 const BUILT_CLI = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/superbee.mjs");
 
@@ -620,6 +630,107 @@ test("Home closes summary, autopull, and board-status gates for a missing bindin
       state: await readSyncState(publicKey),
     }));
     assert.deepEqual(after, before, "missing binding Home leaves the public board and state untouched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a fresh clone whose binding names its own conventional board provisions from origin/board through bare sync", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-fresh-clone-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+    assert.equal(existsSync(topo.a.board), false, "fixture: the fresh clone has no local board yet");
+    const originHead = git(topo.a.root, ["rev-parse", "origin/board"]).trim();
+
+    // Before provisioning, the absent target's recovery points at sync — never at a replacement init.
+    await assert.rejects(
+      () => inDir(topo.a.root, () => list(["--json"], { stdout: () => {} })),
+      (err: unknown) => {
+        const cliErr = err as { code?: string; help?: string; message: string };
+        assert.equal(cliErr.code, "NOT_FOUND");
+        assert.match(cliErr.message, /from project binding/);
+        assert.match(cliErr.help ?? "", /\bsync$/);
+        assert.doesNotMatch(cliErr.help ?? "", /init --create-only/);
+        return true;
+      },
+    );
+
+    await withHome(homeDir, async () => {
+      let out = "";
+      await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true }));
+      const rec = JSON.parse(out) as { provisioned?: string; sync?: string };
+      assert.match(rec.provisioned ?? "", /materialized from origin\/board/);
+      assert.equal(rec.provisioned?.startsWith(topo.a.board), true, "provisioned exactly the bound path");
+      assert.equal(rec.sync, "already up to date");
+      assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+      assert.equal(boardHead(topo.a), originHead);
+
+      const route = await inDir(topo.a.root, () => resolveLocalBundleRoute(undefined));
+      assert.equal(route.kind, "bound-board", "the provisioned target now routes through its proven owner");
+
+      let again = "";
+      await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (again += line), hookInstalled: () => true }));
+      assert.deepEqual(JSON.parse(again), { sync: "already up to date" });
+    });
+    assert.equal(existsSync(topo.b.board), false, "the sibling clone is never touched");
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a local-only bundle at its own conventional bound path is routed to establishment, not 'nothing to sync'", async () => {
+  const topo = await makeGreenfieldTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-greenfield-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
+
+    // No board anywhere and no folder: the absent-target recovery still creates, never syncs.
+    await assert.rejects(
+      () => inDir(topo.a.root, () => list(["--json"], { stdout: () => {} })),
+      (err: unknown) => {
+        const cliErr = err as { code?: string; help?: string };
+        assert.equal(cliErr.code, "NOT_FOUND");
+        assert.match(cliErr.help ?? "", /init --create-only --dir/);
+        return true;
+      },
+    );
+
+    await initPlainBundleDir(topo.a);
+    await withHome(homeDir, async () => {
+      let out = "";
+      await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true }));
+      const rec = JSON.parse(out) as { sync?: string; note?: string };
+      assert.equal(rec.sync, SYNC_LOCAL_ONLY_MESSAGE);
+      assert.match(rec.note ?? "", /--establish/);
+
+      let established = "";
+      await inDir(topo.a.root, () => sync(["--establish", "--json"], { stdout: (line) => (established += line), hookInstalled: () => true }));
+      assert.match(established, /establish/);
+      assert.equal(gitTry(topo.a.root, ["rev-parse", "--verify", "--quiet", "origin/board"]).status, 0, "origin received the board");
+      assert.equal(git(topo.a.board, ["rev-parse", "--abbrev-ref", "HEAD"]).trim(), "board");
+    });
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("a binding naming another project's conventional path never provisions the invoking checkout", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-foreign-home-"));
+  try {
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: topo.b.board }));
+    await withHome(homeDir, async () => {
+      await assert.rejects(
+        () => inDir(topo.a.root, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true })),
+        (err: unknown) => (err as { code?: string }).code === "NOT_FOUND",
+      );
+    });
+    assert.equal(existsSync(topo.a.board), false, "the invoking checkout's board was not provisioned");
+    assert.equal(existsSync(topo.b.board), false, "the foreign target was not provisioned either");
   } finally {
     await topo.cleanup();
     await rm(homeDir, { recursive: true, force: true });

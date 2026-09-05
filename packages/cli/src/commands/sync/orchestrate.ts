@@ -10,6 +10,7 @@
 // fail-soft for the SessionStart caller. `--pull-only` is an interactive verb that must report a
 // REAL structured outcome, so `ffSwallowToError` translates every swallowed reason into the
 // capped CliError taxonomy instead of silently no-op'ing.
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -71,7 +72,12 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
-import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../../bundle.js";
+import {
+  ownConventionalBoardRoot,
+  resolveLocalBundleRoute,
+  resolveProjectBinding,
+  type ResolvedLocalRoute,
+} from "../../bundle.js";
 import type { BoundBoardOwner } from "../../bound-board-owner.js";
 import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
@@ -481,16 +487,32 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
   // A bare project binding is an exact board-owner selection, not a hint for the cwd routing
   // below. Validate it before retarget/heal/channel/provision can spawn Git in the public
   // checkout, then carry only the frozen capability through all remaining phases.
+  //
+  // The one binding shape that is NOT frozen away from provisioning: a target that is its own
+  // repository's conventional board path. That names exactly the board the ordinary flow owns for
+  // this checkout, so an absent target (a fresh clone of a shared board) provisions and a
+  // local-only bundle establishes from the repository top. A target that already IS the linked
+  // board worktree still routes through its proven owner.
   let route: ResolvedLocalRoute | undefined;
-  if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
-    route = await resolveLocalBundleRoute(undefined);
+  let ownBoardRoot: string | undefined;
+  if (values.dir === undefined) {
+    const binding = await resolveProjectBinding(process.cwd());
+    if (binding) {
+      ownBoardRoot = (await ownConventionalBoardRoot(binding)) ?? undefined;
+      if (ownBoardRoot === undefined || existsSync(binding.target)) {
+        route = await resolveLocalBundleRoute(undefined);
+      }
+      if (ownBoardRoot !== undefined && route?.kind === "bound-local") route = undefined;
+    }
   }
   const boundOwner = route?.kind === "bound-board" ? route.owner : undefined;
   const owner = route?.kind === "bound-board" && route.readiness === "ready" ? route.owner : undefined;
 
   // Standing inside the board worktree retargets to the enclosing project so provisioning's
   // idempotent path resolves the REAL board (see retargetBoardInterior).
-  const dir = boundOwner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
+  const dir = boundOwner?.ownerRoot
+    ?? ownBoardRoot
+    ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
   return {
     kind: "run",
     options: {
