@@ -111,6 +111,11 @@ test("core and server form one restricted exact-version release set", () => {
   assert.equal(server.version, core.version);
   assert.equal(server.dependencies["@superbee/core"], core.version);
   for (const manifest of [core, server]) {
+    assert.deepEqual(manifest.repository, {
+      type: "git",
+      url: "git+https://github.com/Holaxis-ai/superbee.git",
+      directory: `packages/${manifest.name.slice("@superbee/".length)}`,
+    });
     assert.equal(manifest.private, undefined);
     assert.deepEqual(manifest.publishConfig, {
       access: "restricted",
