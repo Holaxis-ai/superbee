@@ -66,6 +66,11 @@ async function verifyRuntimeLibraries() {
       "server must depend on the exact matching core version",
     );
     for (const manifest of [coreManifest, serverManifest]) {
+      assert.deepEqual(manifest.repository, {
+        type: "git",
+        url: "git+https://github.com/Holaxis-ai/superbee.git",
+        directory: `packages/${manifest.name.slice("@superbee/".length)}`,
+      });
       assert.deepEqual(manifest.publishConfig, {
         access: "restricted",
         registry: "https://registry.npmjs.org/",

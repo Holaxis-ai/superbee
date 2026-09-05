@@ -4,6 +4,11 @@
   "type": "module",
   "description": "Wire-protocol v0 REFERENCE server: a Web-standard fetch(Request)->Response router over the OKF engine (docs/WIRE-PROTOCOL.md), plus a thin node:http bootstrap. Local-first, no auth (loopback-only default). A reference implementation, not a production deployment.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Holaxis-ai/superbee.git",
+    "directory": "packages/server"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,
