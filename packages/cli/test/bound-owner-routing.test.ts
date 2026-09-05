@@ -681,6 +681,102 @@ test("a fresh clone whose binding names its own conventional board provisions fr
   }
 });
 
+test("own-checkout symlink routes cannot provision an absent board or establish a plain bundle", async () => {
+  for (const populated of [false, true]) {
+    const topo = await makeTwoCloneTopology({ provision: false });
+    const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-own-alias-home-"));
+    try {
+      const direct = path.join(topo.a.root, "alias");
+      const ancestor = path.join(topo.a.root, "ancestor");
+      await symlink(topo.a.root, direct, "dir");
+      await symlink(path.dirname(topo.a.root), ancestor, "dir");
+      if (populated) await initPlainBundleDir(topo.a);
+      const before = git(topo.origin, ["rev-parse", "board"]).trim();
+      const ignoreBefore = await readFile(path.join(topo.a.root, ".gitignore"), "utf8");
+      for (const target of [path.join(direct, ".superbee"), path.join(ancestor, path.basename(topo.a.root), ".superbee")]) {
+        await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: target }));
+        await withHome(homeDir, async () => {
+          for (const flags of [["--json"], ["--establish", "--json"]]) {
+            let out = "";
+            const run = () => inDir(topo.a.root, () => sync(flags, { stdout: (line) => (out += line), hookInstalled: () => true }));
+            if (populated) {
+              await run();
+              assert.deepEqual(JSON.parse(out), { sync: "nothing to sync" });
+            } else {
+              await assert.rejects(run, (err: unknown) => (err as { code?: string }).code === "NOT_FOUND");
+            }
+          }
+        });
+        assert.equal(existsSync(topo.a.board), populated, "no board directory was created");
+        assert.equal(existsSync(path.join(topo.a.board, ".git")), false, "no worktree was created");
+        assert.equal(gitTry(topo.a.root, ["rev-parse", "--verify", "refs/heads/board"]).status, 128);
+        assert.equal(git(topo.origin, ["rev-parse", "board"]).trim(), before);
+        assert.equal(await readFile(path.join(topo.a.root, ".gitignore"), "utf8"), ignoreBefore);
+      }
+    } finally {
+      await topo.cleanup();
+      await rm(homeDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("an absent legacy binding to a shared board explains canonical rebinding without creating a replacement", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-legacy-clone-home-"));
+  try {
+    const bindingFile = path.join(topo.a.root, ".superbee.json");
+    const bindingBytes = JSON.stringify({ bundle: ".agentstate-lite" });
+    await writeFile(bindingFile, bindingBytes);
+    const originHead = git(topo.origin, ["rev-parse", "board"]).trim();
+    await withHome(homeDir, async () => {
+      for (const command of [list, sync]) {
+        await assert.rejects(
+          () => inDir(topo.a.root, () => command(["--json"], { stdout: () => {} })),
+          (err: unknown) => {
+            const cliErr = err as { code?: string; help?: string };
+            assert.equal(cliErr.code, "NOT_FOUND");
+            assert.match(cliErr.help ?? "", /set.*bundle.*\.superbee/);
+            assert.match(cliErr.help ?? "", /then run .*sync$/);
+            assert.doesNotMatch(cliErr.help ?? "", /init --create-only/);
+            return true;
+          },
+        );
+      }
+      assert.equal(await readFile(bindingFile, "utf8"), bindingBytes, "guidance never rewrites the binding");
+      assert.equal(existsSync(topo.a.board), false);
+      assert.equal(existsSync(path.join(topo.a.root, ".agentstate-lite")), false);
+      // Follow the described recovery explicitly, then check the same shared content is joined.
+      await writeFile(bindingFile, JSON.stringify({ bundle: ".superbee" }));
+      await inDir(topo.a.root, () => sync(["--json"], { stdout: () => {}, hookInstalled: () => true }));
+      assert.equal(boardHead(topo.a), originHead);
+      assert.equal(existsSync(path.join(topo.a.root, ".agentstate-lite")), false);
+    });
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("an existing legacy bound board syncs without moving to the canonical directory", async () => {
+  const topo = await makeTwoCloneTopology();
+  const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-existing-legacy-home-"));
+  try {
+    const legacy = path.join(topo.a.root, ".agentstate-lite");
+    git(topo.a.root, ["worktree", "move", topo.a.board, legacy]);
+    await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".agentstate-lite" }));
+    await withHome(homeDir, async () => {
+      let out = "";
+      await inDir(topo.a.root, () => sync(["--json"], { stdout: (line) => (out += line), hookInstalled: () => true }));
+      assert.deepEqual(JSON.parse(out), { sync: "already up to date" });
+    });
+    assert.equal(existsSync(topo.a.board), false);
+    assert.equal(existsSync(path.join(legacy, ".git")), true);
+  } finally {
+    await topo.cleanup();
+    await rm(homeDir, { recursive: true, force: true });
+  }
+});
+
 test("a local-only bundle at its own conventional bound path is routed to establishment, not 'nothing to sync'", async () => {
   const topo = await makeGreenfieldTopology();
   const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-greenfield-home-"));

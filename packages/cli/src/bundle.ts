@@ -1393,8 +1393,20 @@ export async function resolveLocalBundleTarget(
  * following it never redirects sync to a different project.
  */
 export async function ownConventionalBoardRoot(binding: ProjectBinding): Promise<string | null> {
+  const top = await ownConventionalBindingRoot(binding);
+  if (!top || path.basename(binding.target) !== bundleDirNameForProject(top)) return null;
+  return top;
+}
+
+/** Prove the binding names a direct conventional child, without choosing a creation path. */
+async function ownConventionalBindingRoot(binding: ProjectBinding): Promise<string | null> {
   const target = path.resolve(binding.target);
   if (!BUNDLE_DIRS.includes(path.basename(target) as (typeof BUNDLE_DIRS)[number])) return null;
+  const lexicalParent = path.dirname(target);
+  const lexicalAnchor = path.resolve(path.dirname(binding.file));
+  // Physical equality alone admits descendant symlinks that loop back to the checkout. Those
+  // routes are local-only in the binding resolver, so they must never acquire provisioning rights.
+  if (!lexicalBindingAnchors(lexicalAnchor).some((anchor) => samePhysicalPath(lexicalParent, anchor))) return null;
   let parent: string;
   let bindingDir: string;
   try {
@@ -1406,8 +1418,9 @@ export async function ownConventionalBoardRoot(binding: ProjectBinding): Promise
   try {
     // A symlinked conventional target is a redirect, never the checkout's own board path.
     if ((await fs.lstat(target)).isSymbolicLink()) return null;
-  } catch {
-    // Absent is the fresh-clone case this shape exists for.
+  } catch (err) {
+    // Only absence is a fresh clone; unreadable or invalid entries do not establish ownership.
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") return null;
   }
   const top = repoTopLevel(bindingDir);
   if (!top) return null;
@@ -1418,7 +1431,6 @@ export async function ownConventionalBoardRoot(binding: ProjectBinding): Promise
     return null;
   }
   if (!samePhysicalPath(parent, physicalTop)) return null;
-  if (path.basename(target) !== bundleDirNameForProject(top)) return null;
   return top;
 }
 
@@ -1435,8 +1447,14 @@ function hasKnownBoardRef(top: string): boolean {
  * point at `sync`, which materializes the existing board at exactly the bound path.
  */
 async function absentBindingTargetHelp(binding: ProjectBinding): Promise<string> {
-  const top = await ownConventionalBoardRoot(binding);
-  if (top && hasKnownBoardRef(top)) return `${cliInvocation()} sync`;
+  const top = await ownConventionalBindingRoot(binding);
+  if (top && hasKnownBoardRef(top)) {
+    const bundleDir = bundleDirNameForProject(top);
+    if (path.basename(binding.target) === bundleDir) return `${cliInvocation()} sync`;
+    // Fresh checkouts use the canonical name; legacy creation is reserved for establish recovery.
+    // Keep the exact binding authoritative until the user explicitly corrects its absent target.
+    return `set "bundle" in ${commandToken(binding.file)} to "${bundleDir}", then run ${cliInvocation()} sync`;
+  }
   return `${cliInvocation()} init --create-only --dir ${commandToken(binding.target)}`;
 }
 
