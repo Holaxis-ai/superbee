@@ -49,6 +49,7 @@
 import {
   BOARD_BRANCH,
   BOARD_REF,
+  BOARD_REMOTE,
   BUNDLE_DIR,
   BUNDLE_DIRS,
   LEGACY_BUNDLE_DIR,
@@ -1448,7 +1449,9 @@ function hasKnownBoardRef(top: string): boolean {
  */
 async function absentBindingTargetHelp(binding: ProjectBinding): Promise<string> {
   const top = await ownConventionalBindingRoot(binding);
-  if (top && hasKnownBoardRef(top)) {
+  // An origin without a cached board ref may be offline or fetched with a restricted refspec.
+  // Reads stay offline; sync owns determining whether that remote already shares a board.
+  if (top && (hasKnownBoardRef(top) || runGit(top, ["remote", "get-url", BOARD_REMOTE]).status === 0)) {
     const bundleDir = bundleDirNameForProject(top);
     if (path.basename(binding.target) === bundleDir) return `${cliInvocation()} sync`;
     // Fresh checkouts use the canonical name; legacy creation is reserved for establish recovery.

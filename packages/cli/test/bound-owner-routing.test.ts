@@ -777,13 +777,44 @@ test("an existing legacy bound board syncs without moving to the canonical direc
   }
 });
 
+test("absent own bindings with an origin but no cached board ref recommend checking sharing before init", async () => {
+  const topo = await makeTwoCloneTopology({ provision: false });
+  try {
+    git(topo.a.root, ["update-ref", "-d", "refs/remotes/origin/board"]);
+    git(topo.a.root, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
+    for (const remote of [topo.origin, path.join(topo.dir, "unavailable-origin.git")]) {
+      git(topo.a.root, ["remote", "set-url", "origin", remote]);
+      for (const bundle of [".superbee", ".agentstate-lite"]) {
+        await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle }));
+        await assert.rejects(
+          () => inDir(topo.a.root, () => list(["--json"], { stdout: () => {} })),
+          (err: unknown) => {
+            const cliErr = err as { code?: string; help?: string };
+            assert.equal(cliErr.code, "NOT_FOUND");
+            assert.match(cliErr.help ?? "", /\bsync$/);
+            assert.doesNotMatch(cliErr.help ?? "", /init --create-only/);
+            if (bundle === ".agentstate-lite") assert.match(cliErr.help ?? "", /set.*bundle.*\.superbee/);
+            return true;
+          },
+        );
+        assert.notEqual(gitTry(topo.a.root, ["rev-parse", "--verify", "refs/remotes/origin/board"]).status, 0, "read-side help never fetches");
+        assert.equal(existsSync(topo.a.board), false);
+        assert.equal(existsSync(path.join(topo.a.root, ".agentstate-lite")), false);
+      }
+    }
+  } finally {
+    await topo.cleanup();
+  }
+});
+
 test("a local-only bundle at its own conventional bound path is routed to establishment, not 'nothing to sync'", async () => {
   const topo = await makeGreenfieldTopology();
   const homeDir = await mkdtemp(path.join(tmpdir(), "superbee-bound-greenfield-home-"));
   try {
     await writeFile(path.join(topo.a.root, ".superbee.json"), JSON.stringify({ bundle: ".superbee" }));
 
-    // No board anywhere and no folder: the absent-target recovery still creates, never syncs.
+    // No origin, no board and no folder: the absent-target recovery may recommend local creation.
+    git(topo.a.root, ["remote", "remove", "origin"]);
     await assert.rejects(
       () => inDir(topo.a.root, () => list(["--json"], { stdout: () => {} })),
       (err: unknown) => {
@@ -794,6 +825,7 @@ test("a local-only bundle at its own conventional bound path is routed to establ
       },
     );
 
+    git(topo.a.root, ["remote", "add", "origin", topo.origin]);
     await initPlainBundleDir(topo.a);
     await withHome(homeDir, async () => {
       let out = "";
