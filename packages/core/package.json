@@ -25,6 +25,10 @@
       "types": "./dist/engine.d.ts",
       "default": "./dist/engine.js"
     },
+    "./recipes": {
+      "types": "./dist/recipes.d.ts",
+      "default": "./dist/recipes.js"
+    },
     "./kinds": {
       "types": "./dist/kinds.d.ts",
       "default": "./dist/kinds.js"

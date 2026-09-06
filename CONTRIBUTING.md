@@ -184,6 +184,9 @@ shape.
 
 ## Build and package
 
+For in-process recipe parsing and record checks, see the
+[core recipe validation API](packages/core/RECIPES.md).
+
 `npm run build` produces sibling package outputs and bundles the CLI at
 `packages/cli/dist/superbee.mjs`; a package-scoped build can leave imported sibling outputs stale.
 Use `./superbee` for in-repository CLI journeys. At minimum, exercise `init`, `doc write` and

@@ -7,7 +7,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../src/offers.js";
-import { parseRecipeFiles } from "../src/recipe-parser.js";
+import { parseRecipeFiles } from "@superbee/core/recipes";
 import { testFragment, testInvocation } from "./support/command-prefix.js";
 
 const INVOKE = testInvocation("npx --no-install superbee");
