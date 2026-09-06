@@ -9,7 +9,8 @@
 import { constants, promises as fs } from "node:fs";
 import path from "node:path";
 import { parseMarkdown } from "@superbee/core";
-import { parseRecipeFiles, type RecipeFile, type RecipeSource } from "./recipe-parser.js";
+import { parseRecipeFiles, type RecipeFile } from "@superbee/core/recipes";
+import type { RecipeSource } from "./recipe-source-contract.js";
 import { expandRecipePath, looksLikeRecipePath } from "./recipe-ref.js";
 
 /**

@@ -1,6 +1,7 @@
 import { builtinNames, builtinRecipeSource } from "./recipe-source-builtin.js";
 import { filesRecipeSource } from "./recipe-source-filesystem.js";
-import type { LoadResult, RecipeSource } from "./recipe-parser.js";
+import type { LoadResult } from "@superbee/core/recipes";
+import type { RecipeSource } from "./recipe-source-contract.js";
 
 /** The default resolution order: built-in names first, then a filesystem path. */
 export const DEFAULT_SOURCES: RecipeSource[] = [builtinRecipeSource(), filesRecipeSource()];
