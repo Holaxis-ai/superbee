@@ -53,7 +53,7 @@ export const UI_USAGE = `superbee ui — boot the local web UI over the bundle: 
 Usage:
   superbee ui [--dir <path> | --remote <url>] [--port <n>] [--actor <name>] [--open]
   superbee ui --status [--dir <path>] [--limit <n>]
-  superbee ui --stop [--dir <path>] [--actor <name>]
+  superbee ui --stop [--dir <path>] [--actor <name>] [--abandon]
 
 Options:
   --dir <path>          Bundle directory (default: discovered from the cwd) — mounts the
@@ -66,6 +66,9 @@ Options:
   --open                Open the printed URL in a browser once the server is listening
   --status              List managed local document authorities for the selected bundle
   --stop                Stop the exact managed local authority selected by bundle + resolved actor
+  --abandon             With --stop only: release the selected authority's record when its listener
+                         cannot be proven live (a hung or re-bound port). It never signals the
+                         recorded process, and it refuses an authority that answers as live
   --limit <n>           Maximum status rows (default: 20; 0 = all)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
@@ -165,6 +168,7 @@ const UI_PARSE_OPTIONS = {
   open: { type: "boolean" },
   status: { type: "boolean" },
   stop: { type: "boolean" },
+  abandon: { type: "boolean" },
   limit: { type: "string" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
@@ -179,6 +183,7 @@ interface ParsedUiArgs {
     open?: boolean;
     status?: boolean;
     stop?: boolean;
+    abandon?: boolean;
     limit?: string;
     json?: boolean;
     help?: boolean;
@@ -235,7 +240,9 @@ async function runManagedDocumentUi(
   { values, positionals }: ParsedUiArgs,
   deps: Partial<UiCliDeps>,
 ): Promise<void> {
-  if (values.status || values.stop) throw new CliError("USAGE", "doc open does not accept --status or --stop");
+  if (values.status || values.stop || values.abandon) {
+    throw new CliError("USAGE", "doc open does not accept --status, --stop, or --abandon");
+  }
   const rawDocumentId = positionals[0]!;
   const route = await resolveLocalBundleRoute(values.dir);
   await assertResolvedLocalRouteIdentity(route);
@@ -277,8 +284,9 @@ async function runManagedUiControl(
   if (values.status && values.stop) throw new CliError("USAGE", "--status and --stop are mutually exclusive");
   if (values.remote !== undefined) throw new CliError("USAGE", "managed UI status and stop are local-only; --remote remains foreground");
   if (values.port !== undefined || values.open || positionals.length > 0) {
-    throw new CliError("USAGE", "ui --status/--stop accept only their documented --dir, --actor, --limit, and --json options");
+    throw new CliError("USAGE", "ui --status/--stop accept only their documented --dir, --actor, --limit, --abandon, and --json options");
   }
+  if (values.abandon && !values.stop) throw new CliError("USAGE", "--abandon is available only with ui --stop");
   const target = await resolveLocalBundleTarget(values.dir);
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
   if (values.status) {
@@ -294,6 +302,7 @@ async function runManagedUiControl(
       phase: item.phase,
       live: item.live,
       port: item.port,
+      pid: item.pid,
       ...(item.active_clients === undefined ? {} : { active_clients: item.active_clients }),
       started_at: item.started_at,
     }));
@@ -312,13 +321,20 @@ async function runManagedUiControl(
   }
   if (values.limit !== undefined) throw new CliError("USAGE", "--limit is available only with ui --status");
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} ui --stop --dir ${commandToken(target.canonicalRoot)} --actor <name>` });
-  const result = await stopManagedUi(managedUiAuthority(target.canonicalRoot, actor), deps.managedController);
+  const result = await stopManagedUi(managedUiAuthority(target.canonicalRoot, actor), {
+    ...deps.managedController,
+    ...(values.abandon ? { abandon: true } : {}),
+  });
   stdout(render({
     ui: "managed-stop",
     root: target.canonicalRoot,
     actor: actor ?? null,
     actor_present: actor !== undefined,
     stopped: result.stopped,
+    abandoned: result.abandoned,
+    ...(result.abandoned
+      ? { help: ["a listener may still be running on the released port; it was never signaled"] }
+      : {}),
   }, resolveMode(values)));
 }
 

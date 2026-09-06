@@ -67,6 +67,23 @@ export interface ManagedUiStatus extends ManagedUiRecord {
   active_clients?: number;
 }
 
+export interface ManagedUiStopOptions extends ManagedUiControllerOptions {
+  /**
+   * Explicit operator authorization to release an authority whose listener will not answer. It
+   * applies ONLY to an indeterminate probe: a live authority is refused rather than orphaned, and
+   * an absent one needs no authorization. Same-actor by construction — the caller resolves one
+   * authority — and it never signals the recorded process.
+   */
+  abandon?: boolean;
+}
+
+export interface ManagedUiStopReceipt {
+  stopped: boolean;
+  /** The exact record was released without proving its listener exited. */
+  abandoned: boolean;
+  authority: ManagedUiAuthority;
+}
+
 export interface ManagedUiLaunchReceipt {
   state: "started" | "reused";
   authority: ManagedUiAuthority;
@@ -272,6 +289,14 @@ type ProbeResult =
   | { kind: "absent" }
   | { kind: "indeterminate"; reason: string };
 
+// A listener that ANSWERS this record's own management secret and launch nonce with a refusal, or
+// with "no management surface here", proves it is not this authority's server: the credentials it
+// rejected came from the record itself. The recorded port therefore belongs to something else —
+// commonly an unrelated process that re-bound an ephemeral port after the worker died — so the
+// record's claim is dead and its slot is releasable. Every other non-2xx status (5xx, 429) stays
+// indeterminate, because a struggling server of OURS can produce it.
+const FOREIGN_LISTENER_STATUS: ReadonlySet<number> = new Set([403, 404]);
+
 function hasConnectionRefused(error: unknown): boolean {
   const seen = new Set<unknown>();
   const visit = (value: unknown): boolean => {
@@ -293,7 +318,11 @@ async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch, tim
     const response = await boundedFetch(fetchImpl, `http://127.0.0.1:${record.port}/__manage/status`, {
       headers: managementHeaders(record),
     }, timeoutMs);
-    if (!response.ok) return { kind: "indeterminate", reason: `management endpoint returned ${response.status}` };
+    if (!response.ok) {
+      return FOREIGN_LISTENER_STATUS.has(response.status)
+        ? { kind: "absent" }
+        : { kind: "indeterminate", reason: `management endpoint returned ${response.status}` };
+    }
     const value = await response.json() as Partial<Probe>;
     if (
       value.mode !== "dir" ||
@@ -305,7 +334,7 @@ async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch, tim
       typeof value.protocol !== "number" ||
       !(value.state === "ready" || value.state === "adopted" || value.state === "stopping") ||
       typeof value.active_clients !== "number"
-    ) return { kind: "indeterminate", reason: "management endpoint returned a mismatched identity" };
+    ) return { kind: "absent" };
     return { kind: "matched", probe: value as Probe };
   } catch (error) {
     return hasConnectionRefused(error)
@@ -316,7 +345,13 @@ async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch, tim
 
 function probeUncertain(record: ManagedUiRecord, reason: string): CliError {
   return new CliError("TRANSIENT", `could not prove whether the managed UI is still live: ${reason}`, {
-    help: `${cliInvocation()} ui --status --dir ${commandToken(record.authority.bundle_root)}`,
+    details: {
+      port: record.port ?? null,
+      pid: record.pid ?? null,
+      phase: record.phase,
+      started_at: record.started_at ?? null,
+    },
+    help: `${cliInvocation()} ui --status --dir ${commandToken(record.authority.bundle_root)}; if that listener never answers, ${cliInvocation()} ui --stop --dir ${commandToken(record.authority.bundle_root)}${actorArgs(record)} --abandon releases this exact record without signaling its process`,
   });
 }
 
@@ -625,8 +660,8 @@ export async function listManagedUiStatus(
 
 export async function stopManagedUi(
   authority: ManagedUiAuthority,
-  options: ManagedUiControllerOptions = {},
-): Promise<{ stopped: boolean; authority: ManagedUiAuthority }> {
+  options: ManagedUiStopOptions = {},
+): Promise<ManagedUiStopReceipt> {
   const home = options.home ?? homedir();
   const fetchImpl = options.fetch ?? fetch;
   const sleep = options.sleep ?? ((ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -634,7 +669,7 @@ export async function stopManagedUi(
   await ensureUserStateRoot(home);
   return withLock(managedUiRecordPath(authority, home), async () => {
     const current = await readRecord(authority, home);
-    if (!current) return { stopped: false, authority };
+    if (!current) return { stopped: false, abandoned: false, authority };
     const record = current.record;
     if (record.phase === "pending") {
       if ((options.now ?? Date.now)() - Date.parse(record.created_at) < MANAGED_UI_PENDING_RECLAIM_MS) {
@@ -643,14 +678,26 @@ export async function stopManagedUi(
         });
       }
       await removeExactRecord(authority, current.raw, home);
-      return { stopped: false, authority };
+      return { stopped: false, abandoned: false, authority };
     }
     const probe = await probeRecord(record, fetchImpl);
     if (probe.kind === "absent") {
       await removeExactRecord(authority, current.raw, home);
-      return { stopped: false, authority };
+      return { stopped: false, abandoned: false, authority };
     }
-    if (probe.kind === "indeterminate") throw probeUncertain(record, probe.reason);
+    if (probe.kind === "indeterminate") {
+      if (!options.abandon) throw probeUncertain(record, probe.reason);
+      // Releasing the slot is all this authorizes: the record's exact bytes are removed, and the
+      // recorded PID is never signaled. A listener may still be running, so the caller is told.
+      await removeExactRecord(authority, current.raw, home);
+      return { stopped: false, abandoned: true, authority };
+    }
+    if (options.abandon) {
+      throw new CliError("CONFLICT", "the managed UI answered as live, so --abandon would orphan a running authority", {
+        details: { port: record.port ?? null, pid: record.pid ?? null, active_clients: probe.probe.active_clients },
+        help: `${cliInvocation()} ui --stop --dir ${commandToken(record.authority.bundle_root)}${actorArgs(record)}`,
+      });
+    }
     const stopping = { ...record, phase: "stopping" as const };
     await writeRecord(stopping, home);
     await managementPost(stopping, "stop", fetchImpl);
@@ -659,6 +706,6 @@ export async function stopManagedUi(
     if (exact?.record.operation_id === record.operation_id && exact.record.launch_nonce === record.launch_nonce) {
       await removeExactRecord(authority, exact.raw, home);
     }
-    return { stopped: true, authority };
+    return { stopped: true, abandoned: false, authority };
   });
 }
