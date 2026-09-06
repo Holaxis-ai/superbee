@@ -393,7 +393,13 @@ test("a listener that never answers is reported, refuses takeover, and is releas
       const url = new URL(String(args[0]));
       if (Number(url.port) === first.record.port && url.pathname.endsWith("/status")) {
         return new Promise<Response>((_resolve, reject) => {
-          args[1]?.signal?.addEventListener("abort", () => reject(new DOMException("This operation was aborted", "AbortError")));
+          // A referenced timer so the pending request itself keeps the loop alive, exactly as a real
+          // socket would: the probe's own abort timer is unref'd and must not be the only work left.
+          const stuck = setTimeout(() => reject(new Error("the probe never bounded its own wait")), 30_000);
+          args[1]?.signal?.addEventListener("abort", () => {
+            clearTimeout(stuck);
+            reject(new DOMException("This operation was aborted", "AbortError"));
+          });
         });
       }
       return ordinaryFetch(...args);
