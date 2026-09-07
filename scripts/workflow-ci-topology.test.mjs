@@ -417,9 +417,12 @@ function validateProofTopLevel(program) {
   PATH: \`\${prefix}\${path.delimiter}\${process.env.PATH ?? ""}\`,
   AGENTSTATE_LITE_NO_AUTOPULL: "1",
 }`],
+    ["OUTPUT_DIAGNOSTIC_MAX_CHARS", "2_000"],
     ["installedPackageProofComplete", 'Symbol("installed-package-proof-complete")'],
   ]);
   const expectedFunctions = [
+    "outputDiagnostic",
+    "annotateError",
     "run",
     "runScenario",
     "windowsCaseAlias",
