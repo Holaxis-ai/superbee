@@ -32,16 +32,46 @@ const commandEnv = {
   AGENTSTATE_LITE_NO_AUTOPULL: "1",
 };
 
+const OUTPUT_DIAGNOSTIC_MAX_CHARS = 2_000;
+
+function outputDiagnostic(label, raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return "";
+  const clipped = text.length > OUTPUT_DIAGNOSTIC_MAX_CHARS
+    ? `${text.slice(0, OUTPUT_DIAGNOSTIC_MAX_CHARS)} ... (${text.length - OUTPUT_DIAGNOSTIC_MAX_CHARS} more chars)`
+    : text;
+  return `\n--- ${label} ---\n${clipped}`;
+}
+
+function annotateError(error, text) {
+  if (error instanceof Error) {
+    try {
+      error.message = `${error.message}${text}`;
+      return error;
+    } catch {
+      // A frozen message falls through to the wrapper below.
+    }
+  }
+  return new Error(`${String(error?.message ?? error)}${text}`, { cause: error });
+}
+
 async function run(file, args, options = {}) {
-  return execFileAsync(file, args, {
-    cwd: options.cwd ?? scratch,
-    env: options.env ?? commandEnv,
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    windowsHide: true,
-    timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
-    killSignal: "SIGKILL",
-  });
+  try {
+    return await execFileAsync(file, args, {
+      cwd: options.cwd ?? scratch,
+      env: options.env ?? commandEnv,
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+      timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+    });
+  } catch (error) {
+    // The CLI writes its error envelope to stdout, which execFile's own message omits; a failure
+    // line that shows only the argv is a silent instrument. Carry both streams, bounded.
+    const deadline = error?.killed ? `\n(terminated at the ${options.timeoutMs ?? COMMAND_TIMEOUT_MS} ms command deadline)` : "";
+    throw annotateError(error, `${deadline}${outputDiagnostic("stdout", error?.stdout)}${outputDiagnostic("stderr", error?.stderr)}`);
+  }
 }
 
 async function runScenario(name, operation) {
@@ -352,6 +382,7 @@ async function proveManagedDocumentLifecycle(bundle) {
   ]);
 
   let first;
+  let primary;
   try {
     first = await managed([
       "doc", "open", "docs/windows-managed-proof", "--dir", bundle, "--actor", actors[0],
@@ -401,9 +432,24 @@ async function proveManagedDocumentLifecycle(bundle) {
     assert.ok(converged.instances.every((instance) => instance.phase === "adopted" && instance.live === true));
 
     await renderManagedDocumentInChromium(first.url, "Windows managed UI proof");
+  } catch (error) {
+    primary = error;
+    throw error;
   } finally {
+    // Stop every actor even after one stop fails, and never let a stop failure replace the
+    // scenario's first failure: the first failure is the diagnosis, the stop result is a note.
+    const stopFailures = [];
     for (const actor of actors) {
-      await managed(["ui", "--stop", "--dir", bundle, "--actor", actor]);
+      try {
+        await managed(["ui", "--stop", "--dir", bundle, "--actor", actor]);
+      } catch (error) {
+        stopFailures.push(`${actor}: ${String(error?.message ?? error)}`);
+      }
+    }
+    if (stopFailures.length > 0) {
+      const summary = `managed UI stop failed for ${stopFailures.length} actor(s):\n${stopFailures.join("\n")}`;
+      if (primary) annotateError(primary, `\n[cleanup] ${summary}`);
+      else throw new Error(summary);
     }
   }
 

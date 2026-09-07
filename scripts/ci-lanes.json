@@ -184,7 +184,7 @@
       "runtime_node": 22,
       "installed_package_node": 20,
       "installed_package_proof_script": "scripts/windows-installed-package-proof.mjs",
-      "installed_package_proof_sha256": "1da948298f982117b83c7f8889570dd0c68f656d15ac89686dd402ce6d1caea6",
+      "installed_package_proof_sha256": "272ba07a0f0beb0e792802d4b82b32361689fed8d2206e69cca72efa4d097c26",
       "installed_package_proof_digest_update": {
         "command": "node scripts/windows-installed-package-proof-digest.mjs",
         "instructions": "After an intentional review of the proof bytes, run the command and update installed_package_proof_sha256 in this manifest in the same commit."
