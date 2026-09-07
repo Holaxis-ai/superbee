@@ -281,6 +281,8 @@ function pushAndConfirmRemote(top: string, sha: string, inv: CommandPrefix): str
   try {
     pushBoardCommit(top, sha);
   } catch (err) {
+    // The required preflight already proved repository existence in this run. This recheck owns
+    // only the create outcome: if it fails, board state becomes unknown without erasing that fact.
     const fetched = fetchOrigin(top);
     const remoteCommit = refCommit(top, `refs/remotes/${BOARD_REF}`);
     if (!fetched || !remoteCommit) {

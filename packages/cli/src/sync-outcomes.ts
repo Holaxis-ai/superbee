@@ -33,9 +33,9 @@ export function upstreamHelp(inv: CommandPrefix): string {
   return (
     `if a teammate already shares this project's board, point \`origin\` at that SAME existing ` +
     `repository and run \`${inv} sync\` to join. For a first share, the remote repository must ` +
-    `already exist; Superbee does not create it. Connect the existing repository, or, only when ` +
-    `its absence is confirmed, create it outside Superbee if authorized or ask an authorized ` +
-    `owner/teammate to create it and grant access. Then verify the repository is visible and ` +
+    `already exist; Superbee does not create it. Connect the existing repository. If an authorized ` +
+    `check confirms it is absent, create it outside Superbee if authorized. Otherwise, ask an ` +
+    `authorized owner or teammate to create it and grant access. Then verify the repository is visible and ` +
     `\`origin/board\` is absent before explicitly running \`${inv} sync --establish\`. Until then, ` +
     `local-only is supported: every local command works and nothing leaves this machine`
   );
@@ -93,6 +93,11 @@ export interface SharingDetails {
   possible_causes?: SharingPossibleCause[];
 }
 
+/**
+ * `create-board` is reachable only after this establishment run successfully fetched `origin`.
+ * A later verification failure can make the board outcome unknown, but it does not erase that
+ * same-run evidence that the repository exists.
+ */
 export type SharingContext =
   | { operation: "establish-preflight" }
   | { operation: "create-board"; remote_board: SharingRemoteState }

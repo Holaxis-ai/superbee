@@ -681,6 +681,41 @@ test("push rejection preserves the classified auth error and leaves the source, 
   }
 });
 
+test("failed post-push fetch preserves the successful preflight repository fact while board state becomes unknown", async () => {
+  const topo = await makeGreenfieldTopology();
+  const { home, cleanup } = await tempHome();
+  try {
+    await initPlainBundleDir(topo.a);
+    const sourceBefore = readFileSync(path.join(topo.a.board, "index.md"), "utf8");
+    const hook = path.join(topo.a.root, ".git", "hooks", "pre-push");
+    await writeFile(
+      hook,
+      "#!/bin/sh\ngit remote set-url origin ./missing-origin.git\necho 'fatal: Authentication failed' >&2\nexit 1\n",
+    );
+    await chmod(hook, 0o755);
+
+    const { err } = await runSync(home, ["--establish", "--dir", topo.a.root]);
+    assert.equal(err?.code, "AUTH_REQUIRED");
+    assert.deepEqual(err?.details?.sharing, {
+      operation: "create-board",
+      remote_repository: "exists-confirmed",
+      remote_board: "unknown",
+      repository_creation: "irrelevant",
+      required_authority: "repository-write-and-board-create-policy",
+      local_work: "preserved",
+      cause_certainty: "best-effort",
+      possible_causes: ["authentication", "repository-write", "branch-policy"],
+    });
+    assert.equal(readFileSync(path.join(topo.a.board, "index.md"), "utf8"), sourceBefore);
+    assert.equal(git(topo.a.root, ["diff", "--cached", "--name-only"]), "");
+    assert.notEqual(gitTry(topo.origin, ["show-ref", "--verify", `refs/heads/${BOARD_BRANCH}`]).status, 0);
+    assert.equal(existsSync(establishMarkerPath(topo.a.root)), true, "failed publication retains recovery provenance");
+  } finally {
+    await cleanup();
+    await topo.cleanup();
+  }
+});
+
 test("generic remote rejection during first publication stays provider-neutral and recoverable", async () => {
   const topo = await makeGreenfieldTopology();
   const { home, cleanup } = await tempHome();
