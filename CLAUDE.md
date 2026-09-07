@@ -170,13 +170,18 @@ mismatched visibility never weakens the conservative rule.
 ### Releases
 
 Releases use GitHub and npm's native controls; the repository adds no release state, ledger,
-receipt, or approval transport of its own. The mechanism is `.github/workflows/release.yml`
+receipt, or approval transport of its own. The public CLI uses `.github/workflows/release.yml`
 (build once, stage the exact tarball on npm through OIDC trusted publishing) and
 `.github/workflows/release-finalize.yml` (after the human's `npm stage approve`, verify the
 registry against the build attestation and create the GitHub release, immutable once the
-repository setting is on). Read those two files; do not reconstruct a
-procedure from memory. The package's `prepublishOnly` refusal is an ergonomics tripwire, not a
-boundary; npm's require-2FA/disallow-tokens setting is the boundary.
+repository setting is on). Read those two files; do not reconstruct a procedure from memory.
+
+The synchronized restricted runtime libraries use `.github/workflows/release-libraries.yml` and
+`.github/workflows/release-libraries-finalize.yml` under the separate `libraries/v<version>` tag
+identity. The first `0.1.0` pair is the named human bootstrap because npm staging cannot create a
+package; later versions stage core and server separately. These package `prepublishOnly` refusals
+are ergonomics tripwires, not boundaries; npm's require-2FA/disallow-tokens setting is the
+boundary.
 
 Agents may prepare a version-bump PR and, when explicitly asked, push the `v<version>` tag that
 starts a release. Agents never run `npm publish`, `npm stage approve`, `npm dist-tag`, or any

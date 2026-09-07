@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdir, readdir, readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import { build } from "esbuild";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -62,8 +64,16 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("package.json"));
     assert.ok(paths.includes("dist/index.js"));
     assert.ok(paths.includes("dist/index.d.ts"));
+    assert.ok(paths.includes("dist/engine.js"));
+    assert.ok(paths.includes("dist/engine.d.ts"));
     assert.ok(paths.includes("dist/kinds.js"));
     assert.ok(paths.includes("dist/kinds.d.ts"));
+    assert.ok(paths.includes("dist/recipes.js"));
+    assert.ok(paths.includes("dist/recipes.d.ts"));
+    assert.ok(paths.includes("dist/remote.js"));
+    assert.ok(paths.includes("dist/remote.d.ts"));
+    assert.ok(paths.includes("dist/storage.js"));
+    assert.ok(paths.includes("dist/storage.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file.startsWith("dist/")));
 
     await writeFile(
@@ -97,6 +107,12 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
   type StorageBackend,
 } from "@superbee/core";
 import { isTerminal, type KindConvention } from "@superbee/core/kinds";
+import {
+  MalformedDocumentError,
+  type EdgeFilter,
+  type Link,
+} from "@superbee/core/engine";
+import { MalformedDocumentError as StorageMalformedDocumentError } from "@superbee/core/storage";
 
 const document: OkfDocument = { id: "proof", frontmatter: { type: "Proof" }, body: "works" };
 const backends: StorageBackend[] = [
@@ -117,7 +133,10 @@ const kind: KindConvention = {
   },
 };
 const terminal: boolean = isTerminal(kind, { type: "Task", status: "done" });
-void [document, backends, terminal];
+const edgeFilter: EdgeFilter = { from: "proof/", to: ["target"] };
+const link: Link = { from: "proof/source", to: "target", text: "proof", href: "../target.md" };
+const sameMalformedError: boolean = MalformedDocumentError === StorageMalformedDocumentError;
+void [document, backends, terminal, edgeFilter, link, sameMalformedError];
 `,
     );
     await writeFile(
@@ -193,6 +212,39 @@ try {
     );
     await run(process.execPath, ["consumer.mjs"], scratch);
 
+    await writeFile(
+      path.join(scratch, "no-buffer-consumer.mjs"),
+      `delete globalThis.Buffer;
+const { MalformedDocumentError, readBundleOkfVersion, writeDocVersioned } = await import("@superbee/core/engine");
+if (typeof Buffer !== "undefined") throw new Error("proof must execute without Buffer");
+const backend = {
+  readReserved: async () => ({
+    content: "\\uFEFF---\\nokf_version: '0.2'\\n---\\n# Packed Worker proof\\n",
+    version: "proof",
+  }),
+  write: async (_id, doc) => {
+    if (doc.frontmatter.timestamp !== undefined) throw new Error("BOM caused v0.1 timestamp fallback");
+    return "sha256:proof";
+  },
+};
+if (await readBundleOkfVersion(backend) !== "0.2") throw new Error("portable version read failed");
+const written = await writeDocVersioned(backend, {
+  id: "packed/bom-proof",
+  frontmatter: { type: "Proof" },
+  body: "v0.2 stays v0.2",
+});
+if (written.doc.frontmatter.timestamp !== undefined) throw new Error("portable engine fell back to v0.1");
+backend.readReserved = async () => ({ content: "---\\nokf_version: [\\n---\\n", version: "bad" });
+try {
+  await readBundleOkfVersion(backend);
+  throw new Error("malformed root was accepted");
+} catch (error) {
+  if (!(error instanceof MalformedDocumentError)) throw error;
+}
+`,
+    );
+    await run(process.execPath, ["no-buffer-consumer.mjs"], scratch);
+
     // N3: the filesystem identity unit is not reachable from the packed package. Each negative
     // consumer must FAIL to typecheck for the named reason, and a runtime deep import must be
     // refused by the exports map, so the sealed boundary is protected by CI rather than by naming.
@@ -261,11 +313,144 @@ try {
     assert.equal(deep.stdout.trim(), "ERR_PACKAGE_PATH_NOT_EXPORTED");
 
     const installed = path.join(scratch, "node_modules", "@superbee", "core");
+
+    await assert.rejects(lstat(path.join(scratch, "node_modules", "superbee")), { code: "ENOENT" });
+    await writeFile(path.join(scratch, "recipe-consumer.mjs"), String.raw`
+import { parseRecipeFiles } from "@superbee/core/recipes";
+import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
+import { MalformedDocumentError } from "@superbee/core/document-codec";
+
+export function exerciseRecipes() {
+  const files = [
+    { path: "recipe.md", bytes: "---\ntype: Recipe\nid: glossary\ntitle: Glossary\nversion: '1'\nsummary: Define terms.\ncontent_policy: definitions-only\n---\n" },
+    { path: "conventions/term.md", bytes: "---\ntype: Convention\ngoverns: Term\nfields:\n  required: [title]\nsections: [Definition]\n---\n" },
+  ];
+  const before = JSON.stringify(files);
+  const parsed = parseRecipeFiles(files, "memory:glossary");
+  if (!parsed.ok || parsed.recipe.source !== "memory:glossary") throw new Error("recipe parse failed");
+  if (JSON.stringify(files) !== before) throw new Error("parser mutated input");
+  const registry = buildKindRegistry(parsed.recipe.docs);
+  const kind = registry.kinds.get("Term");
+  if (!kind || registry.warnings.length) throw new Error("Kind registry failed");
+  const good = { id: "terms/example", frontmatter: { type: "Term", title: "Example" }, body: "# Definition\n\nAn example." };
+  if (validateAgainstKind(good, kind).length) throw new Error("valid record rejected");
+  const warnings = validateAgainstKind({ ...good, frontmatter: { type: "Term" } }, kind);
+  if (warnings.length !== 1 || warnings[0].code !== "KIND_FIELD_MISSING" || warnings[0].field !== "title") throw new Error("invalid record accepted");
+  const missing = parseRecipeFiles([], "memory:missing");
+  if (missing.ok || missing.error.code !== "RECIPE_MALFORMED") throw new Error("missing manifest accepted");
+  const undeclared = parseRecipeFiles([...files, { path: "terms/instance.md", bytes: "instance" }], "memory:strict");
+  if (undeclared.ok || undeclared.error.code !== "RECIPE_UNSAFE_PATH") throw new Error("instance data accepted");
+  const reserved = parseRecipeFiles([{ ...files[0], bytes: files[0].bytes.replace("summary:", "requires: []\nsummary:") }, files[1]], "memory:warning");
+  if (!reserved.ok || reserved.recipe.warnings[0]?.code !== "RECIPE_MANIFEST_RESERVED_KEY") throw new Error("warning lost");
+  try {
+    parseRecipeFiles([{ path: "recipe.md", bytes: "---\nid: [\n---\n" }], "memory:malformed");
+    throw new Error("malformed YAML accepted");
+  } catch (error) {
+    if (!(error instanceof MalformedDocumentError)) throw error;
+  }
+  return { id: parsed.recipe.id, invalidField: warnings[0].field };
+}
+`);
+    await run(process.execPath, ["--input-type=module", "-e", 'import { exerciseRecipes } from "./recipe-consumer.mjs"; exerciseRecipes();'], scratch);
+    const recipeBundle = await build({
+      absWorkingDir: scratch,
+      entryPoints: ["recipe-consumer.mjs"],
+      bundle: true,
+      platform: "browser",
+      format: "iife",
+      globalName: "RecipeProof",
+      write: false,
+      logLevel: "silent",
+    });
+    // Exercise the browser bundle without Node globals. This is not a live browser/Worker test.
+    const recipeProof = runInNewContext(recipeBundle.outputFiles[0].text + '\nJSON.stringify(RecipeProof.exerciseRecipes())', {}, { timeout: 5000 });
+    assert.deepEqual(JSON.parse(recipeProof), { id: "glossary", invalidField: "title" });
+
+    await writeFile(
+      path.join(scratch, "worker-consumer.ts"),
+      `import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
+import {
+  InvalidInputError,
+  VersionConflict,
+  assertSafeConceptId,
+  type OkfDocument,
+  type StorageBackend,
+} from "@superbee/core/storage";
+import { RemoteBackend, RemoteError } from "@superbee/core/remote";
+import { parseRecipeFiles, type RecipeFile, type LoadResult } from "@superbee/core/recipes";
+import { buildKindRegistry, validateAgainstKind } from "@superbee/core/kinds";
+
+declare const backend: StorageBackend;
+declare const document: OkfDocument;
+declare const files: RecipeFile[];
+const recipe: LoadResult = parseRecipeFiles(files, "memory:typed");
+if (recipe.ok) {
+  const registry = buildKindRegistry(recipe.recipe.docs);
+  const kind = registry.kinds.get(String(document.frontmatter.type));
+  if (kind) validateAgainstKind(document, kind);
+}
+export async function exercisePortableCore(): Promise<void> {
+  assertSafeConceptId(document.id);
+  await writeDocVersioned(backend, document);
+  await queryHeads(backend, { type: String(document.frontmatter.type) });
+}
+export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBackend, RemoteError };
+`,
+    );
+    await writeFile(
+      path.join(scratch, "tsconfig.worker.json"),
+      JSON.stringify(
+        {
+          compilerOptions: {
+            target: "ES2022",
+            lib: ["ES2022", "WebWorker"],
+            types: [],
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            strict: true,
+            noEmit: true,
+            skipLibCheck: false,
+          },
+          include: ["worker-consumer.ts"],
+        },
+        null,
+        2,
+      ),
+    );
+    await run(
+      process.execPath,
+      [path.join(repoRoot, "node_modules", "typescript", "bin", "tsc"), "-p", "tsconfig.worker.json"],
+      scratch,
+    );
+    const workerBundle = await build({
+      absWorkingDir: scratch,
+      entryPoints: ["worker-consumer.ts"],
+      bundle: true,
+      platform: "browser",
+      write: false,
+      logLevel: "silent",
+    });
+    assert.equal(workerBundle.errors.length, 0);
+    assert.ok(workerBundle.outputFiles[0].text.includes("RemoteBackend"));
+
     const installedManifest = JSON.parse(await readFile(path.join(installed, "package.json"), "utf8"));
-    assert.equal(installedManifest.private, true);
+    const sourceManifest = JSON.parse(
+      await readFile(path.join(repoRoot, "packages", "core", "package.json"), "utf8"),
+    );
+    assert.equal(installedManifest.private, undefined);
+    assert.equal(installedManifest.version, sourceManifest.version);
+    assert.deepEqual(installedManifest.publishConfig, {
+      access: "restricted",
+      registry: "https://registry.npmjs.org/",
+    });
+    assert.match(installedManifest.scripts.prepublishOnly, /process\.exit\(1\)/);
     assert.deepEqual(installedManifest.files, ["dist"]);
     assert.ok(installedManifest.exports["."]);
     assert.ok(installedManifest.exports["./kinds"]);
+    assert.ok(installedManifest.exports["./recipes"]);
+    assert.ok(installedManifest.exports["./engine"]);
+    assert.ok(installedManifest.exports["./remote"]);
+    assert.ok(installedManifest.exports["./storage"]);
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
 

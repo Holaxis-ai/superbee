@@ -370,13 +370,13 @@ export class BridgeService {
     let outcome: BridgeOutcome;
     try {
       outcome = await this.execute(before, request);
-    } catch (error) {
+    } catch {
       outcome = {
         reply: fail(
           request.id,
           request.bridge,
           "RUNTIME",
-          error instanceof Error ? error.message : String(error),
+          "the View request failed",
         ),
       };
     }
@@ -429,11 +429,8 @@ export class BridgeService {
     let next: Map<string, string>;
     try {
       next = await this.subscriptionSnapshot();
-    } catch (error) {
-      return this.reload(
-        launchId,
-        error instanceof Error ? error.message : String(error),
-      );
+    } catch {
+      return this.reload(launchId, "the View subscription could not be refreshed");
     }
     const after = await this.options.launches.resolve(launchId, true);
     if (!after) return this.reload(launchId, "the View changed while its subscription was polled");

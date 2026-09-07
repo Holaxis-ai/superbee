@@ -93,6 +93,11 @@ jobs:
     name: browser and UI
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.61.1-noble@sha256:5b8f294aff9041b7191c34a4bab3ac270157a28774d4b0660e9743297b697e48
+      options: --ipc=host
+    env:
+      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,9 +107,41 @@ jobs:
           node-version: 26
           cache: npm
       - run: npm ci
-      - name: Install Chromium and operating-system dependencies
-        run: npx playwright install --with-deps chromium
-        working-directory: packages/ui
+      - name: Verify baked Playwright browser artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { constants } from "node:fs";
+          import { access, readFile } from "node:fs/promises";
+          import path from "node:path";
+
+          assert.equal(process.platform, "linux", "the browser container must run Linux");
+          assert.equal(process.arch, "x64", "the browser job is pinned to GitHub's x64 runner");
+          const root = process.env.PLAYWRIGHT_BROWSERS_PATH;
+          assert.equal(root, "/ms-playwright", "the baked browser registry path must remain explicit");
+          const manifest = JSON.parse(await readFile("node_modules/playwright-core/browsers.json", "utf8"));
+          const browser = (name) => {
+            const matches = manifest.browsers.filter((entry) => entry.name === name);
+            assert.equal(matches.length, 1, `Playwright must declare exactly one ${name} artifact`);
+            assert.equal(matches[0].installByDefault, true, `${name} must remain installed by default`);
+            return matches[0];
+          };
+          const chromium = browser("chromium");
+          const headless = browser("chromium-headless-shell");
+          const ffmpeg = browser("ffmpeg");
+          assert.equal(chromium.revision, headless.revision, "Chromium revisions must stay aligned");
+          const required = [
+            [path.join(root, `chromium-${chromium.revision}`, "INSTALLATION_COMPLETE"), constants.F_OK],
+            [path.join(root, `chromium-${chromium.revision}`, "chrome-linux64", "chrome"), constants.X_OK],
+            [path.join(root, `chromium_headless_shell-${headless.revision}`, "INSTALLATION_COMPLETE"), constants.F_OK],
+            [path.join(root, `chromium_headless_shell-${headless.revision}`, "chrome-headless-shell-linux64", "chrome-headless-shell"), constants.X_OK],
+            [path.join(root, `ffmpeg-${ffmpeg.revision}`, "INSTALLATION_COMPLETE"), constants.F_OK],
+            [path.join(root, `ffmpeg-${ffmpeg.revision}`, "ffmpeg-linux"), constants.X_OK],
+          ];
+          for (const [artifact, mode] of required) await access(artifact, mode);
+          NODE
       - run: npm run ci:browser
 
   scripts:

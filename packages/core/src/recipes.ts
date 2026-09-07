@@ -1,17 +1,11 @@
 // The ONE pure recipe parse+validate+materialize pipeline. Sources only acquire RecipeFile[];
 // everything downstream of that byte boundary is distribution-neutral and branches on content,
 // never on whether the files came from built-in constants, a folder, or a future source adapter.
-import {
-  parseMarkdown,
-  parseConventionDoc,
-  conceptIdFromPath,
-  assertSafeConceptId,
-  isReservedFile,
-  CONVENTIONS_PREFIX,
-  CONVENTION_TYPE,
-  type OkfDocument,
-  type ValidationWarning,
-} from "@superbee/core";
+import { parseMarkdown } from "./frontmatter.js";
+import { parseConventionDoc, CONVENTIONS_PREFIX, CONVENTION_TYPE } from "./kinds.js";
+import { conceptIdFromPath, assertSafeConceptId, isReservedFile } from "./paths.js";
+import type { OkfDocument } from "./types.js";
+import type { ValidationWarning } from "./validation.js";
 import {
   declaredAccessValue,
   isAnyEntryKey,
@@ -21,7 +15,7 @@ import {
   PAGE_REGISTRY_PREFIX,
   VIEW_ENTRY_PREFIX,
   VIEW_REGISTRY_PREFIX,
-} from "@superbee/core/page";
+} from "./page.js";
 
 /** One recipe file: a path relative to the recipe root (posix), with its UTF-8 text. */
 export interface RecipeFile {
@@ -45,7 +39,7 @@ export interface RecipeReference {
   doc: OkfDocument;
 }
 
-/** The common shape every `RecipeSource` produces and `applyRecipe` (recipes.ts) consumes. */
+/** Parsed recipe definitions. Parsing does not install, authorize or execute these assets. */
 export interface LoadedRecipe {
   id: string;
   title: string;
@@ -53,7 +47,7 @@ export interface LoadedRecipe {
   summary: string;
   /** One-line user-outcome phrasing for session offers; the manifest's `offer`, else the title. */
   offer: string;
-  /** `"builtin:<name>"` or the resolved absolute directory — for receipts (+ future provenance). */
+  /** Caller-supplied provenance label; never resolved or fetched by the parser. */
   source: string;
   /** Convention docs, ids under `conventions/`. `timestamp` is stamped at APPLY, not here. */
   docs: OkfDocument[];
@@ -78,17 +72,7 @@ export interface RecipeError {
 
 export type LoadResult = { ok: true; recipe: LoadedRecipe } | { ok: false; error: RecipeError };
 
-/** A named- or path-addressed byte source. `resolve` returns `null` when `ref` is not addressed
- * to this source at all (so the next source in line gets a turn) — as opposed to `{ok:false}`,
- * which means "this ref WAS addressed to me, and loading it failed." */
-export interface RecipeSource {
-  readonly kind: "builtin" | "files";
-  resolve(ref: string): Promise<LoadResult | null>;
-}
-
-/** Manifest (`recipe.md`) frontmatter keys reserved for a future composition surface (§D
- * non-goals: `composes:`/`seeds:`/`requires:`). Declared-but-unapplied — surfaced as a warning,
- * never silently ignored (approved §B decision 4). */
+/** Reserved manifest keys are surfaced as warnings, not applied or silently ignored. */
 const RESERVED_MANIFEST_KEYS = ["composes", "seeds", "requires"] as const;
 
 function nonEmptyString(v: unknown): string {
@@ -276,9 +260,9 @@ function parsePageDeclarations(manifest: Record<string, unknown>, recipeId: stri
 }
 
 /**
- * THE one parse+validate+materialize path (approved §B decision 1). Pure — no fs, no network, no
- * awareness of where `files`/`source` came from. Both `builtinRecipeSource` and
- * `filesRecipeSource` call this, unchanged.
+ * Parse and validate caller-supplied recipe files without I/O or installation.
+ * Structural recipe errors return a failed LoadResult; malformed YAML throws
+ * MalformedDocumentError, as in the shared document codec.
  */
 export function parseRecipeFiles(files: RecipeFile[], source: string): LoadResult {
   const manifestFile = files.find((f) => f.path === "recipe.md");
@@ -445,7 +429,7 @@ export function parseRecipeFiles(files: RecipeFile[], source: string): LoadResul
       }
     }
 
-    // Self-duplicate governs WITHIN this recipe is a malformed recipe (approved §B decision 8(i)) —
+    // Self-duplicate governs WITHIN this recipe is a malformed recipe —
     // NOT a skip-with-warning, since it means the recipe's own conventions disagree about a type
     // it declares governing twice.
     if (governsSeen.has(governs)) {

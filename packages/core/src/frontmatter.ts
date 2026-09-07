@@ -1,15 +1,18 @@
 /**
- * Markdown + YAML frontmatter (de)serialization via `gray-matter`.
+ * Markdown + YAML frontmatter parsing and gray-matter-compatible serialization.
  *
- * This is the ONLY module that touches the YAML layer; every other module works
- * with the already-parsed {@link Frontmatter}/body shapes. gray-matter delimits
- * frontmatter with `---` lines (OKF §4.1) and preserves unknown keys on
- * round-trip (OKF v0.1 §9 / v0.2 §11 permissive consumption).
+ * This is the full-document YAML parse/serialize surface; every other module works with the
+ * already-parsed {@link Frontmatter}/body shapes. The runtime-neutral root-marker reader shares
+ * the same exact delimiter splitter. Unknown keys are preserved on round-trip (OKF v0.1 §9 /
+ * v0.2 §11 permissive consumption).
  */
 
-import matter from "gray-matter";
 import yaml from "js-yaml";
+import { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
+import { splitLeadingFrontmatter } from "./frontmatter-splitter.js";
 import type { Frontmatter } from "./types.js";
+
+export { isUsableTimestamp, MalformedDocumentError } from "./frontmatter-contract.js";
 
 const YAML_TIMESTAMP_TAG = "tag:yaml.org,2002:timestamp";
 
@@ -77,65 +80,27 @@ function normalizeFrontmatter(data: Record<string, unknown>): Frontmatter {
 }
 
 /**
- * Thrown by {@link parseMarkdown} when a document's YAML frontmatter cannot be parsed. Carries
- * `context` — the document's id/path when the caller supplied one — so a whole-bundle scan can
- * attribute the corruption to a SPECIFIC document ("malformed frontmatter in 'notes/bad.md': …")
- * instead of surfacing a raw, id-less js-yaml message. `detail` is the underlying parser message
- * (first line only) for compact reporting; the original error is preserved on `.cause`.
- */
-export class MalformedDocumentError extends Error {
-  override readonly name = "MalformedDocumentError";
-  /** The document id/path the malformed content belongs to (when the caller supplied one). */
-  readonly context?: string;
-  /** The underlying parser message, first line only — for compact per-doc reporting. */
-  readonly detail: string;
-
-  constructor(context: string | undefined, cause: unknown) {
-    const detail = ((cause instanceof Error ? cause.message : String(cause)).split("\n")[0] ?? "")
-      .trim();
-    super(
-      `malformed frontmatter${context ? ` in '${context}'` : ""}: ${detail} — ` +
-        `fix the YAML or remove the file`,
-    );
-    if (context !== undefined) this.context = context;
-    this.detail = detail;
-    if (cause !== undefined) (this as { cause?: unknown }).cause = cause;
-  }
-}
-
-/**
  * Parse raw markdown into `{ frontmatter, body }`. Missing frontmatter yields `{}`. Malformed YAML
  * throws an attributed {@link MalformedDocumentError} (naming `context` when given).
  *
- * Passing parser options bypasses gray-matter's input cache. Without options, gray-matter can cache
- * a still-unparsed file before YAML parsing, causing a later parse of the same malformed bytes to
- * return empty data instead of throwing again. The custom YAML engine also preserves timestamp-like
- * scalars as strings so date-only values retain their original semantic shape.
+ * The shared splitter recognizes only exact OKF delimiters, and the fixed YAML engine preserves
+ * timestamp-like scalars as strings so date-only values retain their original semantic shape.
  */
 export function parseMarkdown(
   raw: string,
   context?: string,
 ): { frontmatter: Frontmatter; body: string } {
-  // An exact opening delimiter asserts that the document has YAML frontmatter. gray-matter accepts
-  // a missing closing delimiter when the remaining bytes happen to be valid YAML (Markdown heading
-  // lines are YAML comments), then returns an empty body. That is lossy ambiguity, not a successful
-  // parse: every caller must see the same attributed malformed-document result before it can read,
-  // export, or rewrite a body that silently disappeared.
-  if (/^---(?:\r?\n|$)/.test(raw)) {
-    const firstLineEnd = raw.indexOf("\n");
-    const afterOpening = firstLineEnd === -1 ? "" : raw.slice(firstLineEnd + 1);
-    if (!/^---\r?$/m.test(afterOpening)) {
-      throw new MalformedDocumentError(context, new Error("unterminated YAML frontmatter delimiter"));
-    }
-  }
+  const split = splitLeadingFrontmatter(raw, context);
+  if (!("yamlSource" in split)) return { frontmatter: {} as Frontmatter, body: split.body };
+
   let parsed;
   try {
-    parsed = matter(raw, { engines: { yaml: yamlEngine } });
+    parsed = yamlEngine.parse(split.yamlSource);
   } catch (err) {
     throw new MalformedDocumentError(context, err);
   }
-  const frontmatter = normalizeFrontmatter((parsed.data ?? {}) as Record<string, unknown>);
-  return { frontmatter, body: parsed.content };
+  const frontmatter = normalizeFrontmatter(parsed as Record<string, unknown>);
+  return { frontmatter, body: split.body };
 }
 
 /** Match the exact body shape emitted by the document serializer. */
@@ -145,28 +110,14 @@ export function normalizeDocumentBodyForStorage(body: string): string {
 
 /** Serialize an arbitrary YAML-mapping + body to OKF markdown (used for reserved files). */
 export function stringifyWithData(data: Record<string, unknown>, body: string): string {
-  const engines = (matter as typeof matter & {
-    engines: { yaml: { stringify(value: object): string } };
-  }).engines;
-  const yaml = engines.yaml.stringify(data).trim();
+  const dumped = yaml.safeDump(data).trim();
   const content = body ?? "";
   const newline = (value: string): string => (value.endsWith("\n") ? value : `${value}\n`);
-  if (yaml === "{}") return normalizeDocumentBodyForStorage(content);
-  return `---\n${newline(yaml)}---\n${normalizeDocumentBodyForStorage(content)}`;
+  if (dumped === "{}") return normalizeDocumentBodyForStorage(content);
+  return `---\n${newline(dumped)}---\n${normalizeDocumentBodyForStorage(content)}`;
 }
 
 /** Serialize a concept document's frontmatter + body to OKF-conformant markdown. */
 export function stringifyDoc(frontmatter: Frontmatter, body: string): string {
   return stringifyWithData(frontmatter as Record<string, unknown>, body);
-}
-
-/**
- * THE engine's usable-document-timestamp predicate: a non-empty (post-trim) string. Anything
- * else — absent, empty string, null, or any non-string — is unusable, and the engine write path
- * (`writeDocVersioned`) replaces it with the current time. A consumer that must DISCLOSE that
- * stamping (e.g. the legacy-name migration's `timestamp_added` receipt) reuses this predicate
- * rather than inventing a second definition of "has a timestamp".
- */
-export function isUsableTimestamp(value: unknown): value is string {
-  return typeof value === "string" && value.trim() !== "";
 }

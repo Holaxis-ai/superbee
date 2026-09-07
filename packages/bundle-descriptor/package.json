@@ -1,0 +1,26 @@
+{
+  "name": "@superbee/bundle-descriptor",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Stable Bundle Descriptor contract bundled into the public superbee package.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "schema"
+  ],
+  "scripts": {
+    "generate": "node scripts/generate-types.mjs",
+    "check:generated": "node scripts/generate-types.mjs --check",
+    "build": "npm run check:generated && tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test ./test/*.test.mjs"
+  },
+  "devDependencies": {
+    "ajv": "^8.18.0",
+    "json-schema-to-typescript": "15.0.4",
+    "typescript": "^5.4.0"
+  }
+}
