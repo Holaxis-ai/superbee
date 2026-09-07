@@ -65,6 +65,11 @@ export function renderNpm(): string {
   lines.push("");
   lines.push("- Operate only on the bundle resolved from the current project or one the user explicitly selects.");
   lines.push("  A catalog entry is available for selection; it is not ambient project context.");
+  lines.push("- Before remote publication, ask whether the intended remote repository exists, then whether");
+  lines.push("  `origin/board` exists. If either is unknown, stop remote mutation and diagnose access.");
+  lines.push("- Superbee does not create the remote repository. If absence is confirmed, create it externally if authorized, or ask an authorized owner/teammate.");
+  lines.push("- On an existing repository without `board`, establishment needs consent, repository-specific Write access,");
+  lines.push("  and branch-create policy clearance; creation authority is irrelevant. If `origin/board` exists, join with `superbee sync`; never establish another board.");
   lines.push("- If no bundle resolves, determine whether this repository already shares a board and clarify the");
   lines.push("  intended purpose, privacy, participants, and sharing boundary before creating anything.");
   lines.push("  `superbee sync` joins an existing shared board; `superbee init --create-only --dir .superbee` is");

@@ -241,6 +241,14 @@ test("the eager npm Skill preserves bundle and publication authority", () => {
   assert.match(renderedNpm, /Ask before creating durable structure or publishing a local bundle/);
   assert.match(renderedNpm, /Never silently rewrite an established Kind, recipe, or its instances/);
   assert.match(renderedNpm, /Never mutate while merely explaining options/);
+  const repositoryQuestion = renderedNpm.indexOf("remote repository exists");
+  const boardQuestion = renderedNpm.indexOf("`origin/board` exists");
+  assert.ok(repositoryQuestion >= 0 && boardQuestion > repositoryQuestion, "repository existence is checked before board existence");
+  assert.match(renderedNpm, /Superbee does not create the remote repository/);
+  assert.match(renderedNpm, /existing repository.*repository-specific Write.*branch-create policy/is);
+  assert.match(renderedNpm, /If `origin\/board` exists, join with `superbee sync`/);
+  assert.match(renderedNpm, /unknown.*stop remote mutation/is);
+  assert.doesNotMatch(renderedNpm, /gh repo create|change (?:GitHub )?(?:access|policy)/i);
 });
 
 test("the npm Skill progressively discloses one focused modeling reference", () => {

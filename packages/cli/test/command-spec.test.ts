@@ -104,3 +104,13 @@ test("command-spec stays at the dependency bottom", () => {
   const source = readFileSync(join(import.meta.dirname, "../src/command-spec.ts"), "utf8");
   assert.doesNotMatch(source, /^\s*import\s/m);
 });
+
+test("sync catalog summary distinguishes repository creation, establishment, and joining", () => {
+  const sync = CLI_COMMAND_GROUPS.flatMap((group) => group.commands).find((row) => row.id === "sync");
+  assert.ok(sync);
+  assert.match(sync.summary, /remote repository must already exist/i);
+  assert.match(sync.summary, /does not create/i);
+  assert.match(sync.summary, /--establish.*board branch/is);
+  assert.match(sync.summary, /plain `sync`.*join/is);
+  assert.match(sync.summary, /repository-specific.*branch-create policy/i);
+});
