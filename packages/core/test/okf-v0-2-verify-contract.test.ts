@@ -130,12 +130,15 @@ test("v0.2 verify: a producer's bare verified mapping is read as one event and b
   try {
     for (const harness of adapters) {
       const label = harness.name;
+      // The producer is the create's resolved actor: on main, candidate frontmatter cannot
+      // self-declare `generated.by` (an unattributed create records process:superbee).
       await mutateDocument({
         bundle: harness.bundle,
         id: "concepts/bare",
         mode: "create-only",
         registry: EMPTY_REGISTRY,
         strict: false,
+        actor: "finance_agent/1.0",
         now: () => CREATED_AT,
         buildCandidate: () => ({
           frontmatter: {
@@ -147,6 +150,7 @@ test("v0.2 verify: a producer's bare verified mapping is read as one event and b
         }),
       });
       const before = await readDocVersioned(harness.bundle, "concepts/bare");
+      assert.deepEqual(before.doc.frontmatter.generated, { by: "finance_agent/1.0", at: CREATED_AT }, label);
       assert.equal(trustTier(before.doc.frontmatter), "machine-confirmed", label);
       assert.deepEqual(verificationEvents(before.doc.frontmatter), [{ by: "process:nightly", at: VERIFIED_AT, method: "checksum" }], label);
 
