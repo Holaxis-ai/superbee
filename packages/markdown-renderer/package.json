@@ -1,10 +1,18 @@
 {
   "name": "@superbee/markdown-renderer",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
   "type": "module",
-  "description": "Shared bounded Markdown renderer for AgentState human surfaces.",
+  "description": "Bounded Markdown rendering for Superbee human interfaces.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Holaxis-ai/superbee.git",
+    "directory": "packages/markdown-renderer"
+  },
+  "publishConfig": {
+    "access": "restricted",
+    "registry": "https://registry.npmjs.org/"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "sideEffects": false,
@@ -19,7 +27,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -27,14 +36,19 @@
     "test": "node --test ./test/*.test.mjs"
   },
   "dependencies": {
-    "@superbee/core": "*",
     "mdast-util-from-markdown": "^2.0.3",
     "mdast-util-gfm": "^3.1.0",
-    "micromark-extension-gfm": "^3.0.0",
+    "micromark-extension-gfm": "^3.0.0"
+  },
+  "peerDependencies": {
+    "@superbee/core": "^0.1.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@superbee/core": "*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "jsdom": "^25.0.1",
