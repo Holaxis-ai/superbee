@@ -99,7 +99,12 @@ test("upstream help keeps both repository-creation remedies behind confirmed abs
   );
   assert.match(
     help,
-    /If its existence is uncertain, ask an organization owner or teammate with access to check first; do not create a replacement\./,
+    /If its existence is uncertain, ask an owner or teammate with access to check first; do not create a replacement\./,
+  );
+  assert.doesNotMatch(help, /organization owner/);
+  assert.match(
+    help,
+    /Then verify the existing repository is visible and `origin\/board` is absent before running `aslite sync --establish`\./,
   );
 });
 

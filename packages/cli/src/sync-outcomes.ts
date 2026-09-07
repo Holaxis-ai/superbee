@@ -33,11 +33,11 @@ export function upstreamHelp(inv: CommandPrefix): string {
   return (
     `if a teammate already shares this project's board, point \`origin\` at that repository and ` +
     `run \`${inv} sync\` to join. For a first share, connect the existing repository; Superbee does ` +
-    `not create it. If its existence is uncertain, ask an organization owner or teammate with ` +
-    `access to check first; do not create a replacement. Only after confirmed absence, create it ` +
+    `not create it. If its existence is uncertain, ask an owner or teammate with access to check ` +
+    `first; do not create a replacement. Only after confirmed absence, create it ` +
     `outside Superbee if authorized, or ask someone with repository-creation permission to do so ` +
-    `and grant access. Then verify \`origin/board\` is absent and run ` +
-    `\`${inv} sync --establish\`. Until then, ` +
+    `and grant access. Then verify the existing repository is visible and \`origin/board\` is ` +
+    `absent before running \`${inv} sync --establish\`. Until then, ` +
     `local-only is supported: every local command works and nothing leaves this machine`
   );
 }
