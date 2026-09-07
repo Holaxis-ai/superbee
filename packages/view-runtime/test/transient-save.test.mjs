@@ -146,7 +146,7 @@ test("filesystem save reconciles the serializer's trailing body newline and rema
   assert.equal(repeated.registryVersion, saved.registryVersion);
 });
 
-test("save on OKF v0.2 preserves storage attribution without inventing legacy document metadata", async () => {
+test("save on OKF v0.2 records the resolved actor without inventing legacy document metadata", async () => {
   const f = fixture();
   await f.bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
   await approve(f);
@@ -163,10 +163,10 @@ test("save on OKF v0.2 preserves storage attribution without inventing legacy do
   assert.equal(Object.hasOwn(registry.doc.frontmatter, "timestamp"), false);
   assert.equal(Object.hasOwn(registry.doc.frontmatter, "actor"), false);
   assert.equal(registry.doc.frontmatter.superbee_updated_by, "openai/codex");
-  // The engine seeds the one standard v0.2 clock on creates; a saved registration is an
-  // ordinary instance doc, so it carries generated {by, at} like any other create.
+  // The engine seeds the one standard v0.2 provenance record on creates; a saved registration is
+  // an ordinary instance doc, so its current content producer is the resolved mutation actor.
   assert.deepEqual(registry.doc.frontmatter.generated, {
-    by: "process:superbee",
+    by: "openai/codex",
     at: "2026-08-02T19:30:00.000Z",
   });
   assert.equal((await docVersions(f.bundle, saved.viewId))[0]?.actor, "openai/codex");

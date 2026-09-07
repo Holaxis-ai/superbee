@@ -1427,9 +1427,9 @@ test("new: a kind DECLARING `actor` as required is satisfiable through the --act
     });
 
     // WITH --actor: validates green and the written doc carries the field.
-    const receipt = await runJson(newCommand, ["Memo", "m1", "--title", "M", "--actor", "alice", "--dir", dir]);
+    const receipt = await runJson(newCommand, ["Memo", "m1", "--title", "M", "--actor", "human:alice", "--dir", dir]);
     const written = await readDoc(bundle, receipt.id as string);
-    assert.equal(written.frontmatter.actor, "alice");
+    assert.equal(written.frontmatter.actor, "human:alice");
     assert.equal(receipt.warnings, undefined, "no kind warnings when the required actor arrives via the control flag");
 
     // WITHOUT --actor: the required field is genuinely missing — strict `new` rejects it.

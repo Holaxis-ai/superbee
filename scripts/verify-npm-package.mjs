@@ -909,7 +909,7 @@ async function runInstalledProof(spec) {
           "--progress_status",
           "todo",
           "--actor",
-          "quickstart-agent",
+          "process:quickstart-agent",
           "--dir",
           bundle,
           "--json",
@@ -923,13 +923,13 @@ async function runInstalledProof(spec) {
     );
     assert.equal(
       createdTask.superbee_updated_by,
-      "quickstart-agent",
+      "process:quickstart-agent",
       "the literal quickstart Task must retain current-format attribution",
     );
     assert.equal(createdTask.title, "Plan the first change", "the verifier must execute the documented Task command");
     const rawDefaultTask = await readFile(path.join(bundle, "tasks", "first-task.md"), "utf8");
     assert.match(rawDefaultTask, /^superbee_progress_status: todo$/m);
-    assert.match(rawDefaultTask, /^superbee_updated_by: quickstart-agent$/m);
+    assert.match(rawDefaultTask, /^superbee_updated_by: ['"]?process:quickstart-agent['"]?$/m);
     assert.doesNotMatch(rawDefaultTask, /^status:/m);
     assert.doesNotMatch(rawDefaultTask, /^actor:/m);
     assert.doesNotMatch(rawDefaultTask, /^timestamp:/m);
@@ -942,7 +942,7 @@ async function runInstalledProof(spec) {
           "--progress_status",
           "done",
           "--actor",
-          "quickstart-agent",
+          "process:quickstart-agent",
           "--dir",
           bundle,
           "--json",
@@ -1009,7 +1009,7 @@ async function runInstalledProof(spec) {
       (
         await runCli(target.preferred_command, [
           "new", "Offline Record", "first", "--title", "Offline proof record",
-          "--actor", "package-proof", "--dir", bundle, "--json",
+          "--actor", "process:package-proof", "--dir", bundle, "--json",
         ])
       ).stdout,
       "external recipe instance create",
@@ -1047,7 +1047,7 @@ async function runInstalledProof(spec) {
       (
         await runCli(target.preferred_command, [
           "recipe", "evolve", externalRecipe, "--apply", String(evolutionPlan.plan_token),
-          "--actor", "package-proof", "--dir", bundle, "--json",
+          "--actor", "process:package-proof", "--dir", bundle, "--json",
         ])
       ).stdout,
       "external recipe evolution apply",
@@ -1072,7 +1072,7 @@ async function runInstalledProof(spec) {
       (
         await runCli(target.preferred_command, [
           "doc", "update", "offline-records/first", "--detail", "Evolved offline",
-          "--actor", "package-proof", "--dir", bundle, "--json",
+          "--actor", "process:package-proof", "--dir", bundle, "--json",
         ])
       ).stdout,
       "evolved external recipe instance update",

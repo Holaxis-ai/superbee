@@ -385,17 +385,17 @@ test("doc write v0.2 actor-only no-op reports no dropped fields", async () => {
       "--body",
       "Same body.",
       "--actor",
-      "alice",
+      "human:alice",
       "--dir",
       dir,
     ];
     const first = await runDoc(args);
-    const actorOnly = await runDoc(args.map((arg) => arg === "alice" ? "bob" : arg));
+    const actorOnly = await runDoc(args.map((arg) => arg === "human:alice" ? "human:bob" : arg));
 
     assert.equal(first.changed, true);
     assert.equal(actorOnly.changed, false);
     assert.equal(actorOnly.dropped_fields, undefined);
-    assert.equal((await readDoc({ root: dir }, "concepts/a")).frontmatter.superbee_updated_by, "alice");
+    assert.equal((await readDoc({ root: dir }, "concepts/a")).frontmatter.superbee_updated_by, "human:alice");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -1261,7 +1261,7 @@ test("doc update: patches ONE field, preserving the body and every other field v
   }
 });
 
-test("doc update on an explicit v0.2 bundle advances generated.at without inventing legacy metadata", async () => {
+test("doc update on an explicit v0.2 bundle advances generated provenance without inventing legacy metadata", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n", "utf8");
@@ -1294,7 +1294,7 @@ test("doc update on an explicit v0.2 bundle advances generated.at without invent
     const after = await readDoc({ root: dir }, "concepts/a");
     const generated = after.frontmatter.generated as { at: string; by: string };
     assert.ok(Date.parse(generated.at) >= before);
-    assert.equal(generated.by, "https://legacy.example/producer");
+    assert.equal(generated.by, "openai/codex");
     assert.deepEqual(after.frontmatter.verified, [{ at: "2026-07-01T00:00:00Z", by: "human:reviewer" }]);
     assert.equal(after.frontmatter.timestamp, undefined);
     assert.equal(after.frontmatter.actor, undefined);

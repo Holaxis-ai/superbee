@@ -55,7 +55,7 @@ function doc(id: ConceptId, frontmatter: OkfDocument["frontmatter"], body = ""):
   return { id, frontmatter, body };
 }
 
-test("v0.2 write policy is non-inventing, preserves verification, and owns only generated.at", () => {
+test("v0.2 write policy is non-inventing, preserves verification, and owns generated provenance", () => {
   const existing = doc("notes/a", {
     type: "Note",
     title: "Before",
@@ -76,7 +76,7 @@ test("v0.2 write policy is non-inventing, preserves verification, and owns only 
   });
   assert.deepEqual(changed.frontmatter.generated, {
     at: "2026-08-03T00:00:00Z",
-    by: "https://legacy.example/producer",
+    by: "process:superbee",
   });
   assert.deepEqual(changed.frontmatter.verified, existing.frontmatter.verified);
   assert.equal(changed.frontmatter.stale_after, "2026-12-31");

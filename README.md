@@ -68,7 +68,7 @@ superbee                                   # confirm that no bundle is selected 
 superbee recipes                           # compare the workspace setups shipped offline
 superbee init --create-only --recipe work-tracking --dir .superbee
 superbee new "Task" first-task --title "Plan the first change" --progress_status todo \
-  --actor quickstart-agent --dir .superbee
+  --actor process:quickstart-agent --dir .superbee
 superbee --dir .superbee                   # see the Task in the live bundle summary
 ```
 
@@ -78,7 +78,8 @@ Bring source material or intent to your agent in the tool you already use. The a
 types, links, and updates the bundle through `superbee`; these commands are the plumbing, not a
 manual data-entry workflow.
 
-`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity.
+`process:quickstart-agent` is an advisory example actor identity; replace it with the actual actor
+identity (`human:<id>`, `process:<id>`, or `<producer>/<version>`).
 
 New bundles use Superbee's current portable format automatically. Existing older bundles remain
 supported in place; Superbee detects their declared format and applies compatibility behavior
@@ -128,7 +129,7 @@ project before retrying.
 Then, day to day:
 
 ```sh
-export SUPERBEE_ACTOR=claude           # optional default; per-command --actor wins
+export SUPERBEE_ACTOR=process:claude   # optional default; per-command --actor wins
 superbee new "Task" ship-parser --title "Ship the parser" --progress_status todo
 superbee list --type Task
 superbee doc update tasks/ship-parser --progress_status in_progress

@@ -625,11 +625,11 @@ test("home surface: flat badged grid, live activity feed, first-run orientation 
     // Live: a NEW doc written behind the server lands in the feed without a reload.
     execFileSync(process.execPath, [
       CLI_DIST, "doc", "write", "notes/live-probe",
-      "--type", "Context Note", "--title", "Live probe note", "--actor", "e2e",
+      "--type", "Context Note", "--title", "Live probe note", "--actor", "process:e2e",
       "--dir", ui.dir,
     ]);
     await expect(feed).toContainText("Live probe note", { timeout: 15_000 });
-    await expect(feed).toContainText("e2e");
+    await expect(feed).toContainText("process:e2e");
   } finally {
     await ui.cleanup();
   }
@@ -653,7 +653,7 @@ test("doc reader: feed rows open rendered docs, links navigate, hostile content 
     // A doc written behind the server, carrying a resolvable link + hostile vectors.
     execFileSync(process.execPath, [
       CLI_DIST, "doc", "write", "notes/reader-probe",
-      "--type", "Context Note", "--title", "Reader probe", "--actor", "e2e",
+      "--type", "Context Note", "--title", "Reader probe", "--actor", "process:e2e",
       "--body", 'See [alpha](../tasks/alpha.md). <script>window.__pwned=1</script> <img src=x onerror="window.__pwned=2"> [evil](javascript:alert(1))',
       "--dir", ui.dir,
     ]);

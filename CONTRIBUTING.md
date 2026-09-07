@@ -229,7 +229,14 @@ Across both editions:
   `timestamp`; raw v0.2 transport does not invent optional `generated`, legacy clocks, or legacy
   actor fields. Engine-mediated v0.2 creates seed one standard `generated` clock when the document
   carries no usable time (definition installs opt out to stay source-comparable). Substantive
-  product mutations advance the edition-appropriate clock.
+  product mutations advance the edition-appropriate clock. For v0.2, `generated.by` records the
+  current content producer even when a retained legacy timestamp remains the document's sole clock;
+  definition installs use the same explicit metadata opt-out. The producer requires an OKF actor (`human:<id>`, `process:<id>`, or
+  `<producer>/<version>`); `superbee_updated_by` remains the separate revision and sync-attribution
+  extension. Existing imported actor spellings remain readable, but a meaningful engine mutation
+  replaces them with the resolved actor or `process:superbee` when the mutation is unattributed;
+  candidate frontmatter cannot self-declare the mutation actor. A create-only definition install
+  using the source-comparability opt-out may retain valid source-declared provenance.
 - Generated internal links use relative bundle-relative Markdown hrefs. External URLs pass through;
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars are normalized to ISO-8601 strings without converting unrelated nested or

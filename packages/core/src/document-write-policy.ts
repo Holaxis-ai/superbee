@@ -1,6 +1,8 @@
 /** Pure document-shape policies applied before a normalized document reaches storage. */
 
 import { InvalidInputError } from "./errors.js";
+import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
+import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
 
 type Generated = Record<string, unknown>;
@@ -75,12 +77,23 @@ function sameValue(a: unknown, b: unknown): boolean {
   return false;
 }
 
-function withoutV02GenerationClock(frontmatter: Frontmatter): Record<string, unknown> {
+function withoutV02AutomaticMetadata(
+  frontmatter: Frontmatter,
+  kindRequiresActor: boolean,
+  compareTimestamp: boolean,
+): Record<string, unknown> {
   const copy: Record<string, unknown> = { ...frontmatter };
+  delete copy[SUPERBEE_UPDATED_BY_FIELD];
+  if (kindRequiresActor) delete copy.actor;
+  if (compareTimestamp && typeof copy.timestamp === "string") {
+    const instant = Date.parse(copy.timestamp);
+    if (!Number.isNaN(instant)) copy.timestamp = new Date(instant).toISOString();
+  }
   const generated = copy.generated;
   if (isRecord(generated)) {
     const { at: _at, ...rest } = generated;
-    copy.generated = rest;
+    if (Object.keys(rest).length === 0) delete copy.generated;
+    else copy.generated = rest;
   }
   return copy;
 }
@@ -89,10 +102,22 @@ function withoutV02GenerationClock(frontmatter: Frontmatter): Record<string, unk
 export function v02MeaningfulContentChanged(
   existing: Pick<OkfDocument, "frontmatter" | "body">,
   candidate: Pick<OkfDocument, "frontmatter" | "body">,
+  options: { kindRequiresActor?: boolean; compareTimestamp?: boolean } = {},
 ): boolean {
-  if (existing.body !== candidate.body) return true;
-  const existingFrontmatter = withoutV02GenerationClock(existing.frontmatter);
-  const candidateFrontmatter = withoutV02GenerationClock(candidate.frontmatter);
+  if (
+    normalizeDocumentBodyForStorage(existing.body)
+    !== normalizeDocumentBodyForStorage(candidate.body)
+  ) return true;
+  const existingFrontmatter = withoutV02AutomaticMetadata(
+    existing.frontmatter,
+    options.kindRequiresActor ?? false,
+    options.compareTimestamp ?? false,
+  );
+  const candidateFrontmatter = withoutV02AutomaticMetadata(
+    candidate.frontmatter,
+    options.kindRequiresActor ?? false,
+    options.compareTimestamp ?? false,
+  );
   delete existingFrontmatter.verified;
   delete candidateFrontmatter.verified;
   return !sameValue(existingFrontmatter, candidateFrontmatter);
@@ -102,22 +127,39 @@ export interface V02MutationMetadataOptions {
   existing?: Pick<OkfDocument, "frontmatter" | "body">;
   candidate: { frontmatter: Frontmatter; body: string };
   meaningfulChangeAt: string;
+  /** Resolved mutation actor. When present, v0.2 requires the OKF actor convention. */
+  actor?: string;
+  /** Whether the governing Kind uses legacy `actor` as an automatic attribution projection. */
+  kindRequiresActor?: boolean;
+  /** Compare explicit legacy timestamp spellings by instant, matching mutation no-op policy. */
+  compareTimestamp?: boolean;
+  /** Allow an absent generated block to be seeded for a create or meaningful content update. */
+  allowGeneratedProvenanceSeed?: boolean;
   /** Seed standard generation metadata when a newly created governed document needs a clock. */
   requireGenerationClock?: boolean;
 }
 
 /**
- * Apply the v0.2 mutation clock without conflating storage attribution with provenance.
- * `generated` is optional; when present its producer is preserved unless explicitly replaced.
+ * Apply v0.2 content provenance without conflating it with storage attribution.
+ * `generated` is optional. When present, a create or meaningful content change records the
+ * resolved mutation actor; an unattributed engine mutation records `process:superbee`.
  */
 export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   frontmatter: Frontmatter;
   body: string;
 } {
+  if (opts.actor !== undefined && !isOkfActor(opts.actor)) {
+    throw new InvalidInputError(
+      `OKF v0.2 mutation actor '${opts.actor}' must be human:<id>, process:<id>, or <producer>/<version>`,
+    );
+  }
   const existingGenerated = generatedRecord(opts.existing?.frontmatter.generated, "existing generated");
   const declaredCandidateGenerated = generatedRecord(opts.candidate.frontmatter.generated, "generated");
-  const candidateGenerated = !opts.existing && opts.requireGenerationClock && !declaredCandidateGenerated
-    ? { by: "process:superbee" }
+  let candidateGenerated = !opts.existing
+    && opts.allowGeneratedProvenanceSeed !== false
+    && (opts.requireGenerationClock || opts.actor !== undefined)
+    && !declaredCandidateGenerated
+    ? { by: opts.actor ?? "process:superbee" }
     : declaredCandidateGenerated;
   const frontmatter: Frontmatter = candidateGenerated === declaredCandidateGenerated
     ? { ...opts.candidate.frontmatter }
@@ -129,8 +171,6 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   ) {
     frontmatter.verified = opts.existing.frontmatter.verified;
   }
-  if (!existingGenerated && !candidateGenerated) return { ...opts.candidate, frontmatter };
-
   const candidateHasBy = candidateGenerated ? hasOwn(candidateGenerated, "by") : false;
   const existingBy = existingGenerated?.by;
   const candidateBy = candidateGenerated?.by;
@@ -141,24 +181,68 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
     );
   }
 
-  const resolvedBy = candidateHasBy ? candidateBy : existingBy;
+  // Compare with the caller's declared/inherited provenance before applying automatic actor
+  // metadata. Otherwise an actor-only change would manufacture the "meaningful change" needed to
+  // justify itself. A genuinely explicit generated.by edit still counts as meaningful.
+  const comparisonBy = candidateHasBy ? candidateBy : existingBy;
+  const comparisonGenerated: Generated = {
+    ...existingGenerated,
+    ...candidateGenerated,
+    ...(comparisonBy === undefined ? {} : { by: comparisonBy }),
+  };
+  const meaningfulChange = opts.existing === undefined || v02MeaningfulContentChanged(opts.existing, {
+    ...opts.candidate,
+    frontmatter: existingGenerated || candidateGenerated
+      ? { ...frontmatter, generated: comparisonGenerated }
+      : frontmatter,
+  }, {
+    kindRequiresActor: opts.kindRequiresActor,
+    compareTimestamp: opts.compareTimestamp,
+  });
+  if (
+    !meaningfulChange
+    && !existingGenerated
+    && candidateGenerated
+    && Object.keys(candidateGenerated).every((key) => key === "at")
+  ) {
+    const { generated: _generated, ...withoutGenerated } = frontmatter;
+    return { ...opts.candidate, frontmatter: withoutGenerated };
+  }
+  if (!existingGenerated && !candidateGenerated) {
+    if (
+      opts.existing === undefined
+      || !meaningfulChange
+      || opts.allowGeneratedProvenanceSeed === false
+    ) return { ...opts.candidate, frontmatter };
+    candidateGenerated = {};
+  }
+  const preserveDeclaredSourceBy = opts.existing === undefined
+    && opts.allowGeneratedProvenanceSeed === false
+    && candidateHasBy;
+  const resolvedBy = meaningfulChange
+    ? preserveDeclaredSourceBy ? candidateBy : opts.actor ?? "process:superbee"
+    : comparisonBy;
   if (typeof resolvedBy !== "string" || resolvedBy.trim() === "") {
     throw new InvalidInputError("OKF v0.2 generated.by is required when generated is present");
   }
 
   const generated: Generated = { ...existingGenerated, ...candidateGenerated, by: resolvedBy };
   if (!opts.existing) {
-    if (generated.at === undefined) generated.at = opts.meaningfulChangeAt;
-    else if (typeof generated.at !== "string" || Number.isNaN(Date.parse(generated.at))) {
+    if (generated.at === undefined) {
+      if (
+        opts.requireGenerationClock
+        || (declaredCandidateGenerated !== undefined && opts.allowGeneratedProvenanceSeed !== false)
+      ) {
+        generated.at = opts.meaningfulChangeAt;
+      }
+    } else if (typeof generated.at !== "string" || Number.isNaN(Date.parse(generated.at))) {
       throw new InvalidInputError("OKF v0.2 generated.at must be an ISO-8601 date/time when present");
     }
-  } else if (v02MeaningfulContentChanged(opts.existing, {
-    ...opts.candidate,
-    frontmatter: { ...frontmatter, generated },
-  })) {
+  } else if (meaningfulChange) {
     generated.at = opts.meaningfulChangeAt;
-  } else if (existingGenerated && hasOwn(existingGenerated, "at")) {
-    generated.at = existingGenerated.at;
+  } else if (existingGenerated) {
+    if (hasOwn(existingGenerated, "at")) generated.at = existingGenerated.at;
+    else delete generated.at;
   }
 
   return {

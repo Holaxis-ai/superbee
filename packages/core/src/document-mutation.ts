@@ -208,6 +208,10 @@ function isNoopMutation(
         return frontmatter;
       }
       const { at: _at, ...generatedRest } = generated as Record<string, unknown>;
+      if (Object.keys(generatedRest).length === 0) {
+        const { generated: _generated, ...withoutGenerated } = frontmatter;
+        return withoutGenerated;
+      }
       return { ...frontmatter, generated: generatedRest };
     };
     return valuesEqual(withoutGeneratedAt(existingFrontmatter), withoutGeneratedAt(candidateFrontmatter));
@@ -268,6 +272,8 @@ function withV02Metadata(
   registry: KindRegistry,
   now: () => string,
   seedGenerationClock: boolean,
+  actor: string | undefined,
+  compareTimestamp: boolean,
 ): DocumentMutationCandidate {
   if (okfVersion !== "0.2") return candidate;
   const kind = registry.kinds.get(String(candidate.frontmatter.type));
@@ -275,6 +281,10 @@ function withV02Metadata(
     existing,
     candidate,
     meaningfulChangeAt: now(),
+    actor,
+    kindRequiresActor: kind?.fields.required.includes("actor") ?? false,
+    compareTimestamp,
+    allowGeneratedProvenanceSeed: seedGenerationClock,
     // Every v0.2 create gets one standard clock unless a usable time already exists (an explicit
     // legacy `timestamp`, a declared `generated.at`) or its kind requires `timestamp` (that one
     // clock is defaulted instead). Ungoverned types are the point: accumulation evidence for
@@ -334,14 +344,23 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       );
     }
     const decisionNow = onceNow(now);
-    const attributed = attributeCandidate(
+    const withMetadata = withV02Metadata(
       await opts.buildCandidate(undefined, context),
+      undefined,
+      okfVersion,
+      opts.registry,
+      decisionNow,
+      seedClock,
+      opts.actor,
+      compareTimestamp,
+    );
+    const candidate = attributeCandidate(
+      withMetadata,
       opts.actor,
       persistActor,
       okfVersion,
       opts.registry,
     );
-    const candidate = withV02Metadata(attributed, undefined, okfVersion, opts.registry, decisionNow, seedClock);
     const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, okfVersion, decisionNow);
     const { doc, version } = await writeDocVersionedForEdition(opts.bundle, { id: opts.id, ...candidate }, okfVersion, {
       expectedVersion: null,
@@ -377,14 +396,23 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       decide: async (existing) => {
         const decisionNow = onceNow(now);
         assertFieldPreconditions(opts.id, existing?.frontmatter, opts.preconditions, lastReadVersion);
-        const attributed = attributeCandidate(
+        const withMetadata = withV02Metadata(
           await opts.buildCandidate(existing, context),
+          existing,
+          okfVersion,
+          opts.registry,
+          decisionNow,
+          seedClock,
+          opts.actor,
+          compareTimestamp,
+        );
+        const candidate = attributeCandidate(
+          withMetadata,
           opts.actor,
           persistActor,
           okfVersion,
           opts.registry,
         );
-        const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, seedClock);
         const validated = validateCandidate(
           opts.id,
           candidate,
@@ -466,19 +494,27 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         opts.registry,
         decisionNow,
         seedClock,
+        opts.actor,
+        compareTimestamp,
       );
-      if (existing && isNoopMutation(existing, candidateForComparison, compareTimestamp, okfVersion)) {
+      if (existing && isNoopMutation(
+        existing,
+        candidateForComparison,
+        compareTimestamp,
+        okfVersion,
+        okfVersion === "0.2" && persistActor && opts.actor !== undefined,
+        opts.registry.kinds.get(String(candidateForComparison.frontmatter.type))?.fields.required.includes("actor") ?? false,
+      )) {
         return { action: "done", result: { doc: existing, warnings: [] } };
       }
 
-      const attributed = attributeCandidate(
-        rawCandidate,
+      const candidate = attributeCandidate(
+        candidateForComparison,
         opts.actor,
         persistActor,
         okfVersion,
         opts.registry,
       );
-      const candidate = withV02Metadata(attributed, existing, okfVersion, opts.registry, decisionNow, seedClock);
       const { warnings } = validateCandidate(
         opts.id,
         candidate,
