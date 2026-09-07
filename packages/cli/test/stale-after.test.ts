@@ -163,3 +163,29 @@ for (const command of ["new", "update"] as const) {
     } finally { await rm(dir, { recursive: true, force: true }); }
   });
 }
+
+for (const command of ["new", "update"] as const) {
+  test(`${command}: Kind stale_after field shares authored deadline validation`, async () => {
+    const dir = await fixture();
+    try {
+      await writeDoc({ root: dir }, {
+        id: "conventions/note", frontmatter: {
+          type: "Convention", governs: "Note", fields: { optional: ["title", "stale_after"] },
+        }, body: "",
+      });
+      const before = await readFile(path.join(dir, "existing.md"), "utf8");
+      for (const invalid of ["garbage", "2026-09-07", "2026-09-07T12:00:00"]) {
+        await assert.rejects(run(command, dir, ["--stale_after", invalid]), (err: unknown) => {
+          assert.ok(err instanceof CliError);
+          assert.equal(err.code, "USAGE");
+          assert.match(err.message, /stale_after.*zone/);
+          return true;
+        });
+        assert.equal(await readFile(path.join(dir, "existing.md"), "utf8"), before);
+        await assert.rejects(readFile(path.join(dir, "created.md")), { code: "ENOENT" });
+      }
+      await run(command, dir, ["--stale_after", INSTANT]);
+      assert.equal((await readDoc({ root: dir }, command === "update" ? "existing" : "created")).frontmatter.stale_after, INSTANT);
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+}

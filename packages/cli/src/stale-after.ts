@@ -1,9 +1,9 @@
-import { parseIsoInstant } from "@superbee/core";
+import { staleAfterInstant } from "@superbee/core";
 import { CliError } from "./errors.js";
 
 /** The CLI input boundary shares the core instant grammar and retains the producer's spelling. */
 export function parseStaleAfter(raw: string | undefined): string | undefined {
-  if (raw !== undefined && parseIsoInstant(raw) === null) {
+  if (raw !== undefined && staleAfterInstant(raw) === null) {
     throw new CliError("USAGE", "--stale-after requires a valid ISO-8601 date and time with a zone (e.g. 2026-09-07T12:00:00Z)");
   }
   return raw;

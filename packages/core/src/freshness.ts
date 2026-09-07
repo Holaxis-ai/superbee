@@ -17,6 +17,11 @@ import type { FreshnessOptions, FreshnessResult, OkfDocument } from "./types.js"
 import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 import { parseIsoInstant } from "./verification.js";
 
+/** A deadline must name an explicit instant; rounding up avoids expiring sub-ms instants early. */
+export function staleAfterInstant(value: unknown): number | null {
+  return typeof value === "string" ? parseIsoInstant(value, "ceil") : null;
+}
+
 /**
  * Parse a timestamp to epoch ms, or `null`. Accepts an ISO-8601 (or any
  * `Date.parse`-able) STRING — the normal case, since {@link parseMarkdown}
@@ -47,8 +52,8 @@ export function freshness(doc: OkfDocument, options: FreshnessOptions = {}): Fre
   const tsMs = parseTimestamp(meaningfulChangeTimeValue(doc.frontmatter));
   const now = options.now ?? new Date();
   const ageMs = tsMs === null ? undefined : now.getTime() - tsMs;
-  const staleAfter = options.okfVersion === "0.2" && typeof doc.frontmatter.stale_after === "string"
-    ? parseIsoInstant(doc.frontmatter.stale_after, "ceil")
+  const staleAfter = options.okfVersion === "0.2"
+    ? staleAfterInstant(doc.frontmatter.stale_after)
     : null;
   if (staleAfter !== null && now.getTime() >= staleAfter) {
     return {
