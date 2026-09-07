@@ -34,8 +34,9 @@ export function upstreamHelp(inv: CommandPrefix): string {
     `if a teammate already shares this project's board, point \`origin\` at that SAME existing ` +
     `repository and run \`${inv} sync\` to join. For a first share, the remote repository must ` +
     `already exist; Superbee does not create it. Connect the existing repository. If an authorized ` +
-    `check confirms it is absent, create it outside Superbee if authorized. Otherwise, ask an ` +
-    `authorized owner or teammate to create it and grant access. Then verify the repository is visible and ` +
+    `check confirms it is absent, create it outside Superbee if authorized, or ask an authorized ` +
+    `owner or teammate to create it and grant access. Otherwise, keep the remote state unresolved ` +
+    `and do not create a replacement. Then verify the repository is visible and ` +
     `\`origin/board\` is absent before explicitly running \`${inv} sync --establish\`. Until then, ` +
     `local-only is supported: every local command works and nothing leaves this machine`
   );

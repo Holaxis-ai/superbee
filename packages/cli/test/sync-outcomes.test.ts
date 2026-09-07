@@ -18,6 +18,7 @@ import {
   SYNC_OUTCOMES,
   SYNC_OUTCOME_LINES,
   ffSwallowToError,
+  upstreamHelp,
   withSharingDetails,
   syncOutcomeError,
   syncOutcomeLine,
@@ -89,6 +90,15 @@ function expectedLineBytes(key: string, bytes: string): string {
   if (key !== RENDERS_CLEANUP_BRANCH) return bytes;
   return bytes.replaceAll(`'${CLEANUP_BRANCH}'`, renderedQuoted(CLEANUP_BRANCH));
 }
+
+test("upstream help keeps both repository-creation remedies behind confirmed absence", () => {
+  const help = upstreamHelp(INV);
+  assert.match(
+    help,
+    /If an authorized check confirms it is absent, create it outside Superbee if authorized, or ask an authorized owner or teammate to create it and grant access\./,
+  );
+  assert.match(help, /Otherwise, keep the remote state unresolved and do not create a replacement\./);
+});
 
 test("sync-outcome agreement: every row renders byte-identical to its pre-refactor fixture", async () => {
   const plainTop = await makePlainTop();
