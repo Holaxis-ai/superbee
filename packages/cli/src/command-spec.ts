@@ -296,14 +296,14 @@ export const CLI_COMMAND_GROUPS = [
         id: "docWrite",
         leaves: [publicLeaf("docWrite", "doc write", one, 4, DIR_BODY_FILE_SURFACE)],
         usage:
-          "doc write <id> --type <t> [--title <t>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc write <id> --type <t> [--title <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary: "Write a generic OKF concept document",
       },
       {
         id: "docUpdate",
         leaves: [publicLeaf("docUpdate", "doc update", one, undefined, DIR_BODY_FILE_DYNAMIC_SURFACE)],
         usage:
-          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {
@@ -403,7 +403,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "new",
         leaves: [publicLeaf("new", "new", two, 12, DIR_BODY_FILE_SURFACE)],
         usage:
-          'new "<Kind>" <id> --<field> <value> [...] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>] [--remote <url>]',
+          'new "<Kind>" <id> --<field> <value> [...] [--stale-after <iso>] [--body <markdown> | --body-file <path>] [--link "<type>=<target-id>" ...] [--no-prefix] [--actor <n>] [--dir <path>] [--remote <url>]',
         summary:
           "Create a new instance of a bundle-declared kind — initial Markdown may come from --body or --body-file (otherwise declared sections are scaffolded); validates strictly, and repeatable --link wires typed cross-links in the same step",
       },

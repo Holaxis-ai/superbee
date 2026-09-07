@@ -274,14 +274,14 @@ test("status: v0.2 stale_after applies without a Kind horizon while v0.1 leaves 
         })();
       await writeDoc(bundle, {
         id: "concepts/expired",
-        frontmatter: { type: "Reference", stale_after: "2020-01-01" },
+        frontmatter: { type: "Reference", stale_after: "2020-01-01T12:00:00Z" },
         body: "",
       });
       const result = await runJson(["--dir", dir]);
       assert.equal(result.stale, okfVersion === "0.2" ? 1 : 0);
       if (okfVersion === "0.2") {
         const stale = result.stale_docs as { rows: Record<string, unknown>[] };
-        assert.deepEqual(stale.rows, [{ id: "concepts/expired", stale_after: "2020-01-01" }]);
+        assert.deepEqual(stale.rows, [{ id: "concepts/expired", stale_after: "2020-01-01T12:00:00Z" }]);
       } else {
         assert.equal("stale_docs" in result, false);
       }
@@ -1449,5 +1449,40 @@ test("status reports a corrupt doc as the `malformed` finding instead of crashin
     assert.equal(out.docs, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("status: v0.2 warns on workflow status enums even with no instances", async () => {
+  for (const okfVersion of ["0.1", "0.2"]) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir, { okfVersion });
+      for (const [name, field, allowed] of [
+        ["Release", "status", ["planned", "published"]],
+        ["Lifecycle", "status", ["draft", "stable", "deprecated"]],
+        ["Workflow", "superbee_progress_status", ["planned", "published"]],
+        ["Unbounded", "status", undefined],
+      ] as const) {
+        await writeDoc(bundle, { id: `conventions/${name.toLowerCase()}`, frontmatter: {
+          type: "Convention", governs: name,
+          fields: { optional: [field], ...(allowed ? { values: { [field]: allowed } } : {}) },
+        }, body: "" });
+      }
+      const result = await runJson(["--dir", dir]);
+      assert.equal(result.registry_warnings, okfVersion === "0.2" ? 1 : 0);
+      if (okfVersion === "0.2") {
+        assert.equal("okf_upgrade" in result, false);
+        const lint = result.registry_lint as { rows: Record<string, unknown>[] };
+        assert.equal(lint.rows[0]!.code, "OKF_WORKFLOW_STATUS_COLLISION");
+        assert.equal(lint.rows[0]!.field, "fields.values.status");
+        assert.match(String(lint.rows[0]!.message), /conventions\/release/);
+        assert.match(String(lint.rows[0]!.message), /progress_status/);
+      } else {
+        assert.ok(result.okf_upgrade);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });

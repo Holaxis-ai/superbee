@@ -190,7 +190,7 @@ user with release authority; the human's interactive 2FA approval of the staged 
 release gate. Prereleases stage on `next`, stable versions on `latest`, chosen at stage time.
 
 Record each release as one `Release` document in the project bundle (`releases/superbee-<version>`)
-with pointers to the workflow run, stage id, tarball digest, GitHub release, current `status`, and
+with pointers to the workflow run, stage id, tarball digest, GitHub release, current `progress_status`, and
 `next_action`. The bundle is memory, never release authority; the registry and the GitHub release
 are the facts.
 

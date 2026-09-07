@@ -87,6 +87,8 @@ Options:
   --tag <t>            A tag (repeatable)
   --timestamp <iso>    Explicit legacy-compatible ISO-8601 last-change time. Current bundles use
                        their standard generated.at clock automatically.
+  --stale-after <iso>  Explicit expiration instant (OKF v0.2 only); requires a valid date, time,
+                       and zone, e.g. 2026-09-07T12:00:00Z. Preserves the supplied spelling.
   --body <s>           Markdown body inline
   --body-file <path>   Read the markdown body from a file (else: piped stdin)
   --blank-body         Required to deliberately overwrite an EXISTING doc's non-empty body with an
@@ -139,6 +141,8 @@ Options:
   --tag <t>              Replace the WHOLE tag set (repeatable; passing --tag at all replaces every
                          existing tag rather than adding to them). It cannot CLEAR the set to empty.
   --type <t>             Replace the type
+  --stale-after <iso>    Set the expiration instant (OKF v0.2 only); requires a valid date, time,
+                         and zone, e.g. 2026-09-07T12:00:00Z. Omit to preserve the existing value.
   --body <s>             Replace the body inline
   --body-file <path>     Replace the body, read from a file. If NEITHER --body nor --body-file is
                          given AND no other field flag is given either (e.g. 'cat body.md | ...

@@ -22,6 +22,7 @@ import {
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
 import { commandToken } from "../../command-text.js";
+import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
 export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promise<void> {
   const stdout = deps.stdout ?? ((s: string) => void process.stdout.write(s));
@@ -38,6 +39,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
           resource: { type: "string" },
           tag: { type: "string", multiple: true },
           timestamp: { type: "string" },
+          "stale-after": { type: "string" },
           body: { type: "string" },
           "body-file": { type: "string" },
           "blank-body": { type: "boolean" },
@@ -73,6 +75,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     });
   }
   const actor = resolveActor(values.actor, { help: `${cliInvocation()} doc write ${commandToken(id)} --actor <name>` });
+  const staleAfter = parseStaleAfter(values["stale-after"]);
 
   // Body source: --body wins, then --body-file, then piped stdin. `bodySourceGiven` tracks whether
   // the caller supplied a body source at all: --body (even --body "") and --body-file always count,
@@ -102,6 +105,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   const blankBody = Boolean(values["blank-body"]);
 
   const frontmatter: Frontmatter = { type };
+  if (staleAfter !== undefined) frontmatter.stale_after = staleAfter;
   if (values.title !== undefined) frontmatter.title = values.title;
   if (values.description !== undefined) frontmatter.description = values.description;
   if (values.resource !== undefined) frontmatter.resource = values.resource;
@@ -176,6 +180,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     // refused/failed one — and only for the conventional board bundle (see board-attribution.ts).
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
     buildCandidate: (fresh: OkfDocument | undefined, context) => {
+      assertStaleAfterEdition(staleAfter, context.okfVersion);
       // SCHEMA-LOSS guard (cold-start study #3): `doc write` replaces the WHOLE document and carries
       // only a fixed flag set (type/title/description/resource/tags/timestamp) — it has NO
       // governs/fields flags. Overwriting an existing kind CONVENTION with it silently drops the

@@ -69,8 +69,8 @@ Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
 isn't in the bundle — informational, since OKF permits links to not-yet-written knowledge; external
 links are excluded entirely), an orphan scan (isolated content docs once a concept graph exists),
-a freshness sweep over standard 'stale_after' dates and kinds that declare a horizon
-(an elapsed absolute date or exceeded horizon is 'stale'; a horizon-governed doc with no usable
+a freshness sweep over standard 'stale_after' instants and kinds that declare a horizon
+(an elapsed absolute instant or exceeded horizon is 'stale'; a horizon-governed doc with no usable
 meaningful-change time is counted 'no_timestamp'), and two graph lints over any declared
 'links'/'expects_inbound' vocabulary (see
 'kinds --help'): edges violating a declared typed-edge type ('link_type_violations') and kind
@@ -102,7 +102,7 @@ Category semantics (one line each):
                       references/* Reference, docs/bundle Bundle Name), and docs already named by
                       another graph finding are excluded. Each remaining row is actionable: link
                       it into the graph or delete it if it is unintended. Self-links do not count.
-  stale              A doc on/after its standard 'stale_after' date, or a governed doc whose
+  stale              A doc on/after its standard 'stale_after' instant, or a governed doc whose
                       meaningful-change time is older than its kind's freshness horizon.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
@@ -111,7 +111,7 @@ Category semantics (one line each):
                       process:/producer verifiers), 'unverified' (no events). A bare single-event
                       mapping counts as one event. Present on a v0.2 bundle with at least one doc;
                       a v0.1 bundle defines no trust family. See 'doc verify' to add an event.
-  registry_warnings  Malformed convention docs THEMSELVES (loadKinds' own warnings) — a problem in
+  registry_warnings  Malformed conventions or v0.2 workflow status collisions — a problem in
                       the schema declaration, not in a doc that kind governs.
   link_type_violations  An edge whose text EXACTLY matches a declared typed-edge vocabulary entry
                       (some kind's 'links' map) but the actual source and/or target doc's type
@@ -572,8 +572,18 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const orphans = cap(orphanRows, limit);
   const stale = cap(staleRows, limit);
   const noTimestamp = cap(noTimestampRows, limit);
+  const statusCollisions = okfV02WorkflowStatusCollisions(registry, docs);
+  const lifecycleWarnings = okfVersion === "0.2"
+    ? statusCollisions.filter((row) => (row.incompatible_values as string[]).length > 0).map((row) => ({
+      code: "OKF_WORKFLOW_STATUS_COLLISION",
+      message: `kind convention '${row.convention}' uses top-level status for workflow values (${(row.incompatible_values as string[]).join(", ")}). ` +
+        "OKF v0.2 reserves status for draft|stable|deprecated; migrate workflow state to logical progress_status (stored as superbee_progress_status).",
+      field: "fields.values.status",
+      severity: "warning",
+    }))
+    : [];
   const registryLint = cap(
-    registry.warnings.map((w): Record<string, unknown> => ({ ...w })),
+    [...registry.warnings.map((w): Record<string, unknown> => ({ ...w })), ...lifecycleWarnings],
     limit,
   );
   const linkTypeViolations = cap(linkTypeViolationRows, limit);
@@ -585,7 +595,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const danglingViewEntries = cap(danglingViewEntryRows, limit);
   const invalidViewRegistrations = cap(invalidRegistrationRows, limit);
   const okfV02StatusCollisionRows =
-    okfVersion === "0.1" ? okfV02WorkflowStatusCollisions(registry, docs) : [];
+    okfVersion === "0.1" ? statusCollisions : [];
 
   const out: Record<string, unknown> = {
     docs: docs.length,
