@@ -24,7 +24,7 @@
  * the AXI `read` truncation's human analog) and the walk bounded ({@link MAX_NODES} nodes,
  * {@link MAX_DEPTH} depth) — a pathological doc degrades, never hangs the trusted tab.
  */
-import type { ReactNode } from "react";
+import type { MouseEvent, ReactNode } from "react";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfm } from "micromark-extension-gfm";
 import { gfmFromMarkdown } from "mdast-util-gfm";
@@ -56,6 +56,9 @@ export interface RenderOptions {
   fromId: string;
   /** Shell navigation for a RESOLVED doc link (the only thing a link can do). */
   onNavigateDoc: (id: string) => void;
+  /** Trusted host route builder for a resolved concept ID. Return a same-origin root-relative,
+   * query, or fragment URL. Used for normal links, including new-tab navigation. */
+  hrefForDoc?: (id: string) => string;
   /** Interactive for the shell reader; inert for serialized fragments crossing into a View. */
   profile?: "interactive" | "inert";
   /** Resolve a concept id to its title, for the inline "verb → title" edge rows (falls back to the id). */
@@ -134,6 +137,23 @@ export function isBareLinkBlock(node: Node, fromId: string): boolean {
 /** A fenced block's language, admitted only in a strictly-shaped class name (never arbitrary). */
 function safeLanguageClass(lang: unknown): string | undefined {
   return typeof lang === "string" && /^[\w+-]{1,24}$/.test(lang) ? `doc-code-${lang}` : undefined;
+}
+
+function documentHref(id: string, options: RenderOptions): string {
+  const href = options.hrefForDoc?.(id) ?? `?view=doc&id=${encodeURIComponent(id)}`;
+  const base = "https://renderer.invalid/";
+  if (typeof href !== "string" || !/^[/?#]/.test(href) || href.startsWith("//")
+    || /[\\\x00-\x20\x7f]/.test(href) || new URL(href, base).origin !== new URL(base).origin) {
+    throw new Error("Document route must be a same-origin relative URL");
+  }
+  return href;
+}
+
+function navigateDoc(event: MouseEvent<HTMLAnchorElement>, id: string, options: RenderOptions): void {
+  // Let the browser honor open-in-new-tab/window gestures using the host-supplied href.
+  if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  options.onNavigateDoc(id);
 }
 
 interface WalkState {
@@ -256,15 +276,11 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
           </span>
         );
       }
-      const onNavigateDoc = state.options.onNavigateDoc;
       return (
         <a
           key={index}
-          href={`?view=doc&id=${encodeURIComponent(resolved)}`}
-          onClick={(event) => {
-            event.preventDefault();
-            onNavigateDoc(resolved);
-          }}
+          href={documentHref(resolved, state.options)}
+          onClick={(event) => navigateDoc(event, resolved, state.options)}
         >
           {children}
         </a>
@@ -317,7 +333,7 @@ function renderNode(node: RootContent | Node, state: WalkState, depth: number, i
  * (the reader's head projection); a target with no title falls back to its id.
  */
 function renderEdgeList(links: Node[], state: WalkState, index: number): ReactNode {
-  const { fromId, onNavigateDoc, titleFor } = state.options;
+  const { fromId, titleFor } = state.options;
   const rows: ReactNode[] = [];
   for (let i = 0; i < links.length; i++) {
     // Each row counts against the walk budget, like renderNode — a hostile all-edges body degrades
@@ -345,11 +361,8 @@ function renderEdgeList(links: Node[], state: WalkState, index: number): ReactNo
       <a
         key={i}
         className="doc-edge-row"
-        href={`?view=doc&id=${encodeURIComponent(to)}`}
-        onClick={(event) => {
-          event.preventDefault();
-          onNavigateDoc(to);
-        }}
+        href={documentHref(to, state.options)}
+        onClick={(event) => navigateDoc(event, to, state.options)}
       >
         <span className="doc-edge-verb">{verb}</span>
         <span className="doc-edge-arrow" aria-hidden="true">→</span>
