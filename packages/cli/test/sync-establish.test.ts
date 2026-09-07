@@ -1137,7 +1137,10 @@ test("ambiguous Repository not found preflight diagnoses access without routing 
       "#!/bin/sh\necho 'ERROR: Repository not found.' >&2\necho 'fatal: Could not read from remote repository.' >&2\nexit 128\n",
     );
     await chmod(uploadPack, 0o755);
-    git(topo.a.root, ["config", "remote.origin.uploadpack", uploadPack]);
+    // Git hands `remote.<name>.uploadpack` to `sh -c` whenever the value carries a shell
+    // metacharacter, and backslash is one: a native Windows path would be consumed as escapes
+    // and the fake would never run. A forward-slash path is portable across both spawn routes.
+    git(topo.a.root, ["config", "remote.origin.uploadpack", uploadPack.split(path.sep).join("/")]);
 
     const { err } = await runSync(home, ["--establish", "--dir", topo.a.root, "--json"]);
     assert.equal(err?.code, "AUTH_REQUIRED");
