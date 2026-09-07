@@ -53,6 +53,8 @@ anything, run `npx -y superbee`; persistent integrations still require the globa
 
 The npm package is the sole executable distribution channel. The optional Agent Skill contains
 guidance and references only; it invokes the npm-installed CLI rather than carrying another copy.
+For a host that imports Skills itself, `superbee skill path --json` reports the package-contained
+portable Skill archive instead of requiring users to find an npm installation directory.
 The new package installs only `superbee`, so it can coexist with a global `@holaxis/aslite` long
 enough for `superbee setup` to inspect and migrate exact legacy integrations. Once setup is
 complete, remove the old package with `npm uninstall -g @holaxis/aslite`; the successor does not
