@@ -50,7 +50,16 @@ test("suggestOkfActor: a kind prefix is preserved and its id repaired; case and 
 
 test("suggestOkfActor: dash-heavy and huge inputs stay linear (CodeQL js/polynomial-redos on the old trim regex)", () => {
   const dashes = "-".repeat(200_000);
+  // The shape that made the old `/^-+|-+$/` quadratic is a non-dash prefix AND suffix around a long
+  // dash run (every position starts a `-+$` attempt that fails at the suffix): ~3s at 100k dashes.
+  // Pure dashes and dashes+x+dashes were fast on the old regex too, so they prove nothing alone.
+  const pathological = `x${"-".repeat(100_000)}y`;
   const started = process.hrtime.bigint();
+  assert.deepEqual(suggestOkfActor(pathological), {
+    primary: `process:${pathological}`,
+    alternatives: [`human:${pathological}`],
+    placeholder: false,
+  });
   assert.deepEqual(suggestOkfActor(dashes), { primary: "process:<id>", alternatives: ["human:<id>", "<producer>/<version>"], placeholder: true });
   assert.deepEqual(suggestOkfActor(`${dashes}x${dashes}`), { primary: "process:x", alternatives: ["human:x"], placeholder: false });
   assert.deepEqual(suggestOkfActor(`--a b--`), { primary: "process:a-b", alternatives: ["human:a-b"], placeholder: false });
