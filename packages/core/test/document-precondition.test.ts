@@ -219,7 +219,7 @@ test("an idempotent re-claim whose preconditions hold converges with no write an
     mode: "patch",
     registry: EMPTY_REGISTRY,
     strict: false,
-    actor: "claimant-a",
+      actor: "process:claimant-a",
     persistActor: true,
     preconditions: [
       { field: OWNER, expect: { equals: "claimant-a" } },

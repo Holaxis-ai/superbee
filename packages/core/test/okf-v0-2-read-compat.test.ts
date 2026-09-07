@@ -130,7 +130,7 @@ test("OKF v0.2 fixture: compatibility probes leave the external bundle byte-unto
   assert.deepEqual(await readFile(revenuePath), before);
 });
 
-test("OKF v0.2 fixture: a trusted mutation preserves external provenance, verification, and date-only values", async () => {
+test("OKF v0.2 fixture: a trusted mutation replaces content provenance while preserving verification and date-only values", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "superbee-okf-v02-fixture-"));
   const root = path.join(parent, "bundle");
   await cp(fixtureRoot, root, { recursive: true });
@@ -152,7 +152,7 @@ test("OKF v0.2 fixture: a trusted mutation preserves external provenance, verifi
 
     assert.deepEqual(result.doc.frontmatter.generated, {
       at: "2026-08-14T12:00:00Z",
-      by: "finance_agent/1.0",
+      by: "openai/codex",
     });
     assert.deepEqual(result.doc.frontmatter.verified, [{
       at: "2026-07-29T09:15:00Z",
@@ -172,7 +172,7 @@ test("OKF v0.2 fixture: a trusted mutation preserves external provenance, verifi
   }
 });
 
-test("OKF v0.2 permissive consumer: mutation preserves unusual legacy actor spellings", async () => {
+test("OKF v0.2 permissive consumer: mutation repairs unusual legacy actor spellings", async () => {
   const parent = await mkdtemp(path.join(tmpdir(), "superbee-okf-v02-legacy-actor-"));
   const root = path.join(parent, "bundle");
   await cp(fixtureRoot, root, { recursive: true });
@@ -207,7 +207,7 @@ verified:
 
     assert.deepEqual(result.doc.frontmatter.generated, {
       at: "2026-08-14T12:00:00Z",
-      by: "https://producer.example/agents/finance",
+      by: "openai/codex",
     });
     assert.deepEqual(result.doc.frontmatter.verified, [{
       at: "2026-07-29T09:15:00Z",

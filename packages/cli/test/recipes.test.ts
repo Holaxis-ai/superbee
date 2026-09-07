@@ -535,17 +535,17 @@ test("kind-lint neutrality: a work-tracking Task written with --actor persists t
     // trips no kind warning (validateAgainstKind is not a top-level-key linter; OKF §9 permits
     // undeclared frontmatter). The `status` assertion below pins the same neutrality on the bundle lint.
     const created = await runJson(newCommand, [
-      "Task", "attributed", "--title", "Attributed", "--progress_status", "todo", "--actor", "alice", "--dir", dir,
+      "Task", "attributed", "--title", "Attributed", "--progress_status", "todo", "--actor", "human:alice", "--dir", dir,
     ]);
     assert.equal(created.id, "tasks/attributed");
     assert.equal("warnings" in created, false, "no kind warnings on the create receipt");
 
     // A kind-field patch (strict path) with --actor: still green, and the actor is OVERWRITTEN.
-    const updated = await runJson(doc, ["update", "tasks/attributed", "--progress_status", "in_progress", "--actor", "bob", "--dir", dir]);
+    const updated = await runJson(doc, ["update", "tasks/attributed", "--progress_status", "in_progress", "--actor", "human:bob", "--dir", dir]);
     assert.equal(updated.changed, true);
     assert.equal("warnings" in updated, false, "no kind warnings on the update receipt");
     const read = await runJson(doc, ["read", "tasks/attributed", "--dir", dir]);
-    assert.equal(read.superbee_updated_by, "bob", "the update's attribution superseded the create's");
+    assert.equal(read.superbee_updated_by, "human:bob", "the update's attribution superseded the create's");
 
     const health = await runJson(status, ["--dir", dir]);
     assert.equal(health.kind_warnings, 0, "the undeclared 'actor' frontmatter key must trip NO kind lint");
@@ -1185,7 +1185,7 @@ test("recipe evolve: a compatible installed convention requires the exact read-o
     const refreshed = await runJson(recipe, ["evolve", recipeDir, "--dir", bundleDir]);
     assert.notEqual(refreshed.plan_token, token);
     const applied = await runJson(recipe, [
-      "evolve", recipeDir, "--apply", String(refreshed.plan_token), "--actor", "test-agent", "--dir", bundleDir,
+      "evolve", recipeDir, "--apply", String(refreshed.plan_token), "--actor", "process:test-agent", "--dir", bundleDir,
     ]);
     assert.equal(applied.recipe, "evolved");
     assert.equal(applied.changed, true);
@@ -1288,7 +1288,7 @@ test("recipe evolve: write-policy-invalid source metadata blocks the whole plan 
   }
 });
 
-test("recipe evolve: preserved v0.2 provenance converges after one additive apply", async () => {
+test("recipe evolve: an unattributed v0.2 change records the Superbee process and converges", async () => {
   const dir = await tempDir();
   try {
     const bundle = await initBundle(dir);
@@ -1309,7 +1309,7 @@ test("recipe evolve: preserved v0.2 provenance converges after one additive appl
     assert.equal(plan.ready, true);
     await applyRecipeEvolution(bundle, desired, plan.plan_token);
     const evolved = await readDoc(bundle, "conventions/widget");
-    assert.equal((evolved.frontmatter.generated as Record<string, unknown>).by, "process:test");
+    assert.equal((evolved.frontmatter.generated as Record<string, unknown>).by, "process:superbee");
     assert.deepEqual(evolved.frontmatter.verified, [{ by: "human:mike", at: T }]);
     const settled = await planRecipeEvolution(bundle, desired);
     assert.equal(settled.ready, true);

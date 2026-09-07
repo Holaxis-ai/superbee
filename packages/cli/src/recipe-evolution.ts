@@ -413,6 +413,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
         applyV02MutationMetadata({
           candidate: { frontmatter: target.frontmatter, body: target.body },
           meaningfulChangeAt: "1970-01-01T00:00:00.000Z",
+          allowGeneratedProvenanceSeed: false,
         });
       } catch (error) {
         if (!(error instanceof InvalidInputError)) throw error;
@@ -476,6 +477,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
           existing: existing.doc,
           candidate: { frontmatter: candidate.frontmatter, body: candidate.body },
           meaningfulChangeAt: "1970-01-01T00:00:00.000Z",
+          allowGeneratedProvenanceSeed: false,
         });
         candidate = { id: candidate.id, ...withMetadata };
       } catch (error) {
@@ -733,6 +735,9 @@ export async function applyRecipeEvolution(
         maxAttempts: 1,
         registry: RECIPE_EVOLUTION_WRITE_REGISTRY,
         strict: false,
+        // Recipe definitions remain source-comparable; like initial recipe installation, evolution
+        // explicitly opts out of seeding provenance when the installed definition has none.
+        seedGenerationClock: false,
         actor,
         now: () => now,
         buildCandidate: (_existing, context) => {

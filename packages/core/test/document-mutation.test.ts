@@ -220,6 +220,39 @@ test("semantic patch no-op ignores the filesystem serializer's trailing body new
   assert.equal(result.version, initial.version);
 });
 
+test("v0.2 actor-only overwrite ignores the filesystem serializer's trailing body newline", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "superbee-v02-document-mutation-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bundle: Bundle = { root, backend: new FilesystemBackend(root) };
+  await bundle.backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n# Bundle\n");
+  const created = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "human:alice",
+    persistActor: true,
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "same" }),
+  });
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/a",
+    mode: "overwrite",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "human:bob",
+    persistActor: true,
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "same" }),
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.version, created.version);
+  assert.equal(result.doc.frontmatter.superbee_updated_by, "human:alice");
+  assert.equal((result.doc.frontmatter.generated as { by?: string }).by, "human:alice");
+});
+
 test("v0.2 mutation persists portable mutation attribution and seeds the standard clock on ungoverned creates", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
@@ -239,13 +272,13 @@ test("v0.2 mutation persists portable mutation attribution and seeds the standar
     type: "Note",
     title: "A",
     superbee_updated_by: "openai/codex",
-    generated: { by: "process:superbee", at: "2026-08-14T12:00:00Z" },
+    generated: { by: "openai/codex", at: "2026-08-14T12:00:00Z" },
   });
   assert.equal(result.doc.frontmatter.timestamp, undefined);
   assert.equal((await backend.versions("notes/a"))[0]!.actor, "openai/codex");
 });
 
-test("v0.2 ungoverned create with an explicit usable timestamp does not invent a generation clock", async () => {
+test("v0.2 create with an actor and explicit usable timestamp records provenance without duplicating the clock", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const result = await mutateDocument({
@@ -254,6 +287,8 @@ test("v0.2 ungoverned create with an explicit usable timestamp does not invent a
     mode: "create-only",
     registry: EMPTY_REGISTRY,
     strict: false,
+    actor: "human:alice",
+    persistActor: true,
     now: () => "2026-08-14T12:00:00Z",
     buildCandidate: () => ({
       frontmatter: { type: "Note", title: "Stamped", timestamp: "2026-07-01T00:00:00.000Z" },
@@ -262,7 +297,7 @@ test("v0.2 ungoverned create with an explicit usable timestamp does not invent a
   });
 
   assert.equal(result.doc.frontmatter.timestamp, "2026-07-01T00:00:00.000Z");
-  assert.equal(result.doc.frontmatter.generated, undefined);
+  assert.deepEqual(result.doc.frontmatter.generated, { by: "human:alice" });
 });
 
 test("v0.2 create with seedGenerationClock: false installs definition bytes without a clock", async () => {
@@ -275,6 +310,8 @@ test("v0.2 create with seedGenerationClock: false installs definition bytes with
     registry: EMPTY_REGISTRY,
     strict: false,
     seedGenerationClock: false,
+    actor: "openai/codex",
+    persistActor: true,
     now: () => "2026-08-14T12:00:00Z",
     buildCandidate: () => ({
       frontmatter: { type: "Convention", title: "Note", governs: "Note" },
@@ -284,6 +321,33 @@ test("v0.2 create with seedGenerationClock: false installs definition bytes with
 
   assert.equal(result.doc.frontmatter.generated, undefined);
   assert.equal(result.doc.frontmatter.timestamp, undefined);
+  assert.equal(result.doc.frontmatter.superbee_updated_by, "openai/codex");
+});
+
+test("v0.2 create with seedGenerationClock: false may preserve valid source provenance", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "conventions/source-note",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    seedGenerationClock: false,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: () => ({
+      frontmatter: {
+        type: "Convention",
+        title: "Source Note",
+        governs: "Note",
+        generated: { by: "process:recipe-author" },
+      },
+      body: "definition",
+    }),
+  });
+
+  assert.deepEqual(result.doc.frontmatter.generated, { by: "process:recipe-author" });
+  assert.equal(result.doc.frontmatter.superbee_updated_by, undefined);
 });
 
 test("v0.2 ungoverned clock-seeded create rewrites as a no-op instead of churning versions", async () => {
@@ -354,6 +418,72 @@ test("freshness clock creation stays edition-aware and does not add v0.2 provena
 
   assert.equal(result.doc.frontmatter.timestamp, "2026-08-20T13:15:00.000Z");
   assert.equal(result.doc.frontmatter.generated, undefined);
+});
+
+test("v0.1 keeps free-form actor attribution without adding v0.2 provenance", async () => {
+  const backend = new MemoryBackend();
+  const result = await mutateDocument({
+    bundle: bundleFor(backend),
+    id: "notes/v01-actor",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "codex-root",
+    persistActor: true,
+    now: () => "2026-08-20T13:15:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Note", title: "V01 actor" },
+      body: "",
+    }),
+  });
+
+  assert.deepEqual(result.doc.frontmatter, {
+    type: "Note",
+    title: "V01 actor",
+    actor: "codex-root",
+    timestamp: "2026-08-20T13:15:00.000Z",
+  });
+  assert.equal(result.doc.frontmatter.generated, undefined);
+});
+
+test("v0.1 same-content patch persists a changed legacy actor", async () => {
+  const backend = new MemoryBackend();
+  const bundle = bundleFor(backend);
+  const initial = await mutateDocument({
+    bundle,
+    id: "notes/v01-actor-patch",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "legacy-alice",
+    persistActor: true,
+    now: () => "2026-08-20T13:15:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: "Note", title: "V01 actor patch" },
+      body: "same",
+    }),
+  });
+
+  const patched = await mutateDocument({
+    bundle,
+    id: "notes/v01-actor-patch",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "legacy-bob",
+    persistActor: true,
+    now: () => "2026-08-21T13:15:00.000Z",
+    buildCandidate: (existing) => {
+      const { actor: _actor, ...frontmatter } = existing!.frontmatter;
+      return { frontmatter, body: existing!.body };
+    },
+  });
+
+  assert.equal(patched.changed, true);
+  assert.notEqual(patched.version, initial.version);
+  assert.equal(patched.doc.frontmatter.actor, "legacy-bob");
+  assert.equal(patched.doc.frontmatter.generated, undefined);
+  assert.equal((await backend.versions("notes/v01-actor-patch")).length, 2);
 });
 
 test("v0.2 freshness Kinds requiring timestamp use that one clock without invented provenance", async () => {
@@ -440,7 +570,7 @@ test("mutation edition is authoritative from the bundle root and cannot be overr
   );
 });
 
-test("v0.2 substantive mutation advances generated.at while preserving producer, verification, and date scalars", async () => {
+test("v0.2 substantive mutation advances generated.at and replaces producer with the mutation actor", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   const initial = await writeDocVersioned(bundle, {
@@ -472,7 +602,7 @@ test("v0.2 substantive mutation advances generated.at while preserving producer,
   assert.notEqual(result.version, initial.version);
   assert.deepEqual(result.doc.frontmatter.generated, {
     at: "2026-08-14T12:00:00Z",
-    by: "https://legacy.example/producer",
+    by: "openai/codex",
   });
   assert.deepEqual(result.doc.frontmatter.verified, [
     { at: "2026-08-02T00:00:00Z", by: "human:reviewer" },
@@ -483,6 +613,47 @@ test("v0.2 substantive mutation advances generated.at while preserving producer,
   ]);
   assert.equal(result.doc.frontmatter.timestamp, undefined);
   assert.equal(result.doc.frontmatter.actor, undefined);
+});
+
+test("v0.2 meaningful updates seed provenance on imported documents without generated metadata", async () => {
+  for (const { id, actor, expectedBy } of [
+    { id: "notes/imported-attributed", actor: "openai/codex", expectedBy: "openai/codex" },
+    { id: "notes/imported-unattributed", actor: undefined, expectedBy: "process:superbee" },
+  ]) {
+    const backend = new MemoryBackend();
+    const bundle = await v02BundleFor(backend);
+    const initial = await writeDocVersioned(bundle, {
+      id,
+      frontmatter: {
+        type: "Note",
+        title: "Imported",
+        timestamp: "2026-07-01T00:00:00.000Z",
+        superbee_updated_by: "legacy-writer",
+      },
+      body: "before",
+    });
+
+    const result = await mutateDocument({
+      bundle,
+      id,
+      mode: "patch",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      actor,
+      persistActor: true,
+      now: () => "2026-08-14T12:00:00Z",
+      buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: "after" }),
+    });
+
+    assert.equal(result.changed, true);
+    assert.notEqual(result.version, initial.version);
+    assert.deepEqual(result.doc.frontmatter.generated, {
+      by: expectedBy,
+      at: "2026-08-14T12:00:00Z",
+    });
+    assert.equal(result.doc.frontmatter.timestamp, "2026-07-01T00:00:00.000Z");
+    assert.equal(result.doc.frontmatter.superbee_updated_by, actor);
+  }
 });
 
 test("v0.2 verification-only writes preserve generated.at and clock-only patches are no-ops", async () => {
@@ -541,7 +712,146 @@ test("v0.2 verification-only writes preserve generated.at and clock-only patches
   assert.equal((clockOnly.doc.frontmatter.generated as { at: string }).at, "2026-08-01T00:00:00Z");
 });
 
-test("v0.2 permits explicit valid producer replacement but rejects a newly supplied invalid identity", async () => {
+test("v0.2 verification writes preserve an existing generated block with no clock", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const kind: KindConvention = {
+    ...FRESH_KIND,
+    fields: {
+      ...FRESH_KIND.fields,
+      required: ["title", "timestamp"],
+      optional: [],
+    },
+  };
+  const registry: KindRegistry = { kinds: new Map([[kind.governs, kind]]), warnings: [] };
+  const initial = await mutateDocument({
+    bundle,
+    id: "context-notes/actor-with-legacy-clock",
+    mode: "create-only",
+    registry,
+    strict: true,
+    actor: "human:alice",
+    persistActor: true,
+    now: () => "2026-08-20T13:15:00.000Z",
+    buildCandidate: () => ({
+      frontmatter: { type: kind.governs, title: "Actor with legacy clock" },
+      body: "# Summary\n",
+    }),
+  });
+
+  assert.deepEqual(initial.doc.frontmatter.generated, { by: "human:alice" });
+  assert.equal(initial.doc.frontmatter.timestamp, "2026-08-20T13:15:00.000Z");
+
+  const verified = await mutateDocument({
+    bundle,
+    id: "context-notes/actor-with-legacy-clock",
+    mode: "patch",
+    registry,
+    strict: true,
+    actor: "human:reviewer",
+    persistActor: true,
+    now: () => "2026-08-21T13:15:00.000Z",
+    buildCandidate: (existing) => ({
+      frontmatter: {
+        ...existing!.frontmatter,
+        generated: {
+          ...(existing!.frontmatter.generated as object),
+          at: "2099-01-01T00:00:00.000Z",
+        },
+        verified: [{ at: "2026-08-21T12:00:00.000Z", by: "human:reviewer" }],
+      },
+      body: existing!.body,
+    }),
+  });
+
+  assert.equal(verified.changed, true);
+  assert.notEqual(verified.version, initial.version);
+  assert.deepEqual(verified.doc.frontmatter.generated, { by: "human:alice" });
+  assert.equal(verified.doc.frontmatter.timestamp, "2026-08-20T13:15:00.000Z");
+  assert.equal(verified.doc.frontmatter.superbee_updated_by, "human:reviewer");
+  assert.deepEqual(verified.doc.frontmatter.verified, [
+    { at: "2026-08-21T12:00:00.000Z", by: "human:reviewer" },
+  ]);
+  assert.equal((await backend.versions("context-notes/actor-with-legacy-clock")).length, 2);
+});
+
+test("v0.2 clock-only patch on a generated-less document remains a no-op without provenance", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const initial = await writeDocVersioned(bundle, {
+    id: "notes/imported",
+    frontmatter: { type: "Note", title: "Imported" },
+    body: "body",
+  });
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/imported",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "human:alice",
+    persistActor: true,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: (existing) => ({
+      frontmatter: { ...existing!.frontmatter, generated: { at: "2099-01-01T00:00:00Z" } },
+      body: existing!.body,
+    }),
+  });
+
+  assert.equal(result.changed, false);
+  assert.equal(result.version, initial.version);
+  assert.equal(result.doc.frontmatter.generated, undefined);
+  assert.equal(result.doc.frontmatter.superbee_updated_by, undefined);
+  assert.equal((await backend.versions("notes/imported")).length, 1);
+});
+
+test("v0.2 verification update strips an automatic-only clock from a generated-less document", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const initial = await writeDocVersioned(bundle, {
+    id: "notes/imported-verification",
+    frontmatter: {
+      type: "Note",
+      title: "Imported",
+      verified: [{ at: "2026-08-01T00:00:00Z", by: "human:first" }],
+    },
+    body: "body",
+  });
+
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/imported-verification",
+    mode: "patch",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "human:reviewer",
+    persistActor: true,
+    buildCandidate: (existing) => ({
+      frontmatter: {
+        ...existing!.frontmatter,
+        generated: { at: "2099-01-01T00:00:00Z" },
+        verified: [
+          ...(existing!.frontmatter.verified as unknown[]),
+          { at: "2026-08-14T11:00:00Z", by: "human:reviewer" },
+        ],
+      },
+      body: existing!.body,
+    }),
+  });
+
+  assert.equal(result.changed, true);
+  assert.notEqual(result.version, initial.version);
+  assert.equal(result.doc.frontmatter.generated, undefined);
+  assert.equal(result.doc.frontmatter.superbee_updated_by, "human:reviewer");
+  assert.deepEqual(result.doc.frontmatter.verified, [
+    { at: "2026-08-01T00:00:00Z", by: "human:first" },
+    { at: "2026-08-14T11:00:00Z", by: "human:reviewer" },
+  ]);
+  assert.equal((await backend.versions("notes/imported-verification")).length, 2);
+});
+
+test("v0.2 ignores a valid candidate producer in favor of mutation attribution and rejects invalid identity", async () => {
   const backend = new MemoryBackend();
   const bundle = await v02BundleFor(backend);
   await writeDocVersioned(bundle, {
@@ -583,8 +893,86 @@ test("v0.2 permits explicit valid producer replacement but rejects a newly suppl
   });
   assert.deepEqual(changed.doc.frontmatter.generated, {
     at: "2026-08-14T12:00:00Z",
-    by: "superbee/1.0.0",
+    by: "process:superbee",
   });
+});
+
+test("v0.2 unattributed creates cannot adopt a candidate-declared producer", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/unattributed-create",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: () => ({
+      frontmatter: {
+        type: "Note",
+        title: "Unattributed",
+        generated: { by: "human:mallory" },
+      },
+      body: "body",
+    }),
+  });
+
+  assert.deepEqual(result.doc.frontmatter.generated, {
+    by: "process:superbee",
+    at: "2026-08-14T12:00:00Z",
+  });
+});
+
+test("v0.2 resolved mutation actor overrides a valid candidate-declared producer", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+  const result = await mutateDocument({
+    bundle,
+    id: "notes/attributed-create",
+    mode: "create-only",
+    registry: EMPTY_REGISTRY,
+    strict: false,
+    actor: "human:alice",
+    persistActor: true,
+    now: () => "2026-08-14T12:00:00Z",
+    buildCandidate: () => ({
+      frontmatter: {
+        type: "Note",
+        title: "Attributed",
+        generated: { by: "human:mallory" },
+      },
+      body: "body",
+    }),
+  });
+
+  assert.deepEqual(result.doc.frontmatter.generated, {
+    by: "human:alice",
+    at: "2026-08-14T12:00:00Z",
+  });
+  assert.equal(result.doc.frontmatter.superbee_updated_by, "human:alice");
+});
+
+test("v0.2 rejects a non-conforming mutation actor before writing", async () => {
+  const backend = new MemoryBackend();
+  const bundle = await v02BundleFor(backend);
+
+  await assert.rejects(
+    () => mutateDocument({
+      bundle,
+      id: "notes/invalid-actor",
+      mode: "create-only",
+      registry: EMPTY_REGISTRY,
+      strict: false,
+      actor: "codex-root",
+      persistActor: true,
+      buildCandidate: () => ({ frontmatter: { type: "Note", title: "Invalid" }, body: "" }),
+    }),
+    (error: unknown) => error instanceof Error
+      && /mutation actor 'codex-root'/.test(error.message)
+      && /human:<id>/.test(error.message),
+  );
+
+  assert.deepEqual(await backend.list(), []);
 });
 
 test("v0.2 bundle-local Kinds may explicitly retain required timestamp and actor extensions", async () => {
@@ -764,7 +1152,7 @@ test("v0.2 overwrite ignores automatic attribution and clock changes only when a
     mode: "create-only",
     registry: EMPTY_REGISTRY,
     strict: false,
-    actor: "alice",
+    actor: "human:alice",
     persistActor: true,
     now: () => "2026-08-19T00:00:00.000Z",
     buildCandidate: () => ({
@@ -779,19 +1167,19 @@ test("v0.2 overwrite ignores automatic attribution and clock changes only when a
     mode: "overwrite",
     registry: EMPTY_REGISTRY,
     strict: false,
-    actor: "bob",
+    actor: "human:bob",
     persistActor: true,
     now: () => "2026-08-20T00:00:00.000Z",
     buildCandidate: () => ({
-      frontmatter: { type: "Note", title: "A", generated: { by: "process:superbee" } },
+      frontmatter: { type: "Note", title: "A" },
       body: "same",
     }),
   });
   assert.equal(noop.changed, false);
   assert.equal(noop.version, created.version);
-  assert.equal(noop.doc.frontmatter.superbee_updated_by, "alice");
+  assert.equal(noop.doc.frontmatter.superbee_updated_by, "human:alice");
   assert.deepEqual(noop.doc.frontmatter.generated, {
-    by: "process:superbee",
+    by: "human:alice",
     at: "2026-08-19T00:00:00.000Z",
   });
 
@@ -801,18 +1189,18 @@ test("v0.2 overwrite ignores automatic attribution and clock changes only when a
     mode: "overwrite",
     registry: EMPTY_REGISTRY,
     strict: false,
-    actor: "bob",
+    actor: "human:bob",
     persistActor: true,
     now: () => "2026-08-20T00:00:00.000Z",
     buildCandidate: () => ({
-      frontmatter: { type: "Note", title: "B", generated: { by: "process:superbee" } },
+      frontmatter: { type: "Note", title: "B", generated: { by: "human:alice" } },
       body: "same",
     }),
   });
   assert.equal(changed.changed, true);
-  assert.equal(changed.doc.frontmatter.superbee_updated_by, "bob");
+  assert.equal(changed.doc.frontmatter.superbee_updated_by, "human:bob");
   assert.deepEqual(changed.doc.frontmatter.generated, {
-    by: "process:superbee",
+    by: "human:bob",
     at: "2026-08-20T00:00:00.000Z",
   });
 });
@@ -1063,7 +1451,7 @@ test("a real unattributed v0.2 mutation clears stale portable attribution while 
     mode: "create-only",
     registry: EMPTY_REGISTRY,
     strict: false,
-    actor: "alice",
+    actor: "human:alice",
     persistActor: true,
     buildCandidate: () => ({ frontmatter: { type: "Note", title: "A" }, body: "before" }),
   });
@@ -1074,12 +1462,14 @@ test("a real unattributed v0.2 mutation clears stale portable attribution while 
     mode: "patch",
     registry: EMPTY_REGISTRY,
     strict: false,
+    actor: "human:bob",
     persistActor: true,
     buildCandidate: (existing) => ({ frontmatter: { ...existing!.frontmatter }, body: existing!.body }),
   });
   assert.equal(noop.changed, false);
   assert.equal(noop.version, created.version);
-  assert.equal(noop.doc.frontmatter.superbee_updated_by, "alice");
+  assert.equal(noop.doc.frontmatter.superbee_updated_by, "human:alice");
+  assert.equal((noop.doc.frontmatter.generated as { by?: string }).by, "human:alice");
 
   const changed = await mutateDocument({
     bundle,

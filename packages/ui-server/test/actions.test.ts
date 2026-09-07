@@ -145,7 +145,9 @@ for (const row of [
     if (row.label === "v0.2") {
       assert.equal(Object.hasOwn(after.doc.frontmatter, "timestamp"), false);
       assert.equal(Object.hasOwn(after.doc.frontmatter, "actor"), false);
-      assert.equal(Object.hasOwn(after.doc.frontmatter, "generated"), false);
+      const generated = after.doc.frontmatter.generated as { by?: string; at?: string };
+      assert.equal(generated.by, "mike/test");
+      assert.ok(!Number.isNaN(Date.parse(generated.at ?? "")));
       assert.equal((await bundle.backend!.versions("tasks/alpha"))[0]?.actor, "mike/test");
     }
   });

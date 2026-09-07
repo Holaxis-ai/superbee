@@ -202,8 +202,8 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   );
   assert.match(
     rootReadme,
-    /`quickstart-agent` is an advisory example actor label; replace it with the actual agent identity\./,
-    "root README must explain the tutorial actor label",
+    /`process:quickstart-agent` is an advisory example actor identity; replace it with the actual actor\s+identity \(`human:<id>`, `process:<id>`, or `<producer>\/<version>`\)\./,
+    "root README must explain the tutorial actor identity",
   );
 
   const npmReadme = await readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8");

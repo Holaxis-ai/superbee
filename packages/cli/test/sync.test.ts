@@ -574,7 +574,7 @@ test("sync: LOCAL board changes present → the local-only state still appears, 
   try {
     // Real local work must not be answered with a bare "nothing to sync".
     await cliDocWrite(path.join(repo, BUNDLE_DIR), "notes/local-work", [
-      "--type", "Note", "--title", "Local work", "--body", "# local\n", "--actor", "mike",
+      "--type", "Note", "--title", "Local work", "--body", "# local\n", "--actor", "human:mike",
     ]);
     const before = git(repo, ["status", "--porcelain"]);
 
@@ -700,13 +700,13 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
     assert.equal(existsSync(path.join(directA, BUNDLE_DIR)), false, "sync never creates a nested worktree");
 
     await cliDocWrite(directA, "notes/from-slack-agent", [
-      "--type", "Note", "--title", "From Slack agent", "--body", "# Direct checkout\n", "--actor", "claude-tag",
+      "--type", "Note", "--title", "From Slack agent", "--body", "# Direct checkout\n", "--actor", "process:claude-tag",
     ]);
     const written = await runSync(homes[0]!, ["--dir", directA]);
     assert.equal(written.err, undefined, written.err?.message);
     assert.match(written.out, /committed: 1/);
     assert.match(written.out, /pushed: 1/);
-    assert.match(written.out, /actor: claude-tag/);
+    assert.match(written.out, /actor: "process:claude-tag"/);
     assert.equal(git(directA, ["rev-parse", "HEAD"]).trim(), git(topo.origin, ["rev-parse", "board"]).trim());
 
     assert.notEqual(
@@ -724,7 +724,7 @@ test("sync: standalone board-branch root checkout commits, pushes, pulls, and st
     assert.equal(received.err, undefined, received.err?.message);
     assert.match(received.out, /pulled: 1/);
     assert.match(received.out, /notes\/from-slack-agent/);
-    assert.match(received.out, /claude-tag/);
+    assert.match(received.out, /process:claude-tag/);
     assert.equal(await readFile(path.join(directB, "notes", "from-slack-agent.md"), "utf8")
       .then((content) => content.includes("# Direct checkout")), true);
 
@@ -747,7 +747,7 @@ test("sync: standalone checkout without a cached origin ref still reports the do
     git(reader, ["update-ref", "-d", `refs/remotes/origin/${BOARD_BRANCH}`]);
 
     await cliDocWrite(writer, "notes/fetched-without-cache", [
-      "--type", "Note", "--title", "Fetched without cache", "--body", "# Arrived\n", "--actor", "claude-tag",
+      "--type", "Note", "--title", "Fetched without cache", "--body", "# Arrived\n", "--actor", "process:claude-tag",
     ]);
     const sent = await runSync(homes[0]!, ["--dir", writer]);
     assert.equal(sent.err, undefined, sent.err?.message);
@@ -756,7 +756,7 @@ test("sync: standalone checkout without a cached origin ref still reports the do
     assert.equal(received.err, undefined, received.err?.message);
     assert.match(received.out, /pulled: 1/);
     assert.match(received.out, /notes\/fetched-without-cache/);
-    assert.match(received.out, /claude-tag/);
+    assert.match(received.out, /process:claude-tag/);
     assert.equal(existsSync(path.join(reader, "notes", "fetched-without-cache.md")), true);
   } finally {
     await cleanup();
@@ -775,7 +775,7 @@ test("sync: standalone exact fetch repairs an unproven cache without losing the 
     git(reader, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
 
     await cliDocWrite(writer, "notes/recovered-from-unproven-cache", [
-      "--type", "Note", "--title", "Recovered cache", "--body", "# Arrived\n", "--actor", "claude-tag",
+      "--type", "Note", "--title", "Recovered cache", "--body", "# Arrived\n", "--actor", "process:claude-tag",
     ]);
     const sent = await runSync(homes[0]!, ["--dir", writer]);
     assert.equal(sent.err, undefined, sent.err?.message);
@@ -788,7 +788,7 @@ test("sync: standalone exact fetch repairs an unproven cache without losing the 
     assert.equal(received.err, undefined, received.err?.message);
     assert.match(received.out, /pulled: 1/);
     assert.match(received.out, /notes\/recovered-from-unproven-cache/);
-    assert.match(received.out, /claude-tag/);
+    assert.match(received.out, /process:claude-tag/);
     assert.equal(existsSync(path.join(reader, "notes", "recovered-from-unproven-cache.md")), true);
   } finally {
     await cleanup();
@@ -812,7 +812,7 @@ test("sync: standalone checkout cannot recreate a deleted remote board from a st
     );
 
     await cliDocWrite(direct, "notes/remains-private", [
-      "--type", "Note", "--title", "Remains private", "--body", "# Never republish implicitly\n", "--actor", "codex",
+      "--type", "Note", "--title", "Remains private", "--body", "# Never republish implicitly\n", "--actor", "process:codex",
     ]);
     const refused = await runSync(homes[0]!, ["--dir", direct]);
     assert.equal(refused.err?.code, "NO_UPSTREAM");
@@ -843,10 +843,10 @@ test("sync: standalone remote-unknown state never commits, pushes, or recommends
     git(cached, ["config", "remote.origin.fetch", "+refs/heads/main:refs/remotes/origin/main"]);
     git(uncached, ["update-ref", "-d", `refs/remotes/origin/${BOARD_BRANCH}`]);
     await cliDocWrite(cached, "notes/cached-offline-work", [
-      "--type", "Note", "--title", "Cached offline", "--body", "# Local only\n", "--actor", "codex",
+      "--type", "Note", "--title", "Cached offline", "--body", "# Local only\n", "--actor", "process:codex",
     ]);
     await cliDocWrite(uncached, "notes/uncached-offline-work", [
-      "--type", "Note", "--title", "Uncached offline", "--body", "# Local only\n", "--actor", "codex",
+      "--type", "Note", "--title", "Uncached offline", "--body", "# Local only\n", "--actor", "process:codex",
     ]);
     const cachedHead = git(cached, ["rev-parse", "HEAD"]).trim();
     const uncachedHead = git(uncached, ["rev-parse", "HEAD"]).trim();
@@ -955,13 +955,13 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
   try {
     // The REAL authoring path (was harness hand-seeded actor frontmatter, which masked the
     // attribution gap this suite now pins — see the dedicated actor-attribution e2e below).
-    await cliDocWrite(topo.a.board, "notes/founder", ["--type", "Note", "--title", "Founder note", "--body", "# hi\n", "--actor", "mike"]);
+    await cliDocWrite(topo.a.board, "notes/founder", ["--type", "Note", "--title", "Founder note", "--body", "# hi\n", "--actor", "human:mike"]);
 
     const first = await runSync(homeA!, ["--dir", topo.a.root]);
     assert.equal(first.err, undefined, first.err?.message);
     assert.match(first.out, /committed: 1/);
     assert.match(first.out, /pushed: 1/);
-    assert.match(first.out, /actor: mike/);
+    assert.match(first.out, /actor: "human:mike"/);
     // Finding 2: A is the AUTHOR of notes/founder, not a recipient of it — A's own receipt must
     // report pulled:0 and must NOT list its own just-committed doc as "incoming" (nothing arrived
     // FROM ORIGIN this run; see the dedicated finding-2 regression test below for the isolated case).
@@ -980,7 +980,7 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
     assert.match(bFirst.out, /pushed: 0/);
     assert.match(bFirst.out, /pulled: 1/);
     assert.match(bFirst.out, /notes\/founder/);
-    assert.match(bFirst.out, /mike/);
+    assert.match(bFirst.out, /human:mike/);
 
     // Idempotent re-run on B: nothing new.
     const bAgain = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
@@ -998,7 +998,7 @@ test("sync: two-clone founder e2e — A writes+syncs (full), B --pull-only sees 
   }
 });
 
-test("sync: actor attribution e2e — `doc write --actor alice` through the REAL CLI path renders 'alice' (never 'unknown') in the receipt, the commit subject, and B's incoming rows", async () => {
+test("sync: actor attribution e2e carries a conforming human actor through the receipt, commit, and incoming rows", async () => {
   const topo = await makeTwoCloneTopology();
   const { homes, cleanup } = await tempHomes(2);
   const [homeA, homeB] = homes;
@@ -1006,25 +1006,25 @@ test("sync: actor attribution e2e — `doc write --actor alice` through the REAL
     // NO harness hand-seeding: the portable attribution must come from the CLI write path itself,
     // or sync's per-doc enrichment falls back to "unknown" everywhere.
     await cliDocWrite(topo.a.board, "notes/attributed", [
-      "--type", "Note", "--title", "Attributed note", "--body", "# hi\n", "--actor", "alice",
+      "--type", "Note", "--title", "Attributed note", "--body", "# hi\n", "--actor", "human:alice",
     ]);
 
     const a = await runSync(homeA!, ["--dir", topo.a.root]);
     assert.equal(a.err, undefined, a.err?.message);
     assert.match(a.out, /committed: 1/);
-    assert.match(a.out, /actor: alice/, "the receipt's actor comes per-doc from frontmatter, via the real CLI write");
+    assert.match(a.out, /actor: "human:alice"/, "the receipt's actor comes per-doc from frontmatter, via the real CLI write");
     assert.ok(!a.out.includes("unknown"), `no 'unknown' anywhere in A's receipt:\n${a.out}`);
 
-    // The commit subject is the human mirror of the same enrichment — it must name alice too.
+    // The commit subject is the human mirror of the same enrichment and keeps the full actor.
     const subject = git(topo.a.board, ["log", "-1", "--format=%s"]).trim();
-    assert.equal(subject, "board: alice — added notes/attributed");
+    assert.equal(subject, "board: human:alice — added notes/attributed");
 
     // B's incoming rows attribute the change to alice, never unknown.
     const b = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
     assert.equal(b.err, undefined, b.err?.message);
     assert.match(b.out, /pulled: 1/);
     assert.match(b.out, /notes\/attributed/);
-    assert.match(b.out, /alice/, "B's incoming row carries the author");
+    assert.match(b.out, /human:alice/, "B's incoming row carries the author");
     assert.ok(!b.out.includes("unknown"), `no 'unknown' anywhere in B's incoming rows:\n${b.out}`);
   } finally {
     await cleanup();
@@ -1043,22 +1043,23 @@ test("sync: explicit v0.2 write keeps actor attribution without a legacy top-lev
       "utf8",
     );
     await cliDocWrite(topo.a.board, "notes/v02-attributed", [
-      "--type", "Note", "--title", "Attributed v0.2 note", "--body", "# hi\n", "--actor", "alice",
+      "--type", "Note", "--title", "Attributed v0.2 note", "--body", "# hi\n", "--actor", "human:alice",
     ]);
 
     const stored = await readBoardFile(topo.a, "notes/v02-attributed.md");
-    assert.match(stored, /^superbee_updated_by: alice$/m);
+    assert.match(stored, /^superbee_updated_by: 'human:alice'$/m);
+    assert.match(stored, /^  by: 'human:alice'$/m);
     assert.doesNotMatch(stored, /^actor:/m, "v0.2 bytes do not restore the legacy attribution field");
 
     const a = await runSync(homeA!, ["--dir", topo.a.root]);
     assert.equal(a.err, undefined, a.err?.message);
-    assert.match(a.out, /actor: alice/);
-    assert.equal(git(topo.a.board, ["log", "-1", "--format=%s"]).trim(), "board: alice — added notes/v02-attributed");
+    assert.match(a.out, /actor: "human:alice"/);
+    assert.equal(git(topo.a.board, ["log", "-1", "--format=%s"]).trim(), "board: human:alice — added notes/v02-attributed");
 
     const b = await runSync(homeB!, ["--dir", topo.b.root, "--pull-only"]);
     assert.equal(b.err, undefined, b.err?.message);
     assert.match(b.out, /notes\/v02-attributed/);
-    assert.match(b.out, /alice/);
+    assert.match(b.out, /human:alice/);
     assert.ok(!b.out.includes("unknown"), `no unknown attribution in B's rows:\n${b.out}`);
   } finally {
     await cleanup();
@@ -1658,7 +1659,7 @@ test("sync: loud provisioning — THE MOUNT-MOVE FIELD FINDING end-to-end — a 
       "--body",
       "# hi\n",
       "--actor",
-      "mike",
+      "human:mike",
     ]);
 
     const result = await runSync(homes[0]!, ["--dir", movedRoot]);

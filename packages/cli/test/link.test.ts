@@ -142,7 +142,7 @@ test("link add --keep-timestamp: preserves the source's existing timestamp", asy
   }
 });
 
-test("link add on an explicit v0.2 bundle uses generated.at and does not reintroduce legacy metadata", async () => {
+test("link add on an explicit v0.2 bundle updates generated provenance without reintroducing legacy metadata", async () => {
   const { dir, cleanup } = await makeFixtureBundle();
   try {
     await writeFile(path.join(dir, "index.md"), "---\nokf_version: '0.2'\n---\n# Bundle\n", "utf8");
@@ -162,7 +162,7 @@ test("link add on an explicit v0.2 bundle uses generated.at and does not reintro
     const doc = await readDoc({ root: dir }, "concepts/a");
     const generated = doc.frontmatter.generated as { at: string; by: string };
     assert.ok(Date.parse(generated.at) >= before);
-    assert.equal(generated.by, "https://legacy.example/producer");
+    assert.equal(generated.by, "openai/codex");
     assert.equal(doc.frontmatter.timestamp, undefined);
     assert.equal(doc.frontmatter.actor, undefined);
   } finally {

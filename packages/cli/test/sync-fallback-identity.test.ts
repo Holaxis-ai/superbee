@@ -98,7 +98,7 @@ test("sync: DoD1 — a fresh-container / identity-less git still commits, with a
       "--body",
       "# x\n",
       "--actor",
-      "mike",
+      "human:mike",
     ]);
 
     const rec = await withNoGitIdentity(() => runSyncJson(home, ["--dir", topo.a.root]));
@@ -106,13 +106,13 @@ test("sync: DoD1 — a fresh-container / identity-less git still commits, with a
     // The receipt is NORMAL — no trace of the fallback in the observable envelope.
     assert.equal(rec.committed, 1);
     assert.equal(rec.pushed, 1);
-    assert.equal(rec.actor, "mike");
+    assert.equal(rec.actor, "human:mike");
 
     // The commit that actually landed carries the synthetic identity: user.name is the
-    // resolved actor ("mike", the doc's own frontmatter actor — the same value the receipt
+    // resolved actor ("human:mike", the doc's own frontmatter actor — the same value the receipt
     // names), user.email is its slug at the RFC 2606 `.invalid` placeholder domain.
     const { author, committer } = identityLine(topo.a.board);
-    assert.equal(author, "mike <mike@superbee.invalid>");
+    assert.equal(author, "human:mike <human-mike@superbee.invalid>");
     assert.equal(committer, author, "commit created directly (not replayed) — author == committer");
   } finally {
     await cleanup();
@@ -162,7 +162,7 @@ test("sync: DoD3 — a resolvable git identity gets NO synthetic override; the c
       "--body",
       "# x\n",
       "--actor",
-      "mike",
+      "human:mike",
     ]);
 
     // Deliberately NOT wrapped in withNoGitIdentity: this suite's ambient process env (from

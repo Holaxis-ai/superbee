@@ -193,6 +193,34 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
     assert.equal((saved.frontmatter.generated as { by?: string }).by, "process:superbee");
     assert.match((saved.frontmatter.generated as { at?: string }).at ?? "", /^\d{4}-/);
     assert.equal((JSON.parse(result.stdout) as Record<string, unknown>).field_coordinates, undefined);
+
+    const attributed = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "attributed", "--title", "Attributed", "--progress_status", "todo", "--actor", "openai/codex", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(attributed.status, 0, `stdout=${attributed.stdout} stderr=${attributed.stderr}`);
+    const attributedDoc = await readDoc(bundle, "tasks/attributed");
+    assert.equal((attributedDoc.frontmatter.generated as { by?: string }).by, "openai/codex");
+    assert.equal(attributedDoc.frontmatter.superbee_updated_by, "openai/codex");
+
+    const invalid = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "invalid-actor", "--title", "Invalid actor", "--progress_status", "todo", "--actor", "codex-root", "--dir", dir, "--json"],
+      { encoding: "utf8" },
+    );
+    assert.equal(invalid.status, 2, `stdout=${invalid.stdout} stderr=${invalid.stderr}`);
+    assert.match(invalid.stdout, /OKF v0\.2 mutation actor 'codex-root'/);
+    await assert.rejects(() => readDoc(bundle, "tasks/invalid-actor"));
+
+    const invalidFromEnv = spawnSync(
+      "node",
+      [cliBin, "new", "Task", "invalid-env-actor", "--title", "Invalid env actor", "--progress_status", "todo", "--dir", dir, "--json"],
+      { encoding: "utf8", env: { ...process.env, SUPERBEE_ACTOR: "codex-root" } },
+    );
+    assert.equal(invalidFromEnv.status, 2, `stdout=${invalidFromEnv.stdout} stderr=${invalidFromEnv.stderr}`);
+    assert.match(invalidFromEnv.stdout, /OKF v0\.2 mutation actor 'codex-root'/);
+    await assert.rejects(() => readDoc(bundle, "tasks/invalid-env-actor"));
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

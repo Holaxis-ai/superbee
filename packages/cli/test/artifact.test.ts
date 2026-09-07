@@ -58,7 +58,7 @@ test("firstFreeId: base, then -2, -3 against taken ids", () => {
 test("create: one command promotes the blob + writes the record (no Artifact convention needed)", async () => {
   const { dir, html, cleanup } = await makeBundle();
   try {
-    const receipt = await runJson(["create", html, "--title", "Q3 Analysis!", "--dir", dir, "--actor", "tester"]);
+    const receipt = await runJson(["create", html, "--title", "Q3 Analysis!", "--dir", dir, "--actor", "process:tester"]);
     assert.equal(receipt.artifact, "created");
     assert.equal(receipt.id, "artifacts/q3-analysis"); // slug from title
     assert.equal(receipt.entry, "artifacts/q3-analysis.html");
@@ -89,8 +89,8 @@ test("create: one command promotes the blob + writes the record (no Artifact con
 test("create: a second same-title artifact gets a collision-safe id", async () => {
   const { dir, html, cleanup } = await makeBundle();
   try {
-    const first = await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "t"]);
-    const second = await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "t"]);
+    const first = await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "process:test"]);
+    const second = await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "process:test"]);
     assert.equal(first.id, "artifacts/report");
     assert.equal(second.id, "artifacts/report-2");
   } finally {
@@ -113,8 +113,8 @@ test("create: an explicitly legacy bundle retains the legacy workflow coordinate
 test("create --supersedes: flips the prior to superseded and links this one 'supersedes' it", async () => {
   const { dir, html, cleanup } = await makeBundle();
   try {
-    await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "t"]);
-    const v2 = await runJson(["create", html, "--title", "Report v2", "--supersedes", "artifacts/report", "--dir", dir, "--actor", "t"]);
+    await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "process:test"]);
+    const v2 = await runJson(["create", html, "--title", "Report v2", "--supersedes", "artifacts/report", "--dir", dir, "--actor", "process:test"]);
     assert.equal(v2.id, "artifacts/report-v2");
     assert.equal(v2.supersedes, "artifacts/report");
 
@@ -138,7 +138,7 @@ test("create --supersedes resolves path-style .md input before the exact storage
       body: "",
     });
     const receipt = await runJson([
-      "create", html, "--title", "Next", "--supersedes", "artifacts/prior.md", "--dir", dir, "--actor", "t",
+      "create", html, "--title", "Next", "--supersedes", "artifacts/prior.md", "--dir", dir, "--actor", "process:test",
     ]);
     assert.equal(receipt.supersedes, "artifacts/prior");
     assert.match(
@@ -156,12 +156,12 @@ test("create --supersedes: a cross-dir / missing / non-Artifact target is reject
   try {
     // A non-artifacts/ id: rejected before any write, so nothing is created.
     await assert.rejects(
-      runJson(["create", html, "--title", "X", "--supersedes", "docs/old-note", "--dir", dir, "--actor", "t"]),
+      runJson(["create", html, "--title", "X", "--supersedes", "docs/old-note", "--dir", dir, "--actor", "process:test"]),
       /must be an artifacts\/ id/,
     );
     // An artifacts/ id that doesn't exist.
     await assert.rejects(
-      runJson(["create", html, "--title", "X", "--supersedes", "artifacts/ghost", "--dir", dir, "--actor", "t"]),
+      runJson(["create", html, "--title", "X", "--supersedes", "artifacts/ghost", "--dir", dir, "--actor", "process:test"]),
       /does not exist/,
     );
     assert.ok(!existsSync(path.join(dir, "artifacts")), "no artifacts/ created on a rejected supersede");
@@ -170,7 +170,7 @@ test("create --supersedes: a cross-dir / missing / non-Artifact target is reject
     const bundle = await openBundle(dir, undefined);
     await writeDoc(bundle, { id: "artifacts/plain", frontmatter: { type: "Doc", title: "Plain" }, body: "" });
     await assert.rejects(
-      runJson(["create", html, "--title", "Y", "--supersedes", "artifacts/plain", "--dir", dir, "--actor", "t"]),
+      runJson(["create", html, "--title", "Y", "--supersedes", "artifacts/plain", "--dir", dir, "--actor", "process:test"]),
       /not Artifact/,
     );
   } finally {
@@ -183,7 +183,7 @@ test("create: a record-create failure NAMES the orphaned blob (strict-convention
   try {
     await declareRejectingArtifactConvention(dir);
     await assert.rejects(
-      runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "t"]),
+      runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "process:test"]),
       (err: unknown) => {
         const msg = (err as Error).message;
         assert.match(msg, /artifacts\/report\.html/, "names the orphaned blob");
@@ -208,7 +208,7 @@ test("create: an orphaned blob does not brick a later create — it picks a fres
     await writeBlob(bundle, "artifacts/report.html", Buffer.from("orphan"), "text/html", { expectedVersion: null });
 
     // A create titled "Report" must NOT collide on the stray blob's expect-absent write — it advances.
-    const receipt = await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "t"]);
+    const receipt = await runJson(["create", html, "--title", "Report", "--dir", dir, "--actor", "process:test"]);
     assert.equal(receipt.id, "artifacts/report-2");
     assert.equal(receipt.entry, "artifacts/report-2.html");
     assert.ok(existsSync(path.join(dir, "artifacts", "report-2.md")), "fresh record written");
@@ -220,8 +220,8 @@ test("create: an orphaned blob does not brick a later create — it picks a fres
 test("create: --title is required; a missing file is a USAGE error; neither leaves a partial write", async () => {
   const { dir, html, cleanup } = await makeBundle();
   try {
-    await assert.rejects(runJson(["create", html, "--dir", dir, "--actor", "t"]), /requires --title/);
-    await assert.rejects(runJson(["create", path.join(dir, "nope.html"), "--title", "X", "--dir", dir, "--actor", "t"]), /no such file/);
+    await assert.rejects(runJson(["create", html, "--dir", dir, "--actor", "process:test"]), /requires --title/);
+    await assert.rejects(runJson(["create", path.join(dir, "nope.html"), "--title", "X", "--dir", dir, "--actor", "process:test"]), /no such file/);
     assert.ok(!existsSync(path.join(dir, "artifacts")), "no artifacts/ dir created on a rejected call");
   } finally {
     await cleanup();

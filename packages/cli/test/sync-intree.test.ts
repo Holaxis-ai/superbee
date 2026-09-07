@@ -207,7 +207,7 @@ test("in-tree --pull-only: fetches the tracking upstream, reports incoming docs,
   const topo = await makeCommittedFolderTopology();
   const { home: h, cleanup } = await tempHome();
   try {
-    await teammateShipsDoc(h, topo.b, "tasks/from-sara", "sara");
+    await teammateShipsDoc(h, topo.b, "tasks/from-sara", "human:sara");
 
     const headBefore = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
     const { rec, err } = await runSyncJson(h, ["--pull-only", "--dir", topo.a.root]);
@@ -221,7 +221,7 @@ test("in-tree --pull-only: fetches the tracking upstream, reports incoming docs,
       kind: "Task",
       id: "tasks/from-sara",
       title: "tasks/from-sara",
-      actor: "sara",
+      actor: "human:sara",
     });
     assert.equal(rec.note, inTreePullHint(1), "delivery is the user's own git pull");
     assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), headBefore, "fetch-and-report moved nothing");
@@ -248,7 +248,7 @@ test("legacy in-tree --pull-only scopes reads and messages to .agentstate-lite",
   const topo = await makeCommittedFolderTopology(LEGACY_BUNDLE_DIR);
   const { home: h, cleanup } = await tempHome();
   try {
-    await teammateShipsDoc(h, topo.b, "tasks/legacy", "sara");
+    await teammateShipsDoc(h, topo.b, "tasks/legacy", "human:sara");
     const { rec, err } = await runSyncJson(h, ["--pull-only", "--dir", topo.a.root]);
     assert.equal(err, undefined, err?.message);
     assert.match(String(rec.board), /\.agentstate-lite\//);
@@ -311,7 +311,7 @@ test("in-tree --show-incoming: reads the upstream version under the board prefix
   const topo = await makeCommittedFolderTopology();
   const { home: h, cleanup } = await tempHome();
   try {
-    await teammateShipsDoc(h, topo.b, "tasks/incoming-view", "sara");
+    await teammateShipsDoc(h, topo.b, "tasks/incoming-view", "human:sara");
     // Fetch once (the viewer itself never fetches — adjudication G).
     await runSyncJson(h, ["--pull-only", "--dir", topo.a.root]);
 
@@ -346,7 +346,7 @@ test("mode flip (in-tree → branch): a 'git-intree' cursor is FOREIGN to branch
   try {
     // A syncs once; B ships a change; A syncs again (cache delta = B's change, cursor at head).
     await runSyncJson(h, ["--dir", topo.a.root]);
-    await cliDocWrite(h, topo.b.board, "tasks/from-b", ["--type", "Task", "--title", "B doc", "--body", "x", "--actor", "sara"]);
+    await cliDocWrite(h, topo.b.board, "tasks/from-b", ["--type", "Task", "--title", "B doc", "--body", "x", "--actor", "human:sara"]);
     await runSyncJson(h, ["--dir", topo.b.root]);
     await runSyncJson(h, ["--dir", topo.a.root]);
 
@@ -375,14 +375,14 @@ test("session-start on an in-tree board: fetch-and-record inside the budget, ren
   const topo = await makeCommittedFolderTopology();
   const { home: h, cleanup } = await tempHome();
   try {
-    await teammateShipsDoc(h, topo.b, "tasks/board-news", "sara");
+    await teammateShipsDoc(h, topo.b, "tasks/board-news", "human:sara");
 
     const headBefore = git(topo.a.root, ["rev-parse", "HEAD"]).trim();
     const cap = captureStdout();
     await withHome(h, () => sessionStart(["--dir", topo.a.root], { stdout: cap.stdout }));
     const out = cap.text();
-    assert.match(out, /since_this_machine_last_checked: 1 board change from sara/, "the in-tree since-header renders");
-    assert.match(out, /sara · added Task/, "the per-doc human line renders");
+    assert.match(out, /since_this_machine_last_checked: "1 board change from human:sara"/, "the in-tree since-header renders");
+    assert.match(out, /human:sara · added Task/, "the per-doc human line renders");
     assert.match(out, /board-news/);
     assert.match(out, /incoming board change is not yet in this checkout — run 'git pull'/);
     assert.equal(git(topo.a.root, ["rev-parse", "HEAD"]).trim(), headBefore, "session-start never merges in-tree");
@@ -417,7 +417,7 @@ test("home (plain, offline): in-tree first contact renders the mode line; backst
     await writeFile(path.join(topo.a.root, "src", "app.js"), "export const x = 3;\n");
     git(topo.a.root, ["add", "src/app.js"]);
     git(topo.a.root, ["commit", "-m", "code only"]);
-    await cliDocWrite(h, topo.a.board, "tasks/mine", ["--type", "Task", "--title", "Mine", "--body", "m", "--actor", "mike"]);
+    await cliDocWrite(h, topo.a.board, "tasks/mine", ["--type", "Task", "--title", "Mine", "--body", "m", "--actor", "human:mike"]);
     git(topo.a.root, ["add", BUNDLE_DIR]);
     git(topo.a.root, ["commit", "-m", "board only"]);
     await writeFile(path.join(topo.a.root, "src", "scratch.js"), "// dirty\n");
@@ -439,8 +439,8 @@ test("home (plain, offline): in-tree first contact renders the mode line; backst
     const key = await withHome(h, async () => resolveBundleKey(topo.a.board));
     const state = await withHome(h, () => readSyncState(key));
     assert.equal(state.cache?.delta.length, 1, "the raw delta DID contain a row (nothing vacuous)");
-    assert.equal(state.cache?.delta[0]?.actor, "mike");
-    assert.ok(state.selfActors?.includes("mike"), "the post-persist hook recorded the writing actor");
+    assert.equal(state.cache?.delta[0]?.actor, "human:mike");
+    assert.ok(state.selfActors?.includes("human:mike"), "the post-persist hook recorded the writing actor");
 
     const cap3 = captureStdout();
     await withHome(h, () => home(["--dir", topo.a.board, "--json"], { stdout: cap3.stdout }));
@@ -510,7 +510,7 @@ test("hook: a substantive doc write records the actor (in-tree AND branch mode);
 
     // A no-op patch (changed: false) with a DIFFERENT actor must not record it.
     await withHome(h, () =>
-      doc(["update", "tasks/attributed", "--title", "T", "--keep-timestamp", "--actor", "bob", "--dir", intree.a.board, "--json"], {
+      doc(["update", "tasks/attributed", "--title", "T", "--keep-timestamp", "--actor", "human:bob", "--dir", intree.a.board, "--json"], {
         stdout: () => {},
         readStdin: async () => undefined,
       }),
@@ -523,7 +523,7 @@ test("hook: a substantive doc write records the actor (in-tree AND branch mode);
 
     // A REFUSED write (the body-blanking guard) with another actor must not record it.
     await assert.rejects(
-      cliDocWrite(h, intree.a.board, "tasks/attributed", ["--type", "Task", "--title", "T2", "--actor", "carol"]),
+      cliDocWrite(h, intree.a.board, "tasks/attributed", ["--type", "Task", "--title", "T2", "--actor", "human:carol"]),
       (err: unknown) => err instanceof CliError && err.code === "USAGE",
     );
     assert.deepEqual(

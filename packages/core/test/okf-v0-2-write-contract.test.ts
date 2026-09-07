@@ -72,7 +72,7 @@ test("v0.2 create, mutate, no-op, conflict, and final receipts agree across all 
         }),
       });
       assert.deepEqual(created.doc.frontmatter.generated, {
-        by: "superbee/1.0.0",
+        by: "openai/codex",
         at: "2026-08-14T10:00:00Z",
       });
 
@@ -151,14 +151,19 @@ test("v0.2 mutation attribution agrees across retained history and the filesyste
         mode: "create-only",
         registry: EMPTY_REGISTRY,
         strict: false,
-        actor: "alice",
+        actor: "human:alice",
         persistActor: true,
         buildCandidate: () => ({ frontmatter: { type: "Note", title: "Attributed" }, body: "body\n" }),
       });
 
-      assert.equal(result.doc.frontmatter.superbee_updated_by, "alice", harness.name);
+      assert.equal(result.doc.frontmatter.superbee_updated_by, "human:alice", harness.name);
+      assert.equal(
+        (result.doc.frontmatter.generated as { by?: string }).by,
+        "human:alice",
+        harness.name,
+      );
       assert.equal(result.doc.frontmatter.actor, undefined, harness.name);
-      assert.equal((await docVersions(harness.bundle, "notes/attributed"))[0]?.actor, "alice", harness.name);
+      assert.equal((await docVersions(harness.bundle, "notes/attributed"))[0]?.actor, "human:alice", harness.name);
     }
   } finally {
     await Promise.all(adapters.map((harness) => harness.cleanup()));
