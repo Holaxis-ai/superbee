@@ -412,6 +412,39 @@ test("invalid v0 envelopes correlate only a bounded existing id and perform no l
   assert.equal(launchResolutions, 0);
 });
 
+test("bridge runtime failures preserve classification without exposing storage diagnostics", async () => {
+  const backend = new MemoryBackend();
+  Object.defineProperty(backend, "read", {
+    configurable: true,
+    value: async () => {
+      throw new Error("SECRET_BRIDGE_SENTINEL /private/bridge/path");
+    },
+  });
+  const bridge = new BridgeService({
+    bundle: { root: "mem://bridge-redaction", backend },
+    launches: {
+      async resolve(launchId) {
+        return { launchId, capability: "bundle-read" };
+      },
+      revoke() {},
+    },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+    allowActionProtocol: false,
+  });
+
+  const outcome = await bridge.handle("launch", {
+    bridge: "v0",
+    type: "read",
+    id: "redaction",
+    docId: "docs/secret",
+  });
+  assert.equal(outcome.reply?.error?.code, "RUNTIME");
+  assert.equal(outcome.reply?.error?.message, "the View request failed");
+  assert.equal(JSON.stringify(outcome).includes("SECRET_BRIDGE_SENTINEL"), false);
+  assert.equal(JSON.stringify(outcome).includes("/private/bridge/path"), false);
+});
+
 test("session authorization keys approval to the complete active-View subject", async () => {
   const store = new SessionViewAuthorizationStore();
   const subject = {

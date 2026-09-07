@@ -71,6 +71,7 @@ import {
   type PersistentInstallAuthority,
 } from "../install-authority.js";
 import { normalizeInstallScope, type InstallScope } from "../install-scope.js";
+import { readRegularFileTextNoFollowSync } from "../nofollow-read.js";
 import { integrationChangeReceipt, type IntegrationHost } from "../integration-receipt.js";
 
 export const HOOK_USAGE = `superbee hook — manage the SessionStart board-aware hook
@@ -749,12 +750,14 @@ function readOpenCodeHookStatus(path: string, expectedSource?: string): OpenCode
   if (!entry.isFile()) {
     return { installed: false, compatibility: { state: "unmanaged", reason: "plugin path is not a regular file" } };
   }
-  let source: string;
-  try {
-    source = readFileSync(path, "utf8");
-  } catch {
+  const read = readRegularFileTextNoFollowSync(path);
+  if (read.state === "missing") {
+    return { installed: false, compatibility: { state: "absent", reason: "plugin file is absent" } };
+  }
+  if (read.state === "unsafe") {
     return { installed: false, compatibility: { state: "unmanaged", reason: "plugin file is unreadable" } };
   }
+  const source = read.text;
   const comparableSource = normalizedGeneratedSource(source);
   if (expectedSource !== undefined && comparableSource === normalizedGeneratedSource(expectedSource)) {
     return {

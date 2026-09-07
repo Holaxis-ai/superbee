@@ -10,6 +10,7 @@
 // fail-soft for the SessionStart caller. `--pull-only` is an interactive verb that must report a
 // REAL structured outcome, so `ffSwallowToError` translates every swallowed reason into the
 // capped CliError taxonomy instead of silently no-op'ing.
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import {
@@ -61,7 +62,7 @@ import {
   writeAwarenessCache,
 } from "./converge.js";
 import { showIncoming } from "./show-incoming.js";
-import { ffSwallowToError, syncOutcomeError, syncOutcomeLine } from "../../sync-outcomes.js";
+import { ffSwallowToError, syncOutcomeError, syncOutcomeLine, withSharingDetails } from "../../sync-outcomes.js";
 import { CliError, asHandled, cliErrorFromBoardGit, toExit } from "../../errors.js";
 import { parseLeafOrUsage } from "../../args.js";
 import { CLI_LEAVES } from "../../command-spec.js";
@@ -71,7 +72,12 @@ import {
   assertBundleOutsidePrivateState,
   assertSearchDirOutsidePrivateState,
 } from "../../private-state-bundle-boundary.js";
-import { resolveLocalBundleRoute, resolveProjectBinding, type ResolvedLocalRoute } from "../../bundle.js";
+import {
+  ownConventionalBoardRoot,
+  resolveLocalBundleRoute,
+  resolveProjectBinding,
+  type ResolvedLocalRoute,
+} from "../../bundle.js";
 import type { BoundBoardOwner } from "../../bound-board-owner.js";
 import { recoverBoundBoardOwner } from "../../bound-board-recovery.js";
 import { commandToken, type CommandPrefix } from "../../command-text.js";
@@ -82,6 +88,14 @@ Usage:
   superbee sync [--pull-only] [--dir <path>] [--limit <n>] [--json]
   superbee sync --establish [--yes] [--dir <path>] [--json]
   superbee sync --show-incoming <id> [--out <file> | --body-out <file>] [--dir <path>] [--json]
+
+Before first publication, check whether the intended remote repository exists, then whether
+origin/board exists. Superbee does not create the remote repository. If the repository is
+confirmed absent, create it outside Superbee if authorized or ask an authorized owner/teammate;
+if it exists and origin/board is confirmed absent, --establish needs explicit consent,
+repository-specific push capability, and branch-create policy clearance. If origin/board exists,
+plain sync joins it. If either remote fact is unknown, diagnose URL, network, identity,
+visibility, and repository Read access; do not establish.
 
 Shares this repo's board (\`.superbee\`, or an existing legacy \`.agentstate-lite\`, kept on its own \`board\` branch) with your
 teammates: ordinary sync commits pending local doc changes, pulls theirs, and pushes yours without
@@ -206,9 +220,10 @@ export const SYNC_LOCAL_ONLY_MESSAGE =
 export function syncLocalOnlyNote(inv: CommandPrefix): string {
   return (
     "a supported mode: every local command works, and your board changes stay on this machine " +
-    `(sync committed nothing). To share the board with teammates, run \`${inv} sync --establish\` ` +
-    "— it publishes the board as a 'board' branch on the repo's 'origin' remote (add one first " +
-    "if the repo has none); teammates then just run sync."
+    `(sync committed nothing). The existing remote repository is visible and has no board branch, ` +
+    "so repository creation permission is irrelevant. With explicit publication consent, " +
+    `repository-specific push capability, and branch-create policy clearance, run \`${inv} sync --establish\`; ` +
+    "the push is the decisive write test. Teammates then use sync to join."
   );
 }
 
@@ -219,7 +234,10 @@ export function syncRemoteStateUnknownNote(inv: CommandPrefix, hasLocalBundle: b
   const local = hasLocalBundle
     ? "your local bundle remains usable and sync committed nothing. "
     : "sync changed nothing. ";
-  return local + `Retry \`${inv} sync\` when origin is available; a shared board may already exist.`;
+  return local +
+    "The repository and board remain unknown: verify the exact origin URL, network, active " +
+    `HTTPS/SSH identity, visibility, and repository Read access, then retry \`${inv} sync\`. ` +
+    "A shared board may already exist; do not establish while its state is unknown.";
 }
 
 // ── the in-tree board (read-side mode) ─────────────────────────────────────────
@@ -481,16 +499,32 @@ async function parseSyncInvocation(argv: string[], inv: CommandPrefix): Promise<
   // A bare project binding is an exact board-owner selection, not a hint for the cwd routing
   // below. Validate it before retarget/heal/channel/provision can spawn Git in the public
   // checkout, then carry only the frozen capability through all remaining phases.
+  //
+  // The one binding shape that is NOT frozen away from provisioning: a target that is its own
+  // repository's conventional board path. That names exactly the board the ordinary flow owns for
+  // this checkout, so an absent target (a fresh clone of a shared board) provisions and a
+  // local-only bundle establishes from the repository top. A target that already IS the linked
+  // board worktree still routes through its proven owner.
   let route: ResolvedLocalRoute | undefined;
-  if (values.dir === undefined && await resolveProjectBinding(process.cwd())) {
-    route = await resolveLocalBundleRoute(undefined);
+  let ownBoardRoot: string | undefined;
+  if (values.dir === undefined) {
+    const binding = await resolveProjectBinding(process.cwd());
+    if (binding) {
+      ownBoardRoot = (await ownConventionalBoardRoot(binding)) ?? undefined;
+      if (ownBoardRoot === undefined || existsSync(binding.target)) {
+        route = await resolveLocalBundleRoute(undefined);
+      }
+      if (ownBoardRoot !== undefined && route?.kind === "bound-local") route = undefined;
+    }
   }
   const boundOwner = route?.kind === "bound-board" ? route.owner : undefined;
   const owner = route?.kind === "bound-board" && route.readiness === "ready" ? route.owner : undefined;
 
   // Standing inside the board worktree retargets to the enclosing project so provisioning's
   // idempotent path resolves the REAL board (see retargetBoardInterior).
-  const dir = boundOwner?.ownerRoot ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
+  const dir = boundOwner?.ownerRoot
+    ?? ownBoardRoot
+    ?? (route?.kind === "bound-local" ? route.target.root : retargetBoardInterior(values.dir ?? process.cwd()));
   return {
     kind: "run",
     options: {
@@ -663,10 +697,11 @@ async function pushPhase(run: SyncRun, board: SyncBoard, commitResult: CommitRes
     push(board.boardPath);
     return ahead;
   } catch (err) {
-    const classified = toCliError(err, "push");
+    const classified = withSharingDetails(toCliError(err, "push"), { operation: "update-board" });
     const warning = pushFailureMessage(classified);
     const partial = buildPushFailurePartial(
       board.outcome, warning, commitResult.docs, delta.originDelta, run.limit, delta.reanchorNote,
+      classified.details,
     );
     run.stdout(render(partial, run.mode));
     await writeAwarenessCache(board.key, board.boardPath, delta.changes, delta.reanchorNote);

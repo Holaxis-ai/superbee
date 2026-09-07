@@ -12,7 +12,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
-import { createRouter } from "./router.js";
+import { createRouter } from "./legacy-router.js";
 import type { Bundle } from "@superbee/core";
 
 /** Options for {@link serve}. */

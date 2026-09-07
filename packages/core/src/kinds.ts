@@ -499,7 +499,9 @@ const CLAIM_COORDINATE_KEYS = [
 
 // Level-1 headings only: `# Foo` (not `## Foo`). The ONE heading splitter, reused by
 // validateAgainstKind's section lint below and re-exported as public API from index.ts.
-const H1_RE = /^#\s+(.+?)\s*$/gm;
+// The capture starts at the first non-space character and runs to end of line; a lazy `(.+?)\s*$`
+// tail backtracks quadratically on a long run of trailing whitespace. Callers trim the name.
+const H1_RE = /^#\s+(\S.*)$/gm;
 
 /** Split a body into `{ headingText: sectionContent }` by its level-1 headings. */
 export function splitSections(body: string): Record<string, string> {

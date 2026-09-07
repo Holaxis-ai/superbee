@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { initBundle, writeDoc } from "@superbee/core";
 
 import {
@@ -36,6 +37,42 @@ interface FakeService {
 function connectionRefused(): TypeError {
   return Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
 }
+
+test("management deadlines include stalled response bodies for status, adopt, and stop", { timeout: 20_000 }, async () => {
+  for (const operation of ["status", "adopt", "stop"] as const) {
+    const home = await mkdtemp(path.join(tmpdir(), "superbee-body-timeout-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("{");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as { port: number };
+    const runtime = fakeRuntime(home);
+    const authority = managedUiAuthority("/canonical/body-timeout", undefined);
+    const ordinaryFetch = runtime.options.fetch!;
+    try {
+      if (operation !== "adopt") await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
+      runtime.options.fetch = (async (url, init) => String(url).endsWith(`/${operation}`)
+        ? fetch(`http://127.0.0.1:${address.port}/`, init)
+        : ordinaryFetch(url, init)) as typeof fetch;
+      const before = Date.now();
+      if (operation === "status") {
+        const receipt = await stopManagedUi(authority, { ...runtime.options, abandon: true });
+        assert.equal(receipt.abandoned, true);
+        assert.equal(runtime.services[0]!.state, "adopted");
+      } else {
+        await assert.rejects(() => operation === "adopt"
+          ? startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options)
+          : stopManagedUi(authority, runtime.options), /abort/i);
+      }
+      assert.ok(Date.now() - before < 6000, `${operation} exceeded its response deadline`);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(home, { recursive: true, force: true });
+    }
+  }
+});
 
 function fakeRuntime(home: string): {
   options: ManagedUiControllerOptions;
@@ -165,7 +202,7 @@ test("start, compatible reuse, status, pinned-port refusal, and exact stop form 
       },
     );
 
-    assert.deepEqual(await stopManagedUi(authority, runtime.options), { stopped: true, authority });
+    assert.deepEqual(await stopManagedUi(authority, runtime.options), { stopped: true, abandoned: false, authority });
     assert.equal(runtime.services[0]!.state, "stopping");
     assert.deepEqual(await listManagedUiStatus(authority.bundle_root, runtime.options), []);
   } finally {
@@ -375,6 +412,145 @@ test("a transient or rejected status probe preserves the exact record and never 
     await stopManagedUi(authority, runtime.options);
   } finally {
     await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a listener that never answers is reported, refuses takeover, and is released only by explicit abandon", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-hung-"));
+  const runtime = fakeRuntime(home);
+  const authority = managedUiAuthority("/canonical/hung", undefined);
+  const other = managedUiAuthority("/canonical/hung", "other");
+  try {
+    const first = await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
+    const healthy = await startOrReuseManagedUi(other, "docs/one", undefined, runtime.options);
+    const ordinaryFetch = runtime.options.fetch!;
+    // The recorded listener accepts the connection and never produces a response, so only the
+    // client's own timeout bound ends the probe: the reported managed-UI open failure.
+    runtime.options.fetch = (async (...args: Parameters<typeof fetch>) => {
+      const url = new URL(String(args[0]));
+      if (Number(url.port) === first.record.port && url.pathname.endsWith("/status")) {
+        return new Promise<Response>((_resolve, reject) => {
+          // A referenced timer so the pending request itself keeps the loop alive, exactly as a real
+          // socket would: the probe's own abort timer is unref'd and must not be the only work left.
+          const stuck = setTimeout(() => reject(new Error("the probe never bounded its own wait")), 30_000);
+          args[1]?.signal?.addEventListener("abort", () => {
+            clearTimeout(stuck);
+            reject(new DOMException("This operation was aborted", "AbortError"));
+          });
+        });
+      }
+      return ordinaryFetch(...args);
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options),
+      (error: unknown) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.code, "TRANSIENT");
+        assert.deepEqual(error.details, {
+          port: first.record.port,
+          pid: first.record.pid,
+          phase: "adopted",
+          started_at: first.record.started_at,
+        });
+        assert.match(error.help ?? "", /ui --stop .*--abandon/u);
+        return true;
+      },
+    );
+    assert.equal(runtime.spawnCount(), 2);
+
+    const hungStatus = (await listManagedUiStatus(authority.bundle_root, runtime.options))
+      .find((item) => item.authority.actor === null)!;
+    assert.equal(hungStatus.live, "unknown");
+    assert.equal(hungStatus.pid, first.record.pid);
+
+    // Without explicit authorization the documented stop is gated by the same unanswerable probe.
+    await assert.rejects(
+      () => stopManagedUi(authority, runtime.options),
+      (error: unknown) => error instanceof CliError && error.code === "TRANSIENT",
+    );
+
+    assert.deepEqual(
+      await stopManagedUi(authority, { ...runtime.options, abandon: true }),
+      { stopped: false, abandoned: true, authority },
+    );
+    // The abandoned worker was never signaled, and no other actor's authority was touched.
+    assert.equal(runtime.services[0]!.state, "adopted");
+    assert.deepEqual(
+      (await listManagedUiStatus(authority.bundle_root, runtime.options)).map((item) => [item.authority.actor, item.live]),
+      [[healthy.authority.actor, true]],
+    );
+
+    const replacement = await startOrReuseManagedUi(authority, "docs/three", undefined, runtime.options);
+    assert.equal(replacement.state, "started");
+    assert.notEqual(replacement.record.launch_nonce, first.record.launch_nonce);
+    await stopManagedUi(authority, runtime.options);
+    await stopManagedUi(other, runtime.options);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("--abandon refuses an authority that answers as live", async () => {
+  const home = await mkdtemp(path.join(tmpdir(), "superbee-managed-abandon-live-"));
+  const runtime = fakeRuntime(home);
+  const authority = managedUiAuthority("/canonical/abandon-live", undefined);
+  try {
+    await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
+    await assert.rejects(
+      () => stopManagedUi(authority, { ...runtime.options, abandon: true }),
+      (error: unknown) => {
+        assert.ok(error instanceof CliError);
+        assert.equal(error.code, "CONFLICT");
+        assert.match(error.help ?? "", /ui --stop/u);
+        return true;
+      },
+    );
+    assert.equal(runtime.services[0]!.state, "adopted");
+    assert.equal((await listManagedUiStatus(authority.bundle_root, runtime.options)).length, 1);
+    assert.equal((await stopManagedUi(authority, runtime.options)).stopped, true);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("a responsive listener that proves it is not this authority releases the recorded slot", async () => {
+  const foreign: Array<[string, () => Response]> = [
+    ["forbidden", () => new Response("nope", { status: 403 })],
+    ["unavailable", () => Response.json({ error: { code: "NOT_FOUND" } }, { status: 404 })],
+    ["mismatched", () => Response.json({
+      protocol: 1,
+      mode: "dir",
+      authority_key: "0".repeat(64),
+      bundle_root: "/canonical/somewhere-else",
+      launch_root: "/canonical/somewhere-else",
+      actor: null,
+      launch_nonce: "another-launch",
+      state: "adopted",
+      active_clients: 0,
+    })],
+  ];
+  for (const [label, respond] of foreign) {
+    const home = await mkdtemp(path.join(tmpdir(), `superbee-managed-foreign-${label}-`));
+    const runtime = fakeRuntime(home);
+    const authority = managedUiAuthority(`/canonical/foreign-${label}`, undefined);
+    try {
+      const first = await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
+      const ordinaryFetch = runtime.options.fetch!;
+      runtime.options.fetch = (async (...args: Parameters<typeof fetch>) => {
+        const url = new URL(String(args[0]));
+        if (Number(url.port) === first.record.port && url.pathname.endsWith("/status")) return respond();
+        return ordinaryFetch(...args);
+      }) as typeof fetch;
+
+      const replacement = await startOrReuseManagedUi(authority, "docs/two", undefined, runtime.options);
+      assert.equal(replacement.state, "started", label);
+      assert.equal(runtime.spawnCount(), 2, label);
+      assert.notEqual(replacement.record.launch_nonce, first.record.launch_nonce);
+      await stopManagedUi(authority, runtime.options);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   }
 });
 

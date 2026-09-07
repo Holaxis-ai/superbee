@@ -1,0 +1,106 @@
+name: Runtime libraries finalize (read-only registry proof)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact core and server version already approved on npm"
+        required: true
+
+permissions: {}
+
+concurrency:
+  group: runtime-libraries-release
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    name: verify both registry artifacts and attestations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.14.0
+          registry-url: "https://registry.npmjs.org"
+      - name: Prove npm serves both synchronized versions and dist-tags
+        env:
+          V: ${{ inputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_RUNTIME_LIBRARIES_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$V" in v*|libraries/*) echo "::error::pass the bare version"; exit 1 ;; esac
+          case "$V" in *-*) T=next ;; *) T=latest ;; esac
+          for attempt in 1 2 3 4 5 6; do
+            CORE="$(npm view "@superbee/core@$V" version 2>/dev/null || true)"
+            SERVER="$(npm view "@superbee/server@$V" version 2>/dev/null || true)"
+            CORE_TAG="$(npm view @superbee/core "dist-tags.$T" 2>/dev/null || true)"
+            SERVER_TAG="$(npm view @superbee/server "dist-tags.$T" 2>/dev/null || true)"
+            [ "$CORE" = "$V" ] && [ "$SERVER" = "$V" ] && [ "$CORE_TAG" = "$V" ] && [ "$SERVER_TAG" = "$V" ] && break
+            echo "registry not settled yet (attempt $attempt)"; sleep 10
+          done
+          test "$CORE" = "$V" || { echo "::error::npm does not serve @superbee/core@$V"; exit 1; }
+          test "$SERVER" = "$V" || { echo "::error::npm does not serve @superbee/server@$V"; exit 1; }
+          test "$CORE_TAG" = "$V" || { echo "::error::@superbee/core $T points at $CORE_TAG, expected $V"; exit 1; }
+          test "$SERVER_TAG" = "$V" || { echo "::error::@superbee/server $T points at $SERVER_TAG, expected $V"; exit 1; }
+          echo "DIST_TAG=$T" >> "$GITHUB_ENV"
+      - name: Download the exact published bytes
+        env:
+          V: ${{ inputs.version }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_RUNTIME_LIBRARIES_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          npm pack "@superbee/core@$V" --ignore-scripts --json --pack-destination out > core-pack.json
+          npm pack "@superbee/server@$V" --ignore-scripts --json --pack-destination out > server-pack.json
+          echo "CORE_TGZ=$(node -p 'require("./core-pack.json")[0].filename')" >> "$GITHUB_ENV"
+          echo "SERVER_TGZ=$(node -p 'require("./server-pack.json")[0].filename')" >> "$GITHUB_ENV"
+      - name: Verify both source-bound build attestations
+        env:
+          V: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh attestation verify "out/$CORE_TGZ" -R "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-libraries.yml" \
+            --source-ref "refs/tags/libraries/v$V"
+          gh attestation verify "out/$SERVER_TGZ" -R "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-libraries.yml" \
+            --source-ref "refs/tags/libraries/v$V"
+      - name: Verify registry manifests agree exactly
+        env:
+          V: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          tar -xOf "out/$CORE_TGZ" package/package.json > core-package.json
+          tar -xOf "out/$SERVER_TGZ" package/package.json > server-package.json
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFile } from "node:fs/promises";
+          const version = process.env.V;
+          const core = JSON.parse(await readFile("core-package.json", "utf8"));
+          const server = JSON.parse(await readFile("server-package.json", "utf8"));
+          assert.equal(core.name, "@superbee/core");
+          assert.equal(server.name, "@superbee/server");
+          assert.equal(core.version, version);
+          assert.equal(server.version, version);
+          assert.equal(server.dependencies["@superbee/core"], version);
+          for (const manifest of [core, server]) {
+            assert.deepEqual(manifest.publishConfig, { access: "restricted", registry: "https://registry.npmjs.org/" });
+            assert.equal(manifest.private, undefined);
+          }
+          NODE
+      - name: Record the completed read-only verification
+        env:
+          V: ${{ inputs.version }}
+        run: |
+          {
+            echo "## Runtime library set $V verified"
+            echo ""
+            echo "- @superbee/core@$V (\`$(sha256sum "out/$CORE_TGZ" | cut -d' ' -f1)\`)"
+            echo "- @superbee/server@$V (\`$(sha256sum "out/$SERVER_TGZ" | cut -d' ' -f1)\`)"
+            echo "- dist-tag: \`$DIST_TAG\`"
+            echo "- source: \`refs/tags/libraries/v$V\`"
+          } >> "$GITHUB_STEP_SUMMARY"

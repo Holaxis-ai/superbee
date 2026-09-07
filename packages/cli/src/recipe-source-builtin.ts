@@ -1,7 +1,8 @@
 // Built-in recipes are an acquisition adapter: they materialize the same RecipeFile[] shape an
 // external source supplies, then delegate all interpretation to parseRecipeFiles.
 import { kindConventionDoc, stringifyDoc } from "@superbee/core";
-import { parseRecipeFiles, type LoadedRecipe, type RecipeFile, type RecipeSource } from "./recipe-parser.js";
+import { parseRecipeFiles, type LoadedRecipe, type RecipeFile } from "@superbee/core/recipes";
+import type { RecipeSource } from "./recipe-source-contract.js";
 import { looksLikeRecipePath } from "./recipe-ref.js";
 import {
   CONTEXT_NOTE_KIND,

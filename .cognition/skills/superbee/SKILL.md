@@ -46,6 +46,11 @@ becoming a second source of truth. Add only the layer justified by current evide
 
 - Operate only on the bundle resolved from the current project or one the user explicitly selects.
   A catalog entry is available for selection; it is not ambient project context.
+- Before remote publication, ask whether the intended remote repository exists, then whether
+  `origin/board` exists. If either is unknown, stop remote mutation and diagnose access.
+- Superbee does not create the remote repository. If absence is confirmed, create it externally if authorized, or ask an authorized owner/teammate.
+- On an existing repository without `board`, establishment needs consent, repository-specific Write access,
+  and branch-create policy clearance; creation authority is irrelevant. If `origin/board` exists, join with `superbee sync`; never establish another board.
 - If no bundle resolves, determine whether this repository already shares a board and clarify the
   intended purpose, privacy, participants, and sharing boundary before creating anything.
   `superbee sync` joins an existing shared board; `superbee init --create-only --dir .superbee` is

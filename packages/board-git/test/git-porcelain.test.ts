@@ -1334,6 +1334,19 @@ test("classifyGitError: non-fast-forward push signals → actionable retry", () 
   }
 });
 
+test("classifyGitError: stable remote rejection syntax stays provider-neutral", () => {
+  for (const stderr of [
+    "To github.com:x/y.git\n ! [remote rejected] board -> board (pre-receive hook declined)",
+    "remote: policy declined this update\n! [remote rejected] board -> board (pre-receive hook declined)",
+  ]) {
+    const err = classifyGitError({ args: ["push"], status: 1, stdout: "", stderr });
+    assert.equal(err.code, "RUNTIME", stderr);
+    assert.deepEqual(err.details, { op: "push", reason: "remote-rejected", best_effort: true });
+    assert.match(err.message, /remote policy, branch rule, or server-side hook may be responsible/);
+    assert.doesNotMatch(err.message, /GitHub ruleset/i);
+  }
+});
+
 test("classifyGitError: unmerged-paths signals → CONFLICT; detached HEAD names the state", () => {
   const conflict = classifyGitError({
     args: ["merge"],

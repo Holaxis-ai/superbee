@@ -134,6 +134,9 @@ export async function buildCliBundle(outfile, options) {
       "jsonc-parser": r("../../node_modules/jsonc-parser/lib/esm/main.js"),
       // List browser-safe core subpaths before the package root so esbuild does not append the
       // subpath to `index.ts` (which would resolve as the impossible `index.ts/page`).
+      "@superbee/core/engine": r("../core/src/engine.ts"),
+      "@superbee/core/recipes": r("../core/src/recipes.ts"),
+      "@superbee/core/storage": r("../core/src/storage.ts"),
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
@@ -203,6 +206,20 @@ export async function buildPublicationBundle(outfile, surface = "full") {
           : "const require = ___createRequire('file:///superbee-publication-bridge.mjs');",
       ].join("\n"),
     },
+    logLevel: "info",
+  });
+}
+
+/** Bundle the stable `superbee/bundle-descriptor` subpath with zero runtime dependencies. */
+export async function buildBundleDescriptorBundle(outfile) {
+  await build({
+    absWorkingDir: pkgRoot,
+    entryPoints: [r("../bundle-descriptor/src/index.ts")],
+    outfile,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node20",
     logLevel: "info",
   });
 }

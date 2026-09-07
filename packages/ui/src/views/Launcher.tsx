@@ -101,15 +101,15 @@ export function sharingChip(sharing: SharingSummary | null): { text: string; cla
 }
 
 /** The "where is this?" panel's sharing detail sentence (fuller than the chip; same truth rules). */
-function sharingDetail(sharing: SharingSummary | null): string {
+export function sharingDetail(sharing: SharingSummary | null): string {
   if (sharing === null) return "no sharing information for this bundle";
   switch (sharing.kind) {
     case "private":
       return "not shared — stays here until you run superbee sync --establish, or commit it with your code";
     case "private_local_branch":
-      return "a local board branch exists but has never been pushed — superbee sync shares it";
+      return "a local board branch exists but has never been pushed — first publication uses superbee sync --establish";
     case "private_intree_no_remote":
-      return "committed with the code, but this repo has no remote — pushing the repo shares it";
+      return "committed with the code, but this repo has no remote — connect an existing remote repository and configure its upstream before normal Git publication";
     case "private_intree_not_pushed":
       return "committed with the code, but no upstream evidence it has been shared — your next git push shares it";
     case "shared_branch":

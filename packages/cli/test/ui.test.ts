@@ -23,6 +23,13 @@ import { CliError } from "../src/errors.js";
 import { BUNDLE_NAME_DOC_ID, BUNDLE_NAME_DOC_TYPE } from "../src/bundle-name.js";
 import { CONVENTIONAL_BUNDLE_DIR_NAME } from "../src/bundle.js";
 
+test("abandon is rejected outside ui stop before opening a bundle or listener", async () => {
+  const usage = (error: unknown) => error instanceof CliError && error.code === "USAGE" && /abandon/.test(error.message);
+  await assert.rejects(() => ui(["--abandon", "--dir", "/missing/probe-bundle"]), usage);
+  await assert.rejects(() => ui(["--status", "--abandon", "--dir", "/missing/probe-bundle"]), usage);
+  await assert.rejects(() => docOpen(["docs/core", "--abandon", "--remote", "http://127.0.0.1:1"]), usage);
+});
+
 async function makeFixtureBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-ui-test-"));
   await initBundle(dir);

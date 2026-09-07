@@ -30,6 +30,7 @@ import {
   MIN_SHARING_REFRESH_DELAY_MS,
   orientationStorageKey,
   sharingChip,
+  sharingDetail,
   sharingRefreshDelay,
 } from "./Launcher.js";
 import { fetchConfig, listPages, type SharingSummary, type UiConfig } from "../api/pages.js";
@@ -612,6 +613,23 @@ describe("sharingChip truth table (the SPA owns the words; every state row pinne
   it("an unknown future kind refuses honestly instead of fabricating", () => {
     const chip = sharingChip({ kind: "surprise" as SharingSummary["kind"], as_of: asOf });
     expect(chip!.text).toBe("sharing status unavailable");
+  });
+});
+
+describe("sharing details name the real publication prerequisites", () => {
+  const asOf = "2026-07-21T12:00:00.000Z";
+
+  it("routes an unpublished local board through explicit establishment", () => {
+    const detail = sharingDetail({ kind: "private_local_branch", as_of: asOf });
+    expect(detail).toContain("superbee sync --establish");
+    expect(detail).not.toContain("superbee sync shares it");
+  });
+
+  it("does not imply that pushing an in-tree bundle provisions a missing remote", () => {
+    const detail = sharingDetail({ kind: "private_intree_no_remote", as_of: asOf });
+    expect(detail).toContain("existing remote repository");
+    expect(detail).toContain("upstream");
+    expect(detail).not.toContain("pushing the repo shares it");
   });
 });
 

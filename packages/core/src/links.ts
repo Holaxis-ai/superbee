@@ -75,10 +75,6 @@ export interface RawLink {
   href: string;
 }
 
-// Non-image markdown links: `[text](href)` where href has no spaces. The image
-// form `![alt](src)` is filtered out by checking the char preceding `[`.
-const MD_LINK_RE = /\[([^\]]*)\]\(([^)\s]+)\)/g;
-
 /** True for links that never become concept edges (external / mail / in-page anchors). */
 export function isExternalHref(href: string): boolean {
   const h = href.trim();
@@ -88,10 +84,54 @@ export function isExternalHref(href: string): boolean {
 /** Extract every non-image markdown link from a body, in document order. */
 export function extractMarkdownLinks(body: string): RawLink[] {
   const out: RawLink[] = [];
-  for (const m of body.matchAll(MD_LINK_RE)) {
-    // Skip image links: `![alt](src)`.
-    if (typeof m.index === "number" && m.index > 0 && body[m.index - 1] === "!") continue;
-    out.push({ text: m[1] ?? "", href: m[2] ?? "" });
+  let textOpen = -1;
+  let afterClose: { open: number; close: number } | undefined;
+  let hrefFirst: { open: number; close: number; hrefStart: number } | undefined;
+  let hrefRest: { open: number; close: number; hrefStart: number } | undefined;
+
+  for (let cursor = 0; cursor < body.length; cursor++) {
+    const char = body[cursor]!;
+
+    // This is a constant-state simulation of the former
+    // /\[([^\]]*)\]\(([^)\s]+)\)/g expression. Keeping only the earliest
+    // candidate in each state preserves the regex's leftmost-first behavior
+    // without backtracking over hostile input.
+    if (hrefRest) {
+      if (char === ")") {
+        if (hrefRest.open === 0 || body[hrefRest.open - 1] !== "!") {
+          out.push({
+            text: body.slice(hrefRest.open + 1, hrefRest.close),
+            href: body.slice(hrefRest.hrefStart, cursor),
+          });
+        }
+        textOpen = -1;
+        afterClose = undefined;
+        hrefFirst = undefined;
+        hrefRest = undefined;
+        continue;
+      }
+      if (char.trim() === "") hrefRest = undefined;
+    }
+
+    if (hrefFirst) {
+      if (char !== ")" && char.trim() !== "" && !hrefRest) {
+        hrefRest = hrefFirst;
+      }
+      hrefFirst = undefined;
+    }
+
+    if (afterClose) {
+      if (char === "(") {
+        hrefFirst = { ...afterClose, hrefStart: cursor + 1 };
+      }
+      afterClose = undefined;
+    }
+
+    if (textOpen >= 0 && char === "]") {
+      afterClose = { open: textOpen, close: cursor };
+      textOpen = -1;
+    }
+    if (char === "[" && textOpen < 0) textOpen = cursor;
   }
   return out;
 }

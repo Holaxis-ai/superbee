@@ -35,9 +35,12 @@ import {
   ffSwallowToError,
   pickHelp,
   pushFailureMessage,
+  PUSH_FAIL_ACCESS_MESSAGE,
+  buildPushFailurePartial,
   sync,
   toIncomingRows,
   PUSH_FAIL_SAFETY_MESSAGE,
+  PUSH_FAIL_NETWORK_MESSAGE,
   SYNC_LOCAL_ONLY_MESSAGE,
   SYNC_REMOTE_STATE_UNKNOWN_MESSAGE,
   syncLocalOnlyNote,
@@ -53,6 +56,7 @@ import {
 import { cliInvocation } from "../src/invocation.js";
 import { doc } from "../src/commands/doc.js";
 import { CliError } from "../src/errors.js";
+import { render } from "../src/output.js";
 import { REANCHOR_NOTE, readSyncState, bundleKey, syncExportsDir, syncStateDir, writeCursor } from "../src/cursor.js";
 import {
   BOARD_BRANCH,
@@ -373,16 +377,86 @@ test("ffSwallowToError: auth is exit 4, network/busy/dirty/diverged classify sen
   assert.equal(ffSwallowToError("totally-unknown-reason", testInvocation("aslite")).code, "RUNTIME");
 });
 
-test("pushFailureMessage: auth and connectivity failures get the exact pinned safety string", () => {
+test("pushFailureMessage: only contextualized update pushes get permission-aware exact guidance", () => {
   const auth = new CliError("AUTH_REQUIRED", "git push was denied access to the remote");
   const network = new CliError("TRANSIENT", "git push could not reach the remote — offline; retry");
-  assert.equal(pushFailureMessage(auth), PUSH_FAIL_SAFETY_MESSAGE);
-  assert.equal(pushFailureMessage(network), PUSH_FAIL_SAFETY_MESSAGE);
+  const sharing = {
+    operation: "update-board",
+    remote_repository: "exists-confirmed",
+    remote_board: "exists-confirmed",
+    repository_creation: "irrelevant",
+    required_authority: "repository-write-and-board-update-policy",
+    local_work: "committed",
+    cause_certainty: "best-effort",
+    possible_causes: ["authentication", "repository-write", "branch-policy"],
+  };
+  const contextualAuth = new CliError("AUTH_REQUIRED", auth.message, { details: { sharing } });
+  const contextualNetwork = new CliError("TRANSIENT", network.message, {
+    details: { sharing: { ...sharing, possible_causes: ["network"] } },
+  });
+  assert.equal(pushFailureMessage(contextualAuth), PUSH_FAIL_ACCESS_MESSAGE);
+  assert.equal(pushFailureMessage(contextualNetwork), PUSH_FAIL_NETWORK_MESSAGE);
+  assert.equal(pushFailureMessage(auth), PUSH_FAIL_SAFETY_MESSAGE, "pre-push fetch failures retain established copy");
+  assert.equal(pushFailureMessage(network), PUSH_FAIL_SAFETY_MESSAGE, "pre-push fetch failures retain established copy");
   assert.equal(
-    PUSH_FAIL_SAFETY_MESSAGE,
-    "committed to the board locally — your work is saved. The push failed (offline or auth); " +
-      "re-run sync when you're back online or your access is restored.",
+    PUSH_FAIL_ACCESS_MESSAGE,
+    "committed to the board locally — your work is saved. The remote did not accept the update " +
+      "to origin/board. Verify the active HTTPS/SSH identity, repository-specific Write access, and " +
+      "board-update policy; re-run sync only after one of those conditions changes.",
   );
+  assert.doesNotMatch(PUSH_FAIL_ACCESS_MESSAGE, /repository creat/i);
+  assert.doesNotMatch(PUSH_FAIL_NETWORK_MESSAGE, /Write access|repository creat/i);
+});
+
+test("pushFailureMessage: provider-neutral remote rejection names policy/rule/hook without GitHub certainty", () => {
+  const rejected = new CliError("RUNTIME", "rejected", {
+    details: {
+      op: "push",
+      reason: "remote-rejected",
+      best_effort: true,
+      sharing: { operation: "update-board" },
+    },
+  });
+  const message = pushFailureMessage(rejected);
+  assert.match(message, /remote policy, branch rule, or server-side hook may be responsible/);
+  assert.doesNotMatch(message, /GitHub ruleset/i);
+  assert.doesNotMatch(message, /repository creat/i);
+});
+
+test("push-failure partial carries the same sharing projection in its top-level details carrier", () => {
+  const details = {
+    op: "push",
+    best_effort: true,
+    sharing: {
+      operation: "update-board",
+      remote_repository: "exists-confirmed",
+      remote_board: "exists-confirmed",
+      repository_creation: "irrelevant",
+      required_authority: "repository-write-and-board-update-policy",
+      local_work: "committed",
+      cause_certainty: "best-effort",
+      possible_causes: ["authentication", "repository-write", "branch-policy"],
+    },
+  };
+  const partial = buildPushFailurePartial(
+    { kind: "already", boardPath: "/repo/.superbee" },
+    PUSH_FAIL_ACCESS_MESSAGE,
+    [],
+    [],
+    20,
+    undefined,
+    details,
+  );
+  assert.strictEqual(partial.details, details);
+  assert.equal((partial.details as typeof details).sharing.operation, "update-board");
+  assert.equal(partial.pushed, 0);
+  const json = JSON.parse(render(partial, "json")) as typeof partial;
+  assert.deepEqual(json.details, details);
+  const toon = render(partial, "default");
+  assert.match(toon, /operation: update-board/);
+  assert.match(toon, /remote_repository: exists-confirmed/);
+  assert.match(toon, /repository_creation: irrelevant/);
+  assert.match(toon, /local_work: committed/);
 });
 
 test("pushFailureMessage: a non-fast-forward TRANSIENT keeps its actionable retry guidance", () => {
@@ -1137,6 +1211,13 @@ test("sync: push-fail after a successful commit -> PARTIAL envelope leading with
     assert.match(result.out, /committed to the board locally — your work is saved\./);
     assert.match(result.out, /committed: 1/);
     assert.match(result.out, /pushed: 0/);
+    assert.match(result.out, /details:/);
+    assert.match(result.out, /operation: update-board/);
+    assert.match(result.out, /remote_repository: exists-confirmed/);
+    assert.match(result.out, /remote_board: exists-confirmed/);
+    assert.match(result.out, /repository_creation: irrelevant/);
+    assert.match(result.out, /local_work: committed/);
+    assert.doesNotMatch(result.out, /repository creation permission/i);
 
     // The commit really landed locally, just never reached origin.
     const after = boardHead(topo.a);

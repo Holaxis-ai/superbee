@@ -15,10 +15,10 @@ The reference `serve()` implementation has **no authentication or authorization*
 machine; it does not protect against another process or user on the same machine. Passing a
 non-loopback `host` exposes the same unauthenticated server and is not a production deployment.
 
-A production host must put authentication, authorization, transport security, request limits, and
-principal attribution in front of the router. It must strip client-supplied `X-Agent` and set that
-header only after authentication if it wants trustworthy agent attribution. On the reference server,
-both `X-Actor` and `X-Agent` are advisory, client-controlled strings.
+A production host uses `@superbee/server/router`, whose context resolver authenticates and
+authorizes the one canonical resolved bundle route, then returns a bundle-bound backend and trusted
+attribution. That router ignores client-supplied `X-Actor` and `X-Agent`; the Node package-root
+reference adapter retains both as advisory, client-controlled strings for compatibility.
 
 `RemoteBackend` can send `Authorization: Bearer <token>` on every request, but that capability does
 not make the reference server enforce it. A gated deployment owns the meaning of that token.
@@ -27,6 +27,18 @@ not make the reference server enforce it. A gated deployment owns the meaning of
 
 - Paths are `/v0/bundles/{bundle}/...`. The reference router closes over one backend: it accepts
   any syntactically valid `{bundle}` segment but does not use it to select among bundles.
+- The Worker-safe `@superbee/server/router` subpath instead requires exactly `bnd_` plus 32
+  lowercase hexadecimal characters. Its public resolver rejects labels, aliases, uppercase ids,
+  percent escapes, encoded slash or backslash, and empty or repeated bundle segments before the
+  trusted context resolver can run. `GET /v0/capabilities` is deployment-scoped and bypasses that
+  resolver and storage.
+- `resolveWireRequest(Request)` governs the normalized `pathname` exposed by the Fetch/WHATWG URL
+  API. An adapter that can inspect an HTTP request-target before URL normalization may enforce
+  stricter raw-target rules separately. The Fetch router does not reconstruct raw bytes that the
+  platform no longer exposes. Encoded separators and malformed bundle tokens that survive
+  normalization are rejected. Normalized-away dot forms are outside this router's observable
+  boundary and can become a canonical route (for example, `/bundles/./bnd_.../docs`); rejecting
+  their raw spelling requires an upstream adapter with request-target access.
 - Document IDs and blob keys may contain `/`; clients encode each segment independently. Every
   route validates decoded IDs/keys before backend access. Document IDs cannot address reserved
   `index.md` or `log.md`; blob keys cannot end in `.md` and reject absolute, traversal, and
@@ -118,19 +130,23 @@ the blob channel cannot become an accidental bypass around document parsing and 
 
 ## Behavior evidence
 
-The router's sole raw URL/method boundary dispatches through its exported `WIRE_ENDPOINTS` registry.
+The router's sole raw URL/method boundary dispatches through its exported `WIRE_ENDPOINTS` registry,
+whose rows own endpoint id, method, path template, resource kind, and access class. The public
+resolver returns either a deployment-scoped capability route or a bundle-scoped route carrying the
+canonical bundle id, endpoint id, access class, and decoded resource. The Worker router passes that
+same object to its context resolver once and dispatches through the returned bound backend.
 The contract test pins that boundary, requires the exact endpoint table above to match the runtime
 registry, and validates every source/test anchor in this proof table. The referenced behavioral
 suites exercise the semantics through the router, `RemoteBackend`, and a real socket.
 
 | ID | Contract area | Implementation evidence | Behavioral proof |
 | --- | --- | --- | --- |
-| WIRE-PROOF-01 | Capabilities and single-backend routing. | `packages/server/src/router.ts::pathname === "/v0/capabilities"` | `packages/core/test/wire-protocol.test.ts::GET /v0/capabilities reports` |
-| WIRE-PROOF-02 | Document collection, projections, filters, cursors, and read-many. | `packages/server/src/router.ts::rest === "docs:read-many"` | `packages/core/test/wire-protocol.test.ts::GET /docs list endpoint carries count` |
+| WIRE-PROOF-01 | Capabilities and single-backend routing. | `packages/server/src/router.ts::id: "capabilities"` | `packages/core/test/wire-protocol.test.ts::GET /v0/capabilities reports` |
+| WIRE-PROOF-02 | Document collection, projections, filters, cursors, and read-many. | `packages/server/src/router.ts::id: "docs-read-many"` | `packages/core/test/wire-protocol.test.ts::GET /docs list endpoint carries count` |
 | WIRE-PROOF-03 | Document member read/write/head/delete and version headers. | `packages/server/src/router.ts::id: "doc-delete"` | `packages/core/test/wire-protocol.test.ts::raw DELETE /docs/{id} response shape` |
-| WIRE-PROOF-04 | History and attribution payload. | `packages/server/src/router.ts::tail.endsWith("/versions")` | `packages/core/test/wire-protocol.test.ts::GET /docs/{id}/versions returns` |
+| WIRE-PROOF-04 | History and attribution payload. | `packages/server/src/router.ts::case "doc-versions"` | `packages/core/test/wire-protocol.test.ts::GET /docs/{id}/versions returns` |
 | WIRE-PROOF-05 | Reserved file get/put only. | `packages/server/src/router.ts::reserved file name must be index.md or log.md` | `packages/core/test/wire-protocol.test.ts::reserved files have no delete route` |
-| WIRE-PROOF-06 | Blob collection and raw byte member routes. | `packages/server/src/router.ts::rest.startsWith("blobs/")` | `packages/core/test/wire-protocol.test.ts::REAL socket GET returns EXACT bytes` |
+| WIRE-PROOF-06 | Blob collection and raw byte member routes. | `packages/server/src/router.ts::case "blob-read"` | `packages/core/test/wire-protocol.test.ts::REAL socket GET returns EXACT bytes` |
 | WIRE-PROOF-07 | Reference server is loopback by default and unauthenticated. | `packages/server/src/serve.ts::NO AUTH in v0` | `packages/core/test/wire-protocol.test.ts::serve() boots a real node:http listener` |
 | WIRE-PROOF-08 | Remote canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/doc/common.ts::canonical OKF re-serialization` | `packages/cli/test/remote.test.ts::canonical re-serialization is byte-identical` |
 | WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/cli/test/remote-auth.test.ts::response stripped of BOTH version headers` |
@@ -139,7 +155,8 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 
 These are current limitations, not promises that a client may paper over:
 
-1. The `{bundle}` segment does not select among multiple bundles in the reference router.
+1. The Node package-root reference adapter remains single-backend and does not select among
+   bundles. Explicit bundle selection belongs to the Worker-safe subpath's host context resolver.
 2. A document whose final path segment is literally `versions` is ambiguous with the history
    subresource.
 3. There is no original-document-byte endpoint. Canonical JSON reconstruction is the only remote

@@ -184,6 +184,9 @@ shape.
 
 ## Build and package
 
+For in-process recipe parsing and record checks, see the
+[core recipe validation API](packages/core/RECIPES.md).
+
 `npm run build` produces sibling package outputs and bundles the CLI at
 `packages/cli/dist/superbee.mjs`; a package-scoped build can leave imported sibling outputs stale.
 Use `./superbee` for in-repository CLI journeys. At minimum, exercise `init`, `doc write` and
@@ -194,6 +197,14 @@ behavior changes.
 zero-runtime-dependency boundary, and offline create/query journey. `npm run check:skill -w
 superbee` proves that the generated npm Agent Skill bytes match their source. Release publication
 has a separate action-time contract; passing either check does not authorize publishing.
+
+`npm run verify:runtime-libraries` consumes the fixed `out/superbee-core.tgz` and
+`out/superbee-server.tgz` pair and proves synchronized restricted metadata, the exact
+server-to-core dependency, and a Worker-safe external consumer. It never builds or repacks the
+supplied artifacts. The dedicated
+`libraries/v<version>` workflow is the only automated release path for that pair.
+Its finalizer receives only `NPM_RUNTIME_LIBRARIES_READ_TOKEN`, a granular read-only token scoped to
+the two restricted packages; build and staging jobs never receive that credential.
 
 ## OKF compatibility
 

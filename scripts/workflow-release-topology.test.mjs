@@ -45,7 +45,9 @@ test("payload code runs only in the credential-free build job; staging runs no p
   assert.match(build, /^ {4}permissions:\n {6}contents: read\n {6}checks: read$/m, "build holds only contents: read plus checks: read for the CI verdict");
   assert.doesNotMatch(build, /id-token|environment:|secrets\./, "build must not mint OIDC tokens or see environment secrets");
   assert.match(build, /npm ci --ignore-scripts/, "dependency lifecycle scripts stay off in the release build");
-  assert.match(build, /compare\/main\.\.\.\$GITHUB_SHA[\s\S]*case "\$REL" in identical\|behind\) ;; \*\)/, "the tag must point at a commit already on main");
+  assert.match(build, /case "\$V" in\n\s+\*-\*\) SOURCE_REF=main ;;\n\s+\*\) SOURCE_REF="release\/\$V" ;;/, "prereleases must use main and stable versions their named release branch");
+  assert.match(build, /compare\/\$SOURCE_REF\.\.\.\$GITHUB_SHA[\s\S]*case "\$REL" in identical\|behind\) ;; \*\)/, "the tag must point at an allowed source ref");
+  assert.match(build, /No other branch can feed staging\./, "only main or the exact stable release branch may feed staging");
   assert.doesNotMatch(build, /npm view[^\n]*\|\| true/, "registry reads must fail closed, never fall through");
   assert.match(build, /npm run build:npm-package -w superbee/, "the release build runs through npm (npm_execpath)");
   assert.match(build, /npm run --silent pack:npm-package -- --pack-destination out/, "the release pack embeds exact npm-page metadata before creating the retained tarball");
@@ -73,15 +75,16 @@ test("the build consumes the exact-source CI verdict and refuses to build withou
   assert.match(build, /sort_by\(\.started_at\) \| last/, "the newest run decides; an older success must never outvote a newer failure");
   assert.match(build, /\$r\.conclusion == "success" then "success"/, "only a success conclusion may allow; cancelled/skipped/neutral are refusals");
   assert.match(build, /refusing to build without the CI verdict"; exit 1; \}/, "an unqueryable verdict must refuse with exit 1, not warn");
-  assert.match(build, /fix CI on main before tagging"; exit 1 ;;/, "a non-success conclusion must refuse with exit 1 immediately");
+  assert.match(build, /fix CI on \$SOURCE_REF before tagging"; exit 1 ;;/, "a non-success conclusion must refuse with exit 1 immediately");
   assert.match(
     build,
     /test "\$VERDICT" = "success" \|\| \{ [^\n]*exit 1; \}/,
     "the post-loop backstop must require success with exit 1 — without it a poll exhaustion falls through to the build",
   );
+  assert.match(build, /wait for or dispatch CI on \$SOURCE_REF, then re-push the tag/, "the missing-verdict recovery must name the selected source ref");
   const gate = build.indexOf("check-runs?check_name");
   assert.ok(gate !== -1 && gate < build.indexOf("npm run build:npm-package"), "the verdict gate must precede the package build");
-  assert.ok(build.indexOf("compare/main...$GITHUB_SHA") < gate, "tag-on-main is established before its verdict is consulted");
+  assert.ok(build.indexOf("compare/$SOURCE_REF...$GITHUB_SHA") < gate, "tag source is established before its verdict is consulted");
   assert.doesNotMatch(release, /workflow_dispatch|ci-tests\.yml/, "release.yml must consume the recorded verdict, never trigger CI itself");
 });
 
