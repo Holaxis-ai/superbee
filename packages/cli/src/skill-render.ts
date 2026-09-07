@@ -78,6 +78,7 @@ export function renderNpm(): string {
   lines.push("  explicit publication decision.");
   lines.push("- Never silently rewrite an established Kind, recipe, or its instances. Inspect dependencies and");
   lines.push("  explain migration consequences first.");
+  lines.push("- Writes carry an actor (`--actor`/`SUPERBEE_ACTOR`); OKF v0.2 bundles accept only `human:<id>`, `process:<id>`, or `<producer>/<version>` (e.g. `openai/codex`); a bare name is refused with the fix.");
   lines.push("");
   lines.push("## Deliver after acceptance");
   lines.push("");

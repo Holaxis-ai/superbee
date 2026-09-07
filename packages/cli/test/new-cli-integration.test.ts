@@ -210,7 +210,7 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
       { encoding: "utf8" },
     );
     assert.equal(invalid.status, 2, `stdout=${invalid.stdout} stderr=${invalid.stderr}`);
-    assert.match(invalid.stdout, /OKF v0\.2 mutation actor 'codex-root'/);
+    assert.match(invalid.stdout, /'codex-root' is not an OKF actor.*process:codex-root/);
     await assert.rejects(() => readDoc(bundle, "tasks/invalid-actor"));
 
     const invalidFromEnv = spawnSync(
@@ -219,7 +219,7 @@ test("built CLI new maps logical progress_status to the producer-qualified v0.2 
       { encoding: "utf8", env: { ...process.env, SUPERBEE_ACTOR: "codex-root" } },
     );
     assert.equal(invalidFromEnv.status, 2, `stdout=${invalidFromEnv.stdout} stderr=${invalidFromEnv.stderr}`);
-    assert.match(invalidFromEnv.stdout, /OKF v0\.2 mutation actor 'codex-root'/);
+    assert.match(invalidFromEnv.stdout, /'codex-root' is not an OKF actor.*process:codex-root/);
     await assert.rejects(() => readDoc(bundle, "tasks/invalid-env-actor"));
   } finally {
     await rm(dir, { recursive: true, force: true });

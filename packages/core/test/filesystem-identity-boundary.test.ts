@@ -153,7 +153,7 @@ test("N1: index.ts exports exactly the allowlisted names from the storage module
   });
   assert.equal(exported.has("./filesystem-identity.js"), false, "the identity module is not exported at all");
   assert.deepEqual(sorted(exported.get("./errors.js")), {
-    values: ["ConcurrentReplacementError", "FilesystemIdentityAliasError", "InvalidInputError"],
+    values: ["ConcurrentReplacementError", "FilesystemIdentityAliasError", "InvalidInputError", "OkfActorError"],
     types: [],
   });
 });

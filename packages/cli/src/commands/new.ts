@@ -104,6 +104,8 @@ Options:
                          (mutually exclusive with --dir; remote access is always explicit)
   --actor <name>         Attribute this write using the bundle's compatible advisory field, used
                          by per-doc sync receipts and version history for a persisting backend.
+                         On an OKF v0.2 bundle the value must be an OKF actor (human:<id>,
+                         process:<id>, or <producer>/<version> such as openai/codex).
                          Precedence: --actor > SUPERBEE_ACTOR >
                          legacy AGENTSTATE_LITE_ACTOR > absent. A present-but-blank flag or
                          environment value is a USAGE error (exit 2).
@@ -345,7 +347,8 @@ function renderKindHelp(
     `Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT.\n` +
     `To ADD a field to this kind, edit its convention doc (${inv} kinds names it; then pull → edit fields.optional → promote).\n\n` +
     `Options:\n` +
-    `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported)\n` +
+    `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).\n` +
+    `                   OKF v0.2 bundles accept only human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)\n` +
     `  --body <markdown>\n` +
     `                   Use inline Markdown as the complete initial body; mutually exclusive with\n` +
     `                   --body-file\n` +

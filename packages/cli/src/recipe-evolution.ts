@@ -8,6 +8,7 @@ import {
   CONVENTIONS_PREFIX,
   DocumentNotFoundError,
   InvalidInputError,
+  OkfActorError,
   VersionConflict,
   applyV02MutationMetadata,
   blobVersion,
@@ -760,7 +761,9 @@ export async function applyRecipeEvolution(
           { details: { completed, pending } },
         );
       }
-      if (error instanceof InvalidInputError) {
+      // An actor rejection is a usage error with a corrected spelling (classifyBundleError), not a
+      // post-preflight conflict; every other typed input rejection keeps the CONFLICT contract.
+      if (error instanceof InvalidInputError && !(error instanceof OkfActorError)) {
         throw new CliError(
           "CONFLICT",
           `recipe evolution write policy rejected '${definition.id}' after preflight: ${error.message}`,

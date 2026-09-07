@@ -58,7 +58,9 @@ Options:
   --remote <url>       Display a document from an explicit remote bundle
                        (mutually exclusive with --dir; remote access is always explicit)
   --port <p>           Require this port for a new managed UI (default: OS-assigned and then reused)
-  --actor <name>       Advisory identity for any later human-confirmed View actions in this UI
+  --actor <name>       Advisory identity for any later human-confirmed View actions in this UI.
+                       On an OKF v0.2 bundle a confirmed write needs an OKF actor: human:<id>,
+                       process:<id>, or <producer>/<version> (e.g. openai/codex)
   --json               Emit compact JSON instead of TOON
   -h, --help           Show this help
 
@@ -111,8 +113,12 @@ Options:
                        warnings when the doc does not satisfy it (default: warn-and-write, exit 0 —
                        see 'superbee kinds')
   --actor <name>       Attribute this write using the bundle's compatible advisory field, used by
-                       per-doc sync receipts and version history for a persisting backend. Note doc
-                       write is a FULL replace:
+                       per-doc sync receipts and version history for a persisting backend.
+                       OKF v0.2 bundles accept only an OKF actor: human:<id> for a person,
+                       process:<id> for a job or role-specific agent session, or <producer>/<version>
+                       for an agent or tool (e.g. openai/codex). Anything else is refused with the
+                       corrected spelling.
+                       Note doc write is a FULL replace:
                        omitting both --actor and the supported actor environment variables on an
                        overwrite drops any existing attribution field (reported in dropped_fields). Precedence:
                        --actor > SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. A
@@ -175,7 +181,9 @@ Options:
                          5), NOT retried. Omit for a normal (auto-retrying) update. A present-but-
                          blank value is a USAGE error (exit 2), not "no CAS".
   --actor <name>         Attribute a substantive patch using the bundle's compatible advisory field
-                         and thread it to version history (see 'doc history'). Precedence: --actor >
+                         and thread it to version history (see 'doc history'). On an OKF v0.2 bundle
+                         the value must be an OKF actor (human:<id>, process:<id>, or
+                         <producer>/<version> such as openai/codex). Precedence: --actor >
                          SUPERBEE_ACTOR > legacy AGENTSTATE_LITE_ACTOR > absent. Without a source,
                          Superbee applies the bundle's compatibility policy. An identical no-op
                          preserves exact bytes. Attribution is
@@ -279,7 +287,9 @@ person, process:<id> for an automated process, <producer>/<version> for an agent
 unattributed verification is refused: there is nobody to record.
 
 Options:
-  --actor <actor>        The verifier (also read from SUPERBEE_ACTOR). Must be an OKF actor.
+  --actor <actor>        The verifier (also read from SUPERBEE_ACTOR). Must be an OKF actor:
+                         human:<id> for a person, process:<id> for a job or role-specific session,
+                         <producer>/<version> for an agent or tool (e.g. openai/codex).
   --at <iso-8601>        The confirmation instant (default: now). Must carry a timezone designator
                          (Z or ±hh:mm); normalized to ISO-8601 UTC. A zone-less or date-only value
                          is refused as ambiguous across hosts.

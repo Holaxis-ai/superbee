@@ -61,7 +61,9 @@ Options:
   --remote <url>         Reverse-proxy /v0/* to a deployed remote instead (explicit only)
   --port <p>            Port to bind (default: 0 — an OS-assigned ephemeral port)
   --actor <name>        Advisory identity for human-confirmed local View actions. Precedence:
-                         --actor > SUPERBEE_ACTOR > AGENTSTATE_LITE_ACTOR (legacy) > absent.
+                         --actor > SUPERBEE_ACTOR > AGENTSTATE_LITE_ACTOR (legacy) > absent. On an
+                         OKF v0.2 bundle a confirmed write needs an OKF actor (human:<id>,
+                         process:<id>, or <producer>/<version>).
                          Read-only Views need none
   --open                Open the printed URL in a browser once the server is listening
   --status              List managed local document authorities for the selected bundle

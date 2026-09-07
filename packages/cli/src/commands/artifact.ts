@@ -31,7 +31,7 @@ import {
 import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag, type BoardAttribution } from "../bundle.js";
 import { mutateDoc } from "../mutate.js";
 import { boardPostPersistHook } from "../board-attribution.js";
-import { resolveActor } from "../actor.js";
+import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import { render, type OutputMode } from "../output.js";
 import { CliError } from "../errors.js";
 import { cliInvocation } from "../invocation.js";
@@ -56,7 +56,8 @@ Options:
   --supersedes <id>     Mark a prior artifact superseded and link this one 'supersedes' it
   --dir <path>          Operate on a local bundle at <path>
   --remote <url>        Operate on a remote bundle
-  --actor <name>        Attribute the write to <name>
+  --actor <name>        Attribute the write to <name>. OKF v0.2 bundles accept only an OKF actor:
+                        human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
   --json                TOON/JSON receipt
   -h, --help            Show this help`;
 
@@ -156,6 +157,9 @@ export async function artifact(argv: string[], deps: Partial<ArtifactCliDeps> = 
   const bundle: Bundle = route?.bundle ?? await openBundle(dir, remote);
   const attribution: BoardAttribution = route ? boardAttributionForRoute(route) : { kind: "none" };
   if (route) await assertResolvedLocalRouteIdentity(route);
+  // Before the blob is promoted: the record write would refuse a non-conforming actor, but by then
+  // the blob would already be on disk (an orphan) and the help would point at cleanup, not the fix.
+  await assertActorAcceptedByBundle(bundle, actor);
   const registry = await loadKinds(bundle);
 
   // Validate --supersedes UPFRONT, before any write: it must be an existing artifacts/ Artifact. This

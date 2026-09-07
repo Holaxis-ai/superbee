@@ -8,9 +8,10 @@
 // reach a command catch-all or fall all the way to `toExit`.
 //
 // The 0/1/2/4/5/6 exit taxonomy is PRESERVED intact from holaxis-agentstate.
-import { InvalidInputError, MalformedDocumentError, RemoteError, VersionConflict } from "@superbee/core";
+import { InvalidInputError, MalformedDocumentError, OkfActorError, RemoteError, VersionConflict } from "@superbee/core";
 import { isBoardGitError, type BoardGitError } from "@superbee/board-git";
 import { commandLiteral, commandToken } from "./command-text.js";
+import { actorRefusal } from "./actor-guidance.js";
 
 /** Stable, documented error codes. Finer than the exit table; rides alongside it in the envelope. */
 export type CliErrorCode =
@@ -196,6 +197,12 @@ export function toEnvelope(err: CliError): ErrorEnvelope {
 export function classifyBundleError(err: unknown, remoteUrl?: string): CliError {
   if (err instanceof CliError) return err;
   if (isBoardGitError(err)) return cliErrorFromBoardGit(err);
+  if (err instanceof OkfActorError) {
+    // Self-correcting: the refusal names the conforming spelling and the once-only env fix, so an
+    // agent on any machine repairs its own next command without a project instruction file.
+    const refusal = actorRefusal(err.actor);
+    return new CliError("USAGE", refusal.message, { help: refusal.help, details: { actor: err.actor } });
+  }
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);
   if (err instanceof MalformedDocumentError) return new CliError("RUNTIME", err.message);
   if (err instanceof VersionConflict) {

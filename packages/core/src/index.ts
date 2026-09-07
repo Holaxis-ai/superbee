@@ -88,7 +88,8 @@ export { freshness } from "./freshness.js";
 
 // OKF v0.2 trust: the one actor grammar and the one `verified` read/append policy every surface
 // (CLI receipts, status counts, list projection, the UI header) derives the trust tier through.
-export { isOkfActor, isHumanActor } from "./okf-actor.js";
+export { OKF_ACTOR_FORMS, isOkfActor, isHumanActor, suggestOkfActor } from "./okf-actor.js";
+export type { OkfActorSuggestion } from "./okf-actor.js";
 export {
   TRUST_TIERS,
   TRUST_TIER_FIELD,
@@ -248,7 +249,7 @@ export {
 // never on message prose. `FilesystemIdentityAliasError` is the alias verdict of the filesystem
 // adapter (a subclass, so it maps through the same branch); `ConcurrentReplacementError` is its
 // bounded-retry runtime condition.
-export { InvalidInputError, FilesystemIdentityAliasError, ConcurrentReplacementError } from "./errors.js";
+export { InvalidInputError, OkfActorError, FilesystemIdentityAliasError, ConcurrentReplacementError } from "./errors.js";
 export { applyV02MutationMetadata } from "./document-write-policy.js";
 
 // Kind conventions: a bundle-declared, opt-in document-kind

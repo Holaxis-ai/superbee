@@ -16,6 +16,20 @@ export class InvalidInputError extends Error {
 }
 
 /**
+ * An actor identity that does not follow the OKF actor convention (SPEC 7). A subclass of
+ * {@link InvalidInputError} so every existing USAGE mapping still applies; it additionally carries
+ * the rejected spelling so a presenting boundary can offer the corrected one.
+ */
+export class OkfActorError extends InvalidInputError {
+  readonly actor: string;
+  constructor(actor: string, message: string) {
+    super(message);
+    this.name = "OkfActorError";
+    this.actor = actor;
+  }
+}
+
+/**
  * The requested bundle-relative path resolves, on a case- or normalization-insensitive
  * filesystem, to a directory entry spelled differently at `segment`. Every operation refuses it
  * so two distinct canonical ids can never read, compare-and-swap, or delete one physical file.

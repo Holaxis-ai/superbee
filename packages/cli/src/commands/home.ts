@@ -68,6 +68,8 @@ import {
 } from "../bundle-name.js";
 import { CONVENTIONS_PREFIX, queryHeads, readBundleOkfVersion, type OkfDocument } from "@superbee/core";
 import { trustCountsRow, type TrustCountsRow } from "../trust.js";
+import { resolveActor } from "../actor.js";
+import { describeResolvedActor } from "../actor-guidance.js";
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
@@ -183,6 +185,8 @@ export interface BundleSummary {
   recent: { shown: number; total: number; rows: HomeRow[] };
   /** OKF v0.2 trust-tier counts (SPEC 5.3); absent on v0.1 or an empty bundle (see `trustCountsRow`). */
   trust?: TrustCountsRow;
+  /** The bundle's declared OKF edition, when the summarizer read it (drives the actor orientation line). */
+  okfVersion?: string | null;
 }
 
 /**
@@ -345,6 +349,7 @@ export function summarizeDocs(
       rows: rows.slice(0, HOME_RECENT_LIMIT),
     },
     ...(trust ? { trust } : {}),
+    ...(options.okfVersion === undefined ? {} : { okfVersion: options.okfVersion }),
   };
 }
 
@@ -789,6 +794,19 @@ function bundleOffers(
  * changing that block's shape otherwise. `bindingError` (a malformed binding file — never a thrown
  * exception, since home must never crash) renders as a standalone `project_binding_error` note.
  */
+/** Resolve the ambient actor without letting a blank env value crash orientation. */
+function resolvedActorLine(env: NodeJS.ProcessEnv): { actor: string; actor_help?: string } {
+  try {
+    const actor = resolveActor(undefined, { env });
+    return describeResolvedActor(actor === undefined ? { kind: "unset" } : { kind: "value", actor }, { env });
+  } catch (err) {
+    // The resolver refused the environment (a blank variable, or two that disagree): the write
+    // path will refuse it too, so surface the resolver's own diagnostic rather than "unset".
+    const diagnostic = err instanceof CliError ? err.message : String(err);
+    return describeResolvedActor({ kind: "unusable", diagnostic }, { env });
+  }
+}
+
 export function buildHomeView(
   deps: {
     binPath: () => string;
@@ -796,6 +814,8 @@ export function buildHomeView(
     identity?: () => { version: string; channel: ArtifactChannel };
     /** Preserve an explicit home --dir selector in every emitted mutating follow-up command. */
     targetDir?: string;
+    /** Environment the actor orientation line resolves SUPERBEE_ACTOR from (tests inject; default process.env). */
+    env?: NodeJS.ProcessEnv;
   },
   summary?: BundleSummary | UnreadableBundle | ConflictedBundle | null,
   remote?: string,
@@ -873,6 +893,12 @@ export function buildHomeView(
     bundleBlock.docs = summary.docs;
     bundleBlock.by_type = summary.byType;
     if (summary.trust) bundleBlock.trust = summary.trust;
+    // Actor orientation (OKF v0.2 only — v0.1 records free-form actors): the resolved identity and,
+    // when it would be refused, the corrected spelling BEFORE the first write fails. This is the
+    // one channel every SessionStart hook renders, so it reaches agents on hosts we never configure.
+    if (summary.okfVersion === "0.2") {
+      Object.assign(bundleBlock, resolvedActorLine(deps.env ?? process.env));
+    }
     const offers = bundleOffers(summary, deps, board);
     if (summary.docs > 0) {
       bundleBlock.recent = summary.recent;

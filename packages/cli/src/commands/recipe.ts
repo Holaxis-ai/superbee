@@ -13,6 +13,7 @@
 import { parseArgs } from "node:util";
 import { loadKinds } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
+import { assertActorAcceptedByBundle } from "../actor.js";
 import { CliError } from "../errors.js";
 import { parseLeafOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
@@ -56,7 +57,9 @@ Options:
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
   --apply <plan-token>  Apply the exact ready token returned by 'recipe evolve' (evolve only)
-  --actor <name>        Attribute evolved convention writes (evolve only)
+  --actor <name>        Attribute evolved convention writes (evolve only). OKF v0.2 bundles accept
+                        only an OKF actor: human:<id>, process:<id>, or <producer>/<version>
+                        (e.g. openai/codex)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;
@@ -131,6 +134,9 @@ async function recipeEvolve(argv: string[], stdout: (s: string) => void): Promis
   const exactPlanCommand = `${exactCliInvocation()} recipe evolve ${commandQuoted(ref)}${target}`;
 
   if (values.apply !== undefined) {
+    // Before apply: the evolution's own error wrapping would present a write-policy refusal as
+    // CONFLICT; the actor rule is a usage error with a corrected spelling, decided up front.
+    await assertActorAcceptedByBundle(bundle, values.actor?.trim());
     const result = await applyRecipeEvolution(bundle, loaded.recipe, values.apply.trim(), values.actor?.trim());
     stdout(render({ ...result, help: [planCommand, `${cliInvocation()} kinds`] }, resolveMode(values)));
     return;

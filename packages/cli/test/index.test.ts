@@ -99,7 +99,7 @@ test("recursive CLI journey: check is read-only, generation resolves links, reru
     assert.match(childIndex, /\[grand\]\(grand\/index\.md\)/);
     assert.match(await readFile(path.join(root, "child", "grand", "index.md"), "utf8"), /\[Deep\]\(deep\.md\)/);
 
-    const noOp = await runJson(["generate", "--dir", root, "--actor", "must-not-write"]);
+    const noOp = await runJson(["generate", "--dir", root, "--actor", "process:must-not-write"]);
     assert.equal(noOp.index, "unchanged");
     assert.equal(noOp.changed, false);
     assert.equal(noOp.writes, 0);
