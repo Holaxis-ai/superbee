@@ -34,6 +34,7 @@ import {
   query,
   validateAgainstKind,
 } from "@superbee/core";
+import { trustCountsRow } from "../trust.js";
 import {
   isAnyEntryKey,
   isAnyRegistryId,
@@ -105,6 +106,11 @@ Category semantics (one line each):
                       meaningful-change time is older than its kind's freshness horizon.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
+  trust              OKF v0.2 trust tiers (SPEC 5.3) counted once per doc from its 'verified'
+                      events: 'human_reviewed' (a human:<id> verifier), 'machine_confirmed' (only
+                      process:/producer verifiers), 'unverified' (no events). A bare single-event
+                      mapping counts as one event. Present on a v0.2 bundle with at least one doc;
+                      a v0.1 bundle defines no trust family. See 'doc verify' to add an event.
   registry_warnings  Malformed convention docs THEMSELVES (loadKinds' own warnings) — a problem in
                       the schema declaration, not in a doc that kind governs.
   link_type_violations  An edge whose text EXACTLY matches a declared typed-edge vocabulary entry
@@ -440,6 +446,10 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     }
   }
 
+  // OKF v0.2 trust tiers (SPEC 5.3), one derivation (core `trustTier`) folded once. Present on a
+  // v0.2 bundle with at least one document — see `trustCountsRow` for why v0.1 and empty bundles omit it.
+  const trust = trustCountsRow(okfVersion, docs);
+
   // missing_expected_links: for every kind instance whose OWN kind declares `expects_inbound`,
   // check each declared `{link type: expected source kind}` entry against the doc's resolved
   // inbound edges (built above, one whole-bundle pass — never a second traversal). A doc missing
@@ -590,6 +600,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     link_type_violations: linkTypeViolations.total,
     missing_expected_links: missingExpectedLinks.total,
   };
+  if (trust) out.trust = trust;
   // Beside the count, unconditionally at the top level (never nested inside the row block below,
   // which is itself omitted when `missing_expected_links` is 0 — a bundle where EVERY matching
   // instance happened to be terminal-skipped would otherwise hide this field entirely, exactly

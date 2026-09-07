@@ -45,6 +45,10 @@
       "types": "./dist/mutation-attribution.d.ts",
       "default": "./dist/mutation-attribution.js"
     },
+    "./verification": {
+      "types": "./dist/verification.d.ts",
+      "default": "./dist/verification.js"
+    },
     "./page": {
       "types": "./dist/page.d.ts",
       "default": "./dist/page.js"

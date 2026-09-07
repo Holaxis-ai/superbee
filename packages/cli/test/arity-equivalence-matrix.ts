@@ -89,6 +89,7 @@ export const BEHAVIOR_ASSIGNMENTS = [
       preValidationEffect: "none",
     },
   },
+  ordinary("docVerify", 1),
   ordinary("docRead", 1, { errorChannel: "stderr" }),
   ordinary("docOpen", 1),
   ordinary("docHistory", 1),

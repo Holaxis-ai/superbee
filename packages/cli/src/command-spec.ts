@@ -307,6 +307,13 @@ export const CLI_COMMAND_GROUPS = [
         summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {
+        id: "docVerify",
+        leaves: [publicLeaf("docVerify", "doc verify", one, undefined, DIR_SURFACE)],
+        usage: "doc verify <id> --actor <n> [--at <iso-8601>] [--expected-version <v>] [--dir <path>] [--remote <url>]",
+        summary:
+          "Append one OKF v0.2 verification event naming the resolved actor as verifier and report the derived trust tier (unverified / machine-confirmed / human-reviewed); body and generated provenance stay untouched",
+      },
+      {
         id: "docRead",
         leaves: [publicLeaf("docRead", "doc read", one, undefined, DIR_DOC_READ_SURFACE)],
         usage:

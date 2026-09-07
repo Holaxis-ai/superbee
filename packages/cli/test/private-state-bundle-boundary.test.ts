@@ -566,6 +566,7 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "status", surface: "--dir", argv: (t) => ["status", "--dir", t, "--json"] },
   { leaf: "docWrite", surface: "--dir", argv: (t) => ["doc", "write", "probe/dw", "--type", "Note", "--body", "x", "--dir", t, "--json"] },
   { leaf: "docUpdate", surface: "--dir", argv: (t) => ["doc", "update", "notes/a", "--title", "Probe", "--dir", t, "--json"] },
+  { leaf: "docVerify", surface: "--dir", argv: (t) => ["doc", "verify", "notes/a", "--actor", "human:probe", "--dir", t, "--json"] },
   { leaf: "docRead", surface: "--dir", argv: (t) => ["doc", "read", "notes/a", "--dir", t, "--json"] },
   {
     leaf: "docOpen",

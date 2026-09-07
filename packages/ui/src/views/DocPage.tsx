@@ -26,6 +26,7 @@ import {
   mutationActorFromFrontmatter,
   SUPERBEE_UPDATED_BY_FIELD,
 } from "@superbee/core/mutation-attribution";
+import { trustTier } from "@superbee/core/verification";
 
 function stringField(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
@@ -150,6 +151,9 @@ export function DocPage({ docId }: { docId: string }) {
   const title = stringField(fm.title) ?? doc.id;
   const actor = mutationActorFromFrontmatter(fm);
   const when = formatWhen(stringField(meaningfulChangeTimeValue(fm)));
+  // OKF v0.2 trust tier (SPEC 5.3), derived by the one core rule from `verified` — a bare mapping
+  // reads as one event. Always shown: "unverified" is itself the signal a reader needs.
+  const trust = trustTier(fm);
   // Chips show the KIND-DECLARED fields present on this doc (required first, then optional) —
   // mechanism in the shell, meaning from the bundle's own conventions. An ungoverned doc shows
   // no chips (its identity fields are already on the card).
@@ -215,6 +219,9 @@ export function DocPage({ docId }: { docId: string }) {
                 {key}: {value}
               </span>
             ))}
+            <span className={`doc-chip doc-trust doc-trust-${trust}`} title="OKF trust tier derived from verified events">
+              trust: {trust}
+            </span>
             {actor && <span>{actor}</span>}
             {when && <span className="doc-when">{when}</span>}
           </p>

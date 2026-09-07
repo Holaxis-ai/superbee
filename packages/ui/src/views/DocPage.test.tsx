@@ -144,6 +144,29 @@ describe("DocPage", () => {
     expect(container.querySelector(".doc-backlinks")!.textContent).toContain("implements");
   });
 
+
+  it("header shows the OKF trust tier derived from verified events — a bare mapping reads as one event", async () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{}, "trust: unverified"],
+      [{ verified: { by: "process:nightly", at: "2026-06-26T02:00:00Z" } }, "trust: machine-confirmed"],
+      [{ verified: [{ by: "process:nightly" }, { by: "human:ahormati", at: "2026-06-25T09:00:00Z" }] }, "trust: human-reviewed"],
+    ];
+    for (const [extra, expected] of cases) {
+      vi.mocked(getDoc).mockResolvedValue({
+        doc: { id: "notes/t", frontmatter: { type: "Note", title: "T", ...extra }, body: "Body." },
+        version: "v1",
+      });
+      await render("notes/t");
+      expect(container.querySelector(".doc-trust")!.textContent).toBe(expected);
+      await act(async () => {
+        root.unmount();
+      });
+      container.remove();
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+    }
+  });
   it("an unknown id renders the honest not-found state with a way home", async () => {
     vi.mocked(getDoc).mockRejectedValue(new ApiError(404, "NOT_FOUND", "no such doc"));
     await render("tasks/ghost");
