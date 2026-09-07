@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { initBundle, writeDoc } from "@superbee/core";
 
 import {
@@ -36,6 +37,42 @@ interface FakeService {
 function connectionRefused(): TypeError {
   return Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
 }
+
+test("management deadlines include stalled response bodies for status, adopt, and stop", { timeout: 20_000 }, async () => {
+  for (const operation of ["status", "adopt", "stop"] as const) {
+    const home = await mkdtemp(path.join(tmpdir(), "superbee-body-timeout-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.write("{");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address() as { port: number };
+    const runtime = fakeRuntime(home);
+    const authority = managedUiAuthority("/canonical/body-timeout", undefined);
+    const ordinaryFetch = runtime.options.fetch!;
+    try {
+      if (operation !== "adopt") await startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options);
+      runtime.options.fetch = (async (url, init) => String(url).endsWith(`/${operation}`)
+        ? fetch(`http://127.0.0.1:${address.port}/`, init)
+        : ordinaryFetch(url, init)) as typeof fetch;
+      const before = Date.now();
+      if (operation === "status") {
+        const receipt = await stopManagedUi(authority, { ...runtime.options, abandon: true });
+        assert.equal(receipt.abandoned, true);
+        assert.equal(runtime.services[0]!.state, "adopted");
+      } else {
+        await assert.rejects(() => operation === "adopt"
+          ? startOrReuseManagedUi(authority, "docs/one", undefined, runtime.options)
+          : stopManagedUi(authority, runtime.options), /abort/i);
+      }
+      assert.ok(Date.now() - before < 6000, `${operation} exceeded its response deadline`);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(home, { recursive: true, force: true });
+    }
+  }
+});
 
 function fakeRuntime(home: string): {
   options: ManagedUiControllerOptions;

@@ -200,6 +200,9 @@ export async function ui(argv: string[], deps: Partial<UiCliDeps> = {}): Promise
     (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(UI_USAGE);
     return;
   }
+  if (parsed.values.abandon && !parsed.values.stop) {
+    throw new CliError("USAGE", "--abandon is available only with ui --stop");
+  }
   if (parsed.values.status || parsed.values.stop) {
     await runManagedUiControl(parsed, deps);
     return;
@@ -217,6 +220,7 @@ export async function openDocumentUi(argv: string[], deps: Partial<UiCliDeps> = 
     (deps.stdout ?? ((s: string) => void process.stdout.write(s)))(DOC_OPEN_USAGE);
     return;
   }
+  if (parsed.values.abandon) throw new CliError("USAGE", "doc open does not accept --abandon");
   const remoteFlag = await resolveRemoteFlag(parsed.values.remote, parsed.values.dir);
   if (remoteFlag !== undefined) {
     await runUi(parsed, deps, { kind: "document" });

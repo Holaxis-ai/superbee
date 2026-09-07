@@ -261,12 +261,18 @@ async function boundedFetch(
   url: string,
   init: RequestInit = {},
   timeoutMs: number = PROBE_TIMEOUT_MS,
-): Promise<Response> {
+): Promise<{ ok: boolean; status: number; value?: unknown }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
   timer.unref?.();
   try {
-    return await fetchImpl(url, { ...init, signal: controller.signal });
+    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    // Fetch resolves at headers; keep the deadline active through body consumption.
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      return { ok: false, status: response.status };
+    }
+    return { ok: true, status: response.status, value: await response.json() };
   } finally {
     clearTimeout(timer);
   }
@@ -323,7 +329,7 @@ async function probeRecord(record: ManagedUiRecord, fetchImpl: typeof fetch, tim
         ? { kind: "absent" }
         : { kind: "indeterminate", reason: `management endpoint returned ${response.status}` };
     }
-    const value = await response.json() as Partial<Probe>;
+    const value = response.value as Partial<Probe>;
     if (
       value.mode !== "dir" ||
       value.authority_key !== record.authority.key ||
@@ -381,7 +387,7 @@ async function managementPost(record: ManagedUiRecord, operation: "adopt" | "sto
     headers: managementHeaders(record),
   });
   if (!response.ok) throw new Error(`managed UI ${operation} was refused (${response.status})`);
-  const value = await response.json() as { launch_nonce?: unknown };
+  const value = response.value as { launch_nonce?: unknown };
   if (value.launch_nonce !== record.launch_nonce) throw new Error(`managed UI ${operation} acknowledged a different launch`);
 }
 
