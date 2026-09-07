@@ -95,9 +95,12 @@ test("upstream help keeps both repository-creation remedies behind confirmed abs
   const help = upstreamHelp(INV);
   assert.match(
     help,
-    /If an authorized check confirms it is absent, create it outside Superbee if authorized, or ask an authorized owner or teammate to create it and grant access\./,
+    /Only after confirmed absence, create it outside Superbee if authorized, or ask someone with repository-creation permission to do so and grant access\./,
   );
-  assert.match(help, /Otherwise, keep the remote state unresolved and do not create a replacement\./);
+  assert.match(
+    help,
+    /If its existence is uncertain, ask an organization owner or teammate with access to check first; do not create a replacement\./,
+  );
 });
 
 test("sync-outcome agreement: every row renders byte-identical to its pre-refactor fixture", async () => {

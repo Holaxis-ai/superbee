@@ -31,13 +31,13 @@ import { commandQuoted, commandToken, type CommandPrefix } from "./command-text.
 /** Route a missing upstream to either the existing shared repo or explicit first publication. */
 export function upstreamHelp(inv: CommandPrefix): string {
   return (
-    `if a teammate already shares this project's board, point \`origin\` at that SAME existing ` +
-    `repository and run \`${inv} sync\` to join. For a first share, the remote repository must ` +
-    `already exist; Superbee does not create it. Connect the existing repository. If an authorized ` +
-    `check confirms it is absent, create it outside Superbee if authorized, or ask an authorized ` +
-    `owner or teammate to create it and grant access. Otherwise, keep the remote state unresolved ` +
-    `and do not create a replacement. Then verify the repository is visible and ` +
-    `\`origin/board\` is absent before explicitly running \`${inv} sync --establish\`. Until then, ` +
+    `if a teammate already shares this project's board, point \`origin\` at that repository and ` +
+    `run \`${inv} sync\` to join. For a first share, connect the existing repository; Superbee does ` +
+    `not create it. If its existence is uncertain, ask an organization owner or teammate with ` +
+    `access to check first; do not create a replacement. Only after confirmed absence, create it ` +
+    `outside Superbee if authorized, or ask someone with repository-creation permission to do so ` +
+    `and grant access. Then verify \`origin/board\` is absent and run ` +
+    `\`${inv} sync --establish\`. Until then, ` +
     `local-only is supported: every local command works and nothing leaves this machine`
   );
 }
