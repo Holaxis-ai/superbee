@@ -588,6 +588,16 @@ function validateWindowsInstalledProofSemantics(job, lane, proof = windowsInstal
     /const renderDeadline = Date\.now\(\) \+ 15_000/,
     "the native browser render must retain a bounded render deadline",
   );
+  assert.match(
+    browserSource,
+    /const readyDeadline = readyStartedAt \+ 60_000/,
+    "ChromeDriver readiness must wait on the reviewed bounded cold-start deadline",
+  );
+  assert.match(
+    browserSource,
+    /while \(!ready && !driverExited && Date\.now\(\) < readyDeadline\)/,
+    "ChromeDriver readiness must stop waiting as soon as the driver exits",
+  );
 
   const lifecycle = proofFunction(program, "runInstalledPackageProof");
   assert.deepEqual(

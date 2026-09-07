@@ -240,7 +240,11 @@ async function renderManagedDocumentInChromium(url, expectedTitle) {
   let driverOutput = "";
   driverProcess.stdout.setEncoding("utf8").on("data", (chunk) => { driverOutput += chunk; });
   driverProcess.stderr.setEncoding("utf8").on("data", (chunk) => { driverOutput += chunk; });
-  const driverExit = new Promise((resolve) => driverProcess.once("exit", resolve));
+  let driverExited = false;
+  const driverExit = new Promise((resolve) => driverProcess.once("exit", (code) => {
+    driverExited = true;
+    resolve(code);
+  }));
 
   async function webdriver(method, route, body, timeoutMs = 10_000) {
     try {
@@ -261,9 +265,13 @@ async function renderManagedDocumentInChromium(url, expectedTitle) {
 
   let sessionId;
   try {
-    const readyDeadline = Date.now() + 10_000;
+    // A fresh Windows runner can take well over ten seconds to bind the driver port on its first
+    // chromedriver.exe launch, so readiness waits on a bounded but generous deadline; a driver that
+    // exits before binding fails immediately with its own output instead of consuming the window.
+    const readyStartedAt = Date.now();
+    const readyDeadline = readyStartedAt + 60_000;
     let ready = false;
-    while (!ready && Date.now() < readyDeadline) {
+    while (!ready && !driverExited && Date.now() < readyDeadline) {
       try {
         const status = await webdriver("GET", "/status");
         ready = status.ready === true;
@@ -271,7 +279,12 @@ async function renderManagedDocumentInChromium(url, expectedTitle) {
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
     }
-    assert.equal(ready, true, `ChromeDriver did not become ready: ${driverOutput}`);
+    assert.equal(
+      ready,
+      true,
+      `ChromeDriver did not become ready after ${Date.now() - readyStartedAt}ms`
+        + `${driverExited ? " (driver exited)" : ""}: ${driverOutput}`,
+    );
 
     const session = await webdriver("POST", "/session", {
       capabilities: {
