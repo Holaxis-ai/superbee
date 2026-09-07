@@ -48,6 +48,16 @@ test("suggestOkfActor: a kind prefix is preserved and its id repaired; case and 
   assert.deepEqual(suggestOkfActor(" / "), { primary: "process:<id>", alternatives: ["human:<id>", "<producer>/<version>"], placeholder: true });
 });
 
+test("suggestOkfActor: dash-heavy and huge inputs stay linear (CodeQL js/polynomial-redos on the old trim regex)", () => {
+  const dashes = "-".repeat(200_000);
+  const started = process.hrtime.bigint();
+  assert.deepEqual(suggestOkfActor(dashes), { primary: "process:<id>", alternatives: ["human:<id>", "<producer>/<version>"], placeholder: true });
+  assert.deepEqual(suggestOkfActor(`${dashes}x${dashes}`), { primary: "process:x", alternatives: ["human:x"], placeholder: false });
+  assert.deepEqual(suggestOkfActor(`--a b--`), { primary: "process:a-b", alternatives: ["human:a-b"], placeholder: false });
+  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  assert.ok(elapsedMs < 500, `expected linear time, took ${elapsedMs.toFixed(0)}ms`);
+});
+
 test("suggestOkfActor: every suggestion it makes for a concrete value conforms to the grammar it repairs", () => {
   const inputs = [
     "codex-root", "openai/codex/root", "Human:alice", "human:Jane Doe", "agent:builder", "a/b/c/d", "x y",

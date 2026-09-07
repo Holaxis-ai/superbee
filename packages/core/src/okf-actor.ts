@@ -31,8 +31,17 @@ export const OKF_ACTOR_FORMS =
   "human:<id> for a person, process:<id> for an automated job or a role-specific agent session, "
   + "or <producer>/<version> for an agent or tool (e.g. openai/codex, anthropic/claude)";
 
+/** Trim leading/trailing dashes with a linear scan: `/^-+|-+$/` is polynomial on dash-heavy input. */
+function trimDashes(value: string): string {
+  let start = 0;
+  let end = value.length;
+  while (start < end && value.charCodeAt(start) === 45) start += 1;
+  while (end > start && value.charCodeAt(end - 1) === 45) end -= 1;
+  return value.slice(start, end);
+}
+
 function slugSegment(value: string): string {
-  return value.trim().replace(/[\s:/]+/g, "-").replace(/^-+|-+$/g, "");
+  return trimDashes(value.trim().replace(/[\s:/]+/g, "-"));
 }
 
 export interface OkfActorSuggestion {
