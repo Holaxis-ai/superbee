@@ -1,6 +1,7 @@
 /** Pure document-shape policies applied before a normalized document reaches storage. */
 
 import { InvalidInputError } from "./errors.js";
+import { isOkfActor } from "./okf-actor.js";
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
 import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
@@ -15,14 +16,7 @@ function hasOwn(record: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
 }
 
-/** OKF v0.2 actor spellings: human/process identities or a producer/version pair. */
-export function isOkfActor(value: unknown): value is string {
-  if (typeof value !== "string" || value.trim() !== value || value.length === 0 || /\s/.test(value)) {
-    return false;
-  }
-  if (/^(?:human|process):[^\s:]+$/.test(value)) return true;
-  return /^[^\s/:]+\/[^\s/]+$/.test(value);
-}
+export { isOkfActor } from "./okf-actor.js";
 
 /**
  * Normalize one document according to Superbee's OKF v0.1 write contract.

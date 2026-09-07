@@ -23,6 +23,7 @@ export const DOC_USAGE = `superbee doc — write, patch, read, present, or delet
 Usage:
   superbee doc write   <id> --type <t> [options]        Create/overwrite a concept doc
   superbee doc update  <id> [options]                   Patch given fields of an existing doc
+  superbee doc verify  <id> --actor <a>                 Append an OKF v0.2 verification event
   superbee doc read    <id> [--out <p> | --body-out <p> | --rendered-out <p>] Read/export a doc
   superbee doc open    <id>                             Open the rendered doc in a browser
   superbee doc history <id>                             Show a doc's attributed version chain
@@ -256,6 +257,41 @@ Examples:
   superbee doc read concepts/auth --body-out <path-outside-bundle>
   superbee doc read concepts/auth --rendered-out ./auth.html
   superbee doc read concepts/auth --field head_version
+`;
+
+export const DOC_VERIFY_USAGE = `superbee doc verify — append one OKF v0.2 verification event and report the trust tier
+
+Usage:
+  superbee doc verify <id> --actor <actor> [--at <iso-8601>] [--expected-version <v>] [options]
+
+Records that the resolved actor confirmed this document's content: one { by, at } event is appended
+to the document's 'verified' list (a bare single-event mapping is first read as the one-element list
+the OKF spec defines; existing events and their extra keys are preserved). The body and 'generated'
+provenance are NOT touched — verification is independent of generation, so 'generated.at' does not
+advance and 'generated.by' is not replaced by the verifier.
+
+The receipt reports the derived trust tier (OKF 5.3): 'unverified' (no events), 'machine-confirmed'
+(only process:/producer verifiers), or 'human-reviewed' (at least one human:<id> verifier). The same
+derivation appears in 'status' (trust counts), 'list --fields trust', 'home', and the UI document header.
+
+Requires an OKF v0.2 bundle and an actor that follows the OKF actor convention — human:<id> for a
+person, process:<id> for an automated process, <producer>/<version> for an agent or tool. An
+unattributed verification is refused: there is nobody to record.
+
+Options:
+  --actor <actor>        The verifier (also read from SUPERBEE_ACTOR). Must be an OKF actor.
+  --at <iso-8601>        The confirmation instant (default: now). Must carry a timezone designator
+                         (Z or ±hh:mm); normalized to ISO-8601 UTC. A zone-less or date-only value
+                         is refused as ambiguous across hosts.
+  --expected-version <v> Optimistic compare-and-swap: append ONLY if the doc still matches this token
+                         (from a prior read/write receipt or 'doc history'); a moved head is
+                         STALE_HEAD (exit 5). Omit for a normal, bounded-retry verification.
+${COMMON_OPTIONS}
+
+Examples:
+  superbee doc verify concepts/revenue --actor human:ahormati
+  superbee doc verify concepts/revenue --actor process:finance-nightly --at 2026-06-26T02:00:00Z
+  superbee list --fields trust
 `;
 
 export const DOC_HISTORY_USAGE = `superbee doc history — show a doc's attributed version chain (newest first)

@@ -86,6 +86,22 @@ export type { BlobKey, ReadBlobResult } from "./types.js";
 
 export { freshness } from "./freshness.js";
 
+// OKF v0.2 trust: the one actor grammar and the one `verified` read/append policy every surface
+// (CLI receipts, status counts, list projection, the UI header) derives the trust tier through.
+export { isOkfActor, isHumanActor } from "./okf-actor.js";
+export {
+  TRUST_TIERS,
+  TRUST_TIER_FIELD,
+  appendVerificationEvent,
+  latestVerifiedAt,
+  parseIsoInstant,
+  storedInstant,
+  trustTier,
+  trustTierCounts,
+  verificationEvents,
+} from "./verification.js";
+export type { AppendVerificationOptions, TrustTier, TrustTierCounts, VerificationEvent } from "./verification.js";
+
 // Pluggable storage: the seam is `StorageBackend` (types.ts). `FilesystemBackend` is
 // the DEGENERATE default adapter (the engine falls back to it for a `{ root }` bundle);
 // `MemoryBackend` implements the SAME contract for the hard case (real version chain,

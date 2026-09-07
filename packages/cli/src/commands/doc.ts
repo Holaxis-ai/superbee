@@ -8,6 +8,9 @@
 // socket. TTYs, character devices, errors, and empty pipes do not imply an explicit body. Use
 // `--body ""` for an explicit empty body.
 //
+// `doc verify` appends one OKF v0.2 `verified` event for the resolved actor and reports the
+// derived trust tier; it never touches the body or `generated` provenance (see `./doc/verify.ts`).
+//
 // `doc update` is a versioned field patch: it preserves omitted fields, validates the resulting
 // kind, refreshes timestamps by default, and uses bounded CAS retry. A field-bearing patch never
 // probes stdin, because an agent harness may hold a genuine pipe open indefinitely. Stdin remains
@@ -27,6 +30,7 @@ import { DOC_USAGE, type DocCliDeps } from "./doc/common.js";
 import type { UiCliDeps } from "./ui.js";
 import { docWrite } from "./doc/write.js";
 import { docUpdate } from "./doc/update.js";
+import { docVerify } from "./doc/verify.js";
 import { docRead } from "./doc/read.js";
 import { docHistory } from "./doc/history.js";
 import { docDelete } from "./doc/delete.js";
@@ -42,6 +46,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
 
   if (sub === "write") return docWrite(rest, deps);
   if (sub === "update") return docUpdate(rest, deps);
+  if (sub === "verify") return docVerify(rest, deps);
   if (sub === "read") return docRead(rest, deps);
   if (sub === "open") return docOpen(rest, deps);
   if (sub === "history") return docHistory(rest, deps);
@@ -60,7 +65,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
       { help: `${invocation} doc --help` },
     );
   }
-  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|read|open|history|delete)`, {
+  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|verify|read|open|history|delete)`, {
     help: `${cliInvocation()} doc --help`,
   });
 }

@@ -36,6 +36,8 @@
 import { parseArgs } from "node:util";
 import {
   PROGRESS_STATUS_FIELD,
+  TRUST_TIER_FIELD,
+  trustTier,
   queryHeads,
   loadKinds,
   isTerminal,
@@ -77,6 +79,9 @@ Options:
   --fields <a,b,...>   Add extra frontmatter fields to each row (comma-separated; default schema is
                        id,type,title,timestamp). ALWAYS overrides kind-aware columns below. Each cell
                        is truncated to 80 chars — long content lives in \`doc read <id>\`.
+                       'trust' is a DERIVED column: the OKF v0.2 trust tier (unverified /
+                       machine-confirmed / human-reviewed) computed from each doc's 'verified'
+                       events, not a stored field. See 'doc verify'.
   --open               Exclude concepts whose OWN kind declares a terminal set of field values
                        (see 'kinds --help') and whose frontmatter currently matches it (e.g. a Task
                        whose progress_status is 'done'/'canceled', if the Task kind declares that terminal
@@ -342,6 +347,10 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
       if (f === PROGRESS_STATUS_FIELD && projectionRegistry) {
         const kind = projectionRegistry.kinds.get(String(d.frontmatter.type ?? ""));
         row[f] = cell(kind ? readKindField(projectionVersion, kind, d.frontmatter, f) : undefined);
+      } else if (f === TRUST_TIER_FIELD) {
+        // A DERIVED column (OKF v0.2 5.3): the tier core computes from `verified`, never a raw
+        // frontmatter key — so a producer's own `trust` field cannot impersonate the derivation.
+        row[f] = trustTier(d.frontmatter);
       } else {
         row[f] = cell((d.frontmatter as Record<string, unknown>)[f]);
       }

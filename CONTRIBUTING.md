@@ -237,6 +237,11 @@ Across both editions:
   replaces them with the resolved actor or `process:superbee` when the mutation is unattributed;
   candidate frontmatter cannot self-declare the mutation actor. A create-only definition install
   using the source-comparability opt-out may retain valid source-declared provenance.
+- `doc verify` appends one OKF v0.2 `verified` event (`{by, at}`) for the resolved actor and is
+  not a meaningful content change: `generated` is untouched. Consumers read a bare `verified`
+  mapping as a one-element list and derive one trust tier (unverified, machine-confirmed,
+  human-reviewed) through core's `trustTier`; `status`, `list --fields trust`, `home`, and the UI
+  header all use that one derivation.
 - Generated internal links use relative bundle-relative Markdown hrefs. External URLs pass through;
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars are normalized to ISO-8601 strings without converting unrelated nested or

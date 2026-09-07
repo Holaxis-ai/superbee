@@ -66,7 +66,8 @@ import {
   BUNDLE_NAME_DOC_TYPE,
   type BundleNameSource,
 } from "../bundle-name.js";
-import { CONVENTIONS_PREFIX, queryHeads, type OkfDocument } from "@superbee/core";
+import { CONVENTIONS_PREFIX, queryHeads, readBundleOkfVersion, type OkfDocument } from "@superbee/core";
+import { trustCountsRow, type TrustCountsRow } from "../trust.js";
 import { deriveOffers, OFFERS_HELP, type OfferRow } from "../offers.js";
 import { parseArgs } from "node:util";
 import path from "node:path";
@@ -180,6 +181,8 @@ export interface BundleSummary {
   conventionIds?: string[];
   /** The most-recent docs (timestamp desc, capped) in the minimal schema. Empty rows when docs===0. */
   recent: { shown: number; total: number; rows: HomeRow[] };
+  /** OKF v0.2 trust-tier counts (SPEC 5.3); absent on v0.1 or an empty bundle (see `trustCountsRow`). */
+  trust?: TrustCountsRow;
 }
 
 /**
@@ -299,7 +302,11 @@ function rowTitle(id: string, title: unknown): string {
  * bundle on disk. Input is structural (`id` + `frontmatter` only — the dashboard never reads a
  * body), so both full documents and `queryHeads` head projections fold identically.
  */
-export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter">>, root: string): BundleSummary {
+export function summarizeDocs(
+  docs: Array<Pick<OkfDocument, "id" | "frontmatter">>,
+  root: string,
+  options: { okfVersion?: string | null } = {},
+): BundleSummary {
   const byType: Record<string, number> = {};
   const conventionIds: string[] = [];
   for (const d of docs) {
@@ -325,6 +332,7 @@ export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter"
   });
   orderedRows.sort((a, b) => compareByMeaningfulChange(a.key, b.key));
   const rows = orderedRows.map(({ row }) => row);
+  const trust = trustCountsRow(options.okfVersion, docs);
 
   return {
     root,
@@ -336,6 +344,7 @@ export function summarizeDocs(docs: Array<Pick<OkfDocument, "id" | "frontmatter"
       total: rows.length,
       rows: rows.slice(0, HOME_RECENT_LIMIT),
     },
+    ...(trust ? { trust } : {}),
   };
 }
 
@@ -371,7 +380,10 @@ export async function defaultSummarizeBundle(
     // ONE extra known-id read (absent-tolerant, never throws, fs-only for home's always-local
     // bundle) — the same display-name chain the ui server's config uses (bundle-name.ts).
     const { name, source } = await deriveBundleDisplayName(bundle);
-    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root)) };
+    // One reserved read (index.md) so the trust fold knows the edition; a missing declaration reads
+    // as the v0.1 compatibility fallback, exactly as the mutation service resolves it.
+    const okfVersion = await readBundleOkfVersion(bundle);
+    return { name, nameSource: source, ...summarizeDocs(docs, collapseHomeDirectory(bundle.root), { okfVersion }) };
   } catch {
     // A bundle root exists but could not be read — DISTINCT from "no bundle" (see UnreadableBundle).
     return { root: collapseHomeDirectory(bundle.root), unreadable: true };
@@ -860,6 +872,7 @@ export function buildHomeView(
     bundleBlock.root = summary.root;
     bundleBlock.docs = summary.docs;
     bundleBlock.by_type = summary.byType;
+    if (summary.trust) bundleBlock.trust = summary.trust;
     const offers = bundleOffers(summary, deps, board);
     if (summary.docs > 0) {
       bundleBlock.recent = summary.recent;
