@@ -75,6 +75,7 @@ import { boardPostPersistHook } from "../board-attribution.js";
 import { resolveActor } from "../actor.js";
 import { readExternalTextFile } from "../external-file.js";
 import { addLink } from "./link.js";
+import { assertStaleAfterEdition, parseStaleAfter } from "../stale-after.js";
 import { commandQuoted, commandToken, type CommandPrefix, type CommandText } from "../command-text.js";
 
 export const NEW_USAGE = `superbee new — create a new instance of a bundle-declared kind
@@ -85,7 +86,8 @@ Usage:
 The kind must be declared by a kind convention doc under conventions/ — run 'superbee kinds'
 to list what a bundle declares. Supply each of the kind's required fields via --<field> <value>
 (or --<field>=<value>); declared optional fields may be supplied the same way. Repeat a flag to
-set an array value (e.g. --tags a --tags b). Any field not declared by the kind is a USAGE error.
+set an array value (e.g. --tags a --tags b). Apart from the standard options below, any field not
+declared by the kind is a USAGE error.
 The kind's declared body 'sections' (if any) are scaffolded as empty '# Heading' blocks; its
 'path' prefix (if any) is prepended onto <id> unless <id> already carries it. Validation is
 STRICT: a missing required field or a disallowed enum value rejects the write (exit 2) rather
@@ -99,6 +101,8 @@ write' to overwrite it outright and deliberately.
 Kind, and is also the deliberate full-replacement path for an existing document.
 
 Options:
+  --stale-after <iso>   Set the expiration instant (OKF v0.2 only), independent of Kind fields.
+                       Requires a valid date, time, and zone, e.g. 2026-09-07T12:00:00Z.
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
                          (mutually exclusive with --dir; remote access is always explicit)
@@ -164,6 +168,7 @@ const NEW_CONTROL_OPTIONS = {
   link: { type: "string", multiple: true },
   body: { type: "string" },
   "body-file": { type: "string" },
+  "stale-after": { type: "string" },
   "no-prefix": { type: "boolean" },
   json: { type: "boolean" },
   help: { type: "boolean", short: "h" },
@@ -347,6 +352,7 @@ function renderKindHelp(
     `Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT.\n` +
     `To ADD a field to this kind, edit its convention doc (${inv} kinds names it; then pull → edit fields.optional → promote).\n\n` +
     `Options:\n` +
+    `  --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required\n` +
     `  --actor <name>   Attribute the write (overrides SUPERBEE_ACTOR; legacy AGENTSTATE_LITE_ACTOR remains supported).\n` +
     `                   OKF v0.2 bundles accept only human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)\n` +
     `  --body <markdown>\n` +
@@ -524,6 +530,8 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   const actor = resolveActor(values.actor as string | undefined, {
     help: `${cliInvocation()} new "<Kind>" <id> --actor <name>`,
   });
+  const staleAfter = parseStaleAfter(values["stale-after"] as string | undefined);
+  assertStaleAfterEdition(staleAfter, okfVersion);
 
   // Parse EVERY --link value up front, before any write — a malformed value is a caller mistake,
   // not a partial-success case, so it must reject cleanly with NOTHING created (see
@@ -564,7 +572,9 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
   }
 
   const frontmatter: Frontmatter = { type: kind.governs };
+  if (staleAfter !== undefined) frontmatter.stale_after = staleAfter;
   const suppliedByStorageField = new Map<string, string>();
+  if (staleAfter !== undefined) suppliedByStorageField.set("stale_after", "stale-after");
   const progressCoordinate = progressStatusCoordinate(okfVersion, kind);
   for (const field of fieldNames) {
     const vals = dynamicValues.get(field);
@@ -627,6 +637,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     // Board self-attribution (PR C): fires only after the expect-absent CAS create persisted.
     onPersisted: boardPostPersistHook(attribution, actor),
     buildCandidate: (_existing, context) => {
+      assertStaleAfterEdition(staleAfter, context.okfVersion);
       const preparedEdition = okfVersion ?? "0.1";
       if (context.okfVersion !== preparedEdition) {
         throw new CliError(

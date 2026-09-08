@@ -243,56 +243,54 @@ test("freshness: empty / fresh / stale-by-age / stale-by-dependency", () => {
   assert.match(dep.reason ?? "", /dependency/);
 });
 
-test("freshness: OKF v0.2 stale_after is an absolute date and does not change v0.1 semantics", () => {
-  const doc: OkfDocument = {
-    id: "x",
-    frontmatter: { type: "T", stale_after: "2026-07-01" },
-    body: "",
-  };
-
-  const before = freshness(doc, { okfVersion: "0.2", now: new Date(2026, 5, 30, 23, 59, 59) });
-  assert.equal(before.verdict, "empty");
-
-  const onDate = freshness(doc, { okfVersion: "0.2", now: new Date(2026, 6, 1, 0, 0, 0) });
-  assert.equal(onDate.verdict, "stale");
-  assert.equal(onDate.ageMs, undefined);
-  assert.match(onDate.reason ?? "", /stale_after 2026-07-01/);
-
-  assert.equal(
-    freshness(doc, { okfVersion: "0.1", now: new Date("2026-07-02T00:00:00Z") }).verdict,
-    "empty",
-  );
-  assert.equal(
-    freshness({ ...doc, frontmatter: { ...doc.frontmatter, stale_after: "2026-02-31" } }, {
-      okfVersion: "0.2",
-      now: new Date("2026-07-02T00:00:00Z"),
-    }).verdict,
-    "empty",
-  );
+test("freshness: v0.2 stale_after expires at the instant, even without a generation clock", () => {
+  const doc: OkfDocument = { id: "x", frontmatter: { type: "T", stale_after: "2026-07-01T12:34:56.789Z" }, body: "" };
+  const expiry = Date.parse(String(doc.frontmatter.stale_after));
+  assert.equal(freshness(doc, { okfVersion: "0.2", now: new Date(expiry - 1) }).verdict, "empty");
+  for (const now of [expiry, expiry + 1]) {
+    const result = freshness(doc, { okfVersion: "0.2", now: new Date(now) });
+    assert.equal(result.verdict, "stale");
+    assert.equal(result.ageMs, undefined);
+    assert.match(result.reason ?? "", /stale_after 2026-07-01T12:34:56.789Z/);
+  }
+  for (const okfVersion of [undefined, "0.1"]) {
+    assert.equal(freshness(doc, { okfVersion, now: new Date(expiry + 1) }).verdict, "empty");
+  }
+  for (const invalid of ["2026-07-01", "2026-07-01T12:34:56", "2026-02-30T00:00:00Z", "", 123, null]) {
+    assert.equal(freshness({ ...doc, frontmatter: { type: "T", stale_after: invalid } }, {
+      okfVersion: "0.2", now: new Date(expiry),
+    }).verdict, "empty", String(invalid));
+  }
 });
 
-test("freshness: stale_after uses the caller's local calendar day rather than UTC", () => {
+test("freshness: offset-equivalent stale_after instants are independent of the host timezone", () => {
   const previous = process.env.TZ;
-  process.env.TZ = "America/New_York";
   try {
-    const doc: OkfDocument = {
-      id: "x",
-      frontmatter: { type: "T", stale_after: "2026-07-01" },
-      body: "",
-    };
-    assert.equal(
-      freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T00:30:00Z") }).verdict,
-      "empty",
-      "June 30 at 20:30 local must not become stale merely because UTC has crossed midnight",
-    );
-    assert.equal(
-      freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T04:00:00Z") }).verdict,
-      "stale",
-    );
+    for (const zone of ["America/New_York", "Asia/Tokyo", "UTC"]) {
+      process.env.TZ = zone;
+      for (const stale_after of ["2026-07-01T00:30:00Z", "2026-06-30T20:30:00-04:00", "2026-07-01T06:00:00+0530"]) {
+        const doc: OkfDocument = { id: "x", frontmatter: { type: "T", stale_after }, body: "" };
+        assert.equal(freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T00:29:59.999Z") }).verdict, "empty");
+        assert.equal(freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T00:30:00Z") }).verdict, "stale");
+      }
+    }
   } finally {
     if (previous === undefined) delete process.env.TZ;
     else process.env.TZ = previous;
   }
+});
+
+test("freshness: a future expiry does not override dependency or horizon staleness", () => {
+  const doc: OkfDocument = { id: "x", frontmatter: {
+    type: "T", generated: { at: "2026-07-01T00:00:00Z" }, stale_after: "2026-07-03T00:00:00Z",
+  }, body: "" };
+  const options = { okfVersion: "0.2", now: new Date("2026-07-02T00:00:00Z") };
+  assert.equal(freshness(doc, options).verdict, "fresh");
+  assert.match(freshness(doc, { ...options, maxAgeMs: 1 }).reason ?? "", /exceeds/);
+  assert.match(freshness(doc, { ...options, dependsOn: ["2026-07-01T12:00:00Z"] }).reason ?? "", /dependency/);
+  const expired = freshness(doc, { ...options, now: new Date("2026-07-03T00:00:00Z"), maxAgeMs: 1 });
+  assert.match(expired.reason ?? "", /stale_after/);
+  assert.equal(expired.ageMs, 2 * 86_400_000);
 });
 
 test("meaningful change time lookup prefers v0.2 generated.at and falls back to v0.1 timestamp", () => {
@@ -493,4 +491,13 @@ test("pin: the extension→MIME table, inference flags, and override trimming ar
   assert.equal(fallback.inferred, false);
   assert.equal(fallback.warning?.field, "content_type");
   assert.equal(fallback.warning?.severity, "info");
+});
+
+
+test("freshness: sub-millisecond deadlines do not expire a millisecond early", () => {
+  for (const stale_after of ["2026-07-01T12:34:56.789000001Z", "2026-07-01T08:34:56.789999-04:00"]) {
+    const doc: OkfDocument = { id: "x", frontmatter: { type: "T", stale_after }, body: "" };
+    assert.equal(freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T12:34:56.789Z") }).verdict, "empty");
+    assert.equal(freshness(doc, { okfVersion: "0.2", now: new Date("2026-07-01T12:34:56.790Z") }).verdict, "stale");
+  }
 });

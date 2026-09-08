@@ -30,12 +30,14 @@ import {
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
 import { commandToken } from "../../command-text.js";
+import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
 /** The `doc update` STANDARD patch fields; excludes control flags (--keep-timestamp/--strict/--dir/--remote/…). */
-const DOC_UPDATE_FIELD_FLAGS = ["title", "description", "tag", "type", "body", "body-file"] as const;
+const DOC_UPDATE_FIELD_FLAGS = ["title", "description", "tag", "type", "stale-after", "body", "body-file"] as const;
 
 /** `doc update` standard value flags that consume the next token (or `=value`) as a single string. */
 const DOC_UPDATE_VALUE_FLAGS = new Set([
+  "stale-after",
   "title",
   "description",
   "type",
@@ -68,6 +70,7 @@ interface ParsedDocUpdateArgs {
   description?: string;
   tags?: string[];
   type?: string;
+  staleAfter?: string;
   /** `undefined` = not given at all; `""` = an explicit empty value (`--body ""`) — same distinction `values.body !== undefined` made. */
   body?: string;
   bodyFile?: string;
@@ -113,6 +116,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
           title: { type: "string" },
           description: { type: "string" },
           type: { type: "string" },
+          "stale-after": { type: "string" },
           body: { type: "string" },
           "body-file": { type: "string" },
           dir: { type: "string" },
@@ -215,6 +219,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
     description: std.description,
     tags: tags.length > 0 ? tags : undefined,
     type: std.type,
+    staleAfter: std["stale-after"],
     body: std.body,
     bodyFile: std["body-file"],
     expectedVersion: std["expected-version"],
@@ -253,6 +258,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     );
   }
   const actor = resolveActor(p.actor, { help: `${cliInvocation()} doc update ${commandToken(id)} --actor <name>` });
+  const staleAfter = parseStaleAfter(p.staleAfter);
 
   // A patchable field OTHER than body, given via a flag — title/description/tag/type/kind fields.
   // Computed BEFORE the stdin read below: a FIELD-ONLY patch (one of these given, no --body/
@@ -266,6 +272,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     p.description !== undefined ||
     (p.tags !== undefined && p.tags.length > 0) ||
     p.type !== undefined ||
+    staleAfter !== undefined ||
     p.kindFields.size > 0;
 
   // Body source: --body wins, then --body-file, then piped stdin — but stdin is consulted ONLY as a
@@ -347,8 +354,10 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
     buildCandidate: async (existingDoc, context) => {
+      assertStaleAfterEdition(staleAfter, context.okfVersion);
       const existing = existingDoc!;
       const nextFrontmatter: Frontmatter = { ...existing.frontmatter };
+      if (staleAfter !== undefined) nextFrontmatter.stale_after = staleAfter;
       if (p.title !== undefined) nextFrontmatter.title = p.title;
       if (p.description !== undefined) nextFrontmatter.description = p.description;
       if (p.tags && p.tags.length > 0) nextFrontmatter.tags = p.tags;
@@ -418,6 +427,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
           );
         }
         const suppliedByStorageField = new Map<string, string>();
+        if (staleAfter !== undefined) suppliedByStorageField.set("stale_after", "stale-after");
         for (const [field, vals] of p.kindFields) {
           const coordinate = resolvedFields.get(field)!;
           const previous = suppliedByStorageField.get(coordinate.storageField);

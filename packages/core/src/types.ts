@@ -458,7 +458,7 @@ export interface EdgeFilter {
   text?: string;
 }
 
-/** A consumer-derived freshness verdict, including OKF v0.2's absolute `stale_after` date. */
+/** A consumer-derived freshness verdict, including OKF v0.2's absolute `stale_after` instant. */
 export type FreshnessVerdict = "fresh" | "stale" | "empty";
 
 /** Inputs for a {@link freshness} judgment. */

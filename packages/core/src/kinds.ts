@@ -466,7 +466,7 @@ function toStringArrayLenient(
  * unreachable, not merely confusing. Filtered out of `required`/`optional`/`values` at parse time
  * with a collected warning — never silently accepted.
  */
-export const RESERVED_KIND_FIELD_NAMES = ["type", "dir", "remote", "json", "help", "body", "body-file"] as const;
+export const RESERVED_KIND_FIELD_NAMES = ["type", "dir", "remote", "json", "help", "body", "body-file", "stale-after"] as const;
 const RESERVED_FIELD_NAMES = new Set<string>(RESERVED_KIND_FIELD_NAMES);
 
 /** The only recognized keys inside a convention doc's `fields:` block. */

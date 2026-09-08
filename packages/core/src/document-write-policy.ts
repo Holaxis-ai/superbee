@@ -1,6 +1,7 @@
 /** Pure document-shape policies applied before a normalized document reaches storage. */
 
 import { InvalidInputError, OkfActorError } from "./errors.js";
+import { staleAfterInstant } from "./freshness.js";
 import { isOkfActor } from "./okf-actor.js";
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
 import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
@@ -57,7 +58,7 @@ function generatedRecord(value: unknown, label: string): Generated | undefined {
 }
 
 function sameValue(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
+  if (a === b || Object.is(a, b)) return true;
   if (Array.isArray(a) || Array.isArray(b)) {
     return Array.isArray(a) && Array.isArray(b)
       && a.length === b.length
@@ -146,6 +147,18 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
     throw new OkfActorError(
       opts.actor,
       `OKF v0.2 mutation actor '${opts.actor}' must be human:<id>, process:<id>, or <producer>/<version>`,
+    );
+  }
+  // Imported legacy values remain editable, but authored changes must supply a usable deadline.
+  const candidateDeadline = opts.candidate.frontmatter.stale_after;
+  if (
+    hasOwn(opts.candidate.frontmatter, "stale_after")
+    && staleAfterInstant(candidateDeadline) === null
+    && !(opts.existing && hasOwn(opts.existing.frontmatter, "stale_after")
+      && sameValue(candidateDeadline, opts.existing.frontmatter.stale_after))
+  ) {
+    throw new InvalidInputError(
+      "OKF v0.2 stale_after requires a valid ISO-8601 date and time with a zone (e.g. 2026-09-07T12:00:00Z)",
     );
   }
   const existingGenerated = generatedRecord(opts.existing?.frontmatter.generated, "existing generated");

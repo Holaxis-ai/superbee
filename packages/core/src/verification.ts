@@ -99,9 +99,10 @@ const ISO_INSTANT = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2})(?::(\d{2})(?:\.
  * a caller did not say: an impossible calendar date (`2026-02-30`, a non-leap `02-29`), an
  * out-of-range time, or a value without a zone designator (which would name a different instant
  * on every host). Read-side consumers stay permissive (see {@link latestVerifiedAt}); this rule
- * guards what gets WRITTEN.
+ * guards what gets WRITTEN. Defaults to millisecond truncation; `ceil` compares expiration
+ * deadlines against a millisecond clock without expiring before a fractional deadline.
  */
-export function parseIsoInstant(raw: string): number | null {
+export function parseIsoInstant(raw: string, rounding: "truncate" | "ceil" = "truncate"): number | null {
   const match = ISO_INSTANT.exec(raw);
   if (!match) return null;
   const [, y, mo, d, h, mi, sec = "0", frac = "0", zulu, sign, oh, om = "0"] = match;
@@ -128,7 +129,9 @@ export function parseIsoInstant(raw: string): number | null {
   const instant = new Date(0);
   instant.setUTCFullYear(year, month - 1, day);
   instant.setUTCHours(hour, minute, second, millis);
-  return instant.getTime() - offsetMinutes * 60_000;
+  // Expiration consumers round up so a sub-millisecond deadline never expires early.
+  const remainder = rounding === "ceil" && /[1-9]/.test(frac.slice(3)) ? 1 : 0;
+  return instant.getTime() - offsetMinutes * 60_000 + remainder;
 }
 
 /**
