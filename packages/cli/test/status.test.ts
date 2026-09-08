@@ -8,13 +8,14 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { initBundle, writeBlob, writeDoc, type Bundle } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
+import { decode } from "@toon-format/toon";
 
 import { status } from "../src/commands/status.js";
 import { newCommand } from "../src/commands/new.js";
@@ -274,20 +275,158 @@ test("status: v0.2 stale_after applies without a Kind horizon while v0.1 leaves 
         })();
       await writeDoc(bundle, {
         id: "concepts/expired",
-        frontmatter: { type: "Reference", stale_after: "2020-01-01" },
+        frontmatter: { type: "Reference", stale_after: "2020-01-01T12:00:00Z" },
         body: "",
       });
       const result = await runJson(["--dir", dir]);
       assert.equal(result.stale, okfVersion === "0.2" ? 1 : 0);
       if (okfVersion === "0.2") {
         const stale = result.stale_docs as { rows: Record<string, unknown>[] };
-        assert.deepEqual(stale.rows, [{ id: "concepts/expired", stale_after: "2020-01-01" }]);
+        assert.deepEqual(stale.rows, [{ id: "concepts/expired", stale_after: "2020-01-01T12:00:00Z" }]);
       } else {
         assert.equal("stale_docs" in result, false);
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  }
+});
+
+test("status: released date-only stale_after spelling is an actionable finding, not a silent fresh result", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir, { okfVersion: "0.2" });
+    await mkdir(path.join(dir, "concepts"));
+    const fixture = await readFile(path.join(REPO_ROOT, "packages/core/test/fixtures/okf-v0.2/concepts/revenue.md"), "utf8");
+    // Keep the actual interop spelling while giving this imported document a usable current clock.
+    const imported = fixture.replace("2026-07-28T12:34:56Z", new Date().toISOString());
+    await writeFile(path.join(dir, "concepts/revenue.md"), imported);
+    const result = await runJson(["--dir", dir]);
+    assert.equal(result.invalid_stale_after, 1);
+    assert.equal(result.stale, 0);
+    assert.equal(result.no_timestamp, 0);
+    assert.equal(result.malformed, 0);
+    const diagnostic = result.invalid_stale_after_docs as { rows: Record<string, unknown>[]; reason: string; help: string };
+    assert.deepEqual(diagnostic.rows, [{ id: "concepts/revenue", type: "Metric", value: "2026-12-31" }]);
+    assert.match(diagnostic.reason, /date-only/);
+    assert.match(diagnostic.help, /doc update <id> --stale-after/);
+    assert.match(diagnostic.help, /Z|offset/);
+    assert.equal(await readFile(path.join(dir, "concepts/revenue.md"), "utf8"), imported);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status: invalid_stale_after covers every stored shape, caps rows, preserves bytes, and is v0.2-only", async () => {
+  const invalid = [
+    { id: "array", value: ["2026-12-31T00:00:00Z"] },
+    { id: "boolean", value: false },
+    { id: "date-only", value: "2020-01-01" },
+    { id: "empty", value: "" },
+    { id: "garbage", value: "not-a-time" },
+    { id: "null", value: null },
+    { id: "numeric", value: 1234 },
+    { id: "object", value: { at: "2026-12-31T00:00:00Z" } },
+    { id: "terminal", value: "2020-01-01" },
+    { id: "untyped", value: "2020-01-01" },
+  ];
+  for (const okfVersion of ["0.1", "0.2"]) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir, { okfVersion });
+      await writeDoc(bundle, { id: "conventions/note", frontmatter: {
+        type: "Convention", governs: "Note", fields: {
+          optional: ["progress_status"], values: { progress_status: ["done"] }, terminal: { progress_status: ["done"] },
+        },
+      }, body: "" });
+      const clock = JSON.stringify({ at: new Date().toISOString(), by: "process:test" });
+      for (const { id, value } of invalid) {
+        await writeFile(path.join(dir, `${id}.md`),
+          `---\n${id === "untyped" ? "" : `type: ${id === "terminal" ? "Note" : "Unknown"}\n`}generated: ${clock}\nsuperbee_progress_status: done\nstale_after: ${JSON.stringify(value)}\n---\nImported bytes.\n`);
+      }
+      for (const [id, value] of [["absent", undefined], ["future", "2999-01-01T00:00:00Z"], ["expired", "2000-01-01T00:00:00+00:00"]]) {
+        await writeFile(path.join(dir, `${id}.md`), `---\ntype: Unknown\ngenerated: ${clock}\n${value ? `stale_after: ${value}\n` : ""}---\n`);
+      }
+      await writeFile(path.join(dir, "malformed.md"), "---\nstale_after: [unclosed\n---\n");
+      const snapshot = async (): Promise<Record<string, string>> => {
+        const bytes: Record<string, string> = {};
+        const visit = async (directory: string): Promise<void> => {
+          for (const entry of await readdir(directory, { withFileTypes: true })) {
+            const file = path.join(directory, entry.name);
+            if (entry.isDirectory()) await visit(file);
+            else if (entry.isFile()) bytes[path.relative(dir, file)] = (await readFile(file)).toString("base64");
+          }
+        };
+        await visit(dir);
+        return bytes;
+      };
+      const before = await snapshot();
+      const result = await runJson(["--dir", dir, "--limit", "0"]);
+      assert.equal(result.no_timestamp, 0);
+      assert.equal(result.malformed, 1, "malformed YAML remains a separate category");
+      assert.equal(result.stale, okfVersion === "0.2" ? 1 : 0);
+      if (okfVersion === "0.2") {
+        assert.equal(result.invalid_stale_after, invalid.length);
+        const diagnostic = result.invalid_stale_after_docs as { shown: number; total: number; rows: Record<string, unknown>[] };
+        assert.equal(diagnostic.shown, invalid.length);
+        assert.equal(diagnostic.total, invalid.length);
+        assert.deepEqual(diagnostic.rows, invalid.map(({ id, value }) => ({
+          id, type: id === "untyped" ? "" : id === "terminal" ? "Note" : "Unknown", value,
+        })));
+        const capped = await runJson(["--dir", dir, "--limit", "1"]);
+        assert.equal(capped.invalid_stale_after, invalid.length);
+        const cappedRows = capped.invalid_stale_after_docs as typeof diagnostic;
+        assert.equal(cappedRows.total, invalid.length);
+        assert.equal(cappedRows.shown, 1);
+        assert.deepEqual(cappedRows.rows, diagnostic.rows.slice(0, 1));
+        const toon = decode(await runToon(["--dir", dir, "--limit", "0"])) as Record<string, unknown>;
+        assert.equal(toon.invalid_stale_after, result.invalid_stale_after);
+        assert.deepEqual(toon.invalid_stale_after_docs, diagnostic);
+      } else {
+        assert.equal("invalid_stale_after" in result, false);
+        assert.equal("invalid_stale_after_docs" in result, false);
+      }
+      assert.deepEqual(await snapshot(), before, "status must preserve every bundle file");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("status: absent and valid stale_after values omit the invalid category", async () => {
+  const dir = await tempDir();
+  try {
+    const bundle = await initBundle(dir, { okfVersion: "0.2" });
+    for (const [id, value] of [["absent", undefined], ["future", "2999-01-01T00:00:00Z"], ["expired", "2000-01-01T00:00:00-01:00"]]) {
+      await writeDoc(bundle, { id: id!, frontmatter: { type: "Note", ...(value ? { stale_after: value } : {}) }, body: "" });
+    }
+    const result = await runJson(["--dir", dir]);
+    assert.equal(result.stale, 1);
+    assert.equal("invalid_stale_after" in result, false);
+    assert.equal("invalid_stale_after_docs" in result, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status: non-JSON stale_after YAML values remain reportable in JSON and TOON", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir, { okfVersion: "0.2" });
+    for (const [id, value] of [["cycle", "&loop [*loop]"], ["infinity", ".inf"], ["nan", ".nan"]]) {
+      await writeFile(path.join(dir, `${id}.md`), `---\ntype: Note\nstale_after: ${value}\n---\n`);
+    }
+    const result = await runJson(["--dir", dir]);
+    assert.equal(result.invalid_stale_after, 3);
+    const diagnostic = result.invalid_stale_after_docs as { rows: Record<string, unknown>[] };
+    assert.deepEqual(diagnostic.rows, [
+      { id: "cycle", type: "Note", value: "<non-JSON array: circular or too deeply nested>" },
+      { id: "infinity", type: "Note", value: "<Infinity>" },
+      { id: "nan", type: "Note", value: "<NaN>" },
+    ]);
+    assert.deepEqual(decode(await runToon(["--dir", dir])), result);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 
@@ -1449,5 +1588,40 @@ test("status reports a corrupt doc as the `malformed` finding instead of crashin
     assert.equal(out.docs, 1);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+test("status: v0.2 warns on workflow status enums even with no instances", async () => {
+  for (const okfVersion of ["0.1", "0.2"]) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir, { okfVersion });
+      for (const [name, field, allowed] of [
+        ["Release", "status", ["planned", "published"]],
+        ["Lifecycle", "status", ["draft", "stable", "deprecated"]],
+        ["Workflow", "superbee_progress_status", ["planned", "published"]],
+        ["Unbounded", "status", undefined],
+      ] as const) {
+        await writeDoc(bundle, { id: `conventions/${name.toLowerCase()}`, frontmatter: {
+          type: "Convention", governs: name,
+          fields: { optional: [field], ...(allowed ? { values: { [field]: allowed } } : {}) },
+        }, body: "" });
+      }
+      const result = await runJson(["--dir", dir]);
+      assert.equal(result.registry_warnings, okfVersion === "0.2" ? 1 : 0);
+      if (okfVersion === "0.2") {
+        assert.equal("okf_upgrade" in result, false);
+        const lint = result.registry_lint as { rows: Record<string, unknown>[] };
+        assert.equal(lint.rows[0]!.code, "OKF_WORKFLOW_STATUS_COLLISION");
+        assert.equal(lint.rows[0]!.field, "fields.values.status");
+        assert.match(String(lint.rows[0]!.message), /conventions\/release/);
+        assert.match(String(lint.rows[0]!.message), /progress_status/);
+      } else {
+        assert.ok(result.okf_upgrade);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });

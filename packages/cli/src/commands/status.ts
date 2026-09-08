@@ -23,6 +23,7 @@ import { parseArgs } from "node:util";
 import {
   freshness,
   freshnessHorizonMs,
+  staleAfterInstant,
   isTerminal,
   listBlobs,
   loadKinds,
@@ -69,8 +70,8 @@ Runs, in ONE pass over the bundle: a kind-conformance lint (against any declared
 reusing the SAME validator 'doc write'/'new' use), an unresolved-link scan (a link whose target
 isn't in the bundle — informational, since OKF permits links to not-yet-written knowledge; external
 links are excluded entirely), an orphan scan (isolated content docs once a concept graph exists),
-a freshness sweep over standard 'stale_after' dates and kinds that declare a horizon
-(an elapsed absolute date or exceeded horizon is 'stale'; a horizon-governed doc with no usable
+a freshness sweep over standard 'stale_after' instants and kinds that declare a horizon
+(an elapsed absolute instant or exceeded horizon is 'stale'; a horizon-governed doc with no usable
 meaningful-change time is counted 'no_timestamp'), and two graph lints over any declared
 'links'/'expects_inbound' vocabulary (see
 'kinds --help'): edges violating a declared typed-edge type ('link_type_violations') and kind
@@ -102,8 +103,13 @@ Category semantics (one line each):
                       references/* Reference, docs/bundle Bundle Name), and docs already named by
                       another graph finding are excluded. Each remaining row is actionable: link
                       it into the graph or delete it if it is unintended. Self-links do not count.
-  stale              A doc on/after its standard 'stale_after' date, or a governed doc whose
+  stale              A doc on/after its standard 'stale_after' instant, or a governed doc whose
                       meaningful-change time is older than its kind's freshness horizon.
+  invalid_stale_after  A v0.2 doc carrying an unreadable 'stale_after' (including date-only values).
+                      Its deadline cannot be evaluated; the stored value is preserved. Applies
+                      without a Kind or horizon, including terminal and untyped docs. Omitted
+                      when none are found, and always absent on v0.1. Fix with
+                      'doc update <id> --stale-after <ISO-8601 instant with Z or UTC offset>'.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
   trust              OKF v0.2 trust tiers (SPEC 5.3) counted once per doc from its 'verified'
@@ -111,7 +117,7 @@ Category semantics (one line each):
                       process:/producer verifiers), 'unverified' (no events). A bare single-event
                       mapping counts as one event. Present on a v0.2 bundle with at least one doc;
                       a v0.1 bundle defines no trust family. See 'doc verify' to add an event.
-  registry_warnings  Malformed convention docs THEMSELVES (loadKinds' own warnings) — a problem in
+  registry_warnings  Malformed conventions or v0.2 workflow status collisions — a problem in
                       the schema declaration, not in a doc that kind governs.
   link_type_violations  An edge whose text EXACTLY matches a declared typed-edge vocabulary entry
                       (some kind's 'links' map) but the actual source and/or target doc's type
@@ -208,6 +214,17 @@ const OKF_V02_LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
 /** A doc's `type` field, or "" when absent/non-string — the ONE place this coercion happens. */
 function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
+}
+
+/** Preserve ordinary YAML value shapes while keeping unsupported JSON values legible. */
+function diagnosticValue(value: unknown): unknown {
+  try {
+    return JSON.parse(JSON.stringify(value, (_key, item: unknown) =>
+      typeof item === "number" && !Number.isFinite(item) ? `<${String(item)}>` : item));
+  } catch {
+    // YAML aliases can form cycles; the health report must still name the offending document.
+    return `<non-JSON ${Array.isArray(value) ? "array" : typeof value}: circular or too deeply nested>`;
+  }
 }
 
 /**
@@ -426,10 +443,16 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const now = new Date();
   const staleRows: Record<string, unknown>[] = [];
   const noTimestampRows: Record<string, unknown>[] = [];
+  const invalidStaleAfterRows: Record<string, unknown>[] = [];
   for (const doc of docs) {
     const kind = registry.kinds.get(docType(doc));
     const horizonMs = kind ? freshnessHorizonMs(kind) : undefined;
-    const staleAfter = okfVersion === "0.2" && typeof doc.frontmatter.stale_after === "string"
+    const hasStaleAfter = okfVersion === "0.2" && Object.hasOwn(doc.frontmatter, "stale_after");
+    const invalidStaleAfter = hasStaleAfter && staleAfterInstant(doc.frontmatter.stale_after) === null;
+    if (invalidStaleAfter) {
+      invalidStaleAfterRows.push({ id: doc.id, type: docType(doc), value: diagnosticValue(doc.frontmatter.stale_after) });
+    }
+    const staleAfter = hasStaleAfter && !invalidStaleAfter
       ? doc.frontmatter.stale_after
       : undefined;
     if (horizonMs === undefined && staleAfter === undefined) continue;
@@ -572,8 +595,19 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const orphans = cap(orphanRows, limit);
   const stale = cap(staleRows, limit);
   const noTimestamp = cap(noTimestampRows, limit);
+  const invalidStaleAfter = cap(invalidStaleAfterRows, limit);
+  const statusCollisions = okfV02WorkflowStatusCollisions(registry, docs);
+  const lifecycleWarnings = okfVersion === "0.2"
+    ? statusCollisions.filter((row) => (row.incompatible_values as string[]).length > 0).map((row) => ({
+      code: "OKF_WORKFLOW_STATUS_COLLISION",
+      message: `kind convention '${row.convention}' uses top-level status for workflow values (${(row.incompatible_values as string[]).join(", ")}). ` +
+        "OKF v0.2 reserves status for draft|stable|deprecated; migrate workflow state to logical progress_status (stored as superbee_progress_status).",
+      field: "fields.values.status",
+      severity: "warning",
+    }))
+    : [];
   const registryLint = cap(
-    registry.warnings.map((w): Record<string, unknown> => ({ ...w })),
+    [...registry.warnings.map((w): Record<string, unknown> => ({ ...w })), ...lifecycleWarnings],
     limit,
   );
   const linkTypeViolations = cap(linkTypeViolationRows, limit);
@@ -585,7 +619,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const danglingViewEntries = cap(danglingViewEntryRows, limit);
   const invalidViewRegistrations = cap(invalidRegistrationRows, limit);
   const okfV02StatusCollisionRows =
-    okfVersion === "0.1" ? okfV02WorkflowStatusCollisions(registry, docs) : [];
+    okfVersion === "0.1" ? statusCollisions : [];
 
   const out: Record<string, unknown> = {
     docs: docs.length,
@@ -595,6 +629,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     unresolved_links: unresolved.total,
     orphans: orphans.total,
     stale: stale.total,
+    ...(invalidStaleAfter.total > 0 ? { invalid_stale_after: invalidStaleAfter.total } : {}),
     no_timestamp: noTimestamp.total,
     registry_warnings: registryLint.total,
     link_type_violations: linkTypeViolations.total,
@@ -671,6 +706,13 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     };
   }
   if (stale.total > 0) out.stale_docs = stale;
+  if (invalidStaleAfter.total > 0) {
+    out.invalid_stale_after_docs = {
+      ...invalidStaleAfter,
+      reason: "The stale_after deadline cannot be evaluated: expected an ISO-8601 instant with Z or a UTC offset; date-only and malformed values remain stored unchanged.",
+      help: `${cliInvocation()} doc update <id> --stale-after <ISO-8601 instant with Z or UTC offset>`,
+    };
+  }
   if (noTimestamp.total > 0) out.no_timestamp_docs = noTimestamp;
   if (linkTypeViolations.total > 0) out.link_type_violations_rows = linkTypeViolations;
   if (missingExpectedLinks.total > 0) out.missing_expected_links_rows = missingExpectedLinks;

@@ -66,7 +66,7 @@ test("v0.2 create, mutate, no-op, conflict, and final receipts agree across all 
             type: "Note",
             title: "Agreement",
             generated: { by: "superbee/1.0.0" },
-            stale_after: "2026-12-31",
+        stale_after: "2026-12-31T00:00:00Z",
           },
           body: "before\n",
         }),

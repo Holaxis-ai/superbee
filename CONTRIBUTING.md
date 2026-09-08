@@ -246,6 +246,11 @@ Across both editions:
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars are normalized to ISO-8601 strings without converting unrelated nested or
   date-only values. Storage revision time and meaningful-change time are different clocks.
+- In v0.2, authored mutations require newly introduced or changed `stale_after` values to name an
+  ISO-8601 date and time with an explicit zone. Unchanged legacy values remain editable, and raw
+  core/wire imports preserve their source values. `status` reports unreadable deadlines, including
+  date-only values, as `invalid_stale_after`; they have no inferred expiration instant. Repair them
+  with `doc update <id> --stale-after <instant>` after choosing the intended time and zone.
 
 The external specification is supporting evidence, not the only discovery route. The committed
 section and core edition tests are the offline fallback. The fixture at
