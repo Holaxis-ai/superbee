@@ -162,8 +162,6 @@ export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> =
     help: `${cliInvocation()} index generate --actor <name>`,
   });
   const bundle = await openBundle(values.dir);
-  // Reserved index files never pass the document mutation seam, so the actor rule is applied here.
-  await assertActorAcceptedByBundle(bundle, actor);
   const [{ name: displayName }, heads] = await Promise.all([
     deriveBundleDisplayName(bundle),
     queryHeads(bundle),
@@ -198,6 +196,10 @@ export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> =
     return;
   }
 
+  // Reserved index files never pass the document mutation seam, so the actor rule is applied here,
+  // after the read-only --check branch: a check records no provenance and must never be blocked by
+  // an ambient actor spelling.
+  await assertActorAcceptedByBundle(bundle, actor);
   try {
     const applied = await applyIndexProjection(bundle, prepared, { actor });
     const receipt = {

@@ -125,12 +125,6 @@ test("actorRefusal / describeResolvedActor: deterministic wording for the three 
   // the hint must WORK when pasted: execute its span from that env and check what follows sees.
   const legacyHint = String(describeResolvedActor({ kind: "value", actor: "codex-root" }, { env: { AGENTSTATE_LITE_ACTOR: "codex-root" } }).actor_help);
   assert.match(legacyHint, /export SUPERBEE_ACTOR=process:codex-root; unset AGENTSTATE_LITE_ACTOR$/);
-  const hintSpan = legacyHint.slice(legacyHint.indexOf("export SUPERBEE_ACTOR="));
-  const hinted = spawnSync("/bin/sh", ["-c", `${hintSpan}; printf '%s|%s' "$SUPERBEE_ACTOR" "\${AGENTSTATE_LITE_ACTOR-UNSET}"`], {
-    encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "", AGENTSTATE_LITE_ACTOR: "codex-root" },
-  });
-  assert.equal(hinted.stdout, "process:codex-root|UNSET", "the pasted orientation hint leaves a usable environment");
   const unset = describeResolvedActor({ kind: "unset" }, { env: {} });
   assert.match(unset.actor, /^unset/);
   assert.match(String(unset.actor_help), /\(human:<id>.*\): export SUPERBEE_ACTOR=<actor>$/, "the span ends the line");
@@ -141,15 +135,7 @@ test("actorRefusal / describeResolvedActor: deterministic wording for the three 
   const combined = actorRefusal("codex-root", { env: { AGENTSTATE_LITE_ACTOR: "codex-root" } }).help;
   assert.equal(combined, "rerun with --actor process:codex-root, or set it once: export SUPERBEE_ACTOR=process:codex-root; unset AGENTSTATE_LITE_ACTOR");
   assert.doesNotMatch(actorRefusal("codex-root", { env: {} }).help, /AGENTSTATE_LITE_ACTOR/);
-  // The repair must WORK when pasted, not merely read well: execute it in a POSIX shell that starts
-  // with the conflicting legacy value and check what the next command would see.
-  const repair = combined.slice(combined.indexOf("set it once: ") + "set it once: ".length);
-  const shell = spawnSync("/bin/sh", ["-c", `${repair}; printf '%s|%s' "$SUPERBEE_ACTOR" "\${AGENTSTATE_LITE_ACTOR-UNSET}"`], {
-    encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "", AGENTSTATE_LITE_ACTOR: "codex-root" },
-  });
-  assert.equal(shell.status, 0, shell.stderr);
-  assert.equal(shell.stdout, "process:codex-root|UNSET", "after the pasted repair the fix is exported and the legacy variable is gone");
+
   assert.equal(LEGACY_ACTOR_ENV, "AGENTSTATE_LITE_ACTOR", "the guidance module spells the legacy variable as a literal to avoid an import cycle");
   const punct = describeResolvedActor({ kind: "value", actor: "///" }, { env: {} });
   assert.match(String(punct.actor_help), /set a real one \(human:<id>.*\): export SUPERBEE_ACTOR=<actor>$/);
@@ -157,12 +143,7 @@ test("actorRefusal / describeResolvedActor: deterministic wording for the three 
   // leave a usable environment (executed, not read).
   const punctLegacy = String(describeResolvedActor({ kind: "value", actor: "///" }, { env: { AGENTSTATE_LITE_ACTOR: "///" } }).actor_help);
   assert.match(punctLegacy, /export SUPERBEE_ACTOR=<actor>; unset AGENTSTATE_LITE_ACTOR$/, "the span ends the line so a whole-line paste works");
-  const punctSpan = punctLegacy.slice(punctLegacy.indexOf("export SUPERBEE_ACTOR=")).replace("<actor>", "process:review");
-  const punctRun = spawnSync("/bin/sh", ["-c", `${punctSpan}; printf '%s|%s' "$SUPERBEE_ACTOR" "\${AGENTSTATE_LITE_ACTOR-UNSET}"`], {
-    encoding: "utf8",
-    env: { PATH: process.env.PATH ?? "", AGENTSTATE_LITE_ACTOR: "///" },
-  });
-  assert.equal(punctRun.stdout, "process:review|UNSET");
+
   assert.match(ACTOR_FORMS_HELP, /human:<id>/);
 });
 
@@ -238,6 +219,16 @@ test("verbs whose first write is not the document mutation refuse BEFORE any wri
     const generated = await expectRefusal(indexCommand(["generate", "--dir", dir, "--actor", "codex-root", "--json"], sink));
     assert.match(String(generated.help), /--actor process:codex-root/);
     assert.equal(await readFile(path.join(dir, "index.md"), "utf8"), indexBefore, "reserved index bytes untouched");
+    // A read-only --check records no provenance, so an ambient non-conforming actor never blocks it.
+    out = "";
+    try {
+      await indexCommand(["generate", "--check", "--dir", dir, "--actor", "codex-root", "--json"], sink);
+    } catch (err) {
+      // A stale projection is a CONFLICT with the receipt in details; only an actor refusal is wrong here.
+      assert.ok(err instanceof CliError && err.code === "CONFLICT", `unexpected: ${String(err)}`);
+      assert.doesNotMatch(err.message, /not an OKF actor/);
+    }
+    assert.doesNotMatch(out, /not an OKF actor/);
 
     const evolved = await expectRefusal(recipe(["evolve", "context-notes", "--apply", "not-a-token", "--actor", "codex-root", "--dir", dir, "--json"], sink));
     assert.equal(evolved.code, "USAGE", "a usage error with the fix, never CONFLICT");
@@ -258,3 +249,43 @@ test("verbs whose first write is not the document mutation refuse BEFORE any wri
     await rm(scratch, { recursive: true, force: true });
   }
 });
+
+/**
+ * The emitted repairs must WORK when pasted, not merely read well. These probes execute the
+ * exact spans in a POSIX shell from the failing environment and check what the next command sees.
+ * Native Windows has no /bin/sh (and the hint is documented as a POSIX-shell hint), so the probes
+ * are skipped there while the string assertions above stay portable.
+ */
+test(
+  "POSIX: every emitted env repair executes verbatim and leaves a usable environment",
+  { skip: process.platform === "win32" && "the export/unset hint is a POSIX-shell repair; no /bin/sh on native Windows" },
+  () => {
+    const run = (span: string, env: NodeJS.ProcessEnv) =>
+      spawnSync("/bin/sh", ["-c", `${span}; printf '%s|%s' "$SUPERBEE_ACTOR" "\${AGENTSTATE_LITE_ACTOR-UNSET}"`], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH ?? "", ...env },
+      });
+    const legacy = { AGENTSTATE_LITE_ACTOR: "codex-root" };
+
+    // Refusal help, concrete fix, legacy variable present.
+    const help = actorRefusal("codex-root", { env: legacy }).help;
+    const repair = help.slice(help.indexOf("set it once: ") + "set it once: ".length);
+    const repaired = run(repair, legacy);
+    assert.equal(repaired.status, 0, repaired.stderr);
+    assert.equal(repaired.stdout, "process:codex-root|UNSET", "after the pasted repair the fix is exported and the legacy variable is gone");
+
+    // Orientation hint, concrete bad value from the legacy variable.
+    const hint = String(describeResolvedActor({ kind: "value", actor: "codex-root" }, { env: legacy }).actor_help);
+    const hinted = run(hint.slice(hint.indexOf("export SUPERBEE_ACTOR=")), legacy);
+    assert.equal(hinted.stdout, "process:codex-root|UNSET", "the pasted orientation hint leaves a usable environment");
+
+    // Orientation hint, placeholder branch, with a real actor substituted for <actor>.
+    const punct = String(describeResolvedActor({ kind: "value", actor: "///" }, { env: { AGENTSTATE_LITE_ACTOR: "///" } }).actor_help);
+    const substituted = punct.slice(punct.indexOf("export SUPERBEE_ACTOR=")).replace("<actor>", "process:review");
+    assert.equal(run(substituted, { AGENTSTATE_LITE_ACTOR: "///" }).stdout, "process:review|UNSET");
+
+    // Unset-env hint, with a real actor substituted.
+    const unsetHint = String(describeResolvedActor({ kind: "unset" }, { env: {} }).actor_help);
+    assert.equal(run(unsetHint.slice(unsetHint.indexOf("export SUPERBEE_ACTOR=")).replace("<actor>", "human:brian"), {}).stdout, "human:brian|UNSET");
+  },
+);
