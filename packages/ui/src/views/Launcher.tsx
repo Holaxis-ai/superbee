@@ -38,6 +38,8 @@ import { getInterceptorStatus, type InterceptorStatus } from "../query/intercept
 import { navigate } from "../routing.js";
 import { ActivityFeed } from "./ActivityFeed.js";
 import { DocumentBrowser } from "./DocumentBrowser.js";
+import { POLL_INTERVAL_MS } from "../query/queryClient.js";
+import { DEFAULT_BUNDLE_TIME_ZONE } from "@superbee/core/time-zone";
 import { formatWhen } from "./format.js";
 
 /** Capability badge per enforced `access` value — role-based wording (the design's content model). */
@@ -147,7 +149,9 @@ export function Launcher() {
   const configQuery = useQuery({
     queryKey: ["ui-config"],
     queryFn: fetchConfig,
-    refetchInterval: (query) => sharingRefreshDelay(query.state.data?.sharing),
+    refetchInterval: (query) => getInterceptorStatus() === "ok"
+      ? Math.min(sharingRefreshDelay(query.state.data?.sharing) || POLL_INTERVAL_MS, POLL_INTERVAL_MS)
+      : false,
   });
   const pagesQuery = useQuery({ queryKey: ["pages"], queryFn: listPages });
   const [orientationDismissed, setOrientationDismissed] = useState<boolean | null>(null);
@@ -184,6 +188,7 @@ export function Launcher() {
   }, [queryClient]);
 
   const config = configQuery.data;
+  const timeZone = configQuery.isError || !config ? null : config.timeZone ?? DEFAULT_BUNDLE_TIME_ZONE;
 
   // The privacy promise describes a LOCAL bundle. Runtime mode is the authority; root may carry a
   // remote display value, so root presence alone must never enable orientation in hosted mode.
@@ -237,6 +242,7 @@ export function Launcher() {
 
   return (
     <div className="launcher">
+      {configQuery.isError && <p className="view-status view-status-error">Could not load bundle settings: {configQuery.error.message}. Dates are shown as stored.</p>}
       <section className="launcher-summary">
         <h2>{config?.name ?? "bundle"}</h2>
         <p className="launcher-meta">
@@ -246,7 +252,7 @@ export function Launcher() {
                   is worth flagging up front (mechanics live behind "where is this?"). */}
               {config.mode === "remote" && <span className="pill">remote</span>}
               {chip && (
-                <span className={chip.className} title={chip.title ?? (config.sharing ? `as of ${formatWhen(config.sharing.as_of) ?? config.sharing.as_of}` : undefined)}>
+                <span className={chip.className} title={chip.title ?? (config.sharing ? `as of ${formatWhen(config.sharing.as_of, timeZone) ?? config.sharing.as_of}` : undefined)}>
                   {chip.text}
                 </span>
               )}
@@ -286,7 +292,7 @@ export function Launcher() {
             {config.sharing && (
               <div>
                 <dt>As of</dt>
-                <dd>{formatWhen(config.sharing.as_of) ?? config.sharing.as_of}</dd>
+                <dd>{formatWhen(config.sharing.as_of, timeZone) ?? config.sharing.as_of}</dd>
               </div>
             )}
           </dl>
@@ -499,7 +505,7 @@ export function Launcher() {
             {pages.length > 0 && (
               <div className="launcher-grid">
                 {pages.map((page) => (
-                  <PageCard key={page.id} page={page} />
+                  <PageCard key={page.id} page={page} timeZone={timeZone} />
                 ))}
               </div>
             )}
@@ -565,14 +571,14 @@ export function Launcher() {
 
           <section className="launcher-section">
             <h3>Browse</h3>
-            <DocumentBrowser />
+            <DocumentBrowser timeZone={timeZone} />
           </section>
         </div>
 
         <aside className="home-aside">
           <section className="launcher-section">
             <h3>Activity</h3>
-            <ActivityFeed />
+            <ActivityFeed timeZone={timeZone} />
           </section>
           {config && (config.workspaces?.length ?? 0) > 0 && <WorkspacesBlock entries={config.workspaces} />}
         </aside>
@@ -630,8 +636,8 @@ function WorkspacesBlock({ entries }: { entries: WorkspaceSummaryEntry[] }) {
   );
 }
 
-function PageCard({ page }: { page: PageEntry }) {
-  const when = formatWhen(page.timestamp);
+function PageCard({ page, timeZone }: { page: PageEntry; timeZone: string | null }) {
+  const when = formatWhen(page.timestamp, timeZone);
   const badge = BRIDGE_BADGES[page.bridge];
   return (
     <button type="button" className="launcher-card" data-page-id={page.id} onClick={() => navigate({ view: "page", id: page.id })}>

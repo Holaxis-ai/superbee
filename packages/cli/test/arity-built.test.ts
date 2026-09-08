@@ -53,6 +53,9 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
   const dir = ["--dir", ctx.bundle] as const;
   return {
     bundleLocate: simple(CLI_LEAVES.bundleLocate, ["bundle", "locate"], [], dir),
+    bundleTimezone: simple(CLI_LEAVES.bundleTimezone, ["bundle", "timezone"], [], dir),
+    bundleTimezoneSet: simple(CLI_LEAVES.bundleTimezoneSet, ["bundle", "timezone", "set"], ["America/New_York"], dir),
+    bundleTimezoneReset: simple(CLI_LEAVES.bundleTimezoneReset, ["bundle", "timezone", "reset"], [], dir),
     catalogAdd: simple(CLI_LEAVES.catalogAdd, ["catalog", "add"], ["arity-second"], dir),
     catalogList: simple(CLI_LEAVES.catalogList, ["catalog", "list"], []),
     catalogResolve: simple(CLI_LEAVES.catalogResolve, ["catalog", "resolve"], ["arity-bundle"], ["--field", "path"], "stderr"),

@@ -10,7 +10,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { DocPage } from "./DocPage.js";
 import { ApiError, getDoc, listAllHeads } from "../api/client.js";
-import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
+import { fetchConfig, fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -20,6 +20,7 @@ vi.mock("../api/client.js", async (importOriginal) => {
 });
 
 vi.mock("../api/pages.js", () => ({
+  fetchConfig: vi.fn(async () => ({ timeZone: "Etc/GMT" })),
   fetchDocumentOpenCommand: vi.fn(async (id: string) => `superbee doc open ${id}`),
   fetchEdges: vi.fn(async () => []),
   fetchKinds: vi.fn(async () => []),
@@ -55,6 +56,8 @@ describe("DocPage", () => {
   let root: Root;
 
   beforeEach(() => {
+    vi.mocked(fetchConfig).mockReset();
+    vi.mocked(fetchConfig).mockResolvedValue({ timeZone: "Etc/GMT" } as Awaited<ReturnType<typeof fetchConfig>>);
     vi.mocked(getDoc).mockReset();
     vi.mocked(fetchEdges).mockReset();
     vi.mocked(fetchEdges).mockResolvedValue([]);
@@ -91,6 +94,15 @@ describe("DocPage", () => {
       });
     }
   }
+
+  it("shows configured time and reports settings failure without substituting GMT", async () => {
+    const timestamp = "2026-01-02T17:00:00Z";
+    vi.mocked(getDoc).mockResolvedValue({ version: "v1", doc: { id: "docs/time", frontmatter: { type: "Note", title: "Time", timestamp }, body: "" } });
+    vi.mocked(fetchConfig).mockRejectedValue(new Error("invalid bundle zone"));
+    await render("docs/time");
+    expect(container.textContent).toContain("Could not load bundle settings: invalid bundle zone");
+    expect(container.textContent).toContain(timestamp);
+  });
 
   async function resync(): Promise<void> {
     await act(async () => {

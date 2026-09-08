@@ -257,6 +257,28 @@ section and core edition tests are the offline fallback. The fixture at
 `examples/sample-bundle/references/okf-spec.md` is explicitly a v0.1 interop reference; it is not a
 cross-edition or current-product authority.
 
+### Bundle base time zone
+
+`bundle timezone` inspects the effective zone, its source, and the root version. The default is
+`Etc/GMT` (fixed UTC+00:00), independent of process or browser time zone. To change it, run
+`bundle timezone set America/New_York`; use `bundle timezone reset` to remove the override.
+The optional `--expected-version` guards the root version returned by inspection. Every change
+also guards the version it reads, so concurrent updates fail instead of overwriting each other.
+These commands support normal explicit `--dir` or `--remote` selection.
+
+The setting lives in root `index.md` as the Superbee extension `superbee_base_time_zone`. It accepts
+named IANA identifiers such as `America/New_York` and `Etc/GMT`, plus `UTC` and `GMT`; ambiguous
+abbreviations such as `EST` and numeric offset strings are refused. Named zones use the runtime's
+IANA rules, including daylight saving. Invalid stored settings are reported; set/reset can repair
+the setting without rewriting concept documents. Index generation preserves root extensions.
+
+The UI renders explicit instants in the resolved bundle zone, and the View bridge exposes it in
+`hello.bundle.timeZone`. This is presentation policy: stored instants and freshness comparisons
+keep their meaning. Authored `stale_after` still requires an explicit date, time, and zone.
+Date-only and zone-less local times, including daylight-saving gaps and repeated times, are not
+converted. Imported date-only deadlines remain invalid until explicitly repaired with an instant.
+Changing the base zone performs no document migration.
+
 ### Kind conventions
 
 Kind conventions are bundle-authored, opt-in schemas consumed through the one core registry. A

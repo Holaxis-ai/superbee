@@ -49,7 +49,7 @@ for (const argv of [["--help"], ["-h"], ["help"]]) {
     const heading = out.match(/^(.+) — read and write a local OKF knowledge bundle/m);
     assert.ok(heading, "must render the invocation in the heading");
     assert.match(out, /\nUsage: .+ <command> \[options\]\n/);
-    assert.match(out, /\nBundle:\n {2}bundle locate \[--dir <path>\][^\n]* — Resolve the exact canonical local bundle path/);
+    assert.match(out, /\nBundle:\n {2}bundle \(locate \| timezone[^\n]* — Inspect local bundle targeting/);
     assert.match(out, /\n {2}catalog \(add <label>[^\n]* — Register and deterministically resolve this user's explicitly named local workspaces/);
     assert.match(out, /\n {2}init \[--dir <path>\][^\n]* — Create \(or open\) an OKF knowledge bundle/);
     assert.match(out, /\nDocuments & links:\n {2}doc write <id> --type <t>/);

@@ -1679,7 +1679,7 @@ test("registered Roadmap View runs from unchanged source through the authorized 
       };
     }).outcome.reply.result,
     {
-      bundle: { root: null, name: "Proof bundle" },
+      bundle: { root: null, name: "Proof bundle", timeZone: "Etc/GMT" },
       mode: "local-mcp",
       protocol: "v0",
       grant: "read",

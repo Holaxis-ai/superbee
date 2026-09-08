@@ -9,7 +9,7 @@
 
 import { backendFor } from "./bundle.js";
 import { InvalidInputError } from "./errors.js";
-import { parseMarkdown, stringifyWithData } from "./frontmatter.js";
+import { parseMarkdown, parseReservedMarkdown, stringifyReservedMarkdown } from "./frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "./index-marker.js";
 import { assertSafeConceptId, toPosix } from "./paths.js";
 import type { Bundle, HeadResult, Version } from "./types.js";
@@ -192,7 +192,8 @@ export function planIndexProjection(displayName: string, heads: readonly HeadRes
 interface Ownership {
   owned: boolean;
   body: string;
-  okfVersion?: string;
+  frontmatter?: Record<string, unknown>;
+  unparseable?: boolean;
   reason?: PreparedIndexTarget["reason"];
 }
 
@@ -211,18 +212,17 @@ function markerOwnership(body: string): Pick<Ownership, "owned" | "reason"> {
 function inspectExisting(dir: string, content: string): Ownership {
   if (dir === "") {
     try {
-      const { frontmatter, body } = parseMarkdown(content, "index.md");
-      const keys = Object.keys(frontmatter);
-      if (keys.length !== 1 || keys[0] !== "okf_version" || typeof frontmatter.okf_version !== "string") {
-        return { owned: false, body, reason: "malformed-root" };
+      const { frontmatter, body } = parseReservedMarkdown(content, "index.md");
+      if (Object.hasOwn(frontmatter, "okf_version") && typeof frontmatter.okf_version !== "string") {
+        return { owned: false, body, frontmatter, reason: "malformed-root" };
       }
       return {
         ...markerOwnership(body),
         body,
-        okfVersion: frontmatter.okf_version,
+        frontmatter,
       };
     } catch {
-      return { owned: false, body: content, reason: "malformed-root" };
+      return { owned: false, body: content, unparseable: true, reason: "malformed-root" };
     }
   }
 
@@ -237,8 +237,8 @@ function inspectExisting(dir: string, content: string): Ownership {
   }
 }
 
-function desiredContent(dir: string, body: string, okfVersion?: string): string {
-  return dir === "" ? stringifyWithData({ okf_version: okfVersion ?? "0.1" }, body) : body;
+function desiredContent(dir: string, body: string, frontmatter: Record<string, unknown> = { okf_version: "0.1" }): string {
+  return dir === "" ? stringifyReservedMarkdown(frontmatter, body) : body;
 }
 
 /**
@@ -266,7 +266,7 @@ export async function prepareIndexProjection(
     }
 
     const ownership = inspectExisting(planned.dir, current.content);
-    const content = desiredContent(planned.dir, planned.body, ownership.okfVersion);
+    const content = desiredContent(planned.dir, planned.body, ownership.frontmatter);
     if (ownership.owned) {
       targets.push({
         dir: planned.dir,
@@ -274,7 +274,7 @@ export async function prepareIndexProjection(
         expectedVersion: current.version,
         disposition: current.content === content ? "unchanged" : "generated",
       });
-    } else if (options.force) {
+    } else if (options.force && !ownership.unparseable) {
       targets.push({
         dir: planned.dir,
         content,

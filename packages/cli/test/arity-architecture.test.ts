@@ -104,7 +104,7 @@ test("production parser and SDK authorities satisfy the closed import-aware arch
       .map(([id]) => id)
       .sort(),
     [
-      "bundleLocate", "catalogAdd", "catalogList", "catalogResolve", "hookInstall", "hookStatus",
+      "bundleLocate", "bundleTimezone", "bundleTimezoneReset", "bundleTimezoneSet", "catalogAdd", "catalogList", "catalogResolve", "hookInstall", "hookStatus",
       "hookUninstall", "indexGenerate", "kindDismiss", "kindDraft", "kindFieldAdd", "kindFieldRemove", "setup",
       "setupHardenState", "setupMigrateState", "setupQuarantineState", "skillInstall", "skillStatus", "skillUninstall", "viewList",
     ],

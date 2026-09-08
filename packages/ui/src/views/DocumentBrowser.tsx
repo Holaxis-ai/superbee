@@ -23,7 +23,7 @@ export const GROUP_CAP = 6;
 /** Max rows in the flattened search result (with an honest "N of M" when more match). */
 export const SEARCH_LIMIT = 40;
 
-export function DocumentBrowser() {
+export function DocumentBrowser({ timeZone = null }: { timeZone?: string | null }) {
   const queryClient = useQueryClient();
   const headsQuery = useQuery({ queryKey: ["all-heads"], queryFn: () => listAllHeads({}) });
   const kindsQuery = useQuery({ queryKey: ["kinds"], queryFn: fetchKinds, refetchInterval: false });
@@ -52,13 +52,13 @@ export function DocumentBrowser() {
     return <p className="view-status view-status-error">Could not load documents: {(headsQuery.error as Error).message}</p>;
   }
 
-  const groups = browseGroups(heads, collapsedKinds);
+  const groups = browseGroups(heads, collapsedKinds, timeZone);
   const total = groups.reduce((n, g) => n + g.rows.length, 0);
   if (total === 0) {
     return <p className="browse-empty">No documents yet. Everything your agents write shows up here, grouped by kind.</p>;
   }
 
-  const search = query.trim() ? searchRows(heads, query, SEARCH_LIMIT) : null;
+  const search = query.trim() ? searchRows(heads, query, SEARCH_LIMIT, timeZone) : null;
 
   return (
     <div className="browse">

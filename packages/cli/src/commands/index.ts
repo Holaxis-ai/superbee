@@ -30,7 +30,8 @@ Usage:
 Scans concept metadata once and plans the bundle's complete index.md hierarchy. A normal run
 creates missing indexes and refreshes only files carrying AgentState's exact generated marker.
 If any existing target is unmarked or malformed, the whole run refuses before writing anything;
---force is the explicit one-time adoption path and may replace curated prose.
+--force is the explicit one-time adoption path and may replace curated prose. Malformed root
+YAML must be repaired first so bundle settings are not discarded.
 
 --check performs the identical scan and ownership preflight but never writes. It exits 0 only when
 the projection is clean; drift or refusal returns a structured CONFLICT (exit 5) whose details
@@ -39,7 +40,7 @@ carry the same capped per-path classification as a normal receipt.
 Options:
   --dir <path>       Local bundle directory (default: discovered from the cwd)
   --check            Report drift/refusal without writing; clean is exit 0, otherwise exit 5
-  --force            Adopt and replace unmarked/malformed index files explicitly
+  --force            Adopt index prose explicitly; preserves root metadata and refuses malformed root YAML
   --actor <name>     Attribute changed writes (overrides SUPERBEE_ACTOR; legacy
                      AGENTSTATE_LITE_ACTOR remains supported). OKF v0.2 bundles accept only an
                      OKF actor: human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)

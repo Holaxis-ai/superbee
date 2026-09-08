@@ -9,6 +9,7 @@
  * A page's HTML never rides the model/query path: only its registry doc (frontmatter) is read
  * here; the bytes travel opaquely through the nonce route into the iframe.
  */
+import { DEFAULT_BUNDLE_TIME_ZONE, validateBundleTimeZone } from "@superbee/core/time-zone";
 import { getDoc, parseErrorEnvelope } from "./client.js";
 import type { Edge, EdgesResponse, Frontmatter } from "./types.js";
 import type { KindConvention } from "@superbee/core/kinds";
@@ -17,6 +18,8 @@ import { parseRegisteredPage, type BridgeCapability } from "../pages/registry.js
 
 /** `/__ui/config` shape (server `configResponse`). `sharing`/`workspaces` are ui-server's plain data shapes (type-only import — no runtime dependency), CLI-injected in dir mode. */
 export interface UiConfig {
+  /** Missing only on older servers; successful fetches resolve the GMT default. */
+  timeZone?: string;
   mode: string;
   remoteUrl: string | null;
   root: string | null;
@@ -41,7 +44,11 @@ export interface PageEntry {
 export async function fetchConfig(): Promise<UiConfig> {
   const res = await fetch("/__ui/config", { credentials: "same-origin" });
   if (!res.ok) throw await parseErrorEnvelope(res);
-  return (await res.json()) as UiConfig;
+  const config = (await res.json()) as UiConfig;
+  config.timeZone = config.timeZone === undefined
+    ? DEFAULT_BUNDLE_TIME_ZONE
+    : validateBundleTimeZone(config.timeZone);
+  return config;
 }
 
 /** CLI-rendered, host-shell-safe recovery command for one document. */

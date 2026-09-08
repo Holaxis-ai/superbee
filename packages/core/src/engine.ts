@@ -33,6 +33,8 @@ import type {
 } from "./types.js";
 
 export { MalformedDocumentError } from "./frontmatter-contract.js";
+export { readBundleTimeZone, setBundleTimeZone } from "./bundle-time-zone.js";
+export type { BundleTimeZone, BundleTimeZoneWrite } from "./bundle-time-zone.js";
 export type { EdgeFilter, Link } from "./types.js";
 
 /** A normalized written document together with the backend version recorded for it. */

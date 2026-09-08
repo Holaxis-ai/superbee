@@ -282,9 +282,10 @@ export interface StorageBackend {
    * {@link Version}, or `null` if absent. The version is the CAS basis a caller
    * passes back as {@link WriteOptions.expectedVersion} to
    * {@link StorageBackend.writeReserved} for a read-modify-write that does not lose
-   * a concurrent writer's update.
+   * a concurrent writer's update. Optional cancellation is forwarded by remote adapters; custom
+   * backends may ignore it, so callers requiring a hard latency bound must also bound their wait.
    */
-  readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null>;
+  readReserved(dir: string, name: ReservedFilename, options?: { signal?: AbortSignal }): Promise<ReservedReadResult | null>;
   /**
    * Persist raw content of a reserved file at `dir` and return its new {@link Version}.
    * Honors {@link WriteOptions.expectedVersion} (compare-and-swap → typed

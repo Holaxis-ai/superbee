@@ -611,6 +611,7 @@ test("bootUiServer: a --remote upstream that never responds on boot does not han
         bundle: { root: origin, backend: new RemoteBackend({ baseUrl: origin, bundle: "default", maxRetries: 0 }) },
         // Test-only override (never the production ~5s default) — keeps this test fast.
         watcherBootTimeoutMs: 100,
+        settingsTimeoutMs: 100,
         sessionSecret: SECRET,
       }).then((h) => {
         handle = h;
@@ -631,7 +632,7 @@ test("bootUiServer: a --remote upstream that never responds on boot does not han
       assert.ok(handle, "bootUiServer must resolve to a handle even when the watcher degrades");
       assert.ok(elapsedMs < 1_000, `bootUiServer took ${elapsedMs}ms — expected near the watcher's own ~100ms boot bound`);
       // Degraded-but-HONEST: the timeout is surfaced (never a silent no-watch), and the UI is
-      // otherwise fully usable — a basic authenticated request still succeeds.
+      // otherwise responsive; settings report unavailable rather than inventing GMT.
       assert.ok(
         stderrChunks.some((line) => line.includes("[ui watcher]") && /timeout/i.test(line)),
         `expected a "[ui watcher] ... timeout ..." stderr line; got: ${JSON.stringify(stderrChunks)}`,
@@ -639,7 +640,8 @@ test("bootUiServer: a --remote upstream that never responds on boot does not han
       const res = await fetch(`http://${handle!.host}:${handle!.port}/__ui/config`, {
         headers: { cookie: `aslite_ui_session=${SECRET}` },
       });
-      assert.equal(res.status, 200, "the UI must remain fully usable even though the watcher degraded");
+      assert.equal(res.status, 500, "unavailable remote settings must fail promptly without a fabricated default");
+      assert.match(await res.text(), /bundle settings/);
     } finally {
       if (handle) await handle.close();
     }

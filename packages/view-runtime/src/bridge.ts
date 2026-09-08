@@ -1,3 +1,4 @@
+import { readViewBundleTimeZone } from "./bundle-settings.js";
 import {
   applyQuerySelectionFilters,
   loadKinds,
@@ -298,6 +299,8 @@ function boundedRows(rows: HeadResult[], params: QuerySelectionParams, kinds: Ki
 }
 
 export interface BridgeServiceOptions {
+  /** Bound bundle settings reads; injectable for deterministic timeout tests. */
+  settingsTimeoutMs?: number;
   bundle: Bundle;
   launches: BridgeLaunchAuthority;
   config: () => Promise<BridgeConfig>;
@@ -376,7 +379,9 @@ export class BridgeService {
           request.id,
           request.bridge,
           "RUNTIME",
-          "the View request failed",
+          request.type === "hello"
+            ? "Could not load bundle settings. Check bundle access and superbee_base_time_zone in root index.md; use bundle timezone set or reset to repair an invalid zone."
+            : "the View request failed",
         ),
       };
     }
@@ -500,7 +505,7 @@ export class BridgeService {
       const config = await this.options.config();
       return {
         reply: ok(request.id, request.bridge, request.type, {
-          bundle: { root: config.root, name: config.name },
+          bundle: { root: config.root, name: config.name, timeZone: (await readViewBundleTimeZone(this.options.bundle, this.options.settingsTimeoutMs)).timeZone },
           mode: config.mode,
           protocol: BRIDGE_PROTOCOL,
           grant: launch.capability === "bundle-propose" ? "propose" : "read",

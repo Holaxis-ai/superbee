@@ -56,6 +56,32 @@ const yamlEngine = {
   },
 };
 
+/** Reserved metadata has no concept timestamp normalization, and its body is user-owned bytes. */
+export function parseReservedMarkdown(
+  raw: string,
+  context?: string,
+): { frontmatter: Record<string, unknown>; body: string } {
+  const split = splitLeadingFrontmatter(raw, context);
+  if (!("yamlSource" in split)) return { frontmatter: {}, body: raw };
+  try {
+    const parsed = yamlEngine.parse(split.yamlSource);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new TypeError("YAML frontmatter must be a mapping");
+    }
+    return { frontmatter: parsed as Record<string, unknown>, body: split.body };
+  } catch (error) {
+    throw new MalformedDocumentError(context, error);
+  }
+}
+
+/** Serialize reserved metadata without adding or normalizing any body bytes. */
+export function stringifyReservedMarkdown(frontmatter: Record<string, unknown>, body: string): string {
+  const dumped = yaml.safeDump(frontmatter).trim();
+  // Keep an explicit empty mapping: removing the block could turn a body-leading delimiter
+  // into new frontmatter on the next read.
+  return `---\n${dumped}\n---\n${body}`;
+}
+
 /**
  * Normalize the legacy top-level `timestamp` field to an ISO-8601 string.
  *

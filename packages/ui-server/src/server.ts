@@ -29,6 +29,7 @@ import { proxyToRemote } from "./proxy.js";
 import { pageCsp } from "./pages.js";
 import {
   BridgeService,
+  readViewBundleTimeZone,
   PageActionLaunchAuthority,
   PageBridgeLaunchAuthority,
   PageLaunchRegistry,
@@ -91,6 +92,8 @@ export interface WorkspaceSummaryEntry {
 }
 
 interface CommonUiServerOptions {
+  /** Bound bundle settings reads; injectable for deterministic timeout tests. */
+  settingsTimeoutMs?: number;
   port?: number;
   /**
    * REQUIRED in both modes: the semantic bundle used by View launch, catalog, bridge, and
@@ -482,13 +485,11 @@ async function handleMint(req: Request, runtime: UiRuntime, options: UiServerOpt
  * else root basename), read per request so a `doc write docs/bundle --title …` shows up on the
  * next load without a server restart. Remote mode keeps the origin host as the label.
  */
-async function configData(options: UiServerOptions): Promise<{
+async function configIdentityData(options: UiServerOptions): Promise<{
   mode: "dir" | "remote";
   remoteUrl: string | null;
   root: string | null;
   name: string;
-  sharing: SharingSummary | null;
-  workspaces: WorkspaceSummaryEntry[];
 }> {
   const name =
     options.mode === "dir"
@@ -507,16 +508,26 @@ async function configData(options: UiServerOptions): Promise<{
     remoteUrl: options.mode === "remote" ? (options.remoteBase ?? null) : null,
     root: options.mode === "dir" ? options.bundle.root : options.remoteBase,
     name,
+  };
+}
+
+async function configData(options: UiServerOptions) {
+  return {
+    ...await configIdentityData(options),
+    timeZone: (await readViewBundleTimeZone(options.bundle, options.settingsTimeoutMs)).timeZone,
     sharing: await sharingSummary(options),
     workspaces: await workspacesSummary(options),
   };
 }
 
 async function configResponse(options: UiServerOptions): Promise<Response> {
-  return new Response(
-    JSON.stringify(await configData(options)),
-    { status: 200, headers: { "content-type": "application/json; charset=utf-8" } },
-  );
+  try {
+    return new Response(JSON.stringify(await configData(options)), {
+      status: 200, headers: { "content-type": "application/json; charset=utf-8" },
+    });
+  } catch {
+    return jsonError(500, "RUNTIME", "Could not load bundle settings. Check bundle access and superbee_base_time_zone in root index.md; use bundle timezone set or reset to repair an invalid zone.");
+  }
 }
 
 /**
@@ -1023,10 +1034,11 @@ export async function bootUiServer(options: UiServerOptions): Promise<UiServerHa
     authorizations,
     bridge: new BridgeService({
       bundle: options.bundle,
+      settingsTimeoutMs: options.settingsTimeoutMs,
       launches: bridgeAuthority,
       renderDocument: options.renderDocument,
       config: async () => {
-        const config = await configData(options);
+        const config = await configIdentityData(options);
         return { root: config.root, name: config.name, mode: config.mode };
       },
     }),

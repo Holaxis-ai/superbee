@@ -69,6 +69,9 @@ const selector = (
  */
 export const BEHAVIOR_ASSIGNMENTS = [
   selector("bundleLocate", "leading-navigation", 0),
+  selector("bundleTimezone", "leading-navigation", 0),
+  selector("bundleTimezoneSet", "leading-navigation", 1),
+  selector("bundleTimezoneReset", "leading-navigation", 0),
   selector("catalogAdd", "leading-navigation", 1),
   selector("catalogList", "leading-navigation", 0),
   selector("catalogResolve", "leading-navigation", 1, { errorChannel: "stderr" }),

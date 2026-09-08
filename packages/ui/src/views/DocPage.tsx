@@ -16,9 +16,10 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { getDoc, listAllHeads, ApiError } from "../api/client.js";
-import { fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
+import { fetchConfig, fetchDocumentOpenCommand, fetchEdges, fetchKinds } from "../api/pages.js";
 import { subscribeToChanges, subscribeToResync } from "../pages/pageEvents.js";
 import { navigate } from "../routing.js";
+import { DEFAULT_BUNDLE_TIME_ZONE } from "@superbee/core/time-zone";
 import { formatWhen } from "./format.js";
 import { renderMarkdown } from "@superbee/markdown-renderer";
 import { meaningfulChangeTimeValue } from "@superbee/core/meaningful-change-time";
@@ -50,6 +51,8 @@ const STANDARD_FIELDS = new Set([
 
 export function DocPage({ docId }: { docId: string }) {
   const queryClient = useQueryClient();
+  const configQuery = useQuery({ queryKey: ["ui-config"], queryFn: fetchConfig, retry: false });
+  const timeZone = configQuery.isError || !configQuery.data ? null : configQuery.data.timeZone ?? DEFAULT_BUNDLE_TIME_ZONE;
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
   const docQuery = useQuery({
     queryKey: ["doc", docId],
@@ -110,6 +113,7 @@ export function DocPage({ docId }: { docId: string }) {
         ← Home
       </button>
       <span className="page-frame-title">{docId}</span>
+      {configQuery.isError && <span className="view-status-error">Could not load bundle settings: {configQuery.error.message}. Dates are shown as stored.</span>}
     </div>
   );
 
@@ -150,7 +154,7 @@ export function DocPage({ docId }: { docId: string }) {
   const kind = String(fm.type ?? "Doc");
   const title = stringField(fm.title) ?? doc.id;
   const actor = mutationActorFromFrontmatter(fm);
-  const when = formatWhen(stringField(meaningfulChangeTimeValue(fm)));
+  const when = formatWhen(stringField(meaningfulChangeTimeValue(fm)), timeZone);
   // OKF v0.2 trust tier (SPEC 5.3), derived by the one core rule from `verified` — a bare mapping
   // reads as one event. Always shown: "unverified" is itself the signal a reader needs.
   const trust = trustTier(fm);

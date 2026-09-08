@@ -50,6 +50,8 @@ export type {
 export {
   initBundle,
   readBundleOkfVersion,
+  readBundleTimeZone,
+  setBundleTimeZone,
   resolveOkfAuthoringVersion,
   DEFAULT_OKF_AUTHORING_VERSION,
   SUPPORTED_OKF_AUTHORING_VERSIONS,
@@ -85,6 +87,8 @@ export { readBlob, writeBlob, existsBlob, listBlobs } from "./bundle.js";
 export type { BlobKey, ReadBlobResult } from "./types.js";
 
 export { freshness, staleAfterInstant } from "./freshness.js";
+export { DEFAULT_BUNDLE_TIME_ZONE, validateBundleTimeZone } from "./time-zone.js";
+export type { BundleTimeZone, BundleTimeZoneWrite } from "./bundle-time-zone.js";
 
 // OKF v0.2 trust: the one actor grammar and the one `verified` read/append policy every surface
 // (CLI receipts, status counts, list projection, the UI header) derives the trust tier through.

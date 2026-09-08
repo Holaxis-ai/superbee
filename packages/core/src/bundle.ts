@@ -44,6 +44,18 @@ export async function readBundleOkfVersion(bundle: Bundle): Promise<string | und
   return engine.readBundleOkfVersion(backendFor(bundle));
 }
 
+export async function readBundleTimeZone(bundle: Bundle, options?: { signal?: AbortSignal }): Promise<engine.BundleTimeZone> {
+  return engine.readBundleTimeZone(backendFor(bundle), options);
+}
+
+export async function setBundleTimeZone(
+  bundle: Bundle,
+  timeZone: string | null,
+  options?: WriteOptions,
+): Promise<engine.BundleTimeZoneWrite> {
+  return engine.setBundleTimeZone(backendFor(bundle), timeZone, options);
+}
+
 export const SUPPORTED_OKF_AUTHORING_VERSIONS = ["0.1", "0.2"] as const;
 export const DEFAULT_OKF_AUTHORING_VERSION = "0.2";
 

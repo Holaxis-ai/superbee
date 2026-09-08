@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getDoc } from "./client.js";
-import { fetchDocumentOpenCommand, listPages, pageFromFrontmatter, resolvePageTarget } from "./pages.js";
+import { fetchConfig, fetchDocumentOpenCommand, listPages, pageFromFrontmatter, resolvePageTarget } from "./pages.js";
 import type { Frontmatter } from "./types.js";
 
 vi.mock("./client.js", async (importOriginal) => {
@@ -105,5 +105,25 @@ describe("resolvePageTarget", () => {
   it("turns missing documents into a false target result", async () => {
     vi.mocked(getDoc).mockRejectedValue(new Error("not found"));
     expect(await resolvePageTarget("pages-registry/missing")).toBe(false);
+  });
+});
+
+
+describe("bundle time zone configuration", () => {
+  it("defaults only a missing field, preserves a configured zone, and rejects invalid values and transport errors", async () => {
+    try {
+      for (const [body, expected] of [[{}, "Etc/GMT"], [{ timeZone: "America/New_York" }, "America/New_York"]] as const) {
+        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(body))));
+        expect((await fetchConfig()).timeZone).toBe(expected);
+      }
+      for (const value of [null, "", "not/a-zone", "EST"]) {
+        vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ timeZone: value }))));
+        await expect(fetchConfig()).rejects.toThrow();
+      }
+      vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("offline"); }));
+      await expect(fetchConfig()).rejects.toThrow("offline");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

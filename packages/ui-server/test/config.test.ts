@@ -172,3 +172,42 @@ test("remote mode derives hosted from remoteBase in the runtime — no injection
     await server.close();
   }
 });
+
+
+test("config resolves GMT, reads current bundle overrides, and reports invalid settings", async () => {
+  const bundle = memoryBundle();
+  const server = await bootDir({ bundle });
+  try {
+    assert.equal((await fetchConfig(server)).timeZone, "Etc/GMT");
+    await bundle.backend!.writeReserved("", "index.md", "---\nokf_version: '0.2'\nsuperbee_base_time_zone: America/New_York\n---\n# Bundle\n");
+    assert.equal((await fetchConfig(server)).timeZone, "America/New_York");
+    await bundle.backend!.writeReserved("", "index.md", "---\nsuperbee_base_time_zone: Not/A_Zone\n---\n");
+    const response = await fetch(`http://${server.host}:${server.port}/__ui/config`, { headers: { cookie: `aslite_ui_session=${SECRET}` } });
+    assert.equal(response.status, 500);
+    const error = await response.json() as { error: { message: string } };
+    assert.match(error.error.message, /superbee_base_time_zone/);
+    assert.match(error.error.message, /reset/);
+  } finally {
+    await server.close();
+  }
+});
+
+
+test("config returns an actionable failure when the settings backend never settles", { timeout: 2_000 }, async () => {
+  const bundle = memoryBundle();
+  let reads = 0;
+  bundle.backend!.readReserved = async () => { reads++; return new Promise(() => {}); };
+  const server = await bootDir({ bundle, settingsTimeoutMs: 10 });
+  try {
+    for (let i = 0; i < 2; i++) {
+      const response = await fetch(`http://${server.host}:${server.port}/__ui/config`, { headers: { cookie: `aslite_ui_session=${SECRET}` } });
+      assert.equal(response.status, 500);
+      const body = await response.json() as { error: { message: string }; timeZone?: string };
+      assert.match(body.error.message, /bundle access/);
+      assert.equal(body.timeZone, undefined);
+    }
+    assert.equal(reads, 2, "a later caller can retry even if a custom backend ignores cancellation");
+  } finally {
+    await server.close();
+  }
+});

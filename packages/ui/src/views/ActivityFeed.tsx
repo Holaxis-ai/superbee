@@ -65,7 +65,7 @@ export function isFeedHead(head: DocHead): boolean {
 }
 
 /** Project heads into display rows: filtered, newest-first by `timestamp` (undated last), capped at {@link FEED_LIMIT}. Pure — the unit-tested core. */
-export function feedRows(heads: DocHead[], okfVersion: string, kinds: readonly KindConvention[]): FeedRow[] {
+export function feedRows(heads: DocHead[], okfVersion: string, kinds: readonly KindConvention[], timeZone: string | null = null): FeedRow[] {
   const kindsByType = new Map(kinds.map((kind) => [kind.governs, kind]));
   return heads
     .filter(isFeedHead)
@@ -87,7 +87,7 @@ export function feedRows(heads: DocHead[], okfVersion: string, kinds: readonly K
         // status coordinate through the same logical field.
         status: stringField(projected.progress_status),
         assignee: stringField(h.frontmatter.assignee),
-        when: formatWhen(timestamp),
+        when: formatWhen(timestamp, timeZone),
         timestamp: timestamp ?? "",
       };
     })
@@ -106,7 +106,7 @@ export function freshIds(rows: FeedRow[], previous: Map<string, string> | null):
   return fresh;
 }
 
-export function ActivityFeed() {
+export function ActivityFeed({ timeZone = null }: { timeZone?: string | null }) {
   const queryClient = useQueryClient();
   const feedQuery = useQuery({
     queryKey: ["activity"],
@@ -140,7 +140,7 @@ export function ActivityFeed() {
   }, [queryClient]);
 
   const rows = feedQuery.data
-    ? feedRows(feedQuery.data.heads, feedQuery.data.okfVersion, feedQuery.data.kinds)
+    ? feedRows(feedQuery.data.heads, feedQuery.data.okfVersion, feedQuery.data.kinds, timeZone)
     : [];
   const fresh = freshIds(rows, previousRef.current);
 

@@ -209,9 +209,7 @@ test("ordinary generated metadata may mention the marker token without revoking 
 test("invalid root metadata and malformed nested YAML are refused unless explicitly adopted", async () => {
   const plan = recursivePlan();
   const invalidRoots = [
-    byDir(plan, ""),
     stringifyWithData({ okf_version: 7 }, byDir(plan, "")),
-    stringifyWithData({ okf_version: "0.8", extra: true }, byDir(plan, "")),
   ];
 
   for (const rootContent of invalidRoots) {

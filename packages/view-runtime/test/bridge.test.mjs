@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   BridgeService,
+  readViewBundleTimeZone,
   PageBridgeLaunchAuthority,
   PageLaunchRegistry,
   parseBridgeRequest,
@@ -11,6 +12,7 @@ import {
 } from "../dist/index.js";
 import {
   MemoryBackend,
+  RemoteBackend,
   queryEdges,
   writeDoc,
 } from "@superbee/core";
@@ -663,4 +665,78 @@ test("render-document reads one canonical version, bounds it, and revalidates th
   });
   assert.equal(revoked.reply.error.code, "REVOKED");
   assert.doesNotMatch(JSON.stringify(revoked.reply), /<article>/);
+});
+
+
+test("hello exposes the selected bundle zone and refuses unreadable configuration", async () => {
+  const bundle = { root: "mem://time-zone", backend: new MemoryBackend() };
+  const bridge = new BridgeService({
+    bundle,
+    launches: { async resolve(launchId) { return { launchId, capability: "bundle-read" }; }, revoke() {} },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+  });
+  const hello = () => bridge.handle("launch", { bridge: "v0", type: "hello", id: "tz" });
+  assert.equal((await hello()).reply.result.bundle.timeZone, "Etc/GMT");
+  await bundle.backend.writeReserved("", "index.md", "---\nsuperbee_base_time_zone: America/New_York\n---\n");
+  assert.equal((await hello()).reply.result.bundle.timeZone, "America/New_York");
+  await bundle.backend.writeReserved("", "index.md", "---\nsuperbee_base_time_zone: Not/A_Zone\n---\n");
+  const reply = (await hello()).reply;
+  assert.equal(reply.type, "error");
+  assert.equal(reply.error.code, "RUNTIME");
+  assert.match(reply.error.message, /superbee_base_time_zone/);
+});
+
+
+test("hello bounds stalled settings reads and aborts before recovery", { timeout: 2_000 }, async () => {
+  const backend = new MemoryBackend();
+  let reads = 0;
+  let aborted = 0;
+  backend.readReserved = (_dir, _name, options) => {
+    reads++;
+    return new Promise((_, reject) => {
+      options.signal.addEventListener("abort", () => { aborted++; reject(options.signal.reason); }, { once: true });
+    });
+  };
+  const bundle = { root: "mem://stalled-settings", backend };
+  const bridge = new BridgeService({
+    bundle,
+    settingsTimeoutMs: 10,
+    launches: { async resolve(launchId) { return { launchId, capability: "bundle-read" }; }, revoke() {} },
+    config: async () => ({ root: null, name: "Test", mode: "test" }),
+    renderDocument: ({ body }) => ({ html: body, bounded: false }),
+  });
+  const hello = () => bridge.handle("launch", { bridge: "v0", type: "hello", id: "stalled" });
+  for (let i = 0; i < 2; i++) {
+    const reply = (await hello()).reply;
+    assert.equal(reply.type, "error");
+    assert.match(reply.error.message, /bundle settings/i);
+  }
+  assert.equal(reads, 2);
+  assert.equal(aborted, 2, "timed out reads must be canceled before retry");
+  backend.readReserved = async () => null;
+  assert.equal((await hello()).reply.result.bundle.timeZone, "Etc/GMT");
+});
+
+
+test("settings timeout aborts the remote fetch and a recovered upstream can be read next", { timeout: 2_000 }, async () => {
+  let recovered = false;
+  let aborted = false;
+  const requests = [];
+  const bundle = { root: "https://settings.invalid", backend: new RemoteBackend({
+    baseUrl: "https://settings.invalid", bundle: "default", maxRetries: 0,
+    fetchImpl: async (request) => {
+      // A real transport retains its in-flight request until completion.
+      requests.push(request);
+      if (recovered) return new Response(null, { status: 404 });
+      return new Promise((_, reject) => {
+        request.signal.addEventListener("abort", () => { aborted = true; reject(request.signal.reason); }, { once: true });
+      });
+    },
+  }) };
+  await assert.rejects(readViewBundleTimeZone(bundle, 10), /timed out/);
+  assert.equal(aborted, true, "the deadline reaches the transport's Request signal");
+  assert.equal(requests[0].signal.aborted, true);
+  recovered = true;
+  assert.equal((await readViewBundleTimeZone(bundle, 100)).timeZone, "Etc/GMT");
 });

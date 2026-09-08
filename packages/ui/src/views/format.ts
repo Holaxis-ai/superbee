@@ -1,16 +1,23 @@
-/** Shared display formatting for the home surface (launcher + activity feed). */
+/** Shared presentation of explicit instants in the selected bundle time zone. */
+import { parseIsoInstant } from "@superbee/core/verification";
+import { DEFAULT_BUNDLE_TIME_ZONE } from "@superbee/core/time-zone";
 
-/** Render an ISO timestamp for card/feed provenance — compact (no seconds; year only when it differs from now). A non-date passes through verbatim, absent is null. */
-export function formatWhen(timestamp?: string): string | null {
+/** A null zone means configuration is unavailable; retain source text without interpreting it. */
+export function formatWhen(timestamp?: string, timeZone: string | null = DEFAULT_BUNDLE_TIME_ZONE, now = new Date()): string | null {
   if (!timestamp) return null;
-  const d = new Date(timestamp);
-  if (Number.isNaN(d.getTime())) return timestamp;
-  const sameYear = d.getFullYear() === new Date().getFullYear();
-  return d.toLocaleString(undefined, {
+  if (timeZone === null) return timestamp;
+  const instant = parseIsoInstant(timestamp);
+  if (instant === null) return timestamp;
+  const date = new Date(instant);
+  const year = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric" });
+  const sameYear = year.format(date) === year.format(now);
+  return date.toLocaleString(undefined, {
+    timeZone,
     month: "short",
     day: "numeric",
     ...(sameYear ? {} : { year: "numeric" }),
     hour: "numeric",
     minute: "2-digit",
+    timeZoneName: "short",
   });
 }

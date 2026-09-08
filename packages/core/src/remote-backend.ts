@@ -198,8 +198,19 @@ function retryDelayMs(attempt: number): number {
 }
 
 /** Resolve after `ms` milliseconds. */
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function delay(ms: number, signal?: AbortSignal | null): Promise<void> {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });
 }
 
 /** Scanned rather than `/\/+$/`-replaced, whose unanchored start backtracks quadratically. */
@@ -270,16 +281,18 @@ export class RemoteBackend implements StorageBackend {
     // retried read is idempotent. `send` rebuilds the Request per attempt from `init` (bodies are
     // strings/bytes, so reusable — no consumed-stream hazard).
     for (let attempt = 0; ; attempt++) {
+      init.signal?.throwIfAborted();
       try {
         const res = await this.fetchImpl(new Request(url, init));
         if (RETRIABLE_STATUS.has(res.status) && attempt < this.maxRetries) {
-          await delay(retryDelayMs(attempt));
+          await delay(retryDelayMs(attempt), init.signal);
           continue;
         }
         return res;
       } catch (err) {
+        init.signal?.throwIfAborted();
         if (attempt < this.maxRetries) {
-          await delay(retryDelayMs(attempt));
+          await delay(retryDelayMs(attempt), init.signal);
           continue;
         }
         throw err;
@@ -460,9 +473,9 @@ export class RemoteBackend implements StorageBackend {
     );
   }
 
-  async readReserved(dir: string, name: ReservedFilename): Promise<ReservedReadResult | null> {
+  async readReserved(dir: string, name: ReservedFilename, options: { signal?: AbortSignal } = {}): Promise<ReservedReadResult | null> {
     const qs = dir ? `?dir=${encodeURIComponent(dir)}` : "";
-    const res = await this.send(`/reserved/${name}${qs}`, { method: "GET" });
+    const res = await this.send(`/reserved/${name}${qs}`, { method: "GET", signal: options.signal });
     if (res.status === 404) return null;
     if (!res.ok) throw await this.toError(res, `${dir}/${name}`);
     const version = extractVersion(res, `GET /reserved/${name}`);

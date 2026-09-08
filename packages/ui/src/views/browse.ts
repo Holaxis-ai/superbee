@@ -35,13 +35,13 @@ function stringField(value: unknown): string | undefined {
 }
 
 /** A display row plus the raw timestamp used only for sorting (stripped from the public shape). */
-function toSortableRow(head: DocHead): BrowseRow & { timestamp: string } {
+function toSortableRow(head: DocHead, timeZone: string | null): BrowseRow & { timestamp: string } {
   const timestamp = stringField(meaningfulChangeTimeValue(head.frontmatter));
   return {
     id: head.id,
     kind: String(head.frontmatter.type ?? "Doc"),
     title: stringField(head.frontmatter.title) ?? head.id,
-    when: formatWhen(timestamp),
+    when: formatWhen(timestamp, timeZone),
     timestamp: timestamp ?? "",
   };
 }
@@ -56,11 +56,11 @@ const strip = ({ timestamp: _timestamp, ...row }: BrowseRow & { timestamp: strin
  * (larger groups before smaller, then by kind name), then the collapsed kinds — durable knowledge on
  * top, the transient/declared-collapsed kinds tucked below. Pure.
  */
-export function browseGroups(heads: DocHead[], collapsedKinds: ReadonlySet<string>): BrowseGroup[] {
+export function browseGroups(heads: DocHead[], collapsedKinds: ReadonlySet<string>, timeZone: string | null = null): BrowseGroup[] {
   const byKind = new Map<string, Array<BrowseRow & { timestamp: string }>>();
   for (const head of heads) {
     if (!isFeedHead(head)) continue;
-    const row = toSortableRow(head);
+    const row = toSortableRow(head, timeZone);
     const list = byKind.get(row.kind) ?? [];
     list.push(row);
     byKind.set(row.kind, list);
@@ -81,12 +81,12 @@ export function browseGroups(heads: DocHead[], collapsedKinds: ReadonlySet<strin
  * capped at `limit`. Returns the shown rows and the TOTAL match count (an honest "N of M"). A blank
  * query returns nothing — the caller shows the grouped view instead. Pure.
  */
-export function searchRows(heads: DocHead[], query: string, limit: number): { rows: BrowseRow[]; total: number } {
+export function searchRows(heads: DocHead[], query: string, limit: number, timeZone: string | null = null): { rows: BrowseRow[]; total: number } {
   const q = query.trim().toLowerCase();
   if (q === "") return { rows: [], total: 0 };
   const matched = heads
     .filter(isFeedHead)
-    .map(toSortableRow)
+    .map((head) => toSortableRow(head, timeZone))
     .filter((row) => row.title.toLowerCase().includes(q) || row.id.toLowerCase().includes(q))
     .sort(byRecencyThenTitle);
   return { rows: matched.slice(0, limit).map(strip), total: matched.length };

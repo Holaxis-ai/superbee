@@ -555,6 +555,9 @@ function benignTarget(role: CliPathRole, fixture: BoundaryFixture, key: string):
 const CROSSING_ROWS: readonly CrossingRow[] = [
   // ── Bundle roots (`--dir`): the target BECOMES the bundle. ──────────────────
   { leaf: "bundleLocate", surface: "--dir", argv: (t) => ["bundle", "locate", "--dir", t, "--json"] },
+  { leaf: "bundleTimezone", surface: "--dir", argv: (t) => ["bundle", "timezone", "--dir", t, "--json"] },
+  { leaf: "bundleTimezoneSet", surface: "--dir", argv: (t) => ["bundle", "timezone", "set", "America/New_York", "--dir", t, "--json"] },
+  { leaf: "bundleTimezoneReset", surface: "--dir", argv: (t) => ["bundle", "timezone", "reset", "--dir", t, "--json"] },
   { leaf: "catalogAdd", surface: "--dir", argv: (t) => ["catalog", "add", "probe-label", "--dir", t, "--json"] },
   {
     leaf: "init",

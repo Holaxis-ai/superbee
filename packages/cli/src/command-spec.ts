@@ -254,9 +254,14 @@ export const CLI_COMMAND_GROUPS = [
     commands: [
       {
         id: "bundleLocate",
-        leaves: [publicLeaf("bundleLocate", "bundle locate", zero, 1, DIR_SURFACE)],
-        usage: "bundle locate [--dir <path>]",
-        summary: "Resolve the exact canonical local bundle path and report why it won selection",
+        leaves: [
+          publicLeaf("bundleLocate", "bundle locate", zero, 1, DIR_SURFACE),
+          publicLeaf("bundleTimezone", "bundle timezone", zero, undefined, DIR_SURFACE),
+          publicLeaf("bundleTimezoneSet", "bundle timezone set", one, undefined, DIR_SURFACE),
+          publicLeaf("bundleTimezoneReset", "bundle timezone reset", zero, undefined, DIR_SURFACE),
+        ],
+        usage: "bundle (locate | timezone [set <IANA-zone> | reset]) [--dir <path>]",
+        summary: "Inspect local bundle targeting or configure its base time zone (default GMT)",
       },
       {
         id: "catalog",
