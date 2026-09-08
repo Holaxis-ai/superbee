@@ -108,7 +108,8 @@ Options:
                        since adding a cross-link is a meaningful change)
   --actor <name>       Attribute a newly-added link in the source doc and backend history.
                        Falls back to SUPERBEE_ACTOR (or legacy AGENTSTATE_LITE_ACTOR); an existing
-                       link remains a true no-op.
+                       link remains a true no-op. OKF v0.2 bundles accept only an OKF actor
+                       (human:<id>, process:<id>, or <producer>/<version> such as openai/codex).
 ${LINK_COMMON_OPTIONS}
 
 Examples:

@@ -12,7 +12,7 @@ import {
   type PreparedIndexTarget,
 } from "@superbee/core";
 
-import { resolveActor } from "../actor.js";
+import { assertActorAcceptedByBundle, resolveActor } from "../actor.js";
 import { parseSelectorOrUsage } from "../args.js";
 import { CLI_LEAVES } from "../command-spec.js";
 import { deriveBundleDisplayName } from "../bundle-name.js";
@@ -41,7 +41,8 @@ Options:
   --check            Report drift/refusal without writing; clean is exit 0, otherwise exit 5
   --force            Adopt and replace unmarked/malformed index files explicitly
   --actor <name>     Attribute changed writes (overrides SUPERBEE_ACTOR; legacy
-                     AGENTSTATE_LITE_ACTOR remains supported)
+                     AGENTSTATE_LITE_ACTOR remains supported). OKF v0.2 bundles accept only an
+                     OKF actor: human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
   --json             Emit compact JSON instead of TOON on success
   -h, --help         Show this help
 
@@ -195,6 +196,10 @@ export async function indexCommand(argv: string[], deps: Partial<IndexCliDeps> =
     return;
   }
 
+  // Reserved index files never pass the document mutation seam, so the actor rule is applied here,
+  // after the read-only --check branch: a check records no provenance and must never be blocked by
+  // an ambient actor spelling.
+  await assertActorAcceptedByBundle(bundle, actor);
   try {
     const applied = await applyIndexProjection(bundle, prepared, { actor });
     const receipt = {

@@ -68,7 +68,8 @@ Options:
   --reason <text>       Record why the Kind was declined ('dismiss' only)
   --dir <path>          Bundle directory (default: discovered from the cwd)
   --remote <url>        Talk to a wire-protocol server instead of a local bundle
-  --actor <name>        Attribute this write
+  --actor <name>        Attribute this write. OKF v0.2 bundles accept only an OKF actor:
+                        human:<id>, process:<id>, or <producer>/<version> (e.g. openai/codex)
   --json                Emit compact JSON instead of TOON
   -h, --help            Show this help
 `;

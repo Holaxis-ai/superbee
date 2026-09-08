@@ -13,7 +13,7 @@
  * Pure and dependency-light on purpose: the browser UI consumes it through the
  * `@superbee/core/verification` subpath without pulling the storage engine.
  */
-import { InvalidInputError } from "./errors.js";
+import { InvalidInputError, OkfActorError } from "./errors.js";
 import { isHumanActor, isOkfActor } from "./okf-actor.js";
 
 /** One verification event. Producer extras beyond `by`/`at` are preserved, never interpreted. */
@@ -170,7 +170,8 @@ export function appendVerificationEvent<F extends Readonly<Record<string, unknow
   options: AppendVerificationOptions,
 ): F & { verified: VerificationEvent[] } {
   if (!isOkfActor(options.by)) {
-    throw new InvalidInputError(
+    throw new OkfActorError(
+      options.by,
       `OKF v0.2 verifier '${options.by}' must be human:<id>, process:<id>, or <producer>/<version>`,
     );
   }

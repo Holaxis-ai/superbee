@@ -32,6 +32,7 @@ import { cliInvocation } from "../../invocation.js";
 import { mutateDoc } from "../../mutate.js";
 import { boardPostPersistHook } from "../../board-attribution.js";
 import { resolveActor } from "../../actor.js";
+import { actorRefusal } from "../../actor-guidance.js";
 import { conceptIdFromCliArgument, resolveConceptIdCliArgument } from "../../concept-id.js";
 import { DOC_VERIFY_USAGE, type DocCliDeps } from "./common.js";
 import { commandToken } from "../../command-text.js";
@@ -91,13 +92,6 @@ export async function docVerify(argv: string[], deps: Partial<DocCliDeps>): Prom
       { help: actorHelp },
     );
   }
-  if (!isOkfActor(actor)) {
-    throw new CliError(
-      "USAGE",
-      `verifier '${actor}' must follow the OKF actor convention: human:<id> for a person, process:<id> for an automated process, or <producer>/<version> for an agent or tool. Trust tiers key off the human: prefix.`,
-      { help: actorHelp },
-    );
-  }
 
   let at = new Date().toISOString();
   if (values.at !== undefined) {
@@ -134,6 +128,16 @@ export async function docVerify(argv: string[], deps: Partial<DocCliDeps>): Prom
       `doc verify records OKF v0.2 trust metadata; this bundle declares OKF ${okfVersion}. Verification events and trust tiers are not defined for that edition.`,
       { help: `${cliInvocation()} status --dir <path>` },
     );
+  }
+
+  // After the edition check, so a v0.1 bundle is told about the edition rather than "this v0.2
+  // bundle refuses". Human-first: for a verifier the human reading is the one that changes the tier.
+  if (!isOkfActor(actor)) {
+    const refusal = actorRefusal(actor, { preferHuman: true });
+    throw new CliError("USAGE", `verifier ${refusal.message.replace(/^actor /, "")} Trust tiers key off the human: prefix.`, {
+      help: refusal.help,
+      details: { actor },
+    });
   }
 
   const registry = await loadKinds(bundle);

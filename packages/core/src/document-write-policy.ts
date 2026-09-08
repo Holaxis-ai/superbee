@@ -1,6 +1,6 @@
 /** Pure document-shape policies applied before a normalized document reaches storage. */
 
-import { InvalidInputError } from "./errors.js";
+import { InvalidInputError, OkfActorError } from "./errors.js";
 import { staleAfterInstant } from "./freshness.js";
 import { isOkfActor } from "./okf-actor.js";
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
@@ -144,7 +144,8 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   body: string;
 } {
   if (opts.actor !== undefined && !isOkfActor(opts.actor)) {
-    throw new InvalidInputError(
+    throw new OkfActorError(
+      opts.actor,
       `OKF v0.2 mutation actor '${opts.actor}' must be human:<id>, process:<id>, or <producer>/<version>`,
     );
   }
