@@ -24,6 +24,7 @@ import {
   freshness,
   freshnessHorizonMs,
   staleAfterInstant,
+  invalidOkfTimestamps,
   isTerminal,
   listBlobs,
   loadKinds,
@@ -110,6 +111,14 @@ Category semantics (one line each):
                       without a Kind or horizon, including terminal and untyped docs. Omitted
                       when none are found, and always absent on v0.1. Fix with
                       'doc update <id> --stale-after <ISO-8601 instant with Z or UTC offset>'.
+  invalid_timestamps  Count of invalid standard v0.2 timestamp FIELD OCCURRENCES, not documents:
+                      generated.at, verified.at (mapping or list), stale_after, source
+                      last_modified, and shared/per-source usage_window.from/to. Bounded rows
+                      in 'invalid_timestamp_fields' name id, type, field, and the stored value.
+                      Date-only, zone-less, malformed, and non-string values remain unchanged;
+                      applies without a Kind or horizon, including terminal and untyped docs.
+                      Omitted when none are found, and always absent on v0.1. Deadlines also
+                      remain in the compatible 'invalid_stale_after' category.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
   trust              OKF v0.2 trust tiers (SPEC 5.3) counted once per doc from its 'verified'
@@ -444,7 +453,13 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const staleRows: Record<string, unknown>[] = [];
   const noTimestampRows: Record<string, unknown>[] = [];
   const invalidStaleAfterRows: Record<string, unknown>[] = [];
+  const invalidTimestampRows: Record<string, unknown>[] = [];
   for (const doc of docs) {
+    if (okfVersion === "0.2") {
+      for (const { field, value } of invalidOkfTimestamps(doc.frontmatter)) {
+        invalidTimestampRows.push({ id: doc.id, type: docType(doc), field, value: diagnosticValue(value) });
+      }
+    }
     const kind = registry.kinds.get(docType(doc));
     const horizonMs = kind ? freshnessHorizonMs(kind) : undefined;
     const hasStaleAfter = okfVersion === "0.2" && Object.hasOwn(doc.frontmatter, "stale_after");
@@ -596,6 +611,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const stale = cap(staleRows, limit);
   const noTimestamp = cap(noTimestampRows, limit);
   const invalidStaleAfter = cap(invalidStaleAfterRows, limit);
+  const invalidTimestamps = cap(invalidTimestampRows, limit);
   const statusCollisions = okfV02WorkflowStatusCollisions(registry, docs);
   const lifecycleWarnings = okfVersion === "0.2"
     ? statusCollisions.filter((row) => (row.incompatible_values as string[]).length > 0).map((row) => ({
@@ -630,6 +646,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     orphans: orphans.total,
     stale: stale.total,
     ...(invalidStaleAfter.total > 0 ? { invalid_stale_after: invalidStaleAfter.total } : {}),
+    ...(invalidTimestamps.total > 0 ? { invalid_timestamps: invalidTimestamps.total } : {}),
     no_timestamp: noTimestamp.total,
     registry_warnings: registryLint.total,
     link_type_violations: linkTypeViolations.total,
@@ -711,6 +728,13 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
       ...invalidStaleAfter,
       reason: "The stale_after deadline cannot be evaluated: expected an ISO-8601 instant with Z or a UTC offset; date-only and malformed values remain stored unchanged.",
       help: `${cliInvocation()} doc update <id> --stale-after <ISO-8601 instant with Z or UTC offset>`,
+    };
+  }
+  if (invalidTimestamps.total > 0) {
+    out.invalid_timestamp_fields = {
+      ...invalidTimestamps,
+      reason: "Standard OKF timestamps require an ISO-8601 date and time with Z or a UTC offset. Ambiguous or invalid stored values remain unchanged.",
+      help: "Choose the intended instant and repair each named field with an explicit UTC offset.",
     };
   }
   if (noTimestamp.total > 0) out.no_timestamp_docs = noTimestamp;

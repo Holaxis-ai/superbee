@@ -404,8 +404,66 @@ test("status: absent and valid stale_after values omit the invalid category", as
     assert.equal(result.stale, 1);
     assert.equal("invalid_stale_after" in result, false);
     assert.equal("invalid_stale_after_docs" in result, false);
+    assert.equal("invalid_timestamps" in result, false);
+    assert.equal("invalid_timestamp_fields" in result, false);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("status: standard timestamp findings count fields, preserve imports, ignore Kind gates and omit v0.1", async () => {
+  for (const okfVersion of ["0.1", "0.2"]) {
+    const dir = await tempDir();
+    try {
+      const bundle = await initBundle(dir, { okfVersion });
+      await writeDoc(bundle, { id: "conventions/note", frontmatter: {
+        type: "Convention", governs: "Note", fields: {
+          optional: ["progress_status"], values: { progress_status: ["done"] }, terminal: { progress_status: ["done"] },
+        },
+      }, body: "" });
+      const invalid = {
+        generated: { at: "2026-09-08" },
+        verified: [{ by: "human:reader", at: "2026-09-08T12:30:00" }],
+        stale_after: null,
+        sources: [{ last_modified: "2026-09-08", usage_window: { from: null, to: "2026-09-08T12:00:00" } }],
+        usage_window: { from: "2026-09-08", to: "2026-09-08T12:00:00" },
+      };
+      const imported = `---\n${Object.entries(invalid).map(([key, value]) => `${key}: ${JSON.stringify(value)}`).join("\n")}\n---\nImported.\n`;
+      await writeFile(path.join(dir, "untyped.md"), imported);
+      await writeFile(path.join(dir, "terminal.md"), "---\ntype: Note\nsuperbee_progress_status: done\nverified: {by: 'human:reader', at: null}\n---\n");
+      const terminalBefore = await readFile(path.join(dir, "terminal.md"), "utf8");
+      const beforeFiles = await readdir(dir);
+      const result = await runJson(["--dir", dir, "--limit", "0"]);
+      if (okfVersion === "0.2") {
+        assert.equal(result.invalid_timestamps, 9, "count invalid field occurrences, not documents");
+        assert.equal(result.invalid_stale_after, 1, "preserve the deadline-only compatibility category");
+        const block = result.invalid_timestamp_fields as { shown: number; total: number; rows: Record<string, unknown>[] };
+        assert.equal(block.total, 9);
+        assert.equal(block.shown, 9);
+        assert.deepEqual(block.rows[0], { id: "terminal", type: "Note", field: "verified.at", value: null });
+        const fields = block.rows.filter((row) => row.id === "untyped");
+        assert.ok(fields.every((row) => row.type === ""));
+        assert.deepEqual(fields.map((row) => row.field).sort(), [
+          "generated.at", "verified[0].at", "stale_after", "sources[0].last_modified",
+          "sources[0].usage_window.from", "sources[0].usage_window.to", "usage_window.from", "usage_window.to",
+        ].sort());
+        const capped = await runJson(["--dir", dir, "--limit", "1"]);
+        assert.equal(capped.invalid_timestamps, 9);
+        const cappedBlock = capped.invalid_timestamp_fields as typeof block;
+        assert.equal(cappedBlock.shown, 1);
+        assert.equal(cappedBlock.total, 9);
+        assert.deepEqual(cappedBlock.rows, block.rows.slice(0, 1));
+        assert.deepEqual(decode(await runToon(["--dir", dir, "--limit", "0"])), result);
+      } else {
+        assert.equal("invalid_timestamps" in result, false);
+        assert.equal("invalid_timestamp_fields" in result, false);
+      }
+      assert.equal(await readFile(path.join(dir, "untyped.md"), "utf8"), imported);
+      assert.equal(await readFile(path.join(dir, "terminal.md"), "utf8"), terminalBefore);
+      assert.deepEqual(await readdir(dir), beforeFiles);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   }
 });
 

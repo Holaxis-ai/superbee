@@ -1,7 +1,7 @@
 /** Pure document-shape policies applied before a normalized document reaches storage. */
 
 import { InvalidInputError, OkfActorError } from "./errors.js";
-import { staleAfterInstant } from "./freshness.js";
+import { assertAuthoredOkfTimestamps } from "./okf-timestamps.js";
 import { isOkfActor } from "./okf-actor.js";
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
 import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
@@ -149,18 +149,8 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
       `OKF v0.2 mutation actor '${opts.actor}' must be human:<id>, process:<id>, or <producer>/<version>`,
     );
   }
-  // Imported legacy values remain editable, but authored changes must supply a usable deadline.
-  const candidateDeadline = opts.candidate.frontmatter.stale_after;
-  if (
-    hasOwn(opts.candidate.frontmatter, "stale_after")
-    && staleAfterInstant(candidateDeadline) === null
-    && !(opts.existing && hasOwn(opts.existing.frontmatter, "stale_after")
-      && sameValue(candidateDeadline, opts.existing.frontmatter.stale_after))
-  ) {
-    throw new InvalidInputError(
-      "OKF v0.2 stale_after requires a valid ISO-8601 date and time with a zone (e.g. 2026-09-07T12:00:00Z)",
-    );
-  }
+  // Validate the declared values before clock replacement or no-op handling can hide bad input.
+  assertAuthoredOkfTimestamps(opts.candidate.frontmatter, opts.existing?.frontmatter);
   const existingGenerated = generatedRecord(opts.existing?.frontmatter.generated, "existing generated");
   const declaredCandidateGenerated = generatedRecord(opts.candidate.frontmatter.generated, "generated");
   let candidateGenerated = !opts.existing
@@ -235,6 +225,7 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   }
 
   const generated: Generated = { ...existingGenerated, ...candidateGenerated, by: resolvedBy };
+  let clockAuthored = false;
   if (!opts.existing) {
     if (generated.at === undefined) {
       if (
@@ -242,17 +233,19 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
         || (declaredCandidateGenerated !== undefined && opts.allowGeneratedProvenanceSeed !== false)
       ) {
         generated.at = opts.meaningfulChangeAt;
+        clockAuthored = true;
       }
-    } else if (typeof generated.at !== "string" || Number.isNaN(Date.parse(generated.at))) {
-      throw new InvalidInputError("OKF v0.2 generated.at must be an ISO-8601 date/time when present");
     }
   } else if (meaningfulChange) {
     generated.at = opts.meaningfulChangeAt;
+    clockAuthored = true;
   } else if (existingGenerated) {
     if (hasOwn(existingGenerated, "at")) generated.at = existingGenerated.at;
     else delete generated.at;
   }
 
+  // A newly produced clock is authored even when it repeats an invalid imported spelling.
+  if (clockAuthored) assertAuthoredOkfTimestamps({ generated });
   return {
     ...opts.candidate,
     frontmatter: { ...frontmatter, generated },

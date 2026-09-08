@@ -49,7 +49,10 @@ export function parseTimestamp(ts: unknown): number | null {
  *                the ISO timestamps of upstream `dependsOn` artifacts.
  */
 export function freshness(doc: OkfDocument, options: FreshnessOptions = {}): FreshnessResult {
-  const tsMs = parseTimestamp(meaningfulChangeTimeValue(doc.frontmatter));
+  const parseClock = options.okfVersion === "0.2"
+    ? (value: unknown) => typeof value === "string" ? parseIsoInstant(value) : null
+    : parseTimestamp;
+  const tsMs = parseClock(meaningfulChangeTimeValue(doc.frontmatter));
   const now = options.now ?? new Date();
   const ageMs = tsMs === null ? undefined : now.getTime() - tsMs;
   const staleAfter = options.okfVersion === "0.2"
@@ -70,7 +73,7 @@ export function freshness(doc: OkfDocument, options: FreshnessOptions = {}): Fre
   // Dependency-based staleness wins: any dependency newer than this concept.
   if (options.dependsOn && options.dependsOn.length > 0) {
     for (const dep of options.dependsOn) {
-      const depMs = parseTimestamp(dep);
+      const depMs = parseClock(dep);
       if (depMs !== null && depMs > tsMs) {
         return {
           verdict: "stale",

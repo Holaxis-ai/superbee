@@ -1,10 +1,12 @@
 /** Shared display formatting for the home surface (launcher + activity feed). */
+import { parseIsoInstant } from "@superbee/core/verification";
 
-/** Render an ISO timestamp for card/feed provenance — compact (no seconds; year only when it differs from now). A non-date passes through verbatim, absent is null. */
+/** Render an explicit instant in the browser's system timezone. Ambiguous imports stay literal. */
 export function formatWhen(timestamp?: string): string | null {
   if (!timestamp) return null;
-  const d = new Date(timestamp);
-  if (Number.isNaN(d.getTime())) return timestamp;
+  const instant = parseIsoInstant(timestamp);
+  if (instant === null) return timestamp;
+  const d = new Date(instant);
   const sameYear = d.getFullYear() === new Date().getFullYear();
   return d.toLocaleString(undefined, {
     month: "short",

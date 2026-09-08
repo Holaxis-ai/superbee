@@ -178,7 +178,7 @@ for (const command of ["new", "update"] as const) {
         await assert.rejects(run(command, dir, ["--stale_after", invalid]), (err: unknown) => {
           assert.ok(err instanceof CliError);
           assert.equal(err.code, "USAGE");
-          assert.match(err.message, /stale_after.*zone/);
+          assert.match(err.message, /stale_after.*explicit UTC offset/);
           return true;
         });
         assert.equal(await readFile(path.join(dir, "existing.md"), "utf8"), before);
