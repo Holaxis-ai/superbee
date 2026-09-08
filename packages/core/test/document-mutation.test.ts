@@ -872,7 +872,7 @@ test("v0.2 ignores a valid candidate producer in favor of mutation attribution a
       strict: false,
       now: () => "2026-08-14T12:00:00Z",
       buildCandidate: (existing) => ({
-        frontmatter: { ...existing!.frontmatter, generated: { at: "x", by: "not-an-actor" } },
+        frontmatter: { ...existing!.frontmatter, generated: { at: "2026-08-01T00:00:00Z", by: "not-an-actor" } },
         body: "changed",
       }),
     }),

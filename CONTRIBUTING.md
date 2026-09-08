@@ -246,11 +246,24 @@ Across both editions:
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars are normalized to ISO-8601 strings without converting unrelated nested or
   date-only values. Storage revision time and meaningful-change time are different clocks.
-- In v0.2, authored mutations require newly introduced or changed `stale_after` values to name an
-  ISO-8601 date and time with an explicit zone. Unchanged legacy values remain editable, and raw
-  core/wire imports preserve their source values. `status` reports unreadable deadlines, including
-  date-only values, as `invalid_stale_after`; they have no inferred expiration instant. Repair them
-  with `doc update <id> --stale-after <instant>` after choosing the intended time and zone.
+- In v0.2, authored mutations require newly supplied or changed standard timestamps to name a
+  real ISO-8601 date and time with an explicit UTC offset (`Z` or a numeric offset). One core
+  validator covers `generated.at`, `verified.at` (bare mapping or list entries), `stale_after`,
+  `sources[].last_modified`, and `usage_window.from`/`to` at the root and within source entries.
+  Validation runs before automatic generation-clock replacement and no-op detection. Automatically
+  produced timestamps use UTC `Z`; accepted explicit offset spellings keep their meaning.
+- Unchanged imported invalid values remain editable. Existing source and verification rows may be
+  preserved, reordered, removed, or accompanied by valid new rows. An edited row is newly authored
+  and must have valid timestamps; copying an invalid row does not grant another legacy allowance.
+  Existing generation clocks still advance on meaningful content edits under the normal policy.
+  Raw core/wire imports preserve source values. This does not validate arbitrary extension fields,
+  log heading dates, or change the legacy v0.1 `timestamp` normalization contract.
+- `status` reports invalid standard v0.2 timestamps with field paths under `invalid_timestamps`;
+  the existing `invalid_stale_after` report remains available. Repair from evidence of the intended
+  instant, or remove an optional value; no offset is inferred and no migration runs automatically.
+  v0.2 freshness does not interpret a zone-less meaningful-change clock as a host-local instant.
+  UI dates use the browser/system time zone to display explicit instants; ambiguous imported
+  strings remain literal. There is no bundle time-zone setting.
 
 The external specification is supporting evidence, not the only discovery route. The committed
 section and core edition tests are the offline fallback. The fixture at

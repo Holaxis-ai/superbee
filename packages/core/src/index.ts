@@ -305,3 +305,5 @@ export {
   DEFAULT_BLOB_CONTENT_TYPE,
 } from "./content-type.js";
 export type { ContentTypeInference, ValidationWarning } from "./content-type.js";
+
+export { invalidOkfTimestamps, assertAuthoredOkfTimestamps, type InvalidOkfTimestamp } from "./okf-timestamps.js";
