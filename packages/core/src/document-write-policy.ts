@@ -97,8 +97,11 @@ export interface V02MutationMetadataOptions {
   existing?: Pick<OkfDocument, "frontmatter" | "body">;
   candidate: { frontmatter: Frontmatter; body: string };
   meaningfulChangeAt: string;
-  /** Resolved mutation actor. When present, v0.2 requires the OKF actor convention. */
+  /** Advisory mutation actor; also the content producer when producer is omitted. */
   actor?: string;
+  /** Explicit content producer for generated.by. Defaults to actor when omitted;
+   * when supplied, actor remains advisory and need not use OKF producer syntax. */
+  producer?: string;
   /** Whether the governing Kind uses legacy `actor` as an automatic attribution projection. */
   kindRequiresActor?: boolean;
   /** Compare explicit legacy timestamp spellings by instant, matching mutation no-op policy. */
@@ -112,7 +115,7 @@ export interface V02MutationMetadataOptions {
 /**
  * Apply v0.2 content provenance without conflating it with storage attribution.
  * `generated` is optional. When present, a create or meaningful content change records the
- * resolved mutation actor; an unattributed engine mutation records `process:superbee`.
+ * explicit producer or resolved mutation actor; an unattributed engine mutation records `process:superbee`.
  */
 export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   frontmatter: Frontmatter;
@@ -128,10 +131,11 @@ function applyMetadata(opts: V02MutationMetadataOptions): {
   frontmatter: Frontmatter;
   body: string;
 } {
-  if (opts.actor !== undefined && !isOkfActor(opts.actor)) {
+  const producer = opts.producer !== undefined ? opts.producer : opts.actor;
+  if (producer !== undefined && !isOkfActor(producer)) {
     throw new OkfActorError(
-      opts.actor,
-      `OKF v0.2 mutation actor '${opts.actor}' must be human:<id>, process:<id>, or <producer>/<version>`,
+      producer,
+      `OKF v0.2 mutation ${opts.producer !== undefined ? "producer" : "actor"} '${producer}' must be human:<id>, process:<id>, or <producer>/<version>`,
     );
   }
   const existingValue = opts.existing?.frontmatter.generated;
@@ -151,9 +155,9 @@ function applyMetadata(opts: V02MutationMetadataOptions): {
   }
   let candidateGenerated = !opts.existing
     && opts.allowGeneratedProvenanceSeed !== false
-    && (opts.requireGenerationClock || opts.actor !== undefined)
+    && (opts.requireGenerationClock || producer !== undefined)
     && !declaredCandidateGenerated
-    ? { by: opts.actor ?? "process:superbee" }
+    ? { by: producer ?? "process:superbee" }
     : declaredCandidateGenerated;
   const frontmatter: Frontmatter = candidateGenerated === declaredCandidateGenerated
     ? { ...opts.candidate.frontmatter }
@@ -208,7 +212,7 @@ function applyMetadata(opts: V02MutationMetadataOptions): {
     && opts.allowGeneratedProvenanceSeed === false
     && candidateHasBy;
   const resolvedBy = meaningfulChange
-    ? preserveDeclaredSourceBy ? candidateBy : opts.actor ?? "process:superbee"
+    ? preserveDeclaredSourceBy ? candidateBy : producer ?? "process:superbee"
     : comparisonBy;
   const generated: Generated = {
     ...existingGenerated, ...candidateGenerated,
