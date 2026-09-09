@@ -182,3 +182,49 @@ test("doc field unsupported names expose current edition and Kind fields from co
     return true;
   });
 });
+
+test("doc field read hints retain an explicit local route when executed outside the bundle", async t => {
+  const f = await fixture(t);
+  const outside = await mkdtemp(join(tmpdir(), "superbee-field-hint-cwd-"));
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const hints: string[] = [];
+  const added = await f.run("add", "notes/a", "tags", "new");
+  hints.push(added.help[0]);
+  await assert.rejects(f.run("add", "notes/a", "tags", "new", "--expected-version", "stale"), err => {
+    assert.ok(err instanceof CliError);
+    assert.equal(err.code, "STALE_HEAD");
+    hints.push(err.help!);
+    return true;
+  });
+  await f.run("add", "notes/a", "sources", "--from-file", await f.file(JSON.stringify({ id: "duplicate", resource: "report one" })));
+  await assert.rejects(f.run("remove", "notes/a", "sources", "--resource", "report one"), err => {
+    assert.ok(err instanceof CliError);
+    assert.equal(err.details?.reason, "ambiguous-source");
+    hints.push(err.help!);
+    return true;
+  });
+  for (const hint of hints) {
+    const argv = parseCommandLine(hint);
+    const result = spawnSync(process.execPath, [join(import.meta.dirname, "../dist/superbee.mjs"), ...argv.slice(argv.indexOf("doc"))], { cwd: outside, encoding: "utf8" });
+    assert.equal(result.status, 0, `${hint}\n${result.stdout}${result.stderr}`);
+    assert.ok(argv.includes(`--dir=${f.dir}`), hint);
+    assert.match(result.stdout, /report one/);
+  }
+});
+
+test("doc field read hints share the explicit remote option shape", async t => {
+  const { serve } = await import("@superbee/server");
+  const f = await fixture(t);
+  const server = await serve({ bundle: f.bundle, port: 0 });
+  t.after(() => server.close());
+  const remote = `http://${server.host}:${server.port}`;
+  let output = "";
+  await doc(["field", "add", "notes/a", "tags", "remote-tag", "--remote", remote, "--json"], { stdout: text => { output += text; } });
+  const receipt = JSON.parse(output);
+  const argv = parseCommandLine(receipt.help[0]);
+  assert.ok(argv.includes(`--remote=${remote}`));
+  assert.ok(!argv.some(arg => arg.startsWith("--dir")));
+  let read = "";
+  await doc(argv.slice(argv.indexOf("doc") + 1), { stdout: text => { read += text; } });
+  assert.match(read, /remote-tag/);
+});

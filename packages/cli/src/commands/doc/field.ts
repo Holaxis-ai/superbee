@@ -90,6 +90,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
     if (literal !== undefined || fromFile !== undefined) fail("Source remove accepts a selector, not a value.");
   } else if (literal === undefined && fromFile === undefined) fail("Supply one literal value or --from-file.");
   if ((action === "edit" || action === "replace-all" || (action === "add" && field === "sources")) && fromFile === undefined) fail("This action requires one complete JSON/YAML value through --from-file.");
+  const routeFlag = values.dir !== undefined ? commandFragment` --dir=${commandToken(values.dir)}` : values.remote !== undefined ? commandFragment` --remote=${commandToken(values.remote)}` : commandFragment``;
   const actor = resolveActor(values.actor, { help: helpCommand });
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
@@ -124,7 +125,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
       onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
       errors: {
         notFound: () => new CliError("NOT_FOUND", `no concept document at id '${id}'`, { help: `${cliInvocation()} list` }),
-        staleHead: error => new CliError("STALE_HEAD", "The document has moved; re-read its current version before retrying.", { help: `${cliInvocation()} doc read ${commandToken(id)}`, details: { expected: error.expected, actual: error.actual } }),
+        staleHead: error => new CliError("STALE_HEAD", "The document has moved; re-read its current version before retrying.", { help: `${cliInvocation()} doc read ${commandToken(id)}${routeFlag}`, details: { expected: error.expected, actual: error.actual } }),
       },
     });
     const scope = result.scope!;
@@ -132,7 +133,7 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
     stdout(render({ doc: "field", id: result.doc.id, field, operation: action, changed: result.changed, version: result.version,
       scope: { ...boundedScope, ...(affectedSourceIds === undefined ? {} : { affectedSourceIds: affectedSourceIds.slice(0, 20), affectedSourceIdCount: affectedSourceIds.length }) },
       ...(result.warnings.length ? { warnings: result.warnings } : {}),
-      help: [`${cliInvocation()} doc read ${commandToken(result.doc.id)}`],
+      help: [`${cliInvocation()} doc read ${commandToken(result.doc.id)}${routeFlag}`],
     }, resolveMode(values)));
   } catch (error) {
     if (error instanceof CliError && error.code === "USAGE" && !error.help) {
@@ -143,10 +144,9 @@ export async function docField(argv: string[], deps: Partial<DocCliDeps>): Promi
         const nextAction = details?.reason === "source-id-conflict" ? "edit" : action;
         const fileFlag = nextAction === "edit" ? commandFragment` --from-file=${commandToken(fromFile ?? "<patch-file>")}` : commandFragment``;
         const versionFlag = expectedVersion !== undefined ? commandFragment` --expected-version=${commandToken(expectedVersion)}` : nextAction === "edit" ? commandFragment` --expected-version=${commandToken("<observed-version>")}` : commandFragment``;
-        const routeFlag = values.dir !== undefined ? commandFragment` --dir=${commandToken(values.dir)}` : values.remote !== undefined ? commandFragment` --remote=${commandToken(values.remote)}` : commandFragment``;
         correction = `${cliInvocation()} doc field ${commandWords(nextAction)} ${commandToken(id)} sources --id=${commandToken(selected.id)}${fileFlag}${versionFlag}${routeFlag}`;
       } else if (details?.reason === "ambiguous-source") {
-        correction = `${cliInvocation()} doc read ${commandToken(id)} --field sources`;
+        correction = `${cliInvocation()} doc read ${commandToken(id)} --field sources${routeFlag}`;
       }
       throw new CliError("USAGE", error.message, { help: correction, details: error.details });
     }
