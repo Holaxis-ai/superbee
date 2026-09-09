@@ -95,7 +95,7 @@ test("legacy rows permit reorder removal and valid additions but not duplication
       const bundle = await harness();
       const base = key === "parameters" ? { type: "Attested Computation", runtime: "custom" } : {};
       await writeDocVersioned(bundle, { id: "legacy", frontmatter: fm({ ...base, [key]: [bad, good] }), body: "old\n" });
-      const operation = mutateDocument({ bundle, id: "legacy", mode: "patch", registry, strict: false, now: () => NOW, buildCandidate: existing => ({ frontmatter: { ...existing!.frontmatter, [key]: rows }, body: "new\n" }) });
+      const operation = mutateDocument({ bundle, id: "legacy", mode: "replace-document", registry, strict: false, now: () => NOW, buildCandidate: existing => ({ frontmatter: { ...existing!.frontmatter, [key]: rows }, body: "new\n" }) });
       if (rows.length === 1 && rows[0] === good || rows.length === 3) assert.deepEqual((await operation).doc.frontmatter[key], rows);
       else await assert.rejects(operation, error => error instanceof Error && error.message.includes(key));
     }
@@ -114,7 +114,7 @@ test("malformed imported generated containers preserve, repair and remove withou
   for (const generated of [null, "legacy", 42, ["legacy"]]) for (const change of ["body", "repair", "remove"]) {
     const bundle = await harness();
     await writeDocVersioned(bundle, { id: "legacy", frontmatter: fm({ generated }), body: "old\n" });
-    const result = await mutateDocument({ bundle, id: "legacy", mode: "patch", registry, strict: false, seedGenerationClock: false, now: () => NOW, buildCandidate: existing => {
+    const result = await mutateDocument({ bundle, id: "legacy", mode: "replace-document", registry, strict: false, seedGenerationClock: false, now: () => NOW, buildCandidate: existing => {
       const frontmatter = { ...existing!.frontmatter };
       if (change === "remove") delete frontmatter.generated;
       if (change === "repair") frontmatter.generated = { by: "process:writer" };
@@ -138,7 +138,7 @@ test("a CAS retry revalidates standard values against the fresh head", async () 
   const legacy = fm({ sources: [{ resource: false }] });
   await writeDocVersioned(bundle, { id: "race", frontmatter: legacy, body: "old\n" });
   let attempts = 0;
-  await assert.rejects(mutateDocument({ bundle, id: "race", mode: "patch", registry, strict: false, now: () => NOW, buildCandidate: async () => {
+  await assert.rejects(mutateDocument({ bundle, id: "race", mode: "replace-document", registry, strict: false, now: () => NOW, buildCandidate: async () => {
     if (++attempts === 1) await writeDocVersioned(bundle, { id: "race", frontmatter: fm({ sources: [{ resource: "repaired" }] }), body: "racer\n" });
     return { frontmatter: legacy, body: "new\n" };
   } }), /sources\[0\].resource/);
@@ -165,7 +165,7 @@ test("generated input rejects explicit invalid actors before rewrite and preserv
 });
 
 test("candidate callbacks cannot mutate the fresh-head legacy exemption basis", async () => {
-  for (const mode of ["patch", "overwrite"] as const) {
+  for (const mode of ["replace-document", "overwrite"] as const) {
     const bundle = await harness();
     const before = await writeDocVersioned(bundle, { id: "alias", frontmatter: fm({ sources: [{ resource: "valid" }] }), body: "old\n" });
     await assert.rejects(mutateDocument({ bundle, id: "alias", mode, registry, strict: false, now: () => NOW, buildCandidate: existing => {

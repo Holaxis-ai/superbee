@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mutateDocument } from "../src/document-mutation.js";
+import { prepareDocumentFieldAction, type FieldAction } from "../src/document-field-actions.js";
+import { mutateDocument, prepareDocumentMutationCandidate } from "../src/document-mutation.js";
 import { applyV02MutationMetadata } from "../src/document-write-policy.js";
 import { OkfActorError } from "../src/errors.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -8,6 +9,58 @@ import type { KindRegistry } from "../src/kinds.js";
 
 const FIRST = "2026-09-09T10:00:00.000Z";
 const NEXT = "2026-09-09T11:00:00.000Z";
+
+// Field previews and commits share the producer contract, including idempotent retries.
+const fieldActions: FieldAction[] = [
+  { action: "set", field: "title", value: "changed" },
+  { action: "add", field: "tags", value: "new" },
+  { action: "remove", field: "tags", value: "old" },
+  { action: "edit", field: "sources", selector: { id: "source" }, patch: { title: "changed" } },
+  { action: "replace-all", field: "sources", value: [{ id: "replacement", resource: "next" }] },
+];
+for (const action of fieldActions) {
+  test(`${action.action}: field preview and commit preserve separate producer and history actor`, async () => {
+    const backend = new MemoryBackend();
+    await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+    const registry: KindRegistry = { kinds: new Map(), warnings: [] };
+    const common = { bundle: { root: "/unused", backend }, id: "notes/test", registry, strict: true };
+    const created = await mutateDocument({ ...common, mode: "create-only", now: () => FIRST,
+      buildCandidate: () => ({ frontmatter: { type: "Note", title: "old", tags: ["old"],
+        sources: [{ id: "source", resource: "original" }] }, body: "untouched body" }) });
+    const attribution = { actor: "person:authenticated", producer: "process:field-writer", persistActor: true };
+    const previewOptions = { ...attribution, id: common.id, registry, strict: true,
+      okfVersion: "0.2" as const, now: () => NEXT };
+    const raw = prepareDocumentFieldAction(created.doc, action, previewOptions);
+    const preview = prepareDocumentMutationCandidate(created.doc, raw.candidate, previewOptions);
+    const committed = await mutateDocument({ ...common, ...attribution, mode: "patch", now: () => NEXT,
+      expectedVersion: created.version, input: { kind: "field-action", action } });
+    assert.equal(preview.changed, true);
+    assert.equal(committed.changed, true);
+    assert.deepEqual(committed.doc.frontmatter, preview.candidate.frontmatter);
+    assert.equal(committed.doc.body, "untouched body");
+    assert.deepEqual(committed.doc.frontmatter.generated, { by: attribution.producer, at: NEXT });
+    assert.equal(committed.doc.frontmatter.superbee_updated_by, attribution.actor);
+    assert.equal((await backend.versions(common.id)).find(row => row.version === committed.version)?.actor, attribution.actor);
+
+    const noopAttribution = { actor: "person:other", producer: "process:other-writer", persistActor: true };
+    const noopRaw = prepareDocumentFieldAction(committed.doc, action, previewOptions);
+    const noopPreview = prepareDocumentMutationCandidate(committed.doc, noopRaw.candidate,
+      { ...previewOptions, ...noopAttribution });
+    const noop = await mutateDocument({ ...common, ...noopAttribution, mode: "patch", now: () => NEXT,
+      expectedVersion: committed.version, input: { kind: "field-action", action } });
+    assert.equal(noopPreview.changed, false);
+    assert.equal(noop.changed, false);
+    assert.deepEqual(noop.doc.frontmatter, noopPreview.candidate.frontmatter);
+    assert.equal(noop.version, committed.version);
+    assert.equal((await backend.versions(common.id)).length, 2);
+
+    assert.throws(() => prepareDocumentMutationCandidate(committed.doc, noopRaw.candidate,
+      { ...previewOptions, producer: "invalid" }), OkfActorError);
+    await assert.rejects(mutateDocument({ ...common, ...attribution, producer: "invalid", mode: "patch",
+      expectedVersion: committed.version, input: { kind: "field-action", action } }), OkfActorError);
+    assert.equal((await backend.read(common.id)).version, committed.version);
+  });
+}
 
 // One matrix projects producer/advisory separation through every mutation mode,
 // edition and automatic Kind attribution path.

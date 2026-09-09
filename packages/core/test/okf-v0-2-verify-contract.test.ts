@@ -78,10 +78,7 @@ test("v0.2 verify: appends the event, keeps generated.by/at and the body, attrib
           actor: "human:reviewer",
           persistActor: true,
           now: () => LATER,
-          buildCandidate: (existing) => ({
-            frontmatter: appendVerificationEvent(existing!.frontmatter, { by: "human:reviewer", at: VERIFIED_AT }),
-            body: existing!.body,
-          }),
+          input: { kind: "verify", event: { by: "human:reviewer", at: VERIFIED_AT } },
         });
 
       const verified = await verify();
@@ -111,10 +108,7 @@ test("v0.2 verify: appends the event, keeps generated.by/at and the body, attrib
         actor: "process:finance-nightly",
         persistActor: true,
         now: () => LATER,
-        buildCandidate: (existing) => ({
-          frontmatter: appendVerificationEvent(existing!.frontmatter, { by: "process:finance-nightly", at: LATER }),
-          body: existing!.body,
-        }),
+        input: { kind: "verify", event: { by: "process:finance-nightly", at: LATER } },
       });
       assert.equal(verificationEvents(machine.doc.frontmatter).length, 2, label);
       assert.equal(trustTier(machine.doc.frontmatter), "human-reviewed", label);
@@ -164,10 +158,7 @@ test("v0.2 verify: a producer's bare verified mapping is read as one event and b
         actor: "human:reviewer",
         persistActor: true,
         now: () => LATER,
-        buildCandidate: (existing) => ({
-          frontmatter: appendVerificationEvent(existing!.frontmatter, { by: "human:reviewer", at: LATER }),
-          body: existing!.body,
-        }),
+        input: { kind: "verify", event: { by: "human:reviewer", at: LATER } },
       });
       assert.deepEqual(
         result.doc.frontmatter.verified,

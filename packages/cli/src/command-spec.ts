@@ -1,5 +1,5 @@
 // Pure CLI grammar metadata. This module owns executable leaf identity, canonical alias identity,
-// exact positional count, display attachment, and ordered top-level command projection. It imports
+// positional bounds, display attachment, and ordered top-level command projection. It imports
 // no handlers, rendering, invocation policy, SDK, or I/O.
 
 const CLI_LEAF_BRAND: unique symbol = Symbol("superbee.cli-leaf");
@@ -8,7 +8,16 @@ const OWNED_CLI_LEAVES = new WeakSet<object>();
 export interface ExactPositionalArity {
   readonly kind: "exact";
   readonly count: number;
+  readonly max?: never;
 }
+
+export interface BoundedPositionalArity {
+  readonly kind: "bounded";
+  readonly count: number;
+  readonly max: number;
+}
+
+export type PositionalArity = ExactPositionalArity | BoundedPositionalArity;
 
 /**
  * What a caller-supplied path token BECOMES. The private-state boundary is a property of the ACT,
@@ -44,7 +53,7 @@ export interface CliLeafSpec<
   readonly id: Id;
   readonly path: Path;
   readonly command: FirstWord<Path>;
-  readonly arity: ExactPositionalArity;
+  readonly arity: PositionalArity;
   readonly canonical: CliLeafSpec;
   readonly exposure: Exposure;
   readonly commandOrder?: number;
@@ -94,6 +103,7 @@ export function exactPositionalArity(count: number): ExactPositionalArity {
 const zero = exactPositionalArity(0);
 const one = exactPositionalArity(1);
 const two = exactPositionalArity(2);
+const fieldValueArity: BoundedPositionalArity = Object.freeze({ kind: "bounded", count: 2, max: 3 });
 
 function pathFlags(...flags: readonly CliPathFlag[]): readonly CliPathFlag[] {
   return Object.freeze(flags.map((entry) => Object.freeze({ ...entry })));
@@ -118,6 +128,9 @@ interface LeafPathSurface {
   readonly dynamicFieldFlags?: true;
 }
 
+const DIR_FIELD_FILE_SURFACE: LeafPathSurface = Object.freeze({
+  flags: pathFlags({ flag: "dir", role: "bundle-root" }, { flag: "from-file", role: "ingress" }),
+});
 const DIR_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR });
 const DIR_REJECTED_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_REJECTED });
 const DIR_BODY_FILE_SURFACE: LeafPathSurface = Object.freeze({ flags: BUNDLE_DIR_AND_BODY_FILE });
@@ -159,7 +172,7 @@ function firstWord<Path extends string>(path: Path): FirstWord<Path> {
   return path.split(" ", 1)[0] as FirstWord<Path>;
 }
 
-function surfaceOf(surface: LeafPathSurface | undefined, arity: ExactPositionalArity): {
+function surfaceOf(surface: LeafPathSurface | undefined, arity: PositionalArity): {
   pathFlags: readonly CliPathFlag[];
   pathPositionals: readonly CliPathPositional[];
 } {
@@ -175,7 +188,7 @@ function surfaceOf(surface: LeafPathSurface | undefined, arity: ExactPositionalA
 function publicLeaf<const Id extends string, const Path extends string>(
   id: Id,
   path: Path,
-  arity: ExactPositionalArity,
+  arity: PositionalArity,
   commandOrder?: number,
   surface?: LeafPathSurface,
 ): CliLeafSpec<Id, Path, "public"> {
@@ -228,7 +241,7 @@ function publicAlias<const Id extends string, const Path extends string, Canonic
 function hiddenLeaf<const Id extends string, const Path extends string>(
   id: Id,
   path: Path,
-  arity: ExactPositionalArity,
+  arity: PositionalArity,
   surface?: LeafPathSurface,
 ): CliLeafSpec<Id, Path, "hidden"> {
   const mutable = {
@@ -303,8 +316,20 @@ export const CLI_COMMAND_GROUPS = [
         id: "docUpdate",
         leaves: [publicLeaf("docUpdate", "doc update", one, undefined, DIR_BODY_FILE_DYNAMIC_SURFACE)],
         usage:
-          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc update <id> [--<field> <value> ...] [--title <t>] [--type <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
+      },
+      {
+        id: "docField",
+        leaves: [
+          publicLeaf("docFieldSet", "doc field set", fieldValueArity, undefined, DIR_FIELD_FILE_SURFACE),
+          publicLeaf("docFieldAdd", "doc field add", fieldValueArity, undefined, DIR_FIELD_FILE_SURFACE),
+          publicLeaf("docFieldRemove", "doc field remove", fieldValueArity, undefined, DIR_FIELD_FILE_SURFACE),
+          publicLeaf("docFieldEdit", "doc field edit", two, undefined, DIR_FIELD_FILE_SURFACE),
+          publicLeaf("docFieldReplaceAll", "doc field replace-all", two, undefined, DIR_FIELD_FILE_SURFACE),
+        ],
+        usage: "doc field <set|add|remove|edit|replace-all> <id> <field> [value] [--from-file <path>] [--id <source-id> | --resource <resource>] [--expected-version <v>] [--actor <n>] [--strict] [--dir <path>] [--remote <url>]",
+        summary: "Set one supported non-collection field, add/remove tags or sources, edit one source, or explicitly replace a complete collection; edit and replace-all require an observed version",
       },
       {
         id: "docVerify",

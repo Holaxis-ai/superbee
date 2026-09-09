@@ -50,9 +50,9 @@ test("every standard timestamp slot shares strict validation and exact field dia
   assert.deepEqual(invalidOkfTimestamps({ type: "Note", custom: { at: "yesterday" }, timestamp: "2026-09-08", date: "2026-09-08" }), []);
 });
 
-test("authored create, patch and overwrite reject invalid slots before any persistence", async () => {
+test("authored create, complete replacement and overwrite reject invalid slots before any persistence", async () => {
   for (const [field, make] of slots) {
-    for (const mode of ["create-only", "patch", "overwrite"] as const) {
+    for (const mode of ["create-only", "replace-document", "overwrite"] as const) {
       const bundle = await harness();
       if (mode !== "create-only") await writeDocVersioned(bundle, { id: "notes/check", frontmatter: make(OLD), body: "old\n" });
       const before = mode === "create-only" ? undefined : await readDocVersioned(bundle, "notes/check");
@@ -127,7 +127,7 @@ test("a CAS retry cannot reuse a legacy timestamp allowance from an obsolete hea
   await writeDocVersioned(bundle, { id: "notes/race", frontmatter: legacy, body: "original\n" });
   let attempts = 0;
   await assert.rejects(mutateDocument({
-    bundle, id: "notes/race", mode: "patch", registry, strict: false, now: () => NOW,
+    bundle, id: "notes/race", mode: "replace-document", registry, strict: false, now: () => NOW,
     buildCandidate: async () => {
       if (++attempts === 1) await writeDocVersioned(bundle, { id: "notes/race", frontmatter: { type: "Note", verified: [{ by: "human:reviewer", at: NOW }] }, body: "racer\n" });
       return { frontmatter: legacy, body: "edit\n" };

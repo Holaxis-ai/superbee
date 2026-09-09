@@ -66,12 +66,10 @@ for (const value of ["2026-09-09", "2026-09-09T12:30:00", "2026-02-30T12:30:00Z"
       value,
       expectedVersion: before.version,
     });
-    assert.equal(prepared.status, "prepared");
-    const result = await f.service.commit(prepared.approvalToken, "launch");
-    assert.equal(result.status, "failed");
+    assert.equal(prepared.status, "rejected");
+    assert.equal(f.service.size(), 0);
     assert.equal(f.writes(), 0, "the authored mutation refuses before any backend write");
     assert.deepEqual(await readDocVersioned(f.bundle, "notes/one"), before);
-    assert.equal((await f.service.commit(prepared.approvalToken, "launch")).status, "expired");
   });
 }
 

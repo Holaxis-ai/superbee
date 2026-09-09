@@ -611,7 +611,7 @@ test("doc update: a FIELD-ONLY patch (no --body) is unaffected by the link-drop 
       { id: "a", frontmatter: { type: "Concept", title: "A", timestamp: OLD_TS }, body: "Intro.\n\n[ref](b.md)\n" },
     );
 
-    const result = await runDoc(["update", "a", "--tag", "reviewed", "--dir", dir]);
+    const result = await runDoc(["update", "a", "--title", "Reviewed", "--dir", dir]);
     assert.equal(result.doc, "updated");
     assert.equal(result.changed, true);
 
@@ -1308,16 +1308,16 @@ test("doc update on an explicit v0.2 bundle advances generated provenance withou
   }
 });
 
-test("doc update --tag: REPLACES the whole tag set, not adds to it", async () => {
+test("doc update --tag: refuses implicit whole-list replacement and preserves tags", async () => {
   const { dir, cleanup } = await makeBundle();
   try {
     await writeDoc(
       { root: dir },
       { id: "concepts/a", frontmatter: { type: "Concept", tags: ["x", "y"], timestamp: OLD_TS }, body: "Body." },
     );
-    await runDoc(["update", "concepts/a", "--tag", "z", "--dir", dir]);
+    await assert.rejects(() => runDoc(["update", "concepts/a", "--tag", "z", "--dir", dir]), /doc field/);
     const after = await readDoc({ root: dir }, "concepts/a");
-    assert.deepEqual(after.frontmatter.tags, ["z"]);
+    assert.deepEqual(after.frontmatter.tags, ["x", "y"]);
   } finally {
     await cleanup();
   }
@@ -1985,7 +1985,7 @@ test("doc update: a standard value flag with no value (final argv token) is a cl
     // the boolean back would either silently persist `title:true` (exit 0 — corruption) or crash a
     // later `.trim()` on `--expected-version`/`--actor` (RUNTIME, off the capped taxonomy). Each flag
     // is placed LAST so parseArgs can't greedily consume a following token as its value.
-    for (const flag of ["--title", "--description", "--type", "--body", "--body-file", "--tag", "--expected-version", "--actor"]) {
+    for (const flag of ["--title", "--description", "--type", "--body", "--body-file", "--expected-version", "--actor"]) {
       await assert.rejects(
         () => doc(["update", "tasks/x", "--dir", dir, "--json", flag], { readStdin: async () => undefined }),
         (err: unknown) => {
@@ -2101,7 +2101,7 @@ test("doc write REFUSES to overwrite a kind convention — it would silently dro
   }
 });
 
-test("doc update: a repeated kind-declared --<field> becomes an array", async () => {
+test("doc update: repeated kind-declared assignments name the arity error", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);
@@ -2125,11 +2125,10 @@ test("doc update: a repeated kind-declared --<field> becomes an array", async ()
       { id: "widgets/x", frontmatter: { type: "Widget", title: "X", timestamp: OLD_TS }, body: "" },
     );
 
-    const result = await runDoc(["update", "widgets/x", "--label", "a", "--label", "b", "--dir", dir]);
-    assert.equal(result.changed, true);
+    await assert.rejects(() => runDoc(["update", "widgets/x", "--label", "a", "--label", "b", "--dir", dir]), /exactly ONE value/);
 
     const after = await readDoc({ root: dir }, "widgets/x");
-    assert.deepEqual(after.frontmatter.label, ["a", "b"]);
+    assert.equal(after.frontmatter.label, undefined);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -59,6 +59,15 @@ delete is a successful `deleted:false`. This does not weaken compare-and-swap: a
 an expected version still receives a conflict when that premise is stale, even if the requested
 content would otherwise be a no-op.
 
+`doc field <action> <document-id> <field-name>` makes collection scope explicit: `add` and
+`remove` change one tag or source, `edit` patches one selected source, and `replace-all`
+replaces the complete supported list. `edit` and `replace-all` require an observed version.
+`set` and ordinary `doc update` refuse implicit list replacement, including nested lists;
+`doc update` accepts one value per dynamic field flag. Collection actions currently support
+only `tags` and `sources`; source selectors refuse ambiguous matches. Receipts report the
+field/action scope, and errors identify the corrective action. See `test/doc-field.test.ts`
+and `test/kind-arity.test.ts` for membership, stale-version, selector, and arity evidence.
+
 ## Evidence map
 
 Every numbered row has one help/source anchor and one behavioral test anchor. The repository test

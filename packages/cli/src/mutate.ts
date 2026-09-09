@@ -13,6 +13,7 @@
 import {
   DocumentNotFoundError,
   KindConformanceError,
+  KindFieldMutationConflict,
   mutateDocument,
   readDoc,
   VersionConflict,
@@ -21,6 +22,8 @@ import {
   type DocumentMutationCandidate,
   type DocumentMutationContext,
   type DocumentMutationMode,
+  type MutateDocumentOptions,
+  type FieldActionScope,
   type Frontmatter,
   type KindRegistry,
   type OkfDocument,
@@ -53,10 +56,11 @@ export interface MutateDocOptions {
   strict: boolean;
   /** Fallback `help` for a kind rejection whose violations name no completable field (see `kindConformanceCliError`). */
   helpOnKindReject: string;
-  buildCandidate: (
+  buildCandidate?: (
     existing: OkfDocument | undefined,
     context: DocumentMutationContext,
   ) => MutateCandidate | Promise<MutateCandidate>;
+  input?: MutateDocumentOptions["input"];
   onAbsent?: "fail" | "create";
   maxAttempts?: number;
   compareTimestamp?: boolean;
@@ -85,6 +89,7 @@ export interface MutateDocOptions {
 }
 
 export interface MutateResult {
+  scope?: FieldActionScope;
   doc: OkfDocument;
   changed: boolean;
   version: Version;
@@ -122,6 +127,7 @@ async function docExistsForMode(bundle: Bundle, id: ConceptId, mode: MutateMode)
 }
 
 async function translateMutationError(error: unknown, opts: MutateDocOptions): Promise<never> {
+  if (error instanceof KindFieldMutationConflict) throw new CliError("STALE_HEAD", error.message, { help: opts.helpOnKindReject });
   if (error instanceof KindConformanceError) {
     const docExists = await docExistsForMode(opts.bundle, opts.id, opts.mode);
     throw kindConformanceCliError(error, opts.registry, opts.helpOnKindReject, docExists);
@@ -147,12 +153,10 @@ export async function mutateDoc(opts: MutateDocOptions): Promise<MutateResult> {
       mode: opts.mode,
       registry: opts.registry,
       strict: opts.strict,
-      buildCandidate: async (existing, context) => {
-        const candidate = await opts.buildCandidate(existing, context);
-        // Inside the attempt, after the verb's own refusals, so the guards see the version-matched
-        // snapshot this compare-and-swap write is about to replace — never a stale upfront peek.
+      buildCandidate: opts.buildCandidate,
+      input: opts.input,
+      assertCandidate: (existing, candidate) => {
         if (existing) guardBodyReplace(opts.bundle, existing, candidate.body, opts.bodyReplace);
-        return candidate;
       },
       onAbsent: opts.onAbsent,
       maxAttempts: opts.maxAttempts,

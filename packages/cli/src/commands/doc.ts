@@ -30,6 +30,7 @@ import { DOC_USAGE, type DocCliDeps } from "./doc/common.js";
 import type { UiCliDeps } from "./ui.js";
 import { docWrite } from "./doc/write.js";
 import { docUpdate } from "./doc/update.js";
+import { docField } from "./doc/field.js";
 import { docVerify } from "./doc/verify.js";
 import { docRead } from "./doc/read.js";
 import { docHistory } from "./doc/history.js";
@@ -46,6 +47,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
 
   if (sub === "write") return docWrite(rest, deps);
   if (sub === "update") return docUpdate(rest, deps);
+  if (sub === "field") return docField(rest, deps);
   if (sub === "verify") return docVerify(rest, deps);
   if (sub === "read") return docRead(rest, deps);
   if (sub === "open") return docOpen(rest, deps);
@@ -65,7 +67,7 @@ export async function doc(argv: string[], deps: Partial<DocCliDeps & UiCliDeps> 
       { help: `${invocation} doc --help` },
     );
   }
-  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|verify|read|open|history|delete)`, {
+  throw new CliError("USAGE", `unknown doc subcommand: ${sub} (expected write|update|field|verify|read|open|history|delete)`, {
     help: `${cliInvocation()} doc --help`,
   });
 }
