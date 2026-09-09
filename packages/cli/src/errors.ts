@@ -8,7 +8,7 @@
 // reach a command catch-all or fall all the way to `toExit`.
 //
 // The 0/1/2/4/5/6 exit taxonomy is PRESERVED intact from holaxis-agentstate.
-import { InvalidInputError, MalformedDocumentError, OkfActorError, RemoteError, VersionConflict } from "@superbee/core";
+import { FieldActionError, InvalidInputError, MalformedDocumentError, OkfActorError, RemoteError, VersionConflict } from "@superbee/core";
 import { isBoardGitError, type BoardGitError } from "@superbee/board-git";
 import { commandLiteral, commandToken } from "./command-text.js";
 import { actorRefusal } from "./actor-guidance.js";
@@ -203,6 +203,7 @@ export function classifyBundleError(err: unknown, remoteUrl?: string): CliError 
     const refusal = actorRefusal(err.actor);
     return new CliError("USAGE", refusal.message, { help: refusal.help, details: { actor: err.actor } });
   }
+  if (err instanceof FieldActionError) return new CliError("USAGE", err.message, { details: { ...err.details } });
   if (err instanceof InvalidInputError) return new CliError("USAGE", err.message);
   if (err instanceof MalformedDocumentError) return new CliError("RUNTIME", err.message);
   if (err instanceof VersionConflict) {

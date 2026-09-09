@@ -23,6 +23,7 @@ export const DOC_USAGE = `superbee doc — write, patch, read, present, or delet
 Usage:
   superbee doc write   <id> --type <t> [options]        Create/overwrite a concept doc
   superbee doc update  <id> [options]                   Patch given fields of an existing doc
+  superbee doc field <action> <id> <field> [options]   Set a field or change explicit collection membership
   superbee doc verify  <id> --actor <a>                 Append an OKF v0.2 verification event
   superbee doc read    <id> [--out <p> | --body-out <p> | --rendered-out <p>] Read/export a doc
   superbee doc open    <id>                             Open the rendered doc in a browser

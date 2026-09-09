@@ -16,13 +16,14 @@ export function assertLeafArity(
   assertCliLeaf(leaf);
   const path = leaf.canonical.path;
   const count = leaf.arity.count;
-  const expected = count === 0
+  const max = leaf.arity.max ?? count;
+  const expected = max !== count ? `${count} to ${max} positionals` : count === 0
     ? "no positional arguments"
     : `exactly ${count} positional${count === 1 ? "" : "s"}`;
   const actual = positionals.length;
-  if (actual === count) return;
-  const firstUnexpected = boundedToken(positionals[count]);
-  const surplus = Math.max(0, actual - count);
+  if (actual >= count && actual <= max) return;
+  const firstUnexpected = boundedToken(positionals[max]);
+  const surplus = Math.max(0, actual - max);
   throw new CliError("USAGE", `${path} expected ${expected}; received ${actual}`, {
     details: {
       command: path,

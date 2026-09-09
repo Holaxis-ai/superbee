@@ -78,7 +78,7 @@ const HOME_BASELINE_TOON = [
   `getting_started: "no OKF bundle found in this directory — run \`superbee init --create-only --recipe none --dir '.superbee'\` to create a blank bundle, or \`superbee recipes\` to compare available workspace setups; create your chosen setup here with \`superbee init --create-only --recipe <name> --dir '.superbee'\`"`,
   "commands:",
   '  Bundle: "bundle locate, catalog, init, index generate, status"',
-  '  "Documents & links": "doc write, doc update, doc verify, doc read, doc open, doc history, doc delete, list, link"',
+  '  "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, list, link"',
   '  Artifacts: "artifact create, promote, pull, blobs, delete"',
   '  Kinds: "new, kinds, kind field, kind draft, kind dismiss, recipes, recipe add, recipe evolve"',
   '  Remote: "serve, ui, mcp, view list, sync"',
@@ -101,7 +101,7 @@ const HOME_BASELINE_JSON = `${JSON.stringify({
     "no OKF bundle found in this directory — run `superbee init --create-only --recipe none --dir '.superbee'` to create a blank bundle, or `superbee recipes` to compare available workspace setups; create your chosen setup here with `superbee init --create-only --recipe <name> --dir '.superbee'`",
   commands: {
     Bundle: "bundle locate, catalog, init, index generate, status",
-    "Documents & links": "doc write, doc update, doc verify, doc read, doc open, doc history, doc delete, list, link",
+    "Documents & links": "doc write, doc update, doc field, doc verify, doc read, doc open, doc history, doc delete, list, link",
     Artifacts: "artifact create, promote, pull, blobs, delete",
     Kinds: "new, kinds, kind field, kind draft, kind dismiss, recipes, recipe add, recipe evolve",
     Remote: "serve, ui, mcp, view list, sync",

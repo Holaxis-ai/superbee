@@ -61,6 +61,11 @@ function leafCases(ctx: FixtureContext): Record<PublicLeafId, LeafCase> {
     status: simple(CLI_LEAVES.status, ["status"], [], dir),
     docWrite: simple(CLI_LEAVES.docWrite, ["doc", "write"], ["candidate"], ["--type", "Test", "--body", "body", ...dir]),
     docUpdate: simple(CLI_LEAVES.docUpdate, ["doc", "update"], ["existing"], ["--title", "Changed", ...dir]),
+    docFieldSet: simple(CLI_LEAVES.docFieldSet, ["doc", "field", "set"], ["existing", "title", "Changed"], dir),
+    docFieldAdd: simple(CLI_LEAVES.docFieldAdd, ["doc", "field", "add"], ["existing", "tags"], dir),
+    docFieldRemove: simple(CLI_LEAVES.docFieldRemove, ["doc", "field", "remove"], ["existing", "tags"], dir),
+    docFieldEdit: simple(CLI_LEAVES.docFieldEdit, ["doc", "field", "edit"], ["existing", "tags"], dir),
+    docFieldReplaceAll: simple(CLI_LEAVES.docFieldReplaceAll, ["doc", "field", "replace-all"], ["existing", "tags"], dir),
     docVerify: simple(CLI_LEAVES.docVerify, ["doc", "verify"], ["existing"], ["--actor", "human:arity", ...dir]),
     docRead: simple(CLI_LEAVES.docRead, ["doc", "read"], ["existing"], ["--out", "-", ...dir], "stderr"),
     docOpen: simple(CLI_LEAVES.docOpen, ["doc", "open"], ["existing"], dir),
@@ -220,8 +225,8 @@ test("built key owners and review sentinels reject surplus with the exact envelo
     const row = rows[id];
     const contract = row.leaf.arity;
     const path = row.leaf.path;
-    assert.equal(contract.kind, "exact", `${id}: matrix derivation requires an exact contract`);
-    assert.equal(row.operands.length, contract.count, `${path}: fixture must be minimally valid`);
+    const max = contract.max ?? contract.count;
+    assert.equal(row.operands.length, max, `${path}: fixture must be minimally valid`);
     assert.doesNotThrow(() => assertLeafArity(row.leaf, row.operands), `${path}: valid boundary`);
 
     const result = run(row.argv([...row.operands, SURPLUS]), ctx.scratch, ctx.env);
@@ -232,14 +237,14 @@ test("built key owners and review sentinels reject surplus with the exact envelo
     }
     const envelope = decodedError(result, row, path);
     assert.equal(envelope.error.code, "USAGE", path);
-    const expected = contract.count === 0
+    const expected = contract.kind === "bounded" ? `${contract.count} to ${max} positionals` : contract.count === 0
       ? "no positional arguments"
       : `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`;
-    assert.equal(envelope.error.message, `${row.leaf.canonical.path} expected ${expected}; received ${contract.count + 1}`, path);
+    assert.equal(envelope.error.message, `${row.leaf.canonical.path} expected ${expected}; received ${max + 1}`, path);
     assert.deepEqual(envelope.error.details, {
       command: row.leaf.canonical.path,
       expected,
-      actual: contract.count + 1,
+      actual: max + 1,
       surplus: 1,
       first_unexpected: SURPLUS,
     }, path);
@@ -280,14 +285,15 @@ test("built key owners and review sentinels prove missing and help precedence", 
     const contract = row.leaf.arity;
     const path = row.leaf.path;
     if (contract.count > 0) {
-      const missing = run(row.argv(row.operands.slice(0, -1)), ctx.scratch, ctx.env);
+      const expected = contract.kind === "bounded" ? `${contract.count} to ${contract.max} positionals` : `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`;
+      const missing = run(row.argv(row.operands.slice(0, contract.count - 1)), ctx.scratch, ctx.env);
       assert.equal(missing.status, 2, `${path} missing boundary\n${missing.stdout}${missing.stderr}`);
       const envelope = decodedError(missing, row, path);
       assert.equal(envelope.error.code, "USAGE", path);
-      assert.equal(envelope.error.message, `${row.leaf.canonical.path} expected exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}; received ${contract.count - 1}`, path);
+      assert.equal(envelope.error.message, `${row.leaf.canonical.path} expected ${expected}; received ${contract.count - 1}`, path);
       assert.deepEqual(envelope.error.details, {
         command: row.leaf.canonical.path,
-        expected: `exactly ${contract.count} positional${contract.count === 1 ? "" : "s"}`,
+        expected,
         actual: contract.count - 1,
       }, id);
       assert.equal(envelope.error.help?.endsWith(`${row.leaf.canonical.path} --help`), true, path);

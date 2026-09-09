@@ -565,6 +565,11 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
   { leaf: "indexGenerate", surface: "--dir", argv: (t) => ["index", "generate", "--dir", t, "--json"] },
   { leaf: "status", surface: "--dir", argv: (t) => ["status", "--dir", t, "--json"] },
   { leaf: "docWrite", surface: "--dir", argv: (t) => ["doc", "write", "probe/dw", "--type", "Note", "--body", "x", "--dir", t, "--json"] },
+  { leaf: "docFieldSet", surface: "--dir", argv: (t) => ["doc", "field", "set", "notes/a", "title", "Probe", "--dir", t, "--json"] },
+  { leaf: "docFieldAdd", surface: "--dir", argv: (t) => ["doc", "field", "add", "notes/a", "tags", "probe", "--dir", t, "--json"] },
+  { leaf: "docFieldRemove", surface: "--dir", argv: (t) => ["doc", "field", "remove", "notes/a", "tags", "probe", "--dir", t, "--json"] },
+  { leaf: "docFieldEdit", controlSkip: "Complete-value and observed-version controls are exercised by doc-field.test.ts; this row proves the path guard before content or version checks.", surface: "--dir", argv: (t) => ["doc", "field", "edit", "notes/a", "sources", "--id", "probe", "--from-file", "input.yaml", "--expected-version", "v", "--dir", t, "--json"] },
+  { leaf: "docFieldReplaceAll", controlSkip: "Complete-value and observed-version controls are exercised by doc-field.test.ts; this row proves the path guard before content or version checks.", surface: "--dir", argv: (t) => ["doc", "field", "replace-all", "notes/a", "tags", "--from-file", "input.yaml", "--expected-version", "v", "--dir", t, "--json"] },
   { leaf: "docUpdate", surface: "--dir", argv: (t) => ["doc", "update", "notes/a", "--title", "Probe", "--dir", t, "--json"] },
   { leaf: "docVerify", surface: "--dir", argv: (t) => ["doc", "verify", "notes/a", "--actor", "human:probe", "--dir", t, "--json"] },
   { leaf: "docRead", surface: "--dir", argv: (t) => ["doc", "read", "notes/a", "--dir", t, "--json"] },
@@ -666,6 +671,11 @@ const CROSSING_ROWS: readonly CrossingRow[] = [
 
   // ── Ingress: the target's BYTES are read. ───────────────────────────────────
   { leaf: "docWrite", surface: "--body-file", argv: (t) => ["doc", "write", "probe/bf", "--type", "Note", "--body-file", t, "--dir", ".superbee", "--json"] },
+  { leaf: "docFieldSet", surface: "--from-file", argv: (t) => ["doc", "field", "set", "notes/a", "title", "--from-file", t, "--dir", ".superbee", "--json"] },
+  { leaf: "docFieldAdd", surface: "--from-file", argv: (t) => ["doc", "field", "add", "notes/a", "tags", "--from-file", t, "--dir", ".superbee", "--json"] },
+  { leaf: "docFieldRemove", surface: "--from-file", argv: (t) => ["doc", "field", "remove", "notes/a", "tags", "--from-file", t, "--dir", ".superbee", "--json"] },
+  { leaf: "docFieldEdit", controlSkip: "Complete-value and observed-version controls are exercised by doc-field.test.ts; this row proves the path guard before content or version checks.", surface: "--from-file", argv: (t) => ["doc", "field", "edit", "notes/a", "sources", "--id", "probe", "--expected-version", "v", "--from-file", t, "--dir", ".superbee", "--json"] },
+  { leaf: "docFieldReplaceAll", controlSkip: "Complete-value and observed-version controls are exercised by doc-field.test.ts; this row proves the path guard before content or version checks.", surface: "--from-file", argv: (t) => ["doc", "field", "replace-all", "notes/a", "tags", "--expected-version", "v", "--from-file", t, "--dir", ".superbee", "--json"] },
   { leaf: "docUpdate", surface: "--body-file", argv: (t) => ["doc", "update", "notes/b", "--body-file", t, "--dir", ".superbee", "--json"] },
   { leaf: "new", surface: "--body-file", argv: (t) => ["new", "Context Note", "probe-bf", "--title", "Probe", "--body-file", t, "--dir", ".superbee", "--json"] },
   { leaf: "promote", surface: "<0>", argv: (t) => ["promote", t, "--doc-key", "probe/leak.json", "--dir", ".superbee", "--json"] },

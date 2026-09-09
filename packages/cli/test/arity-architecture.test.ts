@@ -139,6 +139,7 @@ test("behavioral-equivalence taxonomy is exhaustive, coherent, and materially sm
   for (const [leafId, assignment] of assignments) {
     const leaf = CLI_LEAVES[leafId];
     const dimensions = assignment.dimensions;
+    assert.equal(dimensions.arityKind, leaf.arity.kind, `${leaf.path}: arity kind`);
     assert.equal(dimensions.positionalCount, leaf.arity.count, `${leaf.path}: positional count`);
     assert.equal(
       dimensions.canonicalIdentity,
