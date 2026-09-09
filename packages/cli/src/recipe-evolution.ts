@@ -735,7 +735,7 @@ export async function applyRecipeEvolution(
       const result = await mutateDocument({
         bundle,
         id: definition.id,
-        mode: "patch",
+        mode: "replace-document",
         onAbsent: "fail",
         expectedVersion: definition.expected_version!,
         maxAttempts: 1,

@@ -14,13 +14,13 @@
 import { parseArgs } from "node:util";
 import {
   loadKinds,
+  parseConventionDoc,
   PROGRESS_STATUS_FIELD,
   progressStatusStorageField,
   projectKindForAuthoring,
   readBundleOkfVersion,
   resolveKindFieldCoordinate,
   RESERVED_KIND_FIELD_NAMES,
-  type Frontmatter,
 } from "@superbee/core";
 import { openBundle, resolveRemoteFlag } from "../bundle.js";
 import { CliError } from "../errors.js";
@@ -77,35 +77,6 @@ Options:
 /** Injectable seam so the parse→edit wiring is unit-testable. */
 export interface KindCliDeps {
   stdout: (s: string) => void;
-}
-
-/** Normalize a possibly-absent/malformed `fields.<list>` into a fresh string[]. */
-function toStringList(v: unknown): string[] {
-  return Array.isArray(v) ? v.map((x) => String(x)) : [];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function hasOwn(record: object, key: PropertyKey): boolean {
-  return Object.prototype.hasOwnProperty.call(record, key);
-}
-
-function setOwn(record: Record<string, unknown>, key: string, value: unknown): void {
-  Object.defineProperty(record, key, { value, enumerable: true, configurable: true, writable: true });
-}
-
-function cloneRecord(record: Record<string, unknown>): Record<string, unknown> {
-  const clone: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) setOwn(clone, key, value);
-  return clone;
-}
-
-function deleteOwn(record: Record<string, unknown>, key: string): boolean {
-  return hasOwn(record, key) && delete record[key];
 }
 
 /** The three `kind` sub-verbs' selector payloads, discriminated on `mode`. */
@@ -275,24 +246,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
       : requestedFieldName
   );
 
-  // Edit the governing convention doc's RAW frontmatter.fields, preserving
-  // governs/path/sections/timestamp/body. `target.id` is the convention's own concept id.
-  //
-  // Routed through `mutateDoc`'s "patch" mode (fixes a live lost-update bug: the old unversioned
-  // readDoc -> in-memory edit -> unconditional writeDoc silently lost one edit whenever two
-  // `kind field` edits raced, or a concurrent `doc update` to the SAME convention landed between
-  // the read and the write). `mutateDoc` does the versioned-read -> build -> idempotency -> validate
-  // -> CAS-write-with-bounded-retry itself (the exact shape `link add`/`doc update` already prove for
-  // this seam, now over the shared `versionedMutation` primitive) and throws NOT_FOUND before
-  // `buildCandidate` ever runs on an absent doc (`onAbsent: "fail"`, the default), so `existing`
-  // below is guaranteed defined. Two concurrent field edits now MERGE: the loser's retry re-reads
-  // the winner's write and re-applies its OWN edit on top, instead of one silently clobbering the
-  // other. `buildCandidate` re-runs this computation against EVERY attempt's fresh read — never a
-  // decision computed once and blindly retried with a newer token.
-  let computedRequired: string[] = [];
-  let computedOptional: string[] = [];
-  let computedValues: Record<string, unknown> = {};
-
+  // Core reapplies the schema operation to each fresh CAS head and asserts its governs/edition.
   const result = await mutateDoc({
     bundle,
     id: target.id,
@@ -301,139 +255,7 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
     strict: false, // this command EDITS the schema itself — it never validates against one
     helpOnKindReject: `${cliInvocation()} kinds`,
     actor: values.actor?.trim(),
-    buildCandidate: (existingDoc, context) => {
-      if (context.okfVersion !== preparedEdition) {
-        throw new CliError(
-          "STALE_HEAD",
-          `the bundle format changed while editing the '${kindName}' kind — rerun against the current bundle`,
-          { help: `${cliInvocation()} kinds` },
-        );
-      }
-      const existing = existingDoc!;
-      const fm = existing.frontmatter;
-
-      // Domain-invariant re-check: the
-      // primitive's CAS pairing guarantees this attempt's `existing` is a version-matched fresh
-      // read — it does NOT guarantee the doc still means what we assumed when we looked it up via
-      // `loadKinds` above. A concurrent writer could rename this SAME convention's `governs` (e.g.
-      // 'Context Note' -> 'Renamed Kind') between attempts; re-reading and re-splicing the field
-      // lists would then silently edit the RENAMED convention under the OLD kind name, reporting
-      // success. Re-verify the invariant this command depends on — `governs === kindName` — against
-      // EVERY attempt's fresh read, not just the one `loadKinds` saw before the loop started.
-      const currentGoverns = typeof fm.governs === "string" ? fm.governs.trim() : "";
-      if (currentGoverns !== kindName) {
-        throw new CliError(
-          "STALE_HEAD",
-          `'${target.id}' no longer governs '${kindName}' — it was concurrently renamed to govern ` +
-            `'${currentGoverns || "(missing)"}'. Refusing to edit the wrong kind's schema; re-run ` +
-            `'${cliInvocation()} kinds' to see the current declarations and retry against the right name.`,
-          { help: `${cliInvocation()} kinds` },
-        );
-      }
-
-      const fieldsObj = isRecord(fm.fields) ? cloneRecord(fm.fields) : {};
-      const required = toStringList(fieldsObj.required);
-      const optional = toStringList(fieldsObj.optional);
-      const valuesMap: Record<string, unknown> =
-        hasOwn(fieldsObj, "values") && isRecord(fieldsObj.values)
-          ? cloneRecord(fieldsObj.values)
-          : {};
-      const descriptionsMap: Record<string, unknown> | undefined =
-        hasOwn(fieldsObj, "descriptions") && isRecord(fieldsObj.descriptions)
-          ? cloneRecord(fieldsObj.descriptions)
-          : undefined;
-      const rawValueDescriptions = hasOwn(fieldsObj, "value_descriptions")
-        ? fieldsObj.value_descriptions
-        : undefined;
-      let valueDescriptionsMap: Record<string, unknown> | undefined;
-      let valueDescriptionsChanged = false;
-      let descriptionDeleted = false;
-
-      if (action === "add") {
-        const targetList = values.required ? required : optional;
-        const otherList = values.required ? optional : required;
-        // Re-classifying an existing field (e.g. `add --required` a currently-optional field) moves it.
-        const otherIdx = otherList.indexOf(fieldName);
-        if (otherIdx >= 0) otherList.splice(otherIdx, 1);
-        if (!targetList.includes(fieldName)) targetList.push(fieldName);
-        if (enumVals) {
-          const vals = enumVals;
-          const prev = hasOwn(valuesMap, fieldName) && Array.isArray(valuesMap[fieldName])
-            ? (valuesMap[fieldName] as unknown[]).map(String)
-            : undefined;
-          // Collision-resistant comparison: `prev.join(" ") !==
-          // vals.join(" ")` conflated DIFFERENT enum lists that happen to join to the same string
-          // — e.g. ["a b","c"] and ["a","b c"] BOTH become "a b c" — so `--values "a,b c"` over an
-          // existing ["a b","c"] wrongly reported changed:false. Length + element-wise instead; no
-          // delimiter choice can ever collide.
-          const same = !!prev && prev.length === vals.length && prev.every((v, i) => v === vals[i]);
-          if (!same) setOwn(valuesMap, fieldName, vals);
-
-          if (isRecord(rawValueDescriptions) && hasOwn(rawValueDescriptions, fieldName)) {
-            const rawFieldDescriptions = rawValueDescriptions[fieldName];
-            if (isRecord(rawFieldDescriptions)) {
-              const retained: Record<string, unknown> = {};
-              for (const [value, description] of Object.entries(rawFieldDescriptions)) {
-                if (vals.includes(value)) setOwn(retained, value, description);
-              }
-              if (Object.keys(retained).length !== Object.keys(rawFieldDescriptions).length) {
-                valueDescriptionsMap = cloneRecord(rawValueDescriptions);
-                if (Object.keys(retained).length > 0) setOwn(valueDescriptionsMap, fieldName, retained);
-                else deleteOwn(valueDescriptionsMap, fieldName);
-                valueDescriptionsChanged = true;
-              }
-            }
-          }
-        }
-      } else {
-        for (const list of [required, optional]) {
-          const idx = list.indexOf(fieldName);
-          if (idx >= 0) list.splice(idx, 1);
-        }
-        deleteOwn(valuesMap, fieldName);
-        if (descriptionsMap) descriptionDeleted = deleteOwn(descriptionsMap, fieldName);
-        if (isRecord(rawValueDescriptions) && hasOwn(rawValueDescriptions, fieldName)) {
-          const rawFieldDescriptions = rawValueDescriptions[fieldName];
-          if (isRecord(rawFieldDescriptions)) {
-            valueDescriptionsMap = cloneRecord(rawValueDescriptions);
-            deleteOwn(valueDescriptionsMap, fieldName);
-            valueDescriptionsChanged = true;
-          }
-        }
-      }
-
-      computedRequired = required;
-      computedOptional = optional;
-      computedValues = valuesMap;
-
-      // Rebuild `fields` FROM the original raw object, replacing only the three keys this command
-      // owns (required/optional/values, omitted when now-empty so the convention stays clean).
-      // Every OTHER sibling key — `terminal` today, any future declaration key — passes through
-      // VERBATIM, matching the registry's lenient-parse posture: an unrelated `kind field` edit
-      // must never destroy a declaration it doesn't understand (regression-pinned in
-      // kind.test.ts). `changed`/no-op detection is `mutateDoc`'s job (structural comparison
-      // against the existing doc, ignoring timestamp — this command never refreshes it).
-      const newFields: Record<string, unknown> = { ...fieldsObj };
-      if (required.length > 0) newFields.required = required;
-      else delete newFields.required;
-      if (optional.length > 0) newFields.optional = optional;
-      else delete newFields.optional;
-      if (Object.keys(valuesMap).length > 0) newFields.values = valuesMap;
-      else delete newFields.values;
-      if (descriptionsMap && descriptionDeleted) {
-        if (Object.keys(descriptionsMap).length > 0) newFields.descriptions = descriptionsMap;
-        else delete newFields.descriptions;
-      }
-      if (valueDescriptionsMap && valueDescriptionsChanged) {
-        if (Object.keys(valueDescriptionsMap).length > 0) newFields.value_descriptions = valueDescriptionsMap;
-        else delete newFields.value_descriptions;
-      }
-      const newFm: Frontmatter = { ...fm };
-      if (Object.keys(newFields).length > 0) newFm.fields = newFields;
-      else delete newFm.fields;
-
-      return { frontmatter: newFm, body: existing.body };
-    },
+    input: { kind: "kind-field", mutation: { governs: kindName, field: fieldName, action, required: values.required, values: enumVals, okfVersion: preparedEdition as "0.1" | "0.2" } },
     errors: {
       notFound: () =>
         new CliError(
@@ -445,23 +267,19 @@ export async function kind(argv: string[], deps: Partial<KindCliDeps> = {}): Pro
   });
 
   const changed = result.changed ?? false;
-  // Report the RESULTING schema (reload so the derived KindConvention reflects the write).
-  const after = changed ? (await loadKinds(bundle)).kinds.get(kindName) : target;
-  const authoringAfter = after ? projectKindForAuthoring(okfVersion, after) : undefined;
+  // Report the winning attempt, without a later registry read racing the receipt.
+  const parsedAfter = parseConventionDoc(result.doc);
+  const authoringAfter = projectKindForAuthoring(okfVersion, parsedAfter.ok ? parsedAfter.kind : target);
   const receipt: Record<string, unknown> = {
     kind: kindName,
     changed,
     action,
     field: requestedFieldName,
     convention: target.id,
-    required: authoringAfter?.fields.required ?? computedRequired.map((field) =>
-      field === fieldName ? requestedFieldName : field,
-    ),
-    optional: authoringAfter?.fields.optional ?? computedOptional.map((field) =>
-      field === fieldName ? requestedFieldName : field,
-    ),
+    required: authoringAfter.fields.required,
+    optional: authoringAfter.fields.optional,
   };
-  const resultValues = authoringAfter?.fields.values ?? computedValues;
+  const resultValues = authoringAfter.fields.values;
   if (Object.keys(resultValues).length > 0) receipt.values = resultValues;
   receipt.help = [`${cliInvocation()} kinds`];
   stdout(render(receipt, resolveMode(values)));

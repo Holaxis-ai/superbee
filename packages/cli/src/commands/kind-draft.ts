@@ -266,7 +266,7 @@ export async function kindDraftCommand(
     id: plan.candidateDoc.id,
     // A redraft UPGRADES the dismissal record in place (patch); a fresh draft must not clobber a
     // concurrently created convention (create-only).
-    mode: redraftTarget ? "patch" : "create-only",
+    mode: redraftTarget ? "replace-document" : "create-only",
     registry: plan.registry,
     strict: false, // this command WRITES a schema — it never validates one against another
     helpOnKindReject: `${inv} kinds`,

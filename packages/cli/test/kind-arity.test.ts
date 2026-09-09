@@ -99,7 +99,7 @@ test("doc update: a repeated ENUM field flag is a USAGE rejection — the stored
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");
-        assert.match(String(err.message), /exactly ONE value/);
+        assert.match(String(err.message), /contains a list/);
         return true;
       },
     );

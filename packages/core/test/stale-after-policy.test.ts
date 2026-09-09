@@ -16,7 +16,7 @@ async function fixture(edition = "0.2") {
   await backend.writeReserved("", "index.md", `---\nokf_version: '${edition}'\n---\n`);
   return { backend, bundle: { root: "mem://stale-after-policy", backend } as Bundle };
 }
-function mutate(bundle: Bundle, mode: "create-only" | "patch", change: (fm: Frontmatter) => Frontmatter) {
+function mutate(bundle: Bundle, mode: "create-only" | "patch" | "replace-document", change: (fm: Frontmatter) => Frontmatter) {
   return mutateDocument({ bundle, id: "notes/one", mode, registry, strict: false,
     buildCandidate: (existing) => ({ frontmatter: change({ ...(existing?.frontmatter ?? { type: "Note" }) }), body: "body\n" }) });
 }
@@ -40,7 +40,7 @@ test("authored changes reject invalid deadlines, preserve unchanged legacy value
     const before = await readDocVersioned(bundle, "notes/one");
     await assert.rejects(mutate(bundle, "patch", fm => ({ ...fm, stale_after: "different-invalid-value" })), InvalidInputError);
     assert.deepEqual(await readDocVersioned(bundle, "notes/one"), before);
-    const repaired = await mutate(bundle, "patch", fm => ({ ...fm, stale_after: instant }));
+    const repaired = await mutate(bundle, "replace-document", fm => ({ ...fm, stale_after: instant }));
     assert.equal(repaired.doc.frontmatter.stale_after, instant);
     const removed = await mutate(bundle, "patch", fm => { delete fm.stale_after; return fm; });
     assert.equal(Object.hasOwn(removed.doc.frontmatter, "stale_after"), false);

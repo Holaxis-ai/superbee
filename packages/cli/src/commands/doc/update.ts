@@ -7,7 +7,6 @@ import {
   progressStatusCoordinate,
   projectKindForAuthoring,
   resolveKindFieldCoordinate,
-  type Frontmatter,
 } from "@superbee/core";
 import { assertResolvedLocalRouteIdentity, boardAttributionForRoute, openBundle, resolveLocalBundleRoute, resolveRemoteFlag } from "../../bundle.js";
 import { parseDocUpdateTokensOrUsage } from "../../args.js";
@@ -33,7 +32,7 @@ import { commandToken } from "../../command-text.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
 /** The `doc update` STANDARD patch fields; excludes control flags (--keep-timestamp/--strict/--dir/--remote/…). */
-const DOC_UPDATE_FIELD_FLAGS = ["title", "description", "tag", "type", "stale-after", "body", "body-file"] as const;
+const DOC_UPDATE_FIELD_FLAGS = ["title", "description", "type", "stale-after", "body", "body-file"] as const;
 
 /** `doc update` standard value flags that consume the next token (or `=value`) as a single string. */
 const DOC_UPDATE_VALUE_FLAGS = new Set([
@@ -68,7 +67,6 @@ interface ParsedDocUpdateArgs {
   acceptTruncatedBody: boolean;
   title?: string;
   description?: string;
-  tags?: string[];
   type?: string;
   staleAfter?: string;
   /** `undefined` = not given at all; `""` = an explicit empty value (`--body ""`) — same distinction `values.body !== undefined` made. */
@@ -90,15 +88,14 @@ interface ParsedDocUpdateArgs {
  * but each value flag's VALUE is read back from its OWN option token in the walk below, NOT off
  * `values`: under `strict:false` a configured `type:"string"` option given no trailing value comes
  * back as boolean `true` (not `undefined`, and parseArgs does not throw), which read blindly would
- * silently persist e.g. `title:true` or crash a later `.trim()`. `--tag`'s repeatable
- * "replace-the-whole-set" array and `--body`'s "even `''` counts as explicit" distinction are
- * preserved by that walk. Because a doc's kind fields aren't known until the doc's
+ * silently persist e.g. `title:true` or crash a later `.trim()`. The walk preserves
+ * `--body`'s "even `''` counts as explicit" distinction and refuses the retired --tag channel. Because a doc's kind fields aren't known until the doc's
  * `type` is read at MUTATE time (and may be `--type`-overridden), they CANNOT be configured up
  * front — so the parse runs `strict:false, tokens:true` and a token walk buckets each option: a
  * KNOWN value/boolean flag is handled with its typed semantics; any OTHER `--<field>` /
  * `--<field>=<value>` is captured as a dynamic kind-field candidate (its value taken from the
  * adjacent leaked-positional token that `strict:false` produces) and validated LATE in
- * `buildCandidate` (unknown field / ungoverned type -> USAGE, exit 2 — the taxonomy is unchanged;
+ * semantic input preparation (unknown field / ungoverned type -> USAGE, exit 2 — the taxonomy is unchanged;
  * only some malformed-flag messages improve). `parseArgs` owns all character-level tokenization
  * (`--x=y`, quoting, `--`, short `-h`, and NAMING a shell-glued token). Unlike `new` — whose Kind
  * positional is known before parsing, licensing a strict kind-aware config — pre-reading this doc's
@@ -123,7 +120,6 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
           remote: { type: "string" },
           "expected-version": { type: "string" },
           actor: { type: "string" },
-          tag: { type: "string", multiple: true },
           "keep-timestamp": { type: "boolean" },
           strict: { type: "boolean" },
           "replace-links": { type: "boolean" },
@@ -137,13 +133,12 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
   // which safely coerces the `string | boolean | undefined` that `strict:false` types every value
   // as). STRING value flags are deliberately NOT read from `rawValues`: under `strict:false` a
   // configured `type:"string"` option given no trailing value comes back as boolean `true`
-  // (`--title` at end → `title:true`; `--tag` at end → `tag:[true]`) WITHOUT throwing — reading that
+  // (`--title` at end → `title:true`) WITHOUT throwing — reading that
   // back would persist `title:true` (silent corruption) or crash a later `.trim()`. The token walk
   // below instead takes each value flag's value from its OWN option token (`tok.value`, a real
   // `string | undefined`) and throws a clean USAGE when absent, reproducing the retired parser's
   // `takeValue()` guard AND keeping the value type-honest (no `string|boolean` cast for tsc to trust).
   const std: Record<string, string> = {}; // single-value standard flags, keyed by long-option name
-  const tags: string[] = []; // --tag, repeatable → replace-the-whole-set array
   const positionals: string[] = [];
   const kindFields = new Map<string, string[]>();
   const consumed = new Set<number>(); // argv indices consumed as an unknown option's value
@@ -179,11 +174,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
       continue;
     }
     if (name === "tag") {
-      if (tok.value === undefined) {
-        throw new CliError("USAGE", "--tag requires a value", { help: `${cliInvocation()} doc update --help` });
-      }
-      tags.push(tok.value); // repeatable → accumulate the replace-the-whole-set array
-      continue;
+      throw new CliError("USAGE", "--tag no longer replaces tags. Use doc field add/remove/replace-all <id> tags; replace-all requires --expected-version.", { help: `${cliInvocation()} doc field --help` });
     }
 
     // Not a standard flag: a candidate kind-declared field. Validated once the registry is loaded
@@ -217,7 +208,6 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
     acceptTruncatedBody: Boolean(rawValues["accept-truncated-body"]),
     title: std.title,
     description: std.description,
-    tags: tags.length > 0 ? tags : undefined,
     type: std.type,
     staleAfter: std["stale-after"],
     body: std.body,
@@ -260,7 +250,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const actor = resolveActor(p.actor, { help: `${cliInvocation()} doc update ${commandToken(id)} --actor <name>` });
   const staleAfter = parseStaleAfter(p.staleAfter);
 
-  // A patchable field OTHER than body, given via a flag — title/description/tag/type/kind fields.
+  // A patchable field OTHER than body, given via a flag — title/description/type/kind fields.
   // Computed BEFORE the stdin read below: a FIELD-ONLY patch (one of these given, no --body/
   // --body-file) must never touch stdin at all. Many agent harnesses hand a spawned process an fd 0
   // that IS a real pipe/socket (so `hasRealStdinInput` correctly says "real data source") but whose
@@ -270,7 +260,6 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
   const otherFieldGiven =
     p.title !== undefined ||
     p.description !== undefined ||
-    (p.tags !== undefined && p.tags.length > 0) ||
     p.type !== undefined ||
     staleAfter !== undefined ||
     p.kindFields.size > 0;
@@ -331,7 +320,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
 
   // "patch" mode, onAbsent: "fail": `mutateDoc` does the versioned-read -> build -> idempotency ->
   // validate -> CAS-write-with-bounded-retry itself (the exact shape `link add` proved for this
-  // seam) and throws our NOT_FOUND/STALE_HEAD before/after `buildCandidate` ever runs on an absent
+  // seam) and throws our NOT_FOUND/STALE_HEAD before/after semantic input preparation ever runs on an absent
   // doc, so `existing` below is guaranteed defined.
   if (route) await assertResolvedLocalRouteIdentity(route);
   const result = await mutateDoc({
@@ -353,14 +342,13 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
     // Board self-attribution (PR C): a `changed: false` no-op never records (mutate.ts's
     // post-persist contract), so ambient attribution cannot manufacture a "self" actor.
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
-    buildCandidate: async (existingDoc, context) => {
+    input: async (existingDoc, context) => {
       assertStaleAfterEdition(staleAfter, context.okfVersion);
       const existing = existingDoc!;
-      const nextFrontmatter: Frontmatter = { ...existing.frontmatter };
+      const nextFrontmatter: Record<string, unknown> = {};
       if (staleAfter !== undefined) nextFrontmatter.stale_after = staleAfter;
       if (p.title !== undefined) nextFrontmatter.title = p.title;
       if (p.description !== undefined) nextFrontmatter.description = p.description;
-      if (p.tags && p.tags.length > 0) nextFrontmatter.tags = p.tags;
       if (p.type !== undefined) nextFrontmatter.type = p.type.trim();
       // Actor attribution is applied by `mutateDoc` only after this candidate has proven
       // substantive. The spread preserves the previous actor on a no-op; ambient attribution can
@@ -368,9 +356,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
       // v0.1's legacy meaningful-change clock is refreshed here; v0.2's `generated.at` clock is
       // owned centrally by `mutateDocument` so every trusted write surface advances it identically.
       // `--keep-timestamp` remains the v0.1 compatibility escape hatch.
-      if (context.okfVersion !== "0.2" && !p.keepTimestamp) {
-        nextFrontmatter.timestamp = new Date().toISOString();
-      }
+
 
       let nextBody = existing.body;
       if (p.body !== undefined) nextBody = p.body;
@@ -400,7 +386,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
           throw new CliError(
             "USAGE",
             `no kind governs type '${resultType}', so kind field(s) ${[...p.kindFields.keys()].map((f) => `--${commandToken(f)}`).join(", ")} ` +
-              `cannot be patched here — only the standard fields (--title/--description/--tag/--type/--body/--body-file) ` +
+              `cannot be patched here — only the standard fields (--title/--description/--type/--body/--body-file) ` +
               `are patchable on an ungoverned doc.` +
               schemaHint,
             { help: `${cliInvocation()} kinds` },
@@ -421,7 +407,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             "USAGE",
             `unknown field(s) for kind '${kind.governs}': ${unknown.join(", ")} ` +
               `(declared: ${declared.length > 0 ? declared.join(", ") : "none"}; standard patch flags: ` +
-              `title, description, tag, type, body, body-file)` +
+              `title, description, type, body, body-file)` +
               ` — to ADD a field to the '${kind.governs}' kind: \`${cliInvocation()} kind field ${commandToken(kind.governs)} add <name>\`.`,
             { help: `${cliInvocation()} kinds` },
           );
@@ -446,7 +432,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
         }
       }
 
-      return { frontmatter: nextFrontmatter, body: nextBody };
+      return { kind: "assign", assignments: nextFrontmatter, body: nextBody, refreshTimestamp: !p.keepTimestamp };
     },
     errors: {
       notFound: () =>

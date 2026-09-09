@@ -8,6 +8,9 @@
  * core failures and never imports CLI or browser concerns.
  */
 
+import { assertOrdinaryPatch, prepareDocumentAssignments, prepareDocumentFieldAction, type FieldAction, type FieldActionScope } from "./document-field-actions.js";
+import { prepareKindFieldMutation, type KindFieldMutation } from "./kind-field-mutation.js";
+import { appendVerificationEvent, type AppendVerificationOptions } from "./verification.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
 import { InvalidInputError } from "./errors.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
@@ -41,7 +44,7 @@ import type {
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 
-export type DocumentMutationMode = "create-only" | "overwrite" | "patch";
+export type DocumentMutationMode = "create-only" | "overwrite" | "patch" | "replace-document";
 
 /** The frontmatter and body a caller wants persisted; the service supplies the id. */
 export interface DocumentMutationCandidate {
@@ -87,6 +90,12 @@ export class DocumentNotFoundError extends Error {
   }
 }
 
+export type DocumentMutationInput =
+  | { kind: "field-action"; action: FieldAction }
+  | { kind: "assign"; assignments: Record<string, unknown>; body?: string; refreshTimestamp?: boolean }
+  | { kind: "verify"; event: AppendVerificationOptions }
+  | { kind: "kind-field"; mutation: KindFieldMutation };
+
 export interface MutateDocumentOptions {
   bundle: Bundle;
   id: ConceptId;
@@ -96,10 +105,14 @@ export interface MutateDocumentOptions {
   /** Reject rather than return a non-empty kind warning set. */
   strict: boolean;
   /** Recomputed against a detached copy of every fresh CAS attempt. */
-  buildCandidate: (
+  buildCandidate?: (
     existing: OkfDocument | undefined,
     context: DocumentMutationContext,
   ) => DocumentMutationCandidate | Promise<DocumentMutationCandidate>;
+  /** Actual semantic intent, evaluated on each fresh read. Mutually exclusive with buildCandidate. */
+  input?: DocumentMutationInput | ((existing: OkfDocument, context: DocumentMutationContext) => DocumentMutationInput | Promise<DocumentMutationInput>);
+  /** Adapter invariants observe every fresh candidate, regardless of input route. */
+  assertCandidate?: (existing: OkfDocument | undefined, candidate: DocumentMutationCandidate, context: DocumentMutationContext) => void | Promise<void>;
   /** Patch only: require an existing target or allow an expect-absent create. */
   onAbsent?: "fail" | "create";
   /** Retry budget for overwrite and ordinary patch. */
@@ -130,6 +143,7 @@ export interface MutateDocumentOptions {
 }
 
 export interface DocumentMutationResult {
+  scope?: FieldActionScope;
   doc: OkfDocument;
   changed: boolean;
   version: Version;
@@ -290,6 +304,37 @@ function onceNow(now: () => string): () => string {
   return () => (value ??= now());
 }
 
+export interface PrepareDocumentMutationOptions {
+  id: ConceptId;
+  registry: KindRegistry;
+  strict: boolean;
+  okfVersion: "0.1" | "0.2";
+  now?: () => string;
+  actor?: string;
+  persistActor?: boolean;
+  compareTimestamp?: boolean;
+  seedGenerationClock?: boolean;
+}
+
+/** The pure patch preparation shared by mutation commits and governed previews. */
+export function prepareDocumentMutationCandidate(
+  existing: OkfDocument | undefined,
+  rawCandidate: DocumentMutationCandidate,
+  opts: PrepareDocumentMutationOptions,
+): { candidate: DocumentMutationCandidate; changed: boolean; warnings: ValidationWarning[] } {
+  const decisionNow = onceNow(opts.now ?? (() => new Date().toISOString()));
+  const comparison = withV02Metadata(structuredClone(rawCandidate), existing, opts.okfVersion, opts.registry,
+    decisionNow, opts.seedGenerationClock ?? true, opts.actor, opts.compareTimestamp ?? false);
+  if (existing && isNoopMutation(existing, comparison, opts.compareTimestamp ?? false, opts.okfVersion,
+    opts.okfVersion === "0.2" && !!opts.persistActor && opts.actor !== undefined,
+    opts.registry.kinds.get(String(comparison.frontmatter.type))?.fields.required.includes("actor") ?? false)) {
+    return { candidate: { frontmatter: structuredClone(existing.frontmatter), body: existing.body }, changed: false, warnings: [] };
+  }
+  const candidate = attributeCandidate(comparison, opts.actor, opts.persistActor ?? false, opts.okfVersion, opts.registry);
+  const { warnings } = validateCandidate(opts.id, candidate, opts.registry, opts.strict, opts.okfVersion, decisionNow, existing);
+  return { candidate, changed: true, warnings };
+}
+
 /**
  * True when `existing` already satisfies ITS OWN governing kind — the monotone ratchet's
  * precondition (probe: tasks/overwrite-ratchet-survey). Validates the RAW existing
@@ -319,6 +364,36 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   }
   const now = opts.now ?? (() => new Date().toISOString());
   const context: DocumentMutationContext = { okfVersion };
+  if ((opts.input === undefined) === (opts.buildCandidate === undefined)) throw new InvalidInputError("Supply exactly one semantic input or buildCandidate.");
+  if (opts.input !== undefined && opts.mode !== "patch") throw new InvalidInputError("Semantic field/domain input requires patch mode.");
+  let scope: FieldActionScope | undefined;
+  const build = async (existing: OkfDocument | undefined, decisionNow: () => string): Promise<DocumentMutationCandidate> => {
+    scope = undefined;
+    let candidate: DocumentMutationCandidate;
+    if (opts.input !== undefined) {
+      if (!existing) throw new DocumentNotFoundError(opts.id);
+      const input = typeof opts.input === "function" ? await opts.input(structuredClone(existing), context) : opts.input;
+      if (input.kind === "field-action") {
+        if ((input.action.action === "edit" || input.action.action === "replace-all") && opts.expectedVersion === undefined) throw new InvalidInputError("edit and replace-all require expectedVersion from an observed document.");
+        const prepared = prepareDocumentFieldAction(existing, input.action, { registry: opts.registry, okfVersion, now: decisionNow });
+        candidate = prepared.candidate;
+        scope = prepared.scope;
+      } else if (input.kind === "assign") {
+        candidate = prepareDocumentAssignments(existing, input.assignments);
+        if (input.body !== undefined) candidate.body = input.body;
+        if (input.refreshTimestamp && okfVersion === "0.1") candidate.frontmatter.timestamp = decisionNow();
+      } else if (input.kind === "verify") {
+        if (okfVersion !== "0.2") throw new InvalidInputError("Verification events require OKF v0.2.");
+        candidate = { frontmatter: appendVerificationEvent(existing.frontmatter, input.event), body: existing.body };
+      } else if (input.kind === "kind-field") candidate = prepareKindFieldMutation(existing, input.mutation, okfVersion);
+      else throw new InvalidInputError("Unknown document mutation input.");
+    } else {
+      candidate = await opts.buildCandidate!(existing === undefined ? undefined : structuredClone(existing), context);
+      if (existing && opts.mode === "patch") assertOrdinaryPatch(existing.frontmatter, candidate.frontmatter);
+    }
+    await opts.assertCandidate?.(existing === undefined ? undefined : structuredClone(existing), structuredClone(candidate), context);
+    return candidate;
+  };
 
   if (opts.mode === "create-only") {
     // Fail closed: create-only issues NO read — its CAS basis is expect-absent — so there is no
@@ -332,7 +407,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
     }
     const decisionNow = onceNow(now);
     const withMetadata = withV02Metadata(
-      await opts.buildCandidate(undefined, context),
+      await build(undefined, decisionNow),
       undefined,
       okfVersion,
       opts.registry,
@@ -384,7 +459,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         const decisionNow = onceNow(now);
         assertFieldPreconditions(opts.id, existing?.frontmatter, opts.preconditions, lastReadVersion);
         const withMetadata = withV02Metadata(
-          await opts.buildCandidate(existing === undefined ? undefined : structuredClone(existing), context),
+          await build(existing, decisionNow),
           existing,
           okfVersion,
           opts.registry,
@@ -474,44 +549,12 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         throw new VersionConflict(opts.id, opts.expectedVersion!, lastReadVersion);
       }
 
-      const rawCandidate = await opts.buildCandidate(existing === undefined ? undefined : structuredClone(existing), context);
-      const candidateForComparison = withV02Metadata(
-        rawCandidate,
-        existing,
-        okfVersion,
-        opts.registry,
-        decisionNow,
-        seedClock,
-        opts.actor,
-        compareTimestamp,
-      );
-      if (existing && isNoopMutation(
-        existing,
-        candidateForComparison,
-        compareTimestamp,
-        okfVersion,
-        okfVersion === "0.2" && persistActor && opts.actor !== undefined,
-        opts.registry.kinds.get(String(candidateForComparison.frontmatter.type))?.fields.required.includes("actor") ?? false,
-      )) {
-        return { action: "done", result: { doc: existing, warnings: [] } };
-      }
-
-      const candidate = attributeCandidate(
-        candidateForComparison,
-        opts.actor,
-        persistActor,
-        okfVersion,
-        opts.registry,
-      );
-      const { warnings } = validateCandidate(
-        opts.id,
-        candidate,
-        opts.registry,
-        opts.strict,
-        okfVersion,
-        decisionNow,
-        existing,
-      );
+      const rawCandidate = await build(existing, decisionNow);
+      const { candidate, changed, warnings } = prepareDocumentMutationCandidate(existing, rawCandidate, {
+        id: opts.id, registry: opts.registry, strict: opts.strict, okfVersion, now: decisionNow,
+        actor: opts.actor, persistActor, compareTimestamp, seedGenerationClock: seedClock,
+      });
+      if (!changed) return { action: "done", result: { doc: existing, warnings: [] } };
       return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
     },
     write: async (next, expectedVersion) => {
@@ -526,6 +569,6 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
   });
 
   return outcome.wrote
-    ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings }
-    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: [] };
+    ? { doc: savedDoc!, changed: true, version: outcome.version!, warnings: outcome.result.warnings, ...(scope ? { scope } : {}) }
+    : { doc: outcome.result.doc!, changed: false, version: outcome.version!, warnings: [], ...(scope ? { scope } : {}) };
 }

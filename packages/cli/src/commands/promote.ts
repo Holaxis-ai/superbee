@@ -259,7 +259,7 @@ async function promoteDoc(
     result = await mutateDoc({
       bundle,
       id,
-      mode: opts.expectedVersion === null ? "create-only" : "patch",
+      mode: opts.expectedVersion === null ? "create-only" : "replace-document",
       onAbsent: "create",
       registry,
       remoteUrl,

@@ -144,8 +144,6 @@ timestamp) converges to changed:false (no write, no timestamp refresh).
 Options:
   --title <t>            Replace the title
   --description <d>      Replace the description
-  --tag <t>              Replace the WHOLE tag set (repeatable; passing --tag at all replaces every
-                         existing tag rather than adding to them). It cannot CLEAR the set to empty.
   --type <t>             Replace the type
   --stale-after <iso>    Set the expiration instant (OKF v0.2 only); requires a valid date, time,
                          and zone, e.g. 2026-09-07T12:00:00Z. Omit to preserve the existing value.
@@ -154,7 +152,7 @@ Options:
                          given AND no other field flag is given either (e.g. 'cat body.md | ...
                          doc update <id>' with nothing else), piped stdin is used as the body — same
                          non-empty rule doc write's F1 guard uses (an empty pipe does not count). A
-                         patch that DOES pass another field flag (--title/--description/--tag/--type/
+                         patch that DOES pass another field flag (--title/--description/--type/
                          a kind field) never reads stdin, even without --body/--body-file: it patches
                          only the given fields and leaves the body untouched.
   --replace-links         Required when a --body/--body-file replace would silently DROP one or more
@@ -193,6 +191,10 @@ Options:
                          preserves exact bytes. Attribution is
                          not a patch by itself and cannot turn an identical patch into a write. A
                          present-but-blank flag or environment value is a USAGE error (exit 2).
+
+Collection assignments (including the former --tag flag) are refused. Use doc field
+add/remove/replace-all for tags or sources; replace-all requires an observed --expected-version.
+Nested lists require deliberate full-document pull/edit/promote.
 
 Passing NO patchable field at all is a USAGE error (exit 2) — there is nothing to do.
 ${COMMON_OPTIONS}

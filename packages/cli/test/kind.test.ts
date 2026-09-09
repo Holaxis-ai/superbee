@@ -627,3 +627,29 @@ test("kind field add --values: a DIFFERENT enum split that happens to join-colli
     await cleanup();
   }
 });
+
+test("kind redraft refuses a concurrent declaration-bearing replacement on its fresh retry", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "mem://redraft-race", backend };
+  await writeDoc(bundle, { id: "plans/a", frontmatter: { type: "Plan", title: "A" }, body: "# Summary\n\nplan\n" });
+  await writeDoc(bundle, { id: "conventions/plan", frontmatter: { type: "Convention", title: "Plan", governs: "Plan" }, body: "Dismissed\n" });
+  const server = await bootServerOverBundle(bundle);
+  try {
+    const proposal = await runKind(["draft", "Plan", "--remote", server.url]);
+    const originalWrite = backend.write.bind(backend);
+    let injected = false;
+    backend.write = async (id, next, options = {}) => {
+      if (id === "conventions/plan" && !injected && options.expectedVersion) {
+        injected = true;
+        const current = await backend.read(id);
+        await originalWrite(id, { ...current.doc, frontmatter: { ...current.doc.frontmatter, fields: { required: ["title"] } }, body: "Concurrent schema\n" }, options);
+      }
+      return originalWrite(id, next, options);
+    };
+    await assert.rejects(() => runKind(["draft", "Plan", "--apply", proposal.plan_token as string, "--remote", server.url]), /no longer a declaration-free/);
+    assert.equal(injected, true);
+    const current = await readDoc(bundle, "conventions/plan");
+    assert.deepEqual(current.frontmatter.fields, { required: ["title"] });
+    assert.equal(current.body, "Concurrent schema\n");
+  } finally { await server.close(); }
+});

@@ -303,7 +303,7 @@ export const CLI_COMMAND_GROUPS = [
         id: "docUpdate",
         leaves: [publicLeaf("docUpdate", "doc update", one, undefined, DIR_BODY_FILE_DYNAMIC_SURFACE)],
         usage:
-          "doc update <id> [--<field> <value> ...] [--title <t>] [--tag <t>] [--type <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
+          "doc update <id> [--<field> <value> ...] [--title <t>] [--type <t>] [--stale-after <iso>] [--body <s> | --body-file <p>] [--expected-version <v>] [--actor <n>] [--dir <path>] [--remote <url>]",
         summary: "Patch given fields (incl. kind-declared fields like --progress_status) of an existing doc, preserving the rest; optimistic-CAS with --expected-version",
       },
       {

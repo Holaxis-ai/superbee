@@ -8,7 +8,6 @@
 // wrote the revision, exactly as `doc update` does.
 import { parseArgs } from "node:util";
 import {
-  appendVerificationEvent,
   isOkfActor,
   latestVerifiedAt,
   parseIsoInstant,
@@ -156,13 +155,7 @@ export async function docVerify(argv: string[], deps: Partial<DocCliDeps>): Prom
     expectedVersion: expectedVersion?.trim(),
     // No body-replace posture: the body is handed back untouched on every attempt.
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
-    buildCandidate: async (existingDoc) => {
-      const existing = existingDoc!;
-      // The one append policy (core): preserves existing events and extras, normalizes a bare
-      // mapping into the list it already meant, and refuses an unrecognized `verified` shape as
-      // a typed input error (presented as USAGE) instead of overwriting trust history.
-      return { frontmatter: appendVerificationEvent(existing.frontmatter, { by: actor, at }), body: existing.body };
-    },
+    input: { kind: "verify", event: { by: actor, at } },
     errors: {
       notFound: () =>
         new CliError("NOT_FOUND", `no concept document at id '${id}'`, { help: `${cliInvocation()} list` }),

@@ -677,16 +677,7 @@ test("v0.2 verification-only writes preserve generated.at and clock-only patches
     registry: EMPTY_REGISTRY,
     strict: false,
     now: () => "2026-08-14T12:00:00Z",
-    buildCandidate: (existing) => ({
-      frontmatter: {
-        ...existing!.frontmatter,
-        verified: [
-          ...(existing!.frontmatter.verified as unknown[]),
-          { at: "2026-08-14T11:00:00Z", by: "human:second" },
-        ],
-      },
-      body: existing!.body,
-    }),
+    input: { kind: "verify", event: { at: "2026-08-14T11:00:00Z", by: "human:second" } },
   });
   assert.equal(verified.changed, true);
   assert.equal((verified.doc.frontmatter.generated as { at: string }).at, "2026-08-01T00:00:00Z");
@@ -745,7 +736,7 @@ test("v0.2 verification writes preserve an existing generated block with no cloc
   const verified = await mutateDocument({
     bundle,
     id: "context-notes/actor-with-legacy-clock",
-    mode: "patch",
+    mode: "replace-document",
     registry,
     strict: true,
     actor: "human:reviewer",
@@ -822,7 +813,7 @@ test("v0.2 verification update strips an automatic-only clock from a generated-l
   const result = await mutateDocument({
     bundle,
     id: "notes/imported-verification",
-    mode: "patch",
+    mode: "replace-document",
     registry: EMPTY_REGISTRY,
     strict: false,
     actor: "human:reviewer",
@@ -1339,7 +1330,7 @@ test("non-ENOENT read failures propagate unchanged", async () => {
   }
 });
 
-test("array-valued frontmatter participates structurally in patch no-op detection", async () => {
+test("array-valued frontmatter participates structurally in complete-document no-op detection", async () => {
   const backend = new MemoryBackend();
   const bundle = bundleFor(backend);
   await writeDocVersioned(bundle, {
@@ -1361,7 +1352,7 @@ test("array-valued frontmatter participates structurally in patch no-op detectio
     mutateDocument({
       bundle,
       id: "notes/a",
-      mode: "patch",
+      mode: "replace-document",
       registry: EMPTY_REGISTRY,
       strict: false,
       buildCandidate: (existing) => {
