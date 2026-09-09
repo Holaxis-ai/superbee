@@ -387,7 +387,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
 
   for (const authored of recipe.docs) {
     const target = recipeDocumentForApply(authored, okfVersion, "1970-01-01T00:00:00.000Z");
-    const parsedDesired = parseConventionDoc(target);
+    const parsedDesired = parseConventionDoc(target, { okfVersion });
     if (!parsedDesired.ok) {
       evolutionBlocker(
         blockers,
@@ -451,7 +451,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       continue;
     }
 
-    const parsedCurrent = parseConventionDoc(existing.doc);
+    const parsedCurrent = parseConventionDoc(existing.doc, { okfVersion });
     if (
       existing.doc.frontmatter.type !== "Convention"
       || !parsedCurrent.ok
@@ -493,7 +493,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     }
     desired.set(target.id, candidate);
     prospectiveById.set(target.id, candidate);
-    const parsedCandidate = parseConventionDoc(candidate);
+    const parsedCandidate = parseConventionDoc(candidate, { okfVersion });
     if (!parsedCandidate.ok) {
       evolutionBlocker(
         blockers,
@@ -503,6 +503,11 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
       );
     } else {
       desiredKinds.set(parsedCandidate.kind.governs, parsedCandidate.kind);
+      // Additive evolution preserves local declarations that are absent from the recipe.
+      for (const warning of parsedCandidate.warnings) {
+        if (warning.code !== "OKF_WORKFLOW_STATUS_COLLISION" || blockers.some(blocker => blocker.id === target.id && blocker.code === warning.code)) continue;
+        evolutionBlocker(blockers, warning.code, target.id, warning.message, warning.field);
+      }
     }
 
     const desiredVersion = contentVersion(comparableRecipeDoc(candidate, okfVersion));
@@ -532,7 +537,7 @@ async function prepareRecipeEvolution(bundle: Bundle, sourceRecipe: LoadedRecipe
     }
   }
 
-  const prospectiveRegistry = buildKindRegistry([...prospectiveById.values()]);
+  const prospectiveRegistry = buildKindRegistry([...prospectiveById.values()], [], { okfVersion });
   for (const warning of prospectiveRegistry.warnings) {
     if (warning.code !== "KIND_DUPLICATE_GOVERNS" || !warning.field || !desiredKinds.has(warning.field)) continue;
     evolutionBlocker(

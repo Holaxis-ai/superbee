@@ -2,10 +2,11 @@
  * The backend-touching half of the kind-convention registry: {@link loadKinds}
  * queries a bundle's `conventions/` prefix and builds the registry out of `kinds.ts`'s pure
  * parsing/derivation. Split from `kinds.ts` ONLY by dependency weight — `kinds.ts` is the
- * browser-safe `@superbee/core/kinds` subpath (zero value imports), while this module may
+ * browser-safe `@superbee/core/kinds` subpath (browser-safe value imports), while this module may
  * pull the engine (`query` -> backends -> node built-ins). One registry, two entry weights.
  */
-import { query } from "./bundle.js";
+import { MalformedDocumentError } from "./frontmatter-contract.js";
+import { query, readBundleOkfVersion } from "./bundle.js";
 import {
   CONVENTIONS_PREFIX,
   CONVENTION_TYPE,
@@ -40,5 +41,11 @@ export async function loadKinds(bundle: Bundle): Promise<KindRegistry> {
       }),
   });
 
-  return buildKindRegistry(docs, warnings);
+  const okfVersion = await readBundleOkfVersion(bundle).catch((error: unknown) => {
+    // A corrupt edition declaration cannot establish v0.2. Health reporting owns the root
+    // malformation finding; usable conventions must remain discoverable in the meantime.
+    if (!(error instanceof MalformedDocumentError)) throw error;
+    return undefined;
+  });
+  return buildKindRegistry(docs, warnings, { okfVersion });
 }

@@ -8,6 +8,7 @@
  * core failures and never imports CLI or browser concerns.
  */
 
+import { okfValuesEqual } from "./okf-authored-values.js";
 import { InvalidInputError } from "./errors.js";
 import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
@@ -135,23 +136,6 @@ export interface DocumentMutationResult {
   warnings: ValidationWarning[];
 }
 
-/** Structural equality through plain objects and arrays, independent of object key order. */
-function valuesEqual(a: unknown, b: unknown): boolean {
-  if (a === b) return true;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    if (!Array.isArray(a) || !Array.isArray(b)) return false;
-    return a.length === b.length && a.every((value, index) => valuesEqual(value, b[index]));
-  }
-  if (a && b && typeof a === "object" && typeof b === "object") {
-    const aRecord = a as Record<string, unknown>;
-    const bRecord = b as Record<string, unknown>;
-    const aKeys = Object.keys(aRecord);
-    const bKeys = Object.keys(bRecord);
-    return aKeys.length === bKeys.length && aKeys.every((key) => valuesEqual(aRecord[key], bRecord[key]));
-  }
-  return false;
-}
-
 function withoutAutomaticMutationActor(
   frontmatter: Frontmatter,
   okfVersion: "0.1" | "0.2",
@@ -215,12 +199,12 @@ function isNoopMutation(
       }
       return { ...frontmatter, generated: generatedRest };
     };
-    return valuesEqual(withoutGeneratedAt(existingFrontmatter), withoutGeneratedAt(candidateFrontmatter));
+    return okfValuesEqual(withoutGeneratedAt(existingFrontmatter), withoutGeneratedAt(candidateFrontmatter));
   }
-  if (compareTimestamp) return valuesEqual(existingFrontmatter, candidateFrontmatter);
+  if (compareTimestamp) return okfValuesEqual(existingFrontmatter, candidateFrontmatter);
   const { timestamp: _existingTimestamp, ...existingRest } = existingFrontmatter;
   const { timestamp: _candidateTimestamp, ...candidateRest } = candidateFrontmatter;
-  return valuesEqual(existingRest, candidateRest);
+  return okfValuesEqual(existingRest, candidateRest);
 }
 
 function attributeCandidate(

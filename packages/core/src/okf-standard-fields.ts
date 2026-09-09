@@ -1,4 +1,5 @@
 /** OKF v0.2 authoring rules, independent of bundle-specific Kind conventions and raw imports. */
+import { isOkfLifecycleStatus } from "./okf-lifecycle.js";
 import { InvalidInputError } from "./errors.js";
 import { isOkfActor } from "./okf-actor.js";
 import { assertAuthoredOkfTimestamps } from "./okf-timestamps.js";
@@ -57,7 +58,7 @@ export function assertAuthoredOkfStandardFields(
   field(frontmatter, "type", "type", nonempty, "a nonempty string", undefined, true);
   for (const key of ["title", "description", "resource"]) field(frontmatter, key, key, string, "a string", existing);
   if (Object.hasOwn(frontmatter, "tags") && !(existing && Object.hasOwn(existing, "tags") && okfValuesEqual(frontmatter.tags, existing.tags))) strings(frontmatter.tags, "tags");
-  field(frontmatter, "status", "status", value => typeof value === "string" && ["draft", "stable", "deprecated"].includes(value), "draft, stable, or deprecated", existing);
+  field(frontmatter, "status", "status", isOkfLifecycleStatus, "draft, stable, or deprecated", existing);
   mapping(frontmatter, "usage_window", "usage_window", existing);
   const generated = mapping(frontmatter, "generated", "generated", existing);
   if (generated) {

@@ -307,3 +307,5 @@ export {
 export type { ContentTypeInference, ValidationWarning } from "./content-type.js";
 
 export { invalidOkfTimestamps, assertAuthoredOkfTimestamps, type InvalidOkfTimestamp } from "./okf-timestamps.js";
+
+export { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js";

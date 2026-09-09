@@ -75,11 +75,12 @@ test("optional families, bare verification, scope sources and unknown extensions
 
 test("unchanged imported values survive while changed invalid values refuse", async () => {
   for (const [field, fields] of invalid.filter(([, fields]) => fields.type !== "Attested Computation" && fields.generated === undefined)) {
-    if (field.endsWith("usage_count")) continue;
     const bundle = await harness();
     await writeDocVersioned(bundle, { id: "legacy", frontmatter: fm(fields), body: "old\n" });
+    const imported = await readDocVersioned(bundle, "legacy");
     const edited = await mutateDocument({ bundle, id: "legacy", mode: "patch", registry, strict: false, seedGenerationClock: false, now: () => NOW, buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: "new\n" }) });
-    for (const key of Object.keys(fields)) assert.deepEqual(edited.doc.frontmatter[key], fields[key]);
+    for (const key of Object.keys(fields)) assert.deepEqual(edited.doc.frontmatter[key], imported.doc.frontmatter[key], field);
+    assert.deepEqual((await readDocVersioned(bundle, "legacy")).doc, edited.doc);
     const before = await readDocVersioned(bundle, "legacy");
     await assert.rejects(mutateDocument({ bundle, id: "legacy", mode: "patch", registry, strict: false, now: () => NOW, buildCandidate: existing => ({ frontmatter: { ...existing!.frontmatter, status: "another-invalid-status" }, body: "x" }) }), /status/);
     assert.deepEqual(await readDocVersioned(bundle, "legacy"), before);

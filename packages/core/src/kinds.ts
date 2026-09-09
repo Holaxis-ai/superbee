@@ -23,6 +23,7 @@
  * engine's node built-ins for a pure predicate). The one backend-touching entry point,
  * `loadKinds`, lives in `kinds-load.ts` — same ONE registry, split only by dependency weight.
  */
+import { isOkfLifecycleStatus, OKF_LIFECYCLE_STATUSES } from "./okf-lifecycle.js";
 import { isUsableTimestamp } from "./frontmatter.js";
 import type { ValidationWarning } from "./validation.js";
 import type { ConceptId, Frontmatter, OkfDocument } from "./types.js";
@@ -140,12 +141,13 @@ export interface KindRegistry {
 export function buildKindRegistry(
   docs: readonly OkfDocument[],
   initialWarnings: readonly ValidationWarning[] = [],
+  options: { okfVersion?: string } = {},
 ): KindRegistry {
   const kinds = new Map<string, KindConvention>();
   const warnings = [...initialWarnings];
 
   for (const doc of [...docs].sort((a, b) => a.id.localeCompare(b.id))) {
-    const parsed = parseConventionDoc(doc);
+    const parsed = parseConventionDoc(doc, options);
     if (!parsed.ok) {
       warnings.push({
         code: "KIND_CONVENTION_MALFORMED",
@@ -520,6 +522,7 @@ export function splitSections(body: string): Record<string, string> {
 /** Parse one convention doc into a {@link KindConvention}, or a reason it was skipped. */
 export function parseConventionDoc(
   doc: OkfDocument,
+  options: { okfVersion?: string } = {},
 ): (
   | { ok: true; kind: KindConvention; reservedFieldsIgnored: string[]; reservedFieldPaths: string[] }
   | { ok: false; reason: string }
@@ -601,6 +604,15 @@ export function parseConventionDoc(
         setOwn(values, field, toStringArrayLenient(allowed, `fields.values.${field}`, doc.id, warnings));
       }
     }
+  }
+
+  if (options.okfVersion === "0.2" && values.status?.some(value => !isOkfLifecycleStatus(value))) {
+    warnings.push({
+      code: "OKF_WORKFLOW_STATUS_COLLISION",
+      message: `kind convention '${doc.id}' declares 'fields.values.status' with values outside the OKF v0.2 lifecycle (${OKF_LIFECYCLE_STATUSES.join(", ")}); instance authoring rejects those values. Move workflow state to 'superbee_progress_status' (CLI '--progress_status') and migrate its required/optional, descriptions, values, value_descriptions, terminal declarations and instances.`,
+      field: "fields.values.status",
+      severity: "warning",
+    });
   }
 
   // A values-constrained field that names neither a required nor an optional field is almost
