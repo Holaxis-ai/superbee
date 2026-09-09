@@ -1,7 +1,7 @@
 /** Explicit frontmatter intent. Collection construction is owned here, before CAS metadata. */
 import { InvalidInputError } from "./errors.js";
 import { okfValuesEqual } from "./okf-authored-values.js";
-import { resolveKindFieldCoordinate, type KindRegistry } from "./kinds.js";
+import { kindInputFieldNames, resolveKindFieldCoordinate, type KindRegistry } from "./kinds.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
 import type { DocumentMutationCandidate } from "./document-mutation.js";
 
@@ -9,8 +9,9 @@ export type SourceEntry = { resource: string; id?: string; [property: string]: u
 export type SourceSelector = { id: string; resource?: never } | { resource: string; id?: never };
 export interface SourceCandidateIdentity { id?: string; resource?: string; title?: string }
 export interface FieldActionErrorDetails {
-  reason: "ambiguous-source" | "source-has-id" | "source-not-found" | "source-id-conflict" | "invalid-source-id";
-  field: "sources";
+  reason: "ambiguous-source" | "source-has-id" | "source-not-found" | "source-id-conflict" | "invalid-source-id" | "unsupported-set-field";
+  field: string;
+  supportedFields?: string[];
   selector?: SourceSelector;
   recommendedSelector?: SourceSelector;
   candidates?: SourceCandidateIdentity[];
@@ -147,7 +148,21 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
     const kind = context.registry.kinds.get(String(existing.frontmatter.type));
     const coordinate = kind && resolveKindFieldCoordinate(context.okfVersion, kind, action.field);
     if (context.okfVersion === "0.1" && (action.field === "stale_after" || action.field === "usage_window")) throw new InvalidInputError(`'${action.field}' requires OKF v0.2.`);
-    if (!isStandardDocumentSetField(action.field, context.okfVersion) && !coordinate) throw new InvalidInputError(`Unsupported set field '${action.field}'; use title, description, type, resource, edition-supported standard fields, or a declared Kind field.`);
+    if (!isStandardDocumentSetField(action.field, context.okfVersion) && !coordinate) {
+      const supportedFields = [...new Set([
+        ...standard,
+        ...(context.okfVersion === "0.2" ? v02 : []),
+        ...(kind ? kindInputFieldNames(context.okfVersion, kind) : []),
+      ])].filter(field => {
+        if (managed.has(field) || field === "tags" || field === "sources") return false;
+        if (context.okfVersion === "0.1" && (field === "stale_after" || field === "usage_window")) return false;
+        const storage = kind && resolveKindFieldCoordinate(context.okfVersion, kind, field);
+        return !containsCollection(existing.frontmatter[storage?.storageField ?? field]);
+      }).sort();
+      throw new FieldActionError(`Unsupported set field '${action.field}'; supported fields: ${supportedFields.join(", ")}.`, {
+        reason: "unsupported-set-field", field: action.field, supportedFields,
+      });
+    }
     storageField = coordinate?.storageField ?? action.field;
     candidate = prepareDocumentAssignments(existing, { [storageField]: action.value });
     if (!okfValuesEqual(existing.frontmatter[storageField], action.value)) scope.outcome = "edited";

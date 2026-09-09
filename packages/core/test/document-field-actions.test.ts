@@ -51,6 +51,26 @@ test("standard set-field classification uses the owning edition-specific invento
   }
 });
 
+test("unsupported set names report concrete edition and Kind fields without managed or collection targets", () => {
+  const kind = { id: "conventions/task", title: "Task", governs: "Task", fields: { required: ["title"], optional: ["superbee_progress_status", "custom", "tags", "sources", "verified", "actor", "timestamp", "stale_after", "nested"], values: {}, terminal: {}, descriptions: {} } };
+  const registry = { kinds: new Map([["Task", kind]]), warnings: [] };
+  const existing = doc({ type: "Task", nested: { list: [1] } });
+  for (const okfVersion of ["0.1", "0.2"] as const) {
+    assert.throws(() => prepareDocumentFieldAction(existing, { action: "set", field: "unknown", value: "x" }, { registry, okfVersion }), error => {
+      assert.ok(error instanceof FieldActionError);
+      assert.equal(error.details.reason, "unsupported-set-field");
+      assert.equal(error.details.field, "unknown");
+      const names = error.details.supportedFields!;
+      assert.ok(names.includes("custom") && names.includes("title"));
+      assert.equal(names.includes("stale_after"), okfVersion === "0.2");
+      assert.equal(names.includes("usage_window"), okfVersion === "0.2");
+      assert.equal(names.includes("progress_status"), okfVersion === "0.2");
+      for (const forbidden of ["tags", "sources", "verified", "actor", "timestamp", "nested"]) assert.ok(!names.includes(forbidden));
+      return true;
+    });
+  }
+});
+
 test("tag membership is exact, stable, idempotent and absent-aware", () => {
   assert.deepEqual(apply({}, { action: "add", field: "tags", value: "A" }).candidate.frontmatter.tags, ["A"]);
   assert.equal(apply({ tags: ["a", "A", "a"] }, { action: "add", field: "tags", value: "a" }).scope.outcome, "unchanged");
