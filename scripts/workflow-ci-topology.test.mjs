@@ -30,6 +30,16 @@ const PLAYWRIGHT_IMAGE_DIGEST = "sha256:5b8f294aff9041b7191c34a4bab3ac270157a287
 const PLAYWRIGHT_VERSION = packageLock.packages["node_modules/playwright-core"]?.version;
 const PLAYWRIGHT_IMAGE = `mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-noble@${PLAYWRIGHT_IMAGE_DIGEST}`;
 
+function actionPin(key) {
+  const rows = manifest.github_actions.pins.filter((row) => row.key === key);
+  assert.equal(rows.length, 1, `manifest must declare one GitHub Action pin for ${key}`);
+  return `${rows[0].identity}@${rows[0].revision}`;
+}
+
+function countLiteral(text, literal) {
+  return text.split(literal).length - 1;
+}
+
 const BROWSER_PREFLIGHT = `      - name: Verify baked Playwright browser artifacts
         shell: bash
         run: |
@@ -184,7 +194,7 @@ function displayNameOf(job) {
 }
 
 function assertSmokeJob(job, lane) {
-  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2, "floor smoke needs build and floor runtimes");
+  assert.equal(countLiteral(job, actionPin("setup_node_v4")), 2, "floor smoke needs build and floor runtimes");
   assert.deepEqual(
     [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => match[1]),
     [String(manifest.singleton_node), String(lane.runtime_setup_node)],
@@ -681,7 +691,7 @@ function assertWindowsPreflightJob(job, lane) {
   const steps = stepsOf(job);
   assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
   assert.match(job, /^ {4}timeout-minutes: 20\s*$/m);
-  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 1);
+  assert.equal(countLiteral(job, actionPin("setup_node_v4")), 1);
   assert.deepEqual([...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])), [lane.runtime_node]);
   const filesystemStep = requiredUnconditionalStep(steps, {
     label: "Windows-sensitive filesystem regressions",
@@ -746,7 +756,7 @@ function assertWindowsCliJob(job, lane) {
   assert.match(job, /^ {4}timeout-minutes: 30\s*$/m);
   assert.match(job, /^ {6}fail-fast: false\s*$/m);
   assert.match(job, /^ {8}shard: \[1, 2, 3, 4\]\s*$/m);
-  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 1);
+  assert.equal(countLiteral(job, actionPin("setup_node_v4")), 1);
   assert.deepEqual([...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])), [lane.runtime_node]);
   const shardCommand = "node scripts/run-test-command.mjs node --test --test-shard=${{ matrix.shard }}/4 --import ./test/ts-loader.mjs './test/*.test.ts'";
   requiredUnconditionalStep(steps, {
@@ -761,7 +771,7 @@ function assertWindowsCliJob(job, lane) {
 function assertWindowsPackageJob(job, lane) {
   assert.match(job, /^ {4}runs-on: windows-latest\s*$/m);
   assert.match(job, /^ {4}timeout-minutes: 25\s*$/m);
-  assert.equal((job.match(/actions\/setup-node@v4/g) ?? []).length, 2);
+  assert.equal(countLiteral(job, actionPin("setup_node_v4")), 2);
   assert.deepEqual(
     [...job.matchAll(/^ {10}node-version: (.+)\s*$/gm)].map((match) => Number(match[1])),
     [lane.runtime_node, lane.installed_package_node],

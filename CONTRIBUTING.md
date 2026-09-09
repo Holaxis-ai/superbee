@@ -145,6 +145,22 @@ shell, second-order Git/Hg, and path-injection classes; product tests and review
 non-shell option injection, containment, symbolic-link, permission, atomicity, and destructive-scope
 invariants.
 
+### GitHub Action pin renewal
+
+Every remote action reference uses a full commit SHA plus its semantic release in a same-line
+comment. `scripts/ci-lanes.json` is the repository registry, and
+`scripts/workflow-action-pins.test.mjs` carries a separate reviewed literal so a workflow and its
+registry cannot drift together unnoticed. Dependabot checks the root workflows weekly.
+
+A Dependabot pull request is therefore deliberately red after it changes only workflow SHA and
+version-comment pairs. Before making it green, verify each proposed release tag resolves to that
+commit in the action's official upstream repository and inspect the upstream commit's signature
+evidence. Then update the matching `github_actions.pins` registry row and the independent
+`REVIEWED_PINS` literal in the same pull request. Run
+`node --test scripts/workflow-action-pins.test.mjs` and `npm run ci:scripts`; normal human review
+and CI still decide whether the renewal merges. Do not weaken the test to accept an unreviewed
+Dependabot-only change.
+
 Minimum iteration lanes by reach:
 
 | Touched surface | Run at minimum |
