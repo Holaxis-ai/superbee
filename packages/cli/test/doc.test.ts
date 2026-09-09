@@ -2101,7 +2101,7 @@ test("doc write REFUSES to overwrite a kind convention — it would silently dro
   }
 });
 
-test("doc update: repeated kind-declared assignments refuse an implicit list", async () => {
+test("doc update: repeated kind-declared assignments name the arity error", async () => {
   const dir = await tempDir();
   try {
     await initBundle(dir);
@@ -2125,7 +2125,7 @@ test("doc update: repeated kind-declared assignments refuse an implicit list", a
       { id: "widgets/x", frontmatter: { type: "Widget", title: "X", timestamp: OLD_TS }, body: "" },
     );
 
-    await assert.rejects(() => runDoc(["update", "widgets/x", "--label", "a", "--label", "b", "--dir", dir]), /list/);
+    await assert.rejects(() => runDoc(["update", "widgets/x", "--label", "a", "--label", "b", "--dir", dir]), /exactly ONE value/);
 
     const after = await readDoc({ root: dir }, "widgets/x");
     assert.equal(after.frontmatter.label, undefined);

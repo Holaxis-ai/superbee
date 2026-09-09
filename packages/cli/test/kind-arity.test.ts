@@ -1,16 +1,11 @@
 /**
- * Enum arity guard, end to end (`plans/list-hint-arity.md` decision 3): a repeated
- * kind-field flag is an intentional FEATURE for non-enum fields (`--labels a --labels b`
- * → array) but a silent-corruption trap for enum-restricted ones (`--phase todo
- * --phase done` used to persist a two-phase doc with ZERO warnings, even strict —
- * every array member passes the element-wise membership check). The guard lives in
- * CORE's one validation locus (`validateAgainstKind`, `KIND_FIELD_ARITY`), so this file
- * pins the two CLI surfaces that inherit it (`new` — always strict; `doc update` —
- * strict for kind-field patches) plus the preserved array feature.
+ * Kind-field arity at the CLI boundary: creation preserves repeated non-enum fields
+ * as arrays and delegates enum arity to core. Ordinary updates accept one value per
+ * dynamic field flag and reject repeats before preparing scalar assignments.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -90,21 +85,46 @@ test("new: a repeated NON-enum field flag still produces an array (the feature i
   }
 });
 
-test("doc update: a repeated ENUM field flag is a USAGE rejection — the stored doc is untouched", async () => {
+for (const [field, first, second] of [["phase", "doing", "done"], ["labels", "a", "b"]] as const) {
+  const forms = [
+    { name: "spaced", args: [`--${field}`, first, `--${field}`, second] },
+    { name: "inline", args: [`--${field}=${first}`, `--${field}=${second}`] },
+    { name: "mixed", args: [`--${field}=${first}`, `--${field}`, second] },
+    { name: "reverse mixed", args: [`--${field}`, first, `--${field}=${second}`] },
+  ];
+  for (const { name, args } of forms) {
+    test(`doc update: repeated ${field} flags (${name}) name the arity error and preserve bytes`, async () => {
+      const { dir, cleanup } = await makeEnumKindBundle();
+      try {
+        await newCommand(["Task", "one", "--title", "One", "--phase", "todo", "--dir", dir], sink);
+        const file = path.join(dir, "tasks/one.md");
+        const before = await readFile(file);
+        await assert.rejects(
+          () => doc(["update", "tasks/one", ...args, "--dir", dir], docSink),
+          (err: unknown) => {
+            assert.ok(err instanceof CliError);
+            assert.equal(err.code, "USAGE");
+            assert.match(err.message, /exactly ONE value/);
+            assert.ok(err.message.includes(`--${field}`));
+            return true;
+          },
+        );
+        assert.deepEqual(await readFile(file), before, "the rejected patch must preserve bytes");
+      } finally {
+        await cleanup();
+      }
+    });
+  }
+}
+
+test("doc update: one value for each dynamic Kind field remains supported", async () => {
   const { dir, cleanup } = await makeEnumKindBundle();
   try {
     await newCommand(["Task", "one", "--title", "One", "--phase", "todo", "--dir", dir], sink);
-    await assert.rejects(
-      () => doc(["update", "tasks/one", "--phase", "doing", "--phase", "done", "--dir", dir], docSink),
-      (err: unknown) => {
-        assert.ok(err instanceof CliError);
-        assert.equal(err.code, "USAGE");
-        assert.match(String(err.message), /contains a list/);
-        return true;
-      },
-    );
+    await doc(["update", "tasks/one", "--phase=doing", "--labels", "a", "--dir", dir], docSink);
     const stored = await readDoc({ root: dir }, "tasks/one");
-    assert.equal(stored.frontmatter.phase, "todo", "the rejected patch must not have written");
+    assert.equal(stored.frontmatter.phase, "doing");
+    assert.equal(stored.frontmatter.labels, "a");
   } finally {
     await cleanup();
   }

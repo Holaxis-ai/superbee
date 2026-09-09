@@ -77,8 +77,8 @@ interface ParsedDocUpdateArgs {
   /** `undefined` = not given; `""` = present-but-blank (a USAGE error, checked by the caller). */
   actor?: string;
   positionals: string[];
-  /** Every `--<field>` NOT among the standard flags above, captured as a kind-field candidate (repeatable → array). */
-  kindFields: Map<string, string[]>;
+  /** Every `--<field>` NOT among the standard flags above, captured as a single-value kind-field candidate. */
+  kindFields: Map<string, string>;
 }
 
 /**
@@ -140,7 +140,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
   // `takeValue()` guard AND keeping the value type-honest (no `string|boolean` cast for tsc to trust).
   const std: Record<string, string> = {}; // single-value standard flags, keyed by long-option name
   const positionals: string[] = [];
-  const kindFields = new Map<string, string[]>();
+  const kindFields = new Map<string, string>();
   const consumed = new Set<number>(); // argv indices consumed as an unknown option's value
 
   for (let t = 0; t < tokens.length; t++) {
@@ -179,6 +179,11 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
 
     // Not a standard flag: a candidate kind-declared field. Validated once the registry is loaded
     // (unknown field / ungoverned type / typo of a standard flag are all rejected there, USAGE/exit 2).
+    if (kindFields.has(name)) {
+      throw new CliError("USAGE", `--${commandToken(name)} requires exactly ONE value; pass the flag once.`, {
+        help: `${cliInvocation()} doc update --help`,
+      });
+    }
     let value: string | undefined;
     if (tok.value !== undefined) {
       value = tok.value; // --status=done (=form)
@@ -192,9 +197,7 @@ function parseDocUpdateArgs(argv: string[]): ParsedDocUpdateArgs {
     if (value === undefined) {
       throw new CliError("USAGE", `--${commandToken(name)} requires a value`, { help: `${cliInvocation()} doc update --help` });
     }
-    const arr = kindFields.get(name) ?? [];
-    arr.push(value);
-    kindFields.set(name, arr);
+    kindFields.set(name, value);
   }
 
   return {
@@ -414,7 +417,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
         }
         const suppliedByStorageField = new Map<string, string>();
         if (staleAfter !== undefined) suppliedByStorageField.set("stale_after", "stale-after");
-        for (const [field, vals] of p.kindFields) {
+        for (const [field, value] of p.kindFields) {
           const coordinate = resolvedFields.get(field)!;
           const previous = suppliedByStorageField.get(coordinate.storageField);
           if (previous) {
@@ -428,7 +431,7 @@ export async function docUpdate(argv: string[], deps: Partial<DocCliDeps>): Prom
             );
           }
           suppliedByStorageField.set(coordinate.storageField, field);
-          nextFrontmatter[coordinate.storageField] = vals.length === 1 ? vals[0] : vals;
+          nextFrontmatter[coordinate.storageField] = value;
         }
       }
 
