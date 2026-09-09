@@ -25,6 +25,7 @@ import {
   freshnessHorizonMs,
   staleAfterInstant,
   invalidOkfTimestamps,
+  invalidLegacyTimestamp,
   isTerminal,
   isOkfLifecycleStatus,
   listBlobs,
@@ -120,6 +121,11 @@ Category semantics (one line each):
                       applies without a Kind or horizon, including terminal and untyped docs.
                       Omitted when none are found, and always absent on v0.1. Deadlines also
                       remain in the compatible 'invalid_stale_after' category.
+  invalid_legacy_timestamps
+                      Invalid effective legacy timestamp clocks in v0.2, including ungoverned docs.
+                      Separate from invalid_timestamps; suppressed when generated.at is selected.
+                      Bounded rows in invalid_legacy_timestamp_fields retain the stored value.
+                      Repair from evidence of the intended instant, or remove the optional field.
   no_timestamp       A governed doc with no usable timestamp (missing OR malformed) — it cannot be
                       judged stale or fresh at all, so it is counted separately from 'stale'.
   trust              OKF v0.2 trust tiers (SPEC 5.3) counted once per doc from its 'verified'
@@ -453,7 +459,12 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const noTimestampRows: Record<string, unknown>[] = [];
   const invalidStaleAfterRows: Record<string, unknown>[] = [];
   const invalidTimestampRows: Record<string, unknown>[] = [];
+  const invalidLegacyTimestampRows: Record<string, unknown>[] = [];
   for (const doc of docs) {
+    const invalidLegacy = invalidLegacyTimestamp(doc.frontmatter, okfVersion);
+    if (invalidLegacy) {
+      invalidLegacyTimestampRows.push({ id: doc.id, type: docType(doc), field: invalidLegacy.field, value: diagnosticValue(invalidLegacy.value) });
+    }
     if (okfVersion === "0.2") {
       for (const { field, value } of invalidOkfTimestamps(doc.frontmatter)) {
         invalidTimestampRows.push({ id: doc.id, type: docType(doc), field, value: diagnosticValue(value) });
@@ -611,6 +622,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const noTimestamp = cap(noTimestampRows, limit);
   const invalidStaleAfter = cap(invalidStaleAfterRows, limit);
   const invalidTimestamps = cap(invalidTimestampRows, limit);
+  const invalidLegacyTimestamps = cap(invalidLegacyTimestampRows, limit);
   const statusCollisions = okfV02WorkflowStatusCollisions(registry, docs);
   const registryLint = cap(
     registry.warnings.map((w): Record<string, unknown> => ({ ...w })),
@@ -637,6 +649,7 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
     stale: stale.total,
     ...(invalidStaleAfter.total > 0 ? { invalid_stale_after: invalidStaleAfter.total } : {}),
     ...(invalidTimestamps.total > 0 ? { invalid_timestamps: invalidTimestamps.total } : {}),
+    ...(invalidLegacyTimestamps.total > 0 ? { invalid_legacy_timestamps: invalidLegacyTimestamps.total } : {}),
     no_timestamp: noTimestamp.total,
     registry_warnings: registryLint.total,
     link_type_violations: linkTypeViolations.total,
@@ -725,6 +738,13 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
       ...invalidTimestamps,
       reason: "Standard OKF timestamps require an ISO-8601 date and time with Z or a UTC offset. Ambiguous or invalid stored values remain unchanged.",
       help: "Choose the intended instant and repair each named field with an explicit UTC offset.",
+    };
+  }
+  if (invalidLegacyTimestamps.total > 0) {
+    out.invalid_legacy_timestamp_fields = {
+      ...invalidLegacyTimestamps,
+      reason: "The effective legacy timestamp is not a valid ISO-8601 date and time with an explicit UTC offset. Stored values remain unchanged.",
+      help: "Use evidence of the intended instant to repair timestamp with Z or a numeric UTC offset in the document frontmatter, or remove the optional timestamp. No offset is inferred.",
     };
   }
   if (noTimestamp.total > 0) out.no_timestamp_docs = noTimestamp;

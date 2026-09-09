@@ -49,6 +49,7 @@
 // satisfies an explicitly required `actor` Kind field, with control semantics (blank-value guard,
 // trim).
 import { parseArgs } from "node:util";
+import { assertAuthoredLegacyTimestamp } from "../legacy-timestamp.js";
 import {
   loadKinds,
   kindInputFieldNames,
@@ -87,7 +88,8 @@ The kind must be declared by a kind convention doc under conventions/ — run 's
 to list what a bundle declares. Supply each of the kind's required fields via --<field> <value>
 (or --<field>=<value>); declared optional fields may be supplied the same way. Repeat a flag to
 set an array value (e.g. --tags a --tags b). Apart from the standard options below, any field not
-declared by the kind is a USAGE error.
+declared by the kind is a USAGE error. When timestamp is declared, explicit --timestamp in
+OKF v0.2 requires a real ISO-8601 date and time with an explicit UTC offset (Z or numeric).
 The kind's declared body 'sections' (if any) are scaffolded as empty '# Heading' blocks; its
 'path' prefix (if any) is prepended onto <id> unless <id> already carries it. Validation is
 STRICT: a missing required field or a disallowed enum value rejects the write (exit 2) rather
@@ -350,6 +352,9 @@ function renderKindHelp(
     linksBlock +
     `${pathLine}\n\n` +
     `Repeat a flag to set an array value (e.g. --tag a --tag b). Validation is STRICT.\n` +
+    (req.includes("timestamp") || opt.includes("timestamp")
+      ? `In OKF v0.2, --timestamp requires a real ISO-8601 date and time with an explicit UTC offset (Z or numeric).\n`
+      : "") +
     `To ADD a field to this kind, edit its convention doc (${inv} kinds names it; then pull → edit fields.optional → promote).\n\n` +
     `Options:\n` +
     `  --stale-after <iso>  Expiration instant (OKF v0.2 only); valid date, time, and zone required\n` +
@@ -638,6 +643,7 @@ export async function newCommand(argv: string[], deps: Partial<NewCliDeps> = {})
     onPersisted: boardPostPersistHook(attribution, actor),
     buildCandidate: (_existing, context) => {
       assertStaleAfterEdition(staleAfter, context.okfVersion);
+      assertAuthoredLegacyTimestamp(frontmatter.timestamp, context.okfVersion);
       const preparedEdition = okfVersion ?? "0.1";
       if (context.okfVersion !== preparedEdition) {
         throw new CliError(

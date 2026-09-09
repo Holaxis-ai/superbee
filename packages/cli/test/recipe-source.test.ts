@@ -1,9 +1,11 @@
 /** CLI recipe acquisition and resolver agreement; pure parser cases live in core. */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, mkdir, writeFile, symlink, chmod } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, readFile, symlink, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { initBundle, readDoc } from "@superbee/core";
+import { applyRecipe } from "../src/recipes.js";
 
 import {
   parseRecipeFiles,
@@ -336,4 +338,41 @@ test("resolveRecipe: a dangling in-root symlink says the path does not resolve, 
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("recipe acquisition preserves ambiguous legacy clocks for v0.2 install and reinstall, retaining v0.1 stamping", async () => {
+  const scratch = await tempDir();
+  const source = path.join(scratch, "source");
+  const values = ["2026-09-08", "2026-09-08T12:30:00", "September 8, 2026", "2026-02-30T12:30:00Z", ""];
+  try {
+    await mkdir(path.join(source, "conventions"), { recursive: true });
+    await writeFile(path.join(source, "recipe.md"), VALID_MANIFEST.bytes);
+    for (const [index, value] of values.entries()) {
+      await writeFile(path.join(source, "conventions", `term-${index}.md`),
+        `---\ntype: Convention\ngoverns: Term${index}\ntimestamp: ${JSON.stringify(value)}\n---\nDefinition.\n`);
+    }
+    const loaded = await filesRecipeSource().resolve(source);
+    assert.ok(loaded?.ok);
+    if (!loaded?.ok) return;
+    assert.deepEqual(loaded.recipe.docs.map((entry) => entry.frontmatter.timestamp), values);
+    for (const edition of ["0.1", "0.2"] as const) {
+      const dir = path.join(scratch, edition);
+      const bundle = await initBundle(dir, { okfVersion: edition });
+      const installed = await applyRecipe(bundle, loaded.recipe);
+      assert.equal(installed.changed, true);
+      for (const [index, value] of values.entries()) {
+        const saved = await readDoc(bundle, `conventions/term-${index}`);
+        if (edition === "0.2") {
+          assert.equal(saved.frontmatter.timestamp, value);
+          assert.equal(saved.frontmatter.generated, undefined);
+        } else {
+          assert.notEqual(saved.frontmatter.timestamp, value);
+          assert.ok(Number.isFinite(Date.parse(String(saved.frontmatter.timestamp))));
+        }
+      }
+      const before = await Promise.all(values.map((_value, index) => readFile(path.join(dir, "conventions", `term-${index}.md`), "utf8")));
+      assert.equal((await applyRecipe(bundle, loaded.recipe)).changed, false);
+      assert.deepEqual(await Promise.all(values.map((_value, index) => readFile(path.join(dir, "conventions", `term-${index}.md`), "utf8"))), before);
+    }
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 });

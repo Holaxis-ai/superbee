@@ -171,11 +171,11 @@ function withoutAutomaticMutationActor(
   return withoutActor;
 }
 
-function withCanonicalComparableTimestamp(frontmatter: Frontmatter): Frontmatter {
+function withCanonicalComparableTimestamp(frontmatter: Frontmatter, okfVersion: string): Frontmatter {
   const timestamp = frontmatter.timestamp;
   if (typeof timestamp !== "string") return frontmatter;
-  const instant = Date.parse(timestamp);
-  if (Number.isNaN(instant)) return frontmatter;
+  const instant = parseTimestamp(timestamp, okfVersion);
+  if (instant === null) return frontmatter;
   const canonical = new Date(instant).toISOString();
   return canonical === timestamp ? frontmatter : { ...frontmatter, timestamp: canonical };
 }
@@ -201,10 +201,10 @@ function isNoopMutation(
     ? withoutAutomaticMutationActor(candidate.frontmatter, okfVersion, kindRequiresActor)
     : candidate.frontmatter;
   const existingFrontmatter = compareTimestamp
-    ? withCanonicalComparableTimestamp(existingFrontmatterWithActorPolicy)
+    ? withCanonicalComparableTimestamp(existingFrontmatterWithActorPolicy, okfVersion)
     : existingFrontmatterWithActorPolicy;
   const candidateFrontmatter = compareTimestamp
-    ? withCanonicalComparableTimestamp(candidateFrontmatterWithActorPolicy)
+    ? withCanonicalComparableTimestamp(candidateFrontmatterWithActorPolicy, okfVersion)
     : candidateFrontmatterWithActorPolicy;
   if (okfVersion === "0.2") {
     const withoutGeneratedAt = (frontmatter: Frontmatter): Frontmatter => {
@@ -296,13 +296,15 @@ function withV02Metadata(
     allowGeneratedProvenanceSeed: seedGenerationClock,
     // Every v0.2 create gets one standard clock unless a usable time already exists (an explicit
     // legacy `timestamp`, a declared `generated.at`) or its kind requires `timestamp` (that one
-    // clock is defaulted instead). Ungoverned types are the point: accumulation evidence for
+    // clock is defaulted instead when absent). Present unusable legacy values are preserved.
+    // Ungoverned types are the point: accumulation evidence for
     // per-bundle modeling (designs/agent-proposed-kind-conventions-v1) must not depend on a kind
     // already existing. Callers installing definitions opt out via `seedGenerationClock: false`.
     requireGenerationClock: existing === undefined
       && seedGenerationClock
-      && !(kind?.fields.required.includes("timestamp") ?? false)
-      && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter)) === null,
+      && (!(kind?.fields.required.includes("timestamp") ?? false)
+        || Object.hasOwn(candidate.frontmatter, "timestamp"))
+      && parseTimestamp(meaningfulChangeTimeValue(candidate.frontmatter), okfVersion) === null,
   });
 }
 

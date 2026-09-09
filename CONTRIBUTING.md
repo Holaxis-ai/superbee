@@ -244,8 +244,9 @@ Across both editions:
   header all use that one derivation.
 - Generated internal links use relative bundle-relative Markdown hrefs. External URLs pass through;
   concept IDs remain canonical and bundle-relative.
-- YAML timestamp scalars are normalized to ISO-8601 strings without converting unrelated nested or
-  date-only values. Storage revision time and meaningful-change time are different clocks.
+- YAML timestamp scalars retain their source strings in v0.2, including the legacy `timestamp`
+  extension. Default/v0.1 decoding keeps its historical top-level `timestamp` normalization.
+  Storage revision time and meaningful-change time are different clocks.
 - In v0.2, one shared authoring validator checks standard field shapes and values independently of
   Kind strictness on create-only, overwrite, and patch (including creation on absence). It checks
   input before automatic metadata or no-op detection, then the final candidate before storage.
@@ -276,6 +277,13 @@ Across both editions:
   Existing generation clocks still advance on meaningful content edits under the normal policy.
   Raw core/wire imports preserve source values. This does not validate arbitrary extension fields,
   log heading dates, or change the legacy v0.1 `timestamp` normalization contract.
+- The same edition-aware clock parser decides v0.2 freshness and create seeding. A usable legacy
+  `timestamp` must be an explicit ISO instant; raw imports retain ambiguous values. Normal creates
+  with an unusable legacy value seed `generated.at` without rewriting that value. A Kind-required
+  legacy timestamp defaults only when absent in v0.2. Explicit CLI `--timestamp` authoring is checked
+  before normalization or no-op detection. `status` separately reports `invalid_legacy_timestamps`
+  only when a present legacy timestamp is the effective clock; a selected `generated.at` takes
+  precedence even when malformed. These are Superbee extension semantics, not new OKF requirements.
 - `status` reports invalid standard v0.2 timestamps with field paths under `invalid_timestamps`;
   the existing `invalid_stale_after` report remains available. Repair from evidence of the intended
   instant, or remove an optional value; no offset is inferred and no migration runs automatically.

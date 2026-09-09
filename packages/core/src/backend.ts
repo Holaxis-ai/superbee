@@ -26,7 +26,8 @@
 
 import path from "node:path";
 
-import { parseMarkdown, stringifyDoc } from "./frontmatter.js";
+import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
+import { readBundleOkfVersion } from "./engine.js";
 import { resolveContentType } from "./content-type.js";
 import {
   assertSafeBlobKey,
@@ -153,7 +154,14 @@ export class FilesystemBackend implements StorageBackend {
     const observed = await observeExact(port, this.#root, rel, readBytes);
     if (observed.state === "absent") throw notFound(this.#root, rel);
     const raw = observed.value.toString("utf8");
-    const { frontmatter, body } = parseMarkdown(raw, rel);
+    let okfVersion: string | undefined;
+    try {
+      okfVersion = await readBundleOkfVersion(this);
+    } catch (error) {
+      // An unreadable edition marker must not hide otherwise readable documents from repair tools.
+      if (!(error instanceof MalformedDocumentError)) throw error;
+    }
+    const { frontmatter, body } = parseMarkdown(raw, rel, { okfVersion });
     return { doc: { id, frontmatter, body }, version: versionOfBytes(raw) };
   }
 

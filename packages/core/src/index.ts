@@ -227,7 +227,7 @@ export {
 } from "./links.js";
 export type { RawLink } from "./links.js";
 
-export { parseTimestamp } from "./freshness.js";
+export { parseTimestamp, invalidLegacyTimestamp } from "./freshness.js";
 
 export {
   SUPERBEE_UPDATED_BY_FIELD,

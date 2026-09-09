@@ -23,8 +23,8 @@ export class MalformedDocumentError extends Error {
 }
 
 /**
- * The engine's usable-document-timestamp predicate: a non-empty (post-trim) string. Anything else
- * is unusable, and the edition-aware write path replaces it with the current time.
+ * Legacy timestamp shape predicate: a non-empty (post-trim) string. This controls v0.1
+ * defaults, not edition-aware clock validity or v0.2 imported-value preservation.
  */
 export function isUsableTimestamp(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";

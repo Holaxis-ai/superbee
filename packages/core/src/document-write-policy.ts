@@ -1,3 +1,4 @@
+import { parseTimestamp } from "./freshness.js";
 /** Pure document-shape policies applied before a normalized document reaches storage. */
 
 import { OkfActorError } from "./errors.js";
@@ -56,8 +57,8 @@ function withoutV02AutomaticMetadata(
   delete copy[SUPERBEE_UPDATED_BY_FIELD];
   if (kindRequiresActor) delete copy.actor;
   if (compareTimestamp && typeof copy.timestamp === "string") {
-    const instant = Date.parse(copy.timestamp);
-    if (!Number.isNaN(instant)) copy.timestamp = new Date(instant).toISOString();
+    const instant = parseTimestamp(copy.timestamp, "0.2");
+    if (instant !== null) copy.timestamp = new Date(instant).toISOString();
   }
   const generated = copy.generated;
   if (isRecord(generated)) {

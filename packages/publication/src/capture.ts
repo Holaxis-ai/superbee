@@ -342,11 +342,24 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
   const documents: Array<PublicationSnapshotV1["documents"][number]> = [];
   const relationships: Array<PublicationSnapshotV1["relationships"][number]> = [];
 
+  const rootIndex = first.reserved.find((row) => row.dir === "" && row.name === "index.md");
+  let okfEdition = "0.1";
+  if (rootIndex) {
+    try {
+      const parsed = parseMarkdown(new TextDecoder("utf-8", { fatal: true }).decode(rootIndex.bytes), "index.md");
+      if (typeof parsed.frontmatter.okf_version === "string" && parsed.frontmatter.okf_version.trim()) {
+        okfEdition = parsed.frontmatter.okf_version.trim();
+      }
+    } catch (error) {
+      throw new PublicationError("INVALID_BUNDLE", "the bundle root index is malformed", { cause: error });
+    }
+  }
+
   for (const row of first.documents) {
     let parsed: ReturnType<typeof parseMarkdown>;
     try {
       const raw = new TextDecoder("utf-8", { fatal: true }).decode(row.bytes);
-      parsed = parseMarkdown(raw, `${row.id}.md`);
+      parsed = parseMarkdown(raw, `${row.id}.md`, { okfVersion: okfEdition });
     } catch (error) {
       throw new PublicationError("MALFORMED_DOCUMENT", "a publication document is malformed", {
         subject: row.id,
@@ -449,19 +462,6 @@ function buildSnapshot(first: RawInventory): SnapshotHandle {
     });
   }
   views.sort((a, b) => a.id.localeCompare(b.id));
-
-  const rootIndex = first.reserved.find((row) => row.dir === "" && row.name === "index.md");
-  let okfEdition = "0.1";
-  if (rootIndex) {
-    try {
-      const parsed = parseMarkdown(new TextDecoder("utf-8", { fatal: true }).decode(rootIndex.bytes), "index.md");
-      if (typeof parsed.frontmatter.okf_version === "string" && parsed.frontmatter.okf_version.trim()) {
-        okfEdition = parsed.frontmatter.okf_version.trim();
-      }
-    } catch (error) {
-      throw new PublicationError("INVALID_BUNDLE", "the bundle root index is malformed", { cause: error });
-    }
-  }
 
   const withoutDigest = {
     schema: PUBLICATION_SNAPSHOT_V1,

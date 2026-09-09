@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { evaluateRequiredResults, REQUIRED_JOBS } from "./ci-aggregate.mjs";
+import { meaningfulChangeTimeValue } from "../packages/core/dist/meaningful-change-time.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -12,10 +13,6 @@ const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "packa
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
 const contributing = readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
 const okfBundleSource = readFileSync(path.join(root, "packages", "core", "src", "bundle.ts"), "utf8");
-const meaningfulChangeSource = readFileSync(
-  path.join(root, "packages", "core", "src", "meaningful-change-time.ts"),
-  "utf8",
-);
 const linkSource = readFileSync(path.join(root, "packages", "core", "src", "links.ts"), "utf8");
 const sampleOkfReference = readFileSync(
   path.join(root, "examples", "sample-bundle", "references", "okf-spec.md"),
@@ -52,7 +49,7 @@ function validateContributorAuthority(
   text,
   candidateManifest = manifest,
   packageJson = pkg,
-  sources = { okfBundleSource, meaningfulChangeSource, linkSource, sampleOkfReference },
+  sources = { okfBundleSource, linkSource, sampleOkfReference },
 ) {
   for (const heading of ["## OKF compatibility", "## Findings and commitments", "## Assurance evolution"]) {
     assert.match(text, new RegExp(`^${heading}$`, "m"), `missing exact contributor anchor ${heading}`);
@@ -94,7 +91,16 @@ function validateContributorAuthority(
   ]);
   assert.match(sources.okfBundleSource, /SUPPORTED_OKF_AUTHORING_VERSIONS = \["0\.1", "0\.2"\]/);
   assert.match(sources.okfBundleSource, /DEFAULT_OKF_AUTHORING_VERSION = "0\.2"/);
-  assert.match(sources.meaningfulChangeSource, /if \(at !== undefined\) return at;[\s\S]*return frontmatter\.timestamp;/);
+  for (const [generated, expected] of [
+    [{ at: "standard" }, "standard"],
+    [{ at: null }, null],
+    [{ at: undefined }, "legacy"],
+    [{}, "legacy"],
+    [null, "legacy"],
+    [[], "legacy"],
+  ]) {
+    assert.equal(meaningfulChangeTimeValue({ generated, timestamp: "legacy" }), expected);
+  }
   assert.match(sources.linkSource, /return `\$\{rel\}\.md`;/);
   assert.match(sources.sampleOkfReference, /description: A version-scoped OKF v0\.1 interop reference/);
   assert.match(sources.sampleOkfReference, /This reference is scoped to OKF v0\.1 interop/);
