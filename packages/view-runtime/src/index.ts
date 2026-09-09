@@ -6,14 +6,14 @@ import {
   blobVersion,
   loadKinds,
   mutateDocument,
+  prepareDocumentFieldAction,
+  prepareDocumentMutationCandidate,
   readBundleOkfVersion,
   readBlob,
   readDocVersioned,
   resolveKindFieldCoordinate,
-  validateAgainstKind,
   versionOfBytes,
   type Bundle,
-  type Frontmatter,
   type KindConvention,
   type ValidationWarning,
   type Version,
@@ -250,22 +250,6 @@ export class PageLaunchRegistry {
       if (now > launch.expiresAt) this.revoke(launchId);
     }
   }
-}
-
-function ownRecord(source: Record<string, unknown>): Frontmatter {
-  const target: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(source)) {
-    Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
-  }
-  return target as Frontmatter;
-}
-
-function setOwn(record: Record<string, unknown>, key: string, value: unknown): void {
-  Object.defineProperty(record, key, { value, enumerable: true, configurable: true, writable: true });
-}
-
-function scalarEqual(a: unknown, b: ActionScalar): boolean {
-  return typeof a === typeof b && a === b;
 }
 
 function isActionScalar(value: unknown): value is ActionScalar {
@@ -820,7 +804,23 @@ export class TrustedActionService {
     } else {
       before = beforeRaw;
     }
-    if (scalarEqual(beforeRaw, action.value)) {
+    const timestamp = new Date(this.now()).toISOString();
+    let prepared: ReturnType<typeof prepareDocumentMutationCandidate>;
+    try {
+      if (okfVersion !== undefined && okfVersion !== "0.1" && okfVersion !== "0.2") {
+        return rejected(`unsupported bundle OKF edition '${okfVersion}'`);
+      }
+      const context = { registry, okfVersion: okfVersion ?? "0.1", now: () => timestamp } as const;
+      const fieldAction = prepareDocumentFieldAction(target.doc, {
+        action: "set", field: action.field, value: action.value,
+      }, context);
+      prepared = prepareDocumentMutationCandidate(target.doc, fieldAction.candidate, {
+        ...context, id: action.docId, strict: true, actor, persistActor: true,
+      });
+    } catch (error) {
+      return rejected(error instanceof Error ? error.message : "the proposed scalar mutation is invalid");
+    }
+    if (!prepared.changed) {
       return {
         status: "unchanged",
         action: "document.set-field",
@@ -840,18 +840,6 @@ export class TrustedActionService {
         },
       };
     }
-
-    const timestamp = new Date(this.now()).toISOString();
-    const candidate = ownRecord(target.doc.frontmatter);
-    setOwn(candidate, fieldCoordinate.storageField, action.value);
-    if (okfVersion !== "0.2" || kind.fields.required.includes("timestamp")) {
-      setOwn(candidate, "timestamp", timestamp);
-    }
-    if (okfVersion !== "0.2" || kind.fields.required.includes("actor")) {
-      setOwn(candidate, "actor", actor);
-    }
-    const violations = validateAgainstKind({ id: action.docId, frontmatter: candidate, body: target.doc.body }, kind);
-    if (violations.length > 0) return rejected(violations.map((warning) => warning.message).join("; "));
 
     let kindVersion: Version;
     try {
@@ -967,17 +955,14 @@ export class TrustedActionService {
         persistActor: true,
         expectedVersion: pending.action.expectedVersion,
         now: () => pending.timestamp,
-        buildCandidate: (existing, context) => {
-          if (!existing) throw new DocumentNotFoundError(pending.action.docId);
+        input: (_existing, context) => {
           if (context.okfVersion !== (pending.okfVersion ?? "0.1")) {
             throw new ActionBundleEditionChanged("the bundle OKF edition changed");
           }
-          const frontmatter = ownRecord(existing.frontmatter);
-          setOwn(frontmatter, pending.storageField, pending.action.value);
-          if (context.okfVersion !== "0.2" || kind.fields.required.includes("timestamp")) {
-            setOwn(frontmatter, "timestamp", pending.timestamp);
-          }
-          return { frontmatter, body: existing.body };
+          return {
+            kind: "field-action",
+            action: { action: "set", field: pending.action.field, value: pending.action.value },
+          };
         },
       });
       return {
