@@ -108,6 +108,10 @@ export interface MutateDocumentOptions {
   compareTimestamp?: boolean;
   /** Advisory backend-history attribution, applied only when a write occurs. */
   actor?: string;
+  /** OKF v0.2 content producer for generated.by, independent of advisory actor.
+   * Defaults to actor when omitted; ignored by v0.1. Does not alter history or
+   * persisted attribution, and a producer-only change is not a content edit. */
+  producer?: string;
   /** Also persist the advisory actor in the edition-appropriate frontmatter field after no-op detection. */
   persistActor?: boolean;
   /** Patch only: a caller-supplied token makes the operation a single-shot hard CAS. */
@@ -261,6 +265,7 @@ function withV02Metadata(
   seedGenerationClock: boolean,
   actor: string | undefined,
   compareTimestamp: boolean,
+  producer: string | undefined,
 ): DocumentMutationCandidate {
   if (okfVersion !== "0.2") return candidate;
   const kind = registry.kinds.get(String(candidate.frontmatter.type));
@@ -269,6 +274,7 @@ function withV02Metadata(
     candidate,
     meaningfulChangeAt: now(),
     actor,
+    producer,
     kindRequiresActor: kind?.fields.required.includes("actor") ?? false,
     compareTimestamp,
     allowGeneratedProvenanceSeed: seedGenerationClock,
@@ -340,6 +346,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
       seedClock,
       opts.actor,
       compareTimestamp,
+      opts.producer,
     );
     const candidate = attributeCandidate(
       withMetadata,
@@ -392,6 +399,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           seedClock,
           opts.actor,
           compareTimestamp,
+          opts.producer,
         );
         const candidate = attributeCandidate(
           withMetadata,
@@ -484,6 +492,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         seedClock,
         opts.actor,
         compareTimestamp,
+        opts.producer,
       );
       if (existing && isNoopMutation(
         existing,
