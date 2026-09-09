@@ -949,14 +949,14 @@ test("new: a kind with declared 'sections' scaffolds them as empty body headings
         title: "Roadmap Item",
         governs: "Roadmap Item",
         path: "roadmap/",
-        fields: { required: ["title", "status"], optional: [], values: { status: ["planned", "active", "done"] } },
+        fields: { required: ["title", "phase"], optional: [], values: { phase: ["planned", "active", "done"] } },
         sections: ["Why", "Done when"],
         timestamp: T,
       },
       body: "Roadmap items.",
     });
 
-    await newCommand(["Roadmap Item", "r1", "--title", "R1", "--status", "planned", "--dir", dir], {
+    await newCommand(["Roadmap Item", "r1", "--title", "R1", "--phase", "planned", "--dir", dir], {
       stdout: () => {},
     });
     const saved = await readDoc(bundle, "roadmap/r1");
@@ -965,7 +965,7 @@ test("new: a kind with declared 'sections' scaffolds them as empty body headings
 
     // A disallowed enum value is a validation rejection.
     await assert.rejects(
-      () => newCommand(["Roadmap Item", "r2", "--title", "R2", "--status", "cancelled", "--dir", dir, "--json"]),
+      () => newCommand(["Roadmap Item", "r2", "--title", "R2", "--phase", "cancelled", "--dir", dir, "--json"]),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");

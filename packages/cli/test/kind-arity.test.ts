@@ -1,8 +1,8 @@
 /**
  * Enum arity guard, end to end (`plans/list-hint-arity.md` decision 3): a repeated
  * kind-field flag is an intentional FEATURE for non-enum fields (`--labels a --labels b`
- * → array) but a silent-corruption trap for enum-restricted ones (`--status todo
- * --status done` used to persist a two-status doc with ZERO warnings, even strict —
+ * → array) but a silent-corruption trap for enum-restricted ones (`--phase todo
+ * --phase done` used to persist a two-phase doc with ZERO warnings, even strict —
  * every array member passes the element-wise membership check). The guard lives in
  * CORE's one validation locus (`validateAgainstKind`, `KIND_FIELD_ARITY`), so this file
  * pins the two CLI surfaces that inherit it (`new` — always strict; `doc update` —
@@ -27,7 +27,7 @@ const sink = { stdout: () => {} };
 // hangs (the same rule doc.test.ts's test-authoring note pins).
 const docSink = { stdout: () => {}, readStdin: async () => undefined };
 
-/** A bundle with one governed kind carrying BOTH an enum field (`status`) and a plain
+/** A bundle with one governed kind carrying BOTH an enum field (`phase`) and a plain
  * optional field (`labels`) — the pair the guard must distinguish. */
 async function makeEnumKindBundle(): Promise<{ dir: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "agentstate-lite-arity-test-"));
@@ -41,9 +41,9 @@ async function makeEnumKindBundle(): Promise<{ dir: string; cleanup: () => Promi
       governs: "Task",
       path: "tasks/",
       fields: {
-        required: ["title", "status"],
+        required: ["title", "phase"],
         optional: ["labels"],
-        values: { status: ["todo", "doing", "done"] },
+        values: { phase: ["todo", "doing", "done"] },
       },
       timestamp: T,
     },
@@ -58,7 +58,7 @@ test("new: a repeated ENUM field flag is a USAGE rejection naming the arity viol
     await assert.rejects(
       () =>
         newCommand(
-          ["Task", "two-status", "--title", "X", "--status", "todo", "--status", "done", "--dir", dir],
+          ["Task", "two-phase", "--title", "X", "--phase", "todo", "--phase", "done", "--dir", dir],
           sink,
         ),
       (err: unknown) => {
@@ -69,7 +69,7 @@ test("new: a repeated ENUM field flag is a USAGE rejection naming the arity viol
       },
     );
     // Create-only discipline: the rejected doc must not exist.
-    await assert.rejects(() => readDoc({ root: dir }, "tasks/two-status"));
+    await assert.rejects(() => readDoc({ root: dir }, "tasks/two-phase"));
   } finally {
     await cleanup();
   }
@@ -79,12 +79,12 @@ test("new: a repeated NON-enum field flag still produces an array (the feature i
   const { dir, cleanup } = await makeEnumKindBundle();
   try {
     await newCommand(
-      ["Task", "labeled", "--title", "X", "--status", "todo", "--labels", "a", "--labels", "b", "--dir", dir],
+      ["Task", "labeled", "--title", "X", "--phase", "todo", "--labels", "a", "--labels", "b", "--dir", dir],
       sink,
     );
     const written = await readDoc({ root: dir }, "tasks/labeled");
     assert.deepEqual(written.frontmatter.labels, ["a", "b"]);
-    assert.equal(written.frontmatter.status, "todo");
+    assert.equal(written.frontmatter.phase, "todo");
   } finally {
     await cleanup();
   }
@@ -93,9 +93,9 @@ test("new: a repeated NON-enum field flag still produces an array (the feature i
 test("doc update: a repeated ENUM field flag is a USAGE rejection — the stored doc is untouched", async () => {
   const { dir, cleanup } = await makeEnumKindBundle();
   try {
-    await newCommand(["Task", "one", "--title", "One", "--status", "todo", "--dir", dir], sink);
+    await newCommand(["Task", "one", "--title", "One", "--phase", "todo", "--dir", dir], sink);
     await assert.rejects(
-      () => doc(["update", "tasks/one", "--status", "doing", "--status", "done", "--dir", dir], docSink),
+      () => doc(["update", "tasks/one", "--phase", "doing", "--phase", "done", "--dir", dir], docSink),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");
@@ -104,7 +104,7 @@ test("doc update: a repeated ENUM field flag is a USAGE rejection — the stored
       },
     );
     const stored = await readDoc({ root: dir }, "tasks/one");
-    assert.equal(stored.frontmatter.status, "todo", "the rejected patch must not have written");
+    assert.equal(stored.frontmatter.phase, "todo", "the rejected patch must not have written");
   } finally {
     await cleanup();
   }

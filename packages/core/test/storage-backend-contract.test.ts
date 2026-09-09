@@ -11,6 +11,7 @@ import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
 import {
   registerClaimPreconditionContract,
+  registerOkfAuthoringContract,
   registerStorageBackendAtomicCasContract,
   registerStorageBackendBaseContract,
   registerStorageBackendBlobContract,
@@ -68,6 +69,7 @@ const CONTRACTS = [
 
 for (const contract of CONTRACTS) {
   registerStorageBackendBaseContract(contract);
+  registerOkfAuthoringContract(contract);
   registerStorageBackendBlobContract(contract);
   registerStorageBackendHistoryContract(contract);
 }

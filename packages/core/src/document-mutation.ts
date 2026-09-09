@@ -9,6 +9,7 @@
  */
 
 import { InvalidInputError } from "./errors.js";
+import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { applyV02MutationMetadata } from "./document-write-policy.js";
 import { assertFieldPreconditions } from "./document-precondition.js";
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
@@ -93,7 +94,7 @@ export interface MutateDocumentOptions {
   registry: KindRegistry;
   /** Reject rather than return a non-empty kind warning set. */
   strict: boolean;
-  /** Recomputed against every fresh CAS attempt. */
+  /** Recomputed against a detached copy of every fresh CAS attempt. */
   buildCandidate: (
     existing: OkfDocument | undefined,
     context: DocumentMutationContext,
@@ -253,12 +254,14 @@ function validateCandidate(
   strict: boolean,
   okfVersion: "0.1" | "0.2",
   now: () => string,
+  existing?: OkfDocument,
 ): RegistryValidationResult {
   const result = defaultTimestampAndValidateAgainstRegistry(
     { id, ...candidate },
     registry,
     { okfVersion, now },
   );
+  if (okfVersion === "0.2") assertAuthoredOkfStandardFields(candidate.frontmatter, existing?.frontmatter);
   if (strict && result.kind && result.warnings.length > 0) {
     throw new KindConformanceError(id, result.kind.governs, result.warnings, okfVersion);
   }
@@ -397,7 +400,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         const decisionNow = onceNow(now);
         assertFieldPreconditions(opts.id, existing?.frontmatter, opts.preconditions, lastReadVersion);
         const withMetadata = withV02Metadata(
-          await opts.buildCandidate(existing, context),
+          await opts.buildCandidate(existing === undefined ? undefined : structuredClone(existing), context),
           existing,
           okfVersion,
           opts.registry,
@@ -420,6 +423,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
           opts.strict,
           okfVersion,
           decisionNow,
+          existing,
         );
         warnings = validated.warnings;
 
@@ -486,7 +490,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         throw new VersionConflict(opts.id, opts.expectedVersion!, lastReadVersion);
       }
 
-      const rawCandidate = await opts.buildCandidate(existing, context);
+      const rawCandidate = await opts.buildCandidate(existing === undefined ? undefined : structuredClone(existing), context);
       const candidateForComparison = withV02Metadata(
         rawCandidate,
         existing,
@@ -522,6 +526,7 @@ export async function mutateDocument(opts: MutateDocumentOptions): Promise<Docum
         opts.strict,
         okfVersion,
         decisionNow,
+        existing,
       );
       return { action: "write", next: { id: opts.id, ...candidate }, result: { warnings } };
     },

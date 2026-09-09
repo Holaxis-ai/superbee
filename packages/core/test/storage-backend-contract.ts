@@ -720,3 +720,25 @@ export function registerStorageBackendIdentityContract(options: IdentityBackendC
     });
   });
 }
+
+/** One authored-OKF decision above every adapter, with raw import compatibility beneath it. */
+export function registerOkfAuthoringContract(options: BackendContractOptions): void {
+  test(`${options.name} contract: authored standard refusals preserve raw imported values and versions`, async () => {
+    await withFixture(options.create, async (backend) => {
+      await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+      const bundle = { root: "contract", backend };
+      const legacy = { type: "Note", sources: [{ resource: false }], generated: ["legacy"] };
+      for (const mode of ["create-only", "overwrite", "patch"] as const) {
+        await assert.rejects(mutateDocument({ bundle, id: "authored/refused", mode, onAbsent: "create", registry: EMPTY_REGISTRY, strict: false, buildCandidate: () => ({ frontmatter: { type: "Note", sources: legacy.sources }, body: "x" }) }), /sources\[0\].resource/);
+        await assert.rejects(backend.read("authored/refused"));
+      }
+      await backend.write("authored/legacy", { id: "authored/legacy", frontmatter: legacy, body: "old\n" });
+      const edited = await mutateDocument({ bundle, id: "authored/legacy", mode: "patch", registry: EMPTY_REGISTRY, strict: false, buildCandidate: existing => ({ frontmatter: existing!.frontmatter, body: "new\n" }) });
+      assert.deepEqual(edited.doc.frontmatter.sources, legacy.sources);
+      assert.deepEqual(edited.doc.frontmatter.generated, legacy.generated);
+      const before = await backend.read("authored/legacy");
+      await assert.rejects(mutateDocument({ bundle, id: "authored/legacy", mode: "overwrite", registry: EMPTY_REGISTRY, strict: false, buildCandidate: existing => ({ frontmatter: { ...existing!.frontmatter, sources: [...legacy.sources, ...legacy.sources] }, body: "newer\n" }) }), /sources\[1\].resource/);
+      assert.deepEqual(await backend.read("authored/legacy"), before);
+    });
+  });
+}

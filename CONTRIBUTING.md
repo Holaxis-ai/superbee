@@ -246,7 +246,20 @@ Across both editions:
   concept IDs remain canonical and bundle-relative.
 - YAML timestamp scalars are normalized to ISO-8601 strings without converting unrelated nested or
   date-only values. Storage revision time and meaningful-change time are different clocks.
-- In v0.2, authored mutations require newly supplied or changed standard timestamps to name a
+- In v0.2, one shared authoring validator checks standard field shapes and values independently of
+  Kind strictness on create-only, overwrite, and patch (including creation on absence). It checks
+  input before automatic metadata or no-op detection, then the final candidate before storage.
+  Optional families stay optional: strings for title/description/resource, string-list tags,
+  draft/stable/deprecated status, source mappings with nonempty resources, and verification events
+  with valid actors and timestamps (including one bare mapping). Source authors are nonempty
+  strings, including team identities; source usage counts are finite nonnegative integers as a
+  Superbee authoring policy. Usage windows permit optional from/to bounds. Source IDs need not be
+  unique. Unknown types, fields, and nested producer properties remain preserved.
+- Computation fields are standard only on `Attested Computation`: creating or retyping to that
+  type requires a nonempty runtime. Parameter rows require string name/type and permit an optional
+  boolean required flag; executor/attester mappings check present standard children without
+  inventing mandatory children, runtime enums, or parameter-type enums.
+- Newly supplied or changed standard timestamps must name a
   real ISO-8601 date and time with an explicit UTC offset (`Z` or a numeric offset). One core
   validator covers `generated.at`, `verified.at` (bare mapping or list entries), `stale_after`,
   `sources[].last_modified`, and `usage_window.from`/`to` at the root and within source entries.
@@ -254,7 +267,12 @@ Across both editions:
   produced timestamps use UTC `Z`; accepted explicit offset spellings keep their meaning.
 - Unchanged imported invalid values remain editable. Existing source and verification rows may be
   preserved, reordered, removed, or accompanied by valid new rows. An edited row is newly authored
-  and must have valid timestamps; copying an invalid row does not grant another legacy allowance.
+  and must have valid standard values; copying an invalid row does not grant another legacy
+  allowance. The same row policy covers computation parameters and uses each fresh CAS head.
+  Unchanged malformed imported `generated` containers survive unrelated edits verbatim and can
+  be explicitly repaired or removed. A newly authored generated mapping needs a valid `by` on
+  the final candidate; the engine may fill an absent actor but cannot hide an explicitly invalid
+  actor supplied by the caller.
   Existing generation clocks still advance on meaningful content edits under the normal policy.
   Raw core/wire imports preserve source values. This does not validate arbitrary extension fields,
   log heading dates, or change the legacy v0.1 `timestamp` normalization contract.
