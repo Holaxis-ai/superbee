@@ -13,6 +13,10 @@
   "types": "./dist/index.d.ts",
   "sideEffects": false,
   "exports": {
+    "./view-admission": {
+      "types": "./dist/view-admission.d.ts",
+      "default": "./dist/view-admission.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
