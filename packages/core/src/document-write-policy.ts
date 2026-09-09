@@ -1,6 +1,8 @@
 /** Pure document-shape policies applied before a normalized document reaches storage. */
 
-import { InvalidInputError, OkfActorError } from "./errors.js";
+import { OkfActorError } from "./errors.js";
+import { isOkfRecord as isRecord, okfValuesEqual as sameValue } from "./okf-authored-values.js";
+import { assertAuthoredOkfStandardFields } from "./okf-standard-fields.js";
 import { assertAuthoredOkfTimestamps } from "./okf-timestamps.js";
 import { isOkfActor } from "./okf-actor.js";
 import { normalizeDocumentBodyForStorage } from "./frontmatter.js";
@@ -8,10 +10,6 @@ import { SUPERBEE_UPDATED_BY_FIELD } from "./mutation-attribution.js";
 import type { Frontmatter, OkfDocument } from "./types.js";
 
 type Generated = Record<string, unknown>;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function hasOwn(record: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(record, key);
@@ -47,29 +45,6 @@ export function normalizeV01DocumentForWrite(
 export function normalizeV02DocumentForWrite(doc: OkfDocument, validatedType: string): OkfDocument {
   const { type: _type, ...rest } = doc.frontmatter;
   return { id: doc.id, frontmatter: { type: validatedType, ...rest }, body: doc.body ?? "" };
-}
-
-function generatedRecord(value: unknown, label: string): Generated | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) {
-    throw new InvalidInputError(`OKF v0.2 ${label} must be a mapping when present`);
-  }
-  return value;
-}
-
-function sameValue(a: unknown, b: unknown): boolean {
-  if (a === b || Object.is(a, b)) return true;
-  if (Array.isArray(a) || Array.isArray(b)) {
-    return Array.isArray(a) && Array.isArray(b)
-      && a.length === b.length
-      && a.every((value, index) => sameValue(value, b[index]));
-  }
-  if (isRecord(a) && isRecord(b)) {
-    const aKeys = Object.keys(a);
-    const bKeys = Object.keys(b);
-    return aKeys.length === bKeys.length && aKeys.every((key) => sameValue(a[key], b[key]));
-  }
-  return false;
 }
 
 function withoutV02AutomaticMetadata(
@@ -143,16 +118,37 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   frontmatter: Frontmatter;
   body: string;
 } {
+  assertAuthoredOkfStandardFields(opts.candidate.frontmatter, opts.existing?.frontmatter, { phase: "input" });
+  const result = applyMetadata(opts);
+  assertAuthoredOkfStandardFields(result.frontmatter, opts.existing?.frontmatter);
+  return result;
+}
+
+function applyMetadata(opts: V02MutationMetadataOptions): {
+  frontmatter: Frontmatter;
+  body: string;
+} {
   if (opts.actor !== undefined && !isOkfActor(opts.actor)) {
     throw new OkfActorError(
       opts.actor,
       `OKF v0.2 mutation actor '${opts.actor}' must be human:<id>, process:<id>, or <producer>/<version>`,
     );
   }
-  // Validate the declared values before clock replacement or no-op handling can hide bad input.
-  assertAuthoredOkfTimestamps(opts.candidate.frontmatter, opts.existing?.frontmatter);
-  const existingGenerated = generatedRecord(opts.existing?.frontmatter.generated, "existing generated");
-  const declaredCandidateGenerated = generatedRecord(opts.candidate.frontmatter.generated, "generated");
+  const existingValue = opts.existing?.frontmatter.generated;
+  const candidateValue = opts.candidate.frontmatter.generated;
+  const existingGenerated = isRecord(existingValue) ? existingValue : undefined;
+  const declaredCandidateGenerated = isRecord(candidateValue) ? candidateValue : undefined;
+  // Invalid imported containers are opaque. Prevalidation already refused newly invalid input;
+  // preserving or removing an old container must never spread it or manufacture its replacement.
+  if ((hasOwn(opts.candidate.frontmatter, "generated") && !declaredCandidateGenerated)
+    || (opts.existing && hasOwn(opts.existing.frontmatter, "generated") && !existingGenerated
+      && !hasOwn(opts.candidate.frontmatter, "generated"))) {
+    const frontmatter = { ...opts.candidate.frontmatter };
+    if (!hasOwn(frontmatter, "verified") && opts.existing && hasOwn(opts.existing.frontmatter, "verified")) {
+      frontmatter.verified = opts.existing.frontmatter.verified;
+    }
+    return { ...opts.candidate, frontmatter };
+  }
   let candidateGenerated = !opts.existing
     && opts.allowGeneratedProvenanceSeed !== false
     && (opts.requireGenerationClock || opts.actor !== undefined)
@@ -172,12 +168,6 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   const candidateHasBy = candidateGenerated ? hasOwn(candidateGenerated, "by") : false;
   const existingBy = existingGenerated?.by;
   const candidateBy = candidateGenerated?.by;
-
-  if (candidateHasBy && candidateBy !== existingBy && !isOkfActor(candidateBy)) {
-    throw new InvalidInputError(
-      "OKF v0.2 generated.by must be human:<id>, process:<id>, or <producer>/<version>",
-    );
-  }
 
   // Compare with the caller's declared/inherited provenance before applying automatic actor
   // metadata. Otherwise an actor-only change would manufacture the "meaningful change" needed to
@@ -220,11 +210,10 @@ export function applyV02MutationMetadata(opts: V02MutationMetadataOptions): {
   const resolvedBy = meaningfulChange
     ? preserveDeclaredSourceBy ? candidateBy : opts.actor ?? "process:superbee"
     : comparisonBy;
-  if (typeof resolvedBy !== "string" || resolvedBy.trim() === "") {
-    throw new InvalidInputError("OKF v0.2 generated.by is required when generated is present");
-  }
-
-  const generated: Generated = { ...existingGenerated, ...candidateGenerated, by: resolvedBy };
+  const generated: Generated = {
+    ...existingGenerated, ...candidateGenerated,
+    ...(resolvedBy === undefined ? {} : { by: resolvedBy }),
+  };
   let clockAuthored = false;
   if (!opts.existing) {
     if (generated.at === undefined) {

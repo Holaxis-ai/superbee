@@ -2,28 +2,9 @@
 import { InvalidInputError } from "./errors.js";
 import { parseIsoInstant } from "./verification.js";
 
-type RecordValue = Readonly<Record<string, unknown>>;
+import { isOkfRecord as record, okfValuesEqual as equal, authoredOkfRows, type OkfRecord as RecordValue } from "./okf-authored-values.js";
+
 export interface InvalidOkfTimestamp { field: string; value: unknown }
-
-function record(value: unknown): value is RecordValue {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function equal(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((value, i) => equal(value, b[i]));
-  if (!record(a) || !record(b)) return false;
-  const keys = Object.keys(a);
-  return keys.length === Object.keys(b).length && keys.every(key => Object.hasOwn(b, key) && equal(a[key], b[key]));
-}
-
-/**
- * A consumed exact match lets preserved legacy records move within an array, but not multiply.
- * Editing a source/event row authors that row anew; its known timestamps must then be valid.
- */
-function rows(value: unknown, allowBare: boolean): unknown[] {
-  return Array.isArray(value) ? value : allowBare && record(value) ? [value] : [];
-}
 
 function scan(frontmatter: RecordValue, existing?: RecordValue): InvalidOkfTimestamp[] {
   const findings: InvalidOkfTimestamp[] = [];
@@ -42,15 +23,7 @@ function scan(frontmatter: RecordValue, existing?: RecordValue): InvalidOkfTimes
   slot(frontmatter, "stale_after", "stale_after", existing);
   window(frontmatter.usage_window, "usage_window", existing?.usage_window);
   for (const key of ["verified", "sources"] as const) {
-    const current = rows(frontmatter[key], key === "verified");
-    const prior = rows(existing?.[key], key === "verified");
-    const used = new Set<number>();
-    current.forEach((entry, index) => {
-      const match = prior.findIndex((old, i) => !used.has(i) && equal(entry, old));
-      if (match !== -1) {
-        used.add(match);
-        return;
-      }
+    authoredOkfRows(frontmatter[key], existing?.[key], key === "verified").forEach(({ entry, index }) => {
       const path = key === "verified" && !Array.isArray(frontmatter.verified) ? key : `${key}[${index}]`;
       if (key === "verified") slot(entry, "at", `${path}.at`);
       else {

@@ -26,6 +26,7 @@ import {
   staleAfterInstant,
   invalidOkfTimestamps,
   isTerminal,
+  isOkfLifecycleStatus,
   listBlobs,
   loadKinds,
   MalformedDocumentError,
@@ -218,8 +219,6 @@ function cap(rows: Record<string, unknown>[], limit: number): Capped {
  */
 const FRONTMATTER_VIOLATION_CODES = new Set(["KIND_FIELD_MISSING", "KIND_FIELD_VALUE", "KIND_FIELD_ARITY"]);
 
-const OKF_V02_LIFECYCLE_STATUSES = new Set(["draft", "stable", "deprecated"]);
-
 /** A doc's `type` field, or "" when absent/non-string — the ONE place this coercion happens. */
 function docType(doc: OkfDocument): string {
   return typeof doc.frontmatter.type === "string" ? doc.frontmatter.type : "";
@@ -258,7 +257,7 @@ function okfV02WorkflowStatusCollisions(
   const observedValuesByKind = new Map<string, Set<string>>();
   for (const doc of docs) {
     const value = doc.frontmatter.status;
-    if (value === undefined || (typeof value === "string" && OKF_V02_LIFECYCLE_STATUSES.has(value))) continue;
+    if (value === undefined || isOkfLifecycleStatus(value)) continue;
     const type = docType(doc);
     affectedByKind.set(type, (affectedByKind.get(type) ?? 0) + 1);
     const display = typeof value === "string" ? value : `<${Array.isArray(value) ? "array" : typeof value}>`;
@@ -274,7 +273,7 @@ function okfV02WorkflowStatusCollisions(
     if (!declaresStatus) continue;
     const declaredValues = kind.fields.values.status;
     const incompatibleValues = (declaredValues ?? []).filter(
-      (value) => !OKF_V02_LIFECYCLE_STATUSES.has(value),
+      (value) => !isOkfLifecycleStatus(value),
     );
     const affectedDocuments = affectedByKind.get(kind.governs) ?? 0;
     if (declaredValues !== undefined && incompatibleValues.length === 0 && affectedDocuments === 0) continue;
@@ -613,17 +612,8 @@ export async function status(argv: string[], deps: Partial<StatusCliDeps> = {}):
   const invalidStaleAfter = cap(invalidStaleAfterRows, limit);
   const invalidTimestamps = cap(invalidTimestampRows, limit);
   const statusCollisions = okfV02WorkflowStatusCollisions(registry, docs);
-  const lifecycleWarnings = okfVersion === "0.2"
-    ? statusCollisions.filter((row) => (row.incompatible_values as string[]).length > 0).map((row) => ({
-      code: "OKF_WORKFLOW_STATUS_COLLISION",
-      message: `kind convention '${row.convention}' uses top-level status for workflow values (${(row.incompatible_values as string[]).join(", ")}). ` +
-        "OKF v0.2 reserves status for draft|stable|deprecated; migrate workflow state to logical progress_status (stored as superbee_progress_status).",
-      field: "fields.values.status",
-      severity: "warning",
-    }))
-    : [];
   const registryLint = cap(
-    [...registry.warnings.map((w): Record<string, unknown> => ({ ...w })), ...lifecycleWarnings],
+    registry.warnings.map((w): Record<string, unknown> => ({ ...w })),
     limit,
   );
   const linkTypeViolations = cap(linkTypeViolationRows, limit);

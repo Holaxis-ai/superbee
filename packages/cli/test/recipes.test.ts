@@ -2615,3 +2615,34 @@ test("legacy-alias awareness: the mirror partial pair (blob without its registry
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test("recipe evolve: known v0.2 lifecycle collisions use the existing parser-warning blocker policy", async () => {
+  for (const okfVersion of [undefined, "0.1", "0.2"]) {
+    const backend = new MemoryBackend();
+    const bundle: Bundle = { root: "mem://recipe-lifecycle", backend };
+    if (okfVersion) await backend.writeReserved("", "index.md", `---\nokf_version: '${okfVersion}'\n---\n`);
+    await applyRecipe(bundle, widgetRecipe("1", widgetFields()), T);
+    const desired = widgetRecipe("2", widgetFields(["title"], ["status"], { status: ["investigating", "closed"] }));
+    const plan = await planRecipeEvolution(bundle, desired);
+    assert.equal(plan.blockers.some(blocker => blocker.code === "OKF_WORKFLOW_STATUS_COLLISION"), okfVersion === "0.2");
+    if (okfVersion === "0.2") assert.equal(plan.ready, false);
+    assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")!.fields.values, {});
+  }
+});
+
+
+test("recipe evolve: retained local status enums are diagnosed on the prospective candidate", async () => {
+  const backend = new MemoryBackend();
+  const bundle: Bundle = { root: "mem://recipe-local-lifecycle", backend };
+  await backend.writeReserved("", "index.md", "---\nokf_version: '0.2'\n---\n");
+  await applyRecipe(bundle, widgetRecipe("1", widgetFields(["title"], ["status"], { status: ["investigating", "closed"] })), T);
+  const desired = widgetRecipe("2", widgetFields(["title"], ["colour"]));
+  const plan = await planRecipeEvolution(bundle, desired);
+  assert.equal(plan.ready, false);
+  const warnings = plan.blockers.filter(blocker => blocker.code === "OKF_WORKFLOW_STATUS_COLLISION");
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0]!.id, "conventions/widget");
+  assert.equal(warnings[0]!.field, "fields.values.status");
+  assert.deepEqual((await loadKinds(bundle)).kinds.get("Widget")!.fields.optional, ["status"]);
+});

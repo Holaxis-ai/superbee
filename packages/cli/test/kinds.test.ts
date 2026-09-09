@@ -8,11 +8,11 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { initBundle, writeDoc, readDoc, CONVENTION_TYPE, type Bundle } from "@superbee/core";
+import { initBundle, writeDoc, readDoc, parseMarkdown, isTerminal, loadKinds, CONVENTION_TYPE, type Bundle } from "@superbee/core";
 import { serve, type ServerHandle } from "@superbee/server";
 
 import { newCommand } from "../src/commands/new.js";
@@ -949,14 +949,14 @@ test("new: a kind with declared 'sections' scaffolds them as empty body headings
         title: "Roadmap Item",
         governs: "Roadmap Item",
         path: "roadmap/",
-        fields: { required: ["title", "status"], optional: [], values: { status: ["planned", "active", "done"] } },
+        fields: { required: ["title", "phase"], optional: [], values: { phase: ["planned", "active", "done"] } },
         sections: ["Why", "Done when"],
         timestamp: T,
       },
       body: "Roadmap items.",
     });
 
-    await newCommand(["Roadmap Item", "r1", "--title", "R1", "--status", "planned", "--dir", dir], {
+    await newCommand(["Roadmap Item", "r1", "--title", "R1", "--phase", "planned", "--dir", dir], {
       stdout: () => {},
     });
     const saved = await readDoc(bundle, "roadmap/r1");
@@ -965,7 +965,7 @@ test("new: a kind with declared 'sections' scaffolds them as empty body headings
 
     // A disallowed enum value is a validation rejection.
     await assert.rejects(
-      () => newCommand(["Roadmap Item", "r2", "--title", "R2", "--status", "cancelled", "--dir", dir, "--json"]),
+      () => newCommand(["Roadmap Item", "r2", "--title", "R2", "--phase", "cancelled", "--dir", dir, "--json"]),
       (err: unknown) => {
         assert.ok(err instanceof CliError);
         assert.equal(err.code, "USAGE");
@@ -1445,4 +1445,55 @@ test("new: a kind DECLARING `actor` as required is satisfiable through the --act
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("advisory lifecycle collision is discoverable before instances and migrated workflow remains usable", async () => {
+  const dir = await tempDir();
+  try {
+    await initBundle(dir);
+    const fixture = { id: "conventions/security-advisory", ...parseMarkdown(await readFile(new URL("../../core/test/fixtures/security-advisory-convention.md", import.meta.url), "utf8")) };
+    await writeDoc({ root: dir }, fixture);
+    const old = await runJson(kinds, ["--dir", dir]);
+    assert.equal(old.count, 1);
+    assert.ok((old.warnings as Array<{ code: string }>).some(w => w.code === "OKF_WORKFLOW_STATUS_COLLISION"));
+    await assert.rejects(newCommand(["Security Advisory", "old", "--title", "Probe", "--advisory_id", "opaque", "--severity", "low", "--disclosure_state", "embargoed", "--status", "investigating", "--dir", dir], { stdout: () => {} }), /OKF v0.2 status/);
+
+    const fields = fixture.frontmatter.fields as Record<string, unknown>;
+    fields.required = (fields.required as string[]).map(key => key === "status" ? "superbee_progress_status" : key);
+    (fields.optional as string[]).push("status");
+    for (const coordinate of ["values", "descriptions", "value_descriptions", "terminal"]) {
+      const mapping = fields[coordinate] as Record<string, unknown>;
+      mapping.superbee_progress_status = mapping.status;
+      delete mapping.status;
+    }
+    await writeDoc({ root: dir }, fixture);
+    const current = await runJson(kinds, ["--dir", dir]);
+    assert.equal(current.warnings, undefined);
+    const row = (current.kinds as Array<Record<string, unknown>>)[0]!;
+    assert.ok((row.required as string[]).includes("progress_status"));
+    assert.deepEqual((row.terminal as Record<string, unknown>).progress_status, ["closed", "withdrawn"]);
+    assert.match((row.descriptions as Record<string, string>).progress_status!, /Where remediation stands/);
+    assert.equal((row.value_descriptions as Record<string, Record<string, string>>).progress_status!.released, "A patched version is installable.");
+    let help = "";
+    await newCommand(["Security Advisory", "--help", "--dir", dir], { stdout: text => { help += text; } });
+    assert.match(help, /--progress_status <v>  required/);
+    assert.match(help, /A patched version is installable/);
+    assert.doesNotMatch(help, /superbee_progress_status/);
+    await runJson(newCommand, ["Security Advisory", "probe", "--title", "Probe", "--advisory_id", "opaque", "--severity", "low", "--disclosure_state", "embargoed", "--progress_status", "fix_merged", "--status", "draft", "--dir", dir]);
+    const kind = (await loadKinds({ root: dir })).kinds.get("Security Advisory")!;
+    const id = "security-advisories/probe";
+    const initial = await readDoc({ root: dir }, id);
+    assert.equal(initial.frontmatter.superbee_progress_status, "fix_merged");
+    assert.equal(initial.frontmatter.status, "draft");
+    assert.equal(isTerminal(kind, initial.frontmatter), false);
+    for (const progress of ["released", "closed", "withdrawn"]) {
+      await doc(["update", id, "--progress_status", progress, "--dir", dir, "--json"], { stdout: () => {}, readStdin: async () => undefined });
+      const saved = await readDoc({ root: dir }, id);
+      assert.equal(saved.frontmatter.superbee_progress_status, progress);
+      assert.equal(saved.frontmatter.status, "draft");
+      assert.equal(saved.body, initial.body);
+      assert.equal(isTerminal(kind, saved.frontmatter), progress !== "released");
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
