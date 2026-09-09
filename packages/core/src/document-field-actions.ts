@@ -7,6 +7,24 @@ import type { DocumentMutationCandidate } from "./document-mutation.js";
 
 export type SourceEntry = { resource: string; id?: string; [property: string]: unknown };
 export type SourceSelector = { id: string; resource?: never } | { resource: string; id?: never };
+export interface SourceCandidateIdentity { id?: string; resource?: string; title?: string }
+export interface FieldActionErrorDetails {
+  reason: "ambiguous-source" | "source-has-id" | "source-not-found" | "source-id-conflict" | "invalid-source-id";
+  field: "sources";
+  selector?: SourceSelector;
+  recommendedSelector?: SourceSelector;
+  candidates?: SourceCandidateIdentity[];
+  total?: number;
+}
+/** Adapters can render corrective commands without parsing prose or repeating selection. */
+export class FieldActionError extends InvalidInputError {
+  readonly details: FieldActionErrorDetails;
+  constructor(message: string, details: FieldActionErrorDetails) {
+    super(message);
+    this.name = "FieldActionError";
+    this.details = details;
+  }
+}
 export type FieldAction =
   | { action: "set"; field: string; value: unknown }
   | { action: "add"; field: "tags"; value: string }
@@ -33,10 +51,25 @@ export interface PreparedDocumentFieldAction {
 const managed = new Set(["generated", "verified", "superbee_updated_by", "actor", "timestamp"]);
 const standard = new Set(["title", "description", "type", "resource"]);
 const v02 = new Set(["status", "stale_after", "usage_window"]);
+export function isStandardDocumentSetField(field: string, okfVersion: "0.1" | "0.2"): boolean {
+  return standard.has(field) || (okfVersion === "0.2" && v02.has(field));
+}
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function has(object: object, key: string): boolean { return Object.prototype.hasOwnProperty.call(object, key); }
+function sourceCandidates(rows: unknown[]): Pick<FieldActionErrorDetails, "candidates" | "total"> {
+  return {
+    total: rows.length,
+    candidates: rows.slice(0, 5).map(row => {
+      const identity: SourceCandidateIdentity = {};
+      for (const key of ["id", "resource", "title"] as const) {
+        if (record(row) && has(row, key) && typeof row[key] === "string") identity[key] = row[key];
+      }
+      return identity;
+    }),
+  };
+}
 export function containsCollection(value: unknown): boolean {
   return Array.isArray(value) || (record(value) && Object.values(value).some(containsCollection));
 }
@@ -77,13 +110,25 @@ function selectorIndex(rows: unknown[], selector: SourceSelector, edit: boolean)
   // An imported empty ID is still an existing ID; it may be selected exactly but is never minted.
   if (typeof value !== "string" || (key === "resource" && value.trim() === "")) throw new InvalidInputError(`Source ${key} selector must be a string.`);
   const matches = rows.flatMap((row, index) => record(row) && has(row, key) && row[key] === value ? [index] : []);
-  if (matches.length > 1) throw new InvalidInputError(`Source selector is ambiguous (${matches.length} matches); inspect sources and use a unique ID or version-guarded replace-all.`);
+  if (matches.length > 1) throw new FieldActionError(`Source selector is ambiguous (${matches.length} matches); inspect sources and use a unique ID or version-guarded replace-all.`, {
+    reason: "ambiguous-source", field: "sources", selector: structuredClone(selector), ...sourceCandidates(matches.map(index => rows[index])),
+  });
   if (matches.length === 0) {
-    if (edit) throw new InvalidInputError(`Source ${key} '${value}' was not found.`);
+    if (edit) throw new FieldActionError(`Source ${key} '${value}' was not found.`, {
+      reason: "source-not-found", field: "sources", selector: structuredClone(selector), ...sourceCandidates([]),
+    });
     return -1;
   }
   const index = matches[0]!;
-  if (key === "resource" && has(rows[index] as object, "id")) throw new InvalidInputError(`This resource has source ID '${(rows[index] as SourceEntry).id}'; select it with --id.`);
+  if (key === "resource" && has(rows[index] as object, "id")) {
+    const id = (rows[index] as SourceEntry).id;
+    if (typeof id !== "string") throw new FieldActionError("This source has a malformed ID; repair it with version-guarded replace-all.", {
+      reason: "invalid-source-id", field: "sources", selector: structuredClone(selector), ...sourceCandidates([rows[index]]),
+    });
+    throw new FieldActionError(`This resource has source ID '${id}'; select it with --id.`, {
+      reason: "source-has-id", field: "sources", selector: structuredClone(selector), recommendedSelector: { id }, ...sourceCandidates([rows[index]]),
+    });
+  }
   return index;
 }
 
@@ -102,7 +147,7 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
     const kind = context.registry.kinds.get(String(existing.frontmatter.type));
     const coordinate = kind && resolveKindFieldCoordinate(context.okfVersion, kind, action.field);
     if (context.okfVersion === "0.1" && (action.field === "stale_after" || action.field === "usage_window")) throw new InvalidInputError(`'${action.field}' requires OKF v0.2.`);
-    if (!standard.has(action.field) && !(context.okfVersion === "0.2" && v02.has(action.field)) && !coordinate) throw new InvalidInputError(`Unsupported set field '${action.field}'; use title, description, type, resource, edition-supported standard fields, or a declared Kind field.`);
+    if (!isStandardDocumentSetField(action.field, context.okfVersion) && !coordinate) throw new InvalidInputError(`Unsupported set field '${action.field}'; use title, description, type, resource, edition-supported standard fields, or a declared Kind field.`);
     storageField = coordinate?.storageField ?? action.field;
     candidate = prepareDocumentAssignments(existing, { [storageField]: action.value });
     if (!okfValuesEqual(existing.frontmatter[storageField], action.value)) scope.outcome = "edited";
@@ -132,8 +177,12 @@ export function prepareDocumentFieldAction(existing: OkfDocument, action: FieldA
       sourceRow(action.value);
       if (has(action.value, "id")) {
         const matches = rows.filter(row => record(row) && row.id === action.value.id);
-        if (matches.length > 1) throw new InvalidInputError("Source ID is ambiguous; repair duplicate IDs with replace-all.");
-        if (matches.length === 1 && !okfValuesEqual(matches[0], action.value)) throw new InvalidInputError("Source ID conflicts with an existing entry; use edit with its observed version.");
+        if (matches.length > 1) throw new FieldActionError("Source ID is ambiguous; repair duplicate IDs with replace-all.", {
+          reason: "ambiguous-source", field: "sources", selector: { id: action.value.id! }, ...sourceCandidates(matches),
+        });
+        if (matches.length === 1 && !okfValuesEqual(matches[0], action.value)) throw new FieldActionError("Source ID conflicts with an existing entry; use edit with its observed version.", {
+          reason: "source-id-conflict", field: "sources", selector: { id: action.value.id! }, recommendedSelector: { id: action.value.id! }, ...sourceCandidates(matches),
+        });
       }
       if (!rows.some(row => okfValuesEqual(row, action.value))) { rows.push(structuredClone(action.value)); scope.outcome = "added"; }
       if (action.value.id !== undefined) scope.affectedSourceIds = [action.value.id];

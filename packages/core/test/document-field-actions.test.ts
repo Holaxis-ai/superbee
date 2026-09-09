@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { prepareDocumentFieldAction } from "../src/document-field-actions.js";
+import { FieldActionError, isStandardDocumentSetField, prepareDocumentFieldAction } from "../src/document-field-actions.js";
 import { mutateDocument } from "../src/document-mutation.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { readDocVersioned, writeDocVersioned } from "../src/bundle.js";
@@ -10,6 +10,46 @@ const registry = { kinds: new Map(), warnings: [] };
 const context = { registry, okfVersion: "0.2" as const };
 const doc = (fm: Record<string, unknown> = {}): OkfDocument => ({ id: "a", frontmatter: { type: "Note", title: "A", ...fm }, body: "body" });
 const apply = (fm: Record<string, unknown>, action: any) => prepareDocumentFieldAction(doc(fm), action, context);
+
+test("source refusals expose bounded identities and exact corrective selectors", () => {
+  const rows = Array.from({ length: 7 }, (_, i) => ({ id: `id ${i}`, resource: "same", title: `Title ${i}`, producer: { large: "private detail" } }));
+  assert.throws(() => apply({ sources: rows }, { action: "remove", field: "sources", selector: { resource: "same" } }), error => {
+    assert.ok(error instanceof FieldActionError);
+    assert.equal(error.details.reason, "ambiguous-source");
+    assert.equal(error.details.total, 7);
+    assert.equal(error.details.candidates?.length, 5);
+    assert.deepEqual(error.details.candidates?.[0], { id: "id 0", resource: "same", title: "Title 0" });
+    return true;
+  });
+  for (const id of ["", "report ' $(literal)"]) {
+    assert.throws(() => apply({ sources: [{ id, resource: "same" }] }, { action: "edit", field: "sources", selector: { resource: "same" }, patch: { title: "New" } }), error => {
+      assert.ok(error instanceof FieldActionError);
+      assert.equal(error.details.reason, "source-has-id");
+      assert.deepEqual(error.details.recommendedSelector, { id });
+      return true;
+    });
+  }
+  assert.throws(() => apply({ sources: rows }, { action: "add", field: "sources", value: { id: "id 0", resource: "other" } }), error => {
+    assert.ok(error instanceof FieldActionError);
+    assert.equal(error.details.reason, "source-id-conflict");
+    assert.deepEqual(error.details.recommendedSelector, { id: "id 0" });
+    return true;
+  });
+  assert.throws(() => apply({}, { action: "edit", field: "sources", selector: { id: "missing" }, patch: {} }), error => {
+    assert.ok(error instanceof FieldActionError);
+    assert.equal(error.details.reason, "source-not-found");
+    assert.equal(error.details.total, 0);
+    return true;
+  });
+});
+
+test("standard set-field classification uses the owning edition-specific inventory", () => {
+  for (const edition of ["0.1", "0.2"] as const) {
+    for (const field of ["type", "title", "description", "resource"]) assert.equal(isStandardDocumentSetField(field, edition), true);
+    for (const field of ["status", "stale_after", "usage_window"]) assert.equal(isStandardDocumentSetField(field, edition), edition === "0.2");
+    for (const field of ["tags", "sources", "verified", "progress_status", "custom"]) assert.equal(isStandardDocumentSetField(field, edition), false);
+  }
+});
 
 test("tag membership is exact, stable, idempotent and absent-aware", () => {
   assert.deepEqual(apply({}, { action: "add", field: "tags", value: "A" }).candidate.frontmatter.tags, ["A"]);
