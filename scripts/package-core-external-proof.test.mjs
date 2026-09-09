@@ -74,6 +74,8 @@ test("packed core installs, typechecks, and runs outside the monorepo", async ()
     assert.ok(paths.includes("dist/remote.d.ts"));
     assert.ok(paths.includes("dist/storage.js"));
     assert.ok(paths.includes("dist/storage.d.ts"));
+    assert.ok(paths.includes("dist/view-admission.js"));
+    assert.ok(paths.includes("dist/view-admission.d.ts"));
     assert.ok(paths.every((file) => file === "package.json" || file.startsWith("dist/")));
 
     await writeFile(
@@ -113,6 +115,10 @@ import {
   type Link,
 } from "@superbee/core/engine";
 import { MalformedDocumentError as StorageMalformedDocumentError } from "@superbee/core/storage";
+import { admitActiveView, MAX_ACTIVE_VIEW_BYTES, ACTIVE_VIEW_CONTENT_TYPE } from "@superbee/core/view-admission";
+
+const admitted: { bytes: Uint8Array; contentType: "text/html; charset=utf-8" } = admitActiveView(new Uint8Array(), ACTIVE_VIEW_CONTENT_TYPE);
+void [admitted, MAX_ACTIVE_VIEW_BYTES];
 
 const document: OkfDocument = { id: "proof", frontmatter: { type: "Proof" }, body: "works" };
 const backends: StorageBackend[] = [
@@ -244,6 +250,28 @@ try {
 `,
     );
     await run(process.execPath, ["no-buffer-consumer.mjs"], scratch);
+
+    await writeFile(path.join(scratch, "view-consumer.mjs"), `
+import { admitActiveView, MAX_ACTIVE_VIEW_BYTES, ACTIVE_VIEW_CONTENT_TYPE } from "@superbee/core/view-admission";
+export function exerciseViewAdmission() {
+  const input = new TextEncoder().encode("<h1>Exact bytes</h1>");
+  const output = admitActiveView(input, 'TEXT/HTML; CHARSET="UTF-8"');
+  input.fill(0);
+  if (new TextDecoder().decode(output.bytes) !== "<h1>Exact bytes</h1>") throw new Error("admitted bytes alias input");
+  if (output.contentType !== ACTIVE_VIEW_CONTENT_TYPE || MAX_ACTIVE_VIEW_BYTES !== 512 * 1024) throw new Error("byte contract changed");
+  let rejected = false;
+  try { admitActiveView(new Uint8Array(MAX_ACTIVE_VIEW_BYTES + 1), "text/html"); } catch { rejected = true; }
+  if (!rejected) throw new Error("oversized bytes accepted");
+  return output.contentType;
+}
+`);
+    await run(process.execPath, ["--input-type=module", "-e", 'import { exerciseViewAdmission } from "./view-consumer.mjs"; exerciseViewAdmission();'], scratch);
+    const viewBundle = await build({
+      absWorkingDir: scratch, entryPoints: ["view-consumer.mjs"], bundle: true,
+      platform: "browser", format: "iife", globalName: "ViewProof", write: false, logLevel: "silent",
+    });
+    assert.equal(runInNewContext(viewBundle.outputFiles[0].text + '\nViewProof.exerciseViewAdmission()',
+      { TextEncoder, TextDecoder }, { timeout: 5000 }), "text/html; charset=utf-8");
 
     // N3: the filesystem identity unit is not reachable from the packed package. Each negative
     // consumer must FAIL to typecheck for the named reason, and a runtime deep import must be
@@ -451,6 +479,7 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.ok(installedManifest.exports["./engine"]);
     assert.ok(installedManifest.exports["./remote"]);
     assert.ok(installedManifest.exports["./storage"]);
+    assert.ok(installedManifest.exports["./view-admission"]);
     const installedFiles = await filesUnder(installed);
     assert.ok(installedFiles.every((file) => file === "package.json" || file.startsWith("dist/")));
 

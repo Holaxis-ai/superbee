@@ -137,6 +137,7 @@ export async function buildCliBundle(outfile, options) {
       "@superbee/core/engine": r("../core/src/engine.ts"),
       "@superbee/core/recipes": r("../core/src/recipes.ts"),
       "@superbee/core/storage": r("../core/src/storage.ts"),
+      "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
@@ -188,6 +189,7 @@ export async function buildPublicationBundle(outfile, surface = "full") {
     target: "node20",
     alias: {
       "@superbee/core/page": r("../core/src/page.ts"),
+      "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),
       "@superbee/core/meaningful-change-time": r("../core/src/meaningful-change-time.ts"),
       "@superbee/core/mutation-attribution": r("../core/src/mutation-attribution.ts"),
