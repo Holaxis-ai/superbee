@@ -18,17 +18,15 @@ under test. The honest breakdown is below — read it before depending on anythi
 **Requirements: macOS, Linux, or native Windows, and Node.js 20 or newer.** Windows does not need
 WSL, Ubuntu, or Docker.
 
-The Windows-capable test release is currently on npm's `next` prerelease channel; `latest` still
-points to the older stable package that rejects Windows. Install the prerelease with:
+Superbee is available on npm's `latest` channel. Install it with:
 
 ```sh
-npm install -g superbee@next
+npm install -g superbee
 superbee setup
 ```
 
 On Windows, npm exposes the same command through `superbee.cmd`, which can be invoked explicitly
-when PowerShell blocks its `.ps1` wrapper. On macOS or Linux, `npm install -g superbee` remains the
-stable-channel install. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
+when PowerShell blocks its `.ps1` wrapper. The package's optional Agent Skill teaches Claude Code, Codex, and OpenCode
 how to use the installed command without carrying another copy of the executable. OpenCode uses
 its documented Claude-compatible Skill discovery, so it shares Claude Code's Skill bytes unless a
 custom Claude config root requires separate documented host paths.
