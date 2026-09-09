@@ -78,7 +78,7 @@ export function assertNonCollectionAssignment(field: string, previous: unknown, 
   if (containsCollection(previous) || containsCollection(value)) {
     const correction = field === "tags" || field === "sources"
       ? `Use an explicit ${field} add/remove/replace-all collection action.`
-      : "Use complete-document pull/edit/promote for a mapping or property containing a list.";
+      : "Use complete-document replacement: pull --doc-key <id>.md --out <file>, edit that file, then promote <file> --doc-key <id>.md --expected-version <version-from-pull>.";
     throw new InvalidInputError(`Cannot assign '${field}': the old or new subtree contains a list. ${correction}`);
   }
 }

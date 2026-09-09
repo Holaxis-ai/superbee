@@ -90,8 +90,15 @@ instructions into CLI commands. For example:
 
 Behind those requests, the agent drives a small, predictable CLI: `init` creates a bundle in a
 conventional `.superbee/` folder (discovered automatically, the way git finds `.git`); `new`,
-`doc write`, `doc update`, and `link add` create and connect typed documents; `list` and
+`doc write`, `doc update`, `doc field`, and `link add` create and connect typed documents; `list` and
 `doc read` query them; `sync` shares the board with teammates.
+
+Use `superbee doc field <action> <document-id> <field-name>` to change one field.
+`set` assigns a supported non-collection field; `add` and `remove` change tags or sources;
+`edit` changes a selected source; `replace-all` replaces the complete tags or sources list.
+`edit` and `replace-all` require `--expected-version` from a document read. Source selectors
+use an exact `--id` or a unique `--resource` for an ID-less source. Supply structured values
+through a JSON or YAML `--from-file`. Verification remains `doc verify`.
 
 When you want to see the knowledge yourself, ask the agent to open it — or run the two
 human-facing commands directly:

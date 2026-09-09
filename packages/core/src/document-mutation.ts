@@ -44,6 +44,8 @@ import type {
 
 const DEFAULT_MAX_ATTEMPTS = 5;
 
+/** replace-document shares patch CAS and metadata preparation, but permits an explicit
+ * whole-document replacement instead of ordinary assignment/list protection. */
 export type DocumentMutationMode = "create-only" | "overwrite" | "patch" | "replace-document";
 
 /** The frontmatter and body a caller wants persisted; the service supplies the id. */

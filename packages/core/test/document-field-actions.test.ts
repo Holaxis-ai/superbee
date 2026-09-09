@@ -134,7 +134,13 @@ test("semantic assignments inspect equal input and old subtrees; raw patches ins
   for (const assignments of [{ tags: ["a"] }, { extra: "gone" }, { verified: { by: "human:a" } }]) {
     await assert.rejects(() => mutateDocument({ ...base, input: { kind: "assign", assignments } }), /collection|list|managed/i);
   }
-  await assert.rejects(() => mutateDocument({ ...base, buildCandidate: e => ({ frontmatter: { ...e!.frontmatter, extra: "gone" }, body: e!.body }) }), /list/);
+  await assert.rejects(() => mutateDocument({ ...base, buildCandidate: e => ({ frontmatter: { ...e!.frontmatter, extra: "gone" }, body: e!.body }) }), error => {
+    assert.ok(error instanceof Error);
+    assert.match(error.message, /contains a list/);
+    assert.match(error.message, /pull --doc-key <id>\.md --out <file>/);
+    assert.match(error.message, /promote <file> --doc-key <id>\.md --expected-version <version-from-pull>/);
+    return true;
+  });
   const result = await mutateDocument({ ...base, input: { kind: "assign", assignments: { title: "new" } } });
   assert.deepEqual(result.doc.frontmatter.extra, { list: [1] });
   assert.deepEqual(result.doc.frontmatter.verified, { by: "human:a" });

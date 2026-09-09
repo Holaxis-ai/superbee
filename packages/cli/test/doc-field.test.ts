@@ -31,6 +31,10 @@ test("doc field static family and leaf help requires no document or bundle", asy
     let output = "";
     await doc(["field", ...(action ? [action] : []), "--help"], { stdout: text => { output += text; } });
     assert.match(output, action ? new RegExp(`doc field ${action}`) : /doc field/);
+    if (action) {
+      assert.match(output, /pull --doc-key <id>\.md --out <file>/);
+      assert.match(output, /promote <file> --doc-key <id>\.md\s+--expected-version <version-from-pull>/);
+    }
   }
 });
 
