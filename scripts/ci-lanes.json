@@ -139,6 +139,11 @@
       "id": "ui-end-to-end",
       "command": "npm run e2e:gate -w @superbee/ui",
       "owner": "browser"
+    },
+    {
+      "id": "browser-local-chromium",
+      "command": "npm run test:browser -w @superbee/browser-local",
+      "owner": "browser"
     }
   ],
   "lanes": {
@@ -244,7 +249,8 @@
       "script": "ci:browser",
       "components": [
         "mcp-browser",
-        "ui-end-to-end"
+        "ui-end-to-end",
+        "browser-local-chromium"
       ],
       "prerequisites": [
         "build"
