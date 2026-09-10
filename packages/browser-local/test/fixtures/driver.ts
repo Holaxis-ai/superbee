@@ -29,6 +29,7 @@ import {
   type LocalBundle,
   type SharedBase,
 } from "../../src/local-bundle.ts";
+import type { LockManagerLike } from "../../src/push-role.ts";
 import { faultyIndexedDb, type Faults } from "./faulty-factory.ts";
 import { createFetchTransport } from "./wire-transport.ts";
 
@@ -134,6 +135,15 @@ function intentView(row: IntentRecord) {
 export type IntentView = ReturnType<typeof intentView>;
 
 const immediate = { lookupDelayMs: 0 };
+
+/**
+ * A lock manager that grants every request: the red probe's stand-in for a user agent whose
+ * push role never says held-elsewhere. Every tab that pushes through it believes it holds the
+ * role, which is exactly the shape the real Web Lock rules out.
+ */
+const grantsEveryRequest: LockManagerLike = {
+  request: (name, _options, callback) => callback({ name }),
+};
 
 function edit(body: string) {
   return {
@@ -287,6 +297,18 @@ const driver = {
     attempt(async () => {
       const started = performance.now();
       const role = await pushWithRole(bundleOrThrow(), remoteOrThrow().transport, { remote: remoteOrThrow().backend, write: immediate });
+      return { ...role, ms: performance.now() - started };
+    }),
+
+  /**
+   * The same push with the Web Lock bypassed: the role is granted to every caller, so this page
+   * runs push whether or not another page is mid-push over the same store. Only for the red
+   * probe that shows what the lock prevents.
+   */
+  pushWithoutRole: () =>
+    attempt(async () => {
+      const started = performance.now();
+      const role = await pushWithRole(bundleOrThrow(), remoteOrThrow().transport, { remote: remoteOrThrow().backend, write: immediate }, { locks: grantsEveryRequest });
       return { ...role, ms: performance.now() - started };
     }),
 

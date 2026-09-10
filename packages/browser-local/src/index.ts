@@ -29,4 +29,4 @@ export {
   type ResumeReport,
   type SyncStatus,
 } from "./local-bundle.js";
-export { withPushRole, pushRoleName, type PushRoleResult } from "./push-role.js";
+export { withPushRole, pushRoleName, hostLocks, type PushRoleResult, type PushRoleOptions, type LockManagerLike } from "./push-role.js";

@@ -12,6 +12,13 @@
  * of the spec; the page never sees them. Every scenario here has a Node twin in sync.test.ts
  * over fake-indexeddb; this file is the same runtime in a real page with real IndexedDB, real
  * fetch, real Web Locks, real reloads and real page termination.
+ *
+ * Simulated versus real: the authority's failures are knobs on a real HTTP origin, and page
+ * death is a real page close. The quota failure (scenario h) is armed, not induced: the wrapped
+ * factory makes the next `put` throw a QuotaExceededError synchronously, whereas a real
+ * exhausted origin surfaces the same DOMException through the put request's error event. Both
+ * reach the adapter's transaction guard, abort the transaction, and reject the commit with the
+ * same error name; the throw path is what this file exercises.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -103,7 +110,10 @@ async function bootstrapAndCommitOffline(page: Page, name: string): Promise<{ in
 test("a: bootstrap from the remote, then read, query and commit offline with zero requests and pending intents visible per document", async ({ page }) => {
   await load(page);
   const remoteHits: string[] = [];
+  /** Every request the page issues to any origin, the driver origin included. */
+  const allHits: string[] = [];
   page.on("request", (request) => {
+    allHits.push(`${request.method()} ${request.url()}`);
     if (request.url().startsWith(served.origin)) remoteHits.push(`${request.method()} ${new URL(request.url()).pathname}`);
   });
 
@@ -112,6 +122,7 @@ test("a: bootstrap from the remote, then read, query and commit offline with zer
   expect(booted.marker.findings).toBeUndefined();
   const sharedAlpha = (await served.fixture.authority.read("notes/alpha")).version;
   const hitsAfterBootstrap = remoteHits.length;
+  const allHitsAfterBootstrap = allHits.length;
   const serverHitsAfterBootstrap = remoteRequests();
   expect(hitsAfterBootstrap).toBeGreaterThan(0);
 
@@ -147,8 +158,9 @@ test("a: bootstrap from the remote, then read, query and commit offline with zer
   expect(pushed.held && pushed.result.settled.map((row) => row.state)).toEqual(["pending", "pending"]);
   expect(ok(await call(page, "intents", "pending"), "intents").map((row) => row.attempts)).toEqual([1, 1]);
 
-  // Nothing reached the network: not from the page, not at the server.
+  // Nothing reached the network: not to the authority, not to any origin at all, not at the server.
   expect(remoteHits.length).toBe(hitsAfterBootstrap);
+  expect(allHits.slice(allHitsAfterBootstrap)).toEqual([]);
   expect(remoteRequests()).toBe(serverHitsAfterBootstrap);
   expect((await served.fixture.authority.read("notes/alpha")).doc.body).toBe("notes/alpha v1\n");
   const offlineState = ok(await call(page, "setOffline", true), "setOffline");
@@ -346,6 +358,53 @@ test("f: two tabs over one store push at once; the Web Lock admits one, the othe
   test.info().annotations.push({ type: "web-lock", description: `push role held by tab ${a.held ? "A" : "B"}; the other tab reported held-elsewhere` });
 });
 
+test("f (red probe): the same two-tab push with the lock bypassed makes both tabs report held and run push over one journal; the claim compare-and-swap still applies each intent once", async ({ context }) => {
+  const tabA = await context.newPage();
+  const tabB = await context.newPage();
+  await load(tabA);
+  await load(tabB);
+  const { intents, backOnline } = await bootstrapAndCommitOffline(tabA, "f-bypass");
+  await backOnline();
+  ok(await call(tabB, "attach", served.origin, "f-bypass"), "attach B");
+  expect(ok(await call(tabB, "intents", "pending"), "B sees pending")).toHaveLength(2);
+
+  // Same timing as scenario f: the first tab's push spans two delayed writes, so the second tab's push runs while the first is mid-push.
+  served.fixture.knobs.delayMs = 400;
+  const [replyA, replyB] = await Promise.all([call(tabA, "pushWithoutRole"), call(tabB, "pushWithoutRole")]);
+  const a = ok(replyA, "bypass A");
+  const b = ok(replyB, "bypass B");
+
+  // The observable the lock prevents: both tabs believe they hold the push role, and both run
+  // push over the same journal at once. Scenario f asserts exactly one `held`; here it is two.
+  expect([a.held, b.held]).toEqual([true, true]);
+  const reports = [a, b].flatMap((row) => (row.held ? [row.result] : []));
+  expect(reports).toHaveLength(2);
+  // Both pushes did journal work: each tab settled or was turned away from at least one intent,
+  // and at least one claim lost the intent's compare-and-swap to the other tab. Under the lock
+  // the second tab never touches the journal, so neither of these can happen there.
+  for (const report of reports) expect(report.settled.length + report.skipped.length).toBeGreaterThan(0);
+  const skipped = reports.flatMap((row) => row.skipped);
+  expect(skipped.map((row) => row.reason)).toContain("claimed-elsewhere");
+  // What the lock is not for: application stays single even with the role bypassed. The claim
+  // compare-and-swap hands each intent to one tab, that tab alone settles it, and the authority
+  // applied each request identity once with nothing deduplicated. The lock owns the push role;
+  // the journal owns the correctness of application.
+  const settled = reports.flatMap((row) => row.settled);
+  expect(settled.map((row) => row.state)).toEqual(["acknowledged", "acknowledged"]);
+  expect(settled.map((row) => row.requestId).sort()).toEqual(intents.map((row) => row.requestId).sort());
+  expect(served.fixture.history.map((row) => row.requestId).sort()).toEqual(intents.map((row) => row.requestId).sort());
+  expect(served.fixture.deduplicated).toEqual([]);
+  served.fixture.knobs.delayMs = 0;
+  for (const tab of [tabA, tabB]) {
+    const status = ok(await call(tab, "syncStatus"), "syncStatus");
+    expect(status.counts).toMatchObject({ pending: 0, in_flight: 0, acknowledged: 2 });
+  }
+  test.info().annotations.push({
+    type: "web-lock-bypassed",
+    description: `both tabs reported held; settled A ${a.held ? a.result.settled.length : 0}, B ${b.held ? b.result.settled.length : 0}; skipped ${skipped.map((row) => row.reason).join(",")}`,
+  });
+});
+
 test("g: a tab closed mid-push is reclaimed by a new tab, which settles the intent through lookup without a second application", async ({ context }) => {
   test.setTimeout(60_000);
   const first = await context.newPage();
@@ -359,6 +418,8 @@ test("g: a tab closed mid-push is reclaimed by a new tab, which settles the inte
   const inFlight = call(first, "push").catch((error: unknown) => ({ closed: String(error) }));
   await expect.poll(() => served.requests.some((row) => row.method === "PUT")).toBe(true);
   await first.close();
+  // The tab is gone and the authority still holds the write open: nothing has landed yet.
+  expect(served.fixture.history).toEqual([]);
   const closed = await inFlight;
   expect(isDriverError(closed) || "closed" in (closed as object)).toBe(true);
   // The authority finishes the write after the tab is gone: the write landed, nobody was told.
@@ -389,6 +450,7 @@ test("h: a quota failure rejects the commit, leaves the previous version intact 
   await load(page);
   ok(await call(page, "bootstrap", served.origin, "h-quota"), "bootstrap");
   const before = ok(await call(page, "read", "notes/epsilon"), "read before");
+  // Armed: the next put throws QuotaExceededError synchronously (see the header on the real error-event path).
   ok(await call(page, "armQuota"), "armQuota");
 
   const failed = await call(page, "commitLocal", "notes/epsilon", "notes/epsilon will not fit\n");

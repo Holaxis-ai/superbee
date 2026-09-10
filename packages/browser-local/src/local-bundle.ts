@@ -53,7 +53,7 @@ import {
   type UncertainWriteOptions,
 } from "@superbee/core/uncertain-write";
 
-import { pushRoleName, withPushRole, type PushRoleResult } from "./push-role.js";
+import { pushRoleName, withPushRole, type PushRoleOptions, type PushRoleResult } from "./push-role.js";
 
 export interface OpenLocalBundleOptions {
   /** The IndexedDB factory to open the working copy with. Defaults to the page's `indexedDB`. */
@@ -496,10 +496,17 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
  * {@link push} under the store's push role: the one-writer-per-store coordination for the
  * IndexedDB working copy. A realm that finds the role held elsewhere delivers nothing and
  * leaves the journal untouched; the holder's push is the only one running over this store.
+ * `role` selects the lock manager that owns the role (see {@link withPushRole}); a product
+ * caller leaves it to the host.
  */
-export async function pushWithRole(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushRoleResult<PushReport>> {
+export async function pushWithRole(
+  local: LocalTarget,
+  transport: OperationTransport,
+  options: PushOptions = {},
+  role: PushRoleOptions = {},
+): Promise<PushRoleResult<PushReport>> {
   const backend = backendOf(local);
-  return withPushRole(pushRoleName(backend.databaseName), () => push(backend, transport, options));
+  return withPushRole(pushRoleName(backend.databaseName), () => push(backend, transport, options), role);
 }
 
 // ── pull ───────────────────────────────────────────────────────────────────────────────────
