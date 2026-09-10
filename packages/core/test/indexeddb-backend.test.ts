@@ -1,8 +1,9 @@
 /**
  * Adversarial rows for the IndexedDB adapter's risky mechanics: single-transaction CAS under a
  * two-peer race, an interrupted (aborted) write, persistence across instances, schema refusal,
- * binary blob fidelity, and byte parity with the filesystem adapter. The contract kit proves the
- * seam; these rows attack the mechanics the kit states only once.
+ * binary blob fidelity, byte parity with the filesystem adapter, a close() that lands while an
+ * open is in flight, and a decide callback that throws inside the transaction. The contract kit
+ * proves the seam; these rows attack the mechanics the kit states only once.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -72,6 +73,88 @@ function abortAfterPutFactory(inner: IDBFactory, armed: { value: boolean }): Idb
       });
     },
   };
+}
+
+/**
+ * A factory whose object-store `get` hands back a record whose `contentType` getter throws, when
+ * armed. `writeBlob`'s decide reads that field once the stored version matches, so the throw
+ * happens inside the decide callback, inside the read request's success handler.
+ */
+function throwingDecideFactory(inner: IDBFactory, armed: { value: boolean }, message: string): IdbFactoryLike {
+  const wrapStore = (store: any) =>
+    proxied(store, {
+      get(key: string) {
+        const request = store.get(key);
+        return proxied(request, {
+          get result() {
+            const record = request.result;
+            if (!armed.value || !record) return record;
+            return {
+              ...record,
+              get contentType(): string {
+                throw new Error(message);
+              },
+            };
+          },
+        });
+      },
+    });
+  const wrapTx = (tx: any) => proxied(tx, { objectStore: (name: string) => wrapStore(tx.objectStore(name)) });
+  const wrapDb = (db: any) =>
+    proxied(db, { transaction: (names: string | string[], mode?: string) => wrapTx(db.transaction(names, mode)) });
+  return {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          return wrapDb(request.result);
+        },
+      });
+    },
+  };
+}
+
+/**
+ * A pass-through factory that records every database handle an open request hands out, so a test
+ * can close a handle the adapter leaked and let the harness exit even when the row fails.
+ */
+function handleTrackingFactory(inner: IDBFactory, handles: IDBDatabase[]): IdbFactoryLike {
+  return {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          const db = request.result;
+          if (db && !handles.includes(db)) handles.push(db);
+          return db;
+        },
+      });
+    },
+  };
+}
+
+/**
+ * Delete a database through the raw factory and report which event settled the request first. A
+ * connection that survives `versionchange` fires `blocked`; the request then waits for it, so the
+ * wait is bounded and a timeout counts as blocked too.
+ */
+async function deleteRaw(factory: IDBFactory, name: string, timeoutMs = 2000): Promise<"success" | "blocked" | "timeout"> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    const request = factory.deleteDatabase(name);
+    request.onblocked = () => {
+      clearTimeout(timer);
+      resolve("blocked");
+    };
+    request.onsuccess = () => {
+      clearTimeout(timer);
+      resolve("success");
+    };
+    request.onerror = () => {
+      clearTimeout(timer);
+      reject(request.error);
+    };
+  });
 }
 
 /** Create a database through the raw factory with the given version and object stores. */
@@ -319,5 +402,58 @@ test("filesystem parity: the same documents carry equal tokens and read bodies o
   } finally {
     idb.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("close() while the first open is in flight leaks no connection: a later deleteDatabase succeeds instead of blocking", async () => {
+  const factory = new IDBFactory();
+  const name = "close-during-open";
+  const handles: IDBDatabase[] = [];
+  const backend = new IndexedDbBackend({ databaseName: name, indexedDB: handleTrackingFactory(factory, handles) });
+  try {
+    // The first call starts the open; close() lands before it settles; the next call starts another.
+    const first = backend.list();
+    backend.close();
+    const second = backend.list();
+    assert.deepEqual(await first, []);
+    assert.deepEqual(await second, []);
+    // The instance still works after the interleaving.
+    await backend.write("a/b", doc("a/b", "after"));
+    assert.deepEqual(await backend.list(), ["a/b"]);
+    backend.close();
+    // With every handle closed, deletion proceeds. A leaked first handle would answer its
+    // versionchange by closing the instance's current handle (already gone) and keep blocking.
+    assert.equal(await deleteRaw(factory, name), "success");
+  } finally {
+    // Closing an already-closed handle is a no-op; closing a leaked one unblocks the pending delete.
+    for (const db of handles) db.close();
+  }
+});
+
+test("a decide callback that throws rejects the write with its own error and leaves the previous record readable", async () => {
+  const inner = new IDBFactory();
+  const armed = { value: false };
+  const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: throwingDecideFactory(inner, armed, "decide exploded") });
+  try {
+    const key = "artifacts/decided.bin";
+    const bytes = new Uint8Array([4, 5, 6]);
+    const before = await backend.writeBlob(key, bytes, "application/x-before");
+    armed.value = true;
+    // Same bytes, so decide compares content types and the armed getter throws inside it.
+    await assert.rejects(backend.writeBlob(key, bytes, "application/x-after", { expectedVersion: before }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, "decide exploded");
+      assert.notEqual(error.name, "AbortError");
+      return true;
+    });
+    armed.value = false;
+    const after = await backend.readBlob(key);
+    assert.equal(after?.version, before);
+    assert.equal(after?.contentType, "application/x-before");
+    assert.deepEqual([...after!.bytes], [4, 5, 6]);
+    // The store is still usable after the aborted transaction.
+    await backend.writeBlob(key, new Uint8Array([7]), undefined, { expectedVersion: before });
+  } finally {
+    backend.close();
   }
 });

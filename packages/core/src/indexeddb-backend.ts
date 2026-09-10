@@ -164,6 +164,10 @@ function requestError(request: IdbRequestLike, fallback: string): Error {
   return error instanceof Error ? error : new Error(`${fallback}: ${String(error)}`);
 }
 
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 function sorted<T extends string>(keys: unknown[], prefix?: string): T[] {
   const out = keys.filter((key): key is T => typeof key === "string" && (!prefix || key.startsWith(prefix)));
   out.sort((a, b) => a.localeCompare(b));
@@ -239,8 +243,12 @@ export class IndexedDbBackend implements StorageBackend {
     if (!factory) {
       return Promise.reject(new Error("IndexedDB is not available in this host; pass a factory or use another backend."));
     }
-    this.#opening = new Promise<IdbDatabaseLike>((resolve, reject) => {
+    // The promise is this attempt's token: `close()` drops it, and a later call may start another
+    // attempt, so each handler below adopts or clears instance state only while it is still the
+    // instance's current attempt.
+    const opening = new Promise<IdbDatabaseLike>((resolve, reject) => {
       let refused: Error | null = null;
+      const isCurrent = () => this.#opening === opening;
       const request = factory.open(this.#name, INDEXEDDB_SCHEMA_VERSION);
       request.onupgradeneeded = (event: { oldVersion?: number }) => {
         const oldVersion = typeof event?.oldVersion === "number" ? event.oldVersion : 0;
@@ -263,7 +271,7 @@ export class IndexedDbBackend implements StorageBackend {
         // closes. Nothing to do here but let the caller's await wait.
       };
       request.onerror = () => {
-        this.#opening = null;
+        if (isCurrent()) this.#opening = null;
         if (refused) {
           reject(refused);
           return;
@@ -285,7 +293,7 @@ export class IndexedDbBackend implements StorageBackend {
         const missing = STORES.filter((store) => !db.objectStoreNames.contains(store));
         if (missing.length > 0 || db.objectStoreNames.length !== STORES.length) {
           db.close();
-          this.#opening = null;
+          if (isCurrent()) this.#opening = null;
           reject(
             new IndexedDbSchemaError(
               `IndexedDB database '${this.#name}' does not carry this adapter's object stores (missing: ${missing.join(", ") || "none"}; expected exactly ${STORES.join(", ")}).`,
@@ -293,14 +301,28 @@ export class IndexedDbBackend implements StorageBackend {
           );
           return;
         }
-        // Another realm is upgrading this database; drop our handle so it is not blocked.
-        db.onversionchange = () => this.close();
+        if (!isCurrent()) {
+          // `close()` ran while this open was in flight. Adopting the handle now would leak it (a
+          // later attempt overwrites it and nothing closes it, so upgrades and deletes block
+          // forever). Close it and give the waiting caller whatever the instance opens next, the
+          // same lazy reopen a call issued after `close()` gets.
+          db.close();
+          resolve(this.#open());
+          return;
+        }
+        // Another realm is upgrading this database; drop the handle so it is not blocked. This
+        // closes the handle the event fired on, whether or not it is still the instance's current.
+        db.onversionchange = () => {
+          if (this.#db === db) this.close();
+          else db.close();
+        };
         this.#db = db;
         this.#opening = null;
         resolve(db);
       };
     });
-    return this.#opening;
+    this.#opening = opening;
+    return opening;
   }
 
   /**
@@ -308,12 +330,19 @@ export class IndexedDbBackend implements StorageBackend {
    * transaction reports `complete`. `fail` records an error and aborts; the rejection carries that
    * error. An abort from anywhere else (the host, a failed request) rejects with the transaction's
    * own error. Nothing outside IndexedDB is awaited inside `body`, which is what keeps a
-   * check-then-write section inside the transaction's lifetime.
+   * check-then-write section inside the transaction's lifetime. `guard` wraps a request handler
+   * so an exception thrown inside it also routes through `fail`; unguarded, the host would only
+   * report the transaction's AbortError and the cause would be lost.
    */
   async #transact<T>(
     stores: string | string[],
     mode: "readonly" | "readwrite",
-    body: (tx: IdbTransactionLike, done: (value: T) => void, fail: (error: Error) => void) => void,
+    body: (
+      tx: IdbTransactionLike,
+      done: (value: T) => void,
+      fail: (error: Error) => void,
+      guard: (handler: () => void) => () => void,
+    ) => void,
   ): Promise<T> {
     const db = await this.#open();
     return new Promise<T>((resolve, reject) => {
@@ -347,11 +376,14 @@ export class IndexedDbBackend implements StorageBackend {
           // Already aborting or finished; the recorded failure still wins in `onabort`.
         }
       };
-      try {
-        body(tx, done, fail);
-      } catch (error) {
-        fail(error instanceof Error ? error : new Error(String(error)));
-      }
+      const guard = (handler: () => void) => () => {
+        try {
+          handler();
+        } catch (error) {
+          fail(asError(error));
+        }
+      };
+      guard(() => body(tx, done, fail, guard))();
     });
   }
 
@@ -363,11 +395,11 @@ export class IndexedDbBackend implements StorageBackend {
     expected: Version | null | undefined,
     decide: (current: R | undefined) => { record: R } | { version: Version },
   ): Promise<Version> {
-    return this.#transact<Version>(store, "readwrite", (tx, done, fail) => {
+    return this.#transact<Version>(store, "readwrite", (tx, done, fail, guard) => {
       const objects = tx.objectStore(store);
       const read = objects.get(key);
       read.onerror = () => fail(requestError(read, `IndexedDB read failed for '${key}'`));
-      read.onsuccess = () => {
+      read.onsuccess = guard(() => {
         const current = read.result as R | undefined;
         const currentVersion = current?.version ?? null;
         if (expected !== undefined && expected !== currentVersion) {
@@ -382,17 +414,17 @@ export class IndexedDbBackend implements StorageBackend {
         } else {
           done(decision.version);
         }
-      };
+      });
     });
   }
 
   /** One conditional read-compare-delete over a keyed store, inside one readwrite transaction. */
   #compareAndDelete(store: string, key: string, conflictId: string, expected: Version | null | undefined): Promise<boolean> {
-    return this.#transact<boolean>(store, "readwrite", (tx, done, fail) => {
+    return this.#transact<boolean>(store, "readwrite", (tx, done, fail, guard) => {
       const objects = tx.objectStore(store);
       const read = objects.get(key);
       read.onerror = () => fail(requestError(read, `IndexedDB read failed for '${key}'`));
-      read.onsuccess = () => {
+      read.onsuccess = guard(() => {
         const current = read.result as { version: Version } | undefined;
         if (!current) {
           done(false); // absent: idempotent no-op, even under CAS
@@ -405,7 +437,7 @@ export class IndexedDbBackend implements StorageBackend {
         const removal = objects.delete(key);
         removal.onerror = () => fail(requestError(removal, `IndexedDB delete failed for '${key}'`));
         done(true);
-      };
+      });
     });
   }
 
