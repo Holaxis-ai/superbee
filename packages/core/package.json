@@ -11,7 +11,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/bundle.js"
+  ],
   "exports": {
     "./view-admission": {
       "types": "./dist/view-admission.d.ts",
@@ -21,9 +23,17 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./bundle-ops": {
+      "types": "./dist/bundle-ops.d.ts",
+      "default": "./dist/bundle-ops.js"
+    },
     "./document-codec": {
       "types": "./dist/document-codec.d.ts",
       "default": "./dist/document-codec.js"
+    },
+    "./document-mutation": {
+      "types": "./dist/document-mutation.d.ts",
+      "default": "./dist/document-mutation.js"
     },
     "./engine": {
       "types": "./dist/engine.d.ts",

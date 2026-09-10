@@ -1,48 +1,50 @@
 /**
- * Legacy bundle-shaped core API.
+ * Legacy bundle-shaped core API, Node entry.
  *
- * Portable semantics live in `engine.ts` and receive a backend explicitly. This adapter preserves
- * the historical `{ root, backend? }` signatures and filesystem fallback used by Node consumers.
+ * Portable semantics live in `engine.ts` and receive a backend explicitly; the bundle-shaped
+ * `{ root, backend? }` wrappers live in `bundle-ops.ts` so they bundle for the browser. This
+ * module owns what only a Node host can: the filesystem default for a bare `{ root }` and
+ * on-disk bundle initialization. Loading it installs that default, which is why `index.ts`
+ * imports it and why the package manifest marks it side-effectful.
  */
 
 import path from "node:path";
 
 import { FilesystemBackend } from "./backend.js";
-import * as engine from "./engine.js";
+import { setDefaultBackendFactory } from "./bundle-ops.js";
 import { InvalidInputError } from "./errors.js";
 import { stringifyWithData } from "./frontmatter.js";
 import { GENERATED_INDEX_MARKER } from "./index-marker.js";
 import { VersionConflict } from "./versioning.js";
-import type {
-  BlobKey,
-  Bundle,
-  ConceptId,
-  DeleteOptions,
-  EdgeFilter,
-  HeadResult,
-  InitBundleOptions,
-  Link,
-  OkfDocument,
-  QueryFilter,
-  ReadBlobResult,
-  ReadResult,
-  StorageBackend,
-  Version,
-  VersionInfo,
-  WriteOptions,
-} from "./types.js";
+import type { Bundle, InitBundleOptions } from "./types.js";
 
 export { matchesFilter } from "./query-filter.js";
 export type { QueryOptions, SkippedDoc, WriteResult } from "./engine.js";
+export {
+  backendFor,
+  backlinks,
+  deleteBlob,
+  deleteDoc,
+  docVersions,
+  existsBlob,
+  existsDoc,
+  list,
+  listBlobs,
+  parseLinks,
+  query,
+  queryEdges,
+  queryHeads,
+  readBlob,
+  readBundleOkfVersion,
+  readDoc,
+  readDocVersioned,
+  writeBlob,
+  writeDoc,
+  writeDocVersioned,
+  writeDocVersionedForEdition,
+} from "./bundle-ops.js";
 
-/** Resolve the backend a legacy bundle operation should use. */
-export function backendFor(bundle: Bundle): StorageBackend {
-  return bundle.backend ?? new FilesystemBackend(bundle.root);
-}
-
-export async function readBundleOkfVersion(bundle: Bundle): Promise<string | undefined> {
-  return engine.readBundleOkfVersion(backendFor(bundle));
-}
+setDefaultBackendFactory((root) => new FilesystemBackend(root));
 
 export const SUPPORTED_OKF_AUTHORING_VERSIONS = ["0.1", "0.2"] as const;
 export const DEFAULT_OKF_AUTHORING_VERSION = "0.2";
@@ -75,105 +77,4 @@ export async function initBundle(root: string, options: InitBundleOptions = {}):
     }
   }
   return { root: resolved };
-}
-
-export async function writeDocVersioned(
-  bundle: Bundle,
-  doc: OkfDocument,
-  options?: WriteOptions,
-): Promise<engine.WriteResult> {
-  return engine.writeDocVersioned(backendFor(bundle), doc, options);
-}
-
-export async function writeDocVersionedForEdition(
-  bundle: Bundle,
-  doc: OkfDocument,
-  okfVersion: string,
-  options?: WriteOptions,
-): Promise<engine.WriteResult> {
-  return engine.writeDocVersionedForEdition(backendFor(bundle), doc, okfVersion, options);
-}
-
-export async function writeDoc(
-  bundle: Bundle,
-  doc: OkfDocument,
-  options?: WriteOptions,
-): Promise<OkfDocument> {
-  return engine.writeDoc(backendFor(bundle), doc, options);
-}
-
-export async function readDocVersioned(bundle: Bundle, id: ConceptId): Promise<ReadResult> {
-  return engine.readDocVersioned(backendFor(bundle), id);
-}
-
-export async function readDoc(bundle: Bundle, id: ConceptId): Promise<OkfDocument> {
-  return engine.readDoc(backendFor(bundle), id);
-}
-
-export async function existsDoc(bundle: Bundle, id: ConceptId): Promise<boolean> {
-  return engine.existsDoc(backendFor(bundle), id);
-}
-
-export async function docVersions(bundle: Bundle, id: ConceptId): Promise<VersionInfo[]> {
-  return engine.docVersions(backendFor(bundle), id);
-}
-
-export async function deleteDoc(bundle: Bundle, id: ConceptId, options?: DeleteOptions): Promise<boolean> {
-  return engine.deleteDoc(backendFor(bundle), id, options);
-}
-
-export async function query(
-  bundle: Bundle,
-  filter: QueryFilter = {},
-  options: engine.QueryOptions = {},
-): Promise<OkfDocument[]> {
-  return engine.query(backendFor(bundle), filter, options);
-}
-
-export const list = query;
-
-export async function queryHeads(
-  bundle: Bundle,
-  filter: QueryFilter = {},
-  options: engine.QueryOptions = {},
-): Promise<HeadResult[]> {
-  return engine.queryHeads(backendFor(bundle), filter, options);
-}
-
-export function parseLinks(_bundle: Bundle, doc: OkfDocument): Link[] {
-  return engine.parseLinks(doc);
-}
-
-export async function queryEdges(bundle: Bundle, filter: EdgeFilter = {}): Promise<Link[]> {
-  return engine.queryEdges(backendFor(bundle), filter);
-}
-
-export async function backlinks(bundle: Bundle, target: ConceptId): Promise<Link[]> {
-  return engine.backlinks(backendFor(bundle), target);
-}
-
-export async function readBlob(bundle: Bundle, key: BlobKey): Promise<ReadBlobResult | null> {
-  return engine.readBlob(backendFor(bundle), key);
-}
-
-export async function writeBlob(
-  bundle: Bundle,
-  key: BlobKey,
-  bytes: Uint8Array,
-  contentType?: string,
-  options?: WriteOptions,
-): Promise<Version> {
-  return engine.writeBlob(backendFor(bundle), key, bytes, contentType, options);
-}
-
-export async function existsBlob(bundle: Bundle, key: BlobKey): Promise<boolean> {
-  return engine.existsBlob(backendFor(bundle), key);
-}
-
-export async function listBlobs(bundle: Bundle, prefix?: string): Promise<BlobKey[]> {
-  return engine.listBlobs(backendFor(bundle), prefix);
-}
-
-export async function deleteBlob(bundle: Bundle, key: BlobKey, options?: DeleteOptions): Promise<boolean> {
-  return engine.deleteBlob(backendFor(bundle), key, options);
 }

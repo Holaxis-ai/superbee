@@ -30,8 +30,6 @@
  * re-splicing field lists would not prove that the convention still governs the kind being edited.
  */
 
-import { setTimeout as delay } from "node:timers/promises";
-
 import { ConcurrentReplacementError } from "./errors.js";
 import { VersionConflict } from "./versioning.js";
 import type { Version } from "./types.js";
@@ -46,7 +44,8 @@ const CAS_MAX_ATTEMPTS = 5;
  */
 async function waitForFreshAttempt(error: ConcurrentReplacementError, attempt: number): Promise<void> {
   if (error.retryAfterMs <= 0) return;
-  await delay(error.retryAfterMs * (4 ** attempt));
+  // The global timer rather than node:timers/promises so this seam bundles for the browser.
+  await new Promise<void>((resolve) => setTimeout(resolve, error.retryAfterMs * (4 ** attempt)));
 }
 
 /**
