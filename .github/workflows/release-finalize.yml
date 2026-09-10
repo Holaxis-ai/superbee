@@ -93,9 +93,10 @@ jobs:
           assert.equal(manifest.readmeFilename, "README.md", "packed manifest does not name README.md");
           assert.deepEqual(registry.engines, manifest.engines, "registry Node requirements differ from the installed manifest");
           assert.deepEqual(registry.os, manifest.os, "registry platform metadata differs from the installed manifest");
-          assert.match(readme, /^## How do I download Superbee on Windows\?$/m);
-          assert.match(readme, /Node\.js 20 or newer on macOS, Linux, or native Windows/);
-          assert.match(readme, /ask your AI agent to run `superbee setup`/);
+          assert.match(readme, /^## Install$/m);
+          assert.match(readme, /Node\.js 20 or newer on macOS, Linux, or Windows/);
+          assert.match(readme, /installed by your agent,\s+not by hand/);
+          assert.match(readme, /Run `superbee setup` and follow its instructions/);
           assert.match(readme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
           if (version.includes("-")) {
             assert.match(readme, /^[ \t]*npm install -g superbee@next[ \t]*$/m);
