@@ -25,5 +25,6 @@ export {
   type PushReport,
   type PullOptions,
   type PullReport,
+  type ResumeReport,
   type SyncStatus,
 } from "./local-bundle.js";

@@ -4,12 +4,16 @@
  * lacks today: request identity and outcome lookup.
  *
  * The wrapper plays the hosted side. A document PUT carrying an `Idempotency-Key` header is
- * applied at most once: the first application's response is recorded under that key, and any
- * later submission with the same key returns the recorded response without touching the
- * bundle. `lookup(requestId)` reads the same record. Knobs simulate the failures the primitive
- * must survive: a network error before the request is applied, a dropped response after it was
- * applied, a revoked credential, and latency. Reads (`remote`) bypass the knobs so bootstrap and
- * pull observe the authority's true state.
+ * applied at most once: the key is claimed before the application starts, a submission with the
+ * same key that arrives while the first is still applying waits for that application and
+ * returns its response, and any later submission returns the recorded response without
+ * touching the bundle. `lookup(requestId)` reads the same record. A revoked credential answers
+ * before the key is claimed, as an authorization layer in front of the router would, so a
+ * refused-for-permission identity carries no recorded outcome and is a first delivery when it
+ * is retried. Knobs simulate the failures the primitive must survive: a network error before
+ * the request is applied, a dropped response after it was applied, a revoked credential, and
+ * latency. Reads (`remote`) bypass the knobs so bootstrap and pull observe the authority's true
+ * state.
  *
  * Nothing here changes `@superbee/server` or the wire protocol. What a hosted endpoint would
  * need to provide is exactly this wrapper's contract: honor the identity header on writes,
@@ -62,8 +66,12 @@ export interface RemoteFixture {
   history: AppliedWrite[];
   /** Outcomes recorded by request identity. */
   outcomes: Map<string, Outcome>;
-  /** Submissions that returned a recorded response instead of being applied again. */
+  /** Submissions that returned a recorded or in-progress response instead of being applied again. */
   deduplicated: string[];
+  /** The request identity of every `transport.submit` call, in order, whatever became of it. */
+  submissions: string[];
+  /** The request identity of every `transport.lookup` call, in order. */
+  lookups: string[];
 }
 
 function sleep(ms: number): Promise<void> {
@@ -111,25 +119,15 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
   const router = createRouter({ root: "memory://fixture", backend: authority });
   const knobs: FixtureKnobs = { failBeforeApply: false, dropAfterApply: false, unauthorized: false, lookupFails: false, delayMs: 0 };
   const recorded = new Map<string, StoredResponse>();
+  const applying = new Map<string, Promise<StoredResponse>>();
   const outcomes = new Map<string, Outcome>();
   const history: AppliedWrite[] = [];
   const deduplicated: string[] = [];
+  const submissions: string[] = [];
+  const lookups: string[] = [];
 
-  /** The hosted side: identity-aware for identified writes, plain routing for everything else. */
-  const hosted = async (request: Request): Promise<Response> => {
-    const requestId = request.headers.get(IDENTITY_HEADER);
-    if (requestId === null) return router(request);
-    if (knobs.unauthorized) {
-      const stored = await store(unauthorizedResponse());
-      recorded.set(requestId, stored);
-      outcomes.set(requestId, await outcomeOf(stored));
-      return replay(stored);
-    }
-    const existing = recorded.get(requestId);
-    if (existing) {
-      deduplicated.push(requestId);
-      return replay(existing);
-    }
+  /** One application of an identified request; the key is claimed by the caller before this starts. */
+  const apply = async (requestId: string, request: Request): Promise<StoredResponse> => {
     if (knobs.delayMs > 0) await sleep(knobs.delayMs);
     if (knobs.failBeforeApply) throw new TypeError("fetch failed: connection refused");
     const stored = await store(await router(request));
@@ -137,14 +135,40 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
     outcomes.set(requestId, await outcomeOf(stored));
     const id = decodeURIComponent(new URL(request.url).pathname.replace(/^.*\/docs\//, ""));
     history.push({ requestId, id, status: stored.status });
-    if (knobs.dropAfterApply) throw new TypeError("fetch failed: connection reset by peer");
-    return replay(stored);
+    return stored;
+  };
+
+  /** The hosted side: identity-aware for identified writes, plain routing for everything else. */
+  const hosted = async (request: Request): Promise<Response> => {
+    const requestId = request.headers.get(IDENTITY_HEADER);
+    if (requestId === null) return router(request);
+    if (knobs.unauthorized) return unauthorizedResponse();
+    const existing = recorded.get(requestId);
+    if (existing) {
+      deduplicated.push(requestId);
+      return replay(existing);
+    }
+    const inProgress = applying.get(requestId);
+    if (inProgress) {
+      deduplicated.push(requestId);
+      return replay(await inProgress);
+    }
+    const application = apply(requestId, request);
+    applying.set(requestId, application);
+    try {
+      const stored = await application;
+      if (knobs.dropAfterApply) throw new TypeError("fetch failed: connection reset by peer");
+      return replay(stored);
+    } finally {
+      applying.delete(requestId);
+    }
   };
 
   const remote = new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: hosted, maxRetries: 0 });
 
   const transport: OperationTransport = {
     async submit(intent: OperationIntent): Promise<Outcome> {
+      submissions.push(intent.requestId);
       if (intent.kind !== "document.write") throw new Error(`fixture: unsupported intent kind '${intent.kind}'`);
       const { frontmatter, body } = parseMarkdown(intent.content, pathFromConceptId(intent.target));
       const doc: OkfDocument = { id: intent.target, frontmatter, body };
@@ -169,10 +193,11 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
       return outcomeOf(await store(response));
     },
     async lookup(requestId: string): Promise<Outcome | null> {
+      lookups.push(requestId);
       if (knobs.lookupFails) throw new TypeError("fetch failed: lookup route unreachable");
       return outcomes.get(requestId) ?? null;
     },
   };
 
-  return { authority, remote, transport, knobs, history, outcomes, deduplicated };
+  return { authority, remote, transport, knobs, history, outcomes, deduplicated, submissions, lookups };
 }

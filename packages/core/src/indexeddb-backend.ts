@@ -136,6 +136,26 @@ export class IntentStateConflict extends Error {
   }
 }
 
+/**
+ * A journaled write required that no unsettled intent hold its target, and one does. The local
+ * edit that intent describes would otherwise be replaced while the authority has not accepted
+ * it. The check runs inside the write's own transaction, so an intent committed while the caller
+ * was awaiting the network still holds the target.
+ */
+export class IntentHoldConflict extends Error {
+  override readonly name = "IntentHoldConflict";
+  readonly target: ConceptId;
+  readonly requestId: string;
+  readonly state: OperationState;
+
+  constructor(target: ConceptId, requestId: string, state: OperationState) {
+    super(`'${target}' is held by intent '${requestId}' in state '${state}'`);
+    this.target = target;
+    this.requestId = requestId;
+    this.state = state;
+  }
+}
+
 // ── schema ─────────────────────────────────────────────────────────────────────────────────
 
 /** Bumping this requires a migration in `upgrade`; the handler refuses any other older layout. */
@@ -218,6 +238,13 @@ export interface JournaledWriteOptions extends WriteOptions {
   supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number };
   /** Meta rows to put in the same transaction, given the written bytes when a function. */
   meta?: MetaRecord[] | ((written: { version: Version; raw: string }) => MetaRecord[]);
+  /**
+   * Abort with {@link IntentHoldConflict} when any intent targeting `id` is in a state other than
+   * `acknowledged`, read in the same transaction as the document write. A refresh from the
+   * authority uses this so a local edit committed during its network round trip is never
+   * replaced.
+   */
+  requireSettled?: boolean;
 }
 
 /** Fields a caller may change when settling or reclaiming an intent. */
@@ -678,6 +705,8 @@ export class IndexedDbBackend implements StorageBackend {
    * the written bytes, and putting meta rows. Every step is conditional on every other: a
    * failed document CAS records no intent, and a superseded intent whose state moved fails the
    * whole write with {@link IntentStateConflict} so the caller composes against fresh state.
+   * With `requireSettled`, an unsettled intent on the target fails it with
+   * {@link IntentHoldConflict} before the document is touched.
    */
   async writeJournaled(
     id: ConceptId,
@@ -690,7 +719,7 @@ export class IndexedDbBackend implements StorageBackend {
     const updatedBy = options.actor?.trim() || defaultActor();
     const now = new Date().toISOString();
     const expected = options.expectedVersion;
-    const { intent, supersede } = options;
+    const { intent, supersede, requireSettled } = options;
     const meta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta;
     return this.#transact<{ version: Version; raw: string; intent: IntentRecord | null }>(
       [DOCUMENTS, INTENTS, META],
@@ -751,16 +780,32 @@ export class IndexedDbBackend implements StorageBackend {
             recordIntent();
           });
         };
-        request(documents.get(id), "read", (current) => {
-          const currentVersion = (current as DocumentRecord | undefined)?.version ?? null;
-          if (expected !== undefined && expected !== currentVersion) {
-            fail(new VersionConflict(id, expected, currentVersion));
+        const writeDocument = () => {
+          request(documents.get(id), "read", (current) => {
+            const currentVersion = (current as DocumentRecord | undefined)?.version ?? null;
+            if (expected !== undefined && expected !== currentVersion) {
+              fail(new VersionConflict(id, expected, currentVersion));
+              return;
+            }
+            const record: DocumentRecord = { id, raw, version, updatedBy, updatedAt: now };
+            const put = documents.put(record);
+            put.onerror = () => fail(requestError(put, `IndexedDB write failed for '${id}'`));
+            removeSuperseded();
+          });
+        };
+        if (!requireSettled) {
+          writeDocument();
+          return;
+        }
+        // The journal has no index by target, so the hold check scans it; the scan runs inside
+        // this transaction, which is what makes the answer hold for the write that follows.
+        request(intents.getAll(), "intent scan", (rows) => {
+          const holder = (rows as IntentRecord[]).find((row) => row.target === id && row.state !== "acknowledged");
+          if (holder) {
+            fail(new IntentHoldConflict(id, holder.requestId, holder.state));
             return;
           }
-          const record: DocumentRecord = { id, raw, version, updatedBy, updatedAt: now };
-          const put = documents.put(record);
-          put.onerror = () => fail(requestError(put, `IndexedDB write failed for '${id}'`));
-          removeSuperseded();
+          writeDocument();
         });
       },
     );
