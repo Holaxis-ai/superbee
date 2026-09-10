@@ -16,7 +16,8 @@
  * in sync with the SPA's runtime `@superbee/core/*` imports. `versioning` and `memory-backend`
  * are the browser-local working copy's token minting and store for SaaS mode, `indexeddb-backend`
  * its persistent store candidate; `mutation`, `bundle-ops` and `document-mutation` are its
- * read/decide/CAS document mutation path.
+ * read/decide/CAS document mutation path; `uncertain-write` is the shared unknown-outcome
+ * primitive its sync component pushes intents through.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -49,6 +50,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "mutation.js", symbol: "versionedMutation" },
   { module: "bundle-ops.js", symbol: "backendFor" },
   { module: "document-mutation.js", symbol: "mutateDocument" },
+  { module: "uncertain-write.js", symbol: "performUncertainWrite" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {

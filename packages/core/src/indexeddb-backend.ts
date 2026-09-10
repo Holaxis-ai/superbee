@@ -18,6 +18,12 @@
  * the point a local-save indicator may follow. That is a commit promise, not a power-loss
  * promise: the browser decides when committed pages reach stable storage.
  *
+ * Two further stores serve the working copy's synchronization: `intents` journals every local
+ * write as a pending-change intent committed in the same transaction as the document record
+ * ({@link IndexedDbBackend.writeJournaled}), and `meta` holds opaque key-value rows such as the
+ * bootstrap marker and per-document shared bases. The adapter owns the transaction mechanics;
+ * what the rows mean belongs to the sync component that writes them.
+ *
  * This module imports no Node builtin so it bundles for the browser; the IndexedDB factory is
  * injectable so a Node test can supply an in-memory implementation without touching globals.
  */
@@ -27,6 +33,7 @@ import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatt
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, pathFromConceptId, toPosix } from "./paths.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
+import type { OperationIntent, OperationState } from "./uncertain-write.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
@@ -65,6 +72,7 @@ export interface IdbOpenRequestLike extends IdbRequestLike<IdbDatabaseLike> {
 
 export interface IdbObjectStoreLike {
   get(key: string): IdbRequestLike;
+  getAll(): IdbRequestLike<unknown[]>;
   getAllKeys(): IdbRequestLike<unknown[]>;
   count(key: string): IdbRequestLike<number>;
   put(value: unknown): IdbRequestLike;
@@ -105,6 +113,49 @@ export class IndexedDbSchemaError extends Error {
   override readonly name = "IndexedDbSchemaError";
 }
 
+/**
+ * An intent's journal state was not the one the caller expected, or the intent is gone. Settling
+ * and superseding are compare-and-swap operations on the intent's own record so two realms (a
+ * stale tab, a worker) cannot both settle or both replace one intent.
+ */
+export class IntentStateConflict extends Error {
+  override readonly name = "IntentStateConflict";
+  readonly requestId: string;
+  readonly expected: OperationState;
+  readonly actual: OperationState | null;
+
+  constructor(requestId: string, expected: OperationState, actual: OperationState | null) {
+    super(
+      actual === null
+        ? `intent '${requestId}' does not exist (expected state '${expected}')`
+        : `intent '${requestId}' is '${actual}', not '${expected}'`,
+    );
+    this.requestId = requestId;
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+/**
+ * A journaled write required that no unsettled intent hold its target, and one does. The local
+ * edit that intent describes would otherwise be replaced while the authority has not accepted
+ * it. The check runs inside the write's own transaction, so an intent committed while the caller
+ * was awaiting the network still holds the target.
+ */
+export class IntentHoldConflict extends Error {
+  override readonly name = "IntentHoldConflict";
+  readonly target: ConceptId;
+  readonly requestId: string;
+  readonly state: OperationState;
+
+  constructor(target: ConceptId, requestId: string, state: OperationState) {
+    super(`'${target}' is held by intent '${requestId}' in state '${state}'`);
+    this.target = target;
+    this.requestId = requestId;
+    this.state = state;
+  }
+}
+
 // ── schema ─────────────────────────────────────────────────────────────────────────────────
 
 /** Bumping this requires a migration in `upgrade`; the handler refuses any other older layout. */
@@ -113,7 +164,19 @@ export const INDEXEDDB_SCHEMA_VERSION = 1;
 const DOCUMENTS = "documents";
 const RESERVED = "reserved";
 const BLOBS = "blobs";
-const STORES = [DOCUMENTS, RESERVED, BLOBS] as const;
+const INTENTS = "intents";
+const META = "meta";
+const STORES = [DOCUMENTS, RESERVED, BLOBS, INTENTS, META] as const;
+const KEY_PATHS: Record<(typeof STORES)[number], string> = {
+  [DOCUMENTS]: "id",
+  [RESERVED]: "path",
+  [BLOBS]: "key",
+  [INTENTS]: "requestId",
+  [META]: "key",
+};
+
+/** The meta key holding the intent journal's monotonic sequence counter. */
+const INTENT_SEQUENCE_KEY = "intents:sequence";
 
 interface DocumentRecord {
   id: ConceptId;
@@ -136,6 +199,56 @@ interface BlobRecord {
   contentType: string;
   version: Version;
 }
+
+/**
+ * A journaled local write: the shared primitive's {@link OperationIntent} plus what the
+ * working copy keeps for reconciliation. `sequence` is the local commit order; `after` names a
+ * predecessor intent on the same target that must be acknowledged before this one is delivered.
+ */
+export interface IntentRecord extends OperationIntent {
+  sequence: number;
+  updatedAt: string;
+  /** The serialized document at `base`, when the working copy held it; the three-way baseline. */
+  baseContent: string | null;
+  after?: string;
+  /** Set when the authority committed the intent; equals `local` for a content-addressed token. */
+  acknowledgedVersion?: Version;
+  /** The shared head observed when the intent entered conflict. */
+  remote?: { version: Version | null; content: string | null };
+  refusal?: { code: string; message: string };
+  /** A recorded observation the caller should surface, such as an acknowledged version that differs from `local`. */
+  finding?: string;
+}
+
+/** The caller-supplied part of a new intent; the adapter fills content, version, sequence, and state. */
+export type NewIntentRecord = Pick<IntentRecord, "requestId" | "kind" | "target" | "base" | "baseContent" | "createdAt"> &
+  Partial<Pick<IntentRecord, "after">>;
+
+/** An opaque key-value row in the `meta` store (bootstrap marker, per-document base, pause flag). */
+export interface MetaRecord {
+  key: string;
+  value: unknown;
+}
+
+/** Options for {@link IndexedDbBackend.writeJournaled}. */
+export interface JournaledWriteOptions extends WriteOptions {
+  /** Record this intent in the same transaction as the document write. */
+  intent?: NewIntentRecord;
+  /** An unsettled intent this write composes over; deleted only while its state and attempts still match. */
+  supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number };
+  /** Meta rows to put in the same transaction, given the written bytes when a function. */
+  meta?: MetaRecord[] | ((written: { version: Version; raw: string }) => MetaRecord[]);
+  /**
+   * Abort with {@link IntentHoldConflict} when any intent targeting `id` is in a state other than
+   * `acknowledged`, read in the same transaction as the document write. A refresh from the
+   * authority uses this so a local edit committed during its network round trip is never
+   * replaced.
+   */
+  requireSettled?: boolean;
+}
+
+/** Fields a caller may change when settling or reclaiming an intent. */
+export type IntentPatch = Partial<Omit<IntentRecord, "requestId" | "sequence" | "createdAt" | "kind" | "target">>;
 
 // ── helpers ────────────────────────────────────────────────────────────────────────────────
 
@@ -263,7 +376,7 @@ export class IndexedDbBackend implements StorageBackend {
         }
         const db = request.result;
         for (const store of STORES) {
-          db.createObjectStore(store, { keyPath: store === DOCUMENTS ? "id" : store === RESERVED ? "path" : "key" });
+          db.createObjectStore(store, { keyPath: KEY_PATHS[store] });
         }
       };
       request.onblocked = () => {
@@ -576,6 +689,190 @@ export class IndexedDbBackend implements StorageBackend {
     return this.#compareAndSwap<ReservedRecord>(RESERVED, path, path, options.expectedVersion, () => ({
       record: { path, content, version: versionOfBytes(content) },
     }));
+  }
+
+  // ── intent journal and meta ────────────────────────────────────────────────────────────
+  //
+  // The journal is what makes a local write durable as an intent: the document record and the
+  // intent describing it commit in one transaction, so no committed edit exists without its
+  // pending-change record and no record exists for an edit that never committed. Settling an
+  // intent is a compare-and-swap on the intent's own `state`, so a stale realm cannot settle
+  // an intent another realm already settled.
+
+  /**
+   * One transaction over documents, intents, and meta: the document compare-and-swap of
+   * {@link write}, plus (optionally) deleting a superseded intent, recording a new intent for
+   * the written bytes, and putting meta rows. Every step is conditional on every other: a
+   * failed document CAS records no intent, and a superseded intent whose state moved fails the
+   * whole write with {@link IntentStateConflict} so the caller composes against fresh state.
+   * With `requireSettled`, an unsettled intent on the target fails it with
+   * {@link IntentHoldConflict} before the document is touched.
+   */
+  async writeJournaled(
+    id: ConceptId,
+    doc: OkfDocument,
+    options: JournaledWriteOptions = {},
+  ): Promise<{ version: Version; raw: string; intent: IntentRecord | null }> {
+    assertSafeConceptId(id);
+    const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
+    const version = versionOfBytes(raw);
+    const updatedBy = options.actor?.trim() || defaultActor();
+    const now = new Date().toISOString();
+    const expected = options.expectedVersion;
+    const { intent, supersede, requireSettled } = options;
+    const meta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta;
+    return this.#transact<{ version: Version; raw: string; intent: IntentRecord | null }>(
+      [DOCUMENTS, INTENTS, META],
+      "readwrite",
+      (tx, done, fail, guard) => {
+        const documents = tx.objectStore(DOCUMENTS);
+        const intents = tx.objectStore(INTENTS);
+        const metaStore = tx.objectStore(META);
+        const request = <T>(req: IdbRequestLike<T>, label: string, next: (value: T) => void) => {
+          req.onerror = () => fail(requestError(req, `IndexedDB ${label} failed for '${id}'`));
+          req.onsuccess = guard(() => next(req.result));
+        };
+        const putMeta = () => {
+          for (const row of meta ?? []) {
+            const put = metaStore.put(row);
+            put.onerror = () => fail(requestError(put, `IndexedDB meta write failed for '${row.key}'`));
+          }
+        };
+        const recordIntent = () => {
+          if (!intent) {
+            putMeta();
+            done({ version, raw, intent: null });
+            return;
+          }
+          request(metaStore.get(INTENT_SEQUENCE_KEY), "sequence read", (current) => {
+            const previous = (current as MetaRecord | undefined)?.value;
+            const sequence = (typeof previous === "number" ? previous : 0) + 1;
+            const counter = metaStore.put({ key: INTENT_SEQUENCE_KEY, value: sequence });
+            counter.onerror = () => fail(requestError(counter, "IndexedDB sequence write failed"));
+            const record: IntentRecord = {
+              ...intent,
+              local: version,
+              content: raw,
+              sequence,
+              attempts: 0,
+              state: "pending",
+              updatedAt: now,
+            };
+            const put = intents.put(record);
+            put.onerror = () => fail(requestError(put, `IndexedDB intent write failed for '${record.requestId}'`));
+            putMeta();
+            done({ version, raw, intent: record });
+          });
+        };
+        const removeSuperseded = () => {
+          if (!supersede) {
+            recordIntent();
+            return;
+          }
+          request(intents.get(supersede.requestId), "intent read", (current) => {
+            const existing = current as IntentRecord | undefined;
+            if (!existing || existing.state !== supersede.expectedState || existing.attempts !== supersede.expectedAttempts) {
+              fail(new IntentStateConflict(supersede.requestId, supersede.expectedState, existing?.state ?? null));
+              return;
+            }
+            const removal = intents.delete(supersede.requestId);
+            removal.onerror = () => fail(requestError(removal, `IndexedDB intent delete failed for '${supersede.requestId}'`));
+            recordIntent();
+          });
+        };
+        const writeDocument = () => {
+          request(documents.get(id), "read", (current) => {
+            const currentVersion = (current as DocumentRecord | undefined)?.version ?? null;
+            if (expected !== undefined && expected !== currentVersion) {
+              fail(new VersionConflict(id, expected, currentVersion));
+              return;
+            }
+            const record: DocumentRecord = { id, raw, version, updatedBy, updatedAt: now };
+            const put = documents.put(record);
+            put.onerror = () => fail(requestError(put, `IndexedDB write failed for '${id}'`));
+            removeSuperseded();
+          });
+        };
+        if (!requireSettled) {
+          writeDocument();
+          return;
+        }
+        // The journal has no index by target, so the hold check scans it; the scan runs inside
+        // this transaction, which is what makes the answer hold for the write that follows.
+        request(intents.getAll(), "intent scan", (rows) => {
+          const holder = (rows as IntentRecord[]).find((row) => row.target === id && row.state !== "acknowledged");
+          if (holder) {
+            fail(new IntentHoldConflict(id, holder.requestId, holder.state));
+            return;
+          }
+          writeDocument();
+        });
+      },
+    );
+  }
+
+  /** Intents in local commit order, optionally restricted to one or more states. */
+  async listIntents(state?: OperationState | readonly OperationState[]): Promise<IntentRecord[]> {
+    const wanted = state === undefined ? null : new Set(typeof state === "string" ? [state] : state);
+    const rows = await this.#transact<IntentRecord[]>(INTENTS, "readonly", (tx, done) => {
+      const request = tx.objectStore(INTENTS).getAll();
+      request.onsuccess = () => done(request.result as IntentRecord[]);
+    });
+    const out = wanted ? rows.filter((row) => wanted.has(row.state)) : rows;
+    out.sort((a, b) => a.sequence - b.sequence);
+    return out;
+  }
+
+  async readIntent(requestId: string): Promise<IntentRecord | undefined> {
+    return this.#getOne<IntentRecord>(INTENTS, requestId);
+  }
+
+  /**
+   * Compare-and-swap on an intent's `state`: the patch applies only while the record is in
+   * `expectedState`, together with any meta rows, in one transaction. A different state or a
+   * missing record rejects with {@link IntentStateConflict} and writes nothing.
+   */
+  async updateIntent(
+    requestId: string,
+    expectedState: OperationState,
+    patch: IntentPatch,
+    options: { meta?: MetaRecord[] } = {},
+  ): Promise<IntentRecord> {
+    const now = new Date().toISOString();
+    return this.#transact<IntentRecord>([INTENTS, META], "readwrite", (tx, done, fail, guard) => {
+      const intents = tx.objectStore(INTENTS);
+      const read = intents.get(requestId);
+      read.onerror = () => fail(requestError(read, `IndexedDB intent read failed for '${requestId}'`));
+      read.onsuccess = guard(() => {
+        const current = read.result as IntentRecord | undefined;
+        if (!current || current.state !== expectedState) {
+          fail(new IntentStateConflict(requestId, expectedState, current?.state ?? null));
+          return;
+        }
+        const next: IntentRecord = { ...current, ...patch, requestId, sequence: current.sequence, updatedAt: now };
+        const put = intents.put(next);
+        put.onerror = () => fail(requestError(put, `IndexedDB intent write failed for '${requestId}'`));
+        const metaStore = tx.objectStore(META);
+        for (const row of options.meta ?? []) {
+          const metaPut = metaStore.put(row);
+          metaPut.onerror = () => fail(requestError(metaPut, `IndexedDB meta write failed for '${row.key}'`));
+        }
+        done(next);
+      });
+    });
+  }
+
+  async readMeta<T = unknown>(key: string): Promise<T | undefined> {
+    const row = await this.#getOne<MetaRecord>(META, key);
+    return row === undefined ? undefined : (row.value as T);
+  }
+
+  async writeMeta(key: string, value: unknown): Promise<void> {
+    await this.#transact<void>(META, "readwrite", (tx, done, fail) => {
+      const put = tx.objectStore(META).put({ key, value });
+      put.onerror = () => fail(requestError(put, `IndexedDB meta write failed for '${key}'`));
+      done(undefined);
+    });
   }
 
   // ── blobs ──────────────────────────────────────────────────────────────────────────────
