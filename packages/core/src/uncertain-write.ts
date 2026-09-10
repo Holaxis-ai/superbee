@@ -11,8 +11,9 @@
  *
  * This module is owned by core so the browser-local sync component and bounded CLI remote
  * operations consume one primitive rather than each defining unknown-outcome handling. It
- * imports no Node builtin and bundles for the browser; timers are injectable so tests run
- * deterministically.
+ * imports no Node builtin and bundles for the browser. The only injected time source is the
+ * `sleep` used for the submission deadline and the delay between lookups; there is no
+ * injectable clock, and a transport's own latency is real.
  */
 
 import type { Version } from "./types.js";
@@ -41,7 +42,11 @@ export interface OperationIntent {
   /** The serialized document: the comparison content reconciliation needs later. */
   content: string;
   createdAt: string;
-  /** Submissions made so far; a non-zero count means the authority may already hold the write. */
+  /**
+   * Submissions made or durably claimed so far. A non-zero count means the authority may already
+   * hold the write, so delivery begins with a lookup rather than a submission; a journal records
+   * the count before a submission leaves, never only after its outcome is known.
+   */
   attempts: number;
   state: OperationState;
 }

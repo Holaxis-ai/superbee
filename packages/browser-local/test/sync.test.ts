@@ -3,15 +3,18 @@
  * local writes journal a durable intent with the record; push settles intents only against a
  * known shared outcome; a changed shared head becomes an explicit conflict that preserves base,
  * local, and remote; lost acknowledgements and pre-apply failures reconcile through request
- * identity without a second application; revocation pauses; two handles cannot double-settle;
- * an interrupted bootstrap never reports complete. The Chromium unit runs the same runtime in
- * a real page.
+ * identity without a second application; revocation pauses and resume redelivers what it
+ * refused; two handles cannot double-settle; an interrupted bootstrap never reports complete;
+ * an edit committed while pull or bootstrap is fetching is held inside the refreshing write's
+ * own transaction; a crash between claim and settlement leaves a possibly-delivered record that
+ * a later edit chains behind; a deadline shorter than the authority's latency still applies the
+ * write exactly once. The Chromium unit runs the same runtime in a real page.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 
-import type { OkfDocument } from "@superbee/core";
+import type { OkfDocument, StorageBackend } from "@superbee/core";
 import { IntentStateConflict } from "@superbee/core/indexeddb-backend";
 import { performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
 
@@ -61,6 +64,61 @@ function edit(body: string): { buildCandidate: (existing: OkfDocument | undefine
     buildCandidate: (existing) => ({ frontmatter: existing!.frontmatter, body }),
     now: () => NOW,
   };
+}
+
+/** A create through the engine's patch path, for an id the working copy does not hold yet. */
+function create(body: string): { mode: "patch"; onAbsent: "create"; buildCandidate: () => { frontmatter: Record<string, unknown>; body: string }; now: () => string } {
+  return {
+    mode: "patch",
+    onAbsent: "create",
+    buildCandidate: () => ({ frontmatter: { type: "Note", title: "Created locally" }, body }),
+    now: () => NOW,
+  };
+}
+
+/** Poll `condition` on real timers until it holds; the wait itself is bounded. */
+async function waitFor(condition: () => boolean, timeoutMs = 2000): Promise<void> {
+  const until = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > until) throw new Error("waitFor: condition not met in time");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * The fixture's read side with `readMany` held open: `entered` resolves when the first call
+ * arrives, and the call proceeds only after `release`. What a slow authority looks like to
+ * pull and bootstrap, with a hook to commit locally in the middle of the round trip.
+ */
+function heldRemote(remote: StorageBackend): { remote: StorageBackend; entered: Promise<void>; release: () => void } {
+  const entered = deferred();
+  const gate = deferred();
+  let first = true;
+  const proxy = new Proxy(remote, {
+    get(target, prop) {
+      if (prop === "readMany") {
+        return async (ids: string[]) => {
+          if (first) {
+            first = false;
+            entered.resolve();
+            await gate.promise;
+          }
+          return target.readMany(ids);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as StorageBackend;
+  return { remote: proxy, entered: entered.promise, release: () => gate.resolve() };
 }
 
 const offline: OperationTransport = {
@@ -516,6 +574,244 @@ test("reclaimInFlight marks a reclaimed intent as attempted, so the next push lo
     assert.deepEqual(fixture.deduplicated, []);
     assert.equal((await local.backend.readIntent(requestId))?.acknowledgedVersion, committed.version);
     assert.equal(await reclaimInFlight(local), 0);
+  } finally {
+    local.close();
+  }
+});
+
+test("a local edit committed while pull is fetching is held: the refreshing write checks the journal inside its own transaction", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const base = (await fixture.authority.read("notes/alpha")).version;
+    // The shared head moves, so pull has a refresh to write for alpha.
+    const moved = await fixture.authority.write("notes/alpha", doc("notes/alpha", "alpha remote v2\n"), { expectedVersion: base });
+    const held = heldRemote(fixture.remote);
+
+    const pulling = pull(local, held.remote);
+    await held.entered;
+    // pull computed its held set before the round trip; this edit lands during it.
+    const committed = await commitLocal(local, "notes/alpha", edit("alpha edited during pull\n"));
+    assert.equal(committed.intent?.state, "pending");
+    held.release();
+    const report = await pulling;
+
+    assert.deepEqual(report.held, ["notes/alpha"]);
+    assert.ok(!report.refreshed.includes("notes/alpha"));
+    const read = await local.backend.read("notes/alpha");
+    assert.equal(read.doc.body, "alpha edited during pull\n");
+    assert.equal(read.version, committed.version);
+    assert.equal((await local.backend.readMeta<SharedBase>(baseKey("notes/alpha")))?.version, base);
+    const intent = await local.backend.readIntent(committed.intent!.requestId);
+    assert.equal(intent?.state, "pending");
+    assert.equal(intent?.base, base);
+    assert.notEqual(intent?.base, moved);
+    // The divergence is push's to report, with the original base intact.
+    const pushed = await push(local, fixture.transport, { remote: fixture.remote, write: immediate });
+    assert.deepEqual(pushed.settled.map((row) => row.state), ["conflict"]);
+    assert.equal((await local.backend.readIntent(committed.intent!.requestId))?.remote?.version, moved);
+  } finally {
+    local.close();
+  }
+});
+
+test("a local create committed while bootstrap is fetching that id is held: the hydrating write does not replace it and the marker says so", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    const held = heldRemote(fixture.remote);
+    const bootstrapping = bootstrap(held.remote, local);
+    await held.entered;
+    // bootstrap's upfront refusal saw no intents; beta is not hydrated yet when this lands.
+    const committed = await commitLocal(local, "notes/beta", create("beta created before hydration\n"));
+    assert.equal(committed.intent?.state, "pending");
+    assert.equal(committed.intent?.base, null);
+    held.release();
+    const marker = await bootstrapping;
+
+    assert.equal(marker.complete, true);
+    assert.deepEqual(marker.held, ["notes/beta"]);
+    assert.equal(marker.documentCount, 3);
+    const read = await local.backend.read("notes/beta");
+    assert.equal(read.doc.body, "beta created before hydration\n");
+    assert.equal(read.version, committed.version);
+    assert.equal(await local.backend.readMeta(baseKey("notes/beta")), undefined);
+    assert.equal((await local.backend.readIntent(committed.intent!.requestId))?.state, "pending");
+    // The other documents hydrated normally.
+    assert.equal((await local.backend.read("notes/alpha")).doc.body, "alpha v1\n");
+    assert.equal((await local.backend.read("notes/gamma")).doc.body, "gamma v1\n");
+    assert.equal((await local.backend.readMeta<SharedBase>(baseKey("notes/alpha")))?.version, (await fixture.authority.read("notes/alpha")).version);
+  } finally {
+    local.close();
+  }
+});
+
+/** A transport that delivers through the fixture and then never answers: the page dies mid-push. */
+function crashAfterDelivery(fixture: RemoteFixture, deliver: boolean): { transport: OperationTransport; delivered: Promise<void> } {
+  const delivered = deferred();
+  return {
+    delivered: delivered.promise,
+    transport: {
+      submit: async (intent, options) => {
+        if (deliver) await fixture.transport.submit(intent, options);
+        delivered.resolve();
+        return new Promise<never>(() => {});
+      },
+      lookup: (requestId) => fixture.transport.lookup(requestId),
+    },
+  };
+}
+
+test("crash between claim and settlement: the claim recorded the attempt, reclaim keeps it, the next edit chains, and push resolves the original by lookup", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const first = openLocal(factory);
+  await bootstrap(fixture.remote, first);
+  const committed = await commitLocal(first, "notes/gamma", edit("gamma v2\n"));
+  const requestId = committed.intent!.requestId;
+  const crash = crashAfterDelivery(fixture, true);
+  void push(first, crash.transport, { write: immediate });
+  await crash.delivered;
+  // The authority applied it; the journal already says one attempt, before any outcome is known.
+  assert.equal(fixture.history.length, 1);
+  const inFlight = await first.backend.readIntent(requestId);
+  assert.equal(inFlight?.state, "in_flight");
+  assert.equal(inFlight?.attempts, 1);
+  first.close();
+
+  const reopened = openLocal(factory);
+  try {
+    assert.equal(await reclaimInFlight(reopened), 1);
+    const reclaimed = await reopened.backend.readIntent(requestId);
+    assert.equal(reclaimed?.state, "pending");
+    assert.equal(reclaimed?.attempts, 1);
+
+    // A possibly-delivered intent is frozen: the new edit chains behind it.
+    const chained = await commitLocal(reopened, "notes/gamma", edit("gamma v3\n"));
+    assert.equal(chained.intent?.after, requestId);
+    assert.equal(chained.intent?.base, committed.version);
+    assert.equal((await reopened.backend.readIntent(requestId))?.state, "pending");
+    assert.equal((await reopened.backend.listIntents("pending")).length, 2);
+
+    const submissionsBefore = fixture.submissions.length;
+    const report = await push(reopened, fixture.transport, { write: immediate });
+    assert.deepEqual(report.settled.map((row) => row.state), ["acknowledged", "acknowledged"]);
+    // The original was looked up, not submitted again; only the chained edit was submitted.
+    assert.deepEqual(fixture.lookups, [requestId]);
+    assert.deepEqual(fixture.submissions.slice(submissionsBefore), [chained.intent!.requestId]);
+    assert.deepEqual(fixture.deduplicated, []);
+    assert.equal(fixture.history.length, 2);
+    const original = await reopened.backend.readIntent(requestId);
+    assert.equal(original?.acknowledgedVersion, committed.version);
+    // Two claims, one delivery: the count is what may have been submitted, never fewer.
+    assert.equal(original?.attempts, 2);
+    assert.equal((await fixture.authority.read("notes/gamma")).doc.body, "gamma v3\n");
+    assert.equal((await reopened.backend.readMeta<SharedBase>(baseKey("notes/gamma")))?.version, chained.version);
+  } finally {
+    reopened.close();
+  }
+});
+
+test("crash before delivery: push after reclaim starts with a lookup, finds nothing, and submits the same identity once", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const first = openLocal(factory);
+  await bootstrap(fixture.remote, first);
+  const committed = await commitLocal(first, "notes/beta", edit("beta v2\n"));
+  const requestId = committed.intent!.requestId;
+  const crash = crashAfterDelivery(fixture, false);
+  void push(first, crash.transport, { write: immediate });
+  await crash.delivered;
+  assert.equal((await first.backend.readIntent(requestId))?.attempts, 1);
+  first.close();
+
+  const reopened = openLocal(factory);
+  try {
+    assert.equal(await reclaimInFlight(reopened), 1);
+    const report = await push(reopened, fixture.transport, { write: immediate });
+    assert.deepEqual(report.settled.map((row) => row.state), ["acknowledged"]);
+    assert.deepEqual(fixture.lookups, [requestId]);
+    assert.deepEqual(fixture.submissions, [requestId]);
+    assert.equal(fixture.history.length, 1);
+    assert.equal(fixture.history[0]!.requestId, requestId);
+    assert.equal((await reopened.backend.readIntent(requestId))?.attempts, 2);
+    assert.equal((await fixture.authority.read("notes/beta")).doc.body, "beta v2\n");
+  } finally {
+    reopened.close();
+  }
+});
+
+test("resume requeues the intents a revocation refused: push delivers them with no further local edit", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const committed = await commitLocal(local, "notes/alpha", edit("alpha retained\n"));
+    const requestId = committed.intent!.requestId;
+    fixture.knobs.unauthorized = true;
+    const refused = await push(local, fixture.transport, { write: immediate });
+    assert.equal(refused.paused, true);
+    assert.deepEqual(refused.settled.map((row) => row.state), ["refused"]);
+    // The authority never admitted the request: nothing is recorded under its identity.
+    assert.equal(fixture.outcomes.has(requestId), false);
+    assert.equal(fixture.history.length, 0);
+
+    fixture.knobs.unauthorized = false;
+    assert.deepEqual((await push(local, fixture.transport, { write: immediate })).settled, []);
+    const { requeued } = await resume(local);
+    assert.equal(requeued, 1);
+    const pending = await local.backend.readIntent(requestId);
+    assert.equal(pending?.state, "pending");
+    assert.equal(pending?.attempts, 1);
+    assert.equal((await syncStatus(local)).paused, false);
+
+    const delivered = await push(local, fixture.transport, { write: immediate });
+    assert.deepEqual(delivered.settled.map((row) => row.state), ["acknowledged"]);
+    assert.equal(fixture.history.length, 1);
+    assert.equal(fixture.history[0]!.requestId, requestId);
+    assert.equal((await fixture.authority.read("notes/alpha")).doc.body, "alpha retained\n");
+    assert.equal((await local.backend.readMeta<SharedBase>(baseKey("notes/alpha")))?.version, committed.version);
+    assert.equal((await syncStatus(local)).counts.refused, 0);
+  } finally {
+    local.close();
+  }
+});
+
+test("a deadline shorter than the authority's latency: the aborted submission, its lookup and the resubmission apply the write exactly once", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const committed = await commitLocal(local, "notes/beta", edit("beta under latency\n"));
+    const requestId = committed.intent!.requestId;
+    fixture.knobs.delayMs = 40;
+    // Real timers. The first submission is abandoned at 5 ms while the authority is still
+    // applying it; its lookup finds nothing recorded yet, so the primitive resubmits the same
+    // identity, which arrives during that application and is abandoned at its own deadline.
+    // The call ends unknown with both submissions counted; nothing here decides otherwise.
+    const first = await push(local, fixture.transport, { write: { deadlineMs: 5, lookupDelayMs: 0, maxSubmissions: 2 } });
+    assert.deepEqual(first.settled.map((row) => row.state), ["pending"]);
+    assert.deepEqual(fixture.submissions, [requestId, requestId]);
+    assert.equal((await local.backend.readIntent(requestId))?.attempts, 2);
+
+    // Once the authority has finished, the next push resolves the identity by lookup: the
+    // duplicate was answered from the one application, never applied as a second write.
+    await waitFor(() => fixture.history.length > 0);
+    const second = await push(local, fixture.transport, { write: immediate });
+    assert.deepEqual(second.settled.map((row) => row.state), ["acknowledged"]);
+    assert.deepEqual(fixture.submissions, [requestId, requestId]);
+    assert.deepEqual(fixture.deduplicated, [requestId]);
+    assert.equal(fixture.history.length, 1);
+    assert.equal(fixture.history[0]!.requestId, requestId);
+    assert.deepEqual(fixture.outcomes.get(requestId), { kind: "committed", version: committed.version });
+    assert.equal((await fixture.authority.read("notes/beta")).version, committed.version);
+    assert.equal((await fixture.authority.versions("notes/beta")).length, 2);
+    assert.equal((await local.backend.readIntent(requestId))?.state, "acknowledged");
   } finally {
     local.close();
   }

@@ -26,6 +26,7 @@ export {
   type PushReport,
   type PullOptions,
   type PullReport,
+  type ResumeReport,
   type SyncStatus,
 } from "./local-bundle.js";
 export { withPushRole, pushRoleName, type PushRoleResult } from "./push-role.js";

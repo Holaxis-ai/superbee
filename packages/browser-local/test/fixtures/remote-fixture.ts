@@ -4,18 +4,24 @@
  * today: request identity and outcome lookup.
  *
  * The wrapper plays the hosted side. A document PUT carrying an `Idempotency-Key` header is
- * applied at most once: the first application's response is recorded under that key, and any
- * later submission with the same key returns the recorded response without touching the
- * bundle. The lookup route (`/_fixture/operations/{requestId}`) reads the same record. Knobs
- * simulate the failures the primitive must survive: a network error before the request is
- * applied, a dropped response after it was applied, a revoked credential, latency, and an
- * authority that stops serving reads part-way through a hydration. Reads bypass the write
- * knobs so bootstrap and pull observe the authority's true state.
+ * applied at most once: the key is claimed before the application starts, a submission with the
+ * same key that arrives while the first is still applying waits for that application and
+ * returns its response, and any later submission returns the recorded response without
+ * touching the bundle. The lookup route (`/_fixture/operations/{requestId}`) reads the same
+ * record and answers 404 only when no outcome was ever recorded under the identity. A revoked
+ * credential answers before the key is claimed, as an authorization layer in front of the
+ * router would, so a refused-for-permission identity carries no recorded outcome and is a first
+ * delivery when it is retried. Knobs simulate the failures the primitive must survive: a
+ * network error before the request is applied, a dropped response after it was applied, a
+ * revoked credential, latency, and an authority that stops serving reads part-way through a
+ * hydration. Reads (`remote`) bypass the write knobs so bootstrap and pull observe the
+ * authority's true state.
  *
  * The handler is a plain `(Request) => Promise<Response>`, so the Node proof calls it directly
  * and the Chromium proof serves it over node:http (see `remote-http.ts`). A thrown handler
  * error means "the carrier failed": in process it propagates to the caller, over HTTP the
  * bridge resets the socket, and either way the client cannot tell whether the write landed.
+ * Submissions and lookups are counted at the handler, so both carriers are observed.
  *
  * Nothing here changes `@superbee/server` or the wire protocol. What a hosted endpoint would
  * need to provide is exactly this wrapper's contract: honor the identity header on writes,
@@ -72,8 +78,12 @@ export interface RemoteFixture {
   history: AppliedWrite[];
   /** Outcomes recorded by request identity. */
   outcomes: Map<string, Outcome>;
-  /** Submissions that returned a recorded response instead of being applied again. */
+  /** Submissions that returned a recorded or in-progress response instead of being applied again. */
   deduplicated: string[];
+  /** The request identity of every identified write that reached the handler, in order, whatever became of it. */
+  submissions: string[];
+  /** The request identity of every lookup that reached the handler, in order. */
+  lookups: string[];
   /** Documents served through the read routes so far. */
   served: { documents: number };
 }
@@ -110,17 +120,34 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
   const router = createRouter({ root: "memory://fixture", backend: authority });
   const knobs: FixtureKnobs = { failBeforeApply: false, dropAfterApply: false, unauthorized: false, lookupFails: false, delayMs: 0, readBudget: null };
   const recorded = new Map<string, StoredResponse>();
+  const applying = new Map<string, Promise<StoredResponse>>();
   const outcomes = new Map<string, Outcome>();
   const history: AppliedWrite[] = [];
   const deduplicated: string[] = [];
+  const submissions: string[] = [];
+  const lookups: string[] = [];
   const served = { documents: 0 };
+
+  /** One application of an identified request; the key is claimed by the caller before this starts. */
+  const apply = async (requestId: string, request: Request): Promise<StoredResponse> => {
+    if (knobs.delayMs > 0) await sleep(knobs.delayMs);
+    if (knobs.failBeforeApply) throw new TypeError("fetch failed: connection refused");
+    const stored = await storeResponse(await router(request));
+    recorded.set(requestId, stored);
+    outcomes.set(requestId, outcomeOf(stored));
+    const id = decodeURIComponent(new URL(request.url).pathname.replace(/^.*\/docs\//, ""));
+    history.push({ requestId, id, status: stored.status });
+    return stored;
+  };
 
   /** The hosted side: identity-aware for identified writes, plain routing for everything else. */
   const hosted = async (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url);
     if (pathname.startsWith(LOOKUP_PREFIX)) {
+      const requestId = decodeURIComponent(pathname.slice(LOOKUP_PREFIX.length));
+      lookups.push(requestId);
       if (knobs.lookupFails) throw new TypeError("fetch failed: lookup route unreachable");
-      const outcome = outcomes.get(decodeURIComponent(pathname.slice(LOOKUP_PREFIX.length)));
+      const outcome = outcomes.get(requestId);
       return outcome ? json(200, outcome) : json(404, { error: { code: "NOT_FOUND", message: "no recorded outcome" } });
     }
     const requestId = request.headers.get(IDENTITY_HEADER);
@@ -133,30 +160,32 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
       }
       return router(request);
     }
-    if (knobs.unauthorized) {
-      const stored = await storeResponse(unauthorizedResponse());
-      recorded.set(requestId, stored);
-      outcomes.set(requestId, outcomeOf(stored));
-      return replayResponse(stored);
-    }
+    submissions.push(requestId);
+    // Refused ahead of the router, before the identity is claimed: nothing is recorded under it.
+    if (knobs.unauthorized) return unauthorizedResponse();
     const existing = recorded.get(requestId);
     if (existing) {
       deduplicated.push(requestId);
       return replayResponse(existing);
     }
-    if (knobs.delayMs > 0) await sleep(knobs.delayMs);
-    if (knobs.failBeforeApply) throw new TypeError("fetch failed: connection refused");
-    const stored = await storeResponse(await router(request));
-    recorded.set(requestId, stored);
-    outcomes.set(requestId, outcomeOf(stored));
-    const id = decodeURIComponent(pathname.replace(/^.*\/docs\//, ""));
-    history.push({ requestId, id, status: stored.status });
-    if (knobs.dropAfterApply) throw new TypeError("fetch failed: connection reset by peer");
-    return replayResponse(stored);
+    const inProgress = applying.get(requestId);
+    if (inProgress) {
+      deduplicated.push(requestId);
+      return replayResponse(await inProgress);
+    }
+    const application = apply(requestId, request);
+    applying.set(requestId, application);
+    try {
+      const stored = await application;
+      if (knobs.dropAfterApply) throw new TypeError("fetch failed: connection reset by peer");
+      return replayResponse(stored);
+    } finally {
+      applying.delete(requestId);
+    }
   };
 
   const remote = new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: hosted, maxRetries: 0 });
   const transport = createFetchTransport({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: hosted });
 
-  return { authority, remote, transport, hosted, knobs, history, outcomes, deduplicated, served };
+  return { authority, remote, transport, hosted, knobs, history, outcomes, deduplicated, submissions, lookups, served };
 }

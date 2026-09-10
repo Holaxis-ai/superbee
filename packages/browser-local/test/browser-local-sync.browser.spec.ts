@@ -302,7 +302,8 @@ test("e: a lost acknowledgement leaves the intent pending, and the next push set
   const putsBefore = trafficSummary().puts;
   const second = ok(await call(page, "push"), "push two");
   expect(second.held && second.result.settled.map((row) => row.state)).toEqual(["acknowledged"]);
-  expect(ok(await call(page, "intent", requestId), "intent")).toMatchObject({ state: "acknowledged", attempts: 1, acknowledgedVersion: committed.version });
+  // The second push claimed the intent as attempt 2 before its lookup, and settle keeps no fewer attempts than the claim recorded.
+  expect(ok(await call(page, "intent", requestId), "intent")).toMatchObject({ state: "acknowledged", attempts: 2, acknowledgedVersion: committed.version });
   // Settled by lookup: no second PUT left the page, nothing was deduplicated, history is still one write.
   expect(trafficSummary().puts).toBe(putsBefore);
   expect(served.fixture.deduplicated).toEqual([]);
@@ -368,7 +369,8 @@ test("g: a tab closed mid-push is reclaimed by a new tab, which settles the inte
   const second = await context.newPage();
   await load(second);
   ok(await call(second, "attach", served.origin, "g-termination"), "attach");
-  expect(ok(await call(second, "intents", "in_flight"), "in_flight before reclaim").map((row) => [row.requestId, row.attempts])).toEqual([[requestId, 0]]);
+  // The dead tab's claim persisted attempts 1 before the PUT left, so the journal already says the request may have been delivered.
+  expect(ok(await call(second, "intents", "in_flight"), "in_flight before reclaim").map((row) => [row.requestId, row.attempts])).toEqual([[requestId, 1]]);
   expect(ok(await call(second, "reclaimInFlight"), "reclaim").reclaimed).toBe(1);
   expect(ok(await call(second, "intent", requestId), "reclaimed")).toMatchObject({ state: "pending", attempts: 1 });
   const putsBefore = trafficSummary().puts;

@@ -10,8 +10,15 @@
  * without its pending-change record. {@link push} delivers intents through the core
  * uncertain-write primitive and marks one synchronized only when the authority's matching
  * outcome is known. {@link pull} refreshes documents that carry no unsettled intent and records
- * their new shared base; it never replaces the base under a pending edit, so a changed shared
- * head is discovered by push as an explicit conflict that preserves base, local, and remote.
+ * their new shared base; the "no unsettled intent" check is part of the refresh's own IndexedDB
+ * transaction, so a local edit committed during the network round trip is never replaced, and
+ * a changed shared head is discovered by push as an explicit conflict that preserves base,
+ * local, and remote.
+ *
+ * Delivery is recorded before it happens: claiming an intent for push increments its attempts
+ * durably, so a page that dies mid-push leaves a record that says "possibly delivered", the
+ * next push starts with a lookup, and a later local edit chains behind it instead of replacing
+ * its request identity.
  *
  * Meta rows this module owns: `bootstrap` (the completion marker), `sync` (the pause flag),
  * `pull` (the last pull's progress), and `base:<id>` (the shared version and serialized content
@@ -27,6 +34,7 @@ import { stringifyDoc } from "@superbee/core/document-codec";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
 import {
   IndexedDbBackend,
+  IntentHoldConflict,
   IntentStateConflict,
   type IdbFactoryLike,
   type IntentRecord,
@@ -35,6 +43,7 @@ import {
 } from "@superbee/core/indexeddb-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
 import {
+  AUTHORIZATION_REFUSAL_CODES,
   isAuthorizationRefusal,
   mintRequestId,
   performUncertainWrite,
@@ -100,6 +109,8 @@ export interface BootstrapMarker {
   complete: boolean;
   completedAt?: string;
   documentCount?: number;
+  /** Documents not hydrated because a local edit was committed to them during this bootstrap. */
+  held?: ConceptId[];
   /** Observations recorded during hydration, such as a local token differing from the shared one. */
   findings?: string[];
 }
@@ -156,7 +167,9 @@ export interface BootstrapOptions {
  * itself incomplete rather than an apparently complete, partially hydrated one.
  *
  * Bootstrap refuses to run over unsettled intents: rewriting their targets would discard local
- * edits the authority has not accepted.
+ * edits the authority has not accepted. An edit committed while bootstrap is already fetching is
+ * caught by the hydrating write's own transaction: that document is left as the edit made it,
+ * listed in the marker as `held`, and push discovers the divergence.
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
   const backend = backendOf(local);
@@ -174,16 +187,23 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
 
   const ids = await remote.list();
   const findings: string[] = [];
+  const held: ConceptId[] = [];
   let index = 0;
   for (const batch of chunked(ids, options.batchSize ?? 25)) {
     const heads = await remote.readMany(batch);
     for (const head of heads) {
       const id = head.doc.id;
-      const { version } = await backend.writeJournaled(id, head.doc, {
-        meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
-      });
-      if (version !== head.version) {
-        findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
+      try {
+        const { version } = await backend.writeJournaled(id, head.doc, {
+          requireSettled: true,
+          meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
+        });
+        if (version !== head.version) {
+          findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
+        }
+      } catch (error) {
+        if (!(error instanceof IntentHoldConflict)) throw error;
+        held.push(id);
       }
       await options.onHydrated?.(id, index, ids.length);
       index += 1;
@@ -196,6 +216,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     complete: true,
     completedAt: new Date().toISOString(),
     documentCount: ids.length,
+    ...(held.length > 0 ? { held } : {}),
     ...(findings.length > 0 ? { findings } : {}),
   };
   await backend.writeMeta(BOOTSTRAP_KEY, marker);
@@ -232,11 +253,12 @@ export interface CommitResult extends DocumentMutationResult {
  * then describes the cumulative change against the shared base.
  *
  * When the latest intent may already have reached the authority (`in_flight`, or `pending`
- * with `attempts > 0`), or holds an explicit `conflict` awaiting resolution, its content and
- * identity are frozen: the new edit becomes a separate intent whose base is the predecessor's
- * local version and whose `after` names it. Push delivers it only once the predecessor is
- * acknowledged, and the predecessor's acknowledgement can never clear it, because it is its own
- * record with its own identity.
+ * with `attempts > 0`, which includes an intent reclaimed after a crash mid-push because the
+ * claim records the attempt before delivery), or holds an explicit `conflict` awaiting
+ * resolution, its content and identity are frozen: the new edit becomes a separate intent whose
+ * base is the predecessor's local version and whose `after` names it. Push delivers it only
+ * once the predecessor is acknowledged, and the predecessor's acknowledgement can never clear
+ * it, because it is its own record with its own identity.
  */
 async function composeIntent(backend: IndexedDbBackend, id: ConceptId, now: string): Promise<{ intent: NewIntentRecord; supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number } }> {
   const unsettled = (await backend.listIntents(UNSETTLED_STATES)).filter((row) => row.target === id);
@@ -414,6 +436,12 @@ export async function settleIntent(
  * intent is claimed (`pending` to `in_flight`) by compare-and-swap, so two realms cannot both
  * deliver it, and settled by {@link settleIntent}. A chained intent waits for its predecessor's
  * acknowledgement. A refusal that reports lost permission pauses the bundle and stops the run.
+ *
+ * The claim records `attempts + 1` in the same compare-and-swap, before anything leaves for the
+ * authority: a page that dies between claim and settlement leaves an intent whose record says
+ * it may have been delivered, so {@link reclaimInFlight} and the next push treat it that way.
+ * The primitive itself receives the count of attempts completed before this claim, so a first
+ * delivery is a submission and a repeated one starts with a lookup.
  */
 export async function push(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushReport> {
   const backend = backendOf(local);
@@ -433,7 +461,7 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
     }
     let claimed: IntentRecord;
     try {
-      claimed = await backend.updateIntent(intent.requestId, "pending", { state: "in_flight" });
+      claimed = await backend.updateIntent(intent.requestId, "pending", { state: "in_flight", attempts: intent.attempts + 1 });
     } catch (error) {
       if (error instanceof IntentStateConflict) {
         report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "claimed-elsewhere" });
@@ -441,10 +469,13 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
       }
       throw error;
     }
-    const { outcome, intent: advanced } = await performUncertainWrite(transport, claimed, options.write);
+    const { outcome, intent: advanced } = await performUncertainWrite(transport, { ...claimed, attempts: intent.attempts }, options.write);
+    // Attempts never go below what the claim recorded: the durable count is the possibly
+    // delivered one, and the primitive's count is higher only after a resubmission.
+    const attempts = Math.max(advanced.attempts, claimed.attempts);
     let settled: IntentRecord;
     try {
-      settled = await settleIntent(backend, claimed.requestId, outcome, advanced.attempts, options);
+      settled = await settleIntent(backend, claimed.requestId, outcome, attempts, options);
     } catch (error) {
       if (error instanceof IntentStateConflict) {
         report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "settled-elsewhere" });
@@ -488,7 +519,9 @@ export interface PullReport {
  * Refresh every document that carries no unsettled intent to the authority's head and record
  * that head as its shared base. Documents with an unsettled intent are held: their base is the
  * one the edit was made against, and a moved shared head is push's conflict to report, never a
- * silent base replacement here.
+ * silent base replacement here. The intents known before the network round trip only save
+ * fetching held documents; the hold that decides is the one the refreshing write checks inside
+ * its own transaction, so an edit committed during the round trip holds its document too.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const backend = backendOf(local);
@@ -515,12 +548,14 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
       try {
         await backend.writeJournaled(id, head.doc, {
           expectedVersion,
+          requireSettled: true,
           meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
         });
         report.refreshed.push(id);
       } catch (error) {
-        // A local commit landed between the read and the write; the new intent holds this document now.
-        if ((error as { name?: unknown })?.name === "VersionConflict") {
+        // A local commit landed during the round trip: its intent holds this document now. The
+        // version check is kept for a plain local write that journals nothing.
+        if (error instanceof IntentHoldConflict || (error as { name?: unknown })?.name === "VersionConflict") {
           report.held.push(id);
           continue;
         }
@@ -561,9 +596,34 @@ export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
   };
 }
 
-/** Lift a pause after permission has been restored; an explicit decision, never automatic. */
-export async function resume(local: LocalTarget): Promise<void> {
-  await backendOf(local).writeMeta(SYNC_KEY, { paused: false } satisfies SyncControl);
+export interface ResumeReport {
+  /** Intents refused for lost permission that are pending again. */
+  requeued: number;
+}
+
+/**
+ * Lift a pause after permission has been restored; an explicit decision, never automatic. The
+ * intents the revocation refused return to `pending` with their attempts preserved, so the next
+ * push redelivers them without a new local edit. Only authorization refusals are requeued: the
+ * authority never admitted those requests, so their identities carry no recorded outcome and a
+ * redelivery under the same identity is a first delivery. Any other refusal was recorded under
+ * the identity and would be answered the same way again; only a new local edit, which
+ * supersedes it with a fresh identity, changes that.
+ */
+export async function resume(local: LocalTarget): Promise<ResumeReport> {
+  const backend = backendOf(local);
+  await backend.writeMeta(SYNC_KEY, { paused: false } satisfies SyncControl);
+  let requeued = 0;
+  for (const row of await backend.listIntents("refused")) {
+    if (!row.refusal || !AUTHORIZATION_REFUSAL_CODES.has(row.refusal.code)) continue;
+    try {
+      await backend.updateIntent(row.requestId, "refused", { state: "pending", attempts: row.attempts });
+      requeued += 1;
+    } catch (error) {
+      if (!(error instanceof IntentStateConflict)) throw error;
+    }
+  }
+  return { requeued };
 }
 
 /**
@@ -573,16 +633,16 @@ export async function resume(local: LocalTarget): Promise<void> {
  * be delivered twice, which the authority's request identity tolerates but the journal should
  * not rely on.
  *
- * A reclaimed intent is recorded as attempted at least once: the realm that claimed it may
- * have submitted it before it died, so the next push must begin with a lookup rather than a
- * blind resubmission (see `performUncertainWrite`).
+ * A reclaimed intent keeps its recorded attempts and never drops below one: the claim that put
+ * it in flight may have delivered it, so the next push looks it up before submitting and a
+ * later local edit chains behind it rather than superseding its request identity.
  */
 export async function reclaimInFlight(local: LocalTarget): Promise<number> {
   const backend = backendOf(local);
   let reclaimed = 0;
   for (const row of await backend.listIntents("in_flight")) {
     try {
-      await backend.updateIntent(row.requestId, "in_flight", { state: "pending", attempts: Math.max(row.attempts, 1) });
+      await backend.updateIntent(row.requestId, "in_flight", { state: "pending", attempts: Math.max(1, row.attempts) });
       reclaimed += 1;
     } catch (error) {
       if (!(error instanceof IntentStateConflict)) throw error;
