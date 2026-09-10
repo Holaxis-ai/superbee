@@ -30,7 +30,7 @@ import {
   readBundleOkfVersion,
   readDocVersioned,
   writeDocVersionedForEdition,
-} from "./bundle.js";
+} from "./bundle-ops.js";
 import type { FieldPrecondition } from "./document-precondition.js";
 import type { KindRegistry, RegistryValidationResult } from "./kinds.js";
 import type { ValidationWarning } from "./content-type.js";
