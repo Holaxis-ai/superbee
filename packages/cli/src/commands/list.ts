@@ -35,6 +35,7 @@
 //     INCLUDED (not-terminal is the semantic, never a hardcoded status string).
 import { parseArgs } from "node:util";
 import {
+  MalformedDocumentError,
   PROGRESS_STATUS_FIELD,
   TRUST_TIER_FIELD,
   trustTier,
@@ -312,7 +313,14 @@ export async function list(argv: string[], deps: Partial<ListCliDeps> = {}): Pro
   // Core owns the storage-facing canonical-ID ordering. The CLI presents a different, orientation
   // facing order only after every CLI filter has settled: newest meaningful change first, then
   // canonical ID. Invalid or missing clocks remain visible at the end rather than being dropped.
-  const recency = docs.map((doc) => ({ doc, key: meaningfulChangeOrderKey(doc.id, doc.frontmatter) }));
+  let orderVersion: string | undefined;
+  try {
+    orderVersion = await getOkfVersion();
+  } catch (err) {
+    // A malformed root keeps plain listing available for repair, matching the scan's legacy decode.
+    if (!(err instanceof MalformedDocumentError)) throw err;
+  }
+  const recency = docs.map((doc) => ({ doc, key: meaningfulChangeOrderKey(doc.id, doc.frontmatter, orderVersion) }));
   recency.sort((a, b) => compareByMeaningfulChange(a.key, b.key));
   docs = recency.map(({ doc }) => doc);
   const meaningfulTimestampById = new Map(recency.map(({ key }) => [key.id, key.timestamp]));

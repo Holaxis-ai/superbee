@@ -1,10 +1,23 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { evaluateRequiredResults, REQUIRED_JOBS } from "./ci-aggregate.mjs";
+const clockModule = new URL("../packages/core/dist/meaningful-change-time.js", import.meta.url);
+let meaningfulChangeTimeValue;
+try {
+  ({ meaningfulChangeTimeValue } = await import(clockModule.href));
+} catch (error) {
+  if (error?.code === "ERR_MODULE_NOT_FOUND" && error.url === clockModule.href) {
+    throw new Error("Built core clock helper is missing. Run npm run build before npm run test:scripts.", { cause: error });
+  }
+  throw error;
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -12,10 +25,6 @@ const cliPkg = JSON.parse(readFileSync(path.join(root, "packages", "cli", "packa
 const manifest = JSON.parse(readFileSync(path.join(root, "scripts", "ci-lanes.json"), "utf8"));
 const contributing = readFileSync(path.join(root, "CONTRIBUTING.md"), "utf8");
 const okfBundleSource = readFileSync(path.join(root, "packages", "core", "src", "bundle.ts"), "utf8");
-const meaningfulChangeSource = readFileSync(
-  path.join(root, "packages", "core", "src", "meaningful-change-time.ts"),
-  "utf8",
-);
 const linkSource = readFileSync(path.join(root, "packages", "core", "src", "links.ts"), "utf8");
 const sampleOkfReference = readFileSync(
   path.join(root, "examples", "sample-bundle", "references", "okf-spec.md"),
@@ -52,7 +61,7 @@ function validateContributorAuthority(
   text,
   candidateManifest = manifest,
   packageJson = pkg,
-  sources = { okfBundleSource, meaningfulChangeSource, linkSource, sampleOkfReference },
+  sources = { okfBundleSource, linkSource, sampleOkfReference },
 ) {
   for (const heading of ["## OKF compatibility", "## Findings and commitments", "## Assurance evolution"]) {
     assert.match(text, new RegExp(`^${heading}$`, "m"), `missing exact contributor anchor ${heading}`);
@@ -94,7 +103,16 @@ function validateContributorAuthority(
   ]);
   assert.match(sources.okfBundleSource, /SUPPORTED_OKF_AUTHORING_VERSIONS = \["0\.1", "0\.2"\]/);
   assert.match(sources.okfBundleSource, /DEFAULT_OKF_AUTHORING_VERSION = "0\.2"/);
-  assert.match(sources.meaningfulChangeSource, /if \(at !== undefined\) return at;[\s\S]*return frontmatter\.timestamp;/);
+  for (const [generated, expected] of [
+    [{ at: "standard" }, "standard"],
+    [{ at: null }, null],
+    [{ at: undefined }, "legacy"],
+    [{}, "legacy"],
+    [null, "legacy"],
+    [[], "legacy"],
+  ]) {
+    assert.equal(meaningfulChangeTimeValue({ generated, timestamp: "legacy" }), expected);
+  }
   assert.match(sources.linkSource, /return `\$\{rel\}\.md`;/);
   assert.match(sources.sampleOkfReference, /description: A version-scoped OKF v0\.1 interop reference/);
   assert.match(sources.sampleOkfReference, /This reference is scoped to OKF v0\.1 interop/);
@@ -272,4 +290,18 @@ test("the fail-closed result contract accepts success only", () => {
   renamed[`${REQUIRED_JOBS[0]}-renamed`] = renamed[REQUIRED_JOBS[0]];
   delete renamed[REQUIRED_JOBS[0]];
   assert.equal(evaluateRequiredResults(renamed).ok, false, "a renamed dependency must fail closed");
+});
+
+
+test("a missing core build gives local scripts callers an actionable message", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-script-build-"));
+  try {
+    await mkdir(path.join(scratch, "scripts"));
+    for (const name of ["ci-lanes.test.mjs", "ci-aggregate.mjs", "ci-lanes.json", "is-main-module.mjs"]) {
+      await copyFile(path.join(root, "scripts", name), path.join(scratch, "scripts", name));
+    }
+    const result = spawnSync(process.execPath, [path.join(scratch, "scripts", "ci-lanes.test.mjs")], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Run npm run build before npm run test:scripts/);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 });

@@ -14,7 +14,7 @@
  */
 
 import type { FreshnessOptions, FreshnessResult, OkfDocument } from "./types.js";
-import { meaningfulChangeTimeValue } from "./meaningful-change-time.js";
+import { meaningfulChangeTimeField, meaningfulChangeTimeValue } from "./meaningful-change-time.js";
 import { parseIsoInstant } from "./verification.js";
 
 /** A deadline must name an explicit instant; rounding up avoids expiring sub-ms instants early. */
@@ -22,13 +22,9 @@ export function staleAfterInstant(value: unknown): number | null {
   return typeof value === "string" ? parseIsoInstant(value, "ceil") : null;
 }
 
-/**
- * Parse a timestamp to epoch ms, or `null`. Accepts an ISO-8601 (or any
- * `Date.parse`-able) STRING — the normal case, since {@link parseMarkdown}
- * normalizes frontmatter dates to strings — and, as belt-and-suspenders, a raw
- * `Date` or epoch-millis `number` should one reach here unnormalized.
- */
-export function parseTimestamp(ts: unknown): number | null {
+/** Parse a clock to epoch milliseconds. v0.2 requires an explicit ISO instant; legacy mode is permissive. */
+export function parseTimestamp(ts: unknown, okfVersion?: string): number | null {
+  if (okfVersion === "0.2") return typeof ts === "string" ? parseIsoInstant(ts) : null;
   if (ts instanceof Date) {
     const ms = ts.getTime();
     return Number.isNaN(ms) ? null : ms;
@@ -41,6 +37,17 @@ export function parseTimestamp(ts: unknown): number | null {
   return Number.isNaN(ms) ? null : ms;
 }
 
+/** Diagnose only an effective, present legacy clock; standard generated.at diagnostics own shadowing values. */
+export function invalidLegacyTimestamp(
+  frontmatter: { readonly generated?: unknown; readonly timestamp?: unknown },
+  okfVersion?: string,
+): { field: "timestamp"; value: unknown } | undefined {
+  if (okfVersion !== "0.2" || !Object.hasOwn(frontmatter, "timestamp")
+    || meaningfulChangeTimeField(frontmatter) !== "timestamp"
+    || parseTimestamp(frontmatter.timestamp, okfVersion) !== null) return undefined;
+  return { field: "timestamp", value: frontmatter.timestamp };
+}
+
 /**
  * Derive a freshness verdict from `generated.at`, falling back to legacy `timestamp`.
  *
@@ -49,9 +56,7 @@ export function parseTimestamp(ts: unknown): number | null {
  *                the ISO timestamps of upstream `dependsOn` artifacts.
  */
 export function freshness(doc: OkfDocument, options: FreshnessOptions = {}): FreshnessResult {
-  const parseClock = options.okfVersion === "0.2"
-    ? (value: unknown) => typeof value === "string" ? parseIsoInstant(value) : null
-    : parseTimestamp;
+  const parseClock = (value: unknown) => parseTimestamp(value, options.okfVersion);
   const tsMs = parseClock(meaningfulChangeTimeValue(doc.frontmatter));
   const now = options.now ?? new Date();
   const ageMs = tsMs === null ? undefined : now.getTime() - tsMs;

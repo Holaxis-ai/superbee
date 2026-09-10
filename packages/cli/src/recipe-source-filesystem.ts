@@ -190,7 +190,8 @@ export function filesRecipeSource(): RecipeSource {
         }
         throw err;
       }
-      return parseRecipeFiles(files, real);
+      // Acquisition preserves source clocks; the destination edition owns install-time policy.
+      return parseRecipeFiles(files, real, { okfVersion: "0.2" });
     },
   };
 }

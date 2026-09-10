@@ -323,7 +323,7 @@ export function summarizeDocs(
   );
 
   const orderedRows = docs.map((d) => {
-    const key = meaningfulChangeOrderKey(d.id, d.frontmatter);
+    const key = meaningfulChangeOrderKey(d.id, d.frontmatter, options.okfVersion);
     return {
       key,
       row: {

@@ -264,7 +264,11 @@ function parsePageDeclarations(manifest: Record<string, unknown>, recipeId: stri
  * Structural recipe errors return a failed LoadResult; malformed YAML throws
  * MalformedDocumentError, as in the shared document codec.
  */
-export function parseRecipeFiles(files: RecipeFile[], source: string): LoadResult {
+export function parseRecipeFiles(
+  files: RecipeFile[],
+  source: string,
+  options: { okfVersion?: string } = {},
+): LoadResult {
   const manifestFile = files.find((f) => f.path === "recipe.md");
   if (!manifestFile) {
     return {
@@ -373,7 +377,7 @@ export function parseRecipeFiles(files: RecipeFile[], source: string): LoadResul
       };
     }
 
-    const { frontmatter, body } = parseMarkdown(file.bytes);
+    const { frontmatter, body } = parseMarkdown(file.bytes, undefined, options);
     const doc: OkfDocument = { id: conceptId, frontmatter, body };
 
     // Mirror loadKinds' own skip-with-warning semantics (a doc that is not `type: Convention`, or
@@ -470,7 +474,7 @@ export function parseRecipeFiles(files: RecipeFile[], source: string): LoadResul
         error: { code: "RECIPE_MALFORMED", message: `recipe '${id}': View entry '${declaration.entry}' is empty` },
       };
     }
-    const { frontmatter, body } = parseMarkdown(registryFile.bytes);
+    const { frontmatter, body } = parseMarkdown(registryFile.bytes, undefined, options);
     if (!isPageTypeName(frontmatter.type)) {
       return {
         ok: false,
@@ -526,7 +530,7 @@ export function parseRecipeFiles(files: RecipeFile[], source: string): LoadResul
         },
       };
     }
-    const { frontmatter, body } = parseMarkdown(referenceFile.bytes);
+    const { frontmatter, body } = parseMarkdown(referenceFile.bytes, undefined, options);
     if (frontmatter.type !== "Reference") {
       return {
         ok: false,

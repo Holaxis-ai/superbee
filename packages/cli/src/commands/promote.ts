@@ -231,7 +231,7 @@ async function promoteDoc(
   } catch (err) {
     throw promoteFileReadError(err, file);
   }
-  const { frontmatter, body } = parseMarkdown(raw);
+  const { frontmatter } = parseMarkdown(raw, file, { okfVersion: "0.2" });
 
   // I10: a designed UX, not a bare engine message about a "concept" the user never named — check
   // BEFORE ever calling the engine (rather than pattern-matching its thrown Error's message) and
@@ -271,7 +271,8 @@ async function promoteDoc(
       // the patch route over a present doc is covered and the expect-absent CREATE route (nothing
       // to lose) is untouched.
       bodyReplace: { acceptTruncatedBody: opts.acceptTruncatedBody, replaceLinks: opts.replaceLinks },
-      buildCandidate: () => ({ frontmatter, body }),
+      // Retain source clock spellings until the current mutation edition is known on each attempt.
+      buildCandidate: (_existing, context) => parseMarkdown(raw, file, { okfVersion: context.okfVersion }),
       errors: {
         alreadyExists: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),
         staleHead: (error) => promoteWriteErrorToCliError(error, key, file, remoteUrl),

@@ -63,10 +63,12 @@ const yamlEngine = {
  * sample bundles use (`timestamp: 2026-07-01T12:05:00Z`) — into a non-string under its
  * default schema. The parser above now retains all YAML timestamp scalars as strings so
  * date-only values remain distinguishable at any depth. This legacy field still keeps its
- * established canonical ISO behavior, including epoch-millisecond input.
+ * established canonical ISO behavior, including epoch-millisecond input, for default/v0.1
+ * decoding. v0.2 preserves its value so consumers can distinguish ambiguous legacy clocks.
  */
-function normalizeFrontmatter(data: Record<string, unknown>): Frontmatter {
+function normalizeFrontmatter(data: Record<string, unknown>, okfVersion?: string): Frontmatter {
   const out: Record<string, unknown> = { ...data };
+  if (okfVersion === "0.2") return out as Frontmatter;
   const value = out.timestamp;
   if (value instanceof Date) {
     out.timestamp = value.toISOString();
@@ -89,6 +91,7 @@ function normalizeFrontmatter(data: Record<string, unknown>): Frontmatter {
 export function parseMarkdown(
   raw: string,
   context?: string,
+  options: { okfVersion?: string } = {},
 ): { frontmatter: Frontmatter; body: string } {
   const split = splitLeadingFrontmatter(raw, context);
   if (!("yamlSource" in split)) return { frontmatter: {} as Frontmatter, body: split.body };
@@ -99,7 +102,7 @@ export function parseMarkdown(
   } catch (err) {
     throw new MalformedDocumentError(context, err);
   }
-  const frontmatter = normalizeFrontmatter(parsed as Record<string, unknown>);
+  const frontmatter = normalizeFrontmatter(parsed as Record<string, unknown>, options.okfVersion);
   return { frontmatter, body: split.body };
 }
 

@@ -88,8 +88,8 @@ Options:
   --description <d>    One-sentence summary
   --resource <uri>     Canonical URI of the underlying asset
   --tag <t>            A tag (repeatable)
-  --timestamp <iso>    Explicit legacy-compatible ISO-8601 last-change time. Current bundles use
-                       their standard generated.at clock automatically.
+  --timestamp <iso>    Explicit legacy last-change time. OKF v0.2 requires a real ISO-8601 date
+                       and time with an explicit UTC offset (Z or numeric). v0.1 stays compatible.
   --stale-after <iso>  Explicit expiration instant (OKF v0.2 only); requires a valid date, time,
                        and zone, e.g. 2026-09-07T12:00:00Z. Preserves the supplied spelling.
   --body <s>           Markdown body inline

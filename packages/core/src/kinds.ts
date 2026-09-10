@@ -1098,7 +1098,9 @@ export function defaultTimestampAndValidateAgainstRegistry(
   const kind = registry.kinds.get(String(doc.frontmatter.type));
   const shouldDefaultTimestamp = options.okfVersion !== "0.2"
     || kind?.fields.required.includes("timestamp") === true;
-  if (shouldDefaultTimestamp && !isUsableTimestamp(doc.frontmatter.timestamp)) {
+  if (shouldDefaultTimestamp && (options.okfVersion === "0.2"
+    ? !Object.hasOwn(doc.frontmatter, "timestamp")
+    : !isUsableTimestamp(doc.frontmatter.timestamp))) {
     doc.frontmatter.timestamp = (options.now ?? (() => new Date().toISOString()))();
   }
   if (!kind) return { warnings: [] };

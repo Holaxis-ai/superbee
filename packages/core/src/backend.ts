@@ -26,7 +26,8 @@
 
 import path from "node:path";
 
-import { parseMarkdown, stringifyDoc } from "./frontmatter.js";
+import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
+import { readBundleOkfVersion } from "./engine.js";
 import { resolveContentType } from "./content-type.js";
 import {
   assertSafeBlobKey,
@@ -148,23 +149,46 @@ export class FilesystemBackend implements StorageBackend {
   }
 
   async read(id: ConceptId): Promise<ReadResult> {
+    return this.#readWithEdition(id, () => this.#readEdition());
+  }
+
+  async #readEdition(): Promise<string | undefined> {
+    try {
+      return await readBundleOkfVersion(this);
+    } catch (error) {
+      // Malformed metadata must not hide otherwise readable documents from repair tools.
+      if (!(error instanceof MalformedDocumentError)) throw error;
+      return undefined;
+    }
+  }
+
+  async #readWithEdition(
+    id: ConceptId,
+    edition: () => Promise<string | undefined>,
+  ): Promise<ReadResult> {
     assertSafeConceptId(id);
     const rel = pathFromConceptId(id);
     const observed = await observeExact(port, this.#root, rel, readBytes);
     if (observed.state === "absent") throw notFound(this.#root, rel);
     const raw = observed.value.toString("utf8");
-    const { frontmatter, body } = parseMarkdown(raw, rel);
+    const { frontmatter, body } = parseMarkdown(raw, rel, { okfVersion: await edition() });
     return { doc: { id, frontmatter, body }, version: versionOfBytes(raw) };
   }
 
   async readMany(ids: ConceptId[]): Promise<ReadResult[]> {
-    // Validate every id BEFORE any path realization (not just the first that `read`
-    // would hit) — degenerate batch read: a loop of single reads, since a local
-    // filesystem has no per-read round-trip to amortize. A networked backend implements
-    // this as one multi-get, which is the whole reason `readMany` is on the seam.
+    // Validate the entire batch before any document or metadata I/O.
     for (const id of ids) assertSafeConceptId(id);
     const out: ReadResult[] = [];
-    for (const id of ids) out.push(await this.read(id));
+    // Preserve the existing extension point for subclasses that customize document reads.
+    if (this.read !== FilesystemBackend.prototype.read) {
+      for (const id of ids) out.push(await this.read(id));
+      return out;
+    }
+    // Share metadata only within this batch, including absent/malformed roots. Deferring the
+    // lookup preserves document-before-root error ordering and avoids I/O for an empty batch.
+    let editionPromise: Promise<string | undefined> | undefined;
+    const edition = () => editionPromise ??= this.#readEdition();
+    for (const id of ids) out.push(await this.#readWithEdition(id, edition));
     return out;
   }
 

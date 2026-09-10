@@ -112,7 +112,7 @@ export function builtinRecipeSource(): RecipeSource {
       if (looksLikeRecipePath(ref)) return null;
       const files = BUILTIN_FILES[ref];
       if (!files) return null;
-      return parseRecipeFiles(files, `builtin:${ref}`);
+      return parseRecipeFiles(files, `builtin:${ref}`, { okfVersion: "0.2" });
     },
   };
 }
@@ -121,7 +121,7 @@ export function builtinRecipeSource(): RecipeSource {
 export function resolveBuiltinSync(name: string): LoadedRecipe {
   const files = BUILTIN_FILES[name];
   if (!files) throw new Error(`resolveBuiltinSync: no built-in recipe named '${name}'`);
-  const result = parseRecipeFiles(files, `builtin:${name}`);
+  const result = parseRecipeFiles(files, `builtin:${name}`, { okfVersion: "0.2" });
   if (!result.ok) throw new Error(`resolveBuiltinSync: built-in '${name}' failed to parse: ${result.error.message}`);
   return result.recipe;
 }

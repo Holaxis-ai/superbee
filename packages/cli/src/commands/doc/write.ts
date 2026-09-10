@@ -21,6 +21,7 @@ import {
   STDIN_SILENT_NOTE,
   STDIN_SILENT_TIMEOUT,
 } from "./common.js";
+import { assertAuthoredLegacyTimestamp } from "../../legacy-timestamp.js";
 import { commandToken } from "../../command-text.js";
 import { assertStaleAfterEdition, parseStaleAfter } from "../../stale-after.js";
 
@@ -110,21 +111,7 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
   if (values.description !== undefined) frontmatter.description = values.description;
   if (values.resource !== undefined) frontmatter.resource = values.resource;
   if (values.tag && values.tag.length > 0) frontmatter.tags = values.tag;
-  if (values.timestamp?.trim()) {
-    // Validate an explicit --timestamp at the input boundary: gate 2 derives freshness/staleness and
-    // list-sort from it, so an un-parseable value would silently poison those (it was previously
-    // persisted verbatim). Reject with exit 2 like --type does. External-bundle timestamps still flow
-    // through the engine's parse-layer normalization untouched — this guards only the CLI's raw input.
-    const ts = values.timestamp.trim();
-    if (Number.isNaN(Date.parse(ts))) {
-      throw new CliError(
-        "USAGE",
-        `--timestamp ${commandToken(ts)} is not a valid date/time (expected ISO-8601, e.g. 2026-07-03T12:00:00Z)`,
-        { help: `${cliInvocation()} doc write ${commandToken(id)} --timestamp <iso>` },
-      );
-    }
-    frontmatter.timestamp = ts;
-  }
+  if (values.timestamp?.trim()) frontmatter.timestamp = values.timestamp.trim();
 
   const remote = await resolveRemoteFlag(values.remote, values.dir);
   const route = remote === undefined ? await resolveLocalBundleRoute(values.dir) : undefined;
@@ -181,6 +168,16 @@ export async function docWrite(argv: string[], deps: Partial<DocCliDeps>): Promi
     onPersisted: boardPostPersistHook(route ? boardAttributionForRoute(route) : { kind: "none" }, actor),
     buildCandidate: (fresh: OkfDocument | undefined, context) => {
       assertStaleAfterEdition(staleAfter, context.okfVersion);
+      assertAuthoredLegacyTimestamp(values.timestamp?.trim(), context.okfVersion);
+      // v0.1 retains its permissive input contract; v0.2 validity belongs solely to core's parser.
+      const legacyTimestamp = values.timestamp?.trim();
+      if (context.okfVersion !== "0.2" && legacyTimestamp && Number.isNaN(Date.parse(legacyTimestamp))) {
+        throw new CliError(
+          "USAGE",
+          `--timestamp ${commandToken(legacyTimestamp)} is not a valid date/time (expected ISO-8601, e.g. 2026-07-03T12:00:00Z)`,
+          { help: `${cliInvocation()} doc write ${commandToken(id)} --timestamp <iso>` },
+        );
+      }
       // SCHEMA-LOSS guard (cold-start study #3): `doc write` replaces the WHOLE document and carries
       // only a fixed flag set (type/title/description/resource/tags/timestamp) — it has NO
       // governs/fields flags. Overwriting an existing kind CONVENTION with it silently drops the
