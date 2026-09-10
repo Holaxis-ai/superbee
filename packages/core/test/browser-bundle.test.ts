@@ -13,14 +13,18 @@
  * sibling-dist convention other core tests document.
  *
  * ADD A SUBPATH HERE when the browser starts runtime-importing a new core subpath — keep this list
- * in sync with the SPA's runtime `@superbee/core/*` imports.
+ * in sync with the SPA's runtime `@superbee/core/*` imports. `versioning` and `memory-backend`
+ * are the browser-local working copy's token minting and store for SaaS mode.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
+import { createHash } from "node:crypto";
 import { build } from "esbuild";
+
+import { stringifyDoc } from "../src/frontmatter.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -35,6 +39,8 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "kinds.js", symbol: "isTerminal" },
   { module: "remote.js", symbol: "RemoteBackend" },
   { module: "storage.js", symbol: "assertSafeConceptId" },
+  { module: "versioning.js", symbol: "contentVersion" },
+  { module: "memory-backend.js", symbol: "MemoryBackend" },
 ];
 
 for (const { module, symbol } of BROWSER_SUBPATHS) {
@@ -50,6 +56,35 @@ for (const { module, symbol } of BROWSER_SUBPATHS) {
     assert.ok(result.outputFiles[0]!.text.includes(symbol), `${module}: bundled output must carry ${symbol}`);
   });
 }
+
+test("core/versioning mints Node-identical tokens in a sandbox with no process, Buffer, or node:crypto", async () => {
+  const result = await build({
+    entryPoints: [path.resolve(here, "../dist/versioning.js")],
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    globalName: "SuperbeeVersioning",
+    write: false,
+    logLevel: "silent",
+  });
+  const sandbox: Record<string, unknown> = { TextEncoder };
+  assert.equal(runInNewContext("typeof process", sandbox), "undefined");
+  assert.equal(runInNewContext("typeof Buffer", sandbox), "undefined");
+  runInNewContext(result.outputFiles[0]!.text, sandbox);
+  const versioning = sandbox.SuperbeeVersioning as {
+    contentVersion(doc: { id: string; frontmatter: Record<string, unknown>; body: string }): string;
+    blobVersion(bytes: Uint8Array): string;
+    defaultActor(): string;
+  };
+  const doc = { id: "browser/proof", frontmatter: { type: "Proof", title: "Ünïcödé 🐝" }, body: "same bytes, same token\n" };
+  assert.equal(
+    versioning.contentVersion(doc),
+    `sha256:${createHash("sha256").update(stringifyDoc(doc.frontmatter, doc.body), "utf8").digest("hex")}`,
+  );
+  const blob = new Uint8Array([0x80, 0xff, 0xfe, 0x00]);
+  assert.equal(versioning.blobVersion(blob), `sha256:${createHash("sha256").update(blob).digest("hex")}`);
+  assert.equal(versioning.defaultActor(), "local");
+});
 
 test("core/engine executes bundle-version parsing with no Buffer global", async () => {
   const result = await build({

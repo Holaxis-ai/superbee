@@ -76,6 +76,14 @@
     "./storage": {
       "types": "./dist/storage.d.ts",
       "default": "./dist/storage.js"
+    },
+    "./versioning": {
+      "types": "./dist/versioning.d.ts",
+      "default": "./dist/versioning.js"
+    },
+    "./memory-backend": {
+      "types": "./dist/memory-backend.d.ts",
+      "default": "./dist/memory-backend.js"
     }
   },
   "files": [

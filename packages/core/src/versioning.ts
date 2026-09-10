@@ -17,19 +17,20 @@
  *     the caller's `expectedVersion` no longer matches the backend's current version.
  *
  * Nothing here touches the filesystem — hashing and attribution are backend-neutral,
- * which is precisely why the memory adapter can reuse them.
+ * which is precisely why the memory adapter can reuse them. The digest itself lives in
+ * `sha256.ts`, a pure implementation with no `node:*` import, so this module and the memory
+ * adapter bundle for the browser and mint the same tokens there.
  */
 
-import { createHash } from "node:crypto";
-
 import { stringifyDoc } from "./frontmatter.js";
+import { sha256HexOfBytes, sha256HexOfUtf8 } from "./sha256.js";
 import type { OkfDocument, Version } from "./types.js";
 
 export { VersionConflict, stripETagWrapper } from "./version-transport.js";
 
 /** Lowercase hex SHA-256 of a UTF-8 string. The version tokens' underlying digest. */
 export function sha256Hex(input: string): string {
-  return createHash("sha256").update(input, "utf8").digest("hex");
+  return sha256HexOfUtf8(input);
 }
 
 /**
@@ -58,15 +59,15 @@ export function versionOfBytes(raw: string): Version {
  * of adapter, exactly as {@link contentVersion} is for documents.
  */
 export function blobVersion(bytes: Uint8Array): Version {
-  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  return `sha256:${sha256HexOfBytes(bytes)}`;
 }
 
-/** A local identity for unattributed writes: `$USER`/`$USERNAME`/`$LOGNAME`, else `"local"`. */
+/**
+ * A local identity for unattributed writes: `$USER`/`$USERNAME`/`$LOGNAME`, else `"local"`.
+ * A browser host has no `process` global, so the environment lookup is guarded and such a
+ * host attributes to `"local"`.
+ */
 export function defaultActor(): string {
-  return (
-    process.env.USER?.trim() ||
-    process.env.USERNAME?.trim() ||
-    process.env.LOGNAME?.trim() ||
-    "local"
-  );
+  const env = typeof process !== "undefined" ? process.env : undefined;
+  return env?.USER?.trim() || env?.USERNAME?.trim() || env?.LOGNAME?.trim() || "local";
 }
