@@ -72,7 +72,7 @@ async function verifyRuntimeLibraries() {
         directory: `packages/${manifest.name.slice("@superbee/".length)}`,
       });
       assert.deepEqual(manifest.publishConfig, {
-        access: "restricted",
+        access: "public",
         registry: "https://registry.npmjs.org/",
       });
       assert.match(manifest.scripts?.prepublishOnly ?? "", /process\.exit\(1\)/);
