@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { initBundle, writeDoc, readDocVersioned } from "@superbee/core";
 import { doc } from "../src/commands/doc.js";
 import { CliError } from "../src/errors.js";
+import { isRenderableToken } from "../src/shell-quoting.js";
 
 async function fixture(t: test.TestContext, edition: "0.1" | "0.2" = "0.2") {
   const root = await mkdtemp(join(tmpdir(), "superbee-fields-"));
@@ -102,7 +103,10 @@ test("doc field validates complete file values and finite field surface", async 
 
 test("doc field redirects use exact quoted ID and ambiguity carries bounded candidates", async t => {
   const f = await fixture(t);
-  const key = "owner's report $(literal)";
+  // This correction is executed below. `$` is deliberately omitted from Windows hints, so use an
+  // apostrophe-bearing value that remains one runnable token on both supported shell families.
+  const key = "owner's report (literal)";
+  assert.equal(isRenderableToken(key, "win32"), true);
   await f.run("add", "notes/a", "sources", "--from-file", await f.file(JSON.stringify({ id: key, resource: "special report" })));
   let correction = "";
   await assert.rejects(f.run("remove", "notes/a", "sources", "--resource", "special report"), err => {
