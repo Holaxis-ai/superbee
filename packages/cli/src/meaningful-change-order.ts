@@ -10,12 +10,13 @@ export interface MeaningfulChangeOrderKey {
 export function meaningfulChangeOrderKey(
   id: string,
   frontmatter: { readonly generated?: unknown; readonly timestamp?: unknown },
+  okfVersion?: string | null,
 ): MeaningfulChangeOrderKey {
   const value = meaningfulChangeTimeValue(frontmatter);
   return {
     id,
     timestamp: typeof value === "string" ? value : "",
-    timestampMs: parseTimestamp(value),
+    timestampMs: parseTimestamp(value, okfVersion ?? undefined),
   };
 }
 
