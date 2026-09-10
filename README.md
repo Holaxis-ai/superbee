@@ -18,8 +18,8 @@ under test. The honest breakdown is below — read it before depending on anythi
 **Requirements: macOS, Linux, or native Windows, and Node.js 20 or newer.** Windows does not need
 WSL, Ubuntu, or Docker.
 
-The Windows-capable test release is currently on npm's `next` prerelease channel; `latest` still
-points to the older stable package that rejects Windows. Install the prerelease with:
+The current test release is on npm's `next` prerelease channel; `latest` provides the stable
+release, also with native Windows support. Install the prerelease with:
 
 ```sh
 npm install -g superbee@next

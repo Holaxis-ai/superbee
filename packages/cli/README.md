@@ -48,9 +48,8 @@ Ubuntu, or Docker. On Windows, Superbee keeps per-user operational state under
 
 Superbee currently has two npm release channels:
 
-- `latest` is the stable channel selected by bare `superbee`. Its current release predates native
-  Windows support.
-- `next` is the prerelease channel. It contains the current native-Windows build.
+- `latest` is the stable channel selected by bare `superbee`, including native Windows support.
+- `next` is the prerelease channel for testing the current release candidate.
 
 Install the current prerelease on Windows:
 
