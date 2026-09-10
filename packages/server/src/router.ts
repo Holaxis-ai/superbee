@@ -38,7 +38,7 @@ import {
   type WriteOptions,
 } from "@superbee/core/storage";
 import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
-import { isRequestIdentity } from "@superbee/core/uncertain-write";
+import { isRequestIdentity } from "@superbee/core/storage";
 
 import type {
   OperationOutcomeStore,

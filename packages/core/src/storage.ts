@@ -32,3 +32,7 @@ export {
   toPosix,
 } from "./paths.js";
 export { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
+// The wire request identity (`WriteOptions.requestId`) and the outcome shape an authority records
+// for it: runtime-neutral, so Worker and browser consumers reach them through this seam.
+export { isRequestIdentity } from "./uncertain-write.js";
+export type { Outcome } from "./uncertain-write.js";

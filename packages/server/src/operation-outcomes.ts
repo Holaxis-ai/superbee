@@ -17,7 +17,7 @@
  * subpath consumes it unchanged.
  */
 
-import type { Outcome } from "@superbee/core/uncertain-write";
+import type { Outcome } from "@superbee/core/storage";
 
 /** The outcome kinds an authority can record; `unknown` is the client's word, never the store's. */
 export type RecordedOutcome = Exclude<Outcome, { kind: "unknown" }>;
