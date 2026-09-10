@@ -4,27 +4,25 @@
  * mutation path in a real page with real IndexedDB, real reloads, a real browser restart, and
  * two pages on one origin.
  *
- * Harness: the driver (test/fixtures/driver.ts) is bundled with esbuild inside the spec and
- * served by a node:http server on 127.0.0.1, so every page in every context shares one origin
- * and therefore one IndexedDB. The reload-and-restart scenario uses a persistent Chromium
- * context over a temporary user-data directory, which is the way a browser restart keeps its
- * storage; the other scenarios use Playwright's default per-test context.
+ * Harness: the driver (test/fixtures/driver.ts) is bundled with esbuild and served by a
+ * node:http server on 127.0.0.1 (test/fixtures/harness.ts), so every page in every context
+ * shares one origin and therefore one IndexedDB. The reload-and-restart scenario uses a
+ * persistent Chromium context over a temporary user-data directory, which is the way a browser
+ * restart keeps its storage; the other scenarios use Playwright's default per-test context.
  */
 
-import { createServer, type Server } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AddressInfo } from "node:net";
 
 import { chromium, expect, test, type Page } from "@playwright/test";
-import { build } from "esbuild";
 
 import { FilesystemBackend, type OkfDocument } from "@superbee/core";
 import { writeDocVersioned } from "@superbee/core/bundle-ops";
 import { contentVersion, versionOfBytes } from "@superbee/core/versioning";
 
-import type { Driver, DriverError, MutateReply, WriteReply } from "./fixtures/driver.ts";
+import type { DriverError, MutateReply, WriteReply } from "./fixtures/driver.ts";
+import { call, load as loadAt, ok, startDriverServer, waitForDriver, type DriverServer } from "./fixtures/harness.ts";
 
 const ROOT_INDEX = "---\nokf_version: '0.2'\n---\n# Browser-local proof\n";
 
@@ -52,70 +50,19 @@ const PARITY_DOCS: ReadonlyArray<{ id: string; frontmatter: Record<string, unkno
 const BLOB_KEY = "artifacts/invalid-utf8.bin";
 const BLOB_BYTES = [0x80, 0xff, 0xfe, 0x00, 0xc3, 0x28, 0xa0, 0xa1, 0xe2, 0x28, 0xa1, 0xf0, 0x90, 0x28, 0xbc];
 
-let server: Server;
+let server: DriverServer;
 let origin: string;
 
 test.beforeAll(async () => {
-  const bundle = await build({
-    entryPoints: [new URL("./fixtures/driver.ts", import.meta.url).pathname],
-    bundle: true,
-    platform: "browser",
-    format: "iife",
-    target: "es2022",
-    minify: false,
-    sourcemap: false,
-    write: false,
-    logLevel: "silent",
-  });
-  const script = bundle.outputFiles?.[0]?.text;
-  if (!script) throw new Error("browser-local driver build produced no JavaScript.");
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>browser-local</title></head><body><script src="/driver.js"></script></body></html>`;
-  server = createServer((request, response) => {
-    if (request.url === "/driver.js") {
-      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-      response.end(script);
-      return;
-    }
-    if (request.url === "/") {
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(html);
-      return;
-    }
-    response.writeHead(404);
-    response.end();
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const { port } = server.address() as AddressInfo;
-  origin = `http://127.0.0.1:${port}`;
+  server = await startDriverServer();
+  origin = server.origin;
 });
 
 test.afterAll(async () => {
-  await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+  await server.close();
 });
 
-async function load(page: Page): Promise<void> {
-  await page.goto(`${origin}/`, { waitUntil: "networkidle" });
-  await expect.poll(() => page.evaluate(() => typeof window.superbeeLocal === "object")).toBe(true);
-}
-
-type DriverMethod = keyof Driver;
-type Reply<M extends DriverMethod> = Awaited<ReturnType<Driver[M]>>;
-
-/** Invoke one driver method in the page; every reply is JSON, errors included. */
-function call<M extends DriverMethod>(page: Page, method: M, ...args: Parameters<Driver[M]>): Promise<Reply<M>> {
-  return page.evaluate(
-    ([name, params]) => (window.superbeeLocal[name as DriverMethod] as (...inner: unknown[]) => unknown)(...(params as unknown[])),
-    [method, args] as const,
-  ) as Promise<Reply<M>>;
-}
-
-function ok<T>(reply: T | DriverError, label: string): T {
-  if (reply && typeof reply === "object" && "error" in reply) {
-    const { error } = reply as DriverError;
-    throw new Error(`${label}: ${error.name}: ${error.message}`);
-  }
-  return reply as T;
-}
+const load = (page: Page) => loadAt(page, origin);
 
 function isConflict(reply: MutateReply | DriverError): reply is DriverError {
   return "error" in reply && reply.error.name === "VersionConflict";
@@ -169,7 +116,7 @@ test("b: the working copy survives a real page reload and a browser restart", as
       blobVersion = ok(await call(page, "writeBlob", BLOB_KEY, BLOB_BYTES), "writeBlob").version;
 
       await page.reload({ waitUntil: "networkidle" });
-      await expect.poll(() => page.evaluate(() => typeof window.superbeeLocal === "object")).toBe(true);
+      await waitForDriver(page);
       const reopened = ok(await call(page, "open", "persist"), "reopen");
       expect(reopened.seeded).toBe(false);
       await expectSameWorkingCopy(page, before, blobVersion);
