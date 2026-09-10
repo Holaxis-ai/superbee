@@ -31,4 +31,4 @@ export {
   pathFromConceptId,
   toPosix,
 } from "./paths.js";
-export { VersionConflict, stripETagWrapper } from "./version-transport.js";
+export { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";

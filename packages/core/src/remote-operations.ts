@@ -8,9 +8,11 @@
  * authority applies the write at most once under that identity and a duplicate delivery, a
  * transient retry included, is answered from the record. The wire's three answers map onto the
  * primitive's {@link Outcome}: a version is `committed`, a `412` is `conflict` with the
- * authority's current version, and any other typed refusal is `refused` with the wire code. A
- * carrier failure propagates unchanged: the primitive classifies it as unknown and resolves it
- * by lookup, which is the whole reason the identity exists.
+ * authority's current version, and any other 4xx refusal is `refused` with the wire code. A
+ * carrier failure and a 5xx response both propagate unchanged: a 502 or 504 from an intermediary,
+ * or the authority's own runtime failure, says nothing about whether the write was applied, so
+ * the primitive classifies it as unknown and resolves it by lookup, which is the whole reason
+ * the identity exists. Only a 4xx is final: the authority answered and declined.
  *
  * This module imports nothing from Node so a browser working copy and a Node consumer share
  * one transport over one client adapter.
@@ -45,7 +47,7 @@ export function createRemoteOperationTransport(remote: RemoteBackend, options: R
         return { kind: "committed", version };
       } catch (error) {
         if (error instanceof VersionConflict) return { kind: "conflict", actual: error.actual };
-        if (error instanceof RemoteError) return { kind: "refused", code: error.code, message: error.message };
+        if (error instanceof RemoteError && error.status < 500) return { kind: "refused", code: error.code, message: error.message };
         throw error;
       }
     },

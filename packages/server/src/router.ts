@@ -24,6 +24,7 @@ import {
   assertSafeConceptId,
   assertSafeReservedDir,
   isReservedFile,
+  isContentVersion,
   pathFromConceptId,
   stripETagWrapper,
   type BlobKey,
@@ -1111,8 +1112,14 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         return await handleHeadDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id);
       case "doc-delete": {
         const { id } = resolved.resource as { kind: "doc"; id: ConceptId };
-        if (identity !== null && req.headers.get("If-Match") === null) {
-          return errorResponse(400, "USAGE", "an identified delete must carry If-Match");
+        if (identity !== null) {
+          // The token becomes the version the recorded outcome is committed at and the version
+          // headers the answer carries, so it must be a real content-addressed version, checked
+          // before the key is claimed: an absent, empty or malformed premise records nothing.
+          const premise = req.headers.get("If-Match");
+          if (premise === null || !isContentVersion(stripETagWrapper(premise))) {
+            return errorResponse(400, "USAGE", "an identified delete must carry a well-formed If-Match token");
+          }
         }
         const remove = () => handleDeleteDoc(backend, id, req);
         return identity === null ? await remove() : await applyIdentified(resolved.bundleId, identity, "DELETE", id, remove);

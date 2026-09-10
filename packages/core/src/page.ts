@@ -11,6 +11,7 @@
  */
 
 import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
+import { isContentVersion } from "./version-transport.js";
 
 /** Legacy registry-id prefix — the LOCATION stays recognized (only the legacy kind NAME is retired). */
 export const PAGE_REGISTRY_PREFIX = "pages-registry/";
@@ -139,7 +140,7 @@ export function isAnyEntryKey(entry: unknown): entry is string {
 
 /** True only for the content-addressed version tokens allowed to pin executable View bytes. */
 export function isViewEntryVersion(value: unknown): value is string {
-  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+  return isContentVersion(value);
 }
 
 /** A complete, valid View registration — one identity, entry, and optional exact-byte pin. */

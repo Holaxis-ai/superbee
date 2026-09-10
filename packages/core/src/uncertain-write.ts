@@ -117,11 +117,13 @@ export const REQUEST_ID_MAX_LENGTH = 128;
 
 /**
  * True when `value` is a request identity the wire accepts: 1 to {@link REQUEST_ID_MAX_LENGTH}
- * printable ASCII characters with no space. One rule, checked by the client before a header is
- * built and by the reference router before a key is claimed, so the two sides cannot disagree
- * about which keys identify a write. A minted UUID always satisfies it.
+ * printable ASCII characters with no space, and neither `.` nor `..`, which URL normalization
+ * folds away so the lookup route could never name them. One rule, checked by the client before
+ * a header is built and by the reference router before a key is claimed, so the two sides cannot
+ * disagree about which keys identify a write. A minted UUID always satisfies it.
  */
 export function isRequestIdentity(value: string): boolean {
+  if (value === "." || value === "..") return false;
   return value.length >= 1 && value.length <= REQUEST_ID_MAX_LENGTH && /^[!-~]+$/.test(value);
 }
 

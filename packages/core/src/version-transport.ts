@@ -2,6 +2,16 @@
 
 import type { Version } from "./types.js";
 
+/**
+ * True only for a content-addressed {@link Version} token as every conforming backend mints it:
+ * `sha256:` followed by 64 lowercase hex characters. One rule, shared by the reference router
+ * (an identified delete's premise) and the View registry (an entry pin), so no adapter carries
+ * its own reading of what a version looks like.
+ */
+export function isContentVersion(value: unknown): value is Version {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value);
+}
+
 /** Recover a bare version token from a quoted or weak HTTP ETag. */
 export function stripETagWrapper(raw: string): string {
   let value = raw.trim();

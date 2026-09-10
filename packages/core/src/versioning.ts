@@ -26,7 +26,7 @@ import { stringifyDoc } from "./frontmatter.js";
 import { sha256HexOfBytes, sha256HexOfUtf8 } from "./sha256.js";
 import type { OkfDocument, Version } from "./types.js";
 
-export { VersionConflict, stripETagWrapper } from "./version-transport.js";
+export { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
 
 /** Lowercase hex SHA-256 of a UTF-8 string. The version tokens' underlying digest. */
 export function sha256Hex(input: string): string {

@@ -144,6 +144,7 @@ export {
   blobVersion,
   defaultActor,
   VersionConflict,
+  isContentVersion,
   stripETagWrapper,
 } from "./versioning.js";
 

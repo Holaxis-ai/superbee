@@ -26,7 +26,7 @@ import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { InvalidInputError } from "../src/errors.js";
 import { stringifyDoc } from "../src/frontmatter.js";
-import { RemoteBackend } from "../src/remote-backend.js";
+import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
 import { createRemoteOperationTransport } from "../src/remote-operations.js";
 import type { OperationIntent } from "../src/uncertain-write.js";
 import { MemoryBackend } from "../src/memory-backend.js";
@@ -801,6 +801,18 @@ test("wire: identified DELETE requires If-Match, applies once, replays deleted:t
   assert.equal(await serverBackend.exists("concepts/gone"), true);
   assert.equal((await outcomeAt(router, "del-1")).status, 404);
 
+  // A premise that is not a content-addressed version is refused before the key is claimed:
+  // nothing is recorded, so the key stays free and the lookup stays 404.
+  for (const premise of ["hello", ""]) {
+    const malformed = await router(identifiedDelete("concepts/gone", { "Idempotency-Key": "del-1", "If-Match": premise }));
+    assert.equal(malformed.status, 400, `If-Match ${JSON.stringify(premise)}`);
+    const body = (await malformed.json()) as { error: { code: string; message: string } };
+    assert.equal(body.error.code, "USAGE");
+    assert.match(body.error.message, /well-formed If-Match/);
+    assert.equal(await serverBackend.exists("concepts/gone"), true);
+    assert.equal((await outcomeAt(router, "del-1")).status, 404);
+  }
+
   const deleted = await answer(await router(identifiedDelete("concepts/gone", { "Idempotency-Key": "del-1", "If-Match": version })));
   assert.equal(deleted.status, 200);
   assert.deepEqual(JSON.parse(deleted.body), { deleted: true });
@@ -847,9 +859,9 @@ test("wire: the same Idempotency-Key resubmitted for a different id or method is
   assert.deepEqual(await outcomeAt(router, "bind-1"), { status: 200, body: { kind: "committed", version: created.version } });
 });
 
-test("wire: an invalid Idempotency-Key (empty, 129 characters, containing a space) is 400 USAGE, records nothing, and never reaches the backend", async () => {
+test("wire: an invalid Idempotency-Key (empty, 129 characters, containing a space, '.' or '..') is 400 USAGE, records nothing, and never reaches the backend", async () => {
   const { router, spy } = freshSpiedRouter();
-  for (const key of ["", "k".repeat(129), "has space"]) {
+  for (const key of ["", "k".repeat(129), "has space", ".", ".."]) {
     const res = await router(identifiedPut("concepts/never", "x", { "Idempotency-Key": key, "If-None-Match": "*" }));
     assert.equal(res.status, 400, `key ${JSON.stringify(key)}`);
     assert.equal(((await res.json()) as { error: { code: string } }).error.code, "USAGE");
@@ -922,6 +934,38 @@ test("wire: a recorded outcome expires after the retention window; a resubmissio
   assert.equal(store.size, 1, "recording pruned the expired record");
 });
 
+test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters with null when the clock throws inside record", async () => {
+  let clockFails = false;
+  const store = new MemoryOperationOutcomeStore({
+    now: () => {
+      if (clockFails) throw new Error("clock exploded");
+      return 1_000;
+    },
+  });
+  const claimed = await store.claim("bundle", "clock-1");
+  assert.equal(claimed.kind, "claimed");
+  if (claimed.kind !== "claimed") return;
+  const waiting = await store.claim("bundle", "clock-1");
+  assert.equal(waiting.kind, "in_progress");
+  const settled = waiting.kind === "in_progress" ? waiting.settled : Promise.resolve(undefined);
+
+  const operation = { method: "PUT", id: "concepts/c", response: { status: 200, headers: [], body: "{}" }, outcome: { kind: "committed", version: "sha256:" + "0".repeat(64) } } as const;
+  clockFails = true;
+  assert.throws(() => claimed.record(operation), /clock exploded/);
+  assert.equal(await settled, null, "the waiter is told the claim was released, not left hanging");
+  assert.equal(store.size, 0);
+  assert.equal(await store.lookup("bundle", "clock-1"), null);
+  clockFails = false;
+  assert.throws(() => claimed.record(operation), /already recorded or released/);
+
+  // The key is free again: a fresh claim records once the clock behaves.
+  const again = await store.claim("bundle", "clock-1");
+  assert.equal(again.kind, "claimed");
+  if (again.kind !== "claimed") return;
+  assert.equal(again.record(operation).recordedAt, 1_000);
+  assert.equal((await store.lookup("bundle", "clock-1"))?.outcome.kind, "committed");
+});
+
 /** A backend whose next `failures` writes reject with a runtime error after a tick, then behave. */
 class FlakyWriteBackend extends ServerMemoryBackend {
   failures = 0;
@@ -980,6 +1024,10 @@ test("wire: RemoteBackend sends Idempotency-Key from requestId, rejects a malfor
   await assert.rejects(remote.write("concepts/rb", doc, { requestId: "bad key" }), (err: unknown) => err instanceof InvalidInputError);
   await assert.rejects(remote.delete("concepts/rb", { expectedVersion: version, requestId: "" }), (err: unknown) => err instanceof InvalidInputError);
   await assert.rejects(remote.lookupOperation("k".repeat(129)), (err: unknown) => err instanceof InvalidInputError);
+  for (const key of [".", ".."]) {
+    await assert.rejects(remote.write("concepts/rb", doc, { requestId: key }), (err: unknown) => err instanceof InvalidInputError);
+    await assert.rejects(remote.lookupOperation(key), (err: unknown) => err instanceof InvalidInputError);
+  }
   assert.equal(sent, before, "a malformed identity never becomes a request");
 
   assert.equal(await remote.delete("concepts/rb", { expectedVersion: version, requestId: "rb-del" }), true);
@@ -1024,4 +1072,34 @@ test("wire: createRemoteOperationTransport delivers a document.write intent as a
   assert.equal(refused.kind === "refused" && refused.code, "USAGE");
   assert.deepEqual(await transport.lookup("op-3"), refused, "a content rejection is a recorded outcome");
   await assert.rejects(transport.submit({ ...intent("op-4", "concepts/op", null, "x"), kind: "document.delete" }), /unsupported intent kind/);
+});
+
+test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the primitive classifies it as unknown and looks up, while a 4xx refusal stays refused", async () => {
+  const envelope = (status: number, code: string) =>
+    new Response(JSON.stringify({ error: { code, message: `${code} from the wire` } }), { status, headers: { "content-type": "application/json" } });
+  let status = 503;
+  let code = "RUNTIME";
+  const fetchImpl = async () => envelope(status, code);
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl, maxRetries: 0 });
+  const transport = createRemoteOperationTransport(remote);
+  const intent: OperationIntent = {
+    requestId: "op-5xx",
+    kind: "document.write",
+    target: "concepts/op",
+    base: null,
+    local: "sha256:local",
+    content: stringifyDoc({ type: "T", timestamp: T_DOC }, "x"),
+    createdAt: T_DOC,
+    attempts: 1,
+    state: "in_flight",
+  };
+
+  await assert.rejects(transport.submit(intent), (err: unknown) => err instanceof RemoteError && err.status === 503 && err.code === "RUNTIME");
+  status = 502;
+  code = "BAD_GATEWAY";
+  await assert.rejects(transport.submit(intent), (err: unknown) => err instanceof RemoteError && err.status === 502);
+
+  status = 403;
+  code = "FORBIDDEN";
+  assert.deepEqual(await transport.submit(intent), { kind: "refused", code: "FORBIDDEN", message: "FORBIDDEN from the wire" });
 });

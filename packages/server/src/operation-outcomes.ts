@@ -111,8 +111,11 @@ export class MemoryOperationOutcomeStore implements OperationOutcomeStore {
     const entry: InProgress = { settled, resolve };
     this.inProgress.set(slot, entry);
     let open = true;
-    const finish = (value: RecordedOperation | null): void => {
+    const assertOpen = (): void => {
       if (!open) throw new Error(`operation outcome for '${key}' was already recorded or released`);
+    };
+    const finish = (value: RecordedOperation | null): void => {
+      assertOpen();
       open = false;
       if (this.inProgress.get(slot) === entry) this.inProgress.delete(slot);
       entry.resolve(value);
@@ -120,11 +123,21 @@ export class MemoryOperationOutcomeStore implements OperationOutcomeStore {
     return {
       kind: "claimed",
       record: (operation) => {
-        const record: RecordedOperation = { ...operation, recordedAt: this.now() };
-        this.prune();
-        this.recorded.set(slot, record);
-        finish(record);
-        return record;
+        // A settled claim is refused before any map is touched, so a second record cannot land
+        // a row the caller was told was rejected. The clock is injected, so it can throw; a
+        // record that never lands still gives the key back, or every waiter on this claim would
+        // hang and the key would stay unusable until the process restarts.
+        assertOpen();
+        try {
+          const record: RecordedOperation = { ...operation, recordedAt: this.now() };
+          this.prune();
+          this.recorded.set(slot, record);
+          finish(record);
+          return record;
+        } catch (err) {
+          if (open) finish(null);
+          throw err;
+        }
       },
       release: () => finish(null),
     };

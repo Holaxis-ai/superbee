@@ -146,8 +146,10 @@ client whose response was lost can look the answer up instead of guessing.
   `403 FORBIDDEN` is answered before the key is claimed, so nothing is recorded under it. If the
   application throws before any response exists (a runtime failure, not a 4xx or 5xx response),
   the claim is released with nothing recorded and a later submission applies fresh.
-- An identified `DELETE` must carry `If-Match`; without it the request is `400 USAGE` and nothing
-  is recorded. The delete's response echoes the `If-Match` token as its version headers, which is
+- An identified `DELETE` must carry a well-formed `If-Match` token, a content-addressed version
+  (`sha256:` followed by 64 lowercase hex characters, bare or in ETag form); without one, or with
+  an empty or malformed one, the request is `400 USAGE` before the key is claimed and nothing is
+  recorded. The delete's response echoes the `If-Match` token as its version headers, which is
   the version its recorded outcome is committed at. That holds for `deleted: false` as well: an
   absent target is the idempotent success the wire promises, and the token the client supplied
   remains the revision its outcome names.
