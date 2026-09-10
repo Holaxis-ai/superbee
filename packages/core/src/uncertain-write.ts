@@ -154,6 +154,24 @@ const defaultSleep: Sleep = (ms, signal) =>
 const UNKNOWN: Outcome = { kind: "unknown" };
 
 /**
+ * The outcome as it applies to `intent`. A conflict whose `actual` is the intent's own `local`
+ * version means the shared head already holds exactly this content, so the write is committed
+ * at that version. This is the wire's post-expiry compare-and-swap property: a committed write
+ * whose acknowledgement was lost and whose recorded outcome expired from the authority's
+ * retention window is resubmitted with its original `base`, which no longer matches, and the
+ * authority answers a conflict against the version the client itself committed. The mapping
+ * depends only on the outcome and the intent, so the primitive owns it and every consumer
+ * settles such a write as acknowledged rather than presenting it as a concurrent edit. Every
+ * other conflict, including one against an absent head (`actual: null`), is returned unchanged.
+ */
+export function settleAgainstIntent(outcome: Outcome, intent: OperationIntent): Outcome {
+  if (outcome.kind === "conflict" && outcome.actual !== null && outcome.actual === intent.local) {
+    return { kind: "committed", version: outcome.actual };
+  }
+  return outcome;
+}
+
+/**
  * One submission under a deadline. A transport rejection or a deadline overrun both yield
  * `unknown`: the request may have reached the authority, so nothing here decides otherwise.
  */
@@ -186,11 +204,12 @@ async function submitOnce(transport: OperationTransport, intent: OperationIntent
  * call.
  *
  * No resubmission happens without a `null` lookup because a blind retry after an unknown
- * outcome is unsound in both directions: if the earlier delivery committed, the retry's
- * `base` no longer matches the shared head and the authority answers with a conflict against
- * the intent's own write, which the client would then present as a concurrent edit; and on an
- * authority without request identity the retry applies the write twice. The lookup is what
- * turns "unknown" into a fact before any second delivery.
+ * outcome is unsound: on an authority without request identity the retry applies the write
+ * twice, and even on one with it the retry can only ever learn what the lookup already knew.
+ * The lookup is what turns "unknown" into a fact before any second delivery.
+ *
+ * Every outcome passes through {@link settleAgainstIntent} before it is returned, so a conflict
+ * that names the intent's own version is reported as committed at that version.
  */
 export async function performUncertainWrite(
   transport: OperationTransport,
@@ -205,11 +224,10 @@ export async function performUncertainWrite(
   let attempts = intent.attempts;
   let submissions = 0;
   let lookups = 0;
-  const finish = (outcome: Outcome): UncertainWriteResult => ({
-    intent: { ...intent, attempts, state: stateForOutcome(outcome) },
-    outcome,
-    lookups,
-  });
+  const finish = (raw: Outcome): UncertainWriteResult => {
+    const outcome = settleAgainstIntent(raw, intent);
+    return { intent: { ...intent, attempts, state: stateForOutcome(outcome) }, outcome, lookups };
+  };
 
   // A previously submitted intent starts at the lookup, never at a submission.
   let needSubmission = attempts === 0;

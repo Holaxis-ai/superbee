@@ -163,9 +163,12 @@ client whose response was lost can look the answer up instead of guessing.
   configurable with an injectable clock. A host states its window. A `404` after expiry is
   indistinguishable from never recorded. A resubmission after expiry is safe only because the
   write carries its compare-and-swap premise: a committed write resubmitted after expiry answers
-  `412` whose `actual` equals the client's own committed version, which the client treats as
-  committed. That property is what makes expiry safe, and it is why an identified write is always
-  a guarded write.
+  `412` whose `actual` equals the client's own committed version. The client's uncertain-write
+  primitive (`performUncertainWrite` in `@superbee/core/uncertain-write`) returns that outcome as
+  `{ "kind": "committed", "version": actual }`, so the intent is acknowledged at its own version
+  and its shared base moves, exactly as a `200` would have settled it; a `412` naming any other
+  version, or a deleted target, stays a conflict. That property is what makes expiry safe, and
+  it is why an identified write is always a guarded write.
 - `GET /v0/capabilities` reports `operations: true` exactly when the host records outcomes. A
   host without a store answers any request carrying `Idempotency-Key`, and the lookup route, with
   `400 USAGE` "request identity is not supported by this host".

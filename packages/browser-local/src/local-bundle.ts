@@ -413,6 +413,9 @@ export async function settleIntent(
       );
     }
     case "conflict": {
+      // A conflict naming the intent's own version never arrives here: `performUncertainWrite`
+      // settles the post-expiry 412 at the client's committed version as `committed`, so the
+      // branch above acknowledges it and moves base. What reaches this branch is a moved head.
       const remote = await remoteHead(options.remote, current.target, outcome.actual);
       return backend.updateIntent(requestId, "in_flight", { state: "conflict", attempts, remote });
     }

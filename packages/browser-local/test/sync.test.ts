@@ -285,6 +285,58 @@ test("lost acknowledgement: the fixture applies then drops the response; lookup 
   }
 });
 
+test("lost acknowledgement, lookup unreachable, then retention expired: the post-expiry 412 at the intent's own version settles as acknowledged, nothing is applied twice", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const committed = await commitLocal(local, "notes/gamma", edit("gamma v2\n"));
+    const requestId = committed.intent!.requestId;
+    const base = (await local.backend.readMeta<SharedBase>(baseKey("notes/gamma")))?.version;
+
+    // The authority applies and records the write, the response is lost, and the lookup route
+    // is unreachable: the outcome stays unknown and the intent returns to pending with one attempt.
+    fixture.knobs.dropAfterApply = true;
+    fixture.knobs.lookupFails = true;
+    const first = await push(local, fixture.transport, { remote: fixture.remote, write: immediate });
+    assert.deepEqual(first.settled.map((row) => row.state), ["pending"]);
+    assert.equal((await local.backend.readIntent(requestId))?.attempts, 1);
+    assert.equal(fixture.history.length, 1);
+    assert.equal((await fixture.authority.read("notes/gamma")).version, committed.version);
+    assert.equal((await local.backend.readMeta<SharedBase>(baseKey("notes/gamma")))?.version, base);
+
+    // Retention expires before the network is back: the lookup answers 404 as if never recorded,
+    // so the primitive resubmits the same identity, and the router's compare-and-swap answers 412
+    // whose `actual` is the version the client itself committed.
+    fixture.knobs.dropAfterApply = false;
+    fixture.knobs.lookupFails = false;
+    fixture.clock.skewMs = 25 * 60 * 60 * 1000;
+    const second = await push(local, fixture.transport, { remote: fixture.remote, write: immediate });
+    assert.equal(fixture.history.length, 2);
+    assert.equal(fixture.history[1]!.requestId, requestId);
+    assert.equal(fixture.history[1]!.status, 412);
+    assert.deepEqual(fixture.outcomes.get(requestId), { kind: "conflict", actual: committed.version });
+    assert.deepEqual(second.settled.map((row) => row.state), ["acknowledged"]);
+    const settled = await local.backend.readIntent(requestId);
+    assert.equal(settled?.state, "acknowledged");
+    assert.equal(settled?.acknowledgedVersion, committed.version);
+    assert.equal(settled?.finding, undefined);
+    assert.equal(settled?.remote, undefined);
+    assert.equal((await local.backend.readMeta<SharedBase>(baseKey("notes/gamma")))?.version, committed.version);
+    assert.equal((await fixture.authority.versions("notes/gamma")).length, 2);
+    assert.equal((await local.backend.read("notes/gamma")).doc.body, "gamma v2\n");
+    assert.deepEqual((await syncStatus(local)).counts, { pending: 0, in_flight: 0, acknowledged: 1, conflict: 0, refused: 0, unknown: 0 });
+
+    // Nothing is left to deliver.
+    const third = await push(local, fixture.transport, { remote: fixture.remote, write: immediate });
+    assert.deepEqual(third.settled, []);
+    assert.equal(fixture.history.length, 2);
+  } finally {
+    local.close();
+  }
+});
+
 test("network failure before apply: lookup returns null and a resubmission with the same requestId succeeds once", async () => {
   const fixture = await seededFixture();
   const factory = new IDBFactory();

@@ -119,6 +119,32 @@ test("a conflict and a refusal are real results: settled without lookup, states 
   assert.equal(stateForOutcome({ kind: "unknown" }), "unknown");
 });
 
+test("a conflict whose actual is the intent's own version is the write already committed: settled as committed, by submission and by lookup", async () => {
+  // The wire's post-expiry compare-and-swap: a committed write resubmitted after the authority's
+  // retention window answers a conflict against the client's own committed version.
+  const resubmitted = await performUncertainWrite(scripted({ submit: [{ kind: "conflict", actual: VERSION }] }), intent(), { sleep: immediate });
+  assert.deepEqual(resubmitted.outcome, { kind: "committed", version: VERSION });
+  assert.equal(resubmitted.intent.state, "acknowledged");
+  assert.equal(resubmitted.lookups, 0);
+
+  const recorded = await performUncertainWrite(
+    scripted({ submit: [new Error("socket closed")], lookup: [{ kind: "conflict", actual: VERSION }] }),
+    intent(),
+    { sleep: immediate },
+  );
+  assert.deepEqual(recorded.outcome, { kind: "committed", version: VERSION });
+  assert.equal(recorded.intent.state, "acknowledged");
+  assert.equal(recorded.lookups, 1);
+
+  // Any other head is a real conflict, and a null head (the target deleted) is too.
+  const other = await performUncertainWrite(scripted({ submit: [{ kind: "conflict", actual: OTHER }] }), intent(), { sleep: immediate });
+  assert.deepEqual(other.outcome, { kind: "conflict", actual: OTHER });
+  assert.equal(other.intent.state, "conflict");
+  const absent = await performUncertainWrite(scripted({ submit: [{ kind: "conflict", actual: null }] }), intent(), { sleep: immediate });
+  assert.deepEqual(absent.outcome, { kind: "conflict", actual: null });
+  assert.equal(absent.intent.state, "conflict");
+});
+
 test("a transport error then a lookup that finds committed settles without resubmission", async () => {
   const transport = scripted({
     submit: [new Error("socket closed")],
