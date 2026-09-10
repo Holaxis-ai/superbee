@@ -81,9 +81,8 @@ manual data-entry workflow.
 `process:quickstart-agent` is an advisory example actor identity; replace it with the actual actor
 identity (`human:<id>`, `process:<id>`, or `<producer>/<version>`).
 
-New bundles use Superbee's current portable format automatically. Existing older bundles remain
-supported in place; Superbee detects their declared format and applies compatibility behavior
-without requiring an ordinary-use migration.
+New Superbee bundles use Open Knowledge Format (OKF) v0.2. Existing OKF v0.1 bundles remain
+supported without automatic migration.
 
 The conventional `.superbee/` folder at the project root is discovered with zero
 config (the way git finds `.git`) — every command after setup runs bare from anywhere in
@@ -210,9 +209,9 @@ no access or authority; see
   `examples/recipes/review-workflow` is a complete content-free cognitive ecosystem: a
   self-describing Review Request kind plus a generic live View, with no review instances.
 
-Bundles are valid [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
-— plain markdown any conformant tool can read. Superbee writes the current format for new bundles
-and preserves existing legacy bundles without rewriting their declared edition.
+Bundles use [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf)
+v0.2 by default - plain markdown any tool conforming to that edition can read. Existing OKF v0.1
+bundles remain supported without rewriting their declared edition.
 
 ## What's solid
 
