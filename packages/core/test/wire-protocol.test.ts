@@ -1017,6 +1017,8 @@ test("wire: the operation transport reads capabilities once before its first sub
   assert.equal(capabilityReads, 2);
 });
 
+// A performance row: with a monotonic clock the old full scan and the front-stop loop delete the
+// same records, so this pins the observable outcome, not the loop shape.
 test("wire: MemoryOperationOutcomeStore prunes expired records from the front and stops at the first live one", async () => {
   let clock = 0;
   const store = new MemoryOperationOutcomeStore({ retentionMs: 25, now: () => clock });
@@ -1192,4 +1194,9 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
   status = 403;
   code = "FORBIDDEN";
   assert.deepEqual(await transport.submit(intent), { kind: "refused", code: "FORBIDDEN", message: "FORBIDDEN from the wire" });
+
+  // A gated host that refuses the capabilities route itself is classified the same way, so the
+  // authorization pause fires instead of an unknown loop.
+  const gated = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: async () => envelope(401, "AUTH_REQUIRED"), maxRetries: 0 }));
+  assert.deepEqual(await gated.submit(intent), { kind: "refused", code: "AUTH_REQUIRED", message: "AUTH_REQUIRED from the wire" });
 });

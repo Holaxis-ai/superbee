@@ -24,6 +24,15 @@
  * carrier error and is retried on the next call. {@link openRemoteOperationTransport} runs the
  * same check eagerly for a caller that is online at construction and wants the answer up front.
  *
+ * Two limits of the lazy check. The uncertain-write primitive classifies every thrown error
+ * from `submit` or `lookup` as unknown, so the lazy variant's negative verdict shows up as an
+ * intent that stays pending on every push, not as a named refusal; a product caller that wants
+ * the verdict visible uses {@link openRemoteOperationTransport} or reads `wireCapabilities()`
+ * itself. And the check is memoized on success: a host downgraded afterwards is not detected,
+ * so one unidentified resubmission can reach it. Because every identified write is guarded by
+ * its base, that exposure is bounded to a spurious conflict at a moved head, never a double
+ * application.
+ *
  * This module imports nothing from Node so a browser working copy and a Node consumer share
  * one transport over one client adapter.
  */
@@ -76,7 +85,6 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
   };
   const transport: OperationTransport = {
     async submit(intent: OperationIntent): Promise<Outcome> {
-      await ensureSupported();
       if (intent.kind !== "document.write") {
         throw new Error(`remote operation transport: unsupported intent kind '${intent.kind}'`);
       }
@@ -87,6 +95,9 @@ function buildTransport(remote: RemoteBackend, options: RemoteOperationTransport
         ...(options.actor === undefined ? {} : { actor: options.actor }),
       };
       try {
+        // Inside the mapping so a 4xx from the capabilities route (a gated host answering 401
+        // or 403 there) is classified like a 4xx from the write and can pause the bundle.
+        await ensureSupported();
         const version = await remote.write(intent.target, { id: intent.target, frontmatter, body }, writeOptions);
         return { kind: "committed", version };
       } catch (error) {
