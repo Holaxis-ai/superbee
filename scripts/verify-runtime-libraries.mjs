@@ -84,8 +84,10 @@ async function verifyRuntimeLibraries() {
 import { VersionConflict } from "@superbee/core/storage";
 import { parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType } from "@superbee/core/document-codec";
 import { RemoteBackend } from "@superbee/core/remote";
+import { MemoryBackend } from "@superbee/core/memory-backend";
+import { mutateDocument } from "@superbee/core/document-mutation";
 import { createRouter, resolveWireRequest } from "@superbee/server/router";
-export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteBackend, parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType };
+export const runtime = { createRouter, resolveWireRequest, writeDocVersioned, VersionConflict, RemoteBackend, MemoryBackend, mutateDocument, parseMarkdown, stringifyDoc, versionFromBytes, resolveContentType };
 `,
     );
     const result = await build({
@@ -113,6 +115,20 @@ const raw = runtime.stringifyDoc(doc.frontmatter, doc.body);
 assert.deepEqual(runtime.parseMarkdown(raw), doc);
 assert.match(await runtime.versionFromBytes(new TextEncoder().encode(raw)), /^sha256:[a-f0-9]{64}$/);
 assert.equal(runtime.resolveContentType("image.svg"), "image/svg+xml");
+const backend = new runtime.MemoryBackend();
+await backend.writeReserved("", "index.md", "---\\nokf_version: '0.2'\\n---\\n");
+const bundle = { root: "/unused", backend };
+const id = "proof/collection";
+await runtime.writeDocVersioned(backend, { id, frontmatter: { type: "Note", tags: ["existing"] }, body: "preserved" });
+const options = { bundle, id, mode: "patch", registry: { kinds: new Map(), warnings: [] }, strict: false,
+  actor: "process:package-proof", input: { kind: "field-action", action: { action: "add", field: "tags", value: "added" } } };
+const added = await runtime.mutateDocument(options);
+assert.deepEqual(added.doc.frontmatter.tags, ["existing", "added"]);
+assert.equal(added.scope.outcome, "added");
+const repeated = await runtime.mutateDocument(options);
+assert.equal(repeated.changed, false);
+assert.equal(repeated.version, added.version);
+assert.equal((await backend.read(id)).doc.body.trim(), "preserved");
 `], { cwd: scratch });
 
     return {
