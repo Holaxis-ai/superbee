@@ -47,6 +47,7 @@ import {
   isAuthorizationRefusal,
   mintRequestId,
   performUncertainWrite,
+  settleAgainstIntent,
   type OperationState,
   type OperationTransport,
   type Outcome,
@@ -402,6 +403,10 @@ export async function settleIntent(
   const backend = backendOf(local);
   const current = await backend.readIntent(requestId);
   if (!current) throw new IntentStateConflict(requestId, "in_flight", null);
+  // The primitive already settles a conflict at the intent's own version as committed; applying
+  // the same rule here keeps this exported function correct for a caller that passes a raw
+  // transport outcome, so no path can land the client's own commit as a concurrent edit.
+  outcome = settleAgainstIntent(outcome, current);
   switch (outcome.kind) {
     case "committed": {
       const finding = outcome.version === current.local ? undefined : `acknowledged version ${outcome.version} differs from local version ${current.local}`;
@@ -413,9 +418,8 @@ export async function settleIntent(
       );
     }
     case "conflict": {
-      // A conflict naming the intent's own version never arrives here: `performUncertainWrite`
-      // settles the post-expiry 412 at the client's committed version as `committed`, so the
-      // branch above acknowledges it and moves base. What reaches this branch is a moved head.
+      // What reaches this branch is a moved head: a conflict naming the intent's own version was
+      // settled as committed above.
       const remote = await remoteHead(options.remote, current.target, outcome.actual);
       return backend.updateIntent(requestId, "in_flight", { state: "conflict", attempts, remote });
     }

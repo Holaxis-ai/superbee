@@ -285,6 +285,34 @@ test("lost acknowledgement: the fixture applies then drops the response; lookup 
   }
 });
 
+test("settleIntent applies the own-version rule itself: a raw conflict whose actual is the intent's local version is acknowledged and moves base, a conflict at another version stays a conflict", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const committed = await commitLocal(local, "notes/gamma", edit("gamma v2\n"));
+    const requestId = committed.intent!.requestId;
+    await local.backend.updateIntent(requestId, "pending", { state: "in_flight" });
+
+    // Bypass the primitive: hand settleIntent the transport's raw answer for a post-expiry 412.
+    const settled = await settleIntent(local, requestId, { kind: "conflict", actual: committed.version }, 1);
+    assert.equal(settled.state, "acknowledged");
+    assert.equal(settled.acknowledgedVersion, committed.version);
+    assert.equal(settled.finding, undefined);
+    assert.equal((await local.backend.readMeta<SharedBase>(baseKey("notes/gamma")))?.version, committed.version);
+
+    const other = await commitLocal(local, "notes/beta", edit("beta v2\n"));
+    await local.backend.updateIntent(other.intent!.requestId, "pending", { state: "in_flight" });
+    const movedHead = (await fixture.authority.read("notes/beta")).version;
+    const conflict = await settleIntent(local, other.intent!.requestId, { kind: "conflict", actual: movedHead }, 1, { remote: fixture.remote });
+    assert.equal(conflict.state, "conflict");
+    assert.equal(conflict.remote?.version, movedHead);
+  } finally {
+    local.close();
+  }
+});
+
 test("lost acknowledgement, lookup unreachable, then retention expired: the post-expiry 412 at the intent's own version settles as acknowledged, nothing is applied twice", async () => {
   const fixture = await seededFixture();
   const factory = new IDBFactory();

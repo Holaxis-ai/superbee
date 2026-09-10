@@ -27,7 +27,7 @@ import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 import { InvalidInputError } from "../src/errors.js";
 import { stringifyDoc } from "../src/frontmatter.js";
 import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
-import { createRemoteOperationTransport } from "../src/remote-operations.js";
+import { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "../src/remote-operations.js";
 import type { OperationIntent } from "../src/uncertain-write.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import {
@@ -966,6 +966,94 @@ test("wire: MemoryOperationOutcomeStore releases the claim and settles waiters w
   assert.equal((await store.lookup("bundle", "clock-1"))?.outcome.kind, "committed");
 });
 
+test("wire: the operation transport reads capabilities once before its first submission or lookup and refuses a host that reports operations:false, so nothing identified reaches it", async () => {
+  const bare = new SpyBackend(new ServerMemoryBackend());
+  const withoutStore = createRouterForBackend(bare, { outcomes: null });
+  const unsupported = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: withoutStore, maxRetries: 0 });
+  // The memory backend reports no history and no enforced CAS; the point here is `operations`.
+  assert.deepEqual(await unsupported.wireCapabilities(), { history: false, enforced_cas: false, projections: true, backlinks: false, blobs: true, operations: false });
+  await assert.rejects(openRemoteOperationTransport(unsupported), (err: unknown) => err instanceof OperationsUnsupportedError && err.code === "OPERATIONS_UNSUPPORTED");
+
+  const intent: OperationIntent = {
+    requestId: "op-preflight",
+    kind: "document.write",
+    target: "concepts/preflight",
+    base: null,
+    local: "sha256:local",
+    content: stringifyDoc({ type: "T", timestamp: T_DOC }, "x"),
+    createdAt: T_DOC,
+    attempts: 0,
+    state: "pending",
+  };
+  const lazy = createRemoteOperationTransport(unsupported);
+  await assert.rejects(lazy.submit(intent), OperationsUnsupportedError);
+  await assert.rejects(lazy.lookup("op-preflight"), OperationsUnsupportedError);
+  assert.deepEqual(bare.calls, [], "no write and no read reached the unsupported host's backend");
+
+  // A supported host is asked once; later submissions and lookups do not repeat the read.
+  const { router } = freshSpiedRouter();
+  let capabilityReads = 0;
+  const counting = async (request: Request) => {
+    if (new URL(request.url).pathname === "/v0/capabilities") capabilityReads += 1;
+    return router(request);
+  };
+  const supported = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: counting, maxRetries: 0 });
+  const transport = createRemoteOperationTransport(supported);
+  const first = await transport.submit(intent);
+  assert.equal(first.kind, "committed");
+  assert.equal((await transport.lookup("op-preflight"))?.kind, "committed");
+  assert.equal(capabilityReads, 1);
+
+  // A check that cannot reach the authority fails like a carrier error and is retried next time.
+  let reachable = false;
+  const flaky = async (request: Request) => {
+    if (!reachable) throw new TypeError("fetch failed: authority unreachable");
+    return counting(request);
+  };
+  const retrying = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: flaky, maxRetries: 0 }));
+  await assert.rejects(retrying.lookup("op-preflight"), TypeError);
+  reachable = true;
+  assert.equal((await retrying.lookup("op-preflight"))?.kind, "committed");
+  assert.equal(capabilityReads, 2);
+});
+
+// A performance row: with a monotonic clock the old full scan and the front-stop loop delete the
+// same records, so this pins the observable outcome, not the loop shape.
+test("wire: MemoryOperationOutcomeStore prunes expired records from the front and stops at the first live one", async () => {
+  let clock = 0;
+  const store = new MemoryOperationOutcomeStore({ retentionMs: 25, now: () => clock });
+  const operation = { method: "PUT", id: "concepts/c", response: { status: 200, headers: [], body: "{}" }, outcome: { kind: "committed", version: "sha256:" + "0".repeat(64) } } as const;
+  const record = async (key: string): Promise<void> => {
+    const claimed = await store.claim("bundle", key);
+    assert.equal(claimed.kind, "claimed");
+    if (claimed.kind === "claimed") claimed.record(operation);
+  };
+  await record("k1");
+  clock = 10;
+  await record("k2");
+  clock = 20;
+  await record("k3");
+  assert.equal(store.size, 3);
+  // At 36 only k1 and k2 (recorded at 0 and 10) are past the 25 ms window; the scan stops at k3.
+  clock = 36;
+  await record("k4");
+  assert.equal(store.size, 2);
+  assert.equal(await store.lookup("bundle", "k1"), null);
+  assert.equal(await store.lookup("bundle", "k2"), null);
+  assert.equal((await store.lookup("bundle", "k3"))?.recordedAt, 20);
+  assert.equal((await store.lookup("bundle", "k4"))?.recordedAt, 36);
+  // Nothing expired: a record scans one live entry and keeps everything.
+  clock = 37;
+  await record("k5");
+  assert.equal(store.size, 3);
+  // A lookup drops an expired record on its own; the next record's scan starts at what is left.
+  clock = 70;
+  assert.equal(await store.lookup("bundle", "k3"), null);
+  assert.equal(store.size, 2);
+  await record("k6");
+  assert.equal(store.size, 1);
+});
+
 /** A backend whose next `failures` writes reject with a runtime error after a tick, then behave. */
 class FlakyWriteBackend extends ServerMemoryBackend {
   failures = 0;
@@ -1079,7 +1167,11 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
     new Response(JSON.stringify({ error: { code, message: `${code} from the wire` } }), { status, headers: { "content-type": "application/json" } });
   let status = 503;
   let code = "RUNTIME";
-  const fetchImpl = async () => envelope(status, code);
+  const supported = { history: false, enforced_cas: false, projections: true, backlinks: false, blobs: true, operations: true };
+  const fetchImpl = async (request: Request) =>
+    new URL(request.url).pathname === "/v0/capabilities"
+      ? new Response(JSON.stringify(supported), { status: 200, headers: { "content-type": "application/json" } })
+      : envelope(status, code);
   const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl, maxRetries: 0 });
   const transport = createRemoteOperationTransport(remote);
   const intent: OperationIntent = {
@@ -1102,4 +1194,9 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
   status = 403;
   code = "FORBIDDEN";
   assert.deepEqual(await transport.submit(intent), { kind: "refused", code: "FORBIDDEN", message: "FORBIDDEN from the wire" });
+
+  // A gated host that refuses the capabilities route itself is classified the same way, so the
+  // authorization pause fires instead of an unknown loop.
+  const gated = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: async () => envelope(401, "AUTH_REQUIRED"), maxRetries: 0 }));
+  assert.deepEqual(await gated.submit(intent), { kind: "refused", code: "AUTH_REQUIRED", message: "AUTH_REQUIRED from the wire" });
 });

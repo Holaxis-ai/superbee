@@ -162,9 +162,17 @@ export class MemoryOperationOutcomeStore implements OperationOutcomeStore {
     return this.now() - record.recordedAt >= this.retentionMs;
   }
 
+  /**
+   * Drop expired records from the front of the map. Records are inserted in clock order (a
+   * record always lands as a fresh key, since `live` removes an expired one before a new claim
+   * can be handed out), so the scan stops at the first live record and each record is visited
+   * once over its life. A clock that moves backwards can leave an expired record behind a live
+   * one; `live` still drops it on its next touch, so correctness never depends on this scan.
+   */
   private prune(): void {
     for (const [slot, record] of this.recorded) {
-      if (this.expired(record)) this.recorded.delete(slot);
+      if (!this.expired(record)) break;
+      this.recorded.delete(slot);
     }
   }
 }

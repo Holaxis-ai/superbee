@@ -128,6 +128,17 @@ export class RemoteError extends Error {
   }
 }
 
+/** The deployment-scoped capability booleans a wire authority reports (`docs/WIRE-PROTOCOL.md`). */
+export interface WireCapabilities {
+  history: boolean;
+  enforced_cas: boolean;
+  projections: boolean;
+  backlinks: boolean;
+  blobs: boolean;
+  /** Whether document writes carrying `Idempotency-Key` are recorded and readable by lookup. */
+  operations: boolean;
+}
+
 /** An ENOENT-shaped rejection so missing-document handling matches the local adapters. */
 function notFound(id: string): NodeJS.ErrnoException {
   const err = new Error(`no concept document '${id}'`) as NodeJS.ErrnoException;
@@ -265,12 +276,17 @@ export class RemoteBackend implements StorageBackend {
     this.maxRetries = options.maxRetries ?? 3;
   }
 
+  /** The authority's base URL as configured, without a trailing slash. */
+  get origin(): string {
+    return this.baseUrl;
+  }
+
   /** Build the absolute URL for a bundle-relative wire path (e.g. `/docs/concepts/x`). */
   private url(bundleRelativePath: string): string {
     return `${this.baseUrl}/v0/bundles/${encodeURIComponent(this.bundle)}${bundleRelativePath}`;
   }
 
-  private async send(bundleRelativePath: string, init: RequestInit = {}): Promise<Response> {
+  private async send(path: string, init: RequestInit = {}, scope: "bundle" | "deployment" = "bundle"): Promise<Response> {
     // Attach Authorization on EVERY request when an authToken is configured — the reference
     // server ignores the header (no auth enforced), while a separate gated deployment may
     // require it. Merged onto any caller-supplied headers rather than overwriting `init`.
@@ -279,7 +295,8 @@ export class RemoteBackend implements StorageBackend {
       headers.set("Authorization", `Bearer ${this.authToken}`);
       init = { ...init, headers };
     }
-    const url = this.url(bundleRelativePath);
+    // `deployment` paths (`/v0/capabilities`) sit outside the bundle prefix.
+    const url = scope === "bundle" ? this.url(path) : `${this.baseUrl}${path}`;
     // Retry TRANSIENT failures — a transient 5xx (notably a Cloudflare D1 cold-start's 500 "storage
     // object reset" when a hibernated database is first hit; also 502/503/504 from the edge) or a
     // network/transport error — with exponential backoff + jitter, so a hibernated-backend hiccup is
@@ -401,6 +418,28 @@ export class RemoteBackend implements StorageBackend {
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { version: Version };
     return payload.version;
+  }
+
+  /**
+   * `GET /v0/capabilities`, deployment-scoped: what this authority implements. `operations` says
+   * whether it records outcomes by request identity. A host without it ignores `Idempotency-Key`
+   * and answers the lookup route with a route-miss `404`, which {@link lookupOperation} cannot
+   * tell from "never recorded"; a consumer that relies on identity checks this once before it
+   * sends any intent. Missing booleans read as `false`.
+   */
+  async wireCapabilities(): Promise<WireCapabilities> {
+    const res = await this.send("/v0/capabilities", { method: "GET" }, "deployment");
+    if (!res.ok) throw await this.toError(res, "capabilities");
+    const payload = (await res.json()) as Partial<Record<keyof WireCapabilities, unknown>>;
+    const flag = (name: keyof WireCapabilities): boolean => payload?.[name] === true;
+    return {
+      history: flag("history"),
+      enforced_cas: flag("enforced_cas"),
+      projections: flag("projections"),
+      backlinks: flag("backlinks"),
+      blobs: flag("blobs"),
+      operations: flag("operations"),
+    };
   }
 
   /**
