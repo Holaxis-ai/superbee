@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Browser-local working copy of a Superbee bundle: the IndexedDB bundle path proven in real Chromium.",
+  "description": "Browser-local working copy of a Superbee bundle: the IndexedDB bundle path proven in real Chromium, with the intent journal and sync verbs that relate it to a shared authority.",
   "license": "Apache-2.0",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -20,6 +20,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
+    "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
     "test:browser": "playwright install chromium && playwright test --config playwright.config.ts"
   },
   "dependencies": {
@@ -27,8 +28,10 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.49.0",
+    "@superbee/server": "*",
     "@types/node": "^22.20.0",
     "esbuild": "^0.25.12",
+    "fake-indexeddb": "6.2.5",
     "typescript": "^5.9.3"
   }
 }

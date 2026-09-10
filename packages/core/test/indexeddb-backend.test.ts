@@ -2,8 +2,10 @@
  * Adversarial rows for the IndexedDB adapter's risky mechanics: single-transaction CAS under a
  * two-peer race, an interrupted (aborted) write, persistence across instances, schema refusal,
  * binary blob fidelity, byte parity with the filesystem adapter, a close() that lands while an
- * open is in flight, and a decide callback that throws inside the transaction. The contract kit
- * proves the seam; these rows attack the mechanics the kit states only once.
+ * open is in flight, a decide callback that throws inside the transaction, and the intent
+ * journal: a document write and its intent commit or abort together, settling an intent is a
+ * compare-and-swap two peers cannot both win, and the plain write path records nothing. The
+ * contract kit proves the seam; these rows attack the mechanics the kit states only once.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,7 +16,14 @@ import { IDBFactory } from "fake-indexeddb";
 
 import { FilesystemBackend } from "../src/backend.js";
 import { mutateDocument } from "../src/document-mutation.js";
-import { IndexedDbBackend, IndexedDbSchemaError, INDEXEDDB_SCHEMA_VERSION, type IdbFactoryLike } from "../src/indexeddb-backend.js";
+import {
+  IndexedDbBackend,
+  IndexedDbSchemaError,
+  INDEXEDDB_SCHEMA_VERSION,
+  IntentStateConflict,
+  type IdbFactoryLike,
+  type NewIntentRecord,
+} from "../src/indexeddb-backend.js";
 import type { KindRegistry } from "../src/kinds.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import type { OkfDocument, StorageBackend, Version } from "../src/types.js";
@@ -319,6 +328,7 @@ test("a database with a foreign layout or a newer schema version is refused, and
   await good.write("a/b", doc("a/b", "x"));
   assert.deepEqual(await good.list(), ["a/b"]);
   good.close();
+  assert.deepEqual(await describeRaw(factory, "good"), { version: 1, stores: ["blobs", "documents", "intents", "meta", "reserved"] });
 });
 
 test("invalid UTF-8 blob bytes round-trip byte-identical with MemoryBackend's token", async () => {
@@ -455,5 +465,152 @@ test("a decide callback that throws rejects the write with its own error and lea
     await backend.writeBlob(key, new Uint8Array([7]), undefined, { expectedVersion: before });
   } finally {
     backend.close();
+  }
+});
+
+function newIntent(requestId: string, target: string, base: string | null): NewIntentRecord {
+  return { requestId, kind: "document.write", target, base, baseContent: null, createdAt: "2026-09-10T00:00:00.000Z" };
+}
+
+test("writeJournaled commits the document and its intent together: an aborted transaction leaves neither", async () => {
+  const inner = new IDBFactory();
+  const armed = { value: false };
+  const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: abortAfterPutFactory(inner, armed) });
+  try {
+    const id = "journal/document";
+    armed.value = true;
+    await assert.rejects(
+      backend.writeJournaled(id, doc(id, "never"), { expectedVersion: null, intent: newIntent("req-aborted", id, null) }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.notEqual(error.name, "VersionConflict");
+        assert.notEqual(error.name, "IntentStateConflict");
+        return true;
+      },
+    );
+    armed.value = false;
+    assert.equal(await backend.exists(id), false);
+    assert.deepEqual(await backend.listIntents(), []);
+    assert.equal(await backend.readMeta("intents:sequence"), undefined);
+
+    const { version, intent } = await backend.writeJournaled(id, doc(id, "committed"), {
+      expectedVersion: null,
+      intent: newIntent("req-1", id, null),
+      meta: [{ key: "base:" + id, value: { version: null, content: null } }],
+    });
+    assert.ok(intent);
+    assert.equal(intent.local, version);
+    assert.equal(intent.state, "pending");
+    assert.equal(intent.attempts, 0);
+    assert.equal(intent.sequence, 1);
+    assert.equal((await backend.read(id)).version, version);
+    assert.deepEqual((await backend.listIntents("pending")).map((row) => row.requestId), ["req-1"]);
+    assert.deepEqual(await backend.readMeta("base:" + id), { version: null, content: null });
+
+    // A failed document CAS records no intent and consumes no sequence number.
+    await assert.rejects(
+      backend.writeJournaled(id, doc(id, "stale"), { expectedVersion: "sha256:" + "0".repeat(64), intent: newIntent("req-stale", id, null) }),
+      VersionConflict,
+    );
+    assert.equal(await backend.readIntent("req-stale"), undefined);
+    assert.equal(await backend.readMeta("intents:sequence"), 1);
+
+    // Superseding requires the old intent's state and attempts to match; a moved intent fails the whole write.
+    await backend.updateIntent("req-1", "pending", { state: "in_flight", attempts: 1 });
+    await assert.rejects(
+      backend.writeJournaled(id, doc(id, "composed"), {
+        expectedVersion: version,
+        intent: newIntent("req-2", id, null),
+        supersede: { requestId: "req-1", expectedState: "pending", expectedAttempts: 0 },
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof IntentStateConflict);
+        assert.equal(error.actual, "in_flight");
+        return true;
+      },
+    );
+    assert.equal((await backend.read(id)).version, version);
+    assert.equal(await backend.readIntent("req-2"), undefined);
+    assert.equal((await backend.readIntent("req-1"))?.state, "in_flight");
+
+    // With matching expectations the old intent is deleted and the new one recorded, atomically.
+    await backend.updateIntent("req-1", "in_flight", { state: "pending", attempts: 0 });
+    const composed = await backend.writeJournaled(id, doc(id, "composed"), {
+      expectedVersion: version,
+      intent: newIntent("req-2", id, null),
+      supersede: { requestId: "req-1", expectedState: "pending", expectedAttempts: 0 },
+    });
+    assert.equal(await backend.readIntent("req-1"), undefined);
+    assert.equal(composed.intent?.sequence, 2);
+    assert.deepEqual((await backend.listIntents()).map((row) => row.requestId), ["req-2"]);
+  } finally {
+    backend.close();
+  }
+});
+
+test("two peers racing to settle one intent: exactly one wins, the loser sees IntentStateConflict and changes nothing", async () => {
+  const factory = new IDBFactory();
+  const peers = [open(factory, DB), open(factory, DB)];
+  try {
+    const id = "settle/document";
+    await peers[0]!.writeJournaled(id, doc(id, "edit"), { expectedVersion: null, intent: newIntent("req-race", id, null) });
+    await peers[0]!.updateIntent("req-race", "pending", { state: "in_flight", attempts: 1 });
+    const results = await Promise.allSettled(
+      peers.map((peer, index) =>
+        peer.updateIntent(
+          "req-race",
+          "in_flight",
+          { state: "acknowledged", acknowledgedVersion: `sha256:${String(index).repeat(64)}` },
+          { meta: [{ key: "base:" + id, value: { peer: index } }] },
+        ),
+      ),
+    );
+    const wins = results.filter((r) => r.status === "fulfilled");
+    const losses = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+    assert.equal(wins.length, 1);
+    assert.equal(losses.length, 1);
+    assert.ok(losses[0]!.reason instanceof IntentStateConflict);
+    assert.equal(losses[0]!.reason.actual, "acknowledged");
+    const winner = peers.indexOf(peers[results.findIndex((r) => r.status === "fulfilled")]!);
+    const settled = await peers[1]!.readIntent("req-race");
+    assert.equal(settled?.state, "acknowledged");
+    assert.equal(settled?.acknowledgedVersion, `sha256:${String(winner).repeat(64)}`);
+    // The loser's meta row never landed: the meta put rides the same transaction as the CAS.
+    assert.deepEqual(await peers[0]!.readMeta("base:" + id), { peer: winner });
+    // A missing intent is the same refusal.
+    await assert.rejects(peers[0]!.updateIntent("req-missing", "pending", { state: "in_flight" }), (error: unknown) => {
+      assert.ok(error instanceof IntentStateConflict);
+      assert.equal(error.actual, null);
+      return true;
+    });
+  } finally {
+    for (const peer of peers) peer.close();
+  }
+});
+
+test("a plain write records no intent, and the journal survives a reopen on the same database", async () => {
+  const factory = new IDBFactory();
+  const first = open(factory, DB);
+  const id = "plain/document";
+  await first.write(id, doc(id, "engine path"));
+  assert.deepEqual(await first.listIntents(), []);
+  const journaled = await first.writeJournaled("journaled/document", doc("journaled/document", "sync path"), {
+    expectedVersion: null,
+    intent: newIntent("req-keep", "journaled/document", null),
+  });
+  await first.writeMeta("bootstrap", { generation: 1, complete: true });
+  first.close();
+
+  const second = open(factory, DB);
+  try {
+    const rows = await second.listIntents("pending");
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!.requestId, "req-keep");
+    assert.equal(rows[0]!.local, journaled.version);
+    assert.equal(rows[0]!.content, (await second.read("journaled/document")).version === journaled.version ? rows[0]!.content : "");
+    assert.deepEqual(await second.readMeta("bootstrap"), { generation: 1, complete: true });
+    assert.deepEqual(await second.list(), ["journaled/document", id]);
+  } finally {
+    second.close();
   }
 });

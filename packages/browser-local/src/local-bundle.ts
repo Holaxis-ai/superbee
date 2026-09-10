@@ -1,12 +1,44 @@
 /**
- * The browser-local working copy's entry: one {@link IndexedDbBackend} per bundle name, handed
- * to the engine as `bundle.backend` so every read, query, validation, and compare-and-swap
- * write runs against the page's own IndexedDB. Nothing here talks to a server; sync and UI are
- * separate concerns that build on this seam.
+ * The browser-local working copy's runtime: one {@link IndexedDbBackend} per bundle name,
+ * handed to the engine as `bundle.backend` so every read, query, validation, and
+ * compare-and-swap write runs against the page's own IndexedDB, plus the synchronization
+ * verbs that relate that copy to a shared authority.
+ *
+ * Ownership of meaning: the shared authority admits writes; the working copy records intent.
+ * Every local document write goes through {@link commitLocal}, which journals a pending intent
+ * in the same IndexedDB transaction as the record change, so no committed local edit exists
+ * without its pending-change record. {@link push} delivers intents through the core
+ * uncertain-write primitive and marks one synchronized only when the authority's matching
+ * outcome is known. {@link pull} refreshes documents that carry no unsettled intent and records
+ * their new shared base; it never replaces the base under a pending edit, so a changed shared
+ * head is discovered by push as an explicit conflict that preserves base, local, and remote.
+ *
+ * Meta rows this module owns: `bootstrap` (the completion marker), `sync` (the pause flag),
+ * `pull` (the last pull's progress), and `base:<id>` (the shared version and serialized content
+ * a document was last known to share with the authority).
  */
 
-import type { Bundle } from "@superbee/core";
-import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
+import type { Bundle, ConceptId, OkfDocument, StorageBackend, Version, WriteOptions } from "@superbee/core";
+import { stringifyDoc } from "@superbee/core/document-codec";
+import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
+import {
+  IndexedDbBackend,
+  IntentStateConflict,
+  type IdbFactoryLike,
+  type IntentRecord,
+  type MetaRecord,
+  type NewIntentRecord,
+} from "@superbee/core/indexeddb-backend";
+import type { KindRegistry } from "@superbee/core/kinds";
+import {
+  isAuthorizationRefusal,
+  mintRequestId,
+  performUncertainWrite,
+  type OperationState,
+  type OperationTransport,
+  type Outcome,
+  type UncertainWriteOptions,
+} from "@superbee/core/uncertain-write";
 
 export interface OpenLocalBundleOptions {
   /** The IndexedDB factory to open the working copy with. Defaults to the page's `indexedDB`. */
@@ -29,4 +61,511 @@ export function openLocalBundle(name: string, options: OpenLocalBundleOptions = 
   const backend = new IndexedDbBackend({ databaseName: name, indexedDB: options.indexedDB });
   const bundle: Bundle = { root: `indexeddb://${name}`, backend };
   return { bundle, backend, close: () => backend.close() };
+}
+
+/** Every verb below accepts the opened bundle or its backend directly. */
+export type LocalTarget = LocalBundle | IndexedDbBackend;
+
+function backendOf(target: LocalTarget): IndexedDbBackend {
+  return target instanceof IndexedDbBackend ? target : target.backend;
+}
+
+// ── meta rows ──────────────────────────────────────────────────────────────────────────────
+
+const BOOTSTRAP_KEY = "bootstrap";
+const SYNC_KEY = "sync";
+const PULL_KEY = "pull";
+const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
+
+/** Meta key for the shared base of one document. */
+export function baseKey(id: ConceptId): string {
+  return `base:${id}`;
+}
+
+/** The shared version and serialized content a document was last known to hold at the authority. */
+export interface SharedBase {
+  version: Version | null;
+  content: string | null;
+}
+
+export interface BootstrapMarker {
+  generation: number;
+  startedAt: string;
+  complete: boolean;
+  completedAt?: string;
+  documentCount?: number;
+  /** Observations recorded during hydration, such as a local token differing from the shared one. */
+  findings?: string[];
+}
+
+export interface SyncControl {
+  paused: boolean;
+  reason?: string;
+  since?: string;
+}
+
+export interface PullMarker {
+  startedAt: string;
+  completedAt: string | null;
+  refreshed: number;
+}
+
+/** States in which an intent still describes a local edit the authority has not accepted. */
+export const UNSETTLED_STATES: readonly OperationState[] = ["pending", "in_flight", "conflict", "refused", "unknown"];
+
+function baseRow(id: ConceptId, base: SharedBase): MetaRecord {
+  return { key: baseKey(id), value: base };
+}
+
+function chunked<T>(items: readonly T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let start = 0; start < items.length; start += size) out.push(items.slice(start, start + size));
+  return out;
+}
+
+/** The version of the document currently stored locally, or `null` when absent. */
+async function localVersion(backend: IndexedDbBackend, id: ConceptId): Promise<Version | null> {
+  try {
+    return (await backend.read(id)).version;
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+// ── bootstrap ──────────────────────────────────────────────────────────────────────────────
+
+export interface BootstrapOptions {
+  /** Called after each document is hydrated; a progress hook for a page, a fault point for a test. */
+  onHydrated?: (id: ConceptId, index: number, total: number) => void | Promise<void>;
+  /** Documents fetched per `readMany` round trip. */
+  batchSize?: number;
+}
+
+/**
+ * Hydrate the working copy from the authority: every remote document is written locally with
+ * the shared version recorded as its base, the root `index.md` is copied so the local edition
+ * matches, and only after every write has committed does the marker say `complete`. The marker
+ * is written incomplete first, so an interruption at any point leaves a bundle that reports
+ * itself incomplete rather than an apparently complete, partially hydrated one.
+ *
+ * Bootstrap refuses to run over unsettled intents: rewriting their targets would discard local
+ * edits the authority has not accepted.
+ */
+export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
+  const backend = backendOf(local);
+  const unsettled = await backend.listIntents(UNSETTLED_STATES);
+  if (unsettled.length > 0) {
+    throw new Error(`bootstrap refused: ${unsettled.length} unsettled intent(s) would be discarded; push or resolve them first.`);
+  }
+  const previous = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
+  const generation = (previous?.generation ?? 0) + 1;
+  const startedAt = new Date().toISOString();
+  await backend.writeMeta(BOOTSTRAP_KEY, { generation, startedAt, complete: false } satisfies BootstrapMarker);
+
+  const rootIndex = await remote.readReserved("", "index.md");
+  if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
+
+  const ids = await remote.list();
+  const findings: string[] = [];
+  let index = 0;
+  for (const batch of chunked(ids, options.batchSize ?? 25)) {
+    const heads = await remote.readMany(batch);
+    for (const head of heads) {
+      const id = head.doc.id;
+      const { version } = await backend.writeJournaled(id, head.doc, {
+        meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
+      });
+      if (version !== head.version) {
+        findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
+      }
+      await options.onHydrated?.(id, index, ids.length);
+      index += 1;
+    }
+  }
+
+  const marker: BootstrapMarker = {
+    generation,
+    startedAt,
+    complete: true,
+    completedAt: new Date().toISOString(),
+    documentCount: ids.length,
+    ...(findings.length > 0 ? { findings } : {}),
+  };
+  await backend.writeMeta(BOOTSTRAP_KEY, marker);
+  return marker;
+}
+
+/** True only when the last bootstrap wrote its completion marker after every document committed. */
+export async function isComplete(local: LocalTarget): Promise<boolean> {
+  const marker = await backendOf(local).readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
+  return marker?.complete === true;
+}
+
+// ── local commits ──────────────────────────────────────────────────────────────────────────
+
+/** The engine mutation to apply; `patch` over an empty registry, non-strict, unless overridden. */
+export type LocalMutation = Omit<MutateDocumentOptions, "bundle" | "id" | "mode" | "registry" | "strict"> & {
+  mode?: DocumentMutationMode;
+  registry?: KindRegistry;
+  strict?: boolean;
+};
+
+export interface CommitResult extends DocumentMutationResult {
+  /** The intent journaled with this write, or `null` when the engine found nothing to change. */
+  intent: IntentRecord | null;
+}
+
+/**
+ * How a new local edit relates to the intents already journaled for its target.
+ *
+ * Compose-per-id: when the latest intent for the id is `pending` and has never been submitted
+ * (`attempts === 0`), or is `refused` (the authority definitely did not apply it), the new
+ * write supersedes it in the same transaction: the old record is deleted, and the new one
+ * carries a fresh request identity, the ORIGINAL base, and the new content. One intent per id
+ * then describes the cumulative change against the shared base.
+ *
+ * When the latest intent may already have reached the authority (`in_flight`, or `pending`
+ * with `attempts > 0`), or holds an explicit `conflict` awaiting resolution, its content and
+ * identity are frozen: the new edit becomes a separate intent whose base is the predecessor's
+ * local version and whose `after` names it. Push delivers it only once the predecessor is
+ * acknowledged, and the predecessor's acknowledgement can never clear it, because it is its own
+ * record with its own identity.
+ */
+async function composeIntent(backend: IndexedDbBackend, id: ConceptId, now: string): Promise<{ intent: NewIntentRecord; supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number } }> {
+  const unsettled = (await backend.listIntents(UNSETTLED_STATES)).filter((row) => row.target === id);
+  const latest = unsettled[unsettled.length - 1];
+  if (!latest) {
+    const shared = await backend.readMeta<SharedBase>(baseKey(id));
+    return {
+      intent: {
+        requestId: mintRequestId(),
+        kind: "document.write",
+        target: id,
+        base: shared?.version ?? null,
+        baseContent: shared?.content ?? null,
+        createdAt: now,
+      },
+    };
+  }
+  const neverDelivered = latest.state === "pending" && latest.attempts === 0;
+  if (neverDelivered || latest.state === "refused") {
+    return {
+      intent: {
+        requestId: mintRequestId(),
+        kind: "document.write",
+        target: id,
+        base: latest.base,
+        baseContent: latest.baseContent,
+        createdAt: now,
+        ...(latest.after !== undefined ? { after: latest.after } : {}),
+      },
+      supersede: { requestId: latest.requestId, expectedState: latest.state, expectedAttempts: latest.attempts },
+    };
+  }
+  return {
+    intent: {
+      requestId: mintRequestId(),
+      kind: "document.write",
+      target: id,
+      base: latest.local,
+      baseContent: latest.content,
+      createdAt: now,
+      after: latest.requestId,
+    },
+  };
+}
+
+const COMPOSE_ATTEMPTS = 3;
+
+/**
+ * A backend the engine writes through: every method is the working copy's own except `write`,
+ * which journals the intent in the same transaction as the record. The engine keeps every
+ * policy it has (kinds, clocks, no-op detection, CAS retry); only persistence is redirected.
+ */
+function journalingBackend(backend: IndexedDbBackend, id: ConceptId, recorded: { intent: IntentRecord | null }): StorageBackend {
+  const write = async (target: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> => {
+    if (target !== id) throw new Error(`commitLocal for '${id}' cannot write '${target}'`);
+    for (let attempt = 0; ; attempt++) {
+      const composed = await composeIntent(backend, id, new Date().toISOString());
+      try {
+        const written = await backend.writeJournaled(id, doc, { ...options, ...composed });
+        recorded.intent = written.intent;
+        return written.version;
+      } catch (error) {
+        // Another realm moved the superseded intent between the read and the transaction; the
+        // document CAS still holds, so recompose against the journal as it is now.
+        if (error instanceof IntentStateConflict && attempt < COMPOSE_ATTEMPTS - 1) continue;
+        throw error;
+      }
+    }
+  };
+  return new Proxy(backend, {
+    get(inner, prop) {
+      if (prop === "write") return write;
+      const value = Reflect.get(inner, prop, inner);
+      return typeof value === "function" ? value.bind(inner) : value;
+    },
+  }) as unknown as StorageBackend;
+}
+
+/**
+ * Apply an engine mutation to the working copy and journal it as a pending intent in the same
+ * IndexedDB transaction as the document write. The intent's base is the shared base the edit
+ * was made against (see {@link composeIntent}), never the local head.
+ */
+export async function commitLocal(local: LocalTarget, id: ConceptId, mutation: LocalMutation): Promise<CommitResult> {
+  const backend = backendOf(local);
+  const recorded: { intent: IntentRecord | null } = { intent: null };
+  const { mode, registry, strict, ...rest } = mutation;
+  const result = await mutateDocument({
+    ...rest,
+    bundle: { root: `indexeddb://${backend.databaseName}`, backend: journalingBackend(backend, id, recorded) },
+    id,
+    mode: mode ?? "patch",
+    registry: registry ?? EMPTY_REGISTRY,
+    strict: strict ?? false,
+  });
+  return { ...result, intent: recorded.intent };
+}
+
+// ── push ───────────────────────────────────────────────────────────────────────────────────
+
+export interface PushOptions {
+  /** Used to fetch the shared head's content when an intent enters conflict. */
+  remote?: StorageBackend;
+  write?: UncertainWriteOptions;
+}
+
+export interface PushReport {
+  paused: boolean;
+  settled: Array<{ requestId: string; target: ConceptId; state: OperationState }>;
+  skipped: Array<{ requestId: string; target: ConceptId; reason: "blocked" | "claimed-elsewhere" | "settled-elsewhere" }>;
+}
+
+/** Read the shared head for a conflict record; absence is a real answer (`null`), a failure is unknown. */
+async function remoteHead(remote: StorageBackend | undefined, id: ConceptId, actual: Version | null): Promise<{ version: Version | null; content: string | null }> {
+  if (!remote) return { version: actual, content: null };
+  try {
+    const head = await remote.read(id);
+    return { version: head.version, content: stringifyDoc(head.doc.frontmatter, head.doc.body ?? "") };
+  } catch (error) {
+    if ((error as { code?: unknown })?.code === "ENOENT") return { version: null, content: null };
+    return { version: actual, content: null };
+  }
+}
+
+/**
+ * Settle an in-flight intent against the authority's outcome, as one compare-and-swap on the
+ * intent's state. A committed outcome marks it acknowledged and moves the document's shared
+ * base to the acknowledged version in the same transaction; a conflict stores the shared head
+ * beside base and local and leaves the local content alone; a refusal records its code and,
+ * when it reports lost permission, pauses the bundle; an unknown outcome returns the intent to
+ * `pending` with its attempts recorded, so the next push starts with a lookup. Rejects with
+ * {@link IntentStateConflict} when another realm settled it first.
+ */
+export async function settleIntent(
+  local: LocalTarget,
+  requestId: string,
+  outcome: Outcome,
+  attempts: number,
+  options: PushOptions = {},
+): Promise<IntentRecord> {
+  const backend = backendOf(local);
+  const current = await backend.readIntent(requestId);
+  if (!current) throw new IntentStateConflict(requestId, "in_flight", null);
+  switch (outcome.kind) {
+    case "committed": {
+      const finding = outcome.version === current.local ? undefined : `acknowledged version ${outcome.version} differs from local version ${current.local}`;
+      return backend.updateIntent(
+        requestId,
+        "in_flight",
+        { state: "acknowledged", attempts, acknowledgedVersion: outcome.version, ...(finding ? { finding } : {}) },
+        { meta: [baseRow(current.target, { version: outcome.version, content: current.content })] },
+      );
+    }
+    case "conflict": {
+      const remote = await remoteHead(options.remote, current.target, outcome.actual);
+      return backend.updateIntent(requestId, "in_flight", { state: "conflict", attempts, remote });
+    }
+    case "refused": {
+      const authorization = isAuthorizationRefusal(outcome);
+      const control: SyncControl = { paused: true, reason: `${outcome.code}: ${outcome.message}`, since: new Date().toISOString() };
+      return backend.updateIntent(
+        requestId,
+        "in_flight",
+        { state: "refused", attempts, refusal: { code: outcome.code, message: outcome.message } },
+        authorization ? { meta: [{ key: SYNC_KEY, value: control }] } : {},
+      );
+    }
+    case "unknown":
+      return backend.updateIntent(requestId, "in_flight", { state: "pending", attempts });
+  }
+}
+
+/**
+ * Deliver pending intents in local commit order through the uncertain-write primitive. Each
+ * intent is claimed (`pending` to `in_flight`) by compare-and-swap, so two realms cannot both
+ * deliver it, and settled by {@link settleIntent}. A chained intent waits for its predecessor's
+ * acknowledgement. A refusal that reports lost permission pauses the bundle and stops the run.
+ */
+export async function push(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushReport> {
+  const backend = backendOf(local);
+  const report: PushReport = { paused: false, settled: [], skipped: [] };
+  const control = await backend.readMeta<SyncControl>(SYNC_KEY);
+  if (control?.paused) {
+    report.paused = true;
+    return report;
+  }
+  for (const intent of await backend.listIntents("pending")) {
+    if (intent.after !== undefined) {
+      const predecessor = await backend.readIntent(intent.after);
+      if (predecessor && predecessor.state !== "acknowledged") {
+        report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "blocked" });
+        continue;
+      }
+    }
+    let claimed: IntentRecord;
+    try {
+      claimed = await backend.updateIntent(intent.requestId, "pending", { state: "in_flight" });
+    } catch (error) {
+      if (error instanceof IntentStateConflict) {
+        report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "claimed-elsewhere" });
+        continue;
+      }
+      throw error;
+    }
+    const { outcome, intent: advanced } = await performUncertainWrite(transport, claimed, options.write);
+    let settled: IntentRecord;
+    try {
+      settled = await settleIntent(backend, claimed.requestId, outcome, advanced.attempts, options);
+    } catch (error) {
+      if (error instanceof IntentStateConflict) {
+        report.skipped.push({ requestId: intent.requestId, target: intent.target, reason: "settled-elsewhere" });
+        continue;
+      }
+      throw error;
+    }
+    report.settled.push({ requestId: settled.requestId, target: settled.target, state: settled.state });
+    if (isAuthorizationRefusal(outcome)) {
+      report.paused = true;
+      break;
+    }
+  }
+  return report;
+}
+
+// ── pull ───────────────────────────────────────────────────────────────────────────────────
+
+export interface PullOptions {
+  batchSize?: number;
+}
+
+export interface PullReport {
+  refreshed: ConceptId[];
+  /** Documents left alone because an unsettled intent targets them; push discovers any divergence. */
+  held: ConceptId[];
+  unchanged: ConceptId[];
+}
+
+/**
+ * Refresh every document that carries no unsettled intent to the authority's head and record
+ * that head as its shared base. Documents with an unsettled intent are held: their base is the
+ * one the edit was made against, and a moved shared head is push's conflict to report, never a
+ * silent base replacement here.
+ */
+export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
+  const backend = backendOf(local);
+  const startedAt = new Date().toISOString();
+  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0 } satisfies PullMarker);
+  const report: PullReport = { refreshed: [], held: [], unchanged: [] };
+  const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
+  const ids = await remote.list();
+  const candidates: ConceptId[] = [];
+  for (const id of ids) {
+    if (heldTargets.has(id)) report.held.push(id);
+    else candidates.push(id);
+  }
+  for (const batch of chunked(candidates, options.batchSize ?? 25)) {
+    const heads = await remote.readMany(batch);
+    for (const head of heads) {
+      const id = head.doc.id;
+      const base = await backend.readMeta<SharedBase>(baseKey(id));
+      if (base?.version === head.version) {
+        report.unchanged.push(id);
+        continue;
+      }
+      const expectedVersion = await localVersion(backend, id);
+      try {
+        await backend.writeJournaled(id, head.doc, {
+          expectedVersion,
+          meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
+        });
+        report.refreshed.push(id);
+      } catch (error) {
+        // A local commit landed between the read and the write; the new intent holds this document now.
+        if ((error as { name?: unknown })?.name === "VersionConflict") {
+          report.held.push(id);
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: new Date().toISOString(), refreshed: report.refreshed.length } satisfies PullMarker);
+  return report;
+}
+
+// ── status and control ─────────────────────────────────────────────────────────────────────
+
+export interface SyncStatus {
+  counts: Record<OperationState, number>;
+  paused: boolean;
+  pausedReason?: string;
+  bootstrapComplete: boolean;
+  generation: number | null;
+  lastPull: PullMarker | null;
+}
+
+/** Counts of intents by state plus the pause and bootstrap markers. */
+export async function syncStatus(local: LocalTarget): Promise<SyncStatus> {
+  const backend = backendOf(local);
+  const counts: Record<OperationState, number> = { pending: 0, in_flight: 0, acknowledged: 0, conflict: 0, refused: 0, unknown: 0 };
+  for (const row of await backend.listIntents()) counts[row.state] += 1;
+  const control = await backend.readMeta<SyncControl>(SYNC_KEY);
+  const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
+  const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
+  return {
+    counts,
+    paused: control?.paused === true,
+    ...(control?.reason !== undefined ? { pausedReason: control.reason } : {}),
+    bootstrapComplete: marker?.complete === true,
+    generation: marker?.generation ?? null,
+    lastPull: lastPull ?? null,
+  };
+}
+
+/** Lift a pause after permission has been restored; an explicit decision, never automatic. */
+export async function resume(local: LocalTarget): Promise<void> {
+  await backendOf(local).writeMeta(SYNC_KEY, { paused: false } satisfies SyncControl);
+}
+
+/**
+ * Return `in_flight` intents to `pending` so a later push can look them up. Only for a realm
+ * that knows no other realm is mid-push over this store (a page that has just loaded and holds
+ * the store's lock); an intent reclaimed under a live push would be delivered twice, which the
+ * authority's request identity tolerates but the journal should not rely on.
+ */
+export async function reclaimInFlight(local: LocalTarget): Promise<number> {
+  const backend = backendOf(local);
+  let reclaimed = 0;
+  for (const row of await backend.listIntents("in_flight")) {
+    try {
+      await backend.updateIntent(row.requestId, "in_flight", { state: "pending" });
+      reclaimed += 1;
+    } catch (error) {
+      if (!(error instanceof IntentStateConflict)) throw error;
+    }
+  }
+  return reclaimed;
 }

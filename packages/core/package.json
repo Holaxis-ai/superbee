@@ -98,6 +98,10 @@
     "./indexeddb-backend": {
       "types": "./dist/indexeddb-backend.d.ts",
       "default": "./dist/indexeddb-backend.js"
+    },
+    "./uncertain-write": {
+      "types": "./dist/uncertain-write.d.ts",
+      "default": "./dist/uncertain-write.js"
     }
   },
   "files": [
