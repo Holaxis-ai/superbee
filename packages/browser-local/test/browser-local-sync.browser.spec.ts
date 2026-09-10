@@ -7,9 +7,10 @@
  * and access revocation without ever reporting false synchronization.
  *
  * Harness: the page (test/fixtures/driver.ts, served by test/fixtures/harness.ts) talks to the
- * disposable authority (test/fixtures/remote-fixture.ts) served as a second HTTP origin on
- * 127.0.0.1 (test/fixtures/remote-http.ts). The fixture's knobs are flipped from the Node side
- * of the spec; the page never sees them. Every scenario here has a Node twin in sync.test.ts
+ * disposable authority (test/fixtures/remote-fixture.ts: the reference router and outcome
+ * store with fault injection around them) served as a second HTTP origin on 127.0.0.1
+ * (test/fixtures/remote-http.ts). The fixture's knobs are flipped from the Node side of the
+ * spec; the page never sees them. Every scenario here has a Node twin in sync.test.ts
  * over fake-indexeddb; this file is the same runtime in a real page with real IndexedDB, real
  * fetch, real Web Locks, real reloads and real page termination.
  *
@@ -79,7 +80,7 @@ function trafficSummary(): { puts: number; lookups: number; preflights: number }
   for (const row of served.requests) {
     if (row.method === "OPTIONS") preflights += 1;
     else if (row.method === "PUT") puts += 1;
-    else if (row.method === "GET" && row.path.startsWith("/_fixture/operations/")) lookups += 1;
+    else if (row.method === "GET" && /^\/v0\/bundles\/[^/]+\/operations\//.test(row.path)) lookups += 1;
   }
   return { puts, lookups, preflights };
 }

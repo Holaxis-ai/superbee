@@ -8,12 +8,22 @@ import {
   type StorageCapabilities,
 } from "@superbee/core";
 
+import { MemoryOperationOutcomeStore, type OperationOutcomeStore } from "./operation-outcomes.js";
 import {
   createRouter as createWorkerRouter,
   type TrustedAttribution,
 } from "./router.js";
 
 const LEGACY_INTERNAL_BUNDLE_ID = "bnd_00000000000000000000000000000000";
+
+export interface LegacyRouterOptions {
+  /**
+   * The store behind identified document writes. Omitted, the reference router gets a fresh
+   * in-memory store so identity works out of the box; `null` builds a router without one, which
+   * refuses identity and reports `operations: false`.
+   */
+  outcomes?: OperationOutcomeStore | null;
+}
 
 function capabilitiesForBackend(backend: StorageBackend): StorageCapabilities {
   return (
@@ -47,20 +57,22 @@ function canonicalizeLegacyBundleRoute(request: Request): Request {
   return new Request(url, request);
 }
 
-function buildLegacyRouter(backend: StorageBackend): (request: Request) => Promise<Response> {
+function buildLegacyRouter(backend: StorageBackend, options: LegacyRouterOptions): (request: Request) => Promise<Response> {
+  const outcomes = options.outcomes === undefined ? new MemoryOperationOutcomeStore() : options.outcomes;
   const workerRouter = createWorkerRouter({
     capabilities: capabilitiesForBackend(backend),
+    ...(outcomes === null ? {} : { outcomes }),
     resolveContext: (request) => ({ backend, attribution: legacyAttribution(request) }),
   });
   return (request) => workerRouter(canonicalizeLegacyBundleRoute(request));
 }
 
 /** Historical explicit-backend entry point retained at the Node package root. */
-export function createRouterForBackend(backend: StorageBackend): (request: Request) => Promise<Response> {
-  return buildLegacyRouter(backend);
+export function createRouterForBackend(backend: StorageBackend, options: LegacyRouterOptions = {}): (request: Request) => Promise<Response> {
+  return buildLegacyRouter(backend, options);
 }
 
 /** Historical Bundle entry point retained at the Node package root, including `/bundles/default`. */
-export function createRouter(bundle: Bundle): (request: Request) => Promise<Response> {
-  return buildLegacyRouter(bundle.backend ?? new FilesystemBackend(bundle.root));
+export function createRouter(bundle: Bundle, options: LegacyRouterOptions = {}): (request: Request) => Promise<Response> {
+  return buildLegacyRouter(bundle.backend ?? new FilesystemBackend(bundle.root), options);
 }

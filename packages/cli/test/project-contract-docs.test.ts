@@ -208,7 +208,7 @@ test("wire contract pins the complete implemented route/method table and every p
   const proofRows = contract.split("\n").filter((line) => /^\| WIRE-PROOF-\d{2} \|/.test(line));
   assertEvidenceRows(
     proofRows,
-    Array.from({ length: 9 }, (_, index) => `WIRE-PROOF-${String(index + 1).padStart(2, "0")}`),
+    Array.from({ length: 10 }, (_, index) => `WIRE-PROOF-${String(index + 1).padStart(2, "0")}`),
   );
 
   assert.match(contract, /has \*\*no authentication or authorization\*\*/);

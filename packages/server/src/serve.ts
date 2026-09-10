@@ -13,6 +13,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import { createRouter } from "./legacy-router.js";
+import type { OperationOutcomeStore } from "./operation-outcomes.js";
 import type { Bundle } from "@superbee/core";
 
 /** Options for {@link serve}. */
@@ -23,6 +24,8 @@ export interface ServeOptions {
   host?: string;
   /** Port to bind. `0` (the default) picks an ephemeral port — read it back via {@link ServerHandle.port}. */
   port?: number;
+  /** The store behind identified writes; a fresh in-memory store when omitted, none when `null`. */
+  outcomes?: OperationOutcomeStore | null;
 }
 
 /** A running server, returned by {@link serve}. */
@@ -129,7 +132,7 @@ export async function writeResponseToServerResponse(res: ServerResponse, respons
  * listening. See the module doc for the no-auth / loopback-only caveat.
  */
 export function serve(options: ServeOptions): Promise<ServerHandle> {
-  const router = createRouter(options.bundle);
+  const router = createRouter(options.bundle, { outcomes: options.outcomes });
   const host = options.host ?? "127.0.0.1";
 
   return new Promise((resolve, reject) => {

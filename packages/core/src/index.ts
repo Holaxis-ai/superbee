@@ -129,6 +129,10 @@ export type {
 // tests. No CF/D1/production deployment is implied by its presence.
 export { RemoteBackend, RemoteError } from "./remote-backend.js";
 export type { FetchLike, RemoteBackendOptions } from "./remote-backend.js";
+// The uncertain-write transport over `RemoteBackend`: identified document writes plus outcome
+// lookup, the client side of the wire's request identity.
+export { createRemoteOperationTransport } from "./remote-operations.js";
+export type { RemoteOperationTransportOptions } from "./remote-operations.js";
 
 // Versioning / attribution primitives shared by every adapter: the content-addressed
 // version token, a default actor, and the typed compare-and-swap conflict error.
@@ -140,6 +144,7 @@ export {
   blobVersion,
   defaultActor,
   VersionConflict,
+  isContentVersion,
   stripETagWrapper,
 } from "./versioning.js";
 

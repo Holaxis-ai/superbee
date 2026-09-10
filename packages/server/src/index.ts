@@ -9,6 +9,16 @@
  */
 
 export { createRouter, createRouterForBackend } from "./legacy-router.js";
+export type { LegacyRouterOptions } from "./legacy-router.js";
+export { MemoryOperationOutcomeStore } from "./operation-outcomes.js";
+export type {
+  MemoryOperationOutcomeStoreOptions,
+  OperationClaim,
+  OperationOutcomeStore,
+  RecordedOperation,
+  RecordedOutcome,
+  RecordedResponse,
+} from "./operation-outcomes.js";
 export { WIRE_ENDPOINTS } from "./router.js";
 export {
   RequestBodyTooLargeError,

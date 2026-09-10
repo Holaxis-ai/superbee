@@ -17,7 +17,8 @@
  * are the browser-local working copy's token minting and store for SaaS mode, `indexeddb-backend`
  * its persistent store candidate; `mutation`, `bundle-ops` and `document-mutation` are its
  * read/decide/CAS document mutation path; `uncertain-write` is the shared unknown-outcome
- * primitive its sync component pushes intents through.
+ * primitive its sync component pushes intents through, and `remote-operations` the transport
+ * that carries those intents to a wire authority as identified writes.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -43,6 +44,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "query-selection.js", symbol: "applyQuerySelectionFilters" },
   { module: "kinds.js", symbol: "isTerminal" },
   { module: "remote.js", symbol: "RemoteBackend" },
+  { module: "remote-operations.js", symbol: "createRemoteOperationTransport" },
   { module: "storage.js", symbol: "assertSafeConceptId" },
   { module: "versioning.js", symbol: "contentVersion" },
   { module: "memory-backend.js", symbol: "MemoryBackend" },

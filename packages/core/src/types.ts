@@ -190,6 +190,12 @@ export interface WriteOptions {
    * affects CAS or cross-backend token parity.
    */
   agent?: string;
+  /**
+   * OPTIONAL durable request identity. A remote backend sends it as the wire's `Idempotency-Key`
+   * so the authority applies the write at most once under that key and can report its outcome
+   * later; every other backend ignores it. Minted once per intent and reused verbatim on retry.
+   */
+  requestId?: string;
 }
 
 /**
@@ -210,6 +216,12 @@ export interface DeleteOptions {
    * regardless of `expectedVersion` (idempotency, AXI P6: absence is success, not failure).
    */
   expectedVersion?: Version;
+  /**
+   * OPTIONAL durable request identity, sent by a remote backend as `Idempotency-Key` exactly as
+   * {@link WriteOptions.requestId} is. The wire requires `expectedVersion` alongside it: an
+   * identified delete must name the revision it removes. Other backends ignore it.
+   */
+  requestId?: string;
 }
 
 /** Optional backend capabilities reported without adapter-class inference. */

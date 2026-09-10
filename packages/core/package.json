@@ -83,6 +83,10 @@
       "types": "./dist/remote.d.ts",
       "default": "./dist/remote.js"
     },
+    "./remote-operations": {
+      "types": "./dist/remote-operations.d.ts",
+      "default": "./dist/remote-operations.js"
+    },
     "./storage": {
       "types": "./dist/storage.d.ts",
       "default": "./dist/storage.js"

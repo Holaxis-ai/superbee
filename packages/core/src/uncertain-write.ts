@@ -112,6 +112,21 @@ export function stateForOutcome(outcome: Outcome): OperationState {
   }
 }
 
+/** The longest request identity the wire accepts as `Idempotency-Key`. */
+export const REQUEST_ID_MAX_LENGTH = 128;
+
+/**
+ * True when `value` is a request identity the wire accepts: 1 to {@link REQUEST_ID_MAX_LENGTH}
+ * printable ASCII characters with no space, and neither `.` nor `..`, which URL normalization
+ * folds away so the lookup route could never name them. One rule, checked by the client before
+ * a header is built and by the reference router before a key is claimed, so the two sides cannot
+ * disagree about which keys identify a write. A minted UUID always satisfies it.
+ */
+export function isRequestIdentity(value: string): boolean {
+  if (value === "." || value === "..") return false;
+  return value.length >= 1 && value.length <= REQUEST_ID_MAX_LENGTH && /^[!-~]+$/.test(value);
+}
+
 /** A fresh request identity. UUIDs come from the platform's `crypto` in both Node and browsers. */
 export function mintRequestId(): string {
   const cryptoApi = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
@@ -137,6 +152,24 @@ const defaultSleep: Sleep = (ms, signal) =>
   });
 
 const UNKNOWN: Outcome = { kind: "unknown" };
+
+/**
+ * The outcome as it applies to `intent`. A conflict whose `actual` is the intent's own `local`
+ * version means the shared head already holds exactly this content, so the write is committed
+ * at that version. This is the wire's post-expiry compare-and-swap property: a committed write
+ * whose acknowledgement was lost and whose recorded outcome expired from the authority's
+ * retention window is resubmitted with its original `base`, which no longer matches, and the
+ * authority answers a conflict against the version the client itself committed. The mapping
+ * depends only on the outcome and the intent, so the primitive owns it and every consumer
+ * settles such a write as acknowledged rather than presenting it as a concurrent edit. Every
+ * other conflict, including one against an absent head (`actual: null`), is returned unchanged.
+ */
+export function settleAgainstIntent(outcome: Outcome, intent: OperationIntent): Outcome {
+  if (outcome.kind === "conflict" && outcome.actual !== null && outcome.actual === intent.local) {
+    return { kind: "committed", version: outcome.actual };
+  }
+  return outcome;
+}
 
 /**
  * One submission under a deadline. A transport rejection or a deadline overrun both yield
@@ -171,11 +204,12 @@ async function submitOnce(transport: OperationTransport, intent: OperationIntent
  * call.
  *
  * No resubmission happens without a `null` lookup because a blind retry after an unknown
- * outcome is unsound in both directions: if the earlier delivery committed, the retry's
- * `base` no longer matches the shared head and the authority answers with a conflict against
- * the intent's own write, which the client would then present as a concurrent edit; and on an
- * authority without request identity the retry applies the write twice. The lookup is what
- * turns "unknown" into a fact before any second delivery.
+ * outcome is unsound: on an authority without request identity the retry applies the write
+ * twice, and even on one with it the retry can only ever learn what the lookup already knew.
+ * The lookup is what turns "unknown" into a fact before any second delivery.
+ *
+ * Every outcome passes through {@link settleAgainstIntent} before it is returned, so a conflict
+ * that names the intent's own version is reported as committed at that version.
  */
 export async function performUncertainWrite(
   transport: OperationTransport,
@@ -190,11 +224,10 @@ export async function performUncertainWrite(
   let attempts = intent.attempts;
   let submissions = 0;
   let lookups = 0;
-  const finish = (outcome: Outcome): UncertainWriteResult => ({
-    intent: { ...intent, attempts, state: stateForOutcome(outcome) },
-    outcome,
-    lookups,
-  });
+  const finish = (raw: Outcome): UncertainWriteResult => {
+    const outcome = settleAgainstIntent(raw, intent);
+    return { intent: { ...intent, attempts, state: stateForOutcome(outcome) }, outcome, lookups };
+  };
 
   // A previously submitted intent starts at the lookup, never at a submission.
   let needSubmission = attempts === 0;

@@ -169,7 +169,7 @@ test("deployment capabilities bypass context and backend resolution", async () =
   const response = await router(request("/v0/capabilities"));
   assert.equal(response.status, 200);
   assert.equal(contextCalls, 0);
-  assert.deepEqual(await response.json(), { history: true, ...CAPABILITIES });
+  assert.deepEqual(await response.json(), { history: true, ...CAPABILITIES, operations: false });
 });
 
 test("HEAD resolution failures are bodyless and retain the shaped error status and headers", async () => {

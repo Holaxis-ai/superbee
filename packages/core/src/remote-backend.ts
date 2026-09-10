@@ -44,6 +44,7 @@
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
 import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
+import { isRequestIdentity, type Outcome } from "./uncertain-write.js";
 import { VersionConflict, stripETagWrapper } from "./version-transport.js";
 import type {
   BlobKey,
@@ -178,6 +179,25 @@ function assertValidExpectedVersion(expectedVersion: WriteOptions["expectedVersi
   }
 }
 
+/** The header that carries a write's durable request identity (`docs/WIRE-PROTOCOL.md`). */
+const IDENTITY_HEADER = "Idempotency-Key";
+
+/**
+ * Reject a request identity the wire would refuse before any request is sent, so a malformed
+ * key is a caller-side `InvalidInputError` rather than a `400` the caller might mistake for a
+ * recorded refusal. The rule is core's `isRequestIdentity`, shared with the reference router.
+ */
+function assertRequestIdentity(requestId: string): void {
+  if (!isRequestIdentity(requestId)) {
+    throw new InvalidInputError(
+      "requestId must be 1 to 128 printable ASCII characters with no space to travel as Idempotency-Key",
+    );
+  }
+}
+
+/** The lookup route's `200` body: a recorded outcome, never `unknown`. */
+const RECORDED_OUTCOME_KINDS = new Set(["committed", "conflict", "refused"]);
+
 /**
  * Transient HTTP statuses worth retrying: 500 (a Cloudflare D1 cold-start surfaces as a 500
  * "storage caused object to be reset" the first time a hibernated database is hit), plus the edge
@@ -269,6 +289,10 @@ export class RemoteBackend implements StorageBackend {
     // attempt may have committed before its response was lost — but never silent data loss); a
     // retried read is idempotent. `send` rebuilds the Request per attempt from `init` (bodies are
     // strings/bytes, so reusable — no consumed-stream hazard).
+    //
+    // A write that carries `Idempotency-Key` is different again: its transient retries are true
+    // replays, answered from the authority's recorded outcome, so a retry after a lost response
+    // can neither apply twice nor surface a spurious conflict against its own earlier application.
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await this.fetchImpl(new Request(url, init));
@@ -364,6 +388,10 @@ export class RemoteBackend implements StorageBackend {
     if (options.expectedVersion === null) headers["If-None-Match"] = "*";
     else if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
     if (options.actor) headers["X-Actor"] = options.actor;
+    if (options.requestId !== undefined) {
+      assertRequestIdentity(options.requestId);
+      headers[IDENTITY_HEADER] = options.requestId;
+    }
 
     const res = await this.send(`/docs/${encodeId(id)}`, {
       method: "PUT",
@@ -373,6 +401,24 @@ export class RemoteBackend implements StorageBackend {
     if (!res.ok) throw await this.toError(res, id);
     const payload = (await res.json()) as { version: Version };
     return payload.version;
+  }
+
+  /**
+   * `GET /operations/{requestId}`: the authority's recorded outcome for an identified write, or
+   * `null` when it holds nothing under that identity (never recorded, or recorded and expired;
+   * the wire cannot tell those apart). Any other non-2xx is the usual typed error. Not part of
+   * the {@link StorageBackend} seam: only a remote authority records outcomes by request identity.
+   */
+  async lookupOperation(requestId: string): Promise<Outcome | null> {
+    assertRequestIdentity(requestId);
+    const res = await this.send(`/operations/${encodeURIComponent(requestId)}`, { method: "GET" });
+    if (res.status === 404) return null;
+    if (!res.ok) throw await this.toError(res, requestId);
+    const payload = (await res.json()) as { kind?: unknown };
+    if (typeof payload?.kind !== "string" || !RECORDED_OUTCOME_KINDS.has(payload.kind)) {
+      throw new RemoteError(`wire lookup for '${requestId}' returned a malformed outcome`, "RUNTIME", 502);
+    }
+    return payload as Outcome;
   }
 
   async exists(id: ConceptId): Promise<boolean> {
@@ -508,6 +554,10 @@ export class RemoteBackend implements StorageBackend {
     assertValidExpectedVersion(options.expectedVersion);
     const headers: Record<string, string> = {};
     if (options.expectedVersion !== undefined) headers["If-Match"] = options.expectedVersion;
+    if (options.requestId !== undefined) {
+      assertRequestIdentity(options.requestId);
+      headers[IDENTITY_HEADER] = options.requestId;
+    }
 
     const res = await this.send(`/docs/${encodeId(id)}`, { method: "DELETE", headers });
     if (!res.ok) throw await this.toError(res, id);
