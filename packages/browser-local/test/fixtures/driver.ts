@@ -5,13 +5,32 @@
  * spec can compare tokens and bodies without any page-to-node object marshalling.
  */
 
+import type { OkfDocument, StorageBackend } from "@superbee/core";
 import { queryHeads, readBlob, readDocVersioned, writeBlob, writeDocVersioned } from "@superbee/core/bundle-ops";
 import { mutateDocument } from "@superbee/core/document-mutation";
-import { IndexedDbSchemaError } from "@superbee/core/indexeddb-backend";
+import { IndexedDbSchemaError, type IntentRecord } from "@superbee/core/indexeddb-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
+import { RemoteBackend } from "@superbee/core/remote";
+import type { OperationState, OperationTransport } from "@superbee/core/uncertain-write";
 import { contentVersion, VersionConflict, versionOfBytes } from "@superbee/core/versioning";
 
-import { openLocalBundle, type LocalBundle } from "../../src/local-bundle.ts";
+import {
+  baseKey,
+  bootstrap,
+  commitLocal,
+  isComplete,
+  openLocalBundle,
+  pull,
+  pushWithRole,
+  reclaimInFlight,
+  resume,
+  syncStatus,
+  UNSETTLED_STATES,
+  type LocalBundle,
+  type SharedBase,
+} from "../../src/local-bundle.ts";
+import { faultyIndexedDb, type Faults } from "./faulty-factory.ts";
+import { createFetchTransport } from "./wire-transport.ts";
 
 const ROOT_INDEX = "---\nokf_version: '0.2'\n---\n# Browser-local proof\n";
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
@@ -57,6 +76,69 @@ let current: LocalBundle | null = null;
 function bundleOrThrow(): LocalBundle {
   if (!current) throw new Error("driver: call open(name) first");
   return current;
+}
+
+// ── sync state ─────────────────────────────────────────────────────────────────────────────
+
+const REMOTE_BUNDLE = "default";
+/** Faults the wrapped factory injects; armed per scenario from the Node side. */
+const faults: Faults = { quotaOnNextPut: false };
+/** When set, the carrier throws before any request leaves the page. */
+let offline = false;
+let remote: { baseUrl: string; backend: StorageBackend; transport: OperationTransport } | null = null;
+const submittedWhileOffline: string[] = [];
+
+const carrier = (request: Request): Promise<Response> => {
+  if (offline) {
+    submittedWhileOffline.push(`${request.method} ${new URL(request.url).pathname}`);
+    return Promise.reject(new TypeError("fetch failed: page is offline"));
+  }
+  return fetch(request);
+};
+
+function remoteOrThrow(): NonNullable<typeof remote> {
+  if (!remote) throw new Error("driver: call attach(remoteBaseUrl, name) first");
+  return remote;
+}
+
+/** Open the working copy under `name` through the fault-injecting factory and bind the authority. */
+function attachTo(remoteBaseUrl: string, name: string): void {
+  current?.close();
+  current = openLocalBundle(name, { indexedDB: faultyIndexedDb(indexedDB, faults) });
+  remote = {
+    baseUrl: remoteBaseUrl,
+    backend: new RemoteBackend({ baseUrl: remoteBaseUrl, bundle: REMOTE_BUNDLE, fetchImpl: carrier, maxRetries: 0 }),
+    transport: createFetchTransport({ baseUrl: remoteBaseUrl, bundle: REMOTE_BUNDLE, fetchImpl: carrier }),
+  };
+}
+
+/** The journal fields a scenario compares; content strings ride along so conflict is fully visible. */
+function intentView(row: IntentRecord) {
+  return {
+    requestId: row.requestId,
+    target: row.target,
+    state: row.state,
+    attempts: row.attempts,
+    base: row.base,
+    baseContent: row.baseContent,
+    local: row.local,
+    content: row.content,
+    after: row.after ?? null,
+    acknowledgedVersion: row.acknowledgedVersion ?? null,
+    remote: row.remote ?? null,
+    refusal: row.refusal ?? null,
+    finding: row.finding ?? null,
+  };
+}
+
+export type IntentView = ReturnType<typeof intentView>;
+
+const immediate = { lookupDelayMs: 0 };
+
+function edit(body: string) {
+  return {
+    buildCandidate: (existing: OkfDocument | undefined) => ({ frontmatter: existing!.frontmatter, body }),
+  };
 }
 
 const driver = {
@@ -173,6 +255,122 @@ const driver = {
     const persisted = await storage.persisted();
     return { supported: true as const, persist, persisted };
   },
+
+  // ── sync verbs ───────────────────────────────────────────────────────────────────────────
+
+  /** Open the working copy under `name` (without seeding) and bind the authority at `remoteBaseUrl`. */
+  attach: (remoteBaseUrl: string, name: string) =>
+    attempt(async () => {
+      attachTo(remoteBaseUrl, name);
+      return { ok: true as const, complete: await isComplete(bundleOrThrow()) };
+    }),
+
+  /** Attach and hydrate from the authority; `ms` is the page-measured wall time of the hydration. */
+  bootstrap: (remoteBaseUrl: string, name: string, batchSize?: number) =>
+    attempt(async () => {
+      attachTo(remoteBaseUrl, name);
+      const started = performance.now();
+      const marker = await bootstrap(remoteOrThrow().backend, bundleOrThrow(), batchSize === undefined ? {} : { batchSize });
+      return { marker, ms: performance.now() - started };
+    }),
+
+  /** One body edit through the engine's patch path, journaled as an intent in the same transaction. */
+  commitLocal: (id: string, body: string) =>
+    attempt(async () => {
+      const started = performance.now();
+      const result = await commitLocal(bundleOrThrow(), id, edit(body));
+      return { version: result.version, changed: result.changed, intent: result.intent ? intentView(result.intent) : null, ms: performance.now() - started };
+    }),
+
+  /** Push under the store's push role: the Web Lock decides whether this page delivers at all. */
+  push: () =>
+    attempt(async () => {
+      const started = performance.now();
+      const role = await pushWithRole(bundleOrThrow(), remoteOrThrow().transport, { remote: remoteOrThrow().backend, write: immediate });
+      return { ...role, ms: performance.now() - started };
+    }),
+
+  pull: () => attempt(() => pull(bundleOrThrow(), remoteOrThrow().backend)),
+
+  syncStatus: () => attempt(() => syncStatus(bundleOrThrow())),
+
+  isComplete: () => attempt(async () => ({ complete: await isComplete(bundleOrThrow()) })),
+
+  reclaimInFlight: () => attempt(async () => ({ reclaimed: await reclaimInFlight(bundleOrThrow()) })),
+
+  resume: () => attempt(async () => {
+    await resume(bundleOrThrow());
+    return { ok: true as const };
+  }),
+
+  intents: (state?: OperationState) =>
+    attempt(async () => (await bundleOrThrow().backend.listIntents(state)).map(intentView)),
+
+  intent: (requestId: string) =>
+    attempt(async () => {
+      const row = await bundleOrThrow().backend.readIntent(requestId);
+      return row ? intentView(row) : null;
+    }),
+
+  /**
+   * A read that separates what the page holds from what the authority has acknowledged: the
+   * document's local version, the shared base recorded for it, and any unsettled intent. The
+   * document is locally persisted whenever the read succeeds; it is shared only when the base
+   * equals the local version and no unsettled intent targets it.
+   */
+  readSync: (id: string) =>
+    attempt(async () => {
+      const { bundle, backend } = bundleOrThrow();
+      const { doc, version } = await readDocVersioned(bundle, id);
+      const base = await backend.readMeta<SharedBase>(baseKey(id));
+      const unsettled = (await backend.listIntents(UNSETTLED_STATES)).filter((row) => row.target === id).map(intentView);
+      return {
+        version,
+        doc: { id: doc.id, frontmatter: doc.frontmatter, body: doc.body },
+        local: { persisted: true as const, version },
+        shared: { baseVersion: base?.version ?? null, acknowledged: base?.version === version && unsettled.length === 0, unsettled },
+      };
+    }),
+
+  setOffline: (flag: boolean) => {
+    offline = flag;
+    return { offline, submittedWhileOffline: [...submittedWhileOffline] };
+  },
+
+  armQuota: () => {
+    faults.quotaOnNextPut = true;
+    return { armed: true as const };
+  },
+
+  disarmQuota: () => {
+    faults.quotaOnNextPut = false;
+    return { armed: false as const };
+  },
+
+  /** Wall time of one read and one prefix query, measured in the page. */
+  timeRead: (id: string, prefix: string) =>
+    attempt(async () => {
+      const { bundle } = bundleOrThrow();
+      const readStart = performance.now();
+      const { version } = await readDocVersioned(bundle, id);
+      const readMs = performance.now() - readStart;
+      const queryStart = performance.now();
+      const heads = await queryHeads(bundle, { prefix });
+      const queryMs = performance.now() - queryStart;
+      return { version, readMs, count: heads.length, queryMs };
+    }),
+
+  /** A blob of incompressible bytes from the page's own entropy, so a storage estimate is honest. */
+  writeRandomBlob: (key: string, size: number) =>
+    attempt(async () => {
+      const { bundle } = bundleOrThrow();
+      const bytes = new Uint8Array(size);
+      for (let offset = 0; offset < size; offset += 65536) {
+        crypto.getRandomValues(bytes.subarray(offset, Math.min(size, offset + 65536)));
+      }
+      const version = await writeBlob(bundle, key, bytes, "application/octet-stream");
+      return { version, size };
+    }),
 };
 
 export type Driver = typeof driver;

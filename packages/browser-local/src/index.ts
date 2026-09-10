@@ -4,6 +4,7 @@ export {
   isComplete,
   commitLocal,
   push,
+  pushWithRole,
   settleIntent,
   pull,
   syncStatus,
@@ -27,3 +28,4 @@ export {
   type PullReport,
   type SyncStatus,
 } from "./local-bundle.js";
+export { withPushRole, pushRoleName, type PushRoleResult } from "./push-role.js";

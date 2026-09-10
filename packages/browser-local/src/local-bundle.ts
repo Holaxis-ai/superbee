@@ -16,6 +16,10 @@
  * Meta rows this module owns: `bootstrap` (the completion marker), `sync` (the pause flag),
  * `pull` (the last pull's progress), and `base:<id>` (the shared version and serialized content
  * a document was last known to share with the authority).
+ *
+ * Coordination across realms: {@link pushWithRole} runs push only while holding the store's
+ * push role (a Web Lock in a browser, see `push-role.ts`), so concurrent tabs over one store
+ * never race delivery; the intent journal's own compare-and-swap remains the last line.
  */
 
 import type { Bundle, ConceptId, OkfDocument, StorageBackend, Version, WriteOptions } from "@superbee/core";
@@ -39,6 +43,8 @@ import {
   type Outcome,
   type UncertainWriteOptions,
 } from "@superbee/core/uncertain-write";
+
+import { pushRoleName, withPushRole, type PushRoleResult } from "./push-role.js";
 
 export interface OpenLocalBundleOptions {
   /** The IndexedDB factory to open the working copy with. Defaults to the page's `indexedDB`. */
@@ -455,6 +461,16 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
   return report;
 }
 
+/**
+ * {@link push} under the store's push role: the one-writer-per-store coordination for the
+ * IndexedDB working copy. A realm that finds the role held elsewhere delivers nothing and
+ * leaves the journal untouched; the holder's push is the only one running over this store.
+ */
+export async function pushWithRole(local: LocalTarget, transport: OperationTransport, options: PushOptions = {}): Promise<PushRoleResult<PushReport>> {
+  const backend = backendOf(local);
+  return withPushRole(pushRoleName(backend.databaseName), () => push(backend, transport, options));
+}
+
 // ── pull ───────────────────────────────────────────────────────────────────────────────────
 
 export interface PullOptions {
@@ -553,15 +569,20 @@ export async function resume(local: LocalTarget): Promise<void> {
 /**
  * Return `in_flight` intents to `pending` so a later push can look them up. Only for a realm
  * that knows no other realm is mid-push over this store (a page that has just loaded and holds
- * the store's lock); an intent reclaimed under a live push would be delivered twice, which the
- * authority's request identity tolerates but the journal should not rely on.
+ * the store's push role, see {@link withPushRole}); an intent reclaimed under a live push would
+ * be delivered twice, which the authority's request identity tolerates but the journal should
+ * not rely on.
+ *
+ * A reclaimed intent is recorded as attempted at least once: the realm that claimed it may
+ * have submitted it before it died, so the next push must begin with a lookup rather than a
+ * blind resubmission (see `performUncertainWrite`).
  */
 export async function reclaimInFlight(local: LocalTarget): Promise<number> {
   const backend = backendOf(local);
   let reclaimed = 0;
   for (const row of await backend.listIntents("in_flight")) {
     try {
-      await backend.updateIntent(row.requestId, "in_flight", { state: "pending" });
+      await backend.updateIntent(row.requestId, "in_flight", { state: "pending", attempts: Math.max(row.attempts, 1) });
       reclaimed += 1;
     } catch (error) {
       if (!(error instanceof IntentStateConflict)) throw error;

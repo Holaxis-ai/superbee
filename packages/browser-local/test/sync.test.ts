@@ -23,12 +23,15 @@ import {
   openLocalBundle,
   pull,
   push,
+  pushWithRole,
+  reclaimInFlight,
   resume,
   settleIntent,
   syncStatus,
   type LocalBundle,
   type SharedBase,
 } from "../src/local-bundle.ts";
+import { pushRoleName, withPushRole } from "../src/push-role.ts";
 import { createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
 
 const NOW = "2026-09-10T12:00:00.000Z";
@@ -448,6 +451,71 @@ test("bootstrap refuses to discard unsettled intents", async () => {
     await assert.rejects(bootstrap(fixture.remote, local), /unsettled intent/);
     assert.equal((await local.backend.read("notes/beta")).doc.body, "beta unsent\n");
     assert.equal(await isComplete(local), true);
+  } finally {
+    local.close();
+  }
+});
+
+test("push role in Node: the in-process fallback admits one holder per name, releases on settle, and pushWithRole reports the other side", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory, "role-store");
+  try {
+    await bootstrap(fixture.remote, local);
+    await commitLocal(local, "notes/alpha", edit("alpha under the role\n"));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = withPushRole(pushRoleName("role-store"), async () => {
+      await gate;
+      return "done";
+    });
+    const contender = await pushWithRole(local, fixture.transport, { write: immediate });
+    assert.deepEqual(contender, { held: false, reason: "held-elsewhere" });
+    assert.equal(fixture.history.length, 0);
+    // A different store's role is independent.
+    assert.deepEqual(await withPushRole(pushRoleName("another-store"), async () => 1), { held: true, result: 1 });
+    release();
+    assert.deepEqual(await holder, { held: true, result: "done" });
+    const delivered = await pushWithRole(local, fixture.transport, { write: immediate });
+    assert.equal(delivered.held, true);
+    assert.deepEqual(delivered.held && delivered.result.settled.map((row) => row.state), ["acknowledged"]);
+    assert.equal(fixture.history.length, 1);
+    // A rejecting body still releases the role.
+    await assert.rejects(withPushRole(pushRoleName("role-store"), async () => {
+      throw new Error("boom");
+    }), /boom/);
+    assert.equal((await withPushRole(pushRoleName("role-store"), async () => true)).held, true);
+  } finally {
+    local.close();
+  }
+});
+
+test("reclaimInFlight marks a reclaimed intent as attempted, so the next push looks the request up before resubmitting", async () => {
+  const fixture = await seededFixture();
+  const factory = new IDBFactory();
+  const local = openLocal(factory);
+  try {
+    await bootstrap(fixture.remote, local);
+    const committed = await commitLocal(local, "notes/beta", edit("beta from a dead realm\n"));
+    const requestId = committed.intent!.requestId;
+    // The dead realm claimed and delivered, and the authority applied it; nobody settled.
+    const claimed = await local.backend.updateIntent(requestId, "pending", { state: "in_flight" });
+    await fixture.transport.submit({ ...claimed, attempts: 1 });
+    assert.equal(fixture.history.length, 1);
+
+    assert.equal(await reclaimInFlight(local), 1);
+    const reclaimed = await local.backend.readIntent(requestId);
+    assert.equal(reclaimed?.state, "pending");
+    assert.equal(reclaimed?.attempts, 1);
+    const report = await push(local, fixture.transport, { write: immediate });
+    assert.deepEqual(report.settled.map((row) => row.state), ["acknowledged"]);
+    // Settled by lookup: the authority saw no second submission, deduplicated or otherwise.
+    assert.equal(fixture.history.length, 1);
+    assert.deepEqual(fixture.deduplicated, []);
+    assert.equal((await local.backend.readIntent(requestId))?.acknowledgedVersion, committed.version);
+    assert.equal(await reclaimInFlight(local), 0);
   } finally {
     local.close();
   }
