@@ -11,6 +11,7 @@ import { mutateDocument } from "@superbee/core/document-mutation";
 import { IndexedDbSchemaError, type IntentRecord } from "@superbee/core/indexeddb-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
 import { RemoteBackend } from "@superbee/core/remote";
+import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
 import type { OperationState, OperationTransport } from "@superbee/core/uncertain-write";
 import { contentVersion, VersionConflict, versionOfBytes } from "@superbee/core/versioning";
 
@@ -31,7 +32,6 @@ import {
 } from "../../src/local-bundle.ts";
 import type { LockManagerLike } from "../../src/push-role.ts";
 import { faultyIndexedDb, type Faults } from "./faulty-factory.ts";
-import { createFetchTransport } from "./wire-transport.ts";
 
 const ROOT_INDEX = "---\nokf_version: '0.2'\n---\n# Browser-local proof\n";
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
@@ -106,11 +106,8 @@ function remoteOrThrow(): NonNullable<typeof remote> {
 function attachTo(remoteBaseUrl: string, name: string): void {
   current?.close();
   current = openLocalBundle(name, { indexedDB: faultyIndexedDb(indexedDB, faults) });
-  remote = {
-    baseUrl: remoteBaseUrl,
-    backend: new RemoteBackend({ baseUrl: remoteBaseUrl, bundle: REMOTE_BUNDLE, fetchImpl: carrier, maxRetries: 0 }),
-    transport: createFetchTransport({ baseUrl: remoteBaseUrl, bundle: REMOTE_BUNDLE, fetchImpl: carrier }),
-  };
+  const backend = new RemoteBackend({ baseUrl: remoteBaseUrl, bundle: REMOTE_BUNDLE, fetchImpl: carrier, maxRetries: 0 });
+  remote = { baseUrl: remoteBaseUrl, backend, transport: createRemoteOperationTransport(backend) };
 }
 
 /** The journal fields a scenario compares; content strings ride along so conflict is fully visible. */

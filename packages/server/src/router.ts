@@ -37,9 +37,86 @@ import {
   type WriteOptions,
 } from "@superbee/core/storage";
 import { queryHeads, writeDocVersioned } from "@superbee/core/engine";
+import { isRequestIdentity } from "@superbee/core/uncertain-write";
+
+import type {
+  OperationOutcomeStore,
+  RecordedOperation,
+  RecordedOutcome,
+  RecordedResponse,
+} from "./operation-outcomes.js";
 
 /** Default page size for `GET /docs` when `limit` is not supplied. */
 const DEFAULT_LIST_LIMIT = 50;
+
+/** The header that carries a document write's durable request identity (`docs/WIRE-PROTOCOL.md`, "Identified writes"). */
+const IDENTITY_HEADER = "Idempotency-Key";
+
+/** The only endpoints that accept {@link IDENTITY_HEADER}; every other endpoint refuses it as `400 USAGE`. */
+const IDENTIFIED_ENDPOINTS: ReadonlySet<string> = new Set(["doc-write", "doc-delete"]);
+
+/** The one answer for identity on a host that records no outcomes; a client must never mistake it for silent acceptance. */
+const IDENTITY_UNSUPPORTED = "request identity is not supported by this host";
+
+/** A request identity from an `operations/{key}` path segment: decoded once, then held to the wire's key rule. */
+function decodeOperationKey(rawSegment: string): string {
+  let key: string;
+  try {
+    key = decodeURIComponent(rawSegment);
+  } catch {
+    throw new InvalidInputError(`invalid percent-encoding in operation key '${rawSegment}'`);
+  }
+  assertRequestIdentity(key);
+  return key;
+}
+
+function assertRequestIdentity(key: string): void {
+  if (!isRequestIdentity(key)) {
+    throw new InvalidInputError("Idempotency-Key must be 1 to 128 printable ASCII characters with no space");
+  }
+}
+
+/** Capture a response so it can be recorded and replayed verbatim to a duplicate submission. */
+async function recordableResponse(response: Response): Promise<RecordedResponse> {
+  const headers: Array<[string, string]> = [];
+  response.headers.forEach((value, name) => headers.push([name, value]));
+  return { status: response.status, headers, body: await response.text() };
+}
+
+function replayResponse(recorded: RecordedResponse): Response {
+  return new Response(recorded.body, { status: recorded.status, headers: recorded.headers });
+}
+
+/**
+ * The outcome a recorded response reports through the lookup route: a success is `committed`
+ * at the version the response carried, a `412` is `conflict` at the envelope's `actual`, and
+ * anything else is `refused` with the envelope's code. The same mapping a client applies to a
+ * live response, so a looked-up outcome and a replayed response never disagree.
+ */
+function outcomeOf(recorded: RecordedResponse): RecordedOutcome {
+  let payload: { error?: { code?: unknown; message?: unknown; details?: { actual?: unknown } } } = {};
+  try {
+    payload = JSON.parse(recorded.body) as typeof payload;
+  } catch {
+    payload = {};
+  }
+  if (recorded.status === 200 || recorded.status === 201) {
+    const version = recorded.headers.find(([name]) => name.toLowerCase() === "x-version")?.[1];
+    if (!version) throw new Error("an identified write produced a success response that carries no version");
+    return { kind: "committed", version };
+  }
+  if (recorded.status === 412) {
+    const actual = payload.error?.details?.actual;
+    return { kind: "conflict", actual: typeof actual === "string" ? actual : null };
+  }
+  const code = payload.error?.code;
+  const message = payload.error?.message;
+  return {
+    kind: "refused",
+    code: typeof code === "string" ? code : "RUNTIME",
+    message: typeof message === "string" ? message : `status ${recorded.status}`,
+  };
+}
 
 /** True when `err` carries the `ENOENT`-shaped `.code` the seam's adapters use for "absent". */
 function isEnoent(err: unknown): boolean {
@@ -286,6 +363,13 @@ export const WIRE_ENDPOINTS = [
     path: "/v0/bundles/{bundle}/blobs/{key...}",
     accessClass: "write",
   },
+  {
+    id: "operation-lookup",
+    resource: "operation",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/operations/{key}",
+    accessClass: "write",
+  },
 ] as const;
 
 type WireResource = (typeof WIRE_ENDPOINTS)[number]["resource"];
@@ -302,7 +386,8 @@ export type ResolvedWireResource =
   | { kind: "doc-versions"; id: ConceptId }
   | { kind: "reserved"; dir: string; name: ReservedFilename }
   | { kind: "blobs" }
-  | { kind: "blob"; key: BlobKey };
+  | { kind: "blob"; key: BlobKey }
+  | { kind: "operation"; key: string };
 
 interface ResolvedWireRouteBase {
   endpointId: WireEndpointId;
@@ -342,6 +427,12 @@ export interface TrustedRouterContext {
 
 export interface RouterOptions {
   capabilities: StorageCapabilities;
+  /**
+   * Where identified document writes record their outcomes, scoped by canonical bundle id.
+   * Without one the router refuses every request that carries `Idempotency-Key` and the lookup
+   * route with `400 USAGE`, and `GET /v0/capabilities` reports `operations: false`.
+   */
+  outcomes?: OperationOutcomeStore;
   resolveContext(
     request: Request,
     route: ResolvedBundleWireRoute,
@@ -438,6 +529,8 @@ function resourceFromMatch(
       assertSafeBlobKey(key);
       return { kind: "blob", key };
     }
+    case "operation":
+      return { kind: "operation", key: decodeOperationKey(params.key!) };
   }
 }
 
@@ -545,6 +638,9 @@ function routeLabel(resource: WireResource): string {
       break;
     case "blob":
       label = "a blob route";
+      break;
+    case "operation":
+      label = "an operation route";
       break;
     case "capabilities":
       label = "/v0/capabilities";
@@ -670,12 +766,95 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
    * catch-all (`VersionConflict` -> `412` via `errorFromCaught`, same as a write). `200
    * { deleted }` unconditionally — never a `404`, matching the wire's absence-is-success
    * contract (AXI P6).
+   *
+   * A delete that carried `If-Match` answers with the version headers naming that token: the
+   * revision the delete acted on, and the version an identified delete's recorded outcome is
+   * committed at. When the target was already absent the delete is still the idempotent success
+   * the wire promises, and the token the client supplied is still the revision its outcome
+   * names. An unconditional delete has no revision to name and sends no version headers.
    */
   async function handleDeleteDoc(backend: StorageBackend, id: ConceptId, req: Request): Promise<Response> {
     assertValidDocId(id);
     const options = deleteOptionsFromHeaders(req);
     const deleted = await backend.delete(id, options);
-    return jsonResponse(200, { deleted });
+    const headers = options.expectedVersion === undefined ? {} : versionHeaders(options.expectedVersion);
+    return jsonResponse(200, { deleted }, headers);
+  }
+
+  /**
+   * Apply one identified write at most once under `key`. The key is claimed before `apply`
+   * runs; a duplicate that finds the key recorded replays the recorded response, and one that
+   * finds the first application still in progress waits for it. A typed rejection thrown by the
+   * engine (`412`, `400`, `404`) is the write's answer and is recorded like a returned response;
+   * a runtime failure produced no answer, so the claim is released with nothing recorded and a
+   * later submission applies fresh. A recorded outcome is bound to its method and document id,
+   * so the same key resubmitted for a different operation is refused, never replayed.
+   */
+  async function applyIdentified(
+    scope: BundleId,
+    key: string,
+    method: string,
+    id: ConceptId,
+    apply: () => Promise<Response>,
+  ): Promise<Response> {
+    try {
+      assertRequestIdentity(key);
+    } catch (err) {
+      return errorFromCaught(err);
+    }
+    const store = options.outcomes;
+    if (!store) return errorResponse(400, "USAGE", IDENTITY_UNSUPPORTED);
+    for (;;) {
+      const claim = await store.claim(scope, key);
+      if (claim.kind === "recorded") return replayRecorded(claim.operation, method, id);
+      if (claim.kind === "in_progress") {
+        const settled = await claim.settled;
+        if (settled === null) continue;
+        return replayRecorded(settled, method, id);
+      }
+      let response: Response;
+      try {
+        response = await apply();
+      } catch (err) {
+        if (!(err instanceof VersionConflict || err instanceof InvalidInputError || isEnoent(err))) {
+          claim.release();
+          throw err;
+        }
+        response = errorFromCaught(err);
+      }
+      let recorded: RecordedResponse;
+      let outcome: RecordedOutcome;
+      try {
+        recorded = await recordableResponse(response);
+        outcome = outcomeOf(recorded);
+      } catch (err) {
+        claim.release();
+        throw err;
+      }
+      claim.record({ method, id, response: recorded, outcome });
+      return replayResponse(recorded);
+    }
+  }
+
+  function replayRecorded(operation: RecordedOperation, method: string, id: ConceptId): Response {
+    if (operation.method !== method || operation.id !== id) {
+      return errorResponse(
+        400,
+        "USAGE",
+        `Idempotency-Key was recorded for ${operation.method} '${operation.id}', not ${method} '${id}'`,
+        { recorded: { method: operation.method, id: operation.id } },
+      );
+    }
+    return replayResponse(operation.response);
+  }
+
+  /** `GET /operations/{key}`: the recorded outcome, or `404` when the store holds nothing under the key. */
+  async function handleOperationLookup(scope: BundleId, key: string): Promise<Response> {
+    const store = options.outcomes;
+    if (!store) return errorResponse(400, "USAGE", IDENTITY_UNSUPPORTED);
+    const operation = await store.lookup(scope, key);
+    if (!operation) return errorResponse(404, "NOT_FOUND", `no recorded outcome for '${key}'`);
+    return jsonResponse(200, operation.outcome);
   }
 
   async function handleVersions(backend: StorageBackend, id: ConceptId): Promise<Response> {
@@ -895,10 +1074,18 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
       projections: caps.projections ?? true,
       backlinks: caps.backlinks ?? false,
       blobs: caps.blobs,
+      operations: options.outcomes !== undefined,
     });
   }
 
   return registeredWireRouter(async (req, { resolved }) => {
+    // Identity is refused wherever it is not honored, so a client never believes an
+    // unsupported write was identified. The refusal precedes context resolution the way route
+    // resolution does; on the two identified endpoints the host's own answer comes first.
+    const identity = req.headers.get(IDENTITY_HEADER);
+    if (identity !== null && !IDENTIFIED_ENDPOINTS.has(resolved.endpointId)) {
+      return errorResponse(400, "USAGE", "Idempotency-Key is accepted only on document PUT and DELETE");
+    }
     if (resolved.scope === "deployment") return handleCapabilities();
 
     const context = await options.resolveContext(req, resolved);
@@ -915,17 +1102,23 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         return await handleVersions(backend, (resolved.resource as { kind: "doc-versions"; id: ConceptId }).id);
       case "doc-read":
         return await handleReadDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id);
-      case "doc-write":
-        return await handleWriteDoc(
-          backend,
-          attribution,
-          (resolved.resource as { kind: "doc"; id: ConceptId }).id,
-          req,
-        );
+      case "doc-write": {
+        const { id } = resolved.resource as { kind: "doc"; id: ConceptId };
+        const write = () => handleWriteDoc(backend, attribution, id, req);
+        return identity === null ? await write() : await applyIdentified(resolved.bundleId, identity, "PUT", id, write);
+      }
       case "doc-head":
         return await handleHeadDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id);
-      case "doc-delete":
-        return await handleDeleteDoc(backend, (resolved.resource as { kind: "doc"; id: ConceptId }).id, req);
+      case "doc-delete": {
+        const { id } = resolved.resource as { kind: "doc"; id: ConceptId };
+        if (identity !== null && req.headers.get("If-Match") === null) {
+          return errorResponse(400, "USAGE", "an identified delete must carry If-Match");
+        }
+        const remove = () => handleDeleteDoc(backend, id, req);
+        return identity === null ? await remove() : await applyIdentified(resolved.bundleId, identity, "DELETE", id, remove);
+      }
+      case "operation-lookup":
+        return await handleOperationLookup(resolved.bundleId, (resolved.resource as { kind: "operation"; key: string }).key);
       case "reserved-read": {
         const resource = resolved.resource as { kind: "reserved"; dir: string; name: ReservedFilename };
         return await handleReadReserved(backend, resource.dir, resource.name);

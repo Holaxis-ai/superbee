@@ -871,6 +871,9 @@ test("a deadline shorter than the authority's latency: the aborted submission, i
     const second = await push(local, fixture.transport, { write: immediate });
     assert.deepEqual(second.settled.map((row) => row.state), ["acknowledged"]);
     assert.deepEqual(fixture.submissions, [requestId, requestId]);
+    // The abandoned duplicate reaches the router only after the fixture's latency, where the
+    // reference store answers it from the record; wait for that arrival before reading the count.
+    await waitFor(() => fixture.deduplicated.length > 0);
     assert.deepEqual(fixture.deduplicated, [requestId]);
     assert.equal(fixture.history.length, 1);
     assert.equal(fixture.history[0]!.requestId, requestId);

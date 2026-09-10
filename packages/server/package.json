@@ -20,6 +20,10 @@
     "./router": {
       "types": "./dist/router.d.ts",
       "default": "./dist/router.js"
+    },
+    "./operation-outcomes": {
+      "types": "./dist/operation-outcomes.d.ts",
+      "default": "./dist/operation-outcomes.js"
     }
   },
   "files": [

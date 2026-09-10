@@ -10,7 +10,8 @@ function concretePath(path: string): string {
     .replace("{bundle}", "default")
     .replace("{id...}", "concepts/a")
     .replace("{name}", "log.md")
-    .replace("{key...}", "assets/a.bin");
+    .replace("{key...}", "assets/a.bin")
+    .replace("{key}", "op-0001");
 }
 
 function requestBody(id: string): { body?: string; headers?: Record<string, string> } {

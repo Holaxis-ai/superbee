@@ -112,6 +112,19 @@ export function stateForOutcome(outcome: Outcome): OperationState {
   }
 }
 
+/** The longest request identity the wire accepts as `Idempotency-Key`. */
+export const REQUEST_ID_MAX_LENGTH = 128;
+
+/**
+ * True when `value` is a request identity the wire accepts: 1 to {@link REQUEST_ID_MAX_LENGTH}
+ * printable ASCII characters with no space. One rule, checked by the client before a header is
+ * built and by the reference router before a key is claimed, so the two sides cannot disagree
+ * about which keys identify a write. A minted UUID always satisfies it.
+ */
+export function isRequestIdentity(value: string): boolean {
+  return value.length >= 1 && value.length <= REQUEST_ID_MAX_LENGTH && /^[!-~]+$/.test(value);
+}
+
 /** A fresh request identity. UUIDs come from the platform's `crypto` in both Node and browsers. */
 export function mintRequestId(): string {
   const cryptoApi = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;

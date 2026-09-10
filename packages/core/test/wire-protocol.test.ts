@@ -21,10 +21,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createRouter, serve } from "@superbee/server";
+import { createRouter, createRouterForBackend, MemoryOperationOutcomeStore, serve } from "@superbee/server";
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
+import { InvalidInputError } from "../src/errors.js";
+import { stringifyDoc } from "../src/frontmatter.js";
 import { RemoteBackend } from "../src/remote-backend.js";
+import { createRemoteOperationTransport } from "../src/remote-operations.js";
+import type { OperationIntent } from "../src/uncertain-write.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import {
   writeDocVersioned,
@@ -452,7 +456,7 @@ test("wire: GET /v0/capabilities reports the backend's real capabilities (Memory
   const res = await router(new Request("http://wire.local/v0/capabilities"));
   assert.equal(res.status, 200);
   const body = (await res.json()) as Record<string, unknown>;
-  assert.deepEqual(body, { history: true, enforced_cas: true, projections: true, backlinks: false, blobs: true });
+  assert.deepEqual(body, { history: true, enforced_cas: true, projections: true, backlinks: false, blobs: true, operations: true });
 });
 
 test("wire: error envelopes on 404 and 412 follow the { error: { code, message, details? } } shape", async () => {
@@ -691,4 +695,333 @@ test("wire: serve() blob route — a REAL socket GET returns EXACT bytes with th
   } finally {
     await handle.close();
   }
+});
+
+// ── identified writes and outcome lookup (WIRE-PROOF-10) ─────────────────────
+
+const DOCS_URL = "http://wire.local/v0/bundles/test/docs";
+const OPERATIONS_URL = "http://wire.local/v0/bundles/test/operations";
+
+function identifiedPut(id: string, body: string, headers: Record<string, string> = {}): Request {
+  return new Request(`${DOCS_URL}/${id}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json", ...headers },
+    body: JSON.stringify({ frontmatter: { type: "T", timestamp: T_DOC }, body }),
+  });
+}
+
+function identifiedDelete(id: string, headers: Record<string, string> = {}): Request {
+  return new Request(`${DOCS_URL}/${id}`, { method: "DELETE", headers });
+}
+
+function lookup(key: string): Request {
+  return new Request(`${OPERATIONS_URL}/${encodeURIComponent(key)}`);
+}
+
+/** Everything a duplicate must reproduce: status, both version headers, and the exact body. */
+async function answer(res: Response): Promise<{ status: number; version: string | null; etag: string | null; body: string }> {
+  return { status: res.status, version: res.headers.get("x-version"), etag: res.headers.get("etag"), body: await res.text() };
+}
+
+async function outcomeAt(router: (req: Request) => Promise<Response>, key: string): Promise<{ status: number; body: unknown }> {
+  const res = await router(lookup(key));
+  return { status: res.status, body: await res.json() };
+}
+
+test("wire: identified PUT is applied once; the same Idempotency-Key replays the same status, X-Version and body, and the backend holds one revision", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-identified", backend: serverBackend });
+
+  const first = await answer(await router(identifiedPut("concepts/once", "v1", { "Idempotency-Key": "req-1", "If-None-Match": "*" })));
+  assert.equal(first.status, 201);
+  assert.match(first.version ?? "", /^sha256:[0-9a-f]{64}$/);
+  assert.equal(first.etag, `"${first.version}"`);
+
+  // A different payload under the same key, method and id is not inspected: the record replays.
+  const again = await answer(await router(identifiedPut("concepts/once", "v1 resent with a different body", { "Idempotency-Key": "req-1", "If-None-Match": "*" })));
+  assert.deepEqual(again, first);
+  assert.equal((await serverBackend.versions("concepts/once")).length, 1);
+  assert.equal((await serverBackend.read("concepts/once")).doc.body, "v1");
+});
+
+/** A backend whose writes take real time, so two submissions can overlap deterministically. */
+class SlowWriteBackend extends ServerMemoryBackend {
+  writes = 0;
+  override async write(id: ConceptId, doc: OkfDocument, options?: WriteOptions) {
+    this.writes += 1;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    return super.write(id, doc, options);
+  }
+}
+
+test("wire: two concurrent submissions under one Idempotency-Key apply exactly once and both receive the same version", async () => {
+  const backend = new SlowWriteBackend();
+  const router = createRouter({ root: "mem://wire-identified-race", backend });
+  const [a, b] = await Promise.all([
+    router(identifiedPut("concepts/race", "v1", { "Idempotency-Key": "race-1", "If-None-Match": "*" })),
+    router(identifiedPut("concepts/race", "v1", { "Idempotency-Key": "race-1", "If-None-Match": "*" })),
+  ]);
+  const first = await answer(a);
+  const second = await answer(b);
+  assert.equal(first.status, 201);
+  assert.deepEqual(second, first);
+  assert.equal(backend.writes, 1, "the second submission waited for the first application instead of applying");
+  assert.equal((await backend.versions("concepts/race")).length, 1);
+});
+
+test("wire: GET /operations/{key} returns committed after a PUT, 404 for an unknown key, and conflict after a stale If-Match PUT whose duplicate replays the 412", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-lookup", backend: serverBackend });
+
+  const created = await answer(await router(identifiedPut("concepts/look", "v1", { "Idempotency-Key": "look-1", "If-None-Match": "*" })));
+  assert.equal(created.status, 201);
+  assert.deepEqual(await outcomeAt(router, "look-1"), { status: 200, body: { kind: "committed", version: created.version } });
+
+  const unknown = await outcomeAt(router, "never-submitted");
+  assert.equal(unknown.status, 404);
+  assert.equal((unknown.body as { error: { code: string } }).error.code, "NOT_FOUND");
+
+  const stale = await answer(await router(identifiedPut("concepts/look", "v2", { "Idempotency-Key": "look-2", "If-Match": "sha256:" + "0".repeat(64) })));
+  assert.equal(stale.status, 412);
+  assert.deepEqual(await outcomeAt(router, "look-2"), { status: 200, body: { kind: "conflict", actual: created.version } });
+  const staleAgain = await answer(await router(identifiedPut("concepts/look", "v2", { "Idempotency-Key": "look-2", "If-Match": "sha256:" + "0".repeat(64) })));
+  assert.deepEqual(staleAgain, stale);
+  assert.equal((await serverBackend.versions("concepts/look")).length, 1);
+});
+
+test("wire: identified DELETE requires If-Match, applies once, replays deleted:true, and is looked up as committed at the deleted revision", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-identified-delete", backend: serverBackend };
+  const router = createRouter(bundle);
+  const { version } = await writeDocVersioned(bundle, { id: "concepts/gone", frontmatter: { type: "T", timestamp: T_DOC }, body: "x" });
+
+  const noPremise = await router(identifiedDelete("concepts/gone", { "Idempotency-Key": "del-1" }));
+  assert.equal(noPremise.status, 400);
+  assert.match(((await noPremise.json()) as { error: { message: string } }).error.message, /If-Match/);
+  assert.equal(await serverBackend.exists("concepts/gone"), true);
+  assert.equal((await outcomeAt(router, "del-1")).status, 404);
+
+  const deleted = await answer(await router(identifiedDelete("concepts/gone", { "Idempotency-Key": "del-1", "If-Match": version })));
+  assert.equal(deleted.status, 200);
+  assert.deepEqual(JSON.parse(deleted.body), { deleted: true });
+  assert.equal(deleted.version, version);
+  assert.equal(deleted.etag, `"${version}"`);
+  assert.equal(await serverBackend.exists("concepts/gone"), false);
+
+  // The duplicate replays the record: deleted:true, not the deleted:false a fresh delete would answer.
+  const again = await answer(await router(identifiedDelete("concepts/gone", { "Idempotency-Key": "del-1", "If-Match": version })));
+  assert.deepEqual(again, deleted);
+  assert.deepEqual(await outcomeAt(router, "del-1"), { status: 200, body: { kind: "committed", version } });
+
+  // A new identity on the now-absent target is the idempotent success, still named by its premise.
+  const absent = await answer(await router(identifiedDelete("concepts/gone", { "Idempotency-Key": "del-2", "If-Match": version })));
+  assert.equal(absent.status, 200);
+  assert.deepEqual(JSON.parse(absent.body), { deleted: false });
+  assert.equal(absent.version, version);
+  assert.deepEqual(await outcomeAt(router, "del-2"), { status: 200, body: { kind: "committed", version } });
+
+  // An unidentified, unconditional delete still carries no version headers.
+  const plain = await answer(await router(identifiedDelete("concepts/gone")));
+  assert.equal(plain.status, 200);
+  assert.equal(plain.version, null);
+});
+
+test("wire: the same Idempotency-Key resubmitted for a different id or method is 400 USAGE with details.recorded, and nothing else is applied", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-identified-binding", backend: serverBackend });
+  const created = await answer(await router(identifiedPut("concepts/a", "a", { "Idempotency-Key": "bind-1", "If-None-Match": "*" })));
+  assert.equal(created.status, 201);
+
+  for (const request of [
+    identifiedPut("concepts/b", "b", { "Idempotency-Key": "bind-1", "If-None-Match": "*" }),
+    identifiedDelete("concepts/a", { "Idempotency-Key": "bind-1", "If-Match": created.version! }),
+  ]) {
+    const res = await router(request);
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as { error: { code: string; details?: { recorded?: { method: string; id: string } } } };
+    assert.equal(body.error.code, "USAGE");
+    assert.deepEqual(body.error.details?.recorded, { method: "PUT", id: "concepts/a" });
+  }
+  assert.equal(await serverBackend.exists("concepts/b"), false);
+  assert.equal(await serverBackend.exists("concepts/a"), true);
+  assert.deepEqual(await outcomeAt(router, "bind-1"), { status: 200, body: { kind: "committed", version: created.version } });
+});
+
+test("wire: an invalid Idempotency-Key (empty, 129 characters, containing a space) is 400 USAGE, records nothing, and never reaches the backend", async () => {
+  const { router, spy } = freshSpiedRouter();
+  for (const key of ["", "k".repeat(129), "has space"]) {
+    const res = await router(identifiedPut("concepts/never", "x", { "Idempotency-Key": key, "If-None-Match": "*" }));
+    assert.equal(res.status, 400, `key ${JSON.stringify(key)}`);
+    assert.equal(((await res.json()) as { error: { code: string } }).error.code, "USAGE");
+  }
+  assert.deepEqual(spy.calls, []);
+  for (const key of ["k".repeat(129), "has space"]) {
+    const res = await router(lookup(key));
+    assert.equal(res.status, 400, `lookup ${JSON.stringify(key)}`);
+  }
+  const valid = await router(identifiedPut("concepts/never", "x", { "Idempotency-Key": "k".repeat(128), "If-None-Match": "*" }));
+  assert.equal(valid.status, 201);
+});
+
+test("wire: a router without an outcome store refuses Idempotency-Key and the lookup route with 400 USAGE and reports operations:false; with a store, Idempotency-Key on any other endpoint is 400 USAGE", async () => {
+  const bare = new SpyBackend(new ServerMemoryBackend());
+  const withoutStore = createRouterForBackend(bare, { outcomes: null });
+  const caps = (await (await withoutStore(new Request("http://wire.local/v0/capabilities"))).json()) as { operations: boolean };
+  assert.equal(caps.operations, false);
+  const refused = await withoutStore(identifiedPut("concepts/x", "x", { "Idempotency-Key": "no-store", "If-None-Match": "*" }));
+  assert.equal(refused.status, 400);
+  assert.match(((await refused.json()) as { error: { message: string } }).error.message, /not supported by this host/);
+  const refusedLookup = await withoutStore(lookup("no-store"));
+  assert.equal(refusedLookup.status, 400);
+  assert.deepEqual(bare.calls, []);
+  // Without identity the same router still writes.
+  assert.equal((await withoutStore(identifiedPut("concepts/x", "x", { "If-None-Match": "*" }))).status, 201);
+
+  const { router, spy } = freshSpiedRouter();
+  const withStoreCaps = (await (await router(new Request("http://wire.local/v0/capabilities"))).json()) as { operations: boolean };
+  assert.equal(withStoreCaps.operations, true);
+  const elsewhere = [
+    new Request("http://wire.local/v0/bundles/test/reserved/log.md", { method: "PUT", headers: { "content-type": "application/json", "Idempotency-Key": "k1" }, body: JSON.stringify({ content: "log" }) }),
+    new Request("http://wire.local/v0/bundles/test/blobs/assets/a.bin", { method: "PUT", headers: { "content-type": "application/octet-stream", "Idempotency-Key": "k2" }, body: "bytes" }),
+    new Request("http://wire.local/v0/bundles/test/blobs/assets/a.bin", { method: "DELETE", headers: { "Idempotency-Key": "k3" } }),
+    new Request("http://wire.local/v0/bundles/test/docs/concepts/x", { method: "GET", headers: { "Idempotency-Key": "k4" } }),
+    new Request("http://wire.local/v0/capabilities", { headers: { "Idempotency-Key": "k5" } }),
+  ];
+  for (const request of elsewhere) {
+    const res = await router(request);
+    assert.equal(res.status, 400, `${request.method} ${new URL(request.url).pathname}`);
+    assert.equal(((await res.json()) as { error: { code: string } }).error.code, "USAGE");
+  }
+  assert.deepEqual(spy.calls, []);
+});
+
+test("wire: a recorded outcome expires after the retention window; a resubmission after expiry with the original If-Match answers 412 whose actual is the first application's version", async () => {
+  let now = 1_000_000;
+  const store = new MemoryOperationOutcomeStore({ retentionMs: 60_000, now: () => now });
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-retention", backend: serverBackend };
+  const router = createRouter(bundle, { outcomes: store });
+  const { version: base } = await writeDocVersioned(bundle, { id: "concepts/ttl", frontmatter: { type: "T", timestamp: T_DOC }, body: "v1" });
+
+  const committed = await answer(await router(identifiedPut("concepts/ttl", "v2", { "Idempotency-Key": "ttl-1", "If-Match": base })));
+  assert.equal(committed.status, 200);
+  assert.equal(store.size, 1);
+  now += 59_999;
+  assert.deepEqual(await outcomeAt(router, "ttl-1"), { status: 200, body: { kind: "committed", version: committed.version } });
+  now += 1;
+  assert.equal((await outcomeAt(router, "ttl-1")).status, 404);
+
+  // The premise makes expiry safe: the write's own commit is what the resubmission conflicts with.
+  const resubmitted = await router(identifiedPut("concepts/ttl", "v2", { "Idempotency-Key": "ttl-1", "If-Match": base }));
+  assert.equal(resubmitted.status, 412);
+  const conflict = (await resubmitted.json()) as { error: { details: { expected: string; actual: string } } };
+  assert.equal(conflict.error.details.expected, base);
+  assert.equal(conflict.error.details.actual, committed.version);
+  assert.deepEqual(await outcomeAt(router, "ttl-1"), { status: 200, body: { kind: "conflict", actual: committed.version } });
+  assert.equal((await serverBackend.versions("concepts/ttl")).length, 2);
+  assert.equal(store.size, 1, "recording pruned the expired record");
+});
+
+/** A backend whose next `failures` writes reject with a runtime error after a tick, then behave. */
+class FlakyWriteBackend extends ServerMemoryBackend {
+  failures = 0;
+  override async write(id: ConceptId, doc: OkfDocument, options?: WriteOptions) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    if (this.failures > 0) {
+      this.failures -= 1;
+      throw new Error("storage exploded");
+    }
+    return super.write(id, doc, options);
+  }
+}
+
+test("wire: an identified PUT whose application throws records nothing and releases the key, so a later submission applies, including one that was waiting on the failed claim", async () => {
+  const backend = new FlakyWriteBackend();
+  const router = createRouter({ root: "mem://wire-identified-release", backend });
+
+  backend.failures = 1;
+  const failed = await router(identifiedPut("concepts/flaky", "v1", { "Idempotency-Key": "flaky-1", "If-None-Match": "*" }));
+  assert.equal(failed.status, 500);
+  assert.equal((await outcomeAt(router, "flaky-1")).status, 404);
+  const applied = await answer(await router(identifiedPut("concepts/flaky", "v1", { "Idempotency-Key": "flaky-1", "If-None-Match": "*" })));
+  assert.equal(applied.status, 201);
+  assert.deepEqual(await outcomeAt(router, "flaky-1"), { status: 200, body: { kind: "committed", version: applied.version } });
+
+  // A waiter on a claim that is released re-claims and applies fresh rather than inheriting the failure.
+  backend.failures = 1;
+  const [first, second] = await Promise.all([
+    router(identifiedPut("concepts/flaky-2", "v1", { "Idempotency-Key": "flaky-2", "If-None-Match": "*" })),
+    router(identifiedPut("concepts/flaky-2", "v1", { "Idempotency-Key": "flaky-2", "If-None-Match": "*" })),
+  ]);
+  assert.deepEqual([first.status, second.status].sort(), [201, 500]);
+  const settled = await answer(first.status === 201 ? first : second);
+  assert.deepEqual(await outcomeAt(router, "flaky-2"), { status: 200, body: { kind: "committed", version: settled.version } });
+  assert.equal((await backend.versions("concepts/flaky-2")).length, 1);
+});
+
+test("wire: RemoteBackend sends Idempotency-Key from requestId, rejects a malformed one before any request leaves, and lookupOperation maps 404 to null", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  let sent = 0;
+  const router = createRouter({ root: "mem://wire-remote-identity", backend: serverBackend });
+  const counting = (request: Request) => {
+    sent += 1;
+    return router(request);
+  };
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: counting, maxRetries: 0 });
+  const doc: OkfDocument = { id: "concepts/rb", frontmatter: { type: "T", timestamp: T_DOC }, body: "one" };
+
+  const version = await remote.write("concepts/rb", doc, { expectedVersion: null, requestId: "rb-1" });
+  assert.equal(await remote.write("concepts/rb", { ...doc, body: "one again" }, { expectedVersion: null, requestId: "rb-1" }), version);
+  assert.equal((await serverBackend.versions("concepts/rb")).length, 1);
+  assert.deepEqual(await remote.lookupOperation("rb-1"), { kind: "committed", version });
+  assert.equal(await remote.lookupOperation("rb-never"), null);
+
+  const before = sent;
+  await assert.rejects(remote.write("concepts/rb", doc, { requestId: "bad key" }), (err: unknown) => err instanceof InvalidInputError);
+  await assert.rejects(remote.delete("concepts/rb", { expectedVersion: version, requestId: "" }), (err: unknown) => err instanceof InvalidInputError);
+  await assert.rejects(remote.lookupOperation("k".repeat(129)), (err: unknown) => err instanceof InvalidInputError);
+  assert.equal(sent, before, "a malformed identity never becomes a request");
+
+  assert.equal(await remote.delete("concepts/rb", { expectedVersion: version, requestId: "rb-del" }), true);
+  assert.equal(await remote.delete("concepts/rb", { expectedVersion: version, requestId: "rb-del" }), true, "the duplicate replays the record");
+  assert.deepEqual(await remote.lookupOperation("rb-del"), { kind: "committed", version });
+});
+
+test("wire: createRemoteOperationTransport delivers a document.write intent as an identified guarded PUT and maps committed, conflict and refused; lookup reads the record", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const router = createRouter({ root: "mem://wire-remote-operations", backend: serverBackend });
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
+  const transport = createRemoteOperationTransport(remote, { actor: "human:tester" });
+  const frontmatter = { type: "T", timestamp: T_DOC };
+  const intent = (requestId: string, target: string, base: string | null, body: string): OperationIntent => ({
+    requestId,
+    kind: "document.write",
+    target,
+    base,
+    local: "sha256:local",
+    content: stringifyDoc(frontmatter, body),
+    createdAt: T_DOC,
+    attempts: 1,
+    state: "in_flight",
+  });
+
+  const committed = await transport.submit(intent("op-1", "concepts/op", null, "first"));
+  assert.equal(committed.kind, "committed");
+  const version = committed.kind === "committed" ? committed.version : "";
+  assert.equal((await serverBackend.read("concepts/op")).version, version);
+  assert.equal((await serverBackend.versions("concepts/op"))[0]?.actor, "human:tester");
+  assert.deepEqual(await transport.lookup("op-1"), { kind: "committed", version });
+  assert.equal(await transport.lookup("op-none"), null);
+  // The same identity delivered again is answered from the record, not applied.
+  assert.deepEqual(await transport.submit(intent("op-1", "concepts/op", null, "first")), { kind: "committed", version });
+  assert.equal((await serverBackend.versions("concepts/op")).length, 1);
+
+  assert.deepEqual(await transport.submit(intent("op-2", "concepts/op", "sha256:" + "0".repeat(64), "stale")), { kind: "conflict", actual: version });
+  // The engine's own rejection (a document with no type) comes back as a typed refusal.
+  const untyped = { ...intent("op-3", "concepts/untyped", null, "x"), content: stringifyDoc({ title: "no type", timestamp: T_DOC }, "x") };
+  const refused = await transport.submit(untyped);
+  assert.equal(refused.kind, "refused");
+  assert.equal(refused.kind === "refused" && refused.code, "USAGE");
+  assert.deepEqual(await transport.lookup("op-3"), refused, "a content rejection is a recorded outcome");
+  await assert.rejects(transport.submit({ ...intent("op-4", "concepts/op", null, "x"), kind: "document.delete" }), /unsupported intent kind/);
 });

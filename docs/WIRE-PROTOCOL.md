@@ -48,7 +48,10 @@ not make the reference server enforce it. A gated deployment owns the meaning of
 - Except for `HEAD`, errors have shape
   `{ "error": { "code": "...", "message": "...", "details": ... } }`. Current router-owned
   classes are `400 USAGE`, `404 NOT_FOUND`, `412 VERSION_CONFLICT`, and `500 RUNTIME`. Unsupported
-  methods currently return `400 USAGE`, not `405`.
+  methods currently return `400 USAGE`, not `405`. `401 AUTH_REQUIRED` and `403 FORBIDDEN` are
+  host-owned: a gated host answers them before the router runs, and the reference router never
+  emits them. On an identified write that ordering matters: an authorization refusal arrives
+  before the key is claimed, so nothing is recorded under it.
 - Version-carrying responses send a bare content-addressed token in `X-Version` (primary) and the
   same token as a quoted `ETag` (secondary). A conforming client must refuse a successful versioned
   read that has neither header; it must not silently downgrade a later CAS write.
@@ -59,21 +62,27 @@ not make the reference server enforce it. A gated deployment owns the meaning of
   see the no-auth caveat above. Deletes create no revision and send neither attribution header from
   `RemoteBackend`.
 - Document and blob deletes are idempotent: both return `200 { "deleted": true|false }`; absence is
-  `deleted:false`, not `404`. A supplied stale `If-Match` still returns `412`.
+  `deleted:false`, not `404`. A supplied stale `If-Match` still returns `412`. A document delete
+  that carried `If-Match` answers with the version headers naming that token; an unconditional
+  delete sends none.
+- `Idempotency-Key` identifies a document `PUT` or `DELETE` so it is applied at most once and its
+  outcome can be looked up afterwards; see "Identified writes and outcome lookup" below. On any
+  other endpoint the header is `400 USAGE`, never ignored.
 
 ## Implemented endpoints
 
-`{id...}` and `{key...}` mean one or more independently encoded path segments.
+`{id...}` and `{key...}` mean one or more independently encoded path segments; `{key}` on the
+operation route is exactly one.
 
 | Method | Path | Success contract |
 | --- | --- | --- |
-| GET | `/v0/capabilities` | `200` capability booleans: `history`, `enforced_cas`, `projections`, `backlinks`, `blobs`. |
+| GET | `/v0/capabilities` | `200` capability booleans: `history`, `enforced_cas`, `projections`, `backlinks`, `blobs`, `operations`. |
 | GET | `/v0/bundles/{bundle}/docs` | `200 { count, docs, next_cursor }`; filters/pagination below. |
 | POST | `/v0/bundles/{bundle}/docs:read-many` | JSON `{ ids: string[] }`; `200 { results }`, or all-or-nothing `404` with `details.missing`. |
 | GET | `/v0/bundles/{bundle}/docs/{id...}` | `200 { id, frontmatter, body }` plus version headers. |
 | PUT | `/v0/bundles/{bundle}/docs/{id...}` | JSON `{ frontmatter, body? }`; `201` for expect-absent create, otherwise `200`, with `{ version }` plus version headers. |
 | HEAD | `/v0/bundles/{bundle}/docs/{id...}` | Bodyless `200` plus version headers, `404` absent, or `400` invalid. |
-| DELETE | `/v0/bundles/{bundle}/docs/{id...}` | `200 { deleted }`; optional `If-Match`. |
+| DELETE | `/v0/bundles/{bundle}/docs/{id...}` | `200 { deleted }`; optional `If-Match`, echoed as version headers when supplied. |
 | GET | `/v0/bundles/{bundle}/docs/{id...}/versions` | `200 { versions }`, each carrying version, actor, timestamp, and optional agent. |
 | GET | `/v0/bundles/{bundle}/reserved/{name}` | `{name}` is `index.md` or `log.md`; optional `dir`; `200 { content }` plus version headers, or `404`. |
 | PUT | `/v0/bundles/{bundle}/reserved/{name}` | `{name}` is `index.md` or `log.md`; optional `dir`; JSON `{ content }`; `201` expect-absent or `200`, with `{ version }` plus headers. |
@@ -82,6 +91,7 @@ not make the reference server enforce it. A gated deployment owns the meaning of
 | PUT | `/v0/bundles/{bundle}/blobs/{key...}` | Raw request bytes; optional `Content-Type`; `201` expect-absent or `200`, with `{ version }` plus headers. |
 | HEAD | `/v0/bundles/{bundle}/blobs/{key...}` | Bodyless `200` with content type/version, `404` absent, or `400` invalid. |
 | DELETE | `/v0/bundles/{bundle}/blobs/{key...}` | `200 { deleted }`; optional `If-Match`. |
+| GET | `/v0/bundles/{bundle}/operations/{key}` | `200` recorded outcome of the identified write under `{key}`, or `404 NOT_FOUND` when nothing is recorded; requires write access. |
 
 There are deliberately no collection-delete routes and no reserved-file delete route.
 
@@ -112,6 +122,52 @@ Blobs are the raw-byte channel. Blob `PUT` and `GET` carry exact bytes as the HT
 type in `Content-Type` and identity in the version headers. Blob keys ending in `.md` are rejected so
 the blob channel cannot become an accidental bypass around document parsing and ID safety.
 
+## Identified writes and outcome lookup
+
+A write over a network has three answers, not two: applied, refused, or lost before the client
+learned which. A document `PUT` or `DELETE` that carries an `Idempotency-Key` header is an
+identified write: the authority applies it at most once under that key and keeps the answer, so a
+client whose response was lost can look the answer up instead of guessing.
+
+- The key is 1 to 128 printable ASCII characters with no space; anything else is `400 USAGE`.
+  Identity is scoped per bundle and per key.
+- The header is accepted on document `PUT` and `DELETE` only. Reserved-file and blob writes do not
+  accept it in this slice, and a key on any other endpoint is `400 USAGE`, so a client never
+  believes an unsupported write was identified.
+- The key is claimed before the write is applied. A duplicate submission, including one that
+  arrives while the first application is still in progress, receives the recorded response
+  replayed: the same status, the same `X-Version` and `ETag`, the same body. Payload differences
+  under the same key, method and id are not inspected.
+- A recorded outcome is bound to the method and decoded document id it was recorded for. The same
+  key resubmitted with a different method or id is `400 USAGE` with
+  `details: { recorded: { method, id } }`, never a replay.
+- Content rejections are recorded outcomes: a duplicate of a `412 VERSION_CONFLICT` replays the
+  `412`, and a duplicate of a `400 USAGE` replays the `400`. A host-owned `401 AUTH_REQUIRED` or
+  `403 FORBIDDEN` is answered before the key is claimed, so nothing is recorded under it. If the
+  application throws before any response exists (a runtime failure, not a 4xx or 5xx response),
+  the claim is released with nothing recorded and a later submission applies fresh.
+- An identified `DELETE` must carry `If-Match`; without it the request is `400 USAGE` and nothing
+  is recorded. The delete's response echoes the `If-Match` token as its version headers, which is
+  the version its recorded outcome is committed at. That holds for `deleted: false` as well: an
+  absent target is the idempotent success the wire promises, and the token the client supplied
+  remains the revision its outcome names.
+- `GET /v0/bundles/{bundle}/operations/{key}` returns the recorded outcome as exactly one of
+  `{ "kind": "committed", "version" }`, `{ "kind": "conflict", "actual" }`, or
+  `{ "kind": "refused", "code", "message" }` (the `Outcome` union of
+  `@superbee/core/uncertain-write` without `unknown`). It requires write access: the caller must
+  hold the right to make the write in order to learn its outcome. `404 NOT_FOUND` means the
+  authority holds nothing under that key; an invalid key is `400 USAGE`.
+- Retention. The reference store keeps an outcome for a window, 24 hours by default and
+  configurable with an injectable clock. A host states its window. A `404` after expiry is
+  indistinguishable from never recorded. A resubmission after expiry is safe only because the
+  write carries its compare-and-swap premise: a committed write resubmitted after expiry answers
+  `412` whose `actual` equals the client's own committed version, which the client treats as
+  committed. That property is what makes expiry safe, and it is why an identified write is always
+  a guarded write.
+- `GET /v0/capabilities` reports `operations: true` exactly when the host records outcomes. A
+  host without a store answers any request carrying `Idempotency-Key`, and the lookup route, with
+  `400 USAGE` "request identity is not supported by this host".
+
 ## Client behavior
 
 `RemoteBackend` maps the HTTP surface back to the `StorageBackend` seam:
@@ -127,6 +183,12 @@ the blob channel cannot become an accidental bypass around document parsing and 
   one, callers that require lost-update safety must supply `If-Match`/expect-absent semantics.
 - Full-frontmatter list pagination supplies the optional `queryHeads` push-down. Core re-applies
   query semantics, so a foreign backend may over-return but cannot redefine matches.
+- `WriteOptions.requestId` and `DeleteOptions.requestId` travel as `Idempotency-Key`; a malformed
+  one is an `InvalidInputError` before any request is sent. Transient retries of an identified
+  write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and
+  maps `404` to `null`. `createRemoteOperationTransport` in `@superbee/core/remote-operations`
+  is the uncertain-write transport over those two calls: a `document.write` intent becomes an
+  identified guarded `PUT`, and a lost answer is resolved by lookup before any resubmission.
 
 ## Behavior evidence
 
@@ -150,6 +212,7 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 | WIRE-PROOF-07 | Reference server is loopback by default and unauthenticated. | `packages/server/src/serve.ts::NO AUTH in v0` | `packages/core/test/wire-protocol.test.ts::serve() boots a real node:http listener` |
 | WIRE-PROOF-08 | Remote canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/doc/common.ts::canonical OKF re-serialization` | `packages/cli/test/remote.test.ts::canonical re-serialization is byte-identical` |
 | WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/cli/test/remote-auth.test.ts::response stripped of BOTH version headers` |
+| WIRE-PROOF-10 | Identified writes apply once, replay their record, and are looked up by key. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response` |
 
 ## Known deviations and open questions
 
@@ -171,3 +234,8 @@ These are current limitations, not promises that a client may paper over:
 8. `backlinks` is reported false and has no wire endpoint; clients derive graph results from reads.
 9. Transient retry applies at the transport boundary, including unconditional writes. The storage
    seam permits those writes, so a caller that needs lost-update protection must provide a CAS premise.
+   Only an identified write turns a retry into a replay; an unidentified guarded write retried
+   after a lost response may still surface a conservative conflict.
+10. Request identity covers document `PUT` and `DELETE` only. Reserved-file and blob writes carry
+    no identity yet, and the reference outcome store is in-memory: a restarted reference server
+    holds no records, which a client observes as `404` on lookup.

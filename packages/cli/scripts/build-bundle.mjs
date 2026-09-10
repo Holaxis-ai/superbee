@@ -137,6 +137,7 @@ export async function buildCliBundle(outfile, options) {
       "@superbee/core/engine": r("../core/src/engine.ts"),
       "@superbee/core/recipes": r("../core/src/recipes.ts"),
       "@superbee/core/storage": r("../core/src/storage.ts"),
+      "@superbee/core/uncertain-write": r("../core/src/uncertain-write.ts"),
       "@superbee/core/view-admission": r("../core/src/view-admission.ts"),
       "@superbee/core/page": r("../core/src/page.ts"),
       "@superbee/core/links": r("../core/src/links.ts"),
