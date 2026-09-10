@@ -4,8 +4,10 @@ import path from "node:path";
 
 import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 import { createRouter } from "@superbee/server";
+import { IDBFactory } from "fake-indexeddb";
 
 import { FilesystemBackend } from "../src/backend.js";
+import { IndexedDbBackend } from "../src/indexeddb-backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
@@ -23,7 +25,7 @@ import {
 } from "./storage-backend-contract.js";
 import { assertHostClassExpectation, detectHostAliasingIn } from "./host-class.js";
 
-// Neither adapter stores by filename, so no spelling pair aliases at either kind.
+// None of these adapters stores by filename, so no spelling pair aliases at either kind.
 const EXACT_HOST = { hostClass: "exact", case: false, normalization: false } as const;
 
 async function filesystemFixture(): Promise<BackendFixture> {
@@ -39,6 +41,12 @@ function memoryFixture(): BackendFixture {
     backend: new MemoryBackend(),
     cleanup: async () => undefined,
   };
+}
+
+// A fresh in-memory IndexedDB factory per fixture: no global shim, no state shared across rows.
+function indexedDbFixture(): BackendFixture {
+  const backend = new IndexedDbBackend({ databaseName: "storage-contract", indexedDB: new IDBFactory() });
+  return { backend, cleanup: async () => backend.close() };
 }
 
 function remoteFixture(): BackendFixture {
@@ -65,6 +73,7 @@ const CONTRACTS = [
   },
   // The authenticated hosted worker, not RemoteBackend clients, manufactures X-Agent.
   { name: "RemoteBackend", create: remoteFixture, retention: "retained" as const },
+  { name: "IndexedDbBackend", create: indexedDbFixture, retention: "current-only" as const },
 ];
 
 for (const contract of CONTRACTS) {
@@ -118,6 +127,24 @@ const PEER_CONTRACTS: AtomicBackendContractOptions[] = [
       return { backend: peers[0]!, peers, cleanup: async () => undefined };
     },
   },
+  {
+    // Two adapter instances over one database name and one factory: the concurrent-tabs topology.
+    name: "IndexedDbBackend",
+    createPeers() {
+      const factory = new IDBFactory();
+      const peers = [
+        new IndexedDbBackend({ databaseName: "storage-cas-contract", indexedDB: factory }),
+        new IndexedDbBackend({ databaseName: "storage-cas-contract", indexedDB: factory }),
+      ];
+      return {
+        backend: peers[0]!,
+        peers,
+        cleanup: async () => {
+          for (const peer of peers) peer.close();
+        },
+      };
+    },
+  },
 ];
 
 for (const contract of PEER_CONTRACTS) {
@@ -154,4 +181,9 @@ registerStorageBackendIdentityContract({
 registerStorageBackendIdentityContract({
   name: "RemoteBackend",
   create: () => ({ ...remoteFixture(), host: EXACT_HOST }),
+});
+
+registerStorageBackendIdentityContract({
+  name: "IndexedDbBackend",
+  create: () => ({ ...indexedDbFixture(), host: EXACT_HOST }),
 });

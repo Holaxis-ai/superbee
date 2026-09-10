@@ -14,8 +14,9 @@
  *
  * ADD A SUBPATH HERE when the browser starts runtime-importing a new core subpath — keep this list
  * in sync with the SPA's runtime `@superbee/core/*` imports. `versioning` and `memory-backend`
- * are the browser-local working copy's token minting and store for SaaS mode; `mutation`,
- * `bundle-ops` and `document-mutation` are its read/decide/CAS document mutation path.
+ * are the browser-local working copy's token minting and store for SaaS mode, `indexeddb-backend`
+ * its persistent store candidate; `mutation`, `bundle-ops` and `document-mutation` are its
+ * read/decide/CAS document mutation path.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -44,6 +45,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "storage.js", symbol: "assertSafeConceptId" },
   { module: "versioning.js", symbol: "contentVersion" },
   { module: "memory-backend.js", symbol: "MemoryBackend" },
+  { module: "indexeddb-backend.js", symbol: "IndexedDbBackend" },
   { module: "mutation.js", symbol: "versionedMutation" },
   { module: "bundle-ops.js", symbol: "backendFor" },
   { module: "document-mutation.js", symbol: "mutateDocument" },
