@@ -209,27 +209,27 @@ test("root README teaches the literal create-only quickstart; npm README teaches
   const npmReadme = await readFile(path.join(repoRoot, "packages", "cli", "README.md"), "utf8");
   assert.match(
     npmReadme,
-    /^## How do I download Superbee on Windows\?$/m,
-    "the published README must answer the novice Windows download question directly",
+    /^## Install$/m,
+    "the published README must give every platform one install section",
   );
   assert.match(
     npmReadme,
-    /ask your AI agent to run `superbee setup`/,
+    /installed by your agent,\s+not by hand[\s\S]+Run `superbee setup` and follow its instructions/,
     "npm README must route setup through the agent",
   );
   assert.match(
     npmReadme,
-    /ask your agent for what\s+you need/i,
+    /You rarely type Superbee commands yourself/,
     "npm README must frame usage as asking the agent",
   );
   assert.match(
     npmReadme,
-    /translate your\s+instructions into CLI commands/i,
+    /translates the\s+request into CLI calls/i,
     "npm README must explain the Agent Skill's translation role",
   );
   assert.match(
     npmReadme,
-    /Node\.js 20 or newer on macOS, Linux, or native Windows/,
+    /Node\.js 20 or newer on macOS, Linux, or Windows/,
     "npm README must advertise every supported native platform",
   );
   assert.doesNotMatch(
@@ -237,7 +237,7 @@ test("root README teaches the literal create-only quickstart; npm README teaches
     /Windows is not supported|EBADPLATFORM|["']!win32["']/i,
     "npm README must not retain the retired Windows package block",
   );
-  assert.match(npmReadme, /do not need WSL/i, "npm README must not send native Windows users through WSL");
+  assert.match(npmReadme, /do not\s+need WSL/i, "npm README must not send native Windows users through WSL");
 });
 
 test("root and npm package license declarations agree", async () => {
