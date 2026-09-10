@@ -1,11 +1,23 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { evaluateRequiredResults, REQUIRED_JOBS } from "./ci-aggregate.mjs";
-import { meaningfulChangeTimeValue } from "../packages/core/dist/meaningful-change-time.js";
+const clockModule = new URL("../packages/core/dist/meaningful-change-time.js", import.meta.url);
+let meaningfulChangeTimeValue;
+try {
+  ({ meaningfulChangeTimeValue } = await import(clockModule.href));
+} catch (error) {
+  if (error?.code === "ERR_MODULE_NOT_FOUND" && error.url === clockModule.href) {
+    throw new Error("Built core clock helper is missing. Run npm run build before npm run test:scripts.", { cause: error });
+  }
+  throw error;
+}
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -278,4 +290,18 @@ test("the fail-closed result contract accepts success only", () => {
   renamed[`${REQUIRED_JOBS[0]}-renamed`] = renamed[REQUIRED_JOBS[0]];
   delete renamed[REQUIRED_JOBS[0]];
   assert.equal(evaluateRequiredResults(renamed).ok, false, "a renamed dependency must fail closed");
+});
+
+
+test("a missing core build gives local scripts callers an actionable message", async () => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "superbee-script-build-"));
+  try {
+    await mkdir(path.join(scratch, "scripts"));
+    for (const name of ["ci-lanes.test.mjs", "ci-aggregate.mjs", "ci-lanes.json", "is-main-module.mjs"]) {
+      await copyFile(path.join(root, "scripts", name), path.join(scratch, "scripts", name));
+    }
+    const result = spawnSync(process.execPath, [path.join(scratch, "scripts", "ci-lanes.test.mjs")], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Run npm run build before npm run test:scripts/);
+  } finally { await rm(scratch, { recursive: true, force: true }); }
 });
