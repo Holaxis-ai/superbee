@@ -22,7 +22,7 @@
  */
 
 import { MemoryBackend, RemoteBackend, type StorageBackend } from "@superbee/core";
-import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
+import { openRemoteOperationTransport } from "@superbee/core/remote-operations";
 import type { OperationTransport, Outcome } from "@superbee/core/uncertain-write";
 import { createRouter, MemoryOperationOutcomeStore, type OperationOutcomeStore } from "@superbee/server";
 
@@ -184,7 +184,7 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
   };
 
   const remote = new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl: hosted, maxRetries: 0 });
-  const transport = createRemoteOperationTransport(remote);
+  const transport = await openRemoteOperationTransport(remote);
 
   return { authority, outcomeStore, clock, remote, transport, hosted, knobs, history, outcomes, deduplicated, submissions, lookups, served };
 }

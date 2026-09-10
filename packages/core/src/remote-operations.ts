@@ -14,6 +14,16 @@
  * the primitive classifies it as unknown and resolves it by lookup, which is the whole reason
  * the identity exists. Only a 4xx is final: the authority answered and declined.
  *
+ * The transport is only sound against an authority that implements identity. A host that
+ * predates it ignores the header, applies every retry as a fresh write, and answers the lookup
+ * route with a route-miss `404` the client reads as "never recorded". So the transport reads the
+ * authority's capabilities once before the first submission or lookup leaves and refuses both
+ * with {@link OperationsUnsupportedError} when `operations` is false; nothing identified is
+ * ever sent to a host that would apply it unidentified. The check is lazy so a working copy can
+ * attach to its authority while offline; a check that cannot reach the authority fails like any
+ * carrier error and is retried on the next call. {@link openRemoteOperationTransport} runs the
+ * same check eagerly for a caller that is online at construction and wants the answer up front.
+ *
  * This module imports nothing from Node so a browser working copy and a Node consumer share
  * one transport over one client adapter.
  */
@@ -29,10 +39,44 @@ export interface RemoteOperationTransportOptions {
   actor?: string;
 }
 
-/** Build the transport that carries intents to the authority behind `remote`. */
+/** The authority behind a remote does not record outcomes by request identity. */
+export class OperationsUnsupportedError extends Error {
+  readonly code = "OPERATIONS_UNSUPPORTED";
+  constructor(baseUrl: string) {
+    super(`remote operation transport: the authority at ${baseUrl} does not record operation outcomes; identified writes would be applied unidentified`);
+    this.name = "OperationsUnsupportedError";
+  }
+}
+
+/**
+ * Build the transport after confirming the authority records outcomes by request identity.
+ * Rejects with {@link OperationsUnsupportedError} before the transport is handed out.
+ */
+export async function openRemoteOperationTransport(remote: RemoteBackend, options: RemoteOperationTransportOptions = {}): Promise<OperationTransport> {
+  const built = buildTransport(remote, options);
+  await built.ensureSupported();
+  return built.transport;
+}
+
+/**
+ * Build the transport that carries intents to the authority behind `remote`. Support is
+ * confirmed lazily, before the first submission or lookup leaves.
+ */
 export function createRemoteOperationTransport(remote: RemoteBackend, options: RemoteOperationTransportOptions = {}): OperationTransport {
-  return {
+  return buildTransport(remote, options).transport;
+}
+
+function buildTransport(remote: RemoteBackend, options: RemoteOperationTransportOptions): { transport: OperationTransport; ensureSupported: () => Promise<void> } {
+  let supported = false;
+  const ensureSupported = async (): Promise<void> => {
+    if (supported) return;
+    const capabilities = await remote.wireCapabilities();
+    if (!capabilities.operations) throw new OperationsUnsupportedError(remote.origin);
+    supported = true;
+  };
+  const transport: OperationTransport = {
     async submit(intent: OperationIntent): Promise<Outcome> {
+      await ensureSupported();
       if (intent.kind !== "document.write") {
         throw new Error(`remote operation transport: unsupported intent kind '${intent.kind}'`);
       }
@@ -51,8 +95,10 @@ export function createRemoteOperationTransport(remote: RemoteBackend, options: R
         throw error;
       }
     },
-    lookup(requestId: string): Promise<Outcome | null> {
+    async lookup(requestId: string): Promise<Outcome | null> {
+      await ensureSupported();
       return remote.lookupOperation(requestId);
     },
   };
+  return { transport, ensureSupported };
 }
