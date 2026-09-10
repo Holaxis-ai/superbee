@@ -1,114 +1,114 @@
 # superbee
 
+Shared, versioned, conflict-safe knowledge for AI coding agents, stored as plain markdown in
+your repo.
+
+Superbee is pre-1.0. Commands and formats may change between releases.
+
 ## What is Superbee?
 
-Superbee gives AI coding agents shared, versioned, conflict-safe memory — as a folder of
-plain markdown in your repo.
+Agents forget everything between sessions, overwrite each other's work, and keep what they know
+invisible to the humans they work for. Superbee fixes all three with a **knowledge bundle**: a
+folder of markdown documents, by convention `.superbee/` at your project root, that agents read
+and write through a small command-line tool.
 
-Agents forget everything between sessions, overwrite each other's work, and keep what they
-know invisible to the humans they work for. Superbee fixes all three:
+- **Context that persists.** Agents write context notes, decisions, plans, and research into the
+  bundle. The next session, or a different agent, picks up where the last one left off. An
+  optional `SessionStart` hook for Claude Code, Codex, and OpenCode orients every new session
+  automatically.
+- **Safe for many writers.** Each write can carry the actor that made it. A writer can name the
+  version it last read; if anyone changed the document since, the write fails with a typed
+  conflict error instead of silently overwriting their work.
+- **Visible to humans.** The bundle is plain markdown. Open it in any editor, render it on
+  GitHub, diff it in git. `superbee ui` serves it locally as cross-linked pages with backlinks and
+  a live activity feed. No bundle content leaves your machine until you run `superbee sync`, which
+  shares the bundle with teammates through the board: a copy of the bundle kept on its own git
+  branch, separate from your code.
+- **Views on demand.** Ask your agent for a dashboard, a timeline, a filtered task queue, or a
+  reading view of one dense document. It builds a self-contained HTML page, stores it in the bundle
+  as a View, and `superbee ui` hosts it in a sandboxed frame. A View reads the bundle live and can
+  change it only through a write you confirm. Views are bundle content, so they travel with `sync`.
+- **Built for agents.** Output is structured and token-lean, and errors carry a small, stable set
+  of exit codes. Agents act on responses without parsing prose or flooding their context window.
+- **Yours, and portable.** Bundles follow the Open Knowledge Format (OKF), a convention of
+  markdown with frontmatter, so they outlive the tool: hand the folder to someone else, or read it
+  with anything that speaks markdown. New bundles are written as OKF v0.2, and existing v0.1
+  bundles keep working as they are. Reading and writing the bundle works offline; only sharing
+  needs a network. The document schemas, called kinds, live inside the bundle, so it describes
+  its own structure.
 
-- **Memory that persists.** Agents write context notes, decisions, plans, and research into a
-  knowledge bundle that survives the session. The next session — or a different agent — picks
-  up exactly where the last one left off. An optional `SessionStart` hook (Claude Code, Codex,
-  OpenCode) orients every new session automatically.
-- **Safe for many writers.** Every document write is compare-and-swap versioned and attributed
-  to an actor. Two agents racing on the same document get a clean, typed conflict instead of a
-  silent lost update — and `doc history` shows who changed what, when.
-- **Visible to humans.** Everything is plain markdown you can open in any editor, render on
-  GitHub, and diff in git. `superbee ui` serves the bundle locally as rendered, cross-linked
-  pages with derived backlinks, a live activity feed, and launchable bundle Views. `superbee
-  sync` shares the bundle with teammates on a dedicated `board` branch — pulling their changes
-  and pushing yours without touching your code.
-- **Views on demand.** Ask your agent to create whatever representation you need and Superbee will
-  create it: a self-contained HTML View, registered in the bundle as a typed document, that
-  `superbee ui` launches in a sandboxed iframe. A reading surface for one dense document, a board, a
-  timeline, a filtered queue, a chart, a dashboard — the shape follows the question rather than a
-  fixed set of built-in screens, and a view worth keeping stays. A data View reads live bundle
-  content through a narrow read-only bridge and refreshes as documents change. Views are bundle
-  content, so they travel with `sync` and open the same way for a teammate's agent.
-- **Agent-native by design.** The CLI follows the AXI principles for agent-facing tools:
-  structured, token-lean output; result counts and truncation with explicit escape hatches;
-  idempotent mutations; structured errors with a small, stable exit-code taxonomy. Agents get
-  predictable responses they can act on without parsing prose or flooding their context window.
-- **Yours, and portable.** Bundles conform to the Open Knowledge Format — new bundles are
-  written as OKF v0.2, and existing v0.1 bundles stay supported in place — so they survive the
-  tool: hand the folder to someone else, or read it with anything that speaks markdown.
-  Everything works offline; the filesystem is the source of truth. Typed document schemas
-  ("kinds") live in the bundle itself, so the bundle describes its own structure.
+The npm package is one self-contained executable with zero runtime dependencies, plus an Agent
+Skill, an instruction file your agent loads, that teaches it how to use the tool.
 
-The npm package ships one self-contained executable with zero runtime dependencies, plus an
-Agent Skill that teaches agents how to use it.
+## Install
 
-## How do I download Superbee on Windows?
+Requires Node.js 20 or newer on macOS, Linux, or Windows. Native Windows is supported; you do not
+need WSL or Docker.
 
-**Requirements: Node.js 20 or newer on macOS, Linux, or native Windows.** You do not need WSL,
-Ubuntu, or Docker. On Windows, Superbee keeps per-user operational state under
-`%LOCALAPPDATA%\Superbee`; npm installs the command as `superbee.cmd`.
-
-Superbee currently has two npm release channels:
-
-- `latest` is the stable channel selected by bare `superbee`, including native Windows support.
-- `next` is the prerelease channel for testing the current release candidate.
-
-Install the current prerelease on Windows:
-
-```powershell
-npm install -g superbee@next
-superbee.cmd setup
+```sh
+npm install -g superbee
 ```
 
-On macOS or Linux, the stable channel remains available with `npm install -g superbee`. To test the
-same prerelease as Windows, install `superbee@next` instead.
+Stable releases publish on npm's `latest` tag and prereleases on `next`. To try the prerelease:
 
-After installation, ask your AI agent to run `superbee setup` (`superbee.cmd setup` when invoking
-the Windows shim explicitly). Setup walks the agent through Agent Skill, SessionStart hook, and MCP
-registration. It is read-only: it inspects your configuration and returns one safe next command at
-a time, so the agent performs any actual changes with your approval.
+```sh
+npm install -g superbee@next
+```
 
-The managed Agent Skill works in Claude Code, Codex, and OpenCode. OpenCode discovers Superbee from
-its documented Claude-compatible Skill path. It shares Claude Code's Skill bytes by default; if
-Claude Code is explicitly relocated, the installer manages the two documented host paths separately.
+On Windows, Superbee keeps its private per-user state, such as the workspace catalog and remote
+credentials, under `%LOCALAPPDATA%\Superbee`. npm installs `superbee.cmd` alongside the `superbee`
+command; if PowerShell's execution policy blocks the `.ps1` wrapper, call `superbee.cmd` instead.
 
-Upgrading from the legacy `@holaxis/aslite` package or the retired marketplace plugin? Install
-`superbee` alongside it, have your agent run `superbee setup` to migrate the exact legacy
-integrations, then remove the old package with `npm uninstall -g @holaxis/aslite`. Existing
-`.agentstate-lite/` bundles and `.agentstate.json` bindings keep working with no migration.
+Run `superbee version --check` to compare your install with the current stable release.
 
-## How to use Superbee
+## First run: let your agent finish setup
 
-Superbee is agent-first: you don't type its commands yourself — you ask your agent for what
-you need, and the Agent Skill included with this package helps the agent translate your
-instructions into CLI commands. For example:
+`npm install` gives you the CLI. The integrations (the Agent Skill, the `SessionStart` hook, and
+MCP server registration, where MCP is the Model Context Protocol) are installed by your agent,
+not by hand. Ask it:
 
-- "Set up a Superbee workspace for this project and track our tasks in it."
+> Run `superbee setup` and follow its instructions.
+
+Setup itself changes nothing. It inspects your configuration and returns one safe next command at
+a time, and the agent runs each with your approval. Setup knows Claude Code, Codex, and OpenCode,
+plus Claude Desktop for the MCP registration only.
+
+## Everyday use
+
+You rarely type Superbee commands yourself. You ask your agent, and the Agent Skill translates the
+request into CLI calls:
+
+- "Set up a Superbee bundle for this project and track our tasks in it."
 - "Write up what we decided about the auth design as a doc, and link it to the task."
 - "What did the last session leave off on? Check the context notes."
 - "Sync the board so my teammate's agent sees this."
 - "Give me a view of the open tasks grouped by owner."
 
-Behind those requests, the agent drives a small, predictable CLI: `init` creates a bundle in a
-conventional `.superbee/` folder (discovered automatically, the way git finds `.git`); `new`,
-`doc write`, `doc update`, `doc field`, and `link add` create and connect typed documents; `list` and
-`doc read` query them; `sync` shares the board with teammates.
+Behind those requests the agent uses a small set of commands: `init --dir .superbee` creates the
+bundle, `new` creates a document of a declared kind, `doc write` writes a free-form one,
+`doc update` changes a document, `link add` connects two, `list` and `doc read` query them, and
+`sync` shares the board. `superbee --help` lists the commands, and `superbee <command> --help`
+gives each one's full reference.
 
-Use `superbee doc field <action> <document-id> <field-name>` to change one field.
-`set` assigns a supported non-collection field; `add` and `remove` change tags or sources;
-`edit` changes a selected source; `replace-all` replaces the complete tags or sources list.
-`edit` and `replace-all` require `--expected-version` from a document read. Source selectors
-use an exact `--id` or a unique `--resource` for an ID-less source. Supply structured values
-through a JSON or YAML `--from-file`. Verification remains `doc verify`.
-
-When you want to see the knowledge yourself, ask the agent to open it — or run the two
-human-facing commands directly:
+The two commands meant for you are the ones that show you the knowledge:
 
 ```sh
-superbee ui --open        # the bundle, rendered: pages, links, backlinks, live Views
-superbee doc open <id>    # one exact document in the same local browser reader
+superbee ui --open        # the whole bundle, rendered in your browser
+superbee doc open <id>    # one document, by an id from `superbee list`
 ```
 
-Run `superbee --help` (or any subcommand with `--help`) for the full command reference.
-Design and format docs live in the [repository](https://github.com/Holaxis-ai/superbee).
+## Upgrading from aslite
+
+If you installed the earlier `@holaxis/aslite` package or its marketplace plugin: install
+`superbee` alongside it, have your agent run `superbee setup` to migrate the integrations, then
+run `npm uninstall -g @holaxis/aslite`. Existing `.agentstate-lite/` bundles and
+`.agentstate.json` bindings keep working with no migration.
+
+## Learn more
+
+The [repository](https://github.com/Holaxis-ai/superbee) holds the source, the
+[CLI contract](https://github.com/Holaxis-ai/superbee/blob/main/packages/cli/AXI-CONTRACT.md),
+and the [wire protocol](https://github.com/Holaxis-ai/superbee/blob/main/docs/WIRE-PROTOCOL.md).
 
 ## License
 
