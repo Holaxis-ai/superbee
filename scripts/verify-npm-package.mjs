@@ -1141,12 +1141,13 @@ async function runInstalledProof(spec) {
       `${manifest.license} \u00a9 2026 Holaxis`,
       "the installed README license notice must agree with the published package metadata",
     );
-    assert.match(normalizedInstalledReadme, /ask your AI agent to run `superbee setup`/);
-    assert.match(normalizedInstalledReadme, /ask your agent for what\s+you need/i);
-    assert.match(normalizedInstalledReadme, /translate your\s+instructions into CLI commands/i);
-    assert.match(normalizedInstalledReadme, /^## How do I download Superbee on Windows\?$/m);
-    assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS, Linux, or native Windows/);
-    assert.match(normalizedInstalledReadme, /do not need WSL/i);
+    assert.match(normalizedInstalledReadme, /installed by your agent,\s+not by hand/);
+    assert.match(normalizedInstalledReadme, /Run `superbee setup` and follow its instructions/);
+    assert.match(normalizedInstalledReadme, /You rarely type Superbee commands yourself/);
+    assert.match(normalizedInstalledReadme, /translates the\s+request into CLI calls/i);
+    assert.match(normalizedInstalledReadme, /^## Install$/m);
+    assert.match(normalizedInstalledReadme, /Node\.js 20 or newer on macOS, Linux, or Windows/);
+    assert.match(normalizedInstalledReadme, /do not\s+need WSL/i);
     assert.match(normalizedInstalledReadme, /`latest`[\s\S]+`next`|`next`[\s\S]+`latest`/);
     assertPackageReadmeReleaseChannel(manifest.version, normalizedInstalledReadme);
 

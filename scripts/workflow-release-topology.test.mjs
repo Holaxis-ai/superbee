@@ -149,7 +149,8 @@ test("finalize holds no npm credential, verifies provider state, and creates the
   assert.match(job, /manifest\.readme, readme/, "finalize proves the attested tarball carries the installed README bytes");
   assert.match(job, /registry\.engines, manifest\.engines/, "finalize proves npm exposes the installed Node requirement");
   assert.match(job, /registry\.os, manifest\.os/, "finalize proves npm exposes the installed platform metadata");
-  assert.match(job, /How do I download Superbee on Windows/, "finalize dogfoods the novice Windows question");
+  assert.match(job, /installed by your agent,\\s\+not by hand/, "finalize proves setup is routed through the agent");
+  assert.match(job, /Run `superbee setup` and follow its instructions/, "finalize dogfoods the agent-run setup instruction");
   assert.doesNotMatch(job, /Windows\[\\s\\S\]\{0,240\}/, "stable documentation cannot use a bounded proximity guard");
   const relocatedStaleCommand = `Windows\n${"x".repeat(321)}\nnpm install -g superbee@next\n`;
   const stableNextGuard = /npm install -g superbee@next/;
@@ -177,15 +178,17 @@ test("finalize accepts staged-publish metadata with an empty registry readme", (
   const readme = [
     "# superbee",
     "",
-    "## How do I download Superbee on Windows?",
+    "## Install",
     "",
-    "Node.js 20 or newer on macOS, Linux, or native Windows",
+    "Node.js 20 or newer on macOS, Linux, or Windows",
     "",
     "`latest` and `next`",
     "",
     "npm install -g superbee@next",
     "",
-    "After installation, ask your AI agent to run `superbee setup`.",
+    "The integrations are installed by your agent, not by hand.",
+    "",
+    "Run `superbee setup` and follow its instructions.",
     "",
   ].join("\n");
   const platform = { engines: { node: ">=20" }, os: ["darwin", "linux", "win32"] };
