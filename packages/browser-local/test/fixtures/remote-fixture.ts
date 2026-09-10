@@ -10,8 +10,10 @@
  * dropped response after it was applied, a revoked credential answered ahead of the router (as
  * an authorization layer in front of it would, so nothing is recorded under the identity), a
  * lookup route that is unreachable, latency, and an authority that stops serving reads part-way
- * through a hydration. Reads (`remote`) bypass the write knobs so bootstrap and pull observe the
- * authority's true state.
+ * through a hydration. The write knobs apply to every document write, identified (the sync
+ * verbs' intents) or plain (a request-driven client's compare-and-swap PUT), so the platform
+ * contract kit can show the two execution modes the same fault. Reads (`remote`) bypass the
+ * write knobs so bootstrap and pull observe the authority's true state.
  *
  * The handler is a plain `(Request) => Promise<Response>`, so the Node proof calls it directly
  * and the Chromium proof serves it over node:http (see `remote-http.ts`). A thrown handler
@@ -33,11 +35,11 @@ const LOOKUP_PATH = /^\/v0\/bundles\/[^/]+\/operations\/([^/]+)$/;
 const ROOT_INDEX = "---\nokf_version: '0.2'\n---\n# Remote fixture\n";
 
 export interface FixtureKnobs {
-  /** Throw before the request reaches the router: the authority never sees it. */
+  /** Throw before a document write reaches the router: the authority never sees it. */
   failBeforeApply: boolean;
-  /** Let the router apply and record the request, then throw instead of returning its response. */
+  /** Let the router apply (and, when identified, record) a document write, then throw instead of returning its response. */
   dropAfterApply: boolean;
-  /** Answer every identified write with 401 AUTH_REQUIRED ahead of the router. */
+  /** Answer every document write with 401 AUTH_REQUIRED ahead of the router. */
   unauthorized: boolean;
   /** Make the lookup route throw, as if it were unreachable. */
   lookupFails: boolean;
@@ -94,6 +96,12 @@ function unauthorizedResponse(): Response {
     status: 401,
     headers: { "content-type": "application/json; charset=utf-8" },
   });
+}
+
+/** A document write, identified or not: the write knobs apply to both, as a revoked credential or a dead carrier would. */
+function isDocumentWrite(request: Request): boolean {
+  const { pathname } = new URL(request.url);
+  return (request.method === "PUT" || request.method === "DELETE") && /\/docs\/.+/.test(pathname);
 }
 
 /** How many documents a read request asks for, or `null` when it is not a document read. */
@@ -164,7 +172,7 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
       return router(request);
     }
     const requestId = request.headers.get(IDENTITY_HEADER);
-    if (requestId === null) {
+    if (requestId === null && !isDocumentWrite(request)) {
       const requested = await documentsRequested(request);
       if (requested !== null) {
         if (knobs.readBudget !== null && requested > knobs.readBudget) throw new TypeError("fetch failed: authority stopped serving reads");
@@ -173,7 +181,7 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
       }
       return router(request);
     }
-    submissions.push(requestId);
+    if (requestId !== null) submissions.push(requestId);
     // Refused ahead of the router, before the identity is claimed: nothing is recorded under it.
     if (knobs.unauthorized) return unauthorizedResponse();
     if (knobs.delayMs > 0) await sleep(knobs.delayMs);

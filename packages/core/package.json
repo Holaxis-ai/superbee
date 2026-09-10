@@ -106,6 +106,10 @@
     "./uncertain-write": {
       "types": "./dist/uncertain-write.d.ts",
       "default": "./dist/uncertain-write.js"
+    },
+    "./platform": {
+      "types": "./dist/platform.d.ts",
+      "default": "./dist/platform.js"
     }
   },
   "files": [
