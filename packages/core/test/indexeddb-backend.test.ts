@@ -3,11 +3,11 @@
  * two-peer race, an interrupted (aborted) write, persistence across instances, schema refusal,
  * binary blob fidelity, byte parity with the filesystem adapter, a close() that lands while an
  * open is in flight, a decide callback that throws inside the transaction, and the intent
- * journal: a document write and its intent commit or abort together, a write that requires a
- * settled target is refused inside its own transaction while an intent holds it, settling an
- * intent is a compare-and-swap two peers cannot both win, and the plain write path records
- * nothing. The
- * contract kit proves the seam; these rows attack the mechanics the kit states only once.
+ * journal: a document write and its intent commit or abort together, settling an intent is a
+ * compare-and-swap two peers over one database cannot both win, the plain write path records
+ * nothing, and a journaled snapshot is one readonly transaction. The contract kit (its storage
+ * rows and its journal rows) proves the seam; these rows attack the mechanics the kit states
+ * only once.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -18,15 +18,8 @@ import { IDBFactory } from "fake-indexeddb";
 
 import { FilesystemBackend } from "../src/backend.js";
 import { mutateDocument } from "../src/document-mutation.js";
-import {
-  IndexedDbBackend,
-  IndexedDbSchemaError,
-  INDEXEDDB_SCHEMA_VERSION,
-  IntentHoldConflict,
-  IntentStateConflict,
-  type IdbFactoryLike,
-  type NewIntentRecord,
-} from "../src/indexeddb-backend.js";
+import { IndexedDbBackend, IndexedDbSchemaError, INDEXEDDB_SCHEMA_VERSION, type IdbFactoryLike } from "../src/indexeddb-backend.js";
+import { IntentStateConflict, type NewIntentRecord } from "../src/journaled-backend.js";
 import type { KindRegistry } from "../src/kinds.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import type { OkfDocument, StorageBackend, Version } from "../src/types.js";
@@ -546,52 +539,6 @@ test("writeJournaled commits the document and its intent together: an aborted tr
     assert.equal(await backend.readIntent("req-1"), undefined);
     assert.equal(composed.intent?.sequence, 2);
     assert.deepEqual((await backend.listIntents()).map((row) => row.requestId), ["req-2"]);
-  } finally {
-    backend.close();
-  }
-});
-
-test("writeJournaled with requireSettled: an unsettled intent on the target refuses the write and leaves document and meta untouched; an acknowledged one does not", async () => {
-  const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: new IDBFactory() });
-  try {
-    const id = "journal/held";
-    const other = "journal/other";
-    const { version } = await backend.writeJournaled(id, doc(id, "local edit"), { expectedVersion: null, intent: newIntent("req-hold", id, null) });
-    await backend.writeJournaled(other, doc(other, "other edit"), { expectedVersion: null, intent: newIntent("req-other", other, null) });
-    await backend.writeMeta("base:" + id, { version: null, content: null });
-
-    for (const state of ["pending", "in_flight", "conflict", "refused", "unknown"] as const) {
-      const previous = (await backend.readIntent("req-hold"))!.state;
-      await backend.updateIntent("req-hold", previous, { state });
-      await assert.rejects(
-        backend.writeJournaled(id, doc(id, "refresh"), {
-          requireSettled: true,
-          meta: [{ key: "base:" + id, value: { version: "sha256:" + "1".repeat(64), content: "refresh" } }],
-        }),
-        (error: unknown) => {
-          assert.ok(error instanceof IntentHoldConflict);
-          assert.equal(error.target, id);
-          assert.equal(error.requestId, "req-hold");
-          assert.equal(error.state, state);
-          return true;
-        },
-      );
-      assert.equal((await backend.read(id)).version, version);
-      assert.deepEqual(await backend.readMeta("base:" + id), { version: null, content: null });
-    }
-
-    // The hold is per target: the other document's unsettled intent does not hold this one.
-    await backend.updateIntent("req-hold", "unknown", { state: "acknowledged" });
-    const refreshed = await backend.writeJournaled(id, doc(id, "refresh"), {
-      requireSettled: true,
-      meta: [{ key: "base:" + id, value: { version: "sha256:" + "1".repeat(64), content: "refresh" } }],
-    });
-    assert.equal((await backend.read(id)).version, refreshed.version);
-    assert.equal((await backend.readIntent("req-other"))?.state, "pending");
-    // Without the option the write is the plain journaled CAS, hold or not.
-    await backend.updateIntent("req-other", "pending", { state: "in_flight" });
-    await backend.writeJournaled(other, doc(other, "overwritten"), {});
-    assert.equal((await backend.read(other)).doc.body, "overwritten\n");
   } finally {
     backend.close();
   }

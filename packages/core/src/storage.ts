@@ -32,6 +32,18 @@ export {
   toPosix,
 } from "./paths.js";
 export { VersionConflict, isContentVersion, stripETagWrapper } from "./version-transport.js";
+// The journaled-backend seam: what an adapter adds to `StorageBackend` to host a browser-local
+// working copy's intent journal. Runtime-neutral, like the seam it extends.
+export { IntentHoldConflict, IntentStateConflict } from "./journaled-backend.js";
+export type {
+  IntentPatch,
+  IntentRecord,
+  JournaledBackend,
+  JournaledReadResult,
+  JournaledWriteOptions,
+  MetaRecord,
+  NewIntentRecord,
+} from "./journaled-backend.js";
 // The wire request identity (`WriteOptions.requestId`) and the outcome shape an authority records
 // for it: runtime-neutral, so Worker and browser consumers reach them through this seam.
 export { isRequestIdentity } from "./uncertain-write.js";
