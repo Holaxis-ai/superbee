@@ -1,6 +1,6 @@
 /**
  * The browser-local implementation of the platform contract: every read, query, and validation
- * is answered from the IndexedDB working copy, every commit goes through `commitLocal` (the
+ * is answered from the working copy (an IndexedDB store by default, any journaled backend), every commit goes through `commitLocal` (the
  * document write and its pending intent in one transaction), and `sync` delivers intents under
  * the store's push role and refreshes the working copy from the authority.
  *
@@ -38,7 +38,7 @@
 import type { ConceptId, QueryFilter, RemoteBackend, StorageBackend } from "@superbee/core";
 import { queryHeads } from "@superbee/core/bundle-ops";
 import { assertReadableConceptId } from "@superbee/core/engine";
-import type { IntentRecord, JournaledReadResult } from "@superbee/core/indexeddb-backend";
+import type { IntentRecord, JournaledReadResult } from "@superbee/core/journaled-backend";
 import {
   localConflict,
   localPending,
@@ -204,7 +204,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
 
     sync: async (): Promise<PlatformSyncStatus> => {
       const readSide: StorageBackend = remote;
-      await pushWithRole(backend, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
+      await pushWithRole(local, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       try {
         await pull(backend, readSide);
         online = true;

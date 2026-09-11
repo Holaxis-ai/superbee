@@ -8,7 +8,8 @@
 import type { OkfDocument, QueryFilter, StorageBackend } from "@superbee/core";
 import { queryHeads, readBlob, readDocVersioned, writeBlob, writeDocVersioned } from "@superbee/core/bundle-ops";
 import { mutateDocument } from "@superbee/core/document-mutation";
-import { IndexedDbSchemaError, type IntentRecord } from "@superbee/core/indexeddb-backend";
+import { IndexedDbSchemaError } from "@superbee/core/indexeddb-backend";
+import type { IntentRecord } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
 import type { ExecutionMode, PlatformEdit, PlatformRuntime } from "@superbee/core/platform";
 import { RemoteBackend } from "@superbee/core/remote";
