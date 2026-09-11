@@ -61,6 +61,9 @@ function authorityOf(fixture: RemoteFixture): AuthorityHandle {
       const { doc, version } = await fixture.authority.read(id);
       return fixture.authority.write(id, { ...doc, body }, { expectedVersion: version });
     },
+    delete: async (id) => {
+      await fixture.authority.delete(id);
+    },
   };
 }
 

@@ -25,9 +25,11 @@
  * normalizes differently (a filesystem authority over hand-authored files).
  *
  * `shared-confirmed` means the authority acknowledged or served exactly this content at this
- * runtime's last exchange with it (its last sync), not that the authority holds it now; in
- * particular the working copy keeps a document the authority has since deleted until that is
- * reconciled (pull does not yet remove it).
+ * runtime's last exchange with it (its last sync), not that the authority holds it now. A
+ * document the authority has since deleted stays `shared-confirmed` until the next sync, whose
+ * pull removes it from the working copy; if a local edit holds it, the pull retains it and the
+ * push records the conflict against an absent remote, so it reads `local-conflict` with
+ * `remote: null`.
  *
  * A document with no unsettled intent whose bytes its base does not name is a defect in the
  * working copy (every local write journals an intent): `read` rejects with
@@ -206,7 +208,8 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
       const readSide: StorageBackend = remote;
       await pushWithRole(local, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       try {
-        await pull(backend, readSide);
+        // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
+        await pull(local, readSide);
         online = true;
       } catch (error) {
         if (isInputError(error) || isAuthorityAnswer(error)) throw error;

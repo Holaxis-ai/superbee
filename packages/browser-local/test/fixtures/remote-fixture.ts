@@ -10,8 +10,9 @@
  * dropped response after it was applied, a revoked credential answered ahead of the router (as
  * an authorization layer in front of it would, so nothing is recorded under the identity), a
  * lookup route that is unreachable, latency on identified writes (`delayMs`) or on every request
- * (`latencyMs`, a simulated round trip), and an authority that stops serving reads part-way
- * through a hydration. The write knobs apply to every document write, identified (the sync
+ * (`latencyMs`, a simulated round trip), an authority that stops serving reads part-way
+ * through a hydration, and a snapshot body cut after a number of lines so its terminator never
+ * arrives. The write knobs apply to every document write, identified (the sync
  * verbs' intents) or plain (a request-driven client's compare-and-swap PUT), so the platform
  * contract kit can show the two execution modes the same fault. Reads (`remote`) bypass the
  * write knobs so bootstrap and pull observe the authority's true state.
@@ -54,6 +55,11 @@ export interface FixtureKnobs {
    * budget unchanged, so a hydration stops part-way and stays stopped until the knob is reset.
    */
   readBudget: number | null;
+  /**
+   * Lines of the snapshot body (header included) after which the body ends, without its `end`
+   * line; `null` serves the whole snapshot. The documents that did travel count as served.
+   */
+  snapshotCutAfter: number | null;
 }
 
 export interface AppliedWrite {
@@ -163,7 +169,19 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
   const lookups: string[] = [];
   const served = { documents: 0 };
   const router = createRouter({ root: "memory://fixture", backend: authority }, { outcomes: observedStore(outcomeStore, history, outcomes, deduplicated) });
-  const knobs: FixtureKnobs = { failBeforeApply: false, dropAfterApply: false, unauthorized: false, lookupFails: false, delayMs: 0, latencyMs: 0, readBudget: null };
+  const knobs: FixtureKnobs = { failBeforeApply: false, dropAfterApply: false, unauthorized: false, lookupFails: false, delayMs: 0, latencyMs: 0, readBudget: null, snapshotCutAfter: null };
+
+  /** The router's snapshot, cut after `snapshotCutAfter` lines when the knob is set; served documents are counted either way. */
+  const snapshot = async (request: Request): Promise<Response> => {
+    const response = await router(request);
+    if (!response.ok) return response;
+    const lines = (await response.text()).split("\n");
+    if (lines[lines.length - 1] === "") lines.pop();
+    const kept = knobs.snapshotCutAfter === null ? lines : lines.slice(0, knobs.snapshotCutAfter);
+    for (const line of kept) if (line.startsWith('{"kind":"doc"')) served.documents += 1;
+    const body = kept.map((line) => `${line}\n`).join("");
+    return new Response(body, { status: response.status, headers: response.headers });
+  };
 
   /** The hosted side: the fixture's faults around the real router. */
   const hosted = async (request: Request): Promise<Response> => {
@@ -176,6 +194,7 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
       return router(request);
     }
     const requestId = request.headers.get(IDENTITY_HEADER);
+    if (requestId === null && request.method === "GET" && pathname.endsWith("/snapshot")) return snapshot(request);
     if (requestId === null && !isDocumentWrite(request)) {
       const requested = await documentsRequested(request);
       if (requested !== null) {

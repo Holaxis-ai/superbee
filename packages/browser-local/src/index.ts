@@ -17,6 +17,7 @@ export {
   type OpenLocalBundleOptions,
   type BootstrapOptions,
   type FetchOptions,
+  type WireOptions,
   type BootstrapMarker,
   type SharedBase,
   type SyncControl,

@@ -117,6 +117,7 @@ export type {
   IntentPatch,
   IntentRecord,
   JournaledBackend,
+  JournaledDeleteOptions,
   JournaledReadResult,
   JournaledWriteOptions,
   MetaRecord,

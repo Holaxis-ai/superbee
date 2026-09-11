@@ -4,7 +4,10 @@
  * browser restart, synchronizes nonconflicting changes on reconnect so a second client observes
  * them, holds the push role under a Web Lock so concurrent tabs never double-apply, and
  * preserves local edits through conflict, lost acknowledgement, quota failure, tab termination
- * and access revocation without ever reporting false synchronization.
+ * and access revocation without ever reporting false synchronization. Over the wire's snapshot
+ * and heads routes it bootstraps from one streamed response, reconciles an unchanged authority
+ * with one conditional request answered 304, and drops a document the authority deleted from
+ * the page's list at the next sync.
  *
  * Harness: the page (test/fixtures/driver.ts, served by test/fixtures/harness.ts) talks to the
  * disposable authority (test/fixtures/remote-fixture.ts: the reference router and outcome
@@ -517,26 +520,75 @@ test("i: revocation refuses and pauses; later commits persist locally; push does
   expect((await served.fixture.authority.read("notes/zeta")).doc.body).toBe("notes/zeta edited while paused\n");
 });
 
-test("j: a bootstrap the authority cuts off half-way never reports complete, and a later bootstrap completes it", async ({ page }) => {
+test("j: a snapshot the authority cuts off half-way never reports complete, and a later bootstrap completes it", async ({ page }) => {
   await load(page);
-  served.fixture.knobs.readBudget = NOTE_IDS.length / 2;
+  // The header line plus half the document lines: one whole batch of three lands, then the body ends without its terminator.
+  served.fixture.knobs.snapshotCutAfter = 1 + NOTE_IDS.length / 2;
   const interrupted = await call(page, "bootstrap", served.origin, "j-interrupted", NOTE_IDS.length / 2);
   expect(isDriverError(interrupted)).toBe(true);
-  expect((interrupted as DriverError).error.message).toMatch(/fetch/i);
+  expect((interrupted as DriverError).error).toMatchObject({ name: "RemoteError", code: "SNAPSHOT_TRUNCATED" });
+  expect(served.requests.filter((row) => row.method === "GET" && row.path.endsWith("/snapshot"))).toHaveLength(1);
+  expect(served.requests.some((row) => row.path.endsWith("/docs:read-many"))).toBe(false);
   expect(ok(await call(page, "isComplete"), "isComplete").complete).toBe(false);
   const status = ok(await call(page, "syncStatus"), "syncStatus");
   expect(status).toMatchObject({ bootstrapComplete: false, generation: 1 });
+  expect(ok(await call(page, "markers"), "markers").bootstrap).toMatchObject({ complete: false, generation: 1 });
   // Partial state is visible as partial: half the documents landed, and the store is neither empty nor complete.
   expect(ok(await call(page, "query", "notes/"), "query")).toHaveLength(NOTE_IDS.length / 2);
   expect(served.fixture.served.documents).toBe(NOTE_IDS.length / 2);
   // A fresh handle sees the same incomplete answer.
   expect(ok(await call(page, "attach", served.origin, "j-interrupted"), "attach").complete).toBe(false);
 
-  served.fixture.knobs.readBudget = null;
+  served.fixture.knobs.snapshotCutAfter = null;
   const repaired = ok(await call(page, "bootstrap", served.origin, "j-interrupted"), "bootstrap again");
   expect(repaired.marker).toMatchObject({ complete: true, generation: 2, documentCount: NOTE_IDS.length });
+  expect(repaired.marker.headsDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
   expect(ok(await call(page, "isComplete"), "isComplete").complete).toBe(true);
   expect(ok(await call(page, "query", "notes/"), "query")).toHaveLength(NOTE_IDS.length);
+});
+
+test("l: bootstrap by one snapshot over HTTP; a sync with nothing changed is one conditional heads request answered 304; a document the authority deletes leaves the page's list at the next sync", async ({ page }) => {
+  await load(page);
+  /** The bridge's non-preflight rows from `from` on, as method, path, status triples. */
+  const traffic = (from: number) => served.requests.slice(from).filter((row) => row.method !== "OPTIONS").map((row) => [row.method, row.path, row.status]);
+
+  ok(await call(page, "platformMount", "browser-local", served.origin, "l-heads"), "platformMount");
+  const booted = traffic(0);
+  expect(booted).toContainEqual(["GET", "/v0/bundles/default/snapshot", 200]);
+  expect(booted.some(([, path]) => String(path).endsWith("/docs:read-many"))).toBe(false);
+  const afterBootstrap = ok(await call(page, "markers"), "markers after bootstrap");
+  expect(afterBootstrap.bootstrap).toMatchObject({ complete: true, generation: 1, documentCount: NOTE_IDS.length });
+  const digest = afterBootstrap.bootstrap!.headsDigest;
+  expect(digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+  const root = page.locator('[data-role="presentation"]');
+  await expect(root.locator('[data-role="list"] li')).toHaveCount(NOTE_IDS.length);
+
+  // Nothing changed: the sync's pull is one GET /heads carrying the snapshot's digest, answered 304, and nothing else travels.
+  let since = served.requests.length;
+  const unchanged = ok(await call(page, "platformCall", "sync"), "sync unchanged");
+  expect(unchanged).toMatchObject({ online: true, pending: 0, conflicts: 0, complete: true });
+  expect(traffic(since)).toEqual([["GET", "/v0/bundles/default/heads", 304]]);
+  const afterSync = ok(await call(page, "markers"), "markers after sync");
+  expect(afterSync.pull).toMatchObject({ unchanged: true, refreshed: 0, headsDigest: digest });
+  expect(afterSync.pull!.completedAt).not.toBeNull();
+
+  // The authority deletes a document: the next sync's heads answer 200 without it, no document is read, and the page's list loses it.
+  expect(await served.fixture.authority.delete("notes/zeta")).toBe(true);
+  since = served.requests.length;
+  const reconciled = ok(await call(page, "platformCall", "sync"), "sync after deletion");
+  expect(reconciled).toMatchObject({ online: true, pending: 0, conflicts: 0, unconfirmed: 0 });
+  expect(traffic(since)).toEqual([["GET", "/v0/bundles/default/heads", 200]]);
+  const afterDeletion = ok(await call(page, "markers"), "markers after deletion");
+  expect(afterDeletion.pull).toMatchObject({ unchanged: false, refreshed: 0 });
+  expect(afterDeletion.pull!.headsDigest).not.toBe(digest);
+  const missing = await call(page, "platformCall", "read", "notes/zeta");
+  expect(isDriverError(missing)).toBe(true);
+  expect((missing as DriverError).error.code).toBe("ENOENT");
+  ok(await call(page, "platformRefresh"), "platformRefresh");
+  await expect(root.locator('[data-role="list"] li')).toHaveCount(NOTE_IDS.length - 1);
+  await expect(root.locator('li[data-id="notes/zeta"]')).toHaveCount(0);
+  expect(ok(await call(page, "query", "notes/"), "query").map((head) => head.id)).toEqual([...NOTE_IDS].filter((id) => id !== "notes/zeta").sort());
+  test.info().annotations.push({ type: "heads", description: `bootstrap by snapshot (${booted.length} requests), unchanged sync one GET /heads 304, deletion reconciled by one GET /heads 200` });
 });
 
 test("k: measurements are recorded, not asserted: cold bootstrap, warm read and query, local commit, reconciliation, storage footprint", async ({ page, browser }) => {

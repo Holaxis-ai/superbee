@@ -209,6 +209,61 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
     });
   });
 
+  test(`${name} journal contract: a journaled delete removes the document with its meta changes in one operation, is refused while an unsettled intent holds the target, is a compare-and-swap on the version, and answers absence with false`, async () => {
+    await withFixture(create, async (backend) => {
+      const id = "journal/deleted";
+      const base = `base:${id}`;
+      const { version } = await backend.writeJournaled(id, doc(id, "shared"), { expectedVersion: null, meta: [{ key: base, value: { version: "shared-1", content: null } }] });
+
+      // A stale premise refuses the whole operation: the document, its base, and the offered meta are untouched.
+      await assert.rejects(
+        backend.deleteJournaled(id, { expectedVersion: STALE, removeMeta: [base], meta: [{ key: "never", value: 1 }] }),
+        (error: unknown) => {
+          assert.ok(error instanceof seam.VersionConflict);
+          assert.equal(error.expected, STALE);
+          assert.equal(error.actual, version);
+          return true;
+        },
+      );
+      assert.equal((await backend.read(id)).version, version);
+      assert.deepEqual(await backend.readMeta(base), { version: "shared-1", content: null });
+      assert.equal(await backend.readMeta("never"), undefined);
+
+      // An unsettled intent holds the target against a settled-only deletion, in every unsettled state.
+      const held = await backend.writeJournaled(id, doc(id, "local edit"), { expectedVersion: version, intent: newIntent("req-hold", id, version) });
+      for (const state of UNSETTLED) {
+        const previous = (await backend.readIntent("req-hold"))!.state;
+        await backend.updateIntent("req-hold", previous, { state });
+        await assert.rejects(
+          backend.deleteJournaled(id, { requireSettled: true, removeMeta: [base] }),
+          (error: unknown) => {
+            assert.ok(error instanceof seam.IntentHoldConflict);
+            assert.equal(error.target, id);
+            assert.equal(error.requestId, "req-hold");
+            assert.equal(error.state, state);
+            return true;
+          },
+        );
+        assert.equal((await backend.read(id)).version, held.version, "the held document keeps its bytes");
+        assert.deepEqual(await backend.readMeta(base), { version: "shared-1", content: null }, "the refused delete removed no meta row");
+      }
+
+      // Acknowledged, the intent does not hold: the record, its base row, and the offered meta change together.
+      await backend.updateIntent("req-hold", "unknown", { state: "acknowledged" });
+      assert.equal(await backend.deleteJournaled(id, { expectedVersion: held.version, requireSettled: true, removeMeta: [base], meta: [{ key: "pull", value: { deleted: [id] } }] }), true);
+      await assert.rejects(backend.read(id), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+      assert.equal(await backend.exists(id), false);
+      assert.equal(await backend.readMeta(base), undefined);
+      assert.deepEqual(await backend.readMeta("pull"), { deleted: [id] });
+      assert.deepEqual((await backend.listIntents()).map((row) => row.requestId), ["req-hold"], "the journal keeps its acknowledged record");
+
+      // Absence is a normal result, even under a premise: false, with the meta changes still applied.
+      assert.equal(await backend.deleteJournaled(id, { expectedVersion: held.version, requireSettled: true, meta: [{ key: "again", value: true }], removeMeta: ["pull"] }), false);
+      assert.equal(await backend.readMeta("again"), true);
+      assert.equal(await backend.readMeta("pull"), undefined);
+    });
+  });
+
   test(`${name} journal contract: updateIntent is a compare-and-swap on state that two callers cannot both win, and its meta rows ride the same write`, async () => {
     await withFixture(create, async (backend) => {
       const id = "journal/settle";

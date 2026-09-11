@@ -17,6 +17,16 @@
  * a changed shared head is discovered by push as an explicit conflict that preserves base,
  * local, and remote.
  *
+ * Against a wire authority that reports the `snapshot` and `heads` capabilities
+ * (`docs/WIRE-PROTOCOL.md`, "Heads and snapshot"), {@link bootstrap} hydrates from one streamed
+ * snapshot and {@link pull} reconciles from one conditional heads request: the digest the last
+ * bootstrap or pull recorded travels as `If-None-Match`, a `304` means nothing changed and
+ * nothing else is fetched, and a `200` is diffed against the working copy so only changed
+ * documents are read and documents the authority no longer lists are removed (or, when a local
+ * edit holds one, retained and flagged). Any other authority, and any caller that disables a
+ * feature through {@link FetchOptions.wire}, takes the list plus `readMany` path unchanged; the
+ * capabilities are read once per opened bundle and kept on it.
+ *
  * Delivery is recorded before it happens: claiming an intent for push increments its attempts
  * durably, so a page that dies mid-push leaves a record that says "possibly delivered", the
  * next push starts with a lookup, and a later local edit chains behind it instead of replacing
@@ -31,7 +41,7 @@
  * never race delivery; the intent journal's own compare-and-swap remains the last line.
  */
 
-import type { Bundle, ConceptId, OkfDocument, StorageBackend, Version, WriteOptions } from "@superbee/core";
+import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
 import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
@@ -44,6 +54,7 @@ import {
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
+import type { RemoteBackend, WireCapabilities } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import {
   AUTHORIZATION_REFUSAL_CODES,
@@ -76,6 +87,12 @@ export interface LocalBundle {
   /** The engine-facing bundle: a synthetic root label plus the working copy's backend. */
   bundle: Bundle;
   backend: JournaledBackend;
+  /**
+   * The authority's wire capabilities, read once by the first sync verb that needs them and
+   * kept here for the bundle's lifetime; a read that fails is not kept, so the next verb asks
+   * again. Absent until a verb over a wire authority has run.
+   */
+  capabilities?: Promise<WireCapabilities>;
   /** Release the store handle; a later operation reopens it lazily. */
   close(): void;
 }
@@ -136,6 +153,8 @@ export interface BootstrapMarker {
   complete: boolean;
   completedAt?: string;
   documentCount?: number;
+  /** The heads digest the snapshot announced; the first `If-None-Match` a later pull sends. Absent when hydrated by list. */
+  headsDigest?: string;
   /** Documents not hydrated because a local edit was committed to them during this bootstrap. */
   held?: ConceptId[];
   /** Observations recorded during hydration, such as a local token differing from the shared one. */
@@ -152,6 +171,10 @@ export interface PullMarker {
   startedAt: string;
   completedAt: string | null;
   refreshed: number;
+  /** True when the authority answered the conditional heads request with `304`: nothing changed, nothing was fetched. */
+  unchanged: boolean;
+  /** The heads digest the working copy matched when this pull completed. Absent for a pull by list. */
+  headsDigest?: string;
 }
 
 /** States in which an intent still describes a local edit the authority has not accepted. */
@@ -172,10 +195,22 @@ const DEFAULT_BATCH_SIZE = 25;
 /** Batches in flight at once unless the caller says otherwise. */
 const DEFAULT_CONCURRENCY = 8;
 
+/**
+ * Which wire features a fetching verb may use when the authority reports them. `false`
+ * disables one; the list plus `readMany` path is then taken. Omitted, whatever the authority's
+ * capabilities report.
+ */
+export interface WireOptions {
+  heads?: boolean;
+  snapshot?: boolean;
+}
+
 /** Options both fetching verbs share: how the remote document set is split and how many splits travel at once. */
 export interface FetchOptions {
-  /** Documents fetched per `readMany` round trip. */
+  /** Documents fetched per `readMany` round trip, and written per batch as a snapshot streams. */
   batchSize?: number;
+  /** Wire features to use or refuse; see {@link WireOptions}. */
+  wire?: WireOptions;
   /**
    * Batches fetched concurrently, at most; default 8, minimum 1. Wall time is then bounded by
    * transfer and a few round trips instead of the batch count times the latency. A value below
@@ -230,6 +265,44 @@ async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<V
   }
 }
 
+// ── wire features ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Structural, not `instanceof`: the read side may be the core class, a subclass, or a proxy
+ * over one. The three members the fetching verbs use beyond the storage seam are the shape.
+ */
+function asWireRemote(remote: StorageBackend): RemoteBackend | null {
+  const candidate = remote as Partial<RemoteBackend>;
+  return typeof candidate.heads === "function" && typeof candidate.snapshot === "function" && typeof candidate.wireCapabilities === "function"
+    ? (remote as RemoteBackend)
+    : null;
+}
+
+/** The authority's capabilities: kept on the opened bundle; a bare adapter has nowhere to keep them, so they are read per call. */
+function capabilitiesOf(local: LocalTarget, remote: RemoteBackend): Promise<WireCapabilities> {
+  if (!isLocalBundle(local)) return remote.wireCapabilities();
+  if (!local.capabilities) {
+    const pending = remote.wireCapabilities();
+    local.capabilities = pending;
+    pending.catch(() => {
+      if (local.capabilities === pending) delete local.capabilities;
+    });
+  }
+  return local.capabilities;
+}
+
+/**
+ * The wire read side when `feature` may be used: the remote is a wire adapter, the caller has
+ * not refused the feature, and the authority reports it. Otherwise `null`, and the caller takes
+ * the list path. A refused feature costs no request.
+ */
+async function wireFor(remote: StorageBackend, local: LocalTarget, feature: keyof WireOptions, options: FetchOptions): Promise<RemoteBackend | null> {
+  if (options.wire?.[feature] === false) return null;
+  const wire = asWireRemote(remote);
+  if (!wire) return null;
+  return (await capabilitiesOf(local, wire))[feature] ? wire : null;
+}
+
 // ── bootstrap ──────────────────────────────────────────────────────────────────────────────
 
 export interface BootstrapOptions extends FetchOptions {
@@ -253,9 +326,13 @@ export interface BootstrapOptions extends FetchOptions {
  * caught by the hydrating write's own transaction: that document is left as the edit made it,
  * listed in the marker as `held`, and push discovers the divergence.
  *
- * Batches travel concurrently (see {@link FetchOptions}); each batch is written as it arrives,
- * through the same per-document write as before. A failed batch leaves the marker incomplete
- * and its error propagates once the batches in flight have finished.
+ * Over a wire authority that reports `snapshot`, the documents arrive as one streamed response
+ * and are written in batches of `batchSize` as they arrive; the marker records the digest the
+ * snapshot announced as `headsDigest`, and a snapshot the authority cuts short rejects with the
+ * wire adapter's `SNAPSHOT_TRUNCATED` and leaves the marker incomplete. Otherwise the ids are
+ * listed and fetched in batches that travel concurrently (see {@link FetchOptions}); each batch
+ * is written as it arrives, through the same per-document write. A failed batch leaves the
+ * marker incomplete and its error propagates once the batches in flight have finished.
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
   const concurrency = concurrencyOf(options);
@@ -272,40 +349,64 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const rootIndex = await remote.readReserved("", "index.md");
   if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
 
-  const ids = await remote.list();
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
   const held: ConceptId[] = [];
   let index = 0;
-  await forEachBatch(chunked(ids, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
-    const heads = await remote.readMany(batch);
-    for (const head of heads) {
-      const id = head.doc.id;
-      try {
-        const { version } = await backend.writeJournaled(id, head.doc, {
-          requireSettled: true,
-          meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
-        });
-        if (version !== head.version) {
-          findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
-        }
-      } catch (error) {
-        if (!(error instanceof IntentHoldConflict)) throw error;
-        held.push(id);
+  /** One document as the authority served it, into the working copy, with the marker's bookkeeping. */
+  const hydrate = async (head: ReadResult, total: number): Promise<void> => {
+    const id = head.doc.id;
+    try {
+      const { version } = await backend.writeJournaled(id, head.doc, {
+        requireSettled: true,
+        meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
+      });
+      if (version !== head.version) {
+        findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
       }
-      // Take the index before awaiting the hook: another worker's completion can interleave
-      // with an awaiting hook, and the index must stay unique per hydrated document.
-      const hydrated = index;
-      index += 1;
-      await options.onHydrated?.(id, hydrated, ids.length);
+    } catch (error) {
+      if (!(error instanceof IntentHoldConflict)) throw error;
+      held.push(id);
     }
-  });
+    // Take the index before awaiting the hook: another worker's completion can interleave
+    // with an awaiting hook, and the index must stay unique per hydrated document.
+    const hydrated = index;
+    index += 1;
+    await options.onHydrated?.(id, hydrated, total);
+  };
+
+  let documentCount: number;
+  let headsDigest: string | undefined;
+  const wire = await wireFor(remote, local, "snapshot", options);
+  if (wire) {
+    // One stream: concurrency does not apply. Each batch is written as soon as it has arrived,
+    // so a cut stream leaves whole batches behind and the marker incomplete.
+    const { header, docs } = await wire.snapshot();
+    let batch: ReadResult[] = [];
+    for await (const doc of docs) {
+      batch.push({ doc: { id: doc.id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version });
+      if (batch.length < batchSize) continue;
+      for (const head of batch) await hydrate(head, header.count);
+      batch = [];
+    }
+    for (const head of batch) await hydrate(head, header.count);
+    documentCount = header.count;
+    headsDigest = header.digest;
+  } else {
+    const ids = await remote.list();
+    await forEachBatch(chunked(ids, batchSize), concurrency, async (batch) => {
+      for (const head of await remote.readMany(batch)) await hydrate(head, ids.length);
+    });
+    documentCount = ids.length;
+  }
 
   const marker: BootstrapMarker = {
     generation,
     startedAt,
     complete: true,
     completedAt: new Date().toISOString(),
-    documentCount: ids.length,
+    documentCount,
+    ...(headsDigest === undefined ? {} : { headsDigest }),
     ...(held.length > 0 ? { held } : {}),
     ...(findings.length > 0 ? { findings } : {}),
   };
@@ -614,6 +715,24 @@ export interface PullReport {
   /** Documents left alone because an unsettled intent targets them; push discovers any divergence. */
   held: ConceptId[];
   unchanged: ConceptId[];
+  /** Documents the authority no longer lists, removed from the working copy with their base. Only a pull by heads removes anything. */
+  deleted: ConceptId[];
+}
+
+/**
+ * The digest the working copy last matched: the bootstrap's or the last completed pull's,
+ * whichever finished later. `undefined` when neither recorded one.
+ */
+async function lastKnownDigest(backend: JournaledBackend): Promise<string | undefined> {
+  const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
+  // An incomplete bootstrap has changed the working copy past whatever any digest described:
+  // no conditional request until a bootstrap completes again.
+  if (marker?.complete !== true) return undefined;
+  const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
+  const pullCompletedAt = lastPull?.completedAt ?? null;
+  const fromPull = pullCompletedAt === null ? undefined : lastPull?.headsDigest;
+  if (fromPull !== undefined && marker.completedAt !== undefined && pullCompletedAt! >= marker.completedAt) return fromPull;
+  return marker.headsDigest;
 }
 
 /**
@@ -624,52 +743,120 @@ export interface PullReport {
  * fetching held documents; the hold that decides is the one the refreshing write checks inside
  * its own transaction, so an edit committed during the round trip holds its document too.
  *
+ * Over a wire authority that reports `heads`, the round trip is one conditional heads request
+ * carrying the digest the working copy last matched. A `304` completes the pull with nothing
+ * fetched and the marker saying `unchanged`. A `200` is diffed: a head whose version equals the
+ * recorded base is unchanged, any other unheld head is fetched, and a local document the
+ * authority no longer lists is deleted with its base in one journaled operation that checks the
+ * hold inside its own transaction. A deleted document a local edit holds is retained, reported
+ * as held, and its base rewritten to version `null`, so the base agrees with the absent remote
+ * the conflict push records will carry. Nothing is ever deleted on a `304`, and nothing on the
+ * list path, which fetches every unheld id as before.
+ *
  * Batches travel concurrently (see {@link FetchOptions}) and each is written as it arrives; the
- * pull marker records completion only after every batch has been written.
+ * pull marker records completion, and the digest now matched, only after every batch has been
+ * written.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const concurrency = concurrencyOf(options);
   const backend = backendOf(local);
+  // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
+  const known = await lastKnownDigest(backend);
   const startedAt = new Date().toISOString();
-  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0 } satisfies PullMarker);
-  const report: PullReport = { refreshed: [], held: [], unchanged: [] };
+  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+  const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };
   const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
-  const ids = await remote.list();
-  const candidates: ConceptId[] = [];
-  for (const id of ids) {
-    if (heldTargets.has(id)) report.held.push(id);
-    else candidates.push(id);
-  }
-  await forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
-    const heads = await remote.readMany(batch);
-    for (const head of heads) {
-      const id = head.doc.id;
-      const base = await backend.readMeta<SharedBase>(baseKey(id));
-      if (base?.version === head.version) {
-        report.unchanged.push(id);
-        continue;
+  const complete = async (headsDigest: string | undefined, unchanged: boolean): Promise<PullReport> => {
+    await backend.writeMeta(PULL_KEY, {
+      startedAt,
+      completedAt: new Date().toISOString(),
+      refreshed: report.refreshed.length,
+      unchanged,
+      ...(headsDigest === undefined ? {} : { headsDigest }),
+    } satisfies PullMarker);
+    return report;
+  };
+
+  /** Apply one fetched head to the working copy under the same guards, whichever path fetched it. */
+  const apply = async (head: ReadResult): Promise<void> => {
+    const id = head.doc.id;
+    const base = await backend.readMeta<SharedBase>(baseKey(id));
+    if (base?.version === head.version) {
+      report.unchanged.push(id);
+      return;
+    }
+    const expectedVersion = await localVersion(backend, id);
+    try {
+      await backend.writeJournaled(id, head.doc, {
+        expectedVersion,
+        requireSettled: true,
+        meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
+      });
+      report.refreshed.push(id);
+    } catch (error) {
+      // A local commit landed during the round trip: its intent holds this document now. The
+      // version check is kept for a plain local write that journals nothing.
+      if (error instanceof IntentHoldConflict || (error as { name?: unknown })?.name === "VersionConflict") {
+        report.held.push(id);
+        return;
       }
-      const expectedVersion = await localVersion(backend, id);
+      throw error;
+    }
+  };
+  const fetchAndApply = (candidates: ConceptId[]): Promise<void> =>
+    forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
+      for (const head of await remote.readMany(batch)) await apply(head);
+    });
+
+  const wire = await wireFor(remote, local, "heads", options);
+  if (!wire) {
+    const candidates: ConceptId[] = [];
+    for (const id of await remote.list()) {
+      if (heldTargets.has(id)) report.held.push(id);
+      else candidates.push(id);
+    }
+    await fetchAndApply(candidates);
+    return complete(undefined, false);
+  }
+
+  const answer = await wire.heads(known === undefined ? {} : { ifNoneMatch: known });
+  if (answer === null) {
+    report.unchanged = await backend.list();
+    return complete(known, true);
+  }
+  const candidates: ConceptId[] = [];
+  const listed = new Set<ConceptId>();
+  for (const head of answer.heads) {
+    listed.add(head.id);
+    if (heldTargets.has(head.id)) {
+      report.held.push(head.id);
+      continue;
+    }
+    const base = await backend.readMeta<SharedBase>(baseKey(head.id));
+    if (base?.version === head.version) report.unchanged.push(head.id);
+    else candidates.push(head.id);
+  }
+  await fetchAndApply(candidates);
+  for (const id of await backend.list()) {
+    if (listed.has(id)) continue;
+    // The hold that decides is the one the deletion checks inside its own transaction; the
+    // upfront set only spares the attempt.
+    if (!heldTargets.has(id)) {
       try {
-        await backend.writeJournaled(id, head.doc, {
-          expectedVersion,
-          requireSettled: true,
-          meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
-        });
-        report.refreshed.push(id);
+        await backend.deleteJournaled(id, { requireSettled: true, removeMeta: [baseKey(id)] });
+        report.deleted.push(id);
+        continue;
       } catch (error) {
-        // A local commit landed during the round trip: its intent holds this document now. The
-        // version check is kept for a plain local write that journals nothing.
-        if (error instanceof IntentHoldConflict || (error as { name?: unknown })?.name === "VersionConflict") {
-          report.held.push(id);
-          continue;
-        }
-        throw error;
+        if (!(error instanceof IntentHoldConflict)) throw error;
       }
     }
-  });
-  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: new Date().toISOString(), refreshed: report.refreshed.length } satisfies PullMarker);
-  return report;
+    // Retained under a local edit: the authority holds nothing for this id now, and the base
+    // says so, so the conflict push records carries an absent remote.
+    const previous = await backend.readMeta<SharedBase>(baseKey(id));
+    await backend.writeMeta(baseKey(id), { version: null, content: previous?.content ?? null } satisfies SharedBase);
+    report.held.push(id);
+  }
+  return complete(answer.digest, false);
 }
 
 // ── status and control ─────────────────────────────────────────────────────────────────────

@@ -10,15 +10,21 @@
  * a later edit chains behind; a deadline shorter than the authority's latency still applies the
  * write exactly once; bootstrap and pull fetch their batches concurrently, producing the same
  * working copy as one batch at a time in a fraction of the wall time, and a failed batch leaves
- * the marker incomplete with nothing left in flight. The Chromium unit runs the same runtime in
- * a real page.
+ * the marker incomplete with nothing left in flight. Over a wire authority that reports them,
+ * bootstrap hydrates from one streamed snapshot (byte-identical to the list path, with the
+ * digest on the marker; a cut snapshot leaves the marker incomplete) and pull reconciles from
+ * one conditional heads request (a 304 fetches nothing, a 200 fetches only changed documents
+ * and removes deleted ones unless a local edit holds them); a plain backend, and a wire
+ * authority without the features, still walk the list. The Chromium unit runs the same runtime
+ * in a real page.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 
-import type { OkfDocument, StorageBackend } from "@superbee/core";
+import { RemoteBackend, type ConceptId, type OkfDocument, type StorageBackend } from "@superbee/core";
 import { IntentStateConflict } from "@superbee/core/journaled-backend";
+import { headsDigest, type RemoteError } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import { performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
 
@@ -35,11 +41,12 @@ import {
   resume,
   settleIntent,
   syncStatus,
+  type BootstrapMarker,
   type LocalBundle,
   type SharedBase,
 } from "../src/local-bundle.ts";
 import { hostLocks, pushRoleName, withPushRole } from "../src/push-role.ts";
-import { createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
+import { BASE_URL, BUNDLE, createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
 
 const NOW = "2026-09-10T12:00:00.000Z";
 const immediate = { sleep: async () => {}, lookupDelayMs: 0 };
@@ -98,24 +105,34 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
 }
 
 /**
- * The fixture's read side with `readMany` held open: `entered` resolves when the first call
- * arrives, and the call proceeds only after `release`. What a slow authority looks like to
- * pull and bootstrap, with a hook to commit locally in the middle of the round trip.
+ * The fixture's read side with its document fetch held open, whether that is `readMany` (the
+ * list path, and a pull's changed documents) or `snapshot` (a bootstrap over the wire):
+ * `entered` resolves when the first fetch arrives, and it proceeds only after `release`. What a
+ * slow authority looks like to pull and bootstrap, with a hook to commit locally in the middle
+ * of the round trip.
  */
 function heldRemote(remote: StorageBackend): { remote: StorageBackend; entered: Promise<void>; release: () => void } {
   const entered = deferred();
   const gate = deferred();
   let first = true;
+  const hold = async (): Promise<void> => {
+    if (!first) return;
+    first = false;
+    entered.resolve();
+    await gate.promise;
+  };
   const proxy = new Proxy(remote, {
     get(target, prop) {
       if (prop === "readMany") {
         return async (ids: string[]) => {
-          if (first) {
-            first = false;
-            entered.resolve();
-            await gate.promise;
-          }
+          await hold();
           return target.readMany(ids);
+        };
+      }
+      if (prop === "snapshot") {
+        return async () => {
+          await hold();
+          return (target as RemoteBackend).snapshot();
         };
       }
       const value = Reflect.get(target, prop, target);
@@ -124,6 +141,31 @@ function heldRemote(remote: StorageBackend): { remote: StorageBackend; entered: 
   }) as StorageBackend;
   return { remote: proxy, entered: entered.promise, release: () => gate.resolve() };
 }
+
+/** The fixture's authority behind a fresh wire adapter whose every request is recorded with the status it drew. */
+function countingRemote(fixture: RemoteFixture, answer: (request: Request) => Promise<Response> = fixture.hosted): { remote: RemoteBackend; requests: Array<{ method: string; path: string; status: number }> } {
+  const requests: Array<{ method: string; path: string; status: number }> = [];
+  const fetchImpl = async (request: Request): Promise<Response> => {
+    const response = await answer(request);
+    requests.push({ method: request.method, path: new URL(request.url).pathname, status: response.status });
+    return response;
+  };
+  return { remote: new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl, maxRetries: 0 }), requests };
+}
+
+/** The digest the authority would answer now, by the wire recipe over its own heads. */
+async function authorityDigest(fixture: RemoteFixture): Promise<string> {
+  const heads = [];
+  for (const id of await fixture.authority.list()) heads.push({ id, version: (await fixture.authority.read(id)).version });
+  return headsDigest(heads);
+}
+
+const SNAPSHOT = `/v0/bundles/${BUNDLE}/snapshot`;
+const HEADS = `/v0/bundles/${BUNDLE}/heads`;
+const READ_MANY = `/v0/bundles/${BUNDLE}/docs:read-many`;
+const LIST = `/v0/bundles/${BUNDLE}/docs`;
+const CAPABILITIES = "/v0/capabilities";
+const ROOT_INDEX = `/v0/bundles/${BUNDLE}/reserved/index.md`;
 
 const offline: OperationTransport = {
   submit: async () => {
@@ -1044,8 +1086,9 @@ test("bootstrap with concurrency 8 produces the same working copy as concurrency
   try {
     const serialProbe = overlapProbe(fixture.remote);
     const concurrentProbe = overlapProbe(fixture.remote);
-    const one = await timed(() => bootstrap(serialProbe.remote, serial, { batchSize: TIMING.batchSize, concurrency: 1 }));
-    const eight = await timed(() => bootstrap(concurrentProbe.remote, concurrent, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    // The list path, explicitly: a snapshot is one stream and has no batches to overlap.
+    const one = await timed(() => bootstrap(serialProbe.remote, serial, { batchSize: TIMING.batchSize, concurrency: 1, wire: { snapshot: false } }));
+    const eight = await timed(() => bootstrap(concurrentProbe.remote, concurrent, { batchSize: TIMING.batchSize, concurrency: 8, wire: { snapshot: false } }));
     assert.equal(serialProbe.overlap.max, 1, "concurrency 1 never overlaps readMany calls");
     assert.equal(concurrentProbe.overlap.max, 8, "concurrency 8 keeps eight readMany calls in flight");
     assert.equal(one.result.complete, true);
@@ -1155,7 +1198,7 @@ test("a batch that fails under concurrency 8 leaves the marker incomplete, nothi
   try {
     // Batch size 25: the third batch is ids[50..74]. All eight batches are in flight together.
     const poisoned = poisonedRemote(fixture.remote, ids[60]!);
-    await assert.rejects(bootstrap(poisoned.remote, local, { batchSize: 25, concurrency: 8 }), /batch dropped/);
+    await assert.rejects(bootstrap(poisoned.remote, local, { batchSize: 25, concurrency: 8, wire: { snapshot: false } }), /batch dropped/);
     const callsAtRejection = poisoned.calls.count;
     assert.equal(await isComplete(local), false);
     const marker = await local.backend.readMeta<{ complete: boolean; generation: number; completedAt?: string }>("bootstrap");
@@ -1194,7 +1237,7 @@ test("an authority that stops serving reads part-way still leaves a concurrent b
   fixture.knobs.readBudget = 100;
   const local = openLocal(new IDBFactory());
   try {
-    await assert.rejects(bootstrap(fixture.remote, local, { batchSize: 25, concurrency: 8 }), /stopped serving reads/);
+    await assert.rejects(bootstrap(fixture.remote, local, { batchSize: 25, concurrency: 8, wire: { snapshot: false } }), /stopped serving reads/);
     assert.equal(await isComplete(local), false);
     assert.equal((await syncStatus(local)).generation, 1);
     const landed = await local.backend.list();
@@ -1225,6 +1268,284 @@ test("concurrency below 1 or not an integer is refused before anything is writte
     assert.deepEqual(await local.backend.list(), []);
     // The minimum is one batch at a time: the sequential shape, still valid.
     assert.equal((await bootstrap(fixture.remote, local, { concurrency: 1 })).complete, true);
+  } finally {
+    local.close();
+  }
+});
+
+// ── snapshot and heads ─────────────────────────────────────────────────────────────────────
+
+test("bootstrap by snapshot yields the working copy bootstrap by list yields, with the digest on the marker, in one capabilities, one index and one snapshot request", async () => {
+  const fixture = await createRemoteFixture();
+  await seedMany(fixture, 60);
+  const bySnapshot = openLocal(new IDBFactory(), "by-snapshot");
+  const byList = openLocal(new IDBFactory(), "by-list");
+  try {
+    const counted = countingRemote(fixture);
+    const marker = await bootstrap(counted.remote, bySnapshot, { batchSize: 25 });
+    assert.deepEqual(counted.requests, [
+      { method: "GET", path: ROOT_INDEX, status: 200 },
+      { method: "GET", path: CAPABILITIES, status: 200 },
+      { method: "GET", path: SNAPSHOT, status: 200 },
+    ]);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.documentCount, 60);
+    assert.equal(marker.headsDigest, await authorityDigest(fixture));
+    assert.equal(marker.held, undefined);
+    assert.equal(marker.findings, undefined);
+    assert.equal(await isComplete(bySnapshot), true);
+
+    const listed = countingRemote(fixture);
+    const listMarker = await bootstrap(listed.remote, byList, { batchSize: 25, wire: { snapshot: false } });
+    assert.equal(listMarker.headsDigest, undefined, "the list path records no digest");
+    assert.ok(listed.requests.some((row) => row.path === READ_MANY));
+    assert.ok(!listed.requests.some((row) => row.path === SNAPSHOT || row.path === CAPABILITIES), "a refused feature costs no capabilities read");
+    const expected = await snapshot(byList);
+    assert.equal(expected.length, 60);
+    assert.deepEqual(await snapshot(bySnapshot), expected, "versions and shared bases agree document for document");
+    assert.equal((await bySnapshot.backend.readReserved("", "index.md"))?.content, (await byList.backend.readReserved("", "index.md"))?.content);
+    for (const row of expected) assert.equal(row.base?.content, (await bySnapshot.backend.readMeta<SharedBase>(baseKey(row.id)))?.content);
+
+    // The capabilities are kept on the bundle: a second verb over it sends no capabilities request.
+    const again = countingRemote(fixture);
+    await pull(bySnapshot, again.remote);
+    assert.deepEqual(again.requests.map((row) => row.path), [HEADS]);
+  } finally {
+    bySnapshot.close();
+    byList.close();
+  }
+});
+
+test("a snapshot the authority cuts short leaves the marker incomplete with whole batches landed, and a retry completes", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 60);
+  const local = openLocal(new IDBFactory());
+  try {
+    // The header line plus 30 document lines: one whole batch of 25 arrives before the cut.
+    fixture.knobs.snapshotCutAfter = 31;
+    await assert.rejects(bootstrap(fixture.remote, local, { batchSize: 25 }), (error: unknown) => {
+      assert.equal((error as RemoteError).name, "RemoteError");
+      assert.equal((error as RemoteError).code, "SNAPSHOT_TRUNCATED");
+      return true;
+    });
+    assert.equal(await isComplete(local), false);
+    const marker = await local.backend.readMeta<BootstrapMarker>("bootstrap");
+    assert.equal(marker?.complete, false);
+    assert.equal(marker?.generation, 1);
+    assert.equal(marker?.headsDigest, undefined);
+    assert.deepEqual((await local.backend.list()).sort(), ids.slice(0, 25));
+    assert.equal(fixture.served.documents, 30);
+    // No digest is offered from an incomplete bootstrap: a pull now asks unconditionally.
+    const counted = countingRemote(fixture);
+    await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200], [READ_MANY, 200]]);
+    assert.equal((await local.backend.list()).length, 60);
+
+    fixture.knobs.snapshotCutAfter = null;
+    const repaired = await bootstrap(fixture.remote, local, { batchSize: 25 });
+    assert.equal(repaired.complete, true);
+    assert.equal(repaired.generation, 2);
+    assert.equal(repaired.documentCount, 60);
+    assert.equal(repaired.headsDigest, await authorityDigest(fixture));
+    assert.equal((await local.backend.list()).length, 60);
+  } finally {
+    local.close();
+  }
+});
+
+test("pull with nothing changed is one conditional heads request answered 304, with no document read and the marker saying unchanged", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const marker = await bootstrap(fixture.remote, local);
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    assert.deepEqual(report, { refreshed: [], held: [], unchanged: ["notes/alpha", "notes/beta", "notes/gamma"], deleted: [] });
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.unchanged, true);
+    assert.equal(status.lastPull?.refreshed, 0);
+    assert.equal(status.lastPull?.headsDigest, marker.headsDigest);
+    assert.notEqual(status.lastPull?.completedAt, null);
+    // The digest a later pull offers is the one this pull matched; nothing changed, so 304 again.
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    local.close();
+  }
+});
+
+test("pull after 5 remote edits and 2 remote creates fetches exactly those 7 documents in one read-many batch and records the new digest", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 40);
+  const local = openLocal(new IDBFactory());
+  try {
+    const marker = await bootstrap(fixture.remote, local);
+    const edited = [ids[3]!, ids[7]!, ids[11]!, ids[19]!, ids[39]!];
+    for (const id of edited) {
+      const { version } = await fixture.authority.read(id);
+      await fixture.authority.write(id, doc(id, `${id} v2\n`), { expectedVersion: version });
+    }
+    const created = ["notes/new-a", "notes/new-b"];
+    for (const id of created) await fixture.authority.write(id, doc(id, `${id} created remotely\n`));
+    const changed = [...edited, ...created].sort();
+
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]]);
+    assert.deepEqual([...report.refreshed].sort(), changed);
+    assert.equal(report.unchanged.length, 35);
+    assert.deepEqual(report.held, []);
+    assert.deepEqual(report.deleted, []);
+    for (const id of changed) {
+      const held = await fixture.authority.read(id);
+      assert.equal((await local.backend.read(id)).doc.body, held.doc.body);
+      assert.equal((await local.backend.readMeta<SharedBase>(baseKey(id)))?.version, held.version);
+    }
+    assert.equal((await local.backend.list()).length, 42);
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.refreshed, 7);
+    assert.equal(status.lastPull?.unchanged, false);
+    assert.notEqual(status.lastPull?.headsDigest, marker.headsDigest);
+    assert.equal(status.lastPull?.headsDigest, await authorityDigest(fixture));
+    // The pull's digest, newer than the bootstrap's, is what the next pull offers.
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    local.close();
+  }
+});
+
+test("pull removes documents the authority deleted, with their base, and retains one a pending edit holds with its base marked absent; push then records the conflict against no remote", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 10);
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local);
+    const editedId = ids[3]!;
+    const sharedVersion = (await fixture.authority.read(editedId)).version;
+    const previousBase = await local.backend.readMeta<SharedBase>(baseKey(editedId));
+    const committed = await commitLocal(local, editedId, edit("edited before the authority deleted it\n"));
+    const gone = [ids[0]!, ids[1]!, ids[2]!];
+    for (const id of [...gone, editedId]) assert.equal(await fixture.authority.delete(id), true);
+
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200]], "nothing changed among the listed heads, so nothing is read");
+    assert.deepEqual(report.deleted, gone);
+    assert.deepEqual(report.held, [editedId]);
+    assert.deepEqual(report.refreshed, []);
+    assert.equal(report.unchanged.length, 6);
+    for (const id of gone) {
+      await assert.rejects(local.backend.read(id), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+      assert.equal(await local.backend.readMeta(baseKey(id)), undefined, "the base row went with the document");
+    }
+    assert.equal((await local.backend.list()).length, 7);
+    const retained = await local.backend.read(editedId);
+    assert.equal(retained.doc.body, "edited before the authority deleted it\n");
+    assert.equal(retained.version, committed.version);
+    assert.deepEqual(await local.backend.readMeta<SharedBase>(baseKey(editedId)), { version: null, content: previousBase?.content ?? null });
+    const intent = await local.backend.readIntent(committed.intent!.requestId);
+    assert.equal(intent?.state, "pending");
+    assert.equal(intent?.base, sharedVersion, "the intent still names the base the edit was made against");
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture));
+
+    // Nothing changed since: a 304 removes nothing further, and the retained document stays.
+    const again = countingRemote(fixture);
+    const second = await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    assert.deepEqual(second.deleted, []);
+    assert.equal((await local.backend.list()).length, 7);
+    assert.equal((await local.backend.read(editedId)).version, committed.version);
+
+    // Push delivers the edit at its base and the authority, holding nothing, answers a conflict
+    // whose remote is absent: the runtime's `remote: null` conflict.
+    const pushed = await push(local, fixture.transport, { remote: fixture.remote, write: immediate });
+    assert.deepEqual(pushed.settled.map((row) => row.state), ["conflict"]);
+    const conflict = await local.backend.readIntent(committed.intent!.requestId);
+    assert.equal(conflict?.state, "conflict");
+    assert.deepEqual(conflict?.remote, { version: null, content: null });
+    assert.equal((await local.backend.read(editedId)).doc.body, "edited before the authority deleted it\n");
+    assert.equal(await fixture.authority.exists(editedId), false);
+  } finally {
+    local.close();
+  }
+});
+
+test("a plain storage backend as the authority walks the list: no capabilities, no digest, and deletions are not reconciled", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const authority: StorageBackend = fixture.authority;
+    const marker = await bootstrap(authority, local);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.documentCount, 3);
+    assert.equal(marker.headsDigest, undefined);
+    assert.equal(local.capabilities, undefined, "no wire adapter, no capabilities read");
+    const base = (await fixture.authority.read("notes/alpha")).version;
+    await fixture.authority.write("notes/alpha", doc("notes/alpha", "alpha v2\n"), { expectedVersion: base });
+    await fixture.authority.delete("notes/gamma");
+    const report = await pull(local, authority);
+    assert.deepEqual(report.refreshed, ["notes/alpha"]);
+    assert.deepEqual(report.unchanged, ["notes/beta"]);
+    assert.deepEqual(report.deleted, [], "the list path fetches heads; only a pull by heads removes anything");
+    assert.equal((await local.backend.read("notes/gamma")).doc.body, "gamma v1\n");
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.headsDigest, undefined);
+    assert.equal(status.lastPull?.unchanged, false);
+  } finally {
+    local.close();
+  }
+});
+
+test("a wire authority that reports neither heads nor snapshot takes the list path for both verbs", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const withoutFeatures = async (request: Request): Promise<Response> => {
+      if (new URL(request.url).pathname !== CAPABILITIES) return fixture.hosted(request);
+      const answered = await fixture.hosted(request);
+      const payload = (await answered.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...payload, heads: false, snapshot: false }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const counted = countingRemote(fixture, withoutFeatures);
+    const marker = await bootstrap(counted.remote, local);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.headsDigest, undefined);
+    assert.deepEqual(counted.requests.map((row) => row.path), [ROOT_INDEX, CAPABILITIES, LIST, READ_MANY]);
+    counted.requests.length = 0;
+    const base = (await fixture.authority.read("notes/beta")).version;
+    await fixture.authority.write("notes/beta", doc("notes/beta", "beta v2\n"), { expectedVersion: base });
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => row.path), [LIST, READ_MANY], "the capabilities answer was kept on the bundle");
+    assert.deepEqual(report.refreshed, ["notes/beta"]);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, undefined);
+    assert.equal((await local.backend.read("notes/beta")).doc.body, "beta v2\n");
+  } finally {
+    local.close();
+  }
+});
+
+test("a capabilities read that fails is not kept: the next verb asks again and proceeds over the wire", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    let refuse = true;
+    const flaky = async (request: Request): Promise<Response> => {
+      if (refuse && new URL(request.url).pathname === CAPABILITIES) throw new TypeError("fetch failed: offline");
+      return fixture.hosted(request);
+    };
+    const counted = countingRemote(fixture, flaky);
+    await assert.rejects(bootstrap(counted.remote, local), /offline/);
+    assert.equal(await isComplete(local), false);
+    assert.equal(local.capabilities, undefined, "a rejected read is dropped");
+    refuse = false;
+    const marker = await bootstrap(counted.remote, local);
+    assert.equal(marker.complete, true);
+    assert.ok(marker.headsDigest);
+    assert.deepEqual(counted.requests.filter((row) => row.path === CAPABILITIES).length, 1);
   } finally {
     local.close();
   }

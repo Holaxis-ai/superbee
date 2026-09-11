@@ -19,6 +19,7 @@ import {
   type IntentPatch,
   type IntentRecord,
   type JournaledBackend,
+  type JournaledDeleteOptions,
   type JournaledReadResult,
   type JournaledWriteOptions,
   type MetaRecord,
@@ -194,6 +195,23 @@ export class MemoryJournaledBackend implements JournaledBackend {
     }
     for (const row of meta) this.#meta.set(row.key, structuredClone(row.value));
     return { version, raw, intent: record };
+  }
+
+  async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<boolean> {
+    assertSafeConceptId(id);
+    // Every check runs before any mutation, with no await between them, as in `writeJournaled`.
+    if (options.requireSettled) {
+      const holder = [...this.#intents.values()].sort(bySequence).find((row) => row.target === id && row.state !== "acknowledged");
+      if (holder) throw new IntentHoldConflict(id, holder.requestId, holder.state);
+    }
+    const current = this.#documents.get(id)?.version ?? null;
+    if (current !== null && options.expectedVersion !== undefined && options.expectedVersion !== current) {
+      throw new VersionConflict(id, options.expectedVersion, current);
+    }
+    const removed = this.#documents.delete(id);
+    for (const row of options.meta ?? []) this.#meta.set(row.key, structuredClone(row.value));
+    for (const key of options.removeMeta ?? []) this.#meta.delete(key);
+    return removed;
   }
 
   async readWithJournal(id: ConceptId, options: { meta?: readonly string[] } = {}): Promise<JournaledReadResult> {

@@ -9,7 +9,7 @@
  * summaries.
  *
  * The two modes' cold opens are different operations by construction: browser-local hydrates
- * the whole bundle into IndexedDB once (`bootstrap`), request-driven reads the authority's
+ * the whole bundle into IndexedDB once (`bootstrap`, from one streamed snapshot), request-driven reads the authority's
  * capabilities, lists the bundle, and reads the first screen's documents. Each is the honest
  * first-screen cost of its mode, because it is what that mode must do before its presentation
  * can show a list and one document from its own source of truth. The report records both and
@@ -228,12 +228,12 @@ export interface MeasurementReport {
 
 export const OPERATIONS: Record<string, string> = {
   coldOpen:
-    "browser-local: bootstrap (root index, list, readMany batches of 25, one journaled IndexedDB write per document) from an empty working copy; request-driven: wire capabilities, list pages of 50 rows, and the first 20 documents read one by one. Different operations: each is what its mode must do before showing a list and one document from its own source of truth. The presentation mount is timed and counted separately.",
+    "browser-local: bootstrap (root index, wire capabilities, one streamed snapshot written in batches of 25 as it arrives, one journaled IndexedDB write per document) from an empty working copy; request-driven: wire capabilities, list pages of 50 rows, and the first 20 documents read one by one. Different operations: each is what its mode must do before showing a list and one document from its own source of truth. The presentation mount is timed and counted separately.",
   presentationMount: "mounting the proof presentation over the open runtime and its first refresh: one query for the list, the selection's read, and the status line. Its requests are recorded apart from the cold open's.",
   warmRead: `${READS} reads of ids drawn with a seeded generator, without replacement when the bundle has at least ${READS} documents, through the runtime's read verb; browser-local answers from IndexedDB, request-driven from the authority.`,
   warmQuery: `${QUERIES_PER_KIND} queries by type and ${QUERIES_PER_KIND} by tag through the runtime's query verb; browser-local scans IndexedDB heads and reads each matching snapshot, request-driven pages the authority's filtered list 50 rows at a time.`,
   localCommit: `${COMMITS} commits through the runtime's commit verb with no premise (read then write); browser-local journals an intent in the document's transaction, request-driven reads and PUTs at the authority.`,
-  reconciliation: `browser-local: push of the ${COMMITS} pending intents under the push role, then pull of every head; request-driven has nothing to reconcile.`,
+  reconciliation: `browser-local: push of the ${COMMITS} pending intents under the push role, then pull by one conditional heads request (the ${COMMITS} acknowledged documents already match their heads, so a 200 is diffed and nothing is read); request-driven has nothing to reconcile.`,
   footprint:
     "navigator.storage.estimate() in the same fresh context before the cold open and at three points after it (after bootstrap, after the presentation mount, at the end of the repetition); each sample is the delta from the fresh context, and the cell reports the min and max across every sample. Playwright contexts keep IndexedDB in memory, so this is a logical size (each document is stored twice, as its record and its shared base content), not an on-disk footprint. indexedDbBytes is Chromium's usageDetails.indexedDB when reported. Request-driven holds no working copy.",
   clock: "every time is performance.now() in the page. The measurement driver's page is served with cross-origin-opener-policy: same-origin and cross-origin-embedder-policy: require-corp so it is cross-origin isolated and the clock resolves to 5 us; without isolation Chromium coarsens it to 100 us, which is where a fast IndexedDB read sits. Each cell records whether its pages were isolated.",
