@@ -48,3 +48,7 @@ export type {
 // for it: runtime-neutral, so Worker and browser consumers reach them through this seam.
 export { isRequestIdentity } from "./uncertain-write.js";
 export type { Outcome } from "./uncertain-write.js";
+// The heads digest a wire authority and a working copy both mint over every document id and
+// version, so a client can learn in one round trip whether anything changed.
+export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
+export type { DocumentHead } from "./heads-digest.js";

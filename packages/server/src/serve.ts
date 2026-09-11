@@ -11,6 +11,9 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 
 import { createRouter } from "./legacy-router.js";
 import type { OperationOutcomeStore } from "./operation-outcomes.js";
@@ -116,15 +119,26 @@ export async function requestFromIncomingMessage(
   return new Request(url, { method: req.method ?? "GET", headers, body });
 }
 
-/** Write a Web-standard `Response` back onto a Node `ServerResponse`. EXPORTED — see {@link requestFromIncomingMessage}. */
+/**
+ * Write a Web-standard `Response` back onto a Node `ServerResponse`. EXPORTED for the same
+ * reason as {@link requestFromIncomingMessage}.
+ *
+ * The body is piped, never buffered: a streamed response (the snapshot route) reaches the socket
+ * chunk by chunk under backpressure and is never held in memory a second time. A body that fails
+ * mid-stream destroys the socket, so the client observes a truncated body rather than a
+ * well-formed short one, and this call rejects after the headers have already been sent.
+ */
 export async function writeResponseToServerResponse(res: ServerResponse, response: Response): Promise<void> {
   const headers: Record<string, string> = {};
   response.headers.forEach((value, key) => {
     headers[key] = value;
   });
   res.writeHead(response.status, headers);
-  const bytes = response.body ? Buffer.from(await response.arrayBuffer()) : undefined;
-  res.end(bytes);
+  if (!response.body) {
+    res.end();
+    return;
+  }
+  await pipeline(Readable.fromWeb(response.body as NodeReadableStream<Uint8Array>), res);
 }
 
 /**
@@ -142,6 +156,13 @@ export function serve(options: ServeOptions): Promise<ServerHandle> {
         .then((request) => router(request))
         .then((response) => writeResponseToServerResponse(res, response))
         .catch((err: unknown) => {
+          // Once headers are on the wire a body failure cannot become a 500 envelope; the
+          // severed socket is the client's signal, and a throwing fallback here would only
+          // surface as an unhandled rejection.
+          if (res.headersSent || res.destroyed) {
+            res.destroy();
+            return;
+          }
           res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
           res.end(JSON.stringify({ error: { code: "RUNTIME", message: err instanceof Error ? err.message : String(err) } }));
         });

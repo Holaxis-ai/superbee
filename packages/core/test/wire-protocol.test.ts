@@ -20,9 +20,12 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import { createRouter, createRouterForBackend, MemoryOperationOutcomeStore, serve } from "@superbee/server";
-import { MemoryBackend as ServerMemoryBackend } from "@superbee/core";
+import { FilesystemBackend as ServerFilesystemBackend, MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { InvalidInputError } from "../src/errors.js";
 import { stringifyDoc } from "../src/frontmatter.js";
@@ -36,6 +39,7 @@ import {
   writeBlob,
 } from "../src/bundle.js";
 import { VersionConflict } from "../src/versioning.js";
+import { sha256HexOfUtf8 } from "../src/sha256.js";
 import { scenario, T_DOC } from "./scenario.js";
 import type {
   Bundle,
@@ -456,7 +460,7 @@ test("wire: GET /v0/capabilities reports the backend's real capabilities (Memory
   const res = await router(new Request("http://wire.local/v0/capabilities"));
   assert.equal(res.status, 200);
   const body = (await res.json()) as Record<string, unknown>;
-  assert.deepEqual(body, { history: true, enforced_cas: true, projections: true, backlinks: false, blobs: true, operations: true });
+  assert.deepEqual(body, { history: true, enforced_cas: true, projections: true, backlinks: false, blobs: true, operations: true, heads: true, snapshot: true });
 });
 
 test("wire: error envelopes on 404 and 412 follow the { error: { code, message, details? } } shape", async () => {
@@ -971,7 +975,7 @@ test("wire: the operation transport reads capabilities once before its first sub
   const withoutStore = createRouterForBackend(bare, { outcomes: null });
   const unsupported = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: withoutStore, maxRetries: 0 });
   // The memory backend reports no history and no enforced CAS; the point here is `operations`.
-  assert.deepEqual(await unsupported.wireCapabilities(), { history: false, enforced_cas: false, projections: true, backlinks: false, blobs: true, operations: false });
+  assert.deepEqual(await unsupported.wireCapabilities(), { history: false, enforced_cas: false, projections: true, backlinks: false, blobs: true, operations: false, heads: true, snapshot: true });
   await assert.rejects(openRemoteOperationTransport(unsupported), (err: unknown) => err instanceof OperationsUnsupportedError && err.code === "OPERATIONS_UNSUPPORTED");
 
   const intent: OperationIntent = {
@@ -1199,4 +1203,319 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
   // authorization pause fires instead of an unknown loop.
   const gated = createRemoteOperationTransport(new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: async () => envelope(401, "AUTH_REQUIRED"), maxRetries: 0 }));
   assert.deepEqual(await gated.submit(intent), { kind: "refused", code: "AUTH_REQUIRED", message: "AUTH_REQUIRED from the wire" });
+});
+
+// ── heads and snapshot (WIRE-PROOF-11, WIRE-PROOF-12) ────────────────────────
+
+const HEADS_URL = "http://wire.local/v0/bundles/test/heads";
+const SNAPSHOT_URL = "http://wire.local/v0/bundles/test/snapshot";
+
+/** The documented digest recipe, spelled out independently of `headsDigest` so the test pins the bytes, not the helper. */
+function documentedDigest(heads: Array<{ id: string; version: string }>): string {
+  const sorted = [...heads].sort((a, b) => a.id.localeCompare(b.id));
+  return `sha256:${sha256HexOfUtf8(sorted.map((head) => `${head.id}\n${head.version}\n`).join(""))}`;
+}
+
+async function seedDocs(bundle: Bundle, ids: string[]): Promise<void> {
+  for (const id of ids) {
+    await writeDocVersioned(bundle, { id, frontmatter: { type: "T", title: id, timestamp: T_DOC }, body: `body of ${id}` });
+  }
+}
+
+/** Read a response body chunk by chunk, reporting how many reads it took, so buffering is distinguishable from streaming. */
+async function readChunked(res: Response, onFirstChunk?: () => void): Promise<{ text: string; reads: number }> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let reads = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (reads === 0) onFirstChunk?.();
+    reads += 1;
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  return { text, reads };
+}
+
+test("wire: GET /heads lists every id and version under the documented digest; If-None-Match answers a bodyless 304 in bare, quoted and weak form; a write and a delete each change the digest", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-heads", backend: serverBackend };
+  const router = createRouter(bundle);
+
+  const empty = await router(new Request(HEADS_URL));
+  assert.equal(empty.status, 200);
+  assert.deepEqual(await empty.json(), { count: 0, digest: `sha256:${sha256HexOfUtf8("")}`, heads: [] });
+
+  // Insertion order differs from id order, and "B" versus "a" separates localeCompare from code-unit order.
+  await seedDocs(bundle, ["b", "B", "a/x", "c"]);
+  const res = await router(new Request(HEADS_URL));
+  assert.equal(res.status, 200);
+  const body = (await res.json()) as { count: number; digest: string; heads: Array<{ id: string; version: string }> };
+  assert.deepEqual(body.heads.map((h) => h.id), ["a/x", "b", "B", "c"]);
+  assert.equal(body.count, 4);
+  for (const head of body.heads) {
+    assert.equal(head.version, (await serverBackend.read(head.id)).version, `version of ${head.id} equals its read`);
+  }
+  assert.equal(body.digest, documentedDigest(body.heads));
+  assert.equal(res.headers.get("etag"), `"${body.digest}"`);
+
+  for (const form of [body.digest, `"${body.digest}"`, `W/"${body.digest}"`, `"sha256:${"0".repeat(64)}", "${body.digest}"`]) {
+    const unchanged = await router(new Request(HEADS_URL, { headers: { "If-None-Match": form } }));
+    assert.equal(unchanged.status, 304, `If-None-Match ${form}`);
+    assert.equal(await unchanged.text(), "");
+    assert.equal(unchanged.headers.get("etag"), `"${body.digest}"`);
+  }
+  const other = await router(new Request(HEADS_URL, { headers: { "If-None-Match": `"sha256:${"0".repeat(64)}"` } }));
+  assert.equal(other.status, 200);
+
+  await writeDocVersioned(bundle, { id: "c", frontmatter: { type: "T", title: "c", timestamp: T_DOC }, body: "changed" });
+  const afterWrite = await router(new Request(HEADS_URL, { headers: { "If-None-Match": body.digest } }));
+  assert.equal(afterWrite.status, 200, "a write invalidates the held digest");
+  const written = (await afterWrite.json()) as { digest: string; heads: Array<{ id: string; version: string }> };
+  assert.notEqual(written.digest, body.digest);
+  assert.equal(written.digest, documentedDigest(written.heads));
+  assert.notEqual(written.heads.find((h) => h.id === "c")?.version, body.heads.find((h) => h.id === "c")?.version);
+
+  await serverBackend.delete("b");
+  const afterDelete = await router(new Request(HEADS_URL, { headers: { "If-None-Match": written.digest } }));
+  assert.equal(afterDelete.status, 200, "a delete invalidates the held digest");
+  const deleted = (await afterDelete.json()) as { count: number; digest: string; heads: Array<{ id: string; version: string }> };
+  assert.deepEqual(deleted.heads.map((h) => h.id), ["a/x", "B", "c"], "a deleted id is missing from heads");
+  assert.equal(deleted.count, 3);
+  assert.notEqual(deleted.digest, written.digest);
+  assert.equal(deleted.digest, documentedDigest(deleted.heads));
+});
+
+test("wire: GET /heads over a malformed document fails exactly as GET /docs fails (same status and code, no skip envelope)", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "wire-heads-malformed-"));
+  try {
+    await mkdir(path.join(root, "notes"), { recursive: true });
+    await writeFile(path.join(root, "notes", "good.md"), "---\ntype: Concept\ntitle: Good\n---\nfine\n");
+    await writeFile(path.join(root, "notes", "bad.md"), "---\ntype: [unclosed\ntitle: bad\n---\nbody\n");
+    const router = createRouter({ root, backend: new ServerFilesystemBackend(root) });
+
+    const list = await router(new Request("http://wire.local/v0/bundles/test/docs"));
+    const heads = await router(new Request(HEADS_URL));
+    const snapshot = await router(new Request(SNAPSHOT_URL));
+    const listBody = (await list.json()) as { error: { code: string } };
+    const headsBody = (await heads.json()) as { error: { code: string } };
+    const snapshotBody = (await snapshot.json()) as { error: { code: string } };
+    assert.equal(list.status, 500);
+    assert.equal(heads.status, list.status);
+    assert.equal(snapshot.status, list.status, "the listing fails before any snapshot byte exists");
+    assert.equal(headsBody.error.code, listBody.error.code);
+    assert.equal(snapshotBody.error.code, listBody.error.code);
+    assert.equal(listBody.error.code, "RUNTIME");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("wire: GET /snapshot streams header, docs in id order, and end over 120 documents; the body arrives in more than one chunk and the client iterable completes", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-snapshot", backend: serverBackend };
+  const router = createRouter(bundle);
+  const ids = Array.from({ length: 120 }, (_, i) => `concepts/doc-${String(119 - i).padStart(3, "0")}`);
+  await seedDocs(bundle, ids);
+  const expectedIds = [...ids].sort((a, b) => a.localeCompare(b));
+  const headsBody = (await (await router(new Request(HEADS_URL))).json()) as { digest: string };
+
+  const res = await router(new Request(SNAPSHOT_URL));
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get("content-type"), "application/x-ndjson; charset=utf-8");
+  assert.equal(res.headers.get("etag"), `"${headsBody.digest}"`);
+  const { text, reads } = await readChunked(res);
+  assert.ok(reads >= 2, `a streamed body is read in more than one chunk, got ${reads}`);
+  assert.ok(text.endsWith("\n"), "every line, including the last, is newline-terminated");
+  const lines = text.slice(0, -1).split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+  assert.equal(lines.length, 122);
+  assert.deepEqual(lines[0], { kind: "snapshot", count: 120, digest: headsBody.digest });
+  assert.deepEqual(lines[121], { kind: "end", count: 120 });
+  const docLines = lines.slice(1, 121) as Array<{ kind: string; id: string; version: string; frontmatter: Record<string, unknown>; body: string }>;
+  assert.deepEqual(docLines.map((line) => line.id), expectedIds);
+  for (const line of docLines) {
+    assert.equal(line.kind, "doc");
+    const read = await serverBackend.read(line.id);
+    assert.equal(line.version, read.version);
+    assert.equal(line.body, read.doc.body);
+    assert.deepEqual(line.frontmatter, read.doc.frontmatter);
+  }
+
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
+  const snapshot = await remote.snapshot();
+  assert.deepEqual(snapshot.header, { count: 120, digest: headsBody.digest });
+  const received: string[] = [];
+  for await (const doc of snapshot.docs) received.push(doc.id);
+  assert.deepEqual(received, expectedIds, "iterating to completion is the completeness signal");
+  assert.equal(await remote.heads({ ifNoneMatch: snapshot.header.digest }), null, "a heads check can start from the snapshot digest");
+});
+
+test("wire: a snapshot cut after 40 lines makes RemoteBackend.snapshot reject with SNAPSHOT_TRUNCATED after yielding the first documents; a mid-line cut, a wrong end count and a failing body reject the same way", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-snapshot-cut", backend: serverBackend };
+  const router = createRouter(bundle);
+  await seedDocs(bundle, Array.from({ length: 60 }, (_, i) => `concepts/doc-${String(i).padStart(2, "0")}`));
+
+  const rewriting = (rewrite: (text: string) => string) => async (request: Request) => {
+    const res = await router(request);
+    if (new URL(request.url).pathname !== "/v0/bundles/test/snapshot") return res;
+    return new Response(rewrite(await res.text()), { status: res.status, headers: res.headers });
+  };
+  const collect = async (fetchImpl: (request: Request) => Promise<Response>) => {
+    const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl, maxRetries: 0 });
+    const snapshot = await remote.snapshot();
+    const received: string[] = [];
+    let failure: unknown;
+    try {
+      for await (const doc of snapshot.docs) received.push(doc.id);
+    } catch (err) {
+      failure = err;
+    }
+    return { header: snapshot.header, received, failure };
+  };
+  const isTruncated = (err: unknown): err is RemoteError => err instanceof RemoteError && err.code === "SNAPSHOT_TRUNCATED";
+
+  const cut = await collect(rewriting((text) => `${text.split("\n").slice(0, 40).join("\n")}\n`));
+  assert.equal(cut.header.count, 60);
+  assert.equal(cut.received.length, 39, "the documents before the cut were yielded");
+  assert.ok(isTruncated(cut.failure), `expected SNAPSHOT_TRUNCATED, got ${String(cut.failure)}`);
+
+  const midLine = await collect(rewriting((text) => text.slice(0, Math.floor(text.length * 0.6))));
+  assert.ok(midLine.received.length > 0 && midLine.received.length < 60);
+  assert.ok(isTruncated(midLine.failure), "a partial trailing line is a cut, not a document");
+
+  const wrongCount = await collect(rewriting((text) => text.replace(/\{"kind":"end","count":60\}\n$/, '{"kind":"end","count":59}\n')));
+  assert.equal(wrongCount.received.length, 60);
+  assert.ok(isTruncated(wrongCount.failure), "an end line whose count disagrees is truncation");
+
+  const missingEnd = await collect(rewriting((text) => text.replace(/\{"kind":"end","count":60\}\n$/, "")));
+  assert.equal(missingEnd.received.length, 60);
+  assert.ok(isTruncated(missingEnd.failure), "all documents but no end line is truncation");
+
+  const failing = await collect(async (request) => {
+    const res = await router(request);
+    const text = await res.text();
+    const encoder = new TextEncoder();
+    // The header and one document are delivered; the next read fails as a severed socket would.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(text.split("\n").slice(0, 2).join("\n") + "\n"));
+      },
+      pull(controller) {
+        controller.error(new Error("socket reset"));
+      },
+    });
+    return new Response(stream, { status: 200, headers: res.headers });
+  });
+  assert.equal(failing.received.length, 1);
+  assert.ok(isTruncated(failing.failure) && (failing.failure.cause as Error).message === "socket reset", "a transport failure mid-body is truncation with its cause");
+
+  // Complete bodies are not disturbed by the wrapper itself.
+  const intact = await collect(rewriting((text) => text));
+  assert.equal(intact.received.length, 60);
+  assert.equal(intact.failure, undefined);
+});
+
+test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a missing or malformed digest, a bad row, or a count mismatch rejects", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-heads-client", backend: serverBackend };
+  const router = createRouter(bundle);
+  await seedDocs(bundle, ["y", "x"]);
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
+
+  const first = await remote.heads();
+  assert.ok(first);
+  assert.deepEqual(first.heads.map((h) => h.id), ["x", "y"]);
+  assert.equal(first.digest, documentedDigest(first.heads));
+  assert.equal(await remote.heads({ ifNoneMatch: first.digest }), null);
+  assert.equal(await remote.heads({ ifNoneMatch: `"${first.digest}"` }), null, "an already quoted digest is passed through");
+  const stale = await remote.heads({ ifNoneMatch: `sha256:${"0".repeat(64)}` });
+  assert.deepEqual(stale, first);
+
+  const answering = (payload: unknown) =>
+    new RemoteBackend({
+      baseUrl: "http://wire.local",
+      bundle: "test",
+      fetchImpl: async () => new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } }),
+      maxRetries: 0,
+    });
+  const row = first.heads[0]!;
+  for (const [label, payload] of [
+    ["no digest", { count: 1, heads: [row] }],
+    ["malformed digest", { count: 1, digest: "sha256:nope", heads: [row] }],
+    ["uppercase digest", { count: 1, digest: `sha256:${"A".repeat(64)}`, heads: [row] }],
+    ["missing heads", { count: 1, digest: first.digest }],
+    ["bad row", { count: 1, digest: first.digest, heads: [{ id: row.id }] }],
+    ["count mismatch", { count: 2, digest: first.digest, heads: [row] }],
+  ] as const) {
+    await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME", label);
+  }
+
+  const gated = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async () => new Response(JSON.stringify({ error: { code: "AUTH_REQUIRED", message: "no" } }), { status: 401 }),
+    maxRetries: 0,
+  });
+  await assert.rejects(gated.heads(), (err: unknown) => err instanceof RemoteError && err.code === "AUTH_REQUIRED" && err.status === 401);
+  await assert.rejects(gated.snapshot(), (err: unknown) => err instanceof RemoteError && err.code === "AUTH_REQUIRED" && err.status === 401);
+});
+
+test("wire: serve() streams a 500-document snapshot over a real socket; the first line arrives before the last batch has been read from the backend", async () => {
+  const inner = new ServerMemoryBackend();
+  let batchesServed = 0;
+  // Each batch read waits a little so the whole body cannot exist before the first byte leaves;
+  // a buffering adapter would deliver the first chunk only after every batch was served.
+  const delaying: StorageBackend = Object.assign(Object.create(inner) as StorageBackend, {
+    async readMany(ids: ConceptId[]) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const results = await inner.readMany(ids);
+      batchesServed += 1;
+      return results;
+    },
+  });
+  const bundle: Bundle = { root: "mem://wire-snapshot-socket", backend: inner };
+  await seedDocs(bundle, Array.from({ length: 500 }, (_, i) => `concepts/doc-${String(i).padStart(3, "0")}`));
+  // The heads listing over a scan backend is itself one read-many, then ten body batches of 50.
+  const totalBatches = 11;
+
+  const handle = await serve({ bundle: { root: bundle.root, backend: delaying }, port: 0 });
+  try {
+    const started = Date.now();
+    let batchesAtFirstChunk = -1;
+    let firstChunkAt = 0;
+    const res = await fetch(`http://${handle.host}:${handle.port}/v0/bundles/test/snapshot`);
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get("content-type") ?? "", /^application\/x-ndjson/);
+    assert.match(res.headers.get("etag") ?? "", /^"sha256:[0-9a-f]{64}"$/);
+    const { text, reads } = await readChunked(res, () => {
+      batchesAtFirstChunk = batchesServed;
+      firstChunkAt = Date.now();
+    });
+    const finishedAt = Date.now();
+    assert.equal(batchesServed, totalBatches);
+    assert.ok(reads >= 2, `socket delivery is chunked, got ${reads} read(s)`);
+    assert.ok(
+      batchesAtFirstChunk < totalBatches,
+      `the first chunk arrived after ${batchesAtFirstChunk} of ${totalBatches} batches: the adapter did not buffer the body`,
+    );
+    assert.ok(firstChunkAt - started < finishedAt - started, "time to first line is below total time");
+    const lines = text.slice(0, -1).split("\n");
+    assert.equal(lines.length, 502);
+    assert.deepEqual(JSON.parse(lines[501]!), { kind: "end", count: 500 });
+
+    const remote = new RemoteBackend({ baseUrl: `http://${handle.host}:${handle.port}`, bundle: "test", maxRetries: 0 });
+    const snapshot = await remote.snapshot();
+    let count = 0;
+    for await (const doc of snapshot.docs) {
+      assert.equal(doc.id, `concepts/doc-${String(count).padStart(3, "0")}`);
+      count += 1;
+    }
+    assert.equal(count, 500);
+    assert.equal(await remote.heads({ ifNoneMatch: snapshot.header.digest }), null);
+  } finally {
+    await handle.close();
+  }
 });

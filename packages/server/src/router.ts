@@ -23,6 +23,7 @@ import {
   assertSafeBlobKey,
   assertSafeConceptId,
   assertSafeReservedDir,
+  headsDigest,
   isReservedFile,
   isContentVersion,
   pathFromConceptId,
@@ -30,6 +31,7 @@ import {
   type BlobKey,
   type ConceptId,
   type DeleteOptions,
+  type DocumentHead,
   type Frontmatter,
   type ReservedFilename,
   type StorageBackend,
@@ -49,6 +51,12 @@ import type {
 
 /** Default page size for `GET /docs` when `limit` is not supplied. */
 const DEFAULT_LIST_LIMIT = 50;
+
+/** Documents read per backend batch while a snapshot streams; one NDJSON chunk per batch. */
+const SNAPSHOT_BATCH_SIZE = 50;
+
+/** The snapshot body's media type: one JSON object per line (`docs/WIRE-PROTOCOL.md`, "Heads and snapshot"). */
+const NDJSON_CONTENT_TYPE = "application/x-ndjson; charset=utf-8";
 
 /** The header that carries a document write's durable request identity (`docs/WIRE-PROTOCOL.md`, "Identified writes"). */
 const IDENTITY_HEADER = "Idempotency-Key";
@@ -281,6 +289,20 @@ export const WIRE_ENDPOINTS = [
     accessClass: "read",
   },
   {
+    id: "docs-heads",
+    resource: "docs-heads",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/heads",
+    accessClass: "read",
+  },
+  {
+    id: "docs-snapshot",
+    resource: "docs-snapshot",
+    method: "GET",
+    path: "/v0/bundles/{bundle}/snapshot",
+    accessClass: "read",
+  },
+  {
     id: "doc-read",
     resource: "doc",
     method: "GET",
@@ -383,6 +405,8 @@ export type ResolvedWireResource =
   | { kind: "capabilities" }
   | { kind: "docs" }
   | { kind: "docs-read-many" }
+  | { kind: "docs-heads" }
+  | { kind: "docs-snapshot" }
   | { kind: "doc"; id: ConceptId }
   | { kind: "doc-versions"; id: ConceptId }
   | { kind: "reserved"; dir: string; name: ReservedFilename }
@@ -504,6 +528,10 @@ function resourceFromMatch(
       return { kind: "docs" };
     case "docs-read-many":
       return { kind: "docs-read-many" };
+    case "docs-heads":
+      return { kind: "docs-heads" };
+    case "docs-snapshot":
+      return { kind: "docs-snapshot" };
     case "doc": {
       const id = decodeId(params.id!);
       assertValidDocId(id);
@@ -626,6 +654,12 @@ function routeLabel(resource: WireResource): string {
       break;
     case "docs-read-many":
       label = "/docs:read-many";
+      break;
+    case "docs-heads":
+      label = "/heads";
+      break;
+    case "docs-snapshot":
+      label = "/snapshot";
       break;
     case "doc":
     case "doc-versions":
@@ -948,6 +982,96 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     return jsonResponse(200, { count, docs, next_cursor: nextCursor });
   }
 
+  /**
+   * Every document's id and current version, in the wire's id order. The one listing behind
+   * both `GET /heads` and `GET /snapshot`: core's `queryHeads` prefers the backend's push-down
+   * and otherwise walks `list` plus batched reads server-side, so either way the client pays one
+   * round trip. A malformed document fails the listing exactly as it fails `GET /docs`
+   * (deviation 4): there is no skip envelope on the wire.
+   */
+  async function listHeads(backend: StorageBackend): Promise<DocumentHead[]> {
+    const rows = await queryHeads(backend, {});
+    return rows.map(({ id, version }) => ({ id, version }));
+  }
+
+  /** True when `If-None-Match` names `digest` in bare, quoted, or weak form, alone or in a list. */
+  function ifNoneMatchNames(req: Request, digest: string): boolean {
+    const header = req.headers.get("If-None-Match");
+    if (header === null) return false;
+    return header.split(",").some((token) => stripETagWrapper(token) === digest);
+  }
+
+  /**
+   * `GET /heads`: `{ count, digest, heads }` with the digest as a quoted `ETag`, or a bodyless
+   * `304` when the client already holds that digest. A `304` means nothing changed; a `200` is
+   * diffed by the client against its own copy (a missing id is a deletion, a differing version a
+   * change). No pagination: the whole listing is the point of the route.
+   */
+  async function handleHeads(backend: StorageBackend, req: Request): Promise<Response> {
+    const heads = await listHeads(backend);
+    const digest = headsDigest(heads);
+    if (ifNoneMatchNames(req, digest)) {
+      return new Response(null, { status: 304, headers: { ETag: `"${digest}"` } });
+    }
+    return jsonResponse(200, { count: heads.length, digest, heads }, { ETag: `"${digest}"` });
+  }
+
+  /**
+   * The snapshot's NDJSON lines: the header, one chunk of document lines per backend batch, and
+   * the `end` terminator. Bodies are read in batches after the header has been produced, so a
+   * 5,000-document bundle is never held in memory at once. A document that vanishes between the
+   * heads listing and its batch makes the batch read throw, which errors the stream: the client
+   * then sees a body without its terminator and treats the snapshot as truncated. A document
+   * that changes in that window is emitted at the version actually read, so the header digest may
+   * no longer describe the emitted lines; a later `GET /heads` reconciles that.
+   */
+  async function* snapshotLines(backend: StorageBackend, heads: DocumentHead[], digest: string): AsyncGenerator<string> {
+    yield `${JSON.stringify({ kind: "snapshot", count: heads.length, digest })}\n`;
+    for (let offset = 0; offset < heads.length; offset += SNAPSHOT_BATCH_SIZE) {
+      const batch = heads.slice(offset, offset + SNAPSHOT_BATCH_SIZE);
+      const results = await backend.readMany(batch.map((head) => head.id));
+      let chunk = "";
+      results.forEach((result, index) => {
+        // The heads listing owns identity, as the read-many route does: never a payload id.
+        const line = { kind: "doc", id: batch[index]!.id, version: result.version, frontmatter: result.doc.frontmatter, body: result.doc.body };
+        chunk += `${JSON.stringify(line)}\n`;
+      });
+      yield chunk;
+    }
+    yield `${JSON.stringify({ kind: "end", count: heads.length })}\n`;
+  }
+
+  /** Encode produced lines into a pull-driven byte stream: one enqueue per produced chunk, nothing buffered ahead of the reader. */
+  function ndjsonStream(lines: AsyncGenerator<string>): ReadableStream<Uint8Array> {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const next = await lines.next();
+        if (next.done) controller.close();
+        else controller.enqueue(encoder.encode(next.value));
+      },
+      async cancel() {
+        await lines.return(undefined);
+      },
+    });
+  }
+
+  /**
+   * `GET /snapshot`: every document as a streamed NDJSON body whose header carries the same
+   * digest `GET /heads` would return for this state, so a bootstrap can start its later heads
+   * checks from it. The heads listing (and so a malformed-document failure) completes before any
+   * byte of the response exists; only the batched body reads stream. Reserved files are not part
+   * of a snapshot.
+   */
+  async function handleSnapshot(backend: StorageBackend): Promise<Response> {
+    const heads = await listHeads(backend);
+    const digest = headsDigest(heads);
+    return new Response(ndjsonStream(snapshotLines(backend, heads, digest)), {
+      status: 200,
+      headers: { "content-type": NDJSON_CONTENT_TYPE, ETag: `"${digest}"` },
+    });
+  }
+
   async function handleReadReserved(
     backend: StorageBackend,
     dir: string,
@@ -1076,6 +1200,8 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
       backlinks: caps.backlinks ?? false,
       blobs: caps.blobs,
       operations: options.outcomes !== undefined,
+      heads: true,
+      snapshot: true,
     });
   }
 
@@ -1099,6 +1225,10 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
         return await handleList(backend, resolved.searchParams);
       case "docs-read-many":
         return await handleReadMany(backend, req);
+      case "docs-heads":
+        return await handleHeads(backend, req);
+      case "docs-snapshot":
+        return await handleSnapshot(backend);
       case "doc-versions":
         return await handleVersions(backend, (resolved.resource as { kind: "doc-versions"; id: ConceptId }).id);
       case "doc-read":
