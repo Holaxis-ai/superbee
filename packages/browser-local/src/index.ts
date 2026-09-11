@@ -16,6 +16,7 @@ export {
   type LocalTarget,
   type OpenLocalBundleOptions,
   type BootstrapOptions,
+  type FetchOptions,
   type BootstrapMarker,
   type SharedBase,
   type SyncControl,
