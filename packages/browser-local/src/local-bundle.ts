@@ -292,8 +292,11 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
         if (!(error instanceof IntentHoldConflict)) throw error;
         held.push(id);
       }
-      await options.onHydrated?.(id, index, ids.length);
+      // Take the index before awaiting the hook: another worker's completion can interleave
+      // with an awaiting hook, and the index must stay unique per hydrated document.
+      const hydrated = index;
       index += 1;
+      await options.onHydrated?.(id, hydrated, ids.length);
     }
   });
 

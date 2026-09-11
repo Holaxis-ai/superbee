@@ -1009,9 +1009,31 @@ async function timed<T>(work: () => Promise<T>): Promise<{ result: T; ms: number
 /**
  * The batch fetch is what the concurrency claim bounds; the paginated list and the root index
  * read are serial round trips either way. Small batches make the batch term dominate at 200
- * documents, so the ratio measures the claim rather than the fixed prologue.
+ * documents. The asserted property is structural (how many readMany calls overlap), which is
+ * deterministic; the wall-time ratio is reported as a diagnostic because a loaded CI runner
+ * can compress it without anything being wrong.
  */
-const TIMING = { documents: 200, latencyMs: 30, batchSize: 5, minSpeedup: 3 };
+const TIMING = { documents: 200, latencyMs: 30, batchSize: 5 };
+
+/** The fixture's read side with overlapping `readMany` calls counted, so concurrency is asserted, not inferred from time. */
+function overlapProbe(remote: StorageBackend): { remote: StorageBackend; overlap: { current: number; max: number } } {
+  const overlap = { current: 0, max: 0 };
+  const proxy = new Proxy(remote, {
+    get(target, property, receiver) {
+      if (property !== "readMany") return Reflect.get(target, property, receiver);
+      return async (ids: ConceptId[]) => {
+        overlap.current += 1;
+        overlap.max = Math.max(overlap.max, overlap.current);
+        try {
+          return await target.readMany(ids);
+        } finally {
+          overlap.current -= 1;
+        }
+      };
+    },
+  });
+  return { remote: proxy, overlap };
+}
 
 test("bootstrap with concurrency 8 produces the same working copy as concurrency 1 in a fraction of the wall time", async (t) => {
   const fixture = await createRemoteFixture();
@@ -1020,8 +1042,12 @@ test("bootstrap with concurrency 8 produces the same working copy as concurrency
   const serial = openLocal(new IDBFactory());
   const concurrent = openLocal(new IDBFactory());
   try {
-    const one = await timed(() => bootstrap(fixture.remote, serial, { batchSize: TIMING.batchSize, concurrency: 1 }));
-    const eight = await timed(() => bootstrap(fixture.remote, concurrent, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    const serialProbe = overlapProbe(fixture.remote);
+    const concurrentProbe = overlapProbe(fixture.remote);
+    const one = await timed(() => bootstrap(serialProbe.remote, serial, { batchSize: TIMING.batchSize, concurrency: 1 }));
+    const eight = await timed(() => bootstrap(concurrentProbe.remote, concurrent, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    assert.equal(serialProbe.overlap.max, 1, "concurrency 1 never overlaps readMany calls");
+    assert.equal(concurrentProbe.overlap.max, 8, "concurrency 8 keeps eight readMany calls in flight");
     assert.equal(one.result.complete, true);
     assert.equal(eight.result.complete, true);
     assert.equal(one.result.documentCount, TIMING.documents);
@@ -1036,7 +1062,6 @@ test("bootstrap with concurrency 8 produces the same working copy as concurrency
     assert.equal(await concurrent.backend.readReserved("", "index.md").then((row) => row?.content), (await serial.backend.readReserved("", "index.md"))?.content);
     const speedup = one.ms / eight.ms;
     t.diagnostic(`bootstrap at ${TIMING.documents} documents, ${TIMING.latencyMs} ms latency, batch ${TIMING.batchSize}: concurrency 1 ${one.ms.toFixed(0)} ms, concurrency 8 ${eight.ms.toFixed(0)} ms, ${speedup.toFixed(2)}x`);
-    assert.ok(speedup >= TIMING.minSpeedup, `bootstrap: concurrency 1 took ${one.ms.toFixed(0)} ms, concurrency 8 took ${eight.ms.toFixed(0)} ms (${speedup.toFixed(2)}x, wanted >= ${TIMING.minSpeedup}x)`);
   } finally {
     serial.close();
     concurrent.close();
@@ -1053,8 +1078,12 @@ test("pull with concurrency 8 refreshes the same documents as concurrency 1 in a
     await bootstrap(fixture.remote, concurrent);
     await editAllRemote(fixture);
     fixture.knobs.latencyMs = TIMING.latencyMs;
-    const one = await timed(() => pull(serial, fixture.remote, { batchSize: TIMING.batchSize, concurrency: 1 }));
-    const eight = await timed(() => pull(concurrent, fixture.remote, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    const serialProbe = overlapProbe(fixture.remote);
+    const concurrentProbe = overlapProbe(fixture.remote);
+    const one = await timed(() => pull(serial, serialProbe.remote, { batchSize: TIMING.batchSize, concurrency: 1 }));
+    const eight = await timed(() => pull(concurrent, concurrentProbe.remote, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    assert.equal(serialProbe.overlap.max, 1, "concurrency 1 never overlaps readMany calls");
+    assert.equal(concurrentProbe.overlap.max, 8, "concurrency 8 keeps eight readMany calls in flight");
     assert.equal(one.result.refreshed.length, TIMING.documents);
     assert.deepEqual([...eight.result.refreshed].sort(), [...one.result.refreshed].sort());
     assert.deepEqual(eight.result.held, []);
@@ -1067,10 +1096,32 @@ test("pull with concurrency 8 refreshes the same documents as concurrency 1 in a
     assert.notEqual(status.lastPull?.completedAt, null);
     const speedup = one.ms / eight.ms;
     t.diagnostic(`pull at ${TIMING.documents} documents, ${TIMING.latencyMs} ms latency, batch ${TIMING.batchSize}: concurrency 1 ${one.ms.toFixed(0)} ms, concurrency 8 ${eight.ms.toFixed(0)} ms, ${speedup.toFixed(2)}x`);
-    assert.ok(speedup >= TIMING.minSpeedup, `pull: concurrency 1 took ${one.ms.toFixed(0)} ms, concurrency 8 took ${eight.ms.toFixed(0)} ms (${speedup.toFixed(2)}x, wanted >= ${TIMING.minSpeedup}x)`);
   } finally {
     serial.close();
     concurrent.close();
+  }
+});
+
+test("onHydrated receives a unique index per document under concurrency even when the hook awaits", async () => {
+  const fixture = await createRemoteFixture();
+  await seedMany(fixture, 60);
+  const local = openLocal(new IDBFactory());
+  try {
+    const seen: number[] = [];
+    const marker = await bootstrap(fixture.remote, local, {
+      batchSize: 5,
+      concurrency: 8,
+      onHydrated: async (_id, index, total) => {
+        assert.equal(total, 60);
+        seen.push(index);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      },
+    });
+    assert.equal(marker.complete, true);
+    assert.equal(seen.length, 60);
+    assert.deepEqual([...seen].sort((a, b) => a - b), Array.from({ length: 60 }, (_, i) => i));
+  } finally {
+    local.close();
   }
 });
 
