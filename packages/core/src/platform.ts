@@ -17,7 +17,10 @@
  *   presentation can report shared confirmation without an acknowledgement. It says nothing
  *   about what the authority holds now: request-driven's last exchange is the request itself,
  *   browser-local's is its last sync, and the authority may have moved (or deleted the document)
- *   since.
+ *   since. One limit of "last exchange" today: a browser-local sync pulls what the authority
+ *   lists, so a document the authority deleted is not visited and stays `shared-confirmed` at
+ *   its last served version until pull reconciles deletions; request-driven answers absence
+ *   directly. A presentation must not read `shared-confirmed` as proof of present existence.
  * - `local-pending`: the working copy holds a local edit the authority has not accepted;
  *   `requestId` names the journaled intent that will deliver it and `base` the shared version
  *   the edit was made against.
