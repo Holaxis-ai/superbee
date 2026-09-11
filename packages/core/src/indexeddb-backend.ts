@@ -247,6 +247,18 @@ export interface JournaledWriteOptions extends WriteOptions {
   requireSettled?: boolean;
 }
 
+/** One document with everything the journal holds about it, read in one transaction. See {@link IndexedDbBackend.readWithJournal}. */
+export interface JournaledReadResult {
+  /** The parsed document and its version, or `null` when the store holds no record. */
+  document: ReadResult | null;
+  /** The exact stored serialization, the bytes `version` names; `null` when absent. */
+  raw: string | null;
+  /** Every intent targeting the id, in local commit order, whatever its state. */
+  intents: IntentRecord[];
+  /** The requested meta rows' values by key; a key with no row is absent from the map. */
+  meta: Map<string, unknown>;
+}
+
 /** Fields a caller may change when settling or reclaiming an intent. */
 export type IntentPatch = Partial<Omit<IntentRecord, "requestId" | "sequence" | "createdAt" | "kind" | "target">>;
 
@@ -809,6 +821,61 @@ export class IndexedDbBackend implements StorageBackend {
         });
       },
     );
+  }
+
+  /**
+   * The document, every intent targeting it, and the named meta rows, from ONE readonly
+   * transaction over documents, reserved, intents, and meta. A caller deriving where a document
+   * stands (its bytes against its shared base and its journal) reads them here so a write in
+   * another realm between separate reads can never show it a document of one moment beside a
+   * journal of another; with this snapshot a mismatch is a genuine working-copy defect.
+   */
+  async readWithJournal(id: ConceptId, options: { meta?: readonly string[] } = {}): Promise<JournaledReadResult> {
+    assertSafeConceptId(id);
+    const keys = options.meta ?? [];
+    const { record, index, rows, meta } = await this.#transact<{ record: DocumentRecord | undefined; index: ReservedRecord | undefined; rows: IntentRecord[]; meta: Map<string, unknown> }>(
+      [DOCUMENTS, RESERVED, INTENTS, META],
+      "readonly",
+      (tx, done) => {
+        let record: DocumentRecord | undefined;
+        let index: ReservedRecord | undefined;
+        let rows: IntentRecord[] = [];
+        const meta = new Map<string, unknown>();
+        let pending = 3 + keys.length;
+        const finish = () => {
+          if (--pending === 0) done({ record, index, rows, meta });
+        };
+        const document = tx.objectStore(DOCUMENTS).get(id);
+        document.onsuccess = () => {
+          record = document.result as DocumentRecord | undefined;
+          finish();
+        };
+        const rootIndex = tx.objectStore(RESERVED).get(reservedKey("", "index.md"));
+        rootIndex.onsuccess = () => {
+          index = rootIndex.result as ReservedRecord | undefined;
+          finish();
+        };
+        // The journal has no index by target; the scan runs inside this transaction.
+        const scan = tx.objectStore(INTENTS).getAll();
+        scan.onsuccess = () => {
+          rows = (scan.result as IntentRecord[]).filter((row) => row.target === id);
+          finish();
+        };
+        const metaStore = tx.objectStore(META);
+        for (const key of keys) {
+          const request = metaStore.get(key);
+          request.onsuccess = () => {
+            const row = request.result as MetaRecord | undefined;
+            if (row !== undefined) meta.set(key, row.value);
+            finish();
+          };
+        }
+      },
+    );
+    rows.sort((a, b) => a.sequence - b.sequence);
+    if (!record) return { document: null, raw: null, intents: rows, meta };
+    const { frontmatter, body } = parseMarkdown(record.raw, pathFromConceptId(id), { okfVersion: editionOf(index) });
+    return { document: { doc: { id, frontmatter, body }, version: record.version }, raw: record.raw, intents: rows, meta };
   }
 
   /** Intents in local commit order, optionally restricted to one or more states. */

@@ -128,7 +128,8 @@ export async function writeDoc(
   return (await writeDocVersioned(backend, doc, options)).doc;
 }
 
-function assertReadableConceptId(id: ConceptId): void {
+/** The one rule for an id a document read accepts: safe, and not a reserved file. */
+export function assertReadableConceptId(id: ConceptId): void {
   assertSafeConceptId(id);
   const rel = pathFromConceptId(id);
   if (isReservedFile(rel)) {
