@@ -141,7 +141,18 @@ export type {
 // in-repo reference server (`@superbee/server`) by the tri-backend contract
 // tests. No CF/D1/production deployment is implied by its presence.
 export { RemoteBackend, RemoteError } from "./remote-backend.js";
-export type { FetchLike, RemoteBackendOptions, WireCapabilities } from "./remote-backend.js";
+export type {
+  FetchLike,
+  HeadsOptions,
+  HeadsResult,
+  RemoteBackendOptions,
+  RemoteSnapshot,
+  SnapshotDocument,
+  SnapshotHeader,
+  WireCapabilities,
+} from "./remote-backend.js";
+export { headsDigest, isHeadsDigest, sortHeads } from "./heads-digest.js";
+export type { DocumentHead } from "./heads-digest.js";
 // The uncertain-write transport over `RemoteBackend`: identified document writes plus outcome
 // lookup, the client side of the wire's request identity.
 export { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "./remote-operations.js";

@@ -41,8 +41,10 @@ not make the reference server enforce it. A gated deployment owns the meaning of
   their raw spelling requires an upstream adapter with request-target access.
 - Document IDs and blob keys may contain `/`; clients encode each segment independently. Every
   route validates decoded IDs/keys before backend access. Document IDs cannot address reserved
-  `index.md` or `log.md`; blob keys cannot end in `.md` and reject absolute, traversal, and
-  dot-prefixed segments.
+  `index.md` or `log.md`, and cannot contain a control character (any code unit below U+0020, or
+  U+007F): every document route, read-many entries included, answers `400 USAGE` to such an id
+  before any backend access, even where the core id rule would admit it locally. Blob keys cannot
+  end in `.md` and reject absolute, traversal, and dot-prefixed segments.
 - JSON responses use `content-type: application/json; charset=utf-8`. Blob reads use the blob's
   content type and raw bytes. Successful `HEAD` responses and all `HEAD` failures are bodyless.
 - Except for `HEAD`, errors have shape
@@ -76,9 +78,11 @@ operation route is exactly one.
 
 | Method | Path | Success contract |
 | --- | --- | --- |
-| GET | `/v0/capabilities` | `200` capability booleans: `history`, `enforced_cas`, `projections`, `backlinks`, `blobs`, `operations`. |
+| GET | `/v0/capabilities` | `200` capability booleans: `history`, `enforced_cas`, `projections`, `backlinks`, `blobs`, `operations`, `heads`, `snapshot`. |
 | GET | `/v0/bundles/{bundle}/docs` | `200 { count, docs, next_cursor }`; filters/pagination below. |
 | POST | `/v0/bundles/{bundle}/docs:read-many` | JSON `{ ids: string[] }`; `200 { results }`, or all-or-nothing `404` with `details.missing`. |
+| GET | `/v0/bundles/{bundle}/heads` | `200 { count, digest, heads }` with the digest as `ETag`, or bodyless `304` when `If-None-Match` names it; see "Heads and snapshot". |
+| GET | `/v0/bundles/{bundle}/snapshot` | `200` NDJSON stream of every document between a header and an `end` line, digest as `ETag`; see "Heads and snapshot". |
 | GET | `/v0/bundles/{bundle}/docs/{id...}` | `200 { id, frontmatter, body }` plus version headers. |
 | PUT | `/v0/bundles/{bundle}/docs/{id...}` | JSON `{ frontmatter, body? }`; `201` for expect-absent create, otherwise `200`, with `{ version }` plus version headers. |
 | HEAD | `/v0/bundles/{bundle}/docs/{id...}` | Bodyless `200` plus version headers, `404` absent, or `400` invalid. |
@@ -121,6 +125,73 @@ must not be inferred by hashing the client's reconstructed export.
 Blobs are the raw-byte channel. Blob `PUT` and `GET` carry exact bytes as the HTTP body, with content
 type in `Content-Type` and identity in the version headers. Blob keys ending in `.md` are rejected so
 the blob channel cannot become an accidental bypass around document parsing and ID safety.
+
+## Heads and snapshot
+
+A working copy that re-walks a whole bundle on every sync (one hundred list pages plus reads at
+5,000 documents) and bootstraps with hundreds of round trips has no way to ask what changed. Heads
+and snapshot are the bounded reconciliation mechanism the browser working copy uses: one round
+trip says whether and what changed, and one response carries the whole bundle. Both routes are
+read-only, additive, and reported by `GET /v0/capabilities` as `heads` and `snapshot`.
+
+### Heads
+
+`GET /v0/bundles/{bundle}/heads` answers `200 { count, digest, heads }` where `heads` is every
+document as `{ id, version }`, sorted by id in UTF-16 code unit order, and `count` equals the
+number of rows. Code unit order is independent of any locale and is not the `localeCompare`
+collation the list route uses; a host must not substitute the list order. There is no pagination
+and no filter: the whole listing is the point of the route. Reserved files are not heads.
+
+The digest is `sha256:<hex>` over the UTF-8 bytes of the sorted rows concatenated as
+`id`, `\n`, `version`, `\n` for each row, in order, with no other separator; an empty bundle
+digests the empty byte string. The recipe is injective only when no id contains a line feed
+(U+000A), which the concept id rule alone does not guarantee, so the wire enforces it: every
+document route refuses an id containing a control character (Conventions), and a host whose
+bundle already holds such an id, written outside the wire, fails heads with `500 RUNTIME` and
+fails the snapshot before its header line rather than minting a digest that another listing could
+share. Any host computes the same token from the same heads (`headsDigest` in `@superbee/core/storage`
+is the reference recipe). The digest changes whenever any document is created, updated or
+deleted.
+
+The response carries the digest as a quoted `ETag`. A request whose `If-None-Match` names that
+digest, bare, quoted or weak, alone or in a comma-separated list, answers a bodyless `304` with the
+same `ETag`: nothing changed since the client obtained that digest. On a `200` the client diffs
+`heads` against its own copy: an id missing from `heads` is a deletion, a differing version is a
+change, an unknown id is a creation. `RemoteBackend.heads({ ifNoneMatch })` maps `304` to `null`
+and refuses a `200` whose digest is missing or malformed or whose `count` disagrees with its rows;
+a `304` to a request that sent no `If-None-Match` is likewise refused as malformed.
+
+### Snapshot
+
+`GET /v0/bundles/{bundle}/snapshot` answers `200` with
+`content-type: application/x-ndjson; charset=utf-8`: one JSON object per line, each line
+terminated by `\n`. The grammar is:
+
+1. exactly one header, `{ "kind": "snapshot", "count": N, "digest": "sha256:..." }`;
+2. exactly N document lines, `{ "kind": "doc", "id", "version", "frontmatter", "body" }`, in
+   id order;
+3. exactly one terminator, `{ "kind": "end", "count": N }`.
+
+A client that does not see the `end` line, or sees one whose count differs from the header's
+announcement or from the document lines it received, must treat the snapshot as truncated and
+discard or re-request it; `RemoteBackend.snapshot()` reports that as `RemoteError` code
+`SNAPSHOT_TRUNCATED`, including a transport failure mid-body. The header's `digest` equals what
+`heads` would return for the same state, so a bootstrap that consumes a snapshot can start its
+later heads checks from it; the response also carries it as `ETag`. Reserved files are not part of
+a snapshot: a client fetches `index.md` through the reserved route as today.
+
+The body streams. The reference router produces the heads listing first (so a malformed document
+fails the request before any byte of the response exists, exactly as it fails a list), then reads
+bodies in batches of 50 and encodes each batch as it is produced; the `node:http` bootstrap pipes
+the body to the socket. A document deleted between the listing and its batch errors the stream,
+which the client observes as truncation. A document changed in that window errors the stream the
+same way: the router compares each read version to the listed head and never emits a line the
+header digest does not describe, so the client sees truncation and re-requests.
+
+A host may implement heads and snapshot over a change log or over a scan; the reference scans:
+`list` for the ids, then reads in batches of 50 keeping only each document's version, so the
+listing touches every document once but holds no bodies. The snapshot then reads the bodies again
+in batches of 50 as it streams. Either way the client pays one round trip.
 
 ## Identified writes and outcome lookup
 
@@ -188,6 +259,11 @@ client whose response was lost can look the answer up instead of guessing.
   one, callers that require lost-update safety must supply `If-Match`/expect-absent semantics.
 - Full-frontmatter list pagination supplies the optional `queryHeads` push-down. Core re-applies
   query semantics, so a foreign backend may over-return but cannot redefine matches.
+- `RemoteBackend.heads()` and `RemoteBackend.snapshot()` are the client half of "Heads and
+  snapshot" above. A snapshot resolves once its header line is parsed and then streams its
+  documents as an async iterable; iterating to completion is the completeness signal, and a body
+  that ends or fails first rejects the iteration with `SNAPSHOT_TRUNCATED`. Transient retry covers
+  obtaining the response only; re-requesting a truncated snapshot is the consumer's decision.
 - `WriteOptions.requestId` and `DeleteOptions.requestId` travel as `Idempotency-Key`; a malformed
   one is an `InvalidInputError` before any request is sent. Transient retries of an identified
   write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and
@@ -218,6 +294,8 @@ suites exercise the semantics through the router, `RemoteBackend`, and a real so
 | WIRE-PROOF-08 | Remote canonical export differs from an original-byte guarantee. | `packages/cli/src/commands/doc/common.ts::canonical OKF re-serialization` | `packages/cli/test/remote.test.ts::canonical re-serialization is byte-identical` |
 | WIRE-PROOF-09 | Missing version transport fails closed. | `packages/core/src/remote-backend.ts::VERSION_MISSING` | `packages/cli/test/remote-auth.test.ts::response stripped of BOTH version headers` |
 | WIRE-PROOF-10 | Identified writes apply once, replay their record, and are looked up by key. | `packages/server/src/router.ts::id: "operation-lookup"`; `packages/server/src/operation-outcomes.ts::class MemoryOperationOutcomeStore` | `packages/core/test/wire-protocol.test.ts::identified PUT is applied once`; `packages/browser-local/test/sync.test.ts::lost acknowledgement: the fixture applies then drops the response` |
+| WIRE-PROOF-11 | Heads digest, `304` on `If-None-Match`, and deletions visible as missing ids. | `packages/server/src/router.ts::id: "docs-heads"`; `packages/core/src/heads-digest.ts::export function headsDigest` | `packages/core/test/wire-protocol.test.ts::GET /heads lists every id and version under the documented digest`; `packages/core/test/wire-protocol.test.ts::RemoteBackend.heads maps 304 to null` |
+| WIRE-PROOF-12 | Snapshot streams terminated NDJSON; a cut body or count mismatch is truncation. | `packages/server/src/router.ts::id: "docs-snapshot"`; `packages/server/src/serve.ts::pipeline(Readable.fromWeb` | `packages/core/test/wire-protocol.test.ts::GET /snapshot streams header, docs in id order, and end`; `packages/core/test/wire-protocol.test.ts::a snapshot cut after 40 lines`; `packages/core/test/wire-protocol.test.ts::serve() streams a 500-document snapshot` |
 
 ## Known deviations and open questions
 

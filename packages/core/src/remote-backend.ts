@@ -43,6 +43,7 @@
 
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
+import { isHeadsDigest, type DocumentHead } from "./heads-digest.js";
 import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
 import { isRequestIdentity, type Outcome } from "./uncertain-write.js";
 import { VersionConflict, stripETagWrapper } from "./version-transport.js";
@@ -120,8 +121,8 @@ export class RemoteError extends Error {
   /** The raw HTTP status that produced this error. */
   readonly status: number;
 
-  constructor(message: string, code: string, status: number) {
-    super(message);
+  constructor(message: string, code: string, status: number, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = "RemoteError";
     this.code = code;
     this.status = status;
@@ -137,6 +138,48 @@ export interface WireCapabilities {
   blobs: boolean;
   /** Whether document writes carrying `Idempotency-Key` are recorded and readable by lookup. */
   operations: boolean;
+  /** Whether `GET /heads` answers every document id and version under one digest, with `304`. */
+  heads: boolean;
+  /** Whether `GET /snapshot` streams every document as terminated NDJSON. */
+  snapshot: boolean;
+}
+
+/** Options for {@link RemoteBackend.heads}. */
+export interface HeadsOptions {
+  /** A digest from an earlier `heads` or `snapshot` answer; the authority answers `304` when it still holds it. */
+  ifNoneMatch?: string;
+}
+
+/** A `200` from `GET /heads`: every document id and version, and the digest over them. */
+export interface HeadsResult {
+  digest: string;
+  heads: DocumentHead[];
+}
+
+/** The snapshot's first line: how many documents follow and the digest `heads` would return for this state. */
+export interface SnapshotHeader {
+  count: number;
+  digest: string;
+}
+
+/** One `doc` line of a snapshot. */
+export interface SnapshotDocument {
+  id: ConceptId;
+  version: Version;
+  frontmatter: Frontmatter;
+  body: string;
+}
+
+/**
+ * A snapshot as {@link RemoteBackend.snapshot} hands it over: the header, already parsed, and
+ * the documents as they stream. Iterating `docs` to completion is the completeness signal: the
+ * loop ends only after the `end` line arrived with the announced count, and it throws
+ * `SNAPSHOT_TRUNCATED` otherwise, so a consumer that writes batches as they arrive has one
+ * control path and never needs to inspect a terminator itself.
+ */
+export interface RemoteSnapshot {
+  header: SnapshotHeader;
+  docs: AsyncIterable<SnapshotDocument>;
 }
 
 /** An ENOENT-shaped rejection so missing-document handling matches the local adapters. */
@@ -208,6 +251,119 @@ function assertRequestIdentity(requestId: string): void {
 
 /** The lookup route's `200` body: a recorded outcome, never `unknown`. */
 const RECORDED_OUTCOME_KINDS = new Set(["committed", "conflict", "refused"]);
+
+/** A snapshot body that ended, or failed, before its terminator arrived with the announced count. */
+const SNAPSHOT_TRUNCATED = "SNAPSHOT_TRUNCATED";
+
+function isDocumentHead(value: unknown): value is DocumentHead {
+  if (typeof value !== "object" || value === null) return false;
+  const head = value as { id?: unknown; version?: unknown };
+  return typeof head.id === "string" && typeof head.version === "string";
+}
+
+/** A wire payload the authority produced but the contract does not admit: not retried, not truncation. */
+function malformed(message: string): RemoteError {
+  return new RemoteError(message, "RUNTIME", 502);
+}
+
+/** Quote a bare digest for `If-None-Match`; an already quoted or weak form passes through. */
+function etagForm(token: string): string {
+  return token.startsWith('"') || token.startsWith("W/") ? token : `"${token}"`;
+}
+
+/**
+ * Split a response body into its NDJSON lines as they arrive, decoding UTF-8 across chunk
+ * boundaries. Only `TextDecoder` and the Web Streams reader are used, so the same code runs in a
+ * browser. A partial trailing line at the end of the body is a cut line and is not yielded; a
+ * transport failure while reading is reported as truncation, since either way the terminator
+ * never arrived. Leaving the loop early cancels the reader so the connection is released.
+ */
+async function* ndjsonLines(body: ReadableStream<Uint8Array>, status: number): AsyncGenerator<string> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  try {
+    for (;;) {
+      let chunk: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        chunk = await reader.read();
+      } catch (cause) {
+        throw new RemoteError("snapshot body failed before its end line arrived", SNAPSHOT_TRUNCATED, status, cause);
+      }
+      buffered += decoder.decode(chunk.value, { stream: !chunk.done });
+      let start = 0;
+      for (let newline = buffered.indexOf("\n"); newline !== -1; newline = buffered.indexOf("\n", start)) {
+        yield buffered.slice(start, newline);
+        start = newline + 1;
+      }
+      buffered = buffered.slice(start);
+      if (chunk.done) return;
+    }
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+}
+
+function parseSnapshotLine(line: string): { kind?: unknown } & Record<string, unknown> {
+  let record: unknown;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    throw malformed("snapshot line is not JSON");
+  }
+  if (typeof record !== "object" || record === null) throw malformed("snapshot line is not a JSON object");
+  return record as { kind?: unknown } & Record<string, unknown>;
+}
+
+function parseSnapshotHeader(line: string): SnapshotHeader {
+  const record = parseSnapshotLine(line);
+  if (record.kind !== "snapshot") throw malformed("snapshot did not begin with its header line");
+  if (typeof record.count !== "number" || !Number.isInteger(record.count) || record.count < 0) {
+    throw malformed("snapshot header carries no document count");
+  }
+  if (!isHeadsDigest(record.digest)) throw malformed("snapshot header carries no well-formed digest");
+  return { count: record.count, digest: record.digest };
+}
+
+/**
+ * The document lines of a snapshot, ending normally only at an `end` line whose count equals
+ * both the header's announcement and the documents actually seen. Anything else is a rejection:
+ * a body that ends first is `SNAPSHOT_TRUNCATED`; a line the contract does not admit is malformed.
+ */
+async function* snapshotDocuments(lines: AsyncGenerator<string>, header: SnapshotHeader, status: number): AsyncGenerator<SnapshotDocument> {
+  let seen = 0;
+  for await (const line of lines) {
+    const record = parseSnapshotLine(line);
+    if (record.kind === "doc") {
+      if (typeof record.id !== "string" || typeof record.version !== "string" || typeof record.body !== "string") {
+        throw malformed("snapshot doc line lacks id, version, or body");
+      }
+      if (typeof record.frontmatter !== "object" || record.frontmatter === null || Array.isArray(record.frontmatter)) {
+        throw malformed("snapshot doc line lacks a frontmatter object");
+      }
+      seen += 1;
+      if (seen > header.count) throw malformed(`snapshot delivered more than the ${header.count} announced document(s)`);
+      yield { id: record.id, version: record.version, frontmatter: record.frontmatter as Frontmatter, body: record.body };
+      continue;
+    }
+    if (record.kind === "end") {
+      if (record.count !== seen || seen !== header.count) {
+        throw new RemoteError(
+          `snapshot end line counts ${String(record.count)} document(s), but ${seen} of ${header.count} announced arrived`,
+          SNAPSHOT_TRUNCATED,
+          status,
+        );
+      }
+      return;
+    }
+    throw malformed(`snapshot line has unexpected kind ${JSON.stringify(record.kind)}`);
+  }
+  throw new RemoteError(
+    `snapshot ended after ${seen} of ${header.count} document(s) without its end line`,
+    SNAPSHOT_TRUNCATED,
+    status,
+  );
+}
 
 /**
  * Transient HTTP statuses worth retrying: 500 (a Cloudflare D1 cold-start surfaces as a 500
@@ -439,7 +595,64 @@ export class RemoteBackend implements StorageBackend {
       backlinks: flag("backlinks"),
       blobs: flag("blobs"),
       operations: flag("operations"),
+      heads: flag("heads"),
+      snapshot: flag("snapshot"),
     };
+  }
+
+  /**
+   * `GET /heads`: every document id and version the authority holds, under one digest, or
+   * `null` when `ifNoneMatch` named the digest it still holds (a `304`: nothing changed). A
+   * `200` is diffed against the caller's own copy: an id missing from `heads` was deleted, a
+   * differing version changed. A `200` without a well-formed digest, or whose `count` and rows
+   * disagree, is rejected rather than trusted, as is a `304` to a request that sent no
+   * `ifNoneMatch`. Not part of the {@link StorageBackend} seam.
+   */
+  async heads(options: HeadsOptions = {}): Promise<HeadsResult | null> {
+    const headers: Record<string, string> = {};
+    if (options.ifNoneMatch !== undefined) headers["If-None-Match"] = etagForm(options.ifNoneMatch);
+    const res = await this.send("/heads", { method: "GET", headers });
+    if (res.status === 304) {
+      // Only a conditional request can be answered `304`; to an unconditional one it is a
+      // malformed answer, not "nothing changed", since there is no digest it could be relative to.
+      if (options.ifNoneMatch === undefined) throw malformed("wire heads answered 304 to a request that sent no If-None-Match");
+      return null;
+    }
+    if (!res.ok) throw await this.toError(res, "heads");
+    const payload = (await res.json()) as { count?: unknown; digest?: unknown; heads?: unknown } | null;
+    if (!isHeadsDigest(payload?.digest)) throw malformed("wire heads answered without a well-formed digest");
+    if (!Array.isArray(payload.heads) || !payload.heads.every(isDocumentHead)) {
+      throw malformed("wire heads answered without a heads array of { id, version } rows");
+    }
+    if (payload.count !== payload.heads.length) {
+      throw malformed(`wire heads count ${String(payload.count)} disagrees with its ${payload.heads.length} row(s)`);
+    }
+    return { digest: payload.digest, heads: payload.heads.map(({ id, version }) => ({ id, version })) };
+  }
+
+  /**
+   * `GET /snapshot`: the whole bundle in one response. The header line is parsed before this
+   * resolves, so a non-2xx or a body without a header rejects here with the usual typed error;
+   * the documents then stream through {@link RemoteSnapshot.docs}. Transient retry applies only
+   * to obtaining the response: a body cut mid-stream is reported to the consumer as
+   * `SNAPSHOT_TRUNCATED`, and re-requesting is the consumer's decision. Reserved files are not
+   * part of a snapshot. Not part of the {@link StorageBackend} seam.
+   */
+  async snapshot(): Promise<RemoteSnapshot> {
+    const res = await this.send("/snapshot", { method: "GET" });
+    if (!res.ok) throw await this.toError(res, "snapshot");
+    if (!res.body) throw new RemoteError("snapshot response carried no body", SNAPSHOT_TRUNCATED, res.status);
+    const lines = ndjsonLines(res.body, res.status);
+    const first = await lines.next();
+    if (first.done) throw new RemoteError("snapshot ended before its header line", SNAPSHOT_TRUNCATED, res.status);
+    let header: SnapshotHeader;
+    try {
+      header = parseSnapshotHeader(first.value);
+    } catch (err) {
+      await lines.return(undefined);
+      throw err;
+    }
+    return { header, docs: snapshotDocuments(lines, header, res.status) };
   }
 
   /**
