@@ -8,7 +8,10 @@
  * an edit committed while pull or bootstrap is fetching is held inside the refreshing write's
  * own transaction; a crash between claim and settlement leaves a possibly-delivered record that
  * a later edit chains behind; a deadline shorter than the authority's latency still applies the
- * write exactly once. The Chromium unit runs the same runtime in a real page.
+ * write exactly once; bootstrap and pull fetch their batches concurrently, producing the same
+ * working copy as one batch at a time in a fraction of the wall time, and a failed batch leaves
+ * the marker incomplete with nothing left in flight. The Chromium unit runs the same runtime in
+ * a real page.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -16,6 +19,7 @@ import { IDBFactory } from "fake-indexeddb";
 
 import type { OkfDocument, StorageBackend } from "@superbee/core";
 import { IntentStateConflict } from "@superbee/core/journaled-backend";
+import { InvalidInputError } from "@superbee/core/storage";
 import { performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
 
 import {
@@ -961,6 +965,215 @@ test("a deadline shorter than the authority's latency: the aborted submission, i
     assert.equal((await fixture.authority.read("notes/beta")).version, committed.version);
     assert.equal((await fixture.authority.versions("notes/beta")).length, 2);
     assert.equal((await local.backend.readIntent(requestId))?.state, "acknowledged");
+  } finally {
+    local.close();
+  }
+});
+
+// ── concurrent batch fetch ─────────────────────────────────────────────────────────────────
+
+/** `count` notes under `notes/`, ids zero-padded so the authority lists them in a known order. */
+async function seedMany(fixture: RemoteFixture, count: number): Promise<string[]> {
+  const ids: string[] = [];
+  for (let n = 0; n < count; n += 1) {
+    const id = `notes/n${String(n).padStart(4, "0")}`;
+    await fixture.authority.write(id, doc(id, `${id} v1\n`));
+    ids.push(id);
+  }
+  return ids;
+}
+
+/** Move every remote head once, so a pull has one refresh to write per document. */
+async function editAllRemote(fixture: RemoteFixture): Promise<void> {
+  for (const id of await fixture.authority.list()) {
+    const { version } = await fixture.authority.read(id);
+    await fixture.authority.write(id, doc(id, `${id} v2\n`), { expectedVersion: version });
+  }
+}
+
+/** Everything a working copy holds that sync owns: each document's version and shared base, in id order. */
+async function snapshot(local: LocalBundle): Promise<Array<{ id: string; version: string; base: SharedBase | undefined }>> {
+  const rows = [];
+  for (const id of (await local.backend.list()).sort()) {
+    rows.push({ id, version: (await local.backend.read(id)).version, base: await local.backend.readMeta<SharedBase>(baseKey(id)) });
+  }
+  return rows;
+}
+
+async function timed<T>(work: () => Promise<T>): Promise<{ result: T; ms: number }> {
+  const started = performance.now();
+  const result = await work();
+  return { result, ms: performance.now() - started };
+}
+
+/**
+ * The batch fetch is what the concurrency claim bounds; the paginated list and the root index
+ * read are serial round trips either way. Small batches make the batch term dominate at 200
+ * documents, so the ratio measures the claim rather than the fixed prologue.
+ */
+const TIMING = { documents: 200, latencyMs: 30, batchSize: 5, minSpeedup: 3 };
+
+test("bootstrap with concurrency 8 produces the same working copy as concurrency 1 in a fraction of the wall time", async (t) => {
+  const fixture = await createRemoteFixture();
+  await seedMany(fixture, TIMING.documents);
+  fixture.knobs.latencyMs = TIMING.latencyMs;
+  const serial = openLocal(new IDBFactory());
+  const concurrent = openLocal(new IDBFactory());
+  try {
+    const one = await timed(() => bootstrap(fixture.remote, serial, { batchSize: TIMING.batchSize, concurrency: 1 }));
+    const eight = await timed(() => bootstrap(fixture.remote, concurrent, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    assert.equal(one.result.complete, true);
+    assert.equal(eight.result.complete, true);
+    assert.equal(one.result.documentCount, TIMING.documents);
+    assert.equal(eight.result.documentCount, TIMING.documents);
+    assert.equal(one.result.held, undefined);
+    assert.equal(eight.result.held, undefined);
+    assert.equal(await isComplete(serial), true);
+    assert.equal(await isComplete(concurrent), true);
+    const expected = await snapshot(serial);
+    assert.equal(expected.length, TIMING.documents);
+    assert.deepEqual(await snapshot(concurrent), expected);
+    assert.equal(await concurrent.backend.readReserved("", "index.md").then((row) => row?.content), (await serial.backend.readReserved("", "index.md"))?.content);
+    const speedup = one.ms / eight.ms;
+    t.diagnostic(`bootstrap at ${TIMING.documents} documents, ${TIMING.latencyMs} ms latency, batch ${TIMING.batchSize}: concurrency 1 ${one.ms.toFixed(0)} ms, concurrency 8 ${eight.ms.toFixed(0)} ms, ${speedup.toFixed(2)}x`);
+    assert.ok(speedup >= TIMING.minSpeedup, `bootstrap: concurrency 1 took ${one.ms.toFixed(0)} ms, concurrency 8 took ${eight.ms.toFixed(0)} ms (${speedup.toFixed(2)}x, wanted >= ${TIMING.minSpeedup}x)`);
+  } finally {
+    serial.close();
+    concurrent.close();
+  }
+});
+
+test("pull with concurrency 8 refreshes the same documents as concurrency 1 in a fraction of the wall time", async (t) => {
+  const fixture = await createRemoteFixture();
+  await seedMany(fixture, TIMING.documents);
+  const serial = openLocal(new IDBFactory());
+  const concurrent = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, serial);
+    await bootstrap(fixture.remote, concurrent);
+    await editAllRemote(fixture);
+    fixture.knobs.latencyMs = TIMING.latencyMs;
+    const one = await timed(() => pull(serial, fixture.remote, { batchSize: TIMING.batchSize, concurrency: 1 }));
+    const eight = await timed(() => pull(concurrent, fixture.remote, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    assert.equal(one.result.refreshed.length, TIMING.documents);
+    assert.deepEqual([...eight.result.refreshed].sort(), [...one.result.refreshed].sort());
+    assert.deepEqual(eight.result.held, []);
+    assert.deepEqual(eight.result.unchanged, []);
+    const expected = await snapshot(serial);
+    assert.deepEqual(await snapshot(concurrent), expected);
+    for (const row of expected) assert.equal(row.base?.version, (await fixture.authority.read(row.id)).version);
+    const status = await syncStatus(concurrent);
+    assert.equal(status.lastPull?.refreshed, TIMING.documents);
+    assert.notEqual(status.lastPull?.completedAt, null);
+    const speedup = one.ms / eight.ms;
+    t.diagnostic(`pull at ${TIMING.documents} documents, ${TIMING.latencyMs} ms latency, batch ${TIMING.batchSize}: concurrency 1 ${one.ms.toFixed(0)} ms, concurrency 8 ${eight.ms.toFixed(0)} ms, ${speedup.toFixed(2)}x`);
+    assert.ok(speedup >= TIMING.minSpeedup, `pull: concurrency 1 took ${one.ms.toFixed(0)} ms, concurrency 8 took ${eight.ms.toFixed(0)} ms (${speedup.toFixed(2)}x, wanted >= ${TIMING.minSpeedup}x)`);
+  } finally {
+    serial.close();
+    concurrent.close();
+  }
+});
+
+/** The fixture's read side with `readMany` failing for the batch that carries `poison`; every call is counted. */
+function poisonedRemote(remote: StorageBackend, poison: string): { remote: StorageBackend; calls: { count: number } } {
+  const calls = { count: 0 };
+  const proxy = new Proxy(remote, {
+    get(target, prop) {
+      if (prop === "readMany") {
+        return async (ids: string[]) => {
+          calls.count += 1;
+          if (ids.includes(poison)) throw new TypeError("fetch failed: batch dropped");
+          return target.readMany(ids);
+        };
+      }
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as StorageBackend;
+  return { remote: proxy, calls };
+}
+
+test("a batch that fails under concurrency 8 leaves the marker incomplete, nothing in flight and no unhandled rejection; a retry completes", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 200);
+  fixture.knobs.latencyMs = 5;
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  const local = openLocal(new IDBFactory());
+  try {
+    // Batch size 25: the third batch is ids[50..74]. All eight batches are in flight together.
+    const poisoned = poisonedRemote(fixture.remote, ids[60]!);
+    await assert.rejects(bootstrap(poisoned.remote, local, { batchSize: 25, concurrency: 8 }), /batch dropped/);
+    const callsAtRejection = poisoned.calls.count;
+    assert.equal(await isComplete(local), false);
+    const marker = await local.backend.readMeta<{ complete: boolean; generation: number; completedAt?: string }>("bootstrap");
+    assert.equal(marker?.complete, false);
+    assert.equal(marker?.generation, 1);
+    assert.equal(marker?.completedAt, undefined);
+    // The seven other batches were already in flight when the third failed; each ran to its end
+    // and was written whole, so what landed is exactly those batches, none of them partial.
+    const landed = (await local.backend.list()).sort();
+    assert.equal(landed.length, 175);
+    assert.deepEqual(landed, ids.filter((_, index) => index < 50 || index >= 75));
+    for (const id of landed) assert.equal((await local.backend.readMeta<SharedBase>(baseKey(id)))?.version, (await fixture.authority.read(id)).version);
+    // Nothing was left pending: no further fetch arrives after the rejection, and no rejection
+    // surfaced anywhere but at the caller.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(poisoned.calls.count, callsAtRejection);
+    assert.equal(callsAtRejection, 8);
+    assert.deepEqual(unhandled, []);
+
+    const repaired = await bootstrap(fixture.remote, local, { batchSize: 25, concurrency: 8 });
+    assert.equal(repaired.complete, true);
+    assert.equal(repaired.generation, 2);
+    assert.equal(repaired.documentCount, 200);
+    assert.equal((await local.backend.list()).length, 200);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    local.close();
+  }
+});
+
+test("an authority that stops serving reads part-way still leaves a concurrent bootstrap incomplete, with only whole batches landed", async () => {
+  const fixture = await createRemoteFixture();
+  await seedMany(fixture, 200);
+  fixture.knobs.readBudget = 100;
+  const local = openLocal(new IDBFactory());
+  try {
+    await assert.rejects(bootstrap(fixture.remote, local, { batchSize: 25, concurrency: 8 }), /stopped serving reads/);
+    assert.equal(await isComplete(local), false);
+    assert.equal((await syncStatus(local)).generation, 1);
+    const landed = await local.backend.list();
+    // Every document the authority served was written, in whole batches, and no more than the budget.
+    assert.equal(landed.length, fixture.served.documents);
+    assert.ok(landed.length > 0 && landed.length <= 100 && landed.length % 25 === 0, `landed ${landed.length}`);
+
+    fixture.knobs.readBudget = null;
+    const repaired = await bootstrap(fixture.remote, local, { concurrency: 8 });
+    assert.equal(repaired.complete, true);
+    assert.equal(repaired.generation, 2);
+    assert.equal((await local.backend.list()).length, 200);
+  } finally {
+    local.close();
+  }
+});
+
+test("concurrency below 1 or not an integer is refused before anything is written", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    for (const concurrency of [0, -1, 1.5, Number.NaN]) {
+      await assert.rejects(bootstrap(fixture.remote, local, { concurrency }), (error: unknown) => error instanceof InvalidInputError);
+      await assert.rejects(pull(local, fixture.remote, { concurrency }), (error: unknown) => error instanceof InvalidInputError);
+    }
+    assert.equal(await local.backend.readMeta("bootstrap"), undefined);
+    assert.equal(await local.backend.readMeta("pull"), undefined);
+    assert.deepEqual(await local.backend.list(), []);
+    // The minimum is one batch at a time: the sequential shape, still valid.
+    assert.equal((await bootstrap(fixture.remote, local, { concurrency: 1 })).complete, true);
   } finally {
     local.close();
   }
