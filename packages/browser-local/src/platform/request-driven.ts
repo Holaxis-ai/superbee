@@ -103,7 +103,11 @@ export async function createRequestDrivenRuntime(options: RequestDrivenRuntimeOp
 
     syncStatus: async () => status(),
 
-    /** Nothing is pending in this mode; the status is the whole answer. */
+    /**
+     * Nothing is pending in this mode; the status is the whole answer, and `lastSync` stays
+     * undefined because there is no sync to report: every verb is its own exchange with the
+     * authority. `acceptRefusedDeletions` is ignored; nothing is ever refused here.
+     */
     sync: async () => status(),
   };
 }

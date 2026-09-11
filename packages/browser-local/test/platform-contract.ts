@@ -274,6 +274,7 @@ export function platformContractRows(): ContractRow[] {
           const status = await runtime.sync();
           assert.equal(status.pending, 0);
           assert.equal(status.online, true);
+          assert.deepEqual(status.lastSync, { ok: true }, "a completed sync with nothing refused");
         }
         const after = await runtime.read("notes/alpha");
         const shared = expectState(after.provenance, "shared-confirmed", "read after commit");
@@ -317,6 +318,8 @@ export function platformContractRows(): ContractRow[] {
           const status = await runtime.sync();
           assert.equal(status.pending, 1, "a sync that cannot reach the authority leaves the intent pending");
           assert.equal(status.online, false);
+          assert.equal(status.lastSync?.ok, false, "a sync that rejected is reported as failed");
+          assert.match(status.lastSync?.error ?? "", /TypeError/);
           expectState((await runtime.read("notes/beta")).provenance, "local-pending", "read after failed sync");
         }
         assert.deepEqual(await authority.read("notes/beta"), before, "the authority is unchanged");

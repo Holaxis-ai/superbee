@@ -115,6 +115,66 @@ export interface PlatformCommit {
   provenance: Provenance;
 }
 
+/**
+ * Why a browser-local sync applied none of the deletions a verified listing implied:
+ * `empty-listing` names no document while the working copy holds some, `over-half` names so
+ * few that more than half of the working copy would go. Only a listing that would remove at
+ * least eight documents is bounded; fewer are applied on the authority's word.
+ */
+export type RefusedDeletionsReason = "empty-listing" | "over-half";
+
+/**
+ * The deletions a browser-local sync refused to apply, exactly as recorded on its last pull.
+ * `digest` names the listing that implied them; a caller that has judged the shrink genuine
+ * passes the record back as {@link PlatformSyncOptions.acceptRefusedDeletions}.
+ */
+export interface RefusedDeletions {
+  /** How many documents the listing would have removed from the working copy. */
+  deletions: number;
+  reason: RefusedDeletionsReason;
+  /** The heads digest of the listing that was refused. */
+  digest: string;
+}
+
+/** How the runtime's last sync ended; see {@link PlatformSyncStatus.lastSync}. */
+export interface PlatformSyncOutcome {
+  /** False when the sync rejected (a carrier failure, or an authority answer the runtime could not apply). */
+  ok: boolean;
+  /** The rejection's `name: message` when `ok` is false. */
+  error?: string;
+  /** The deletions the last completed pull refused; present until a pull applies or clears them. */
+  refusedDeletions?: RefusedDeletions;
+}
+
+export interface PlatformSyncOptions {
+  /**
+   * The refusal the last sync reported (`lastSync.refusedDeletions`), passed back to say the
+   * shrink it describes is genuine. Browser-local applies the deletions only when the
+   * authority's current listing still carries the same digest, count and reason; a listing
+   * that has moved since is refused afresh. Request-driven ignores it: nothing is ever
+   * refused there.
+   */
+  acceptRefusedDeletions?: RefusedDeletions;
+}
+
+/**
+ * The runtime's relation to the authority as of its last exchange. `online` reports the
+ * carrier: it turns false only when a request could not reach the authority, never on an
+ * answer the authority gave. `lastSync` reports the sync verb itself, and is the field a
+ * presentation must show to distinguish "synchronized" from "tried and failed": `ok` is false
+ * whenever `sync` rejected, whatever the cause, with the rejection's text in `error`.
+ *
+ * Browser-local applies a verified heads listing on the authority's word, including the
+ * documents it no longer names, with one bound: a listing that would remove at least eight
+ * documents and more than half of the working copy (or every document) is refused as a whole.
+ * The refreshes in that sync still apply, nothing is removed, `lastSync.ok` stays true, and
+ * `lastSync.refusedDeletions` carries the refusal until a later pull applies or clears it. A
+ * genuine shrink of that size therefore never reconciles on its own; the recovery path is to
+ * pass the recorded refusal back as `sync({ acceptRefusedDeletions })`, which applies the
+ * deletions if the authority still lists the same state and refuses afresh if it has moved.
+ * Request-driven has no working copy and leaves `lastSync` undefined: the status is the answer
+ * to the request that produced it.
+ */
 export interface PlatformSyncStatus {
   mode: ExecutionMode;
   /** Whether the last request to the authority succeeded; `null` before any was made. */
@@ -135,6 +195,12 @@ export interface PlatformSyncStatus {
   pausedReason?: string;
   /** The runtime's working set is complete: the authority's for request-driven, a finished bootstrap for browser-local. */
   complete: boolean;
+  /**
+   * How the last sync ended, and any deletions its pull refused. Browser-local fills it from
+   * the sync's own outcome and the pull marker (so a refusal recorded before this runtime was
+   * created still shows); request-driven leaves it undefined. Absent before any sync.
+   */
+  lastSync?: PlatformSyncOutcome;
 }
 
 export interface PlatformRuntime {
@@ -146,8 +212,12 @@ export interface PlatformRuntime {
   validate(id: ConceptId): Promise<PlatformValidation>;
   commit(id: ConceptId, edit: PlatformEdit): Promise<PlatformCommit>;
   syncStatus(): Promise<PlatformSyncStatus>;
-  /** Push pending work and pull the authority's changes; a no-op returning the status in request-driven mode. */
-  sync(): Promise<PlatformSyncStatus>;
+  /**
+   * Push pending work and pull the authority's changes; a no-op returning the status in
+   * request-driven mode. `options` carries the recovery path for refused deletions; see
+   * {@link PlatformSyncOptions}.
+   */
+  sync(options?: PlatformSyncOptions): Promise<PlatformSyncStatus>;
 }
 
 /** The word a presentation shows for a provenance. */

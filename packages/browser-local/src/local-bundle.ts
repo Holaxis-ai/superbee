@@ -24,12 +24,27 @@
  * nothing else is fetched, and a `200` is diffed against the working copy so only changed
  * documents are read and documents the authority no longer lists are removed (or, when a local
  * edit holds one, retained and flagged). A listing is trusted only after the wire adapter has
- * recomputed its digest over the rows it served, and even a verified listing never removes
- * more than half of the working copy, or all of it, in one step: such a listing (a misrouted or
- * emptied bundle) is refused as a whole, reported, and no digest is recorded
- * ({@link DeletionRefusal}). Any other authority, and any caller that disables a feature
- * through {@link FetchOptions.wire}, takes the list plus `readMany` path unchanged; the
- * capabilities are read once per opened bundle and kept on it.
+ * recomputed its digest over the rows it served, and even a verified listing never removes,
+ * in one step, eight or more documents that amount to more than half of the working copy, or
+ * all of it: such a listing (a misrouted or emptied bundle) is refused as a whole, reported
+ * with the listing's digest, and no digest is recorded ({@link DeletionRefusal}), so the next
+ * pull asks unconditionally. Documents a local edit holds are never counted against the bound;
+ * they are retained whatever the listing says. Fewer than eight deletions always apply, so a
+ * small working copy follows ordinary deletions and may be emptied by an emptied authority.
+ * A genuine shrink beyond the bound never reconciles on its own: the caller passes the
+ * recorded refusal back as {@link PullOptions.acceptRefusedDeletions}, and the pull applies
+ * the deletions only while the authority still lists the very state that was refused. Any
+ * other authority, and any caller that disables a feature through {@link FetchOptions.wire},
+ * takes the list plus `readMany` path unchanged; the capabilities are read once per opened
+ * bundle and kept on it.
+ *
+ * The trust model is the authority's word. A forged listing that is internally consistent
+ * and within the bound is applied: its deletions land and its refreshes are read from the
+ * same authority, and the working copy self-heals at the next honest pull, which lists the
+ * real state and fetches what the forgery removed or changed. A forged snapshot can likewise
+ * plant documents that read as shared-confirmed until an honest pull no longer lists them.
+ * Neither the digest nor the bound is an integrity proof against the authority itself; they
+ * catch a listing that is not what its digest names and a listing that is not this bundle.
  *
  * Delivery is recorded before it happens: claiming an intent for push increments its attempts
  * durably, so a page that dies mid-push leaves a record that says "possibly delivered", the
@@ -58,6 +73,7 @@ import {
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
+import type { RefusedDeletions, RefusedDeletionsReason } from "@superbee/core/platform";
 import type { RemoteBackend, WireCapabilities } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import {
@@ -156,17 +172,18 @@ export interface SharedBase {
  * listing was whole and its digest verified, and still it is not trusted to remove documents:
  * `empty-listing` names no document while the working copy holds some, `over-half` names so few
  * that more than half of the working copy would go. A misrouted, emptied or replaced bundle
- * looks exactly like that, and a working copy is never emptied on one answer. Everything else
- * in the verb applied; no digest was recorded, so the next pull asks unconditionally.
+ * looks exactly like that. Only a listing that would remove at least
+ * {@link MIN_BOUNDED_DELETIONS} unheld documents is bounded. Everything else in the verb
+ * applied; no digest was recorded, so the next pull asks unconditionally. The shape is the
+ * platform contract's, so a presentation can pass a refusal back unchanged.
  */
-export type DeletionRefusalReason = "empty-listing" | "over-half";
+export type DeletionRefusalReason = RefusedDeletionsReason;
 
-/** The deletions a pull or bootstrap refused to apply, on its marker and its report. */
-export interface DeletionRefusal {
-  /** How many documents the listing would have removed from the working copy. */
-  deletions: number;
-  reason: DeletionRefusalReason;
-}
+/**
+ * The deletions a pull or bootstrap refused to apply, on its marker and its report, with the
+ * digest of the listing that implied them; see {@link PullOptions.acceptRefusedDeletions}.
+ */
+export type DeletionRefusal = RefusedDeletions;
 
 export interface BootstrapMarker {
   generation: number;
@@ -303,34 +320,58 @@ async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<V
 // ── deletions ──────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Deletions below this count are applied on a verified listing's word without the bound: a
+ * small working copy must follow ordinary deletions (three documents, two removed), and a
+ * misrouted bundle is a mass event, not a handful.
+ */
+const MIN_BOUNDED_DELETIONS = 8;
+
+/**
  * The bound a verified listing must stay within before any document is removed on its word:
  * `undefined` when the deletions may apply, otherwise the refusal to report. `listedCount` is
  * the number of documents the listing names, `presentCount` how many the working copy holds
- * now, `candidates` how many of those the listing does not name.
+ * now, `candidates` how many of those the listing does not name and no local edit holds, and
+ * `digest` names the listing so the refusal can be passed back.
  */
-function deletionBound(listedCount: number, presentCount: number, candidates: number): DeletionRefusal | undefined {
-  if (candidates === 0) return undefined;
-  if (listedCount === 0) return { deletions: candidates, reason: "empty-listing" };
-  if (candidates * 2 > presentCount) return { deletions: candidates, reason: "over-half" };
+function deletionBound(listedCount: number, presentCount: number, candidates: number, digest: string): DeletionRefusal | undefined {
+  if (candidates < MIN_BOUNDED_DELETIONS) return undefined;
+  if (listedCount === 0) return { deletions: candidates, reason: "empty-listing", digest };
+  if (candidates * 2 > presentCount) return { deletions: candidates, reason: "over-half", digest };
   return undefined;
+}
+
+/** True when `accepted` is the very refusal `refused` describes: same listing, same count, same reason. */
+function acceptsRefusal(refused: DeletionRefusal, accepted: DeletionRefusal | undefined): boolean {
+  return accepted !== undefined && accepted.digest === refused.digest && accepted.deletions === refused.deletions && accepted.reason === refused.reason;
 }
 
 /**
  * Remove from the working copy every document a verified listing no longer names, each with
  * its base in one journaled operation that checks the hold inside its own transaction, or
- * refuse the whole set when it is out of bounds ({@link deletionBound}). A document a local edit
- * holds is retained, reported as held, and its base rewritten to version `null` in the same
- * transaction as the refusing hold check (the seam's `onHeld`), so the base agrees with the
- * absent remote; the conflict itself is recorded by push when the authority answers the edit
- * with a conflict whose actual version is `null`. A document whose version moved under a plain
- * local write between the read and the deletion is likewise held, as a refresh treats it. This
- * is the one reconciliation pull and a snapshot bootstrap share.
+ * refuse the whole set when it is out of bounds ({@link deletionBound}). Documents an unsettled
+ * intent targets are excluded from the bound's count before it is applied: they are held
+ * whatever the listing says, so a batch of offline creates never turns one real deletion into
+ * a refusal. A refusal the caller has already seen and passes back as `accept`, for the same
+ * listing digest, is applied instead of refused ({@link PullOptions.acceptRefusedDeletions}).
+ * A document a local edit holds is retained, reported as held, and its base rewritten to
+ * version `null` in the same transaction as the refusing hold check (the seam's `onHeld`), so
+ * the base agrees with the absent remote; the conflict itself is recorded by push when the
+ * authority answers the edit with a conflict whose actual version is `null`. A document whose
+ * version moved under a plain local write between the read and the deletion is likewise held,
+ * as a refresh treats it. This is the one reconciliation pull and a snapshot bootstrap share.
  */
-async function reconcileDeletions(backend: JournaledBackend, listed: ReadonlySet<ConceptId>): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal }> {
+async function reconcileDeletions(
+  backend: JournaledBackend,
+  listed: ReadonlySet<ConceptId>,
+  digest: string,
+  accept?: DeletionRefusal,
+): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal }> {
   const present = await backend.list();
   const candidates = present.filter((id) => !listed.has(id));
-  const refused = deletionBound(listed.size, present.length, candidates.length);
-  if (refused) return { deleted: [], held: [], refused };
+  const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
+  const unheld = candidates.filter((id) => !heldTargets.has(id)).length;
+  const refused = deletionBound(listed.size, present.length, unheld, digest);
+  if (refused && !acceptsRefusal(refused, accept)) return { deleted: [], held: [], refused };
   const deleted: ConceptId[] = [];
   const held: ConceptId[] = [];
   for (const id of candidates) {
@@ -490,7 +531,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
     for (const head of batch) await hydrate(head, header.count);
     // The loop ended normally, so the stream was whole and its rows digest to the header: the
     // listing may now say what the working copy should not hold.
-    const reconciled = await reconcileDeletions(backend, listed);
+    const reconciled = await reconcileDeletions(backend, listed, header.digest);
     deleted = reconciled.deleted;
     held.push(...reconciled.held);
     refused = reconciled.refused;
@@ -814,7 +855,16 @@ export async function pushWithRole(
 
 // ── pull ───────────────────────────────────────────────────────────────────────────────────
 
-export type PullOptions = FetchOptions;
+export interface PullOptions extends FetchOptions {
+  /**
+   * The refusal the last pull recorded (`syncStatus().lastPull.refused`), passed back to say
+   * the shrink it describes is genuine. The deletions apply only when the authority's current
+   * listing carries the same digest, and the refusal the same count and reason, as the one
+   * being accepted; a listing that has moved since is refused afresh with a new record. An
+   * acceptance that matches nothing is ignored.
+   */
+  acceptRefusedDeletions?: DeletionRefusal;
+}
 
 export interface PullReport {
   refreshed: ConceptId[];
@@ -828,18 +878,21 @@ export interface PullReport {
 }
 
 /**
- * The digest the working copy last matched: the bootstrap's or the last completed pull's,
- * whichever finished later. `undefined` when neither recorded one.
+ * The digest the working copy last matched, or `undefined` when the next pull must ask
+ * unconditionally. The bootstrap's digest counts only while no pull has started since that
+ * bootstrap completed; once one has, the latest pull marker is the whole answer, and a marker
+ * without a digest (a refused listing, a pull by list, or an interrupted pull) means the
+ * working copy no longer matches any digest the authority could be asked about. Falling back
+ * to the bootstrap's digest there would let the authority answer `304` to a copy that has
+ * moved past it.
  */
 async function lastKnownDigest(backend: JournaledBackend): Promise<string | undefined> {
   const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
   // An incomplete bootstrap has changed the working copy past whatever any digest described:
   // no conditional request until a bootstrap completes again.
-  if (marker?.complete !== true) return undefined;
+  if (marker?.complete !== true || marker.completedAt === undefined) return undefined;
   const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
-  const pullCompletedAt = lastPull?.completedAt ?? null;
-  const fromPull = pullCompletedAt === null ? undefined : lastPull?.headsDigest;
-  if (fromPull !== undefined && marker.completedAt !== undefined && pullCompletedAt! >= marker.completedAt) return fromPull;
+  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) return lastPull.completedAt === null ? undefined : lastPull.headsDigest;
   return marker.headsDigest;
 }
 
@@ -860,9 +913,11 @@ async function lastKnownDigest(backend: JournaledBackend): Promise<string | unde
  * base in one journaled operation that checks the hold inside its own transaction, a held one
  * retained with its base rewritten to version `null` in that same transaction, so that after
  * pull alone it reads as a local edit over an absent base and push records the conflict when
- * the authority answers with actual `null`. A verified listing that would still empty the
- * working copy, or remove more than half of it, is refused as a whole: the refreshes stand,
- * no document is removed, no digest is recorded, and the marker and report carry `refused`.
+ * the authority answers with actual `null`. A verified listing that would still remove eight
+ * or more unheld documents amounting to more than half of the working copy, or all of it, is
+ * refused as a whole: the refreshes stand, no document is removed, no digest is recorded, and
+ * the marker and report carry `refused` with the listing's digest, until the caller passes
+ * that refusal back as {@link PullOptions.acceptRefusedDeletions} against the same listing.
  * Nothing is ever deleted on a `304`, and nothing on the list path, which fetches every unheld
  * id as before.
  *
@@ -951,7 +1006,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     else candidates.push(head.id);
   }
   await fetchAndApply(candidates);
-  const reconciled = await reconcileDeletions(backend, listed);
+  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions);
   report.deleted = reconciled.deleted;
   report.held.push(...reconciled.held);
   if (reconciled.refused) {

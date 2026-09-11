@@ -42,6 +42,11 @@ function statusLine(status: PlatformSyncStatus): string {
     `complete=${status.complete}`,
   ];
   if (status.pausedReason) fields.push(`reason=${status.pausedReason}`);
+  // The sync's own outcome, kept apart from `online`: a sync the authority answered with a
+  // refusal or a malformed listing is a failed sync on a reachable carrier.
+  fields.push(`lastSync=${status.lastSync === undefined ? "none" : status.lastSync.ok ? "ok" : "failed"}`);
+  if (status.lastSync?.error) fields.push(`lastSyncError=${status.lastSync.error}`);
+  if (status.lastSync?.refusedDeletions) fields.push(`refusedDeletions=${status.lastSync.refusedDeletions.deletions}`);
   return fields.join(" ");
 }
 
@@ -101,19 +106,26 @@ export function mountPresentation(container: HTMLElement, runtime: PlatformRunti
     body.textContent = result.doc.body;
   };
 
+  /**
+   * Re-query, re-read, and reprint the status line. A caller that has just shown an error
+   * (a failed sync) renders with `keepError`, so the message survives the redraw and the
+   * status line beside it says `lastSync=failed`; a plain refresh starts from a clean line.
+   */
+  const render = async (keepError: boolean): Promise<void> => {
+    if (!keepError) error.textContent = "";
+    try {
+      renderList(await runtime.query());
+      await renderSelected();
+    } catch (failure) {
+      showError(failure);
+    }
+    // Last, so the line reports what the list and selection just learned about the authority.
+    status.textContent = statusLine(await runtime.syncStatus());
+  };
+
   const presentation: Presentation = {
     root,
-    async refresh() {
-      error.textContent = "";
-      try {
-        renderList(await runtime.query());
-        await renderSelected();
-      } catch (failure) {
-        showError(failure);
-      }
-      // Last, so the line reports what the list and selection just learned about the authority.
-      status.textContent = statusLine(await runtime.syncStatus());
-    },
+    refresh: () => render(false),
     async select(id) {
       error.textContent = "";
       try {
@@ -142,12 +154,14 @@ export function mountPresentation(container: HTMLElement, runtime: PlatformRunti
     },
     async sync() {
       error.textContent = "";
+      let failed = false;
       try {
         status.textContent = statusLine(await runtime.sync());
       } catch (failure) {
+        failed = true;
         showError(failure);
       }
-      await presentation.refresh();
+      await render(failed);
     },
   };
 

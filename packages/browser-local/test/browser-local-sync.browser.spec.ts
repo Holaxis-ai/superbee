@@ -6,8 +6,9 @@
  * preserves local edits through conflict, lost acknowledgement, quota failure, tab termination
  * and access revocation without ever reporting false synchronization. Over the wire's snapshot
  * and heads routes it bootstraps from one streamed response, reconciles an unchanged authority
- * with one conditional request answered 304, and drops a document the authority deleted from
- * the page's list at the next sync.
+ * with one conditional request answered 304, drops a document the authority deleted from the
+ * page's list at the next sync, and shows a heads answer the wire adapter rejects as a failed
+ * sync on a reachable carrier, cleared by the next honest sync.
  *
  * Harness: the page (test/fixtures/driver.ts, served by test/fixtures/harness.ts) talks to the
  * disposable authority (test/fixtures/remote-fixture.ts: the reference router and outcome
@@ -32,6 +33,7 @@ import path from "node:path";
 import { chromium, expect, test, type Page } from "@playwright/test";
 
 import type { OkfDocument } from "@superbee/core";
+import type { PlatformSyncStatus } from "@superbee/core/platform";
 
 import type { DriverError, IntentView } from "./fixtures/driver.ts";
 import { call, isDriverError, load as loadAt, ok, startDriverServer, waitForDriver, type DriverServer } from "./fixtures/harness.ts";
@@ -588,7 +590,39 @@ test("l: bootstrap by one snapshot over HTTP; a sync with nothing changed is one
   await expect(root.locator('[data-role="list"] li')).toHaveCount(NOTE_IDS.length - 1);
   await expect(root.locator('li[data-id="notes/zeta"]')).toHaveCount(0);
   expect(ok(await call(page, "query", "notes/"), "query").map((head) => head.id)).toEqual([...NOTE_IDS].filter((id) => id !== "notes/zeta").sort());
-  test.info().annotations.push({ type: "heads", description: `bootstrap by snapshot (${booted.length} requests), unchanged sync one GET /heads 304, deletion reconciled by one GET /heads 200` });
+
+  // A heads answer whose digest does not name its rows is an authority answer the wire adapter
+  // rejects: the sync fails on a reachable carrier, the page shows the error beside a status
+  // line that says so, and the message survives the redraw. An honest sync clears both.
+  const headsRoute = `${served.origin}/v0/bundles/default/heads`;
+  await page.route(headsRoute, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const headers = { ...route.request().headers() };
+    delete headers["if-none-match"];
+    const response = await route.fetch({ headers });
+    const payload = (await response.json()) as Record<string, unknown>;
+    await route.fulfill({ response, json: { ...payload, digest: `sha256:${"e".repeat(64)}` } });
+  });
+  const error = root.locator('[data-role="error"]');
+  const status = root.locator('[data-role="status"]');
+  await root.locator('[data-role="sync"]').click();
+  await expect(error).toContainText("RemoteError");
+  await expect(error).toContainText("digest");
+  await expect(status).toContainText("online=true");
+  await expect(status).toContainText("lastSync=failed");
+  await expect(status).toContainText("lastSyncError=RemoteError");
+  await expect(root.locator('[data-role="list"] li')).toHaveCount(NOTE_IDS.length - 1);
+  const failed = ok(await call(page, "platformCall", "syncStatus"), "syncStatus after a hostile heads answer") as PlatformSyncStatus;
+  expect(failed.online).toBe(true);
+  expect(failed.lastSync).toMatchObject({ ok: false });
+  expect(failed.lastSync?.error).toMatch(/RemoteError: .*digest/);
+  await page.unroute(headsRoute);
+  await root.locator('[data-role="sync"]').click();
+  await expect(status).toContainText("lastSync=ok");
+  await expect(error).toHaveText("");
+  const healed = ok(await call(page, "platformCall", "syncStatus"), "syncStatus after an honest sync") as PlatformSyncStatus;
+  expect(healed.lastSync).toEqual({ ok: true });
+  test.info().annotations.push({ type: "heads", description: `bootstrap by snapshot (${booted.length} requests), unchanged sync one GET /heads 304, deletion reconciled by one GET /heads 200, hostile digest shown as a failed sync and cleared by an honest one` });
 });
 
 test("k: measurements are recorded, not asserted: cold bootstrap, warm read and query, local commit, reconciliation, storage footprint", async ({ page, browser }) => {
