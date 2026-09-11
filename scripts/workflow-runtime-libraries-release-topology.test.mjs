@@ -104,7 +104,7 @@ function runSourceGuard({ currentVersion, priorTag, mainMatches = true, depth = 
   return result;
 }
 
-test("core and server form one restricted exact-version release set", () => {
+test("core and server form one public exact-version release set", () => {
   const core = JSON.parse(read("packages/core/package.json"));
   const server = JSON.parse(read("packages/server/package.json"));
   assert.match(core.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/);
@@ -118,7 +118,7 @@ test("core and server form one restricted exact-version release set", () => {
     });
     assert.equal(manifest.private, undefined);
     assert.deepEqual(manifest.publishConfig, {
-      access: "restricted",
+      access: "public",
       registry: "https://registry.npmjs.org/",
     });
     assert.match(manifest.scripts.prepublishOnly, /process\.exit\(1\)/);
@@ -138,14 +138,14 @@ test("runtime library workflows pin actions and share an isolated release identi
   assert.match(release, /tags: \["libraries\/v\*"\]/);
   assert.doesNotMatch(release, /gh release (?:create|upload)|release assets?/i);
   assert.doesNotMatch(finalize, /gh release|npm stage|npm publish|id-token: write|contents: write/);
-  assert.equal((finalize.match(/secrets\.NPM_RUNTIME_LIBRARIES_READ_TOKEN/g) ?? []).length, 2);
+  assert.doesNotMatch(finalize, /secrets\.|NODE_AUTH_TOKEN/, "registry proof must use anonymous access");
   assert.doesNotMatch(release, /secrets\.|NODE_AUTH_TOKEN/, "payload build and OIDC staging need no long-lived npm credential");
   const entrypoint = read("CLAUDE.md");
   const contributing = read("CONTRIBUTING.md");
   assert.match(entrypoint, /release-libraries\.yml/);
   assert.match(entrypoint, /libraries\/v<version>/);
   assert.match(contributing, /verify:runtime-libraries` consumes the fixed `out\/superbee-core\.tgz`/);
-  assert.match(contributing, /NPM_RUNTIME_LIBRARIES_READ_TOKEN/);
+  assert.match(contributing, /finalizer reads npm anonymously/);
 });
 
 test("payload code builds once before a literal two-tarball verification", () => {
@@ -182,8 +182,8 @@ test("release source and first-version boundaries fail closed", () => {
   assert.match(build, /if \[ "\$V" = "0\.1\.0" \]; then BOOTSTRAP=true/);
   assert.match(core, /if: needs\.build\.outputs\.bootstrap != 'true'/);
   assert.match(server, /needs\.build\.outputs\.bootstrap != 'true'/);
-  assert.match(attest, /npm publish \\\"\.\/\$CORE_TGZ\\\" --access restricted --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
-  assert.match(attest, /npm publish \\\"\.\/\$SERVER_TGZ\\\" --access restricted --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
+  assert.match(attest, /npm publish \\\"\.\/\$CORE_TGZ\\\" --access public --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
+  assert.match(attest, /npm publish \\\"\.\/\$SERVER_TGZ\\\" --access public --tag \\\"\$DIST_TAG\\\" --ignore-scripts/);
 });
 
 test("the exact source guard allows only current-main channel advancement", () => {
@@ -263,7 +263,7 @@ test("later releases stage core and server separately behind the existing enviro
   for (const job of [core, server]) {
     assert.match(job, /^ {4}environment: release$/m);
     assert.match(job, /id-token: write/);
-    assert.match(job, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --access restricted --provenance=false --json/);
+    assert.match(job, /npm stage publish "\.\/out\/\$TGZ" --tag "\$DIST_TAG" --access public --provenance=false --json/);
     assert.doesNotMatch(job, /npm publish|npm dist-tag/);
   }
   assert.match(core, /sha256sum "out\/\$\{\{ needs\.build\.outputs\.core_tgz \}\}"[\s\S]*needs\.build\.outputs\.core_sha256/);
@@ -273,7 +273,7 @@ test("later releases stage core and server separately behind the existing enviro
   assert.match(server, /npm stage approve \$SERVER_STAGE/);
 });
 
-test("both literal stage steps retain private access without unsupported npm provenance", () => {
+test("both literal stage steps enforce public access and the existing attestation channel", () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), "runtime-library-stage-options-"));
   try {
     for (const name of ["core", "server"]) {
@@ -289,12 +289,12 @@ test("both literal stage steps retain private access without unsupported npm pro
         encoding: "utf8",
         env: { ...process.env, SOURCE_STEP: step, ARGS_OUT: argsFile,
           GITHUB_OUTPUT: outputFile, TGZ: `superbee-${name}.tgz`, DIST_TAG: "latest",
-          npm_config_access: "public", npm_config_provenance: "true" },
+          npm_config_access: "restricted", npm_config_provenance: "true" },
       });
       assert.equal(result.status, 0, result.stderr);
       assert.deepEqual(readFileSync(argsFile, "utf8").trim().split("\n"), [
         "stage", "publish", `./out/superbee-${name}.tgz`, "--tag", "latest",
-        "--access", "restricted", "--provenance=false", "--json", "--loglevel", "verbose",
+        "--access", "public", "--provenance=false", "--json", "--loglevel", "verbose",
       ]);
       assert.match(readFileSync(outputFile, "utf8"), /^stage_id=test-stage$/m);
     }
@@ -305,7 +305,7 @@ test("the finalizer proves both registry tarballs against the dedicated source t
   const { finalize: job } = jobs(finalize);
   assert.ok(job);
   assert.match(job, /^ {4}permissions:\n {6}contents: read$/m);
-  assert.match(job, /registry-url: "https:\/\/registry\.npmjs\.org"/);
+  assert.doesNotMatch(job, /registry-url:/, "setup-node must not generate an authenticated npm configuration");
   assert.match(job, /npm pack "@superbee\/core@\$V"/);
   assert.match(job, /npm pack "@superbee\/server@\$V"/);
   assert.equal((job.match(/gh attestation verify/g) ?? []).length, 2);

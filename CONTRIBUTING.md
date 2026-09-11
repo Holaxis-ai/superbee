@@ -199,12 +199,12 @@ superbee` proves that the generated npm Agent Skill bytes match their source. Re
 has a separate action-time contract; passing either check does not authorize publishing.
 
 `npm run verify:runtime-libraries` consumes the fixed `out/superbee-core.tgz` and
-`out/superbee-server.tgz` pair and proves synchronized restricted metadata, the exact
+`out/superbee-server.tgz` pair and proves synchronized public metadata, the exact
 server-to-core dependency, and a Worker-safe external consumer. It never builds or repacks the
 supplied artifacts. The dedicated
 `libraries/v<version>` workflow is the only automated release path for that pair.
-Its finalizer receives only `NPM_RUNTIME_LIBRARIES_READ_TOKEN`, a granular read-only token scoped to
-the two restricted packages; build and staging jobs never receive that credential.
+Its finalizer reads npm anonymously, proving the pair is publicly downloadable; no library
+release job receives a long-lived npm credential.
 
 ## OKF compatibility
 
