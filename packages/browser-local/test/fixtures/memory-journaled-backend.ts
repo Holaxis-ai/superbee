@@ -178,7 +178,13 @@ export class MemoryJournaledBackend implements JournaledBackend {
         throw new IntentStateConflict(supersede.requestId, supersede.expectedState, existing?.state ?? null);
       }
     }
-    const { version, raw } = this.#putDocument(id, doc, undefined, options.actor, now);
+    // The caller's meta function is the last check that can throw, so it runs on the bytes
+    // that will be written before anything is mutated, as the IndexedDB adapter evaluates it
+    // before opening its transaction.
+    const raw = stringifyDoc(doc.frontmatter, doc.body ?? "");
+    const version = versionOfBytes(raw);
+    const meta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? [];
+    this.#putDocument(id, doc, undefined, options.actor, now);
     if (supersede) this.#intents.delete(supersede.requestId);
     let record: IntentRecord | null = null;
     if (intent) {
@@ -186,7 +192,6 @@ export class MemoryJournaledBackend implements JournaledBackend {
       record = { ...intent, local: version, content: raw, sequence: this.#sequence, attempts: 0, state: "pending", updatedAt: now };
       this.#intents.set(record.requestId, structuredClone(record));
     }
-    const meta = typeof options.meta === "function" ? options.meta({ version, raw }) : options.meta ?? [];
     for (const row of meta) this.#meta.set(row.key, structuredClone(row.value));
     return { version, raw, intent: record };
   }

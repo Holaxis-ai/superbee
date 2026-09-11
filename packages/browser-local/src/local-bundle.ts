@@ -92,10 +92,14 @@ export function openLocalBundle(name: string, options: OpenLocalBundleOptions = 
 /** Every verb below accepts the opened bundle or its backend directly. */
 export type LocalTarget = LocalBundle | JournaledBackend;
 
-/** Structural, not `instanceof`: the seam is an interface, and an opened bundle is the shape that carries one. */
+/**
+ * Structural, not `instanceof`: the seam is an interface, and an opened bundle is the shape that
+ * carries one. The discriminator is the pair no adapter has, `bundle` plus the `backend` this
+ * function dereferences; `name` and `close` are shapes an adapter may share.
+ */
 function isLocalBundle(target: LocalTarget): target is LocalBundle {
   const candidate = target as Partial<LocalBundle>;
-  return typeof candidate.bundle === "object" && candidate.bundle !== null && typeof candidate.close === "function" && typeof candidate.name === "string";
+  return typeof candidate.bundle === "object" && candidate.bundle !== null && typeof candidate.backend === "object" && candidate.backend !== null;
 }
 
 function backendOf(target: LocalTarget): JournaledBackend {

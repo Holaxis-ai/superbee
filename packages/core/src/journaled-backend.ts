@@ -155,8 +155,8 @@ export interface JournaledBackend extends StorageBackend {
    * One transaction over documents, intents, and meta: the document compare-and-swap of
    * `write`, plus (optionally) deleting a superseded intent, recording a new intent for the
    * written bytes, and putting meta rows. Every step is conditional on every other: a failed
-   * document CAS records no intent, and a superseded intent whose state moved fails the whole
-   * write with {@link IntentStateConflict} so the caller composes against fresh state. With
+   * document CAS records no intent, and a superseded intent whose state or attempts moved fails
+   * the whole write with {@link IntentStateConflict} so the caller composes against fresh state. With
    * `requireSettled`, an unsettled intent on the target fails it with
    * {@link IntentHoldConflict} before the document is touched.
    */
