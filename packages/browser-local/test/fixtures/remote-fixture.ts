@@ -9,7 +9,8 @@
  * is fault injection around the real router: a network error before the request is applied, a
  * dropped response after it was applied, a revoked credential answered ahead of the router (as
  * an authorization layer in front of it would, so nothing is recorded under the identity), a
- * lookup route that is unreachable, latency, and an authority that stops serving reads part-way
+ * lookup route that is unreachable, latency on identified writes (`delayMs`) or on every request
+ * (`latencyMs`, a simulated round trip), and an authority that stops serving reads part-way
  * through a hydration. The write knobs apply to every document write, identified (the sync
  * verbs' intents) or plain (a request-driven client's compare-and-swap PUT), so the platform
  * contract kit can show the two execution modes the same fault. Reads (`remote`) bypass the
@@ -45,6 +46,8 @@ export interface FixtureKnobs {
   lookupFails: boolean;
   /** Latency before the router is invoked for an identified write. */
   delayMs: number;
+  /** Latency added to every request the handler sees (reads, writes, lookups, capabilities), as a simulated round trip. */
+  latencyMs: number;
   /**
    * Documents the read routes will still serve before failing; `null` means unlimited. A
    * read-many whose ids exceed the remaining budget fails as a carrier error and leaves the
@@ -160,10 +163,11 @@ export async function createRemoteFixture(): Promise<RemoteFixture> {
   const lookups: string[] = [];
   const served = { documents: 0 };
   const router = createRouter({ root: "memory://fixture", backend: authority }, { outcomes: observedStore(outcomeStore, history, outcomes, deduplicated) });
-  const knobs: FixtureKnobs = { failBeforeApply: false, dropAfterApply: false, unauthorized: false, lookupFails: false, delayMs: 0, readBudget: null };
+  const knobs: FixtureKnobs = { failBeforeApply: false, dropAfterApply: false, unauthorized: false, lookupFails: false, delayMs: 0, latencyMs: 0, readBudget: null };
 
   /** The hosted side: the fixture's faults around the real router. */
   const hosted = async (request: Request): Promise<Response> => {
+    if (knobs.latencyMs > 0) await sleep(knobs.latencyMs);
     const { pathname } = new URL(request.url);
     const lookup = LOOKUP_PATH.exec(pathname);
     if (lookup) {

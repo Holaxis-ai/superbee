@@ -44,6 +44,7 @@ import {
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
+import { InvalidInputError } from "@superbee/core/storage";
 import {
   AUTHORIZATION_REFUSAL_CODES,
   isAuthorizationRefusal,
@@ -166,6 +167,59 @@ function chunked<T>(items: readonly T[], size: number): T[][] {
   return out;
 }
 
+/** Documents fetched per `readMany` round trip unless the caller says otherwise. */
+const DEFAULT_BATCH_SIZE = 25;
+/** Batches in flight at once unless the caller says otherwise. */
+const DEFAULT_CONCURRENCY = 8;
+
+/** Options both fetching verbs share: how the remote document set is split and how many splits travel at once. */
+export interface FetchOptions {
+  /** Documents fetched per `readMany` round trip. */
+  batchSize?: number;
+  /**
+   * Batches fetched concurrently, at most; default 8, minimum 1. Wall time is then bounded by
+   * transfer and a few round trips instead of the batch count times the latency. A value below
+   * 1 or not an integer is refused with {@link InvalidInputError} before anything is written.
+   */
+  concurrency?: number;
+}
+
+function concurrencyOf(options: FetchOptions): number {
+  const value = options.concurrency ?? DEFAULT_CONCURRENCY;
+  if (!Number.isInteger(value) || value < 1) throw new InvalidInputError(`concurrency must be an integer of at least 1, got ${String(value)}`);
+  return value;
+}
+
+/**
+ * Run `work` over every batch with at most `concurrency` calls in flight: a bounded pool of
+ * workers pulling from one shared cursor, so batches start in list order and each batch is
+ * fetched and written by the worker that took it. A worker's failure stops the others from
+ * taking further batches, but every batch already in flight runs to its own end (fetched, then
+ * written) before the first failure is rethrown; nothing is left pending and no rejection goes
+ * unobserved. Which batch fails first under concurrency is not deterministic; that the caller
+ * sees exactly one rejection, after the pool has drained, is.
+ */
+async function forEachBatch<T>(batches: readonly T[][], concurrency: number, work: (batch: T[]) => Promise<void>): Promise<void> {
+  let next = 0;
+  let failure: { error: unknown } | null = null;
+  const worker = async (): Promise<void> => {
+    while (failure === null && next < batches.length) {
+      const batch = batches[next]!;
+      next += 1;
+      try {
+        await work(batch);
+      } catch (error) {
+        failure ??= { error };
+      }
+    }
+  };
+  const outcomes = await Promise.allSettled(Array.from({ length: Math.min(concurrency, batches.length) }, worker));
+  // Workers catch their own work; a rejection here would be a defect in the pool itself, and it
+  // is still surfaced rather than dropped.
+  for (const outcome of outcomes) if (outcome.status === "rejected") failure ??= { error: outcome.reason };
+  if (failure !== null) throw failure.error;
+}
+
 /** The version of the document currently stored locally, or `null` when absent. */
 async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<Version | null> {
   try {
@@ -178,11 +232,13 @@ async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<V
 
 // ── bootstrap ──────────────────────────────────────────────────────────────────────────────
 
-export interface BootstrapOptions {
-  /** Called after each document is hydrated; a progress hook for a page, a fault point for a test. */
+export interface BootstrapOptions extends FetchOptions {
+  /**
+   * Called after each document is hydrated; a progress hook for a page, a fault point for a
+   * test. `index` counts hydrated documents in completion order, which under concurrency is not
+   * the authority's list order.
+   */
   onHydrated?: (id: ConceptId, index: number, total: number) => void | Promise<void>;
-  /** Documents fetched per `readMany` round trip. */
-  batchSize?: number;
 }
 
 /**
@@ -196,8 +252,13 @@ export interface BootstrapOptions {
  * edits the authority has not accepted. An edit committed while bootstrap is already fetching is
  * caught by the hydrating write's own transaction: that document is left as the edit made it,
  * listed in the marker as `held`, and push discovers the divergence.
+ *
+ * Batches travel concurrently (see {@link FetchOptions}); each batch is written as it arrives,
+ * through the same per-document write as before. A failed batch leaves the marker incomplete
+ * and its error propagates once the batches in flight have finished.
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
+  const concurrency = concurrencyOf(options);
   const backend = backendOf(local);
   const unsettled = await backend.listIntents(UNSETTLED_STATES);
   if (unsettled.length > 0) {
@@ -215,7 +276,7 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const findings: string[] = [];
   const held: ConceptId[] = [];
   let index = 0;
-  for (const batch of chunked(ids, options.batchSize ?? 25)) {
+  await forEachBatch(chunked(ids, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
     const heads = await remote.readMany(batch);
     for (const head of heads) {
       const id = head.doc.id;
@@ -231,10 +292,13 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
         if (!(error instanceof IntentHoldConflict)) throw error;
         held.push(id);
       }
-      await options.onHydrated?.(id, index, ids.length);
+      // Take the index before awaiting the hook: another worker's completion can interleave
+      // with an awaiting hook, and the index must stay unique per hydrated document.
+      const hydrated = index;
       index += 1;
+      await options.onHydrated?.(id, hydrated, ids.length);
     }
-  }
+  });
 
   const marker: BootstrapMarker = {
     generation,
@@ -543,9 +607,7 @@ export async function pushWithRole(
 
 // ── pull ───────────────────────────────────────────────────────────────────────────────────
 
-export interface PullOptions {
-  batchSize?: number;
-}
+export type PullOptions = FetchOptions;
 
 export interface PullReport {
   refreshed: ConceptId[];
@@ -561,8 +623,12 @@ export interface PullReport {
  * silent base replacement here. The intents known before the network round trip only save
  * fetching held documents; the hold that decides is the one the refreshing write checks inside
  * its own transaction, so an edit committed during the round trip holds its document too.
+ *
+ * Batches travel concurrently (see {@link FetchOptions}) and each is written as it arrives; the
+ * pull marker records completion only after every batch has been written.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
+  const concurrency = concurrencyOf(options);
   const backend = backendOf(local);
   const startedAt = new Date().toISOString();
   await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0 } satisfies PullMarker);
@@ -574,7 +640,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
     if (heldTargets.has(id)) report.held.push(id);
     else candidates.push(id);
   }
-  for (const batch of chunked(candidates, options.batchSize ?? 25)) {
+  await forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
     const heads = await remote.readMany(batch);
     for (const head of heads) {
       const id = head.doc.id;
@@ -601,7 +667,7 @@ export async function pull(local: LocalTarget, remote: StorageBackend, options: 
         throw error;
       }
     }
-  }
+  });
   await backend.writeMeta(PULL_KEY, { startedAt, completedAt: new Date().toISOString(), refreshed: report.refreshed.length } satisfies PullMarker);
   return report;
 }

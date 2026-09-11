@@ -319,11 +319,14 @@ const driver = {
     }),
 
   /** Attach and hydrate from the authority; `ms` is the page-measured wall time of the hydration. */
-  bootstrap: (remoteBaseUrl: string, name: string, batchSize?: number) =>
+  bootstrap: (remoteBaseUrl: string, name: string, batchSize?: number, concurrency?: number) =>
     attempt(async () => {
       attachTo(remoteBaseUrl, name);
       const started = performance.now();
-      const marker = await bootstrap(remoteOrThrow().backend, bundleOrThrow(), batchSize === undefined ? {} : { batchSize });
+      const marker = await bootstrap(remoteOrThrow().backend, bundleOrThrow(), {
+        ...(batchSize === undefined ? {} : { batchSize }),
+        ...(concurrency === undefined ? {} : { concurrency }),
+      });
       return { marker, ms: performance.now() - started };
     }),
 
