@@ -8,7 +8,9 @@
  *
  * The page and the authority are different origins, as a browser-local client and a hosted
  * authority would be, so the bridge answers CORS preflights and exposes the version header.
- * Those headers are this test fixture's concern; nothing here touches `@superbee/server`.
+ * Every response also carries `cross-origin-resource-policy: cross-origin`, so a page served
+ * under `cross-origin-embedder-policy: require-corp` (the measurement driver) may still fetch
+ * it. Those headers are this test fixture's concern; nothing here touches `@superbee/server`.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -38,6 +40,7 @@ const COMMON_HEADERS: Record<string, string> = {
   "access-control-allow-headers": "content-type, if-match, if-none-match, idempotency-key, x-actor, x-agent, authorization",
   "access-control-expose-headers": "x-version, etag",
   "access-control-max-age": "0",
+  "cross-origin-resource-policy": "cross-origin",
 };
 
 async function readBody(request: IncomingMessage): Promise<Buffer> {

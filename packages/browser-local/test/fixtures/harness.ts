@@ -21,6 +21,12 @@ export interface DriverServer {
 export interface DriverServerOptions {
   /** The page script to bundle and serve; the proof driver by default. */
   entry?: URL;
+  /**
+   * Extra response headers on the page and its script, for a driver that needs a document
+   * policy the proof driver does not (the measurement driver asks for cross-origin isolation
+   * so `performance.now()` keeps its 5 us resolution). None by default.
+   */
+  headers?: Record<string, string>;
 }
 
 export async function startDriverServer(options: DriverServerOptions = {}): Promise<DriverServer> {
@@ -38,14 +44,15 @@ export async function startDriverServer(options: DriverServerOptions = {}): Prom
   const script = bundle.outputFiles?.[0]?.text;
   if (!script) throw new Error("browser-local driver build produced no JavaScript.");
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>browser-local</title></head><body><script src="/driver.js"></script></body></html>`;
+  const extra = options.headers ?? {};
   const server: Server = createServer((request, response) => {
     if (request.url === "/driver.js") {
-      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      response.writeHead(200, { ...extra, "content-type": "text/javascript; charset=utf-8" });
       response.end(script);
       return;
     }
     if (request.url === "/") {
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.writeHead(200, { ...extra, "content-type": "text/html; charset=utf-8" });
       response.end(html);
       return;
     }

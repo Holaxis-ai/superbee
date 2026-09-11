@@ -48,7 +48,8 @@ async function attempt<T>(work: () => Promise<T>): Promise<T | MeasureError> {
 interface Session {
   mode: ExecutionMode;
   runtime: PlatformRuntime;
-  presentation: Presentation;
+  /** Set by `mount`, after `open`. */
+  presentation: Presentation | null;
   remote: RemoteBackend;
   local: LocalBundle | null;
   transport: OperationTransport | null;
@@ -57,8 +58,14 @@ interface Session {
 let session: Session | null = null;
 
 function sessionOrThrow(): Session {
-  if (!session) throw new Error("measure driver: call mount(mode, remoteBaseUrl, name) first");
+  if (!session) throw new Error("measure driver: call open(mode, remoteBaseUrl, name) first");
   return session;
+}
+
+function closeSession(): void {
+  session?.presentation?.root.remove();
+  session?.local?.close();
+  session = null;
 }
 
 /** Count `longtask` entries from now until `stop`; `null` when the browser does not report them. */
@@ -92,7 +99,16 @@ export interface StorageReply {
   usageDetails: Record<string, number> | null;
 }
 
-export interface MountReply {
+export interface PageReply {
+  /**
+   * Whether the page is cross-origin isolated (COOP same-origin plus COEP require-corp). When
+   * true, Chromium resolves `performance.now()` to 5 us; otherwise it is coarsened to 100 us,
+   * which is the floor a fast IndexedDB read sits at.
+   */
+  crossOriginIsolated: boolean;
+}
+
+export interface OpenReply {
   mode: ExecutionMode;
   /** Wall time of the mode's cold open: bootstrap (browser-local) or capabilities plus list plus the first screen's reads (request-driven). */
   coldOpenMs: number;
@@ -102,6 +118,9 @@ export interface MountReply {
   longTasksDuringColdOpen: number | null;
   /** Browser-local only: list plus the first screen's reads from the working copy after bootstrap. */
   firstScreenAfterBootstrapMs: number | null;
+}
+
+export interface MountReply {
   /** Mounting the presentation and its first refresh (query, selection, status) over the runtime. */
   presentationMountMs: number;
 }
@@ -144,12 +163,16 @@ const driver = {
     return { usage: estimate?.usage ?? null, quota: estimate?.quota ?? null, usageDetails: details ? { ...details } : null };
   },
 
-  /** Build a runtime of `mode` over the authority, time its cold open, and mount the presentation. */
-  mount: (mode: ExecutionMode, remoteBaseUrl: string, name: string) =>
-    attempt<MountReply>(async () => {
-      session?.presentation.root.remove();
-      session?.local?.close();
-      session = null;
+  page: (): PageReply => ({ crossOriginIsolated: globalThis.crossOriginIsolated === true }),
+
+  /**
+   * Build a runtime of `mode` over the authority and time its cold open. The presentation is
+   * mounted by the separate `mount` call, so the Node side can count the cold open's requests
+   * apart from the mount's own query and reads.
+   */
+  open: (mode: ExecutionMode, remoteBaseUrl: string, name: string) =>
+    attempt<OpenReply>(async () => {
+      closeSession();
       const remote = new RemoteBackend({ baseUrl: remoteBaseUrl, bundle: REMOTE_BUNDLE, fetchImpl: (request) => fetch(request), maxRetries: 0 });
       let runtime: PlatformRuntime;
       let local: LocalBundle | null = null;
@@ -176,12 +199,21 @@ const driver = {
         firstScreenAfterBootstrapMs = performance.now() - screenStarted;
       }
       const longTasksDuringColdOpen = await tasks.stop();
+      session = { mode, runtime, presentation: null, remote, local, transport };
+      return { mode, coldOpenMs, documents, longTasksDuringColdOpen, firstScreenAfterBootstrapMs };
+    }),
+
+  /** Mount the presentation over the open runtime and time its first refresh. */
+  mount: () =>
+    attempt<MountReply>(async () => {
+      const current = sessionOrThrow();
+      if (current.presentation) throw new Error("mount: the presentation is already mounted");
       const mountStarted = performance.now();
-      const presentation = mountPresentation(document.body, runtime);
+      const presentation = mountPresentation(document.body, current.runtime);
       await presentation.refresh();
       const presentationMountMs = performance.now() - mountStarted;
-      session = { mode, runtime, presentation, remote, local, transport };
-      return { mode, coldOpenMs, documents, longTasksDuringColdOpen, firstScreenAfterBootstrapMs, presentationMountMs };
+      current.presentation = presentation;
+      return { presentationMountMs };
     }),
 
   reads: (ids: string[]) =>
@@ -243,6 +275,7 @@ const driver = {
   commitClick: (id: string, body: string) =>
     attempt<ClickReply>(async () => {
       const { presentation } = sessionOrThrow();
+      if (!presentation) throw new Error("commitClick: call mount() first");
       await presentation.select(id);
       const root = presentation.root;
       const editor = root.querySelector<HTMLTextAreaElement>('[data-role="editor"]')!;
@@ -268,9 +301,7 @@ const driver = {
     }),
 
   unmount: () => {
-    session?.presentation.root.remove();
-    session?.local?.close();
-    session = null;
+    closeSession();
     return { ok: true as const };
   },
 };
