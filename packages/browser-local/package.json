@@ -21,7 +21,8 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "test": "node --test --import ./test/ts-loader.mjs ./test/*.test.ts",
-    "test:browser": "playwright install chromium && playwright test --config playwright.config.ts"
+    "test:browser": "playwright install chromium && playwright test --config playwright.config.ts",
+    "measure:browser": "playwright install chromium && playwright test --config playwright.measure.config.ts"
   },
   "dependencies": {
     "@superbee/core": "*"

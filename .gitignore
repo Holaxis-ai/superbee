@@ -16,6 +16,8 @@ packages/ui/test-results/
 packages/ui/playwright-report/
 packages/mcp-app/test-results/
 packages/browser-local/test-results/
+# Measurement reports from `npm run measure:browser -w @superbee/browser-local`; never committed.
+packages/browser-local/measurements/*.json
 packages/ui/blob-report/
 /docs/
 /research/

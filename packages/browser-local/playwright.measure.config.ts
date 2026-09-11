@@ -1,12 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
+/** The measurement run only: `npm run measure:browser`. The proof config ignores this spec. */
 export default defineConfig({
   testDir: "./test",
-  testMatch: "**/*.browser.spec.ts",
-  // The full measurement plan runs only through playwright.measure.config.ts (`measure:browser`).
-  testIgnore: "**/measure.browser.spec.ts",
+  testMatch: "**/measure.browser.spec.ts",
   fullyParallel: false,
   workers: 1,
+  retries: 0,
+  timeout: 0,
   reporter: "line",
   use: {
     ...devices["Desktop Chrome"],

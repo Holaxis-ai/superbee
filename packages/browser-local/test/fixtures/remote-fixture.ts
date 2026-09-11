@@ -9,12 +9,12 @@
  * is fault injection around the real router: a network error before the request is applied, a
  * dropped response after it was applied, a revoked credential answered ahead of the router (as
  * an authorization layer in front of it would, so nothing is recorded under the identity), a
- * lookup route that is unreachable, latency (per write, or per request), and an authority that
- * stops serving reads part-way through a hydration. The write knobs apply to every document
- * write, identified (the sync verbs' intents) or plain (a request-driven client's
- * compare-and-swap PUT), so the platform contract kit can show the two execution modes the same
- * fault. Reads (`remote`) bypass the write knobs so bootstrap and pull observe the authority's
- * true state.
+ * lookup route that is unreachable, latency on identified writes (`delayMs`) or on every request
+ * (`latencyMs`, a simulated round trip), and an authority that stops serving reads part-way
+ * through a hydration. The write knobs apply to every document write, identified (the sync
+ * verbs' intents) or plain (a request-driven client's compare-and-swap PUT), so the platform
+ * contract kit can show the two execution modes the same fault. Reads (`remote`) bypass the
+ * write knobs so bootstrap and pull observe the authority's true state.
  *
  * The handler is a plain `(Request) => Promise<Response>`, so the Node proof calls it directly
  * and the Chromium proof serves it over node:http (see `remote-http.ts`). A thrown handler
@@ -46,7 +46,7 @@ export interface FixtureKnobs {
   lookupFails: boolean;
   /** Latency before the router is invoked for an identified write. */
   delayMs: number;
-  /** Latency added to every request the handler receives, reads and lookups included: a round trip's cost. */
+  /** Latency added to every request the handler sees (reads, writes, lookups, capabilities), as a simulated round trip. */
   latencyMs: number;
   /**
    * Documents the read routes will still serve before failing; `null` means unlimited. A
