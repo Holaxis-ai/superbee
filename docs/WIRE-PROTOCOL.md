@@ -41,8 +41,10 @@ not make the reference server enforce it. A gated deployment owns the meaning of
   their raw spelling requires an upstream adapter with request-target access.
 - Document IDs and blob keys may contain `/`; clients encode each segment independently. Every
   route validates decoded IDs/keys before backend access. Document IDs cannot address reserved
-  `index.md` or `log.md`; blob keys cannot end in `.md` and reject absolute, traversal, and
-  dot-prefixed segments.
+  `index.md` or `log.md`, and cannot contain a control character (any code unit below U+0020, or
+  U+007F): every document route, read-many entries included, answers `400 USAGE` to such an id
+  before any backend access, even where the core id rule would admit it locally. Blob keys cannot
+  end in `.md` and reject absolute, traversal, and dot-prefixed segments.
 - JSON responses use `content-type: application/json; charset=utf-8`. Blob reads use the blob's
   content type and raw bytes. Successful `HEAD` responses and all `HEAD` failures are bodyless.
 - Except for `HEAD`, errors have shape
@@ -142,10 +144,12 @@ and no filter: the whole listing is the point of the route. Reserved files are n
 
 The digest is `sha256:<hex>` over the UTF-8 bytes of the sorted rows concatenated as
 `id`, `\n`, `version`, `\n` for each row, in order, with no other separator; an empty bundle
-digests the empty byte string. Precondition: no id contains a line feed (U+000A). The concept
-id rule does not reject control characters, so the recipe is injective only under that
-precondition; a host must not serve a document whose id contains one through heads or snapshot.
-Any host computes the same token from the same heads (`headsDigest` in `@superbee/core/storage`
+digests the empty byte string. The recipe is injective only when no id contains a line feed
+(U+000A), which the concept id rule alone does not guarantee, so the wire enforces it: every
+document route refuses an id containing a control character (Conventions), and a host whose
+bundle already holds such an id, written outside the wire, fails heads with `500 RUNTIME` and
+fails the snapshot before its header line rather than minting a digest that another listing could
+share. Any host computes the same token from the same heads (`headsDigest` in `@superbee/core/storage`
 is the reference recipe). The digest changes whenever any document is created, updated or
 deleted.
 

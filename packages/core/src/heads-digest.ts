@@ -10,8 +10,9 @@
  * lowercase hex with `sha256:`. An empty bundle digests the empty byte string. The digest
  * changes whenever a document is created, updated (its version changes) or deleted (its id
  * disappears). Precondition: no id contains a line feed. The id rule in `paths.ts` does not
- * reject control characters, so a host serving such an id would mint a digest that is not
- * injective over its heads; the wire document records this as a host obligation.
+ * reject control characters, so a digest over such an id would not be injective over its heads;
+ * the wire refuses control characters in document ids on every route and fails heads and
+ * snapshot closed when a bundle already holds one (`docs/WIRE-PROTOCOL.md`).
  *
  * Runtime-neutral: the reference router, a Worker host and a browser working copy all mint the
  * same token through the one pure SHA-256 in `sha256.ts`.

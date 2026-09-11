@@ -1655,3 +1655,127 @@ test("wire: serve() streams a 500-document snapshot over a real socket; the firs
     await handle.close();
   }
 });
+
+// ── control characters in document ids (heads QA F1) ────────────────────────
+
+const CONTROL_ID_MESSAGE = "document ids cannot contain control characters";
+
+/** Assert `res` is the router's `400 USAGE` refusal of a control character in a document id. */
+async function assertControlIdRefused(res: Response, label: string): Promise<void> {
+  assert.equal(res.status, 400, `${label}: status`);
+  const body = (await res.json()) as { error: { code: string; message: string } };
+  assert.equal(body.error.code, "USAGE", `${label}: code`);
+  assert.equal(body.error.message, CONTROL_ID_MESSAGE, `${label}: message`);
+}
+
+test("wire security: PUT /docs/{id} with %0A, %00 or %7F in the id answers 400 USAGE before any backend access", async () => {
+  for (const escape of ["%0A", "%00", "%7F"]) {
+    const { router, spy } = freshSpiedRouter();
+    const res = await router(
+      new Request(`http://wire.local/v0/bundles/test/docs/wire${escape}made`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ frontmatter: { type: "T", title: "made", timestamp: T_DOC }, body: "" }),
+      }),
+    );
+    await assertControlIdRefused(res, `PUT wire${escape}made`);
+    assert.deepEqual(spy.calls, [], `PUT wire${escape}made never reaches the backend`);
+  }
+});
+
+test("wire security: GET, HEAD, DELETE, versions and read-many with a control character in the id answer 400 before any backend access", async () => {
+  const { router, spy } = freshSpiedRouter();
+  const url = "http://wire.local/v0/bundles/test/docs/wire%0Amade";
+  await assertControlIdRefused(await router(new Request(url)), "GET");
+  await assertControlIdRefused(await router(new Request(`${url}/versions`)), "GET versions");
+  await assertControlIdRefused(await router(new Request(url, { method: "DELETE" })), "DELETE");
+  const head = await router(new Request(url, { method: "HEAD" }));
+  assert.equal(head.status, 400, "HEAD: status");
+  assert.equal(await head.text(), "", "HEAD: bodyless");
+  for (const control of ["\n", "\u0000", "\u007f"]) {
+    const readMany = await router(
+      new Request("http://wire.local/v0/bundles/test/docs:read-many", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ids: ["fine", `wire${control}made`] }),
+      }),
+    );
+    assert.equal(readMany.status, 400, "read-many: status");
+    const readManyBody = (await readMany.json()) as { error: { code: string; message: string; details: { id: string } } };
+    assert.equal(readManyBody.error.code, "USAGE");
+    assert.equal(readManyBody.error.message, CONTROL_ID_MESSAGE);
+    assert.equal(readManyBody.error.details.id, `wire${control}made`);
+  }
+  assert.deepEqual(spy.calls, [], "no route reached the backend");
+});
+
+test("wire: a bundle seeded outside the wire with a line feed in an id fails heads with 500 RUNTIME and fails the snapshot before its header, never SNAPSHOT_TRUNCATED", async () => {
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-unservable", backend: serverBackend };
+  const router = createRouter(bundle);
+  await seedDocs(bundle, ["fine"]);
+  // The core id rule admits this id locally; only the wire refuses it.
+  const unservable = "line\nbreak";
+  await serverBackend.write(unservable, { id: unservable, frontmatter: { type: "T", title: "lf", timestamp: T_DOC }, body: "" });
+
+  const heads = await router(new Request(HEADS_URL));
+  assert.equal(heads.status, 500);
+  assert.deepEqual(await heads.json(), { error: { code: "RUNTIME", message: "bundle holds a document id the wire cannot serve" } });
+  assert.equal(heads.headers.get("etag"), null, "no digest is minted over an unservable listing");
+
+  const snapshot = await router(new Request(SNAPSHOT_URL));
+  assert.equal(snapshot.status, 500, "the listing fails before any snapshot byte exists");
+  assert.equal(snapshot.headers.get("content-type"), "application/json; charset=utf-8", "an error envelope, not a truncated NDJSON body");
+  assert.deepEqual(await snapshot.json(), { error: { code: "RUNTIME", message: "bundle holds a document id the wire cannot serve" } });
+
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
+  await assert.rejects(
+    remote.snapshot(),
+    (err: unknown) => err instanceof RemoteError && err.status === 500 && err.code === "RUNTIME",
+    "the client sees no snapshot at all rather than a truncated one",
+  );
+  await assert.rejects(remote.heads(), (err: unknown) => err instanceof RemoteError && err.status === 500 && err.code === "RUNTIME");
+
+  // Other routes still serve the documents the wire can address.
+  assert.equal((await router(new Request("http://wire.local/v0/bundles/test/docs/fine"))).status, 200);
+});
+
+test("wire: the QA collision (two bundles, one digest) cannot be produced through the wire, and a directly seeded copy answers 500 rather than a 304 to the other bundle's digest", async () => {
+  // Bundle A holds x and y. Row bytes: "x\n<Vx>\ny\n<Vy>\n".
+  const backendA = new ServerMemoryBackend();
+  const bundleA: Bundle = { root: "mem://wire-collide-a", backend: backendA };
+  const routerA = createRouter(bundleA);
+  await seedDocs(bundleA, ["x", "y"]);
+  const headsA = (await (await routerA(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
+  const versionX = headsA.heads.find((head) => head.id === "x")!.version;
+  const versionY = headsA.heads.find((head) => head.id === "y")!.version;
+  const yDoc = (await backendA.read("y")).doc;
+  // Bundle B would hold one document whose id embeds x's row and whose content is y's, so its
+  // single row spells the same bytes as A's two rows. Versions are content-addressed and do
+  // not cover the id, so the crafted document takes y's version.
+  const craftedId = `x\n${versionX}\ny`;
+  assert.equal(headsDigest([{ id: craftedId, version: versionY }]), headsA.digest, "the recipe alone cannot tell the two listings apart");
+
+  // Through the wire the crafted id is refused, and B stays empty with the empty digest.
+  const backendB = new ServerMemoryBackend();
+  const routerB = createRouter({ root: "mem://wire-collide-b", backend: backendB });
+  const put = await routerB(
+    new Request(`http://wire.local/v0/bundles/test/docs/${encodeURIComponent(craftedId)}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ frontmatter: yDoc.frontmatter, body: yDoc.body }),
+    }),
+  );
+  await assertControlIdRefused(put, "PUT crafted id");
+  assert.deepEqual(await backendB.list(), []);
+  const emptyB = await routerB(new Request(HEADS_URL, { headers: { "If-None-Match": `"${headsA.digest}"` } }));
+  assert.equal(emptyB.status, 200);
+  assert.equal(((await emptyB.json()) as { digest: string }).digest, `sha256:${sha256HexOfUtf8("")}`);
+
+  // Seeded outside the wire, B fails closed: no 304 to A's digest, no digest at all.
+  await backendB.write(craftedId, { id: craftedId, frontmatter: yDoc.frontmatter, body: yDoc.body });
+  const seededB = await routerB(new Request(HEADS_URL, { headers: { "If-None-Match": `"${headsA.digest}"` } }));
+  assert.equal(seededB.status, 500);
+  assert.equal(seededB.headers.get("etag"), null);
+  assert.equal(((await seededB.json()) as { error: { code: string } }).error.code, "RUNTIME");
+});

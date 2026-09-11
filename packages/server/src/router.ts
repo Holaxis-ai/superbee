@@ -169,9 +169,41 @@ function decodeBlobKey(rawPathTail: string): BlobKey {
  * principle 4: OKF/id-safety invariants are enforced server-side too).
  */
 function assertValidDocId(id: ConceptId): void {
+  if (hasControlCharacter(id)) {
+    throw new InvalidInputError("document ids cannot contain control characters");
+  }
   assertSafeConceptId(id);
   if (isReservedFile(pathFromConceptId(id))) {
     throw new InvalidInputError(`'${id}' is a reserved file, not a concept document`);
+  }
+}
+
+/**
+ * True when `id` holds any code unit below U+0020 or equal to U+007F. The core id rule admits
+ * such characters (a local bundle may hold `"line\nbreak"`), but the heads digest concatenates
+ * `id`, `\n`, `version`, `\n` per row and is injective only when no id contains a line feed. The
+ * wire therefore refuses the whole control range on every document route
+ * ({@link assertValidDocId}) and refuses to list such an id ({@link UnservableIdError}), so no
+ * digest is ever minted over a listing the recipe cannot tell apart from another.
+ */
+function hasControlCharacter(id: string): boolean {
+  for (let i = 0; i < id.length; i += 1) {
+    const unit = id.charCodeAt(i);
+    if (unit < 0x20 || unit === 0x7f) return true;
+  }
+  return false;
+}
+
+/**
+ * A bundle written outside the wire holds a document id the wire cannot serve through heads or
+ * snapshot (see {@link hasControlCharacter}). Mapped to `500 RUNTIME` with this message: the
+ * request is well formed, the bundle is what cannot be served, and the listing fails closed
+ * rather than minting a non-injective digest.
+ */
+class UnservableIdError extends Error {
+  constructor() {
+    super("bundle holds a document id the wire cannot serve");
+    this.name = "UnservableIdError";
   }
 }
 
@@ -205,6 +237,9 @@ function errorFromCaught(err: unknown): Response {
   }
   if (err instanceof InvalidInputError) {
     return errorResponse(400, "USAGE", err.message);
+  }
+  if (err instanceof UnservableIdError) {
+    return errorResponse(500, "RUNTIME", err.message);
   }
   return errorResponse(500, "RUNTIME", "internal server error");
 }
@@ -917,8 +952,9 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
     for (const id of ids) {
       try {
         assertValidDocId(id);
-      } catch {
-        return errorResponse(400, "USAGE", `invalid document id '${id}'`, { id });
+      } catch (err) {
+        const reason = err instanceof InvalidInputError ? err.message : `invalid document id '${id}'`;
+        return errorResponse(400, "USAGE", reason, { id });
       }
     }
 
@@ -992,9 +1028,14 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
    * Every document is still read once for the listing. A document deleted between `list` and
    * its batch is simply not a head, as in the engine's scan; a malformed document fails the
    * listing exactly as it fails `GET /docs` (deviation 4): there is no skip envelope on the wire.
+   * An id the wire cannot serve (a control character, which the digest recipe cannot delimit)
+   * fails the listing closed before any document is read: heads answers `500 RUNTIME`, and the
+   * snapshot fails before its header line exists, so the client sees no snapshot rather than
+   * a digest that another listing could share.
    */
   async function listHeads(backend: StorageBackend): Promise<DocumentHead[]> {
     const ids = await backend.list();
+    if (ids.some(hasControlCharacter)) throw new UnservableIdError();
     const heads: DocumentHead[] = [];
     for (let offset = 0; offset < ids.length; offset += SNAPSHOT_BATCH_SIZE) {
       const batch = ids.slice(offset, offset + SNAPSHOT_BATCH_SIZE);
