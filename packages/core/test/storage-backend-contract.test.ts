@@ -8,9 +8,12 @@ import { IDBFactory } from "fake-indexeddb";
 
 import { FilesystemBackend } from "../src/backend.js";
 import { IndexedDbBackend } from "../src/indexeddb-backend.js";
+import { IntentHoldConflict, IntentStateConflict } from "../src/journaled-backend.js";
 import { MemoryBackend } from "../src/memory-backend.js";
 import { RemoteBackend } from "../src/remote-backend.js";
 import type { StorageBackend } from "../src/types.js";
+import { VersionConflict } from "../src/versioning.js";
+import { registerJournaledBackendContract } from "./journaled-backend-contract.js";
 import {
   registerClaimPreconditionContract,
   registerOkfAuthoringContract,
@@ -186,4 +189,16 @@ registerStorageBackendIdentityContract({
 registerStorageBackendIdentityContract({
   name: "IndexedDbBackend",
   create: () => ({ ...indexedDbFixture(), host: EXACT_HOST }),
+});
+
+// The journal rows: the seam the browser-local sync runtime programs against. The IndexedDB
+// adapter is the shipping implementation; `@superbee/browser-local` runs the same rows over its
+// in-memory test adapter to prove the seam is not a description of this one class.
+registerJournaledBackendContract({
+  name: "IndexedDbBackend",
+  create: () => {
+    const backend = new IndexedDbBackend({ databaseName: "journal-contract", indexedDB: new IDBFactory() });
+    return { backend, cleanup: async () => backend.close() };
+  },
+  seam: { IntentStateConflict, IntentHoldConflict, VersionConflict },
 });

@@ -15,7 +15,8 @@
  * ADD A SUBPATH HERE when the browser starts runtime-importing a new core subpath — keep this list
  * in sync with the SPA's runtime `@superbee/core/*` imports. `versioning` and `memory-backend`
  * are the browser-local working copy's token minting and store for SaaS mode, `indexeddb-backend`
- * its persistent store candidate; `mutation`, `bundle-ops` and `document-mutation` are its
+ * its persistent store candidate and `journaled-backend` the seam its sync runtime programs
+ * against; `mutation`, `bundle-ops` and `document-mutation` are its
  * read/decide/CAS document mutation path; `uncertain-write` is the shared unknown-outcome
  * primitive its sync component pushes intents through, and `remote-operations` the transport
  * that carries those intents to a wire authority as identified writes; `platform` is the
@@ -50,6 +51,7 @@ const BROWSER_SUBPATHS: Array<{ module: string; symbol: string }> = [
   { module: "versioning.js", symbol: "contentVersion" },
   { module: "memory-backend.js", symbol: "MemoryBackend" },
   { module: "indexeddb-backend.js", symbol: "IndexedDbBackend" },
+  { module: "journaled-backend.js", symbol: "IntentStateConflict" },
   { module: "mutation.js", symbol: "versionedMutation" },
   { module: "bundle-ops.js", symbol: "backendFor" },
   { module: "document-mutation.js", symbol: "mutateDocument" },

@@ -468,7 +468,7 @@ export const portableRuntime = { InvalidInputError, VersionConflict, RemoteBacke
     assert.equal(installedManifest.private, undefined);
     assert.equal(installedManifest.version, sourceManifest.version);
     assert.deepEqual(installedManifest.publishConfig, {
-      access: "restricted",
+      access: "public",
       registry: "https://registry.npmjs.org/",
     });
     assert.match(installedManifest.scripts.prepublishOnly, /process\.exit\(1\)/);

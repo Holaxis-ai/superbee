@@ -1,7 +1,8 @@
 /**
- * IndexedDB-backed {@link StorageBackend}: the browser-local working copy's first persistent
+ * IndexedDB-backed {@link JournaledBackend}: the browser-local working copy's first persistent
  * store candidate, sitting behind the same core seam as {@link FilesystemBackend} and
- * {@link MemoryBackend} and proven by the same adapter contract kit.
+ * {@link MemoryBackend} and proven by the same adapter contract kit, plus the journal seam the
+ * sync runtime needs (`journaled-backend.ts`), proven by that kit's journal rows.
  *
  * Storage shape mirrors the filesystem adapter, not the memory adapter: a concept document is
  * stored as its exact OKF-serialized string and parsed on every read, so the read body carries
@@ -22,7 +23,8 @@
  * write as a pending-change intent committed in the same transaction as the document record
  * ({@link IndexedDbBackend.writeJournaled}), and `meta` holds opaque key-value rows such as the
  * bootstrap marker and per-document shared bases. The adapter owns the transaction mechanics;
- * what the rows mean belongs to the sync component that writes them.
+ * what the rows mean belongs to the sync component that writes them, and what the verbs
+ * promise is stated once on the seam.
  *
  * This module imports no Node builtin so it bundles for the browser; the IndexedDB factory is
  * injectable so a Node test can supply an in-memory implementation without touching globals.
@@ -31,9 +33,19 @@
 import { resolveContentType } from "./content-type.js";
 import { MalformedDocumentError, parseMarkdown, stringifyDoc } from "./frontmatter.js";
 import { mutationActorFromFrontmatter } from "./mutation-attribution.js";
+import {
+  IntentHoldConflict,
+  IntentStateConflict,
+  type IntentPatch,
+  type IntentRecord,
+  type JournaledBackend,
+  type JournaledReadResult,
+  type JournaledWriteOptions,
+  type MetaRecord,
+} from "./journaled-backend.js";
 import { assertSafeBlobKey, assertSafeConceptId, assertSafeReservedDir, pathFromConceptId, toPosix } from "./paths.js";
 import { parseLeadingFrontmatter } from "./portable-frontmatter.js";
-import type { OperationIntent, OperationState } from "./uncertain-write.js";
+import type { OperationState } from "./uncertain-write.js";
 import { blobVersion, defaultActor, VersionConflict, versionOfBytes } from "./versioning.js";
 import type {
   BlobKey,
@@ -44,12 +56,16 @@ import type {
   ReadResult,
   ReservedFilename,
   ReservedReadResult,
-  StorageBackend,
   StorageCapabilities,
   Version,
   VersionInfo,
   WriteOptions,
 } from "./types.js";
+
+// Re-exports: the journal's record, option, and error names moved to the seam module
+// (`journaled-backend.ts`); they stay reachable here so existing importers keep working.
+export { IntentHoldConflict, IntentStateConflict } from "./journaled-backend.js";
+export type { IntentPatch, IntentRecord, JournaledReadResult, JournaledWriteOptions, MetaRecord, NewIntentRecord } from "./journaled-backend.js";
 
 // ── the slice of the IndexedDB API this adapter needs ──────────────────────────────────────
 // Core compiles against the ES library only (no DOM lib), so the adapter names the structural
@@ -113,49 +129,6 @@ export class IndexedDbSchemaError extends Error {
   override readonly name = "IndexedDbSchemaError";
 }
 
-/**
- * An intent's journal state was not the one the caller expected, or the intent is gone. Settling
- * and superseding are compare-and-swap operations on the intent's own record so two realms (a
- * stale tab, a worker) cannot both settle or both replace one intent.
- */
-export class IntentStateConflict extends Error {
-  override readonly name = "IntentStateConflict";
-  readonly requestId: string;
-  readonly expected: OperationState;
-  readonly actual: OperationState | null;
-
-  constructor(requestId: string, expected: OperationState, actual: OperationState | null) {
-    super(
-      actual === null
-        ? `intent '${requestId}' does not exist (expected state '${expected}')`
-        : `intent '${requestId}' is '${actual}', not '${expected}'`,
-    );
-    this.requestId = requestId;
-    this.expected = expected;
-    this.actual = actual;
-  }
-}
-
-/**
- * A journaled write required that no unsettled intent hold its target, and one does. The local
- * edit that intent describes would otherwise be replaced while the authority has not accepted
- * it. The check runs inside the write's own transaction, so an intent committed while the caller
- * was awaiting the network still holds the target.
- */
-export class IntentHoldConflict extends Error {
-  override readonly name = "IntentHoldConflict";
-  readonly target: ConceptId;
-  readonly requestId: string;
-  readonly state: OperationState;
-
-  constructor(target: ConceptId, requestId: string, state: OperationState) {
-    super(`'${target}' is held by intent '${requestId}' in state '${state}'`);
-    this.target = target;
-    this.requestId = requestId;
-    this.state = state;
-  }
-}
-
 // ── schema ─────────────────────────────────────────────────────────────────────────────────
 
 /** Bumping this requires a migration in `upgrade`; the handler refuses any other older layout. */
@@ -199,68 +172,6 @@ interface BlobRecord {
   contentType: string;
   version: Version;
 }
-
-/**
- * A journaled local write: the shared primitive's {@link OperationIntent} plus what the
- * working copy keeps for reconciliation. `sequence` is the local commit order; `after` names a
- * predecessor intent on the same target that must be acknowledged before this one is delivered.
- */
-export interface IntentRecord extends OperationIntent {
-  sequence: number;
-  updatedAt: string;
-  /** The serialized document at `base`, when the working copy held it; the three-way baseline. */
-  baseContent: string | null;
-  after?: string;
-  /** Set when the authority committed the intent; equals `local` for a content-addressed token. */
-  acknowledgedVersion?: Version;
-  /** The shared head observed when the intent entered conflict. */
-  remote?: { version: Version | null; content: string | null };
-  refusal?: { code: string; message: string };
-  /** A recorded observation the caller should surface, such as an acknowledged version that differs from `local`. */
-  finding?: string;
-}
-
-/** The caller-supplied part of a new intent; the adapter fills content, version, sequence, and state. */
-export type NewIntentRecord = Pick<IntentRecord, "requestId" | "kind" | "target" | "base" | "baseContent" | "createdAt"> &
-  Partial<Pick<IntentRecord, "after">>;
-
-/** An opaque key-value row in the `meta` store (bootstrap marker, per-document base, pause flag). */
-export interface MetaRecord {
-  key: string;
-  value: unknown;
-}
-
-/** Options for {@link IndexedDbBackend.writeJournaled}. */
-export interface JournaledWriteOptions extends WriteOptions {
-  /** Record this intent in the same transaction as the document write. */
-  intent?: NewIntentRecord;
-  /** An unsettled intent this write composes over; deleted only while its state and attempts still match. */
-  supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number };
-  /** Meta rows to put in the same transaction, given the written bytes when a function. */
-  meta?: MetaRecord[] | ((written: { version: Version; raw: string }) => MetaRecord[]);
-  /**
-   * Abort with {@link IntentHoldConflict} when any intent targeting `id` is in a state other than
-   * `acknowledged`, read in the same transaction as the document write. A refresh from the
-   * authority uses this so a local edit committed during its network round trip is never
-   * replaced.
-   */
-  requireSettled?: boolean;
-}
-
-/** One document with everything the journal holds about it, read in one transaction. See {@link IndexedDbBackend.readWithJournal}. */
-export interface JournaledReadResult {
-  /** The parsed document and its version, or `null` when the store holds no record. */
-  document: ReadResult | null;
-  /** The exact stored serialization, the bytes `version` names; `null` when absent. */
-  raw: string | null;
-  /** Every intent targeting the id, in local commit order, whatever its state. */
-  intents: IntentRecord[];
-  /** The requested meta rows' values by key; a key with no row is absent from the map. */
-  meta: Map<string, unknown>;
-}
-
-/** Fields a caller may change when settling or reclaiming an intent. */
-export type IntentPatch = Partial<Omit<IntentRecord, "requestId" | "sequence" | "createdAt" | "kind" | "target">>;
 
 // ── helpers ────────────────────────────────────────────────────────────────────────────────
 
@@ -312,11 +223,11 @@ function editionOf(index: ReservedRecord | undefined): string | undefined {
 }
 
 /**
- * A persistent browser-local OKF store implementing the {@link StorageBackend} contract over
+ * A persistent browser-local OKF store implementing the {@link JournaledBackend} contract over
  * IndexedDB. One instance per bundle per JavaScript realm; several instances over the same
  * database name are peers whose conditional writes are serialized by the database.
  */
-export class IndexedDbBackend implements StorageBackend {
+export class IndexedDbBackend implements JournaledBackend {
   /**
    * What a resolved write promises: the IndexedDB transaction reported `complete`. Whether the
    * committed pages survive power loss is the browser's and the operating system's decision.

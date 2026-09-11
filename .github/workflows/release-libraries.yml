@@ -2,8 +2,8 @@ name: Release runtime libraries (build once, stage separately)
 
 # `libraries/v<version>` is independent of the public CLI's `v<version>` release identity. The
 # credential-free job builds and packs both libraries once. Later jobs only move those exact bytes.
-# npm provenance supports public packages only. The restricted pair retains GitHub build
-# attestations, which the registry finalizer verifies against the dedicated source tag.
+# The pair retains GitHub build attestations, which the registry finalizer verifies against the
+# dedicated source tag. npm provenance remains disabled; it is not this workflow's proof channel.
 on:
   push:
     tags: ["libraries/v*"]
@@ -187,7 +187,7 @@ jobs:
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
         run: |
           {
-            echo "## Human bootstrap required for the first restricted library release"
+            echo "## Human bootstrap required for the first public library release"
             echo ""
             echo "npm staging cannot create a new package. Download this run's retained artifact, verify the two digests, then a human maintainer may publish core followed by server with interactive 2FA:"
             echo ""
@@ -195,8 +195,8 @@ jobs:
             echo "- $SERVER_TGZ: \`$SERVER_SHA\`"
             echo ""
             echo '```sh'
-            echo "npm publish \"./$CORE_TGZ\" --access restricted --tag \"$DIST_TAG\" --ignore-scripts"
-            echo "npm publish \"./$SERVER_TGZ\" --access restricted --tag \"$DIST_TAG\" --ignore-scripts"
+            echo "npm publish \"./$CORE_TGZ\" --access public --tag \"$DIST_TAG\" --ignore-scripts"
+            echo "npm publish \"./$SERVER_TGZ\" --access public --tag \"$DIST_TAG\" --ignore-scripts"
             echo "gh workflow run release-libraries-finalize.yml -f version=$V"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -233,7 +233,7 @@ jobs:
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access restricted --provenance=false --json --loglevel verbose > stage.json
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
           STAGE_ID="$(node -e '
             const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
             const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
@@ -271,7 +271,7 @@ jobs:
           DIST_TAG: ${{ needs.build.outputs.dist_tag }}
         run: |
           set -euo pipefail
-          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access restricted --provenance=false --json --loglevel verbose > stage.json
+          npm stage publish "./out/$TGZ" --tag "$DIST_TAG" --access public --provenance=false --json --loglevel verbose > stage.json
           STAGE_ID="$(node -e '
             const value = JSON.parse(require("fs").readFileSync("stage.json", "utf8"));
             const find = (v) => v && typeof v === "object" ? (typeof v.stageId === "string" ? v.stageId : Object.values(v).map(find).find(Boolean)) : undefined;
