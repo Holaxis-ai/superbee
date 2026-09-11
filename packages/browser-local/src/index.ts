@@ -30,3 +30,11 @@ export {
   type SyncStatus,
 } from "./local-bundle.js";
 export { withPushRole, pushRoleName, hostLocks, type PushRoleResult, type PushRoleOptions, type LockManagerLike } from "./push-role.js";
+export {
+  createRequestDrivenRuntime,
+  createBrowserLocalRuntime,
+  UnconfirmedWorkingCopyError,
+  kindWarningsFor,
+  type RequestDrivenRuntimeOptions,
+  type BrowserLocalRuntimeOptions,
+} from "./platform/index.js";

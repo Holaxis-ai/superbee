@@ -5,11 +5,12 @@
  * spec can compare tokens and bodies without any page-to-node object marshalling.
  */
 
-import type { OkfDocument, StorageBackend } from "@superbee/core";
+import type { OkfDocument, QueryFilter, StorageBackend } from "@superbee/core";
 import { queryHeads, readBlob, readDocVersioned, writeBlob, writeDocVersioned } from "@superbee/core/bundle-ops";
 import { mutateDocument } from "@superbee/core/document-mutation";
 import { IndexedDbSchemaError, type IntentRecord } from "@superbee/core/indexeddb-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
+import type { ExecutionMode, PlatformEdit, PlatformRuntime } from "@superbee/core/platform";
 import { RemoteBackend } from "@superbee/core/remote";
 import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
 import type { OperationState, OperationTransport } from "@superbee/core/uncertain-write";
@@ -31,13 +32,15 @@ import {
   type SharedBase,
 } from "../../src/local-bundle.ts";
 import type { LockManagerLike } from "../../src/push-role.ts";
+import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../../src/platform/index.ts";
 import { faultyIndexedDb, type Faults } from "./faulty-factory.ts";
+import { mountPresentation, type Presentation } from "./presentation.ts";
 
 const ROOT_INDEX = "---\nokf_version: '0.2'\n---\n# Browser-local proof\n";
 const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 
 export interface DriverError {
-  error: { name: string; message: string; expected?: string | null; actual?: string | null };
+  error: { name: string; message: string; expected?: string | null; actual?: string | null; code?: string; status?: number };
 }
 
 export interface WriteReply {
@@ -55,11 +58,13 @@ function describeError(error: unknown): DriverError {
     return { error: { name: error.name, message: error.message, expected: error.expected, actual: error.actual } };
   }
   if (error instanceof IndexedDbSchemaError) return { error: { name: error.name, message: error.message } };
-  const err = error as { name?: unknown; message?: unknown };
+  const err = error as { name?: unknown; message?: unknown; code?: unknown; status?: unknown };
   return {
     error: {
       name: typeof err?.name === "string" ? err.name : "Error",
       message: typeof err?.message === "string" ? err.message : String(error),
+      ...(typeof err?.code === "string" ? { code: err.code } : {}),
+      ...(typeof err?.status === "number" ? { status: err.status } : {}),
     },
   };
 }
@@ -147,6 +152,46 @@ function edit(body: string) {
     buildCandidate: (existing: OkfDocument | undefined) => ({ frontmatter: existing!.frontmatter, body }),
   };
 }
+
+// ── platform runtime and presentation ─────────────────────────────────────────────────────
+
+/** The fixed clock and actor the contract kit uses, so a page commit mints the kit's version. */
+const PLATFORM_NOW = "2026-09-10T12:00:00.000Z";
+const PLATFORM_ACTOR = "process:contract-kit";
+
+let platform: { mode: ExecutionMode; runtime: PlatformRuntime; presentation: Presentation } | null = null;
+
+function platformOrThrow(): NonNullable<typeof platform> {
+  if (!platform) throw new Error("driver: call platformMount(mode, remoteBaseUrl, name) first");
+  return platform;
+}
+
+/**
+ * Build a runtime of `mode` over the authority at `remoteBaseUrl` through the page's carrier
+ * (so the offline flag cuts either mode off), mount the presentation over it, and render once.
+ * Browser-local hydrates the working copy under `name` when it is not already complete.
+ */
+async function mountPlatform(mode: ExecutionMode, remoteBaseUrl: string, name: string): Promise<PlatformRuntime> {
+  platform?.presentation.root.remove();
+  platform = null;
+  let runtime: PlatformRuntime;
+  if (mode === "request-driven") {
+    const backend = new RemoteBackend({ baseUrl: remoteBaseUrl, bundle: REMOTE_BUNDLE, fetchImpl: carrier, maxRetries: 0 });
+    runtime = await createRequestDrivenRuntime({ remote: backend, actor: PLATFORM_ACTOR, now: () => PLATFORM_NOW });
+  } else {
+    attachTo(remoteBaseUrl, name);
+    const local = bundleOrThrow();
+    const { backend, transport } = remoteOrThrow();
+    if (!(await isComplete(local))) await bootstrap(backend, local);
+    runtime = createBrowserLocalRuntime({ local, remote: backend as RemoteBackend, transport, write: immediate, actor: PLATFORM_ACTOR, now: () => PLATFORM_NOW });
+  }
+  const presentation = mountPresentation(document.body, runtime);
+  await presentation.refresh();
+  platform = { mode, runtime, presentation };
+  return runtime;
+}
+
+type PlatformVerb = "read" | "query" | "validate" | "commit" | "syncStatus" | "sync";
 
 const driver = {
   /** Open the working copy under `name`; seed the root index.md once so the edition is 0.2. */
@@ -365,6 +410,47 @@ const driver = {
     faults.quotaOnNextPut = false;
     return { armed: false as const };
   },
+
+  // ── platform contract ────────────────────────────────────────────────────────────────────
+
+  /** Mount the presentation over a runtime of `mode`; replies with the runtime's capabilities. */
+  platformMount: (mode: ExecutionMode, remoteBaseUrl: string, name: string) =>
+    attempt(async () => {
+      const runtime = await mountPlatform(mode, remoteBaseUrl, name);
+      return { capabilities: runtime.capabilities() };
+    }),
+
+  /** One contract verb on the mounted runtime; the reply is the contract's own result as JSON. */
+  platformCall: (verb: PlatformVerb, id?: string, edit?: PlatformEdit | QueryFilter) =>
+    attempt(async () => {
+      const { runtime } = platformOrThrow();
+      switch (verb) {
+        case "read":
+          return runtime.read(id!);
+        case "query":
+          return runtime.query((edit as QueryFilter | undefined) ?? {});
+        case "validate":
+          return runtime.validate(id!);
+        case "commit":
+          return runtime.commit(id!, edit as PlatformEdit);
+        case "syncStatus":
+          return runtime.syncStatus();
+        case "sync":
+          return runtime.sync();
+      }
+    }),
+
+  /** Unsettled intents for `id` in the mounted working copy; none in request-driven mode. */
+  platformUnsettled: (id: string) =>
+    attempt(async () => {
+      if (platformOrThrow().mode === "request-driven") return [];
+      return (await bundleOrThrow().backend.listIntents(UNSETTLED_STATES)).filter((row) => row.target === id).map((row) => ({ requestId: row.requestId, state: row.state }));
+    }),
+
+  platformRefresh: () => attempt(async () => {
+    await platformOrThrow().presentation.refresh();
+    return { ok: true as const };
+  }),
 
   /** Wall time of one read and one prefix query, measured in the page. */
   timeRead: (id: string, prefix: string) =>

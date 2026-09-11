@@ -663,3 +663,74 @@ test("a plain write records no intent, and the journal survives a reopen on the 
     second.close();
   }
 });
+
+/** A pass-through factory that records every `transaction(stores, mode)` the adapter opens. */
+function transactionRecordingFactory(inner: IDBFactory, log: Array<{ stores: string[]; mode: string }>): IdbFactoryLike {
+  const wrapDb = (db: any) =>
+    proxied(db, {
+      transaction: (names: string | string[], mode?: string) => {
+        log.push({ stores: [...(typeof names === "string" ? [names] : names)].sort(), mode: mode ?? "readonly" });
+        return db.transaction(names, mode);
+      },
+    });
+  return {
+    open(name: string, version?: number) {
+      const request = inner.open(name, version);
+      return proxied(request, {
+        get result() {
+          return wrapDb(request.result);
+        },
+      });
+    },
+  };
+}
+
+test("readWithJournal reads the document, its intents, and the named meta rows in one readonly transaction, consistent under a concurrent writeJournaled", async () => {
+  const log: Array<{ stores: string[]; mode: string }> = [];
+  const backend = new IndexedDbBackend({ databaseName: DB, indexedDB: transactionRecordingFactory(new IDBFactory(), log) });
+  const id = "journal/snapshot";
+  const base = `base:${id}`;
+  try {
+    await backend.writeReserved("", "index.md", ROOT_INDEX);
+    const first = await backend.writeJournaled(id, doc(id, "v1"), { expectedVersion: null, meta: [{ key: base, value: { version: "shared-1", content: null } }] });
+
+    log.length = 0;
+    const snapshot = await backend.readWithJournal(id, { meta: [base, "absent:key"] });
+    assert.deepEqual(log, [{ stores: ["documents", "intents", "meta", "reserved"], mode: "readonly" }], "one readonly transaction over the four stores");
+    assert.equal(snapshot.document?.version, first.version);
+    assert.equal(snapshot.document?.doc.body, "v1\n", "the read body carries the serializer normalization");
+    assert.equal(snapshot.raw, first.raw);
+    assert.deepEqual(snapshot.intents, []);
+    assert.deepEqual([...snapshot.meta.entries()], [[base, { version: "shared-1", content: null }]], "an absent key has no entry");
+
+    // Race the snapshot against a journaled write that moves the document, the journal, and the
+    // base together; whichever the database serializes first, the snapshot is one moment or the other.
+    const consistent = (snap: Awaited<ReturnType<typeof backend.readWithJournal>>, before: { version: string }, after: { version: string } | null): "before" | "after" => {
+      if (after && snap.document?.version === after.version) {
+        assert.equal(snap.intents.length, 1, "after the write, the intent is in the snapshot");
+        assert.equal(snap.intents[0]!.local, after.version);
+        assert.deepEqual(snap.meta.get(base), { version: "shared-2", content: null });
+        return "after";
+      }
+      assert.equal(snap.document?.version, before.version);
+      assert.deepEqual(snap.intents, [], "before the write, no intent");
+      assert.deepEqual(snap.meta.get(base), { version: "shared-1", content: null });
+      return "before";
+    };
+    const readFirst = backend.readWithJournal(id, { meta: [base] });
+    const write = backend.writeJournaled(id, doc(id, "v2"), {
+      expectedVersion: first.version,
+      intent: newIntent("req-snapshot", id, "shared-1"),
+      meta: [{ key: base, value: { version: "shared-2", content: null } }],
+    });
+    const readSecond = backend.readWithJournal(id, { meta: [base] });
+    const [early, written, late] = await Promise.all([readFirst, write, readSecond]);
+    const moments = [consistent(early, first, written), consistent(late, first, written)];
+    assert.ok(!(moments[0] === "after" && moments[1] === "before"), "a snapshot started after the write cannot predate one started before it");
+    const settled = await backend.readWithJournal(id, { meta: [base] });
+    assert.equal(consistent(settled, first, written), "after");
+    assert.deepEqual(await backend.readWithJournal("journal/absent"), { document: null, raw: null, intents: [], meta: new Map() });
+  } finally {
+    backend.close();
+  }
+});
