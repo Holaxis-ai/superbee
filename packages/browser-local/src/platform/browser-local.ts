@@ -25,9 +25,13 @@
  * normalizes differently (a filesystem authority over hand-authored files).
  *
  * `shared-confirmed` means the authority acknowledged or served exactly this content at this
- * runtime's last exchange with it (its last sync), not that the authority holds it now; in
- * particular the working copy keeps a document the authority has since deleted until that is
- * reconciled (pull does not yet remove it).
+ * runtime's last exchange with it (its last sync), not that the authority holds it now. A
+ * document the authority has since deleted stays `shared-confirmed` until the next sync, whose
+ * pull removes it from the working copy. If a local edit holds it, the pull retains it and
+ * rewrites its base to an absent shared version, and the document reads `local-pending`; the
+ * conflict is recorded by push, which delivers the edit and settles the authority's 412 with
+ * actual `null` as a conflict against an absent remote, so after a sync (push then pull) it
+ * reads `local-conflict` with `remote: null`.
  *
  * A document with no unsettled intent whose bytes its base does not name is a defect in the
  * working copy (every local write journals an intent): `read` rejects with
@@ -49,6 +53,8 @@ import {
   type PlatformEdit,
   type PlatformQueryRow,
   type PlatformRuntime,
+  type PlatformSyncOptions,
+  type PlatformSyncOutcome,
   type PlatformSyncStatus,
   type PlatformValidation,
   type Provenance,
@@ -95,6 +101,14 @@ function notFound(id: ConceptId): Error & { code: string } {
 
 const UNSETTLED = new Set(UNSETTLED_STATES);
 
+/** The one line a status carries for a rejected sync: the error's name and message. */
+function describeFailure(failure: unknown): string {
+  const err = failure as { name?: unknown; message?: unknown };
+  const name = typeof err?.name === "string" ? err.name : "Error";
+  const message = typeof err?.message === "string" ? err.message : String(failure);
+  return `${name}: ${message}`;
+}
+
 /**
  * The provenance of one snapshot, or `null` when the snapshot is unconfirmed (no unsettled
  * intent, and no base naming the bytes). `raw` are the stored bytes `version` names.
@@ -117,6 +131,8 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
   const { local, remote, transport, actor, now } = options;
   const { bundle, backend } = local;
   let online: boolean | null = null;
+  /** How this runtime's last sync ended; `null` until one has run here. */
+  let lastOutcome: { ok: boolean; error?: string } | null = null;
 
   const capabilities = (): PlatformCapabilities => ({ mode: "browser-local", offlineCommits: true, localPersistence: true });
 
@@ -146,8 +162,21 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
     return count;
   };
 
+  /**
+   * The last sync as the contract reports it: this runtime's own outcome when it has synced,
+   * otherwise what the pull marker says about the last pull over this store (complete or
+   * interrupted), and in either case the deletions that marker still refuses. Absent when no
+   * pull has ever run here.
+   */
+  const lastSyncOf = (marker: Awaited<ReturnType<typeof localSyncStatus>>["lastPull"]): PlatformSyncOutcome | undefined => {
+    const outcome = lastOutcome ?? (marker === null ? undefined : { ok: marker.completedAt !== null });
+    if (outcome === undefined) return undefined;
+    return { ...outcome, ...(marker?.refused === undefined ? {} : { refusedDeletions: marker.refused }) };
+  };
+
   const status = async (): Promise<PlatformSyncStatus> => {
     const local = await localSyncStatus(backend);
+    const lastSync = lastSyncOf(local.lastPull);
     return {
       mode: "browser-local",
       online,
@@ -158,6 +187,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
       paused: local.paused,
       ...(local.pausedReason === undefined ? {} : { pausedReason: local.pausedReason }),
       complete: local.bootstrapComplete,
+      ...(lastSync === undefined ? {} : { lastSync }),
     };
   };
 
@@ -202,13 +232,28 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
 
     syncStatus: status,
 
-    sync: async (): Promise<PlatformSyncStatus> => {
+    /**
+     * Push, then pull. `online` reports the carrier alone: it turns false on a carrier failure
+     * and stays as it was on an authority answer. `lastSync` reports the verb: any rejection,
+     * carrier or authority, records `ok: false` with the error's text before it propagates or
+     * is absorbed, so a presentation can show that the sync failed even when the authority
+     * answered.
+     */
+    sync: async (syncOptions: PlatformSyncOptions = {}): Promise<PlatformSyncStatus> => {
       const readSide: StorageBackend = remote;
-      await pushWithRole(local, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       try {
-        await pull(backend, readSide);
-        online = true;
+        await pushWithRole(local, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       } catch (error) {
+        lastOutcome = { ok: false, error: describeFailure(error) };
+        throw error;
+      }
+      try {
+        // The opened bundle, not its backend: the pull keeps the authority's capabilities on it.
+        await pull(local, readSide, syncOptions.acceptRefusedDeletions === undefined ? {} : { acceptRefusedDeletions: syncOptions.acceptRefusedDeletions });
+        online = true;
+        lastOutcome = { ok: true };
+      } catch (error) {
+        lastOutcome = { ok: false, error: describeFailure(error) };
         if (isInputError(error) || isAuthorityAnswer(error)) throw error;
         online = false;
       }

@@ -24,7 +24,7 @@
 import assert from "node:assert/strict";
 
 import type { OkfDocument, StorageBackend, Version } from "@superbee/core";
-import type { ExecutionMode, PlatformRuntime, Provenance } from "@superbee/core/platform";
+import type { ExecutionMode, PlatformDocument, PlatformRuntime, Provenance } from "@superbee/core/platform";
 
 export const MODES: readonly ExecutionMode[] = ["request-driven", "browser-local"];
 
@@ -68,6 +68,33 @@ export interface AuthorityHandle {
   read(id: string): Promise<{ version: Version; body: string }>;
   /** A body edit applied directly at the authority, as another client would make it. */
   write(id: string, body: string): Promise<Version>;
+  /**
+   * A deletion applied directly at the authority, as another client would make it. The
+   * harness records the id: the invariant sweep accepts absence only for ids deleted this way.
+   */
+  delete(id: string): Promise<void>;
+}
+
+/**
+ * The authority handle over one fixture's `MemoryBackend`, recording every id it deletes into
+ * `absent`. Both harnesses (Node, and the Chromium page session) build theirs here so the
+ * sweep's notion of expected absence is one definition.
+ */
+export function authorityHandle(authority: StorageBackend, absent: Set<string>): AuthorityHandle {
+  return {
+    read: async (id) => {
+      const { doc, version } = await authority.read(id);
+      return { version, body: doc.body };
+    },
+    write: async (id, body) => {
+      const { doc, version } = await authority.read(id);
+      return authority.write(id, { ...doc, body }, { expectedVersion: version });
+    },
+    delete: async (id) => {
+      await authority.delete(id);
+      absent.add(id);
+    },
+  };
 }
 
 export interface UnsettledIntent {
@@ -88,6 +115,8 @@ export interface ContractSession {
   setKnob(name: WriteKnob, flag: boolean): Promise<void>;
   /** Unsettled intents journaled for `id`; always empty in request-driven mode. */
   unsettled(id: string): Promise<UnsettledIntent[]>;
+  /** The ids this session deleted at the authority through its handle: the only ids the sweep accepts as absent. */
+  expectedAbsent(): readonly string[];
   /** Back online with every knob cleared; the invariant sweep runs after this. */
   restore(): Promise<void>;
   close(): Promise<void>;
@@ -245,6 +274,7 @@ export function platformContractRows(): ContractRow[] {
           const status = await runtime.sync();
           assert.equal(status.pending, 0);
           assert.equal(status.online, true);
+          assert.deepEqual(status.lastSync, { ok: true }, "a completed sync with nothing refused");
         }
         const after = await runtime.read("notes/alpha");
         const shared = expectState(after.provenance, "shared-confirmed", "read after commit");
@@ -288,6 +318,8 @@ export function platformContractRows(): ContractRow[] {
           const status = await runtime.sync();
           assert.equal(status.pending, 1, "a sync that cannot reach the authority leaves the intent pending");
           assert.equal(status.online, false);
+          assert.equal(status.lastSync?.ok, false, "a sync that rejected is reported as failed");
+          assert.match(status.lastSync?.error ?? "", /TypeError/);
           expectState((await runtime.read("notes/beta")).provenance, "local-pending", "read after failed sync");
         }
         assert.deepEqual(await authority.read("notes/beta"), before, "the authority is unchanged");
@@ -481,6 +513,49 @@ export function platformContractRows(): ContractRow[] {
       },
     },
     {
+      verb: "sync",
+      name: "reconciles a document the authority deleted",
+      inputs: { deleted: "tasks/one", edited: "notes/beta", body: "beta v2 (over a deletion)\n" },
+      outcome: {
+        "request-driven": "read of the deleted document rejects ENOENT and query omits it; a commit at the premise read before the deletion rejects; nothing is pending",
+        "browser-local": "after sync the deleted document is gone from the working copy (read rejects ENOENT, query omits it); the document with a pending edit is retained as local-conflict with remote null and its body kept",
+      },
+      parity: false,
+      scope: "sync",
+      async run(session) {
+        const { runtime, authority, mode } = session;
+        const premise = (await runtime.read("notes/beta")).provenance.version;
+        let pending: string | null = null;
+        if (mode === "browser-local") {
+          const commit = await runtime.commit("notes/beta", { body: "beta v2 (over a deletion)\n", expectedVersion: premise });
+          pending = expectState(commit.provenance, "local-pending", "commit").requestId;
+        }
+        await authority.delete("tasks/one");
+        await authority.delete("notes/beta");
+        const status = await runtime.sync();
+        const absent = await rejection(() => runtime.read("tasks/one"));
+        assert.equal(absent.code, "ENOENT", "the deleted document reads as absent");
+        assert.deepEqual((await runtime.query({ type: "Task" })).map((row) => row.id), ["tasks/two"], "query omits the deleted document");
+        if (mode === "request-driven") {
+          assert.equal(status.pending, 0);
+          const error = await rejection(() => runtime.commit("notes/beta", { body: "beta v2 (over a deletion)\n", expectedVersion: premise }));
+          assert.equal(error.name, "DocumentNotFoundError", "a commit at a premise the authority deleted from under rejects");
+          assert.equal((await rejection(() => runtime.read("notes/beta"))).code, "ENOENT");
+        } else {
+          assert.equal(status.conflicts, 1);
+          assert.equal(status.pending, 0);
+          const read = await runtime.read("notes/beta");
+          const conflict = expectState(read.provenance, "local-conflict", "read after sync");
+          assert.equal(conflict.remote, null, "the authority holds nothing for the id");
+          assert.equal(conflict.base, premise);
+          assert.equal(conflict.requestId, pending);
+          assert.equal(read.doc.body, "beta v2 (over a deletion)\n", "the local edit is retained");
+          assert.deepEqual((await runtime.query({ type: "Note" })).map((row) => [row.id, row.provenance.state]), [["notes/alpha", "shared-confirmed"], ["notes/beta", "local-conflict"]]);
+        }
+        return null;
+      },
+    },
+    {
       verb: "errors",
       name: "rejects an invalid id and an absent id with the same typed errors",
       inputs: { invalid: ["", "/absolute"], absent: "notes/missing" },
@@ -508,11 +583,24 @@ export function platformContractRows(): ContractRow[] {
  * The provenance invariant over every document: `shared-confirmed` only with no unsettled
  * intent for the id; `local-pending` or `local-conflict` only with one, and naming it; and,
  * whatever state was derived, `local-conflict` exactly when a conflict intent exists for the
- * id. Nothing in the working copy is unconfirmed.
+ * id. A document the runtime no longer holds is absent only if the row deleted it at the
+ * authority (the session records those ids), and then has no unsettled intent, since a held
+ * document is never removed; any other absence is a document the runtime lost. Nothing in the
+ * working copy is unconfirmed.
  */
 export async function assertProvenanceInvariant(session: ContractSession): Promise<void> {
+  const expectedAbsent = new Set(session.expectedAbsent());
   for (const id of SYNTHETIC_IDS) {
-    const { provenance } = await session.runtime.read(id);
+    let document: PlatformDocument;
+    try {
+      document = await session.runtime.read(id);
+    } catch (error) {
+      assert.equal((error as { code?: unknown }).code, "ENOENT", `${session.mode} '${id}': read rejected with something other than absence`);
+      assert.ok(expectedAbsent.has(id), `${session.mode} '${id}': absent, but the row never deleted it at the authority`);
+      assert.deepEqual(await session.unsettled(id), [], `${session.mode} '${id}': absent with an unsettled intent`);
+      continue;
+    }
+    const { provenance } = document;
     const unsettled = await session.unsettled(id);
     const conflicted = unsettled.some((row) => row.state === "conflict");
     assert.equal(provenance.state === "local-conflict", conflicted, `${session.mode} '${id}': ${provenance.state} with ${conflicted ? "a" : "no"} conflict intent`);

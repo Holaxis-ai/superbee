@@ -19,6 +19,17 @@
  *   attempts, carries the written bytes as `content` and their version as `local`, and takes
  *   the next value of a monotonic per-store sequence. The sequence advances only for a write
  *   that commits.
+ * - {@link JournaledBackend.deleteJournaled} is the deletion counterpart: ONE transaction that
+ *   removes the document record under the same compare-and-swap, puts and removes meta rows
+ *   with it, and honours `requireSettled` the same way, so a document the authority deleted
+ *   leaves the working copy together with its shared base and never while a local edit holds
+ *   it. An absent target is not a conflict: the meta changes still apply and the result says
+ *   `absent`, as the plain `delete` answers absence with `false`. With `onHeld`, a hold is not a
+ *   rejection but the third outcome: the deletion and its own meta changes do not apply, the
+ *   `onHeld` meta rows apply instead, in the same transaction as the hold check, and the result
+ *   says `held` and names the holder. A caller that must rewrite a held document's shared base
+ *   (a pull reconciling a remote deletion) does it there, so no other realm can settle the
+ *   holding intent between the refusal and the rewrite.
  * - {@link JournaledBackend.readWithJournal} is ONE snapshot: the document, every intent
  *   targeting it, and the named meta rows, read in one readonly transaction, so a write in
  *   another realm between separate reads can never show a caller a document of one moment
@@ -39,7 +50,7 @@
  */
 
 import type { OperationIntent, OperationState } from "./uncertain-write.js";
-import type { ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "./types.js";
+import type { ConceptId, DeleteOptions, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "./types.js";
 
 /**
  * An intent's journal state was not the one the caller expected, or the intent is gone. Settling
@@ -131,6 +142,36 @@ export interface JournaledWriteOptions extends WriteOptions {
   requireSettled?: boolean;
 }
 
+/** Options for {@link JournaledBackend.deleteJournaled}. */
+export interface JournaledDeleteOptions extends DeleteOptions {
+  /** Meta rows to put in the same transaction; they apply only when the deletion applies or the target is absent. */
+  meta?: MetaRecord[];
+  /** Meta keys to remove in the same transaction; a key with no row is not an error. Applied as `meta` is. */
+  removeMeta?: readonly string[];
+  /**
+   * Refuse the deletion when any intent targeting `id` is in a state other than `acknowledged`,
+   * read in the same transaction as the deletion. A pull that reconciles a remote deletion uses
+   * this so a local edit is never discarded. Without `onHeld` the refusal rejects with
+   * {@link IntentHoldConflict}; with it, the refusal is the `held` outcome.
+   */
+  requireSettled?: boolean;
+  /**
+   * What to apply instead when `requireSettled` refuses the deletion: these meta rows are put in
+   * the same transaction as the hold check, and nothing else in the options applies. Only
+   * meaningful with `requireSettled`.
+   */
+  onHeld?: { meta: MetaRecord[] };
+}
+
+/** What {@link JournaledBackend.deleteJournaled} did, in one transaction. */
+export type JournaledDeleteResult =
+  /** A record was removed; `meta` and `removeMeta` applied. */
+  | { outcome: "deleted" }
+  /** No record to remove; `meta` and `removeMeta` still applied. */
+  | { outcome: "absent" }
+  /** An unsettled intent holds the target and `onHeld` was given: its meta rows applied, nothing else did. */
+  | { outcome: "held"; requestId: string; state: OperationState };
+
 /** One document with everything the journal holds about it, read in one transaction. See {@link JournaledBackend.readWithJournal}. */
 export interface JournaledReadResult {
   /** The parsed document and its version, or `null` when the store holds no record. */
@@ -165,6 +206,18 @@ export interface JournaledBackend extends StorageBackend {
     doc: OkfDocument,
     options?: JournaledWriteOptions,
   ): Promise<{ version: Version; raw: string; intent: IntentRecord | null }>;
+
+  /**
+   * One transaction over documents, intents, and meta: the document compare-and-swap of
+   * `delete`, plus putting and removing meta rows. With `requireSettled`, an unsettled intent on
+   * the target refuses it before anything is touched: a rejection with
+   * {@link IntentHoldConflict}, or, with `onHeld`, the `held` outcome with the `onHeld` meta rows
+   * applied in the same transaction. Resolves `deleted` when a record was removed and `absent`
+   * when the target was already absent; the meta changes apply in both of those cases, and a
+   * mismatched `expectedVersion` against a present record rejects with `VersionConflict` and
+   * changes nothing.
+   */
+  deleteJournaled(id: ConceptId, options?: JournaledDeleteOptions): Promise<JournaledDeleteResult>;
 
   /**
    * The document, every intent targeting it, and the named meta rows, from ONE readonly

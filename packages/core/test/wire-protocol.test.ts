@@ -1359,7 +1359,7 @@ test("wire: GET /snapshot streams header, docs in id order, and end over 120 doc
   assert.equal(await remote.heads({ ifNoneMatch: snapshot.header.digest }), null, "a heads check can start from the snapshot digest");
 });
 
-test("wire: a snapshot cut after 40 lines makes RemoteBackend.snapshot reject with SNAPSHOT_TRUNCATED after yielding the first documents; a mid-line cut, a wrong end count and a failing body reject the same way", async () => {
+test("wire: a snapshot cut after 40 lines makes RemoteBackend.snapshot reject with SNAPSHOT_TRUNCATED after yielding the first documents; a mid-line cut, a wrong end count and a failing body reject the same way; a whole body under a digest its rows do not produce rejects with SNAPSHOT_DIGEST_MISMATCH", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-snapshot-cut", backend: serverBackend };
   const router = createRouter(bundle);
@@ -1419,13 +1419,37 @@ test("wire: a snapshot cut after 40 lines makes RemoteBackend.snapshot reject wi
   assert.equal(failing.received.length, 1);
   assert.ok(isTruncated(failing.failure) && (failing.failure.cause as Error).message === "socket reset", "a transport failure mid-body is truncation with its cause");
 
+  // A whole body (all 60 documents, the end line with the right count) whose header names a
+  // digest the rows do not produce: every document is yielded, then the iteration rejects with
+  // the mismatch code, not truncation, so a consumer never records that digest as matched.
+  const otherDigest = `sha256:${"e".repeat(64)}`;
+  const mismatched = await collect(rewriting((text) => text.replace(/"digest":"sha256:[0-9a-f]{64}"/, `"digest":"${otherDigest}"`)));
+  assert.equal(mismatched.header.digest, otherDigest);
+  assert.equal(mismatched.received.length, 60, "the whole body was yielded before the check");
+  assert.ok(
+    mismatched.failure instanceof RemoteError && mismatched.failure.code === "SNAPSHOT_DIGEST_MISMATCH",
+    `expected SNAPSHOT_DIGEST_MISMATCH, got ${String(mismatched.failure)}`,
+  );
+  // The same body with 59 of its 60 documents dropped and both counts rewritten to 59 is whole
+  // by count and by terminator, and only the recipe tells it apart from the announced state.
+  const shortened = await collect(
+    rewriting((text) => {
+      const lines = text.split("\n").filter((line) => line !== "");
+      const kept = [lines[0]!.replace('"count":60', '"count":59'), ...lines.slice(1, 60), '{"kind":"end","count":59}'];
+      return `${kept.join("\n")}\n`;
+    }),
+  );
+  assert.equal(shortened.header.count, 59);
+  assert.equal(shortened.received.length, 59);
+  assert.ok(shortened.failure instanceof RemoteError && shortened.failure.code === "SNAPSHOT_DIGEST_MISMATCH", "a shortened listing under the real digest is a mismatch");
+
   // Complete bodies are not disturbed by the wrapper itself.
   const intact = await collect(rewriting((text) => text));
   assert.equal(intact.received.length, 60);
   assert.equal(intact.failure, undefined);
 });
 
-test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a missing or malformed digest, a bad row, or a count mismatch rejects", async () => {
+test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a missing or malformed digest, a bad row, a count mismatch, or rows that do not digest to the served digest rejects", async () => {
   const serverBackend = new ServerMemoryBackend();
   const bundle: Bundle = { root: "mem://wire-heads-client", backend: serverBackend };
   const router = createRouter(bundle);
@@ -1456,9 +1480,15 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
     ["missing heads", { count: 1, digest: first.digest }],
     ["bad row", { count: 1, digest: first.digest, heads: [{ id: row.id }] }],
     ["count mismatch", { count: 2, digest: first.digest, heads: [row] }],
+    // Whole by its own count, under the digest of the full listing: the recomputation is what refuses it.
+    ["digest mismatch", { count: 1, digest: first.digest, heads: [row] }],
+    ["digest of another version", { count: 2, digest: headsDigest(first.heads.map((h) => ({ id: h.id, version: `sha256:${"f".repeat(64)}` }))), heads: first.heads }],
   ] as const) {
-    await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME", label);
+    await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME" && err.status === 502, label);
   }
+  // The recomputation sorts by the recipe, so the served row order does not decide.
+  const reversed = await answering({ count: 2, digest: first.digest, heads: [...first.heads].reverse() }).heads();
+  assert.equal(reversed?.digest, first.digest);
 
   // A 304 is only meaningful relative to a digest the client sent; to an unconditional request it is malformed.
   const unconditional304 = new RemoteBackend({

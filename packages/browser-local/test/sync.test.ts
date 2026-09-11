@@ -10,15 +10,28 @@
  * a later edit chains behind; a deadline shorter than the authority's latency still applies the
  * write exactly once; bootstrap and pull fetch their batches concurrently, producing the same
  * working copy as one batch at a time in a fraction of the wall time, and a failed batch leaves
- * the marker incomplete with nothing left in flight. The Chromium unit runs the same runtime in
- * a real page.
+ * the marker incomplete with nothing left in flight. Over a wire authority that reports them,
+ * bootstrap hydrates from one streamed snapshot (byte-identical to the list path, with the
+ * digest on the marker; a cut snapshot leaves the marker incomplete) and pull reconciles from
+ * one conditional heads request (a 304 fetches nothing, a 200 fetches only changed documents
+ * and removes deleted ones unless a local edit holds them); a listing whose rows do not digest
+ * to the digest it serves is rejected before anything is diffed, and a verified listing that
+ * would remove eight or more unheld documents amounting to more than half of the working copy,
+ * or all of it, is refused as a whole and reported with its digest; after a refusal no digest
+ * is offered, not even the bootstrap's, so the next pull asks unconditionally; unpushed local
+ * creates never count toward the bound; fewer than eight deletions always apply; and the
+ * recorded refusal passed back as `acceptRefusedDeletions` applies the shrink only against the
+ * same listing. A snapshot bootstrap over an earlier generation reconciles what the snapshot
+ * did not carry the same way; a plain backend, and a wire authority without the features, still
+ * walk the list. The Chromium unit runs the same runtime in a real page.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 
-import type { OkfDocument, StorageBackend } from "@superbee/core";
+import { RemoteBackend, type ConceptId, type OkfDocument, type StorageBackend } from "@superbee/core";
 import { IntentStateConflict } from "@superbee/core/journaled-backend";
+import { headsDigest, type DocumentHead, type RemoteError } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import { performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
 
@@ -35,11 +48,12 @@ import {
   resume,
   settleIntent,
   syncStatus,
+  type BootstrapMarker,
   type LocalBundle,
   type SharedBase,
 } from "../src/local-bundle.ts";
 import { hostLocks, pushRoleName, withPushRole } from "../src/push-role.ts";
-import { createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
+import { BASE_URL, BUNDLE, createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
 
 const NOW = "2026-09-10T12:00:00.000Z";
 const immediate = { sleep: async () => {}, lookupDelayMs: 0 };
@@ -98,24 +112,34 @@ function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => voi
 }
 
 /**
- * The fixture's read side with `readMany` held open: `entered` resolves when the first call
- * arrives, and the call proceeds only after `release`. What a slow authority looks like to
- * pull and bootstrap, with a hook to commit locally in the middle of the round trip.
+ * The fixture's read side with its document fetch held open, whether that is `readMany` (the
+ * list path, and a pull's changed documents) or `snapshot` (a bootstrap over the wire):
+ * `entered` resolves when the first fetch arrives, and it proceeds only after `release`. What a
+ * slow authority looks like to pull and bootstrap, with a hook to commit locally in the middle
+ * of the round trip.
  */
 function heldRemote(remote: StorageBackend): { remote: StorageBackend; entered: Promise<void>; release: () => void } {
   const entered = deferred();
   const gate = deferred();
   let first = true;
+  const hold = async (): Promise<void> => {
+    if (!first) return;
+    first = false;
+    entered.resolve();
+    await gate.promise;
+  };
   const proxy = new Proxy(remote, {
     get(target, prop) {
       if (prop === "readMany") {
         return async (ids: string[]) => {
-          if (first) {
-            first = false;
-            entered.resolve();
-            await gate.promise;
-          }
+          await hold();
           return target.readMany(ids);
+        };
+      }
+      if (prop === "snapshot") {
+        return async () => {
+          await hold();
+          return (target as RemoteBackend).snapshot();
         };
       }
       const value = Reflect.get(target, prop, target);
@@ -124,6 +148,62 @@ function heldRemote(remote: StorageBackend): { remote: StorageBackend; entered: 
   }) as StorageBackend;
   return { remote: proxy, entered: entered.promise, release: () => gate.resolve() };
 }
+
+/**
+ * The fixture's authority behind a fresh wire adapter whose every request is recorded with the
+ * status it drew; `ifNoneMatch` holds, per request in the same order, the `If-None-Match` the
+ * request carried or `null`, so a row can assert that a pull asked unconditionally.
+ */
+function countingRemote(
+  fixture: RemoteFixture,
+  answer: (request: Request) => Promise<Response> = fixture.hosted,
+): { remote: RemoteBackend; requests: Array<{ method: string; path: string; status: number }>; ifNoneMatch: Array<string | null> } {
+  const requests: Array<{ method: string; path: string; status: number }> = [];
+  const ifNoneMatch: Array<string | null> = [];
+  const fetchImpl = async (request: Request): Promise<Response> => {
+    const response = await answer(request);
+    requests.push({ method: request.method, path: new URL(request.url).pathname, status: response.status });
+    ifNoneMatch.push(request.headers.get("If-None-Match"));
+    return response;
+  };
+  return { remote: new RemoteBackend({ baseUrl: BASE_URL, bundle: BUNDLE, fetchImpl, maxRetries: 0 }), requests, ifNoneMatch };
+}
+
+/** The digest the authority would answer now, by the wire recipe over its own heads. */
+async function authorityDigest(fixture: RemoteFixture): Promise<string> {
+  const heads = [];
+  for (const id of await fixture.authority.list()) heads.push({ id, version: (await fixture.authority.read(id)).version });
+  return headsDigest(heads);
+}
+
+/**
+ * The fixture's hosted side with every `GET /heads` rewritten: the request is forwarded without
+ * its `If-None-Match`, so the authority always lists, and `rewrite` receives the rows it would
+ * serve and returns the rows and digest to serve instead, internally consistent by count. What
+ * a misrouted, shortened or emptied listing looks like to pull.
+ */
+function rewritingHeads(fixture: RemoteFixture, rewrite: (heads: DocumentHead[]) => { heads: DocumentHead[]; digest: string }): (request: Request) => Promise<Response> {
+  return async (request: Request): Promise<Response> => {
+    if (new URL(request.url).pathname !== HEADS) return fixture.hosted(request);
+    const headers = new Headers(request.headers);
+    headers.delete("If-None-Match");
+    const response = await fixture.hosted(new Request(request.url, { method: request.method, headers }));
+    if (response.status !== 200) return response;
+    const payload = (await response.json()) as { heads: DocumentHead[] };
+    const served = rewrite(payload.heads);
+    return new Response(JSON.stringify({ count: served.heads.length, digest: served.digest, heads: served.heads }), {
+      status: 200,
+      headers: { "content-type": "application/json", ETag: `"${served.digest}"` },
+    });
+  };
+}
+
+const SNAPSHOT = `/v0/bundles/${BUNDLE}/snapshot`;
+const HEADS = `/v0/bundles/${BUNDLE}/heads`;
+const READ_MANY = `/v0/bundles/${BUNDLE}/docs:read-many`;
+const LIST = `/v0/bundles/${BUNDLE}/docs`;
+const CAPABILITIES = "/v0/capabilities";
+const ROOT_INDEX = `/v0/bundles/${BUNDLE}/reserved/index.md`;
 
 const offline: OperationTransport = {
   submit: async () => {
@@ -1044,8 +1124,9 @@ test("bootstrap with concurrency 8 produces the same working copy as concurrency
   try {
     const serialProbe = overlapProbe(fixture.remote);
     const concurrentProbe = overlapProbe(fixture.remote);
-    const one = await timed(() => bootstrap(serialProbe.remote, serial, { batchSize: TIMING.batchSize, concurrency: 1 }));
-    const eight = await timed(() => bootstrap(concurrentProbe.remote, concurrent, { batchSize: TIMING.batchSize, concurrency: 8 }));
+    // The list path, explicitly: a snapshot is one stream and has no batches to overlap.
+    const one = await timed(() => bootstrap(serialProbe.remote, serial, { batchSize: TIMING.batchSize, concurrency: 1, wire: { snapshot: false } }));
+    const eight = await timed(() => bootstrap(concurrentProbe.remote, concurrent, { batchSize: TIMING.batchSize, concurrency: 8, wire: { snapshot: false } }));
     assert.equal(serialProbe.overlap.max, 1, "concurrency 1 never overlaps readMany calls");
     assert.equal(concurrentProbe.overlap.max, 8, "concurrency 8 keeps eight readMany calls in flight");
     assert.equal(one.result.complete, true);
@@ -1155,7 +1236,7 @@ test("a batch that fails under concurrency 8 leaves the marker incomplete, nothi
   try {
     // Batch size 25: the third batch is ids[50..74]. All eight batches are in flight together.
     const poisoned = poisonedRemote(fixture.remote, ids[60]!);
-    await assert.rejects(bootstrap(poisoned.remote, local, { batchSize: 25, concurrency: 8 }), /batch dropped/);
+    await assert.rejects(bootstrap(poisoned.remote, local, { batchSize: 25, concurrency: 8, wire: { snapshot: false } }), /batch dropped/);
     const callsAtRejection = poisoned.calls.count;
     assert.equal(await isComplete(local), false);
     const marker = await local.backend.readMeta<{ complete: boolean; generation: number; completedAt?: string }>("bootstrap");
@@ -1194,7 +1275,7 @@ test("an authority that stops serving reads part-way still leaves a concurrent b
   fixture.knobs.readBudget = 100;
   const local = openLocal(new IDBFactory());
   try {
-    await assert.rejects(bootstrap(fixture.remote, local, { batchSize: 25, concurrency: 8 }), /stopped serving reads/);
+    await assert.rejects(bootstrap(fixture.remote, local, { batchSize: 25, concurrency: 8, wire: { snapshot: false } }), /stopped serving reads/);
     assert.equal(await isComplete(local), false);
     assert.equal((await syncStatus(local)).generation, 1);
     const landed = await local.backend.list();
@@ -1225,6 +1306,681 @@ test("concurrency below 1 or not an integer is refused before anything is writte
     assert.deepEqual(await local.backend.list(), []);
     // The minimum is one batch at a time: the sequential shape, still valid.
     assert.equal((await bootstrap(fixture.remote, local, { concurrency: 1 })).complete, true);
+  } finally {
+    local.close();
+  }
+});
+
+// ── snapshot and heads ─────────────────────────────────────────────────────────────────────
+
+test("bootstrap by snapshot yields the working copy bootstrap by list yields, with the digest on the marker, in one capabilities, one index and one snapshot request", async () => {
+  const fixture = await createRemoteFixture();
+  await seedMany(fixture, 60);
+  const bySnapshot = openLocal(new IDBFactory(), "by-snapshot");
+  const byList = openLocal(new IDBFactory(), "by-list");
+  try {
+    const counted = countingRemote(fixture);
+    const marker = await bootstrap(counted.remote, bySnapshot, { batchSize: 25 });
+    assert.deepEqual(counted.requests, [
+      { method: "GET", path: ROOT_INDEX, status: 200 },
+      { method: "GET", path: CAPABILITIES, status: 200 },
+      { method: "GET", path: SNAPSHOT, status: 200 },
+    ]);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.documentCount, 60);
+    assert.equal(marker.headsDigest, await authorityDigest(fixture));
+    assert.equal(marker.held, undefined);
+    assert.equal(marker.findings, undefined);
+    assert.equal(await isComplete(bySnapshot), true);
+
+    const listed = countingRemote(fixture);
+    const listMarker = await bootstrap(listed.remote, byList, { batchSize: 25, wire: { snapshot: false } });
+    assert.equal(listMarker.headsDigest, undefined, "the list path records no digest");
+    assert.ok(listed.requests.some((row) => row.path === READ_MANY));
+    assert.ok(!listed.requests.some((row) => row.path === SNAPSHOT || row.path === CAPABILITIES), "a refused feature costs no capabilities read");
+    const expected = await snapshot(byList);
+    assert.equal(expected.length, 60);
+    assert.deepEqual(await snapshot(bySnapshot), expected, "versions and shared bases agree document for document");
+    assert.equal((await bySnapshot.backend.readReserved("", "index.md"))?.content, (await byList.backend.readReserved("", "index.md"))?.content);
+    for (const row of expected) assert.equal(row.base?.content, (await bySnapshot.backend.readMeta<SharedBase>(baseKey(row.id)))?.content);
+
+    // The capabilities are kept on the bundle: a second verb over it sends no capabilities request.
+    const again = countingRemote(fixture);
+    await pull(bySnapshot, again.remote);
+    assert.deepEqual(again.requests.map((row) => row.path), [HEADS]);
+  } finally {
+    bySnapshot.close();
+    byList.close();
+  }
+});
+
+test("a snapshot the authority cuts short leaves the marker incomplete with whole batches landed, and a retry completes", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 60);
+  const local = openLocal(new IDBFactory());
+  try {
+    // The header line plus 30 document lines: one whole batch of 25 arrives before the cut.
+    fixture.knobs.snapshotCutAfter = 31;
+    await assert.rejects(bootstrap(fixture.remote, local, { batchSize: 25 }), (error: unknown) => {
+      assert.equal((error as RemoteError).name, "RemoteError");
+      assert.equal((error as RemoteError).code, "SNAPSHOT_TRUNCATED");
+      return true;
+    });
+    assert.equal(await isComplete(local), false);
+    const marker = await local.backend.readMeta<BootstrapMarker>("bootstrap");
+    assert.equal(marker?.complete, false);
+    assert.equal(marker?.generation, 1);
+    assert.equal(marker?.headsDigest, undefined);
+    assert.deepEqual((await local.backend.list()).sort(), ids.slice(0, 25));
+    assert.equal(fixture.served.documents, 30);
+    // No digest is offered from an incomplete bootstrap: a pull now asks unconditionally.
+    const counted = countingRemote(fixture);
+    await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200], [READ_MANY, 200]]);
+    assert.equal((await local.backend.list()).length, 60);
+
+    fixture.knobs.snapshotCutAfter = null;
+    const repaired = await bootstrap(fixture.remote, local, { batchSize: 25 });
+    assert.equal(repaired.complete, true);
+    assert.equal(repaired.generation, 2);
+    assert.equal(repaired.documentCount, 60);
+    assert.equal(repaired.headsDigest, await authorityDigest(fixture));
+    assert.equal((await local.backend.list()).length, 60);
+  } finally {
+    local.close();
+  }
+});
+
+test("pull with nothing changed is one conditional heads request answered 304, with no document read and the marker saying unchanged", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const marker = await bootstrap(fixture.remote, local);
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    assert.deepEqual(report, { refreshed: [], held: [], unchanged: ["notes/alpha", "notes/beta", "notes/gamma"], deleted: [] });
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.unchanged, true);
+    assert.equal(status.lastPull?.refreshed, 0);
+    assert.equal(status.lastPull?.headsDigest, marker.headsDigest);
+    assert.notEqual(status.lastPull?.completedAt, null);
+    // The digest a later pull offers is the one this pull matched; nothing changed, so 304 again.
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    local.close();
+  }
+});
+
+test("pull after 5 remote edits and 2 remote creates fetches exactly those 7 documents in one read-many batch and records the new digest", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 40);
+  const local = openLocal(new IDBFactory());
+  try {
+    const marker = await bootstrap(fixture.remote, local);
+    const edited = [ids[3]!, ids[7]!, ids[11]!, ids[19]!, ids[39]!];
+    for (const id of edited) {
+      const { version } = await fixture.authority.read(id);
+      await fixture.authority.write(id, doc(id, `${id} v2\n`), { expectedVersion: version });
+    }
+    const created = ["notes/new-a", "notes/new-b"];
+    for (const id of created) await fixture.authority.write(id, doc(id, `${id} created remotely\n`));
+    const changed = [...edited, ...created].sort();
+
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]]);
+    assert.deepEqual([...report.refreshed].sort(), changed);
+    assert.equal(report.unchanged.length, 35);
+    assert.deepEqual(report.held, []);
+    assert.deepEqual(report.deleted, []);
+    for (const id of changed) {
+      const held = await fixture.authority.read(id);
+      assert.equal((await local.backend.read(id)).doc.body, held.doc.body);
+      assert.equal((await local.backend.readMeta<SharedBase>(baseKey(id)))?.version, held.version);
+    }
+    assert.equal((await local.backend.list()).length, 42);
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.refreshed, 7);
+    assert.equal(status.lastPull?.unchanged, false);
+    assert.notEqual(status.lastPull?.headsDigest, marker.headsDigest);
+    assert.equal(status.lastPull?.headsDigest, await authorityDigest(fixture));
+    // The pull's digest, newer than the bootstrap's, is what the next pull offers.
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    local.close();
+  }
+});
+
+test("pull removes documents the authority deleted, with their base, and retains one a pending edit holds with its base marked absent; push then records the conflict against no remote", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 10);
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local);
+    const editedId = ids[3]!;
+    const sharedVersion = (await fixture.authority.read(editedId)).version;
+    const previousBase = await local.backend.readMeta<SharedBase>(baseKey(editedId));
+    const committed = await commitLocal(local, editedId, edit("edited before the authority deleted it\n"));
+    const gone = [ids[0]!, ids[1]!, ids[2]!];
+    for (const id of [...gone, editedId]) assert.equal(await fixture.authority.delete(id), true);
+
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200]], "nothing changed among the listed heads, so nothing is read");
+    assert.deepEqual(report.deleted, gone);
+    assert.deepEqual(report.held, [editedId]);
+    assert.deepEqual(report.refreshed, []);
+    assert.equal(report.unchanged.length, 6);
+    for (const id of gone) {
+      await assert.rejects(local.backend.read(id), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+      assert.equal(await local.backend.readMeta(baseKey(id)), undefined, "the base row went with the document");
+    }
+    assert.equal((await local.backend.list()).length, 7);
+    const retained = await local.backend.read(editedId);
+    assert.equal(retained.doc.body, "edited before the authority deleted it\n");
+    assert.equal(retained.version, committed.version);
+    assert.deepEqual(await local.backend.readMeta<SharedBase>(baseKey(editedId)), { version: null, content: previousBase?.content ?? null });
+    const intent = await local.backend.readIntent(committed.intent!.requestId);
+    assert.equal(intent?.state, "pending");
+    assert.equal(intent?.base, sharedVersion, "the intent still names the base the edit was made against");
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture));
+
+    // Nothing changed since: a 304 removes nothing further, and the retained document stays.
+    const again = countingRemote(fixture);
+    const second = await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    assert.deepEqual(second.deleted, []);
+    assert.equal((await local.backend.list()).length, 7);
+    assert.equal((await local.backend.read(editedId)).version, committed.version);
+
+    // Push delivers the edit at its base and the authority, holding nothing, answers a conflict
+    // whose remote is absent: the runtime's `remote: null` conflict.
+    const pushed = await push(local, fixture.transport, { remote: fixture.remote, write: immediate });
+    assert.deepEqual(pushed.settled.map((row) => row.state), ["conflict"]);
+    const conflict = await local.backend.readIntent(committed.intent!.requestId);
+    assert.equal(conflict?.state, "conflict");
+    assert.deepEqual(conflict?.remote, { version: null, content: null });
+    assert.equal((await local.backend.read(editedId)).doc.body, "edited before the authority deleted it\n");
+    assert.equal(await fixture.authority.exists(editedId), false);
+  } finally {
+    local.close();
+  }
+});
+
+test("a heads answer with the first 100 of 197 rows, count 100 and the real digest is rejected before anything is diffed: nothing deleted, no digest recorded; the untampered answer then yields the normal outcome and a 304", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 200);
+  const local = openLocal(new IDBFactory());
+  try {
+    const marker = await bootstrap(fixture.remote, local);
+    assert.equal(marker.headsDigest, await authorityDigest(fixture));
+    const committed = await commitLocal(local, ids[7]!, edit("local edit on n0007\n"));
+    for (const id of [ids[7]!, ids[8]!, ids[9]!]) assert.equal(await fixture.authority.delete(id), true);
+    const tenth = await fixture.authority.read(ids[10]!);
+    await fixture.authority.write(ids[10]!, doc(ids[10]!, "n0010 v2\n"), { expectedVersion: tenth.version });
+    const realDigest = await authorityDigest(fixture);
+
+    // Whole by its own count, under the digest of the full 197-row listing.
+    const shortened = countingRemote(fixture, rewritingHeads(fixture, (heads) => ({ heads: heads.slice(0, 100), digest: realDigest })));
+    await assert.rejects(pull(local, shortened.remote), (error: unknown) => {
+      assert.equal((error as RemoteError).name, "RemoteError");
+      assert.equal((error as RemoteError).code, "RUNTIME");
+      assert.equal((error as RemoteError).status, 502);
+      assert.match((error as RemoteError).message, /digest/);
+      return true;
+    });
+    assert.deepEqual(shortened.requests, [{ method: "GET", path: HEADS, status: 200 }], "the listing was rejected before any document was read");
+    assert.equal((await local.backend.list()).length, 200, "nothing deleted");
+    for (const id of [ids[150]!, ids[199]!]) assert.equal((await local.backend.readMeta<SharedBase>(baseKey(id)))?.version, (await fixture.authority.read(id)).version, "base rows of unlisted documents stand");
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.completedAt, null, "the pull never completed");
+    assert.equal(status.lastPull?.headsDigest, undefined, "no digest recorded");
+
+    // The untampered answer: n0008 and n0009 deleted, n0007 held with its base marked absent, n0010 refreshed.
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]]);
+    assert.deepEqual(report.deleted, [ids[8]!, ids[9]!]);
+    assert.deepEqual(report.held, [ids[7]!]);
+    assert.deepEqual(report.refreshed, [ids[10]!]);
+    assert.equal(report.refused, undefined);
+    assert.equal(report.unchanged.length, 196);
+    assert.equal((await local.backend.list()).length, 198);
+    assert.equal((await local.backend.read(ids[7]!)).version, committed.version);
+    assert.deepEqual((await local.backend.readMeta<SharedBase>(baseKey(ids[7]!)))?.version, null);
+    assert.equal((await local.backend.read(ids[10]!)).doc.body, "n0010 v2\n");
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, realDigest);
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    local.close();
+  }
+});
+
+test("a verified listing that would empty the working copy, or remove more than half of it, is refused as a whole: nothing deleted, refreshes applied, the refusal with the listing's digest on the report and the marker, no digest recorded; the next pull sends no If-None-Match", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 200);
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local);
+    for (const id of ids.slice(0, 3)) assert.equal(await fixture.authority.delete(id), true);
+    const settled = await pull(local, fixture.remote);
+    assert.deepEqual(settled.deleted, ids.slice(0, 3));
+    assert.equal((await local.backend.list()).length, 197);
+    const matched = (await syncStatus(local)).lastPull?.headsDigest;
+    assert.equal(matched, await authorityDigest(fixture));
+
+    // An internally consistent empty listing: count 0 under the digest of the empty recipe.
+    const emptyDigest = headsDigest([]);
+    const emptied = countingRemote(fixture, rewritingHeads(fixture, () => ({ heads: [], digest: emptyDigest })));
+    const refusedEmpty = await pull(local, emptied.remote);
+    assert.deepEqual(emptied.requests, [{ method: "GET", path: HEADS, status: 200 }]);
+    assert.deepEqual(emptied.ifNoneMatch, [`"${matched}"`], "the honest pull's digest was offered");
+    assert.deepEqual(refusedEmpty.refused, { deletions: 197, reason: "empty-listing", digest: emptyDigest });
+    assert.deepEqual(refusedEmpty.deleted, []);
+    assert.deepEqual(refusedEmpty.held, []);
+    assert.equal((await local.backend.list()).length, 197, "the working copy keeps every document");
+    let status = await syncStatus(local);
+    assert.notEqual(status.lastPull?.completedAt, null, "the pull completed");
+    assert.deepEqual(status.lastPull?.refused, { deletions: 197, reason: "empty-listing", digest: emptyDigest });
+    assert.equal(status.lastPull?.headsDigest, undefined, "no digest recorded for a listing that was not applied");
+
+    // A consistent listing of 60 of the 197 rows, with one of them edited at the authority so
+    // the refresh is seen to apply while the deletions are refused.
+    const edited = ids[100]!;
+    const before = await fixture.authority.read(edited);
+    await fixture.authority.write(edited, doc(edited, "n0100 v2\n"), { expectedVersion: before.version });
+    let halvedDigest = "";
+    const halved = countingRemote(
+      fixture,
+      rewritingHeads(fixture, (heads) => {
+        const kept = heads.slice(60, 120);
+        halvedDigest = headsDigest(kept);
+        return { heads: kept, digest: halvedDigest };
+      }),
+    );
+    const refusedHalf = await pull(local, halved.remote);
+    assert.deepEqual(halved.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]]);
+    assert.deepEqual(halved.ifNoneMatch.slice(0, 1), [null], "after a refused pull, no digest is offered: the bootstrap's is not a fallback");
+    assert.deepEqual(refusedHalf.refused, { deletions: 137, reason: "over-half", digest: halvedDigest });
+    assert.deepEqual(refusedHalf.refreshed, [edited], "the refresh in the same pull applied");
+    assert.deepEqual(refusedHalf.deleted, []);
+    assert.equal((await local.backend.list()).length, 197);
+    assert.equal((await local.backend.read(edited)).doc.body, "n0100 v2\n");
+    status = await syncStatus(local);
+    assert.deepEqual(status.lastPull?.refused, { deletions: 137, reason: "over-half", digest: halvedDigest });
+    assert.equal(status.lastPull?.headsDigest, undefined);
+
+    // With no digest from the refused pulls, the next pull asks the authority for its real
+    // listing, which names every document the working copy holds: nothing to remove, and the
+    // digest is matched again.
+    const real = countingRemote(fixture);
+    const repaired = await pull(local, real.remote);
+    assert.deepEqual(real.requests, [{ method: "GET", path: HEADS, status: 200 }]);
+    assert.deepEqual(real.ifNoneMatch, [null], "the request carried no If-None-Match");
+    assert.equal(repaired.refused, undefined);
+    assert.deepEqual(repaired.deleted, []);
+    assert.equal(repaired.unchanged.length, 197);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture));
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+  } finally {
+    local.close();
+  }
+});
+
+test("a snapshot bootstrap over an earlier generation removes the documents the snapshot did not carry, records the digest, and the next pull is a 304; one that would remove more than half refuses with the snapshot's digest, records no digest, and the next pull sends no If-None-Match", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 50);
+  const local = openLocal(new IDBFactory());
+  try {
+    const first = await bootstrap(fixture.remote, local, { batchSize: 25 });
+    assert.equal(first.generation, 1);
+    const gone = ids.slice(10, 15);
+    for (const id of gone) assert.equal(await fixture.authority.delete(id), true);
+
+    const second = await bootstrap(fixture.remote, local, { batchSize: 25 });
+    assert.equal(second.generation, 2);
+    assert.equal(second.complete, true);
+    assert.equal(second.documentCount, 45);
+    assert.deepEqual(second.deleted, gone);
+    assert.equal(second.refused, undefined);
+    assert.equal(second.headsDigest, await authorityDigest(fixture));
+    assert.equal((await local.backend.list()).length, 45);
+    for (const id of gone) {
+      await assert.rejects(local.backend.read(id), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
+      assert.equal(await local.backend.readMeta(baseKey(id)), undefined, "the base row went with the document");
+    }
+    const counted = countingRemote(fixture);
+    await pull(local, counted.remote);
+    assert.deepEqual(counted.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+
+    // The authority shrinks to 20 of the 45: a snapshot bootstrap hydrates those 20 and refuses
+    // to remove the 25 others, and says so on the marker.
+    for (const id of ids.slice(20, 45)) assert.equal(await fixture.authority.delete(id), true);
+    const third = await bootstrap(fixture.remote, local, { batchSize: 25 });
+    const shrunkDigest = await authorityDigest(fixture);
+    assert.equal(third.generation, 3);
+    assert.equal(third.complete, true);
+    assert.equal(third.documentCount, 20);
+    assert.deepEqual(third.refused, { deletions: 25, reason: "over-half", digest: shrunkDigest });
+    assert.equal(third.deleted, undefined);
+    assert.equal(third.headsDigest, undefined, "the working copy does not match the snapshot's digest");
+    assert.equal((await local.backend.list()).length, 45);
+    const unconditional = countingRemote(fixture);
+    const report = await pull(local, unconditional.remote);
+    assert.deepEqual(unconditional.requests, [{ method: "GET", path: HEADS, status: 200 }]);
+    assert.deepEqual(unconditional.ifNoneMatch, [null], "the earlier generation's digest is not offered after a refusing bootstrap");
+    assert.deepEqual(report.refused, { deletions: 25, reason: "over-half", digest: shrunkDigest });
+    assert.equal((await local.backend.list()).length, 45);
+  } finally {
+    local.close();
+  }
+});
+
+test("a snapshot whose rows do not digest to its header leaves the marker incomplete with no digest, and nothing is reconciled on its word", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 30);
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local, { batchSize: 10 });
+    await fixture.authority.delete(ids[0]!);
+    const lying = async (request: Request): Promise<Response> => {
+      const response = await fixture.hosted(request);
+      if (new URL(request.url).pathname !== SNAPSHOT || response.status !== 200) return response;
+      const text = (await response.text()).replace(/"digest":"sha256:[0-9a-f]{64}"/, `"digest":"sha256:${"e".repeat(64)}"`);
+      return new Response(text, { status: 200, headers: response.headers });
+    };
+    const counted = countingRemote(fixture, lying);
+    await assert.rejects(bootstrap(counted.remote, local, { batchSize: 10 }), (error: unknown) => {
+      assert.equal((error as RemoteError).name, "RemoteError");
+      assert.equal((error as RemoteError).code, "SNAPSHOT_DIGEST_MISMATCH");
+      return true;
+    });
+    assert.equal(await isComplete(local), false);
+    const marker = await local.backend.readMeta<BootstrapMarker>("bootstrap");
+    assert.equal(marker?.generation, 2);
+    assert.equal(marker?.headsDigest, undefined);
+    assert.equal(marker?.deleted, undefined);
+    assert.equal((await local.backend.list()).length, 30, "the deleted document is still held: the snapshot's listing was not trusted");
+  } finally {
+    local.close();
+  }
+});
+
+test("a plain storage backend as the authority walks the list: no capabilities, no digest, and deletions are not reconciled", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const authority: StorageBackend = fixture.authority;
+    const marker = await bootstrap(authority, local);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.documentCount, 3);
+    assert.equal(marker.headsDigest, undefined);
+    assert.equal(local.capabilities, undefined, "no wire adapter, no capabilities read");
+    const base = (await fixture.authority.read("notes/alpha")).version;
+    await fixture.authority.write("notes/alpha", doc("notes/alpha", "alpha v2\n"), { expectedVersion: base });
+    await fixture.authority.delete("notes/gamma");
+    const report = await pull(local, authority);
+    assert.deepEqual(report.refreshed, ["notes/alpha"]);
+    assert.deepEqual(report.unchanged, ["notes/beta"]);
+    assert.deepEqual(report.deleted, [], "the list path fetches heads; only a pull by heads removes anything");
+    assert.equal((await local.backend.read("notes/gamma")).doc.body, "gamma v1\n");
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.headsDigest, undefined);
+    assert.equal(status.lastPull?.unchanged, false);
+  } finally {
+    local.close();
+  }
+});
+
+test("a wire authority that reports neither heads nor snapshot takes the list path for both verbs", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    const withoutFeatures = async (request: Request): Promise<Response> => {
+      if (new URL(request.url).pathname !== CAPABILITIES) return fixture.hosted(request);
+      const answered = await fixture.hosted(request);
+      const payload = (await answered.json()) as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...payload, heads: false, snapshot: false }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    const counted = countingRemote(fixture, withoutFeatures);
+    const marker = await bootstrap(counted.remote, local);
+    assert.equal(marker.complete, true);
+    assert.equal(marker.headsDigest, undefined);
+    assert.deepEqual(counted.requests.map((row) => row.path), [ROOT_INDEX, CAPABILITIES, LIST, READ_MANY]);
+    counted.requests.length = 0;
+    const base = (await fixture.authority.read("notes/beta")).version;
+    await fixture.authority.write("notes/beta", doc("notes/beta", "beta v2\n"), { expectedVersion: base });
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests.map((row) => row.path), [LIST, READ_MANY], "the capabilities answer was kept on the bundle");
+    assert.deepEqual(report.refreshed, ["notes/beta"]);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, undefined);
+    assert.equal((await local.backend.read("notes/beta")).doc.body, "beta v2\n");
+  } finally {
+    local.close();
+  }
+});
+
+test("a capabilities read that fails is not kept: the next verb asks again and proceeds over the wire", async () => {
+  const fixture = await seededFixture();
+  const local = openLocal(new IDBFactory());
+  try {
+    let refuse = true;
+    const flaky = async (request: Request): Promise<Response> => {
+      if (refuse && new URL(request.url).pathname === CAPABILITIES) throw new TypeError("fetch failed: offline");
+      return fixture.hosted(request);
+    };
+    const counted = countingRemote(fixture, flaky);
+    await assert.rejects(bootstrap(counted.remote, local), /offline/);
+    assert.equal(await isComplete(local), false);
+    assert.equal(local.capabilities, undefined, "a rejected read is dropped");
+    refuse = false;
+    const marker = await bootstrap(counted.remote, local);
+    assert.equal(marker.complete, true);
+    assert.ok(marker.headsDigest);
+    assert.deepEqual(counted.requests.filter((row) => row.path === CAPABILITIES).length, 1);
+  } finally {
+    local.close();
+  }
+});
+
+// ── the deletion bound and the digest offered after it ─────────────────────────────────────
+
+test("after an honest pull and then a refused one, the next pull sends no If-None-Match even when the authority is back at its bootstrap state: the bootstrap digest is never a fallback, a 200 reconciles the copy, and only then a 304", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 10);
+  const local = openLocal(new IDBFactory());
+  try {
+    const marker = await bootstrap(fixture.remote, local);
+    const bootstrapDigest = marker.headsDigest!;
+    // The authority deletes two documents and edits a third; the honest pull follows it.
+    const gone = [ids[0]!, ids[1]!];
+    const edited = ids[2]!;
+    const originals = new Map<string, OkfDocument>();
+    for (const id of [...gone, edited]) originals.set(id, (await fixture.authority.read(id)).doc);
+    for (const id of gone) assert.equal(await fixture.authority.delete(id), true);
+    await fixture.authority.write(edited, doc(edited, `${edited} v2\n`), { expectedVersion: (await fixture.authority.read(edited)).version });
+    const honest = countingRemote(fixture);
+    const first = await pull(local, honest.remote);
+    assert.deepEqual(honest.ifNoneMatch.slice(0, 1), [`"${bootstrapDigest}"`], "the bootstrap's digest is offered while no pull has run since");
+    assert.deepEqual(first.deleted, gone);
+    assert.deepEqual(first.refreshed, [edited]);
+    assert.equal((await local.backend.list()).length, 8);
+
+    // A refused listing completes the pull and records no digest.
+    const emptied = countingRemote(fixture, rewritingHeads(fixture, () => ({ heads: [], digest: headsDigest([]) })));
+    const refused = await pull(local, emptied.remote);
+    assert.equal(refused.refused?.reason, "empty-listing");
+    assert.equal((await local.backend.list()).length, 8);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, undefined);
+
+    // The authority is restored to exactly its bootstrap state: the same documents at the same
+    // versions, so it digests as it did when the bootstrap marker was written.
+    for (const [id, original] of originals) {
+      const current = (await fixture.authority.exists(id)) ? (await fixture.authority.read(id)).version : undefined;
+      await fixture.authority.write(id, original, current === undefined ? {} : { expectedVersion: current });
+    }
+    assert.equal(await authorityDigest(fixture), bootstrapDigest, "the probe's premise: the authority digests as it did at bootstrap");
+
+    // Offering the bootstrap digest here would draw a 304 and leave the copy at 8 documents
+    // with a stale n0002, while reporting nothing changed.
+    const next = countingRemote(fixture);
+    const reconciled = await pull(local, next.remote);
+    assert.deepEqual(next.requests.map((row) => [row.path, row.status]), [[HEADS, 200], [READ_MANY, 200]]);
+    assert.equal(next.ifNoneMatch[0], null, "no If-None-Match after a refused pull");
+    assert.deepEqual([...reconciled.refreshed].sort(), [...gone, edited].sort());
+    assert.equal((await local.backend.list()).length, 10);
+    assert.equal((await local.backend.read(edited)).doc.body, `${edited} v1\n`);
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, bootstrapDigest);
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    assert.deepEqual(again.ifNoneMatch, [`"${bootstrapDigest}"`]);
+  } finally {
+    local.close();
+  }
+});
+
+test("unpushed local creates do not count toward the deletion bound: 10 bootstrapped documents, 9 offline creates, 8 real remote deletions apply and the creates are held", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 10);
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local);
+    const created: string[] = [];
+    for (let n = 0; n < 9; n += 1) {
+      const id = `notes/local-${n}`;
+      await commitLocal(local, id, create(`${id} created offline\n`));
+      created.push(id);
+    }
+    assert.equal((await local.backend.list()).length, 19);
+    const gone = ids.slice(0, 8);
+    for (const id of gone) assert.equal(await fixture.authority.delete(id), true);
+
+    // 17 of the 19 are unlisted; only the 8 with no intent count, and 8 of 19 is within the bound.
+    const counted = countingRemote(fixture);
+    const report = await pull(local, counted.remote);
+    assert.deepEqual(counted.requests, [{ method: "GET", path: HEADS, status: 200 }]);
+    assert.equal(report.refused, undefined);
+    assert.deepEqual(report.deleted, gone);
+    assert.deepEqual([...report.held].sort(), [...created].sort());
+    assert.deepEqual((await local.backend.list()).sort(), [...created, ids[8]!, ids[9]!].sort());
+    for (const id of created) assert.equal((await local.backend.read(id)).doc.body, `${id} created offline\n`);
+    assert.equal((await local.backend.listIntents("pending")).length, 9, "the creates are still pending");
+    assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture));
+  } finally {
+    local.close();
+  }
+});
+
+test("the deletion bound starts at eight: 7 of 10 deletions apply though over half, 8 of 10 are refused, and a 3-document working copy follows the authority to empty", async () => {
+  {
+    const fixture = await createRemoteFixture();
+    const ids = await seedMany(fixture, 10);
+    const local = openLocal(new IDBFactory(), "seven-of-ten");
+    try {
+      await bootstrap(fixture.remote, local);
+      for (const id of ids.slice(0, 7)) assert.equal(await fixture.authority.delete(id), true);
+      const report = await pull(local, fixture.remote);
+      assert.equal(report.refused, undefined);
+      assert.deepEqual(report.deleted, ids.slice(0, 7));
+      assert.deepEqual((await local.backend.list()).sort(), ids.slice(7));
+      assert.equal((await syncStatus(local)).lastPull?.headsDigest, await authorityDigest(fixture));
+    } finally {
+      local.close();
+    }
+  }
+  {
+    const fixture = await createRemoteFixture();
+    const ids = await seedMany(fixture, 10);
+    const local = openLocal(new IDBFactory(), "eight-of-ten");
+    try {
+      await bootstrap(fixture.remote, local);
+      for (const id of ids.slice(0, 8)) assert.equal(await fixture.authority.delete(id), true);
+      const report = await pull(local, fixture.remote);
+      assert.deepEqual(report.refused, { deletions: 8, reason: "over-half", digest: await authorityDigest(fixture) });
+      assert.deepEqual(report.deleted, []);
+      assert.equal((await local.backend.list()).length, 10);
+      assert.equal((await syncStatus(local)).lastPull?.headsDigest, undefined);
+    } finally {
+      local.close();
+    }
+  }
+  {
+    const fixture = await createRemoteFixture();
+    const ids = await seedMany(fixture, 3);
+    const local = openLocal(new IDBFactory(), "three-to-empty");
+    try {
+      await bootstrap(fixture.remote, local);
+      for (const id of ids) assert.equal(await fixture.authority.delete(id), true);
+      const report = await pull(local, fixture.remote);
+      assert.equal(report.refused, undefined);
+      assert.deepEqual(report.deleted, ids);
+      assert.deepEqual(await local.backend.list(), []);
+      assert.equal((await syncStatus(local)).lastPull?.headsDigest, headsDigest([]));
+      const again = countingRemote(fixture);
+      await pull(local, again.remote);
+      assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    } finally {
+      local.close();
+    }
+  }
+});
+
+test("acceptRefusedDeletions: the recorded refusal passed back against the same listing applies the deletions, records the digest and clears the refusal; against a listing that has moved, or with another count, it is refused afresh", async () => {
+  const fixture = await createRemoteFixture();
+  const ids = await seedMany(fixture, 20);
+  const local = openLocal(new IDBFactory());
+  try {
+    await bootstrap(fixture.remote, local);
+    for (const id of ids.slice(0, 12)) assert.equal(await fixture.authority.delete(id), true);
+    const shrunk = await authorityDigest(fixture);
+    const refused = await pull(local, fixture.remote);
+    assert.deepEqual(refused.refused, { deletions: 12, reason: "over-half", digest: shrunk });
+    assert.equal((await local.backend.list()).length, 20);
+    const recorded = (await syncStatus(local)).lastPull?.refused;
+    assert.deepEqual(recorded, refused.refused);
+
+    // A refusal with another count is not this one: still refused, nothing removed.
+    const other = await pull(local, fixture.remote, { acceptRefusedDeletions: { ...recorded!, deletions: 11 } });
+    assert.deepEqual(other.refused, { deletions: 12, reason: "over-half", digest: shrunk });
+    assert.equal((await local.backend.list()).length, 20);
+
+    // The authority moves on before the recorded refusal is accepted: refused afresh, new record.
+    assert.equal(await fixture.authority.delete(ids[12]!), true);
+    const moved = await authorityDigest(fixture);
+    const mismatch = await pull(local, fixture.remote, { acceptRefusedDeletions: recorded! });
+    assert.deepEqual(mismatch.refused, { deletions: 13, reason: "over-half", digest: moved });
+    assert.deepEqual(mismatch.deleted, []);
+    assert.equal((await local.backend.list()).length, 20);
+    assert.deepEqual((await syncStatus(local)).lastPull?.refused, mismatch.refused);
+
+    // Accepting the fresh record applies the deletions, records the digest, and the next pull is a 304.
+    const counted = countingRemote(fixture);
+    const accepted = await pull(local, counted.remote, { acceptRefusedDeletions: mismatch.refused! });
+    assert.deepEqual(counted.requests, [{ method: "GET", path: HEADS, status: 200 }]);
+    assert.deepEqual(counted.ifNoneMatch, [null]);
+    assert.equal(accepted.refused, undefined);
+    assert.deepEqual(accepted.deleted, ids.slice(0, 13));
+    assert.deepEqual((await local.backend.list()).sort(), ids.slice(13));
+    const status = await syncStatus(local);
+    assert.equal(status.lastPull?.refused, undefined);
+    assert.equal(status.lastPull?.headsDigest, moved);
+    const again = countingRemote(fixture);
+    await pull(local, again.remote);
+    assert.deepEqual(again.requests, [{ method: "GET", path: HEADS, status: 304 }]);
+    // An acceptance that matches nothing is ignored.
+    const idle = await pull(local, fixture.remote, { acceptRefusedDeletions: mismatch.refused! });
+    assert.equal(idle.refused, undefined);
+    assert.deepEqual(idle.deleted, []);
   } finally {
     local.close();
   }

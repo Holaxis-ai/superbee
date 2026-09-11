@@ -158,8 +158,10 @@ digest, bare, quoted or weak, alone or in a comma-separated list, answers a body
 same `ETag`: nothing changed since the client obtained that digest. On a `200` the client diffs
 `heads` against its own copy: an id missing from `heads` is a deletion, a differing version is a
 change, an unknown id is a creation. `RemoteBackend.heads({ ifNoneMatch })` maps `304` to `null`
-and refuses a `200` whose digest is missing or malformed or whose `count` disagrees with its rows;
-a `304` to a request that sent no `If-None-Match` is likewise refused as malformed.
+and refuses a `200` whose digest is missing or malformed, whose `count` disagrees with its rows, or
+whose rows do not digest by the recipe to the digest it served (a listing that is whole by its
+own count but is not the state its digest names is never diffed as deletions); a `304` to a
+request that sent no `If-None-Match` is likewise refused as malformed.
 
 ### Snapshot
 
@@ -175,10 +177,15 @@ terminated by `\n`. The grammar is:
 A client that does not see the `end` line, or sees one whose count differs from the header's
 announcement or from the document lines it received, must treat the snapshot as truncated and
 discard or re-request it; `RemoteBackend.snapshot()` reports that as `RemoteError` code
-`SNAPSHOT_TRUNCATED`, including a transport failure mid-body. The header's `digest` equals what
-`heads` would return for the same state, so a bootstrap that consumes a snapshot can start its
-later heads checks from it; the response also carries it as `ETag`. Reserved files are not part of
-a snapshot: a client fetches `index.md` through the reserved route as today.
+`SNAPSHOT_TRUNCATED`, including a transport failure mid-body. A client that saw the whole body
+must also recompute the digest over the `{ id, version }` of the document lines it received and
+compare it to the header's before recording that digest as matched; `RemoteBackend.snapshot()`
+rejects the iteration with code `SNAPSHOT_DIGEST_MISMATCH` when they differ. That is not
+truncation: the body was whole, the authority contradicted its own header, and re-requesting is
+not known to repair it. The header's `digest` equals what `heads` would return for the same
+state, so a bootstrap that consumes a snapshot can start its later heads checks from it; the
+response also carries it as `ETag`. Reserved files are not part of a snapshot: a client fetches
+`index.md` through the reserved route as today.
 
 The body streams. The reference router produces the heads listing first (so a malformed document
 fails the request before any byte of the response exists, exactly as it fails a list), then reads
@@ -261,9 +268,11 @@ client whose response was lost can look the answer up instead of guessing.
   query semantics, so a foreign backend may over-return but cannot redefine matches.
 - `RemoteBackend.heads()` and `RemoteBackend.snapshot()` are the client half of "Heads and
   snapshot" above. A snapshot resolves once its header line is parsed and then streams its
-  documents as an async iterable; iterating to completion is the completeness signal, and a body
-  that ends or fails first rejects the iteration with `SNAPSHOT_TRUNCATED`. Transient retry covers
-  obtaining the response only; re-requesting a truncated snapshot is the consumer's decision.
+  documents as an async iterable; iterating to completion is the completeness signal, a body
+  that ends or fails first rejects the iteration with `SNAPSHOT_TRUNCATED`, and a whole body
+  whose rows do not digest to its header rejects it with `SNAPSHOT_DIGEST_MISMATCH`. Transient
+  retry covers obtaining the response only; re-requesting a truncated snapshot is the consumer's
+  decision.
 - `WriteOptions.requestId` and `DeleteOptions.requestId` travel as `Idempotency-Key`; a malformed
   one is an `InvalidInputError` before any request is sent. Transient retries of an identified
   write are true replays. `RemoteBackend.lookupOperation(requestId)` reads the outcome route and

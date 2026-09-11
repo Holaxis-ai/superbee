@@ -17,6 +17,35 @@
  * a changed shared head is discovered by push as an explicit conflict that preserves base,
  * local, and remote.
  *
+ * Against a wire authority that reports the `snapshot` and `heads` capabilities
+ * (`docs/WIRE-PROTOCOL.md`, "Heads and snapshot"), {@link bootstrap} hydrates from one streamed
+ * snapshot and {@link pull} reconciles from one conditional heads request: the digest the last
+ * bootstrap or pull recorded travels as `If-None-Match`, a `304` means nothing changed and
+ * nothing else is fetched, and a `200` is diffed against the working copy so only changed
+ * documents are read and documents the authority no longer lists are removed (or, when a local
+ * edit holds one, retained and flagged). A listing is trusted only after the wire adapter has
+ * recomputed its digest over the rows it served, and even a verified listing never removes,
+ * in one step, eight or more documents that amount to more than half of the working copy, or
+ * all of it: such a listing (a misrouted or emptied bundle) is refused as a whole, reported
+ * with the listing's digest, and no digest is recorded ({@link DeletionRefusal}), so the next
+ * pull asks unconditionally. Documents a local edit holds are never counted against the bound;
+ * they are retained whatever the listing says. Fewer than eight deletions always apply, so a
+ * small working copy follows ordinary deletions and may be emptied by an emptied authority.
+ * A genuine shrink beyond the bound never reconciles on its own: the caller passes the
+ * recorded refusal back as {@link PullOptions.acceptRefusedDeletions}, and the pull applies
+ * the deletions only while the authority still lists the very state that was refused. Any
+ * other authority, and any caller that disables a feature through {@link FetchOptions.wire},
+ * takes the list plus `readMany` path unchanged; the capabilities are read once per opened
+ * bundle and kept on it.
+ *
+ * The trust model is the authority's word. A forged listing that is internally consistent
+ * and within the bound is applied: its deletions land and its refreshes are read from the
+ * same authority, and the working copy self-heals at the next honest pull, which lists the
+ * real state and fetches what the forgery removed or changed. A forged snapshot can likewise
+ * plant documents that read as shared-confirmed until an honest pull no longer lists them.
+ * Neither the digest nor the bound is an integrity proof against the authority itself; they
+ * catch a listing that is not what its digest names and a listing that is not this bundle.
+ *
  * Delivery is recorded before it happens: claiming an intent for push increments its attempts
  * durably, so a page that dies mid-push leaves a record that says "possibly delivered", the
  * next push starts with a lookup, and a later local edit chains behind it instead of replacing
@@ -31,7 +60,7 @@
  * never race delivery; the intent journal's own compare-and-swap remains the last line.
  */
 
-import type { Bundle, ConceptId, OkfDocument, StorageBackend, Version, WriteOptions } from "@superbee/core";
+import type { Bundle, ConceptId, OkfDocument, ReadResult, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
 import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
@@ -44,6 +73,8 @@ import {
   type NewIntentRecord,
 } from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
+import type { RefusedDeletions, RefusedDeletionsReason } from "@superbee/core/platform";
+import type { RemoteBackend, WireCapabilities } from "@superbee/core/remote";
 import { InvalidInputError } from "@superbee/core/storage";
 import {
   AUTHORIZATION_REFUSAL_CODES,
@@ -76,6 +107,12 @@ export interface LocalBundle {
   /** The engine-facing bundle: a synthetic root label plus the working copy's backend. */
   bundle: Bundle;
   backend: JournaledBackend;
+  /**
+   * The authority's wire capabilities, read once by the first sync verb that needs them and
+   * kept here for the bundle's lifetime; a read that fails is not kept, so the next verb asks
+   * again. Absent until a verb over a wire authority has run.
+   */
+  capabilities?: Promise<WireCapabilities>;
   /** Release the store handle; a later operation reopens it lazily. */
   close(): void;
 }
@@ -130,14 +167,46 @@ export interface SharedBase {
   content: string | null;
 }
 
+/**
+ * Why a pull or a snapshot bootstrap applied none of the deletions a listing implied. The
+ * listing was whole and its digest verified, and still it is not trusted to remove documents:
+ * `empty-listing` names no document while the working copy holds some, `over-half` names so few
+ * that more than half of the working copy would go. A misrouted, emptied or replaced bundle
+ * looks exactly like that. Only a listing that would remove at least
+ * {@link MIN_BOUNDED_DELETIONS} unheld documents is bounded. Everything else in the verb
+ * applied; no digest was recorded, so the next pull asks unconditionally. The shape is the
+ * platform contract's, so a presentation can pass a refusal back unchanged.
+ */
+export type DeletionRefusalReason = RefusedDeletionsReason;
+
+/**
+ * The deletions a pull or bootstrap refused to apply, on its marker and its report, with the
+ * digest of the listing that implied them; see {@link PullOptions.acceptRefusedDeletions}.
+ */
+export type DeletionRefusal = RefusedDeletions;
+
 export interface BootstrapMarker {
   generation: number;
   startedAt: string;
   complete: boolean;
   completedAt?: string;
   documentCount?: number;
-  /** Documents not hydrated because a local edit was committed to them during this bootstrap. */
+  /**
+   * The heads digest the snapshot announced and the working copy now matches; the first
+   * `If-None-Match` a later pull sends. Absent when hydrated by list, and absent when the
+   * snapshot's deletions were refused, since the working copy then holds more than the digest names.
+   */
+  headsDigest?: string;
+  /**
+   * Documents left as a local edit made them: not hydrated because the edit was committed to
+   * them during this bootstrap, or not removed because the edit holds a document the snapshot
+   * did not carry.
+   */
   held?: ConceptId[];
+  /** Documents a snapshot bootstrap removed because an earlier generation held them and the snapshot did not carry them. */
+  deleted?: ConceptId[];
+  /** The deletions a snapshot bootstrap refused to apply; see {@link DeletionRefusal}. */
+  refused?: DeletionRefusal;
   /** Observations recorded during hydration, such as a local token differing from the shared one. */
   findings?: string[];
 }
@@ -152,6 +221,12 @@ export interface PullMarker {
   startedAt: string;
   completedAt: string | null;
   refreshed: number;
+  /** True when the authority answered the conditional heads request with `304`: nothing changed, nothing was fetched. */
+  unchanged: boolean;
+  /** The heads digest the working copy matched when this pull completed. Absent for a pull by list, and when deletions were refused. */
+  headsDigest?: string;
+  /** The deletions this pull refused to apply; see {@link DeletionRefusal}. */
+  refused?: DeletionRefusal;
 }
 
 /** States in which an intent still describes a local edit the authority has not accepted. */
@@ -172,10 +247,22 @@ const DEFAULT_BATCH_SIZE = 25;
 /** Batches in flight at once unless the caller says otherwise. */
 const DEFAULT_CONCURRENCY = 8;
 
+/**
+ * Which wire features a fetching verb may use when the authority reports them. `false`
+ * disables one; the list plus `readMany` path is then taken. Omitted, whatever the authority's
+ * capabilities report.
+ */
+export interface WireOptions {
+  heads?: boolean;
+  snapshot?: boolean;
+}
+
 /** Options both fetching verbs share: how the remote document set is split and how many splits travel at once. */
 export interface FetchOptions {
-  /** Documents fetched per `readMany` round trip. */
+  /** Documents fetched per `readMany` round trip, and written per batch as a snapshot streams. */
   batchSize?: number;
+  /** Wire features to use or refuse; see {@link WireOptions}. */
+  wire?: WireOptions;
   /**
    * Batches fetched concurrently, at most; default 8, minimum 1. Wall time is then bounded by
    * transfer and a few round trips instead of the batch count times the latency. A value below
@@ -230,6 +317,122 @@ async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<V
   }
 }
 
+// ── deletions ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Deletions below this count are applied on a verified listing's word without the bound: a
+ * small working copy must follow ordinary deletions (three documents, two removed), and a
+ * misrouted bundle is a mass event, not a handful.
+ */
+const MIN_BOUNDED_DELETIONS = 8;
+
+/**
+ * The bound a verified listing must stay within before any document is removed on its word:
+ * `undefined` when the deletions may apply, otherwise the refusal to report. `listedCount` is
+ * the number of documents the listing names, `presentCount` how many the working copy holds
+ * now, `candidates` how many of those the listing does not name and no local edit holds, and
+ * `digest` names the listing so the refusal can be passed back.
+ */
+function deletionBound(listedCount: number, presentCount: number, candidates: number, digest: string): DeletionRefusal | undefined {
+  if (candidates < MIN_BOUNDED_DELETIONS) return undefined;
+  if (listedCount === 0) return { deletions: candidates, reason: "empty-listing", digest };
+  if (candidates * 2 > presentCount) return { deletions: candidates, reason: "over-half", digest };
+  return undefined;
+}
+
+/** True when `accepted` is the very refusal `refused` describes: same listing, same count, same reason. */
+function acceptsRefusal(refused: DeletionRefusal, accepted: DeletionRefusal | undefined): boolean {
+  return accepted !== undefined && accepted.digest === refused.digest && accepted.deletions === refused.deletions && accepted.reason === refused.reason;
+}
+
+/**
+ * Remove from the working copy every document a verified listing no longer names, each with
+ * its base in one journaled operation that checks the hold inside its own transaction, or
+ * refuse the whole set when it is out of bounds ({@link deletionBound}). Documents an unsettled
+ * intent targets are excluded from the bound's count before it is applied: they are held
+ * whatever the listing says, so a batch of offline creates never turns one real deletion into
+ * a refusal. A refusal the caller has already seen and passes back as `accept`, for the same
+ * listing digest, is applied instead of refused ({@link PullOptions.acceptRefusedDeletions}).
+ * A document a local edit holds is retained, reported as held, and its base rewritten to
+ * version `null` in the same transaction as the refusing hold check (the seam's `onHeld`), so
+ * the base agrees with the absent remote; the conflict itself is recorded by push when the
+ * authority answers the edit with a conflict whose actual version is `null`. A document whose
+ * version moved under a plain local write between the read and the deletion is likewise held,
+ * as a refresh treats it. This is the one reconciliation pull and a snapshot bootstrap share.
+ */
+async function reconcileDeletions(
+  backend: JournaledBackend,
+  listed: ReadonlySet<ConceptId>,
+  digest: string,
+  accept?: DeletionRefusal,
+): Promise<{ deleted: ConceptId[]; held: ConceptId[]; refused?: DeletionRefusal }> {
+  const present = await backend.list();
+  const candidates = present.filter((id) => !listed.has(id));
+  const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
+  const unheld = candidates.filter((id) => !heldTargets.has(id)).length;
+  const refused = deletionBound(listed.size, present.length, unheld, digest);
+  if (refused && !acceptsRefusal(refused, accept)) return { deleted: [], held: [], refused };
+  const deleted: ConceptId[] = [];
+  const held: ConceptId[] = [];
+  for (const id of candidates) {
+    const previous = await backend.readMeta<SharedBase>(baseKey(id));
+    // The premise is the version just listed; a document gone since is answered as absent.
+    const expectedVersion = await localVersion(backend, id);
+    try {
+      const result = await backend.deleteJournaled(id, {
+        ...(expectedVersion === null ? {} : { expectedVersion }),
+        requireSettled: true,
+        removeMeta: [baseKey(id)],
+        onHeld: { meta: [baseRow(id, { version: null, content: previous?.content ?? null })] },
+      });
+      if (result.outcome === "held") held.push(id);
+      else if (result.outcome === "deleted") deleted.push(id);
+    } catch (error) {
+      if ((error as { name?: unknown })?.name !== "VersionConflict") throw error;
+      held.push(id);
+    }
+  }
+  return { deleted, held };
+}
+
+// ── wire features ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Structural, not `instanceof`: the read side may be the core class, a subclass, or a proxy
+ * over one. The three members the fetching verbs use beyond the storage seam are the shape.
+ */
+function asWireRemote(remote: StorageBackend): RemoteBackend | null {
+  const candidate = remote as Partial<RemoteBackend>;
+  return typeof candidate.heads === "function" && typeof candidate.snapshot === "function" && typeof candidate.wireCapabilities === "function"
+    ? (remote as RemoteBackend)
+    : null;
+}
+
+/** The authority's capabilities: kept on the opened bundle; a bare adapter has nowhere to keep them, so they are read per call. */
+function capabilitiesOf(local: LocalTarget, remote: RemoteBackend): Promise<WireCapabilities> {
+  if (!isLocalBundle(local)) return remote.wireCapabilities();
+  if (!local.capabilities) {
+    const pending = remote.wireCapabilities();
+    local.capabilities = pending;
+    pending.catch(() => {
+      if (local.capabilities === pending) delete local.capabilities;
+    });
+  }
+  return local.capabilities;
+}
+
+/**
+ * The wire read side when `feature` may be used: the remote is a wire adapter, the caller has
+ * not refused the feature, and the authority reports it. Otherwise `null`, and the caller takes
+ * the list path. A refused feature costs no request.
+ */
+async function wireFor(remote: StorageBackend, local: LocalTarget, feature: keyof WireOptions, options: FetchOptions): Promise<RemoteBackend | null> {
+  if (options.wire?.[feature] === false) return null;
+  const wire = asWireRemote(remote);
+  if (!wire) return null;
+  return (await capabilitiesOf(local, wire))[feature] ? wire : null;
+}
+
 // ── bootstrap ──────────────────────────────────────────────────────────────────────────────
 
 export interface BootstrapOptions extends FetchOptions {
@@ -253,9 +456,18 @@ export interface BootstrapOptions extends FetchOptions {
  * caught by the hydrating write's own transaction: that document is left as the edit made it,
  * listed in the marker as `held`, and push discovers the divergence.
  *
- * Batches travel concurrently (see {@link FetchOptions}); each batch is written as it arrives,
- * through the same per-document write as before. A failed batch leaves the marker incomplete
- * and its error propagates once the batches in flight have finished.
+ * Over a wire authority that reports `snapshot`, the documents arrive as one streamed response
+ * and are written in batches of `batchSize` as they arrive; a snapshot the authority cuts short
+ * rejects with the wire adapter's `SNAPSHOT_TRUNCATED`, one whose rows do not digest to its
+ * header with `SNAPSHOT_DIGEST_MISMATCH`, and either leaves the marker incomplete. Once the
+ * stream has ended whole and verified, the documents an earlier generation left in the working
+ * copy that the snapshot did not carry are reconciled exactly as a pull reconciles deletions
+ * (removed with their base, retained when a local edit holds them, refused as a whole when out
+ * of bounds), and the marker records the digest the snapshot announced as `headsDigest` only
+ * when the working copy now matches it. Otherwise the ids are listed and fetched in batches
+ * that travel concurrently (see {@link FetchOptions}); each batch is written as it arrives,
+ * through the same per-document write, and nothing is removed. A failed batch leaves the
+ * marker incomplete and its error propagates once the batches in flight have finished.
  */
 export async function bootstrap(remote: StorageBackend, local: LocalTarget, options: BootstrapOptions = {}): Promise<BootstrapMarker> {
   const concurrency = concurrencyOf(options);
@@ -272,41 +484,77 @@ export async function bootstrap(remote: StorageBackend, local: LocalTarget, opti
   const rootIndex = await remote.readReserved("", "index.md");
   if (rootIndex) await backend.writeReserved("", "index.md", rootIndex.content);
 
-  const ids = await remote.list();
+  const batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
   const findings: string[] = [];
   const held: ConceptId[] = [];
   let index = 0;
-  await forEachBatch(chunked(ids, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
-    const heads = await remote.readMany(batch);
-    for (const head of heads) {
-      const id = head.doc.id;
-      try {
-        const { version } = await backend.writeJournaled(id, head.doc, {
-          requireSettled: true,
-          meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
-        });
-        if (version !== head.version) {
-          findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
-        }
-      } catch (error) {
-        if (!(error instanceof IntentHoldConflict)) throw error;
-        held.push(id);
+  /** One document as the authority served it, into the working copy, with the marker's bookkeeping. */
+  const hydrate = async (head: ReadResult, total: number): Promise<void> => {
+    const id = head.doc.id;
+    try {
+      const { version } = await backend.writeJournaled(id, head.doc, {
+        requireSettled: true,
+        meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
+      });
+      if (version !== head.version) {
+        findings.push(`'${id}': local token ${version} differs from shared token ${head.version}`);
       }
-      // Take the index before awaiting the hook: another worker's completion can interleave
-      // with an awaiting hook, and the index must stay unique per hydrated document.
-      const hydrated = index;
-      index += 1;
-      await options.onHydrated?.(id, hydrated, ids.length);
+    } catch (error) {
+      if (!(error instanceof IntentHoldConflict)) throw error;
+      held.push(id);
     }
-  });
+    // Take the index before awaiting the hook: another worker's completion can interleave
+    // with an awaiting hook, and the index must stay unique per hydrated document.
+    const hydrated = index;
+    index += 1;
+    await options.onHydrated?.(id, hydrated, total);
+  };
+
+  let documentCount: number;
+  let headsDigest: string | undefined;
+  let deleted: ConceptId[] = [];
+  let refused: DeletionRefusal | undefined;
+  const wire = await wireFor(remote, local, "snapshot", options);
+  if (wire) {
+    // One stream: concurrency does not apply. Each batch is written as soon as it has arrived,
+    // so a cut stream leaves whole batches behind and the marker incomplete.
+    const { header, docs } = await wire.snapshot();
+    const listed = new Set<ConceptId>();
+    let batch: ReadResult[] = [];
+    for await (const doc of docs) {
+      listed.add(doc.id);
+      batch.push({ doc: { id: doc.id, frontmatter: doc.frontmatter, body: doc.body }, version: doc.version });
+      if (batch.length < batchSize) continue;
+      for (const head of batch) await hydrate(head, header.count);
+      batch = [];
+    }
+    for (const head of batch) await hydrate(head, header.count);
+    // The loop ended normally, so the stream was whole and its rows digest to the header: the
+    // listing may now say what the working copy should not hold.
+    const reconciled = await reconcileDeletions(backend, listed, header.digest);
+    deleted = reconciled.deleted;
+    held.push(...reconciled.held);
+    refused = reconciled.refused;
+    documentCount = header.count;
+    if (refused === undefined) headsDigest = header.digest;
+  } else {
+    const ids = await remote.list();
+    await forEachBatch(chunked(ids, batchSize), concurrency, async (batch) => {
+      for (const head of await remote.readMany(batch)) await hydrate(head, ids.length);
+    });
+    documentCount = ids.length;
+  }
 
   const marker: BootstrapMarker = {
     generation,
     startedAt,
     complete: true,
     completedAt: new Date().toISOString(),
-    documentCount: ids.length,
+    documentCount,
+    ...(headsDigest === undefined ? {} : { headsDigest }),
     ...(held.length > 0 ? { held } : {}),
+    ...(deleted.length > 0 ? { deleted } : {}),
+    ...(refused === undefined ? {} : { refused }),
     ...(findings.length > 0 ? { findings } : {}),
   };
   await backend.writeMeta(BOOTSTRAP_KEY, marker);
@@ -607,13 +855,45 @@ export async function pushWithRole(
 
 // ── pull ───────────────────────────────────────────────────────────────────────────────────
 
-export type PullOptions = FetchOptions;
+export interface PullOptions extends FetchOptions {
+  /**
+   * The refusal the last pull recorded (`syncStatus().lastPull.refused`), passed back to say
+   * the shrink it describes is genuine. The deletions apply only when the authority's current
+   * listing carries the same digest, and the refusal the same count and reason, as the one
+   * being accepted; a listing that has moved since is refused afresh with a new record. An
+   * acceptance that matches nothing is ignored.
+   */
+  acceptRefusedDeletions?: DeletionRefusal;
+}
 
 export interface PullReport {
   refreshed: ConceptId[];
   /** Documents left alone because an unsettled intent targets them; push discovers any divergence. */
   held: ConceptId[];
   unchanged: ConceptId[];
+  /** Documents the authority no longer lists, removed from the working copy with their base. Only a pull by heads removes anything. */
+  deleted: ConceptId[];
+  /** Present when the heads listing implied deletions this pull refused to apply; see {@link DeletionRefusal}. */
+  refused?: DeletionRefusal;
+}
+
+/**
+ * The digest the working copy last matched, or `undefined` when the next pull must ask
+ * unconditionally. The bootstrap's digest counts only while no pull has started since that
+ * bootstrap completed; once one has, the latest pull marker is the whole answer, and a marker
+ * without a digest (a refused listing, a pull by list, or an interrupted pull) means the
+ * working copy no longer matches any digest the authority could be asked about. Falling back
+ * to the bootstrap's digest there would let the authority answer `304` to a copy that has
+ * moved past it.
+ */
+async function lastKnownDigest(backend: JournaledBackend): Promise<string | undefined> {
+  const marker = await backend.readMeta<BootstrapMarker>(BOOTSTRAP_KEY);
+  // An incomplete bootstrap has changed the working copy past whatever any digest described:
+  // no conditional request until a bootstrap completes again.
+  if (marker?.complete !== true || marker.completedAt === undefined) return undefined;
+  const lastPull = await backend.readMeta<PullMarker>(PULL_KEY);
+  if (lastPull !== undefined && lastPull.startedAt >= marker.completedAt) return lastPull.completedAt === null ? undefined : lastPull.headsDigest;
+  return marker.headsDigest;
 }
 
 /**
@@ -624,52 +904,116 @@ export interface PullReport {
  * fetching held documents; the hold that decides is the one the refreshing write checks inside
  * its own transaction, so an edit committed during the round trip holds its document too.
  *
+ * Over a wire authority that reports `heads`, the round trip is one conditional heads request
+ * carrying the digest the working copy last matched. A `304` completes the pull with nothing
+ * fetched and the marker saying `unchanged`. A `200`, which the wire adapter admits only after
+ * recomputing its digest over the rows it served, is diffed: a head whose version equals the
+ * recorded base is unchanged, any other unheld head is fetched, and the local documents the
+ * authority no longer lists are reconciled by {@link reconcileDeletions}: each deleted with its
+ * base in one journaled operation that checks the hold inside its own transaction, a held one
+ * retained with its base rewritten to version `null` in that same transaction, so that after
+ * pull alone it reads as a local edit over an absent base and push records the conflict when
+ * the authority answers with actual `null`. A verified listing that would still remove eight
+ * or more unheld documents amounting to more than half of the working copy, or all of it, is
+ * refused as a whole: the refreshes stand, no document is removed, no digest is recorded, and
+ * the marker and report carry `refused` with the listing's digest, until the caller passes
+ * that refusal back as {@link PullOptions.acceptRefusedDeletions} against the same listing.
+ * Nothing is ever deleted on a `304`, and nothing on the list path, which fetches every unheld
+ * id as before.
+ *
  * Batches travel concurrently (see {@link FetchOptions}) and each is written as it arrives; the
- * pull marker records completion only after every batch has been written.
+ * pull marker records completion, and the digest now matched, only after every batch has been
+ * written.
  */
 export async function pull(local: LocalTarget, remote: StorageBackend, options: PullOptions = {}): Promise<PullReport> {
   const concurrency = concurrencyOf(options);
   const backend = backendOf(local);
+  // Read before the in-progress marker replaces the last pull's record, which may carry the digest.
+  const known = await lastKnownDigest(backend);
   const startedAt = new Date().toISOString();
-  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0 } satisfies PullMarker);
-  const report: PullReport = { refreshed: [], held: [], unchanged: [] };
+  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: null, refreshed: 0, unchanged: false } satisfies PullMarker);
+  const report: PullReport = { refreshed: [], held: [], unchanged: [], deleted: [] };
   const heldTargets = new Set((await backend.listIntents(UNSETTLED_STATES)).map((row) => row.target));
-  const ids = await remote.list();
-  const candidates: ConceptId[] = [];
-  for (const id of ids) {
-    if (heldTargets.has(id)) report.held.push(id);
-    else candidates.push(id);
-  }
-  await forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
-    const heads = await remote.readMany(batch);
-    for (const head of heads) {
-      const id = head.doc.id;
-      const base = await backend.readMeta<SharedBase>(baseKey(id));
-      if (base?.version === head.version) {
-        report.unchanged.push(id);
-        continue;
-      }
-      const expectedVersion = await localVersion(backend, id);
-      try {
-        await backend.writeJournaled(id, head.doc, {
-          expectedVersion,
-          requireSettled: true,
-          meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
-        });
-        report.refreshed.push(id);
-      } catch (error) {
-        // A local commit landed during the round trip: its intent holds this document now. The
-        // version check is kept for a plain local write that journals nothing.
-        if (error instanceof IntentHoldConflict || (error as { name?: unknown })?.name === "VersionConflict") {
-          report.held.push(id);
-          continue;
-        }
-        throw error;
-      }
+  const complete = async (headsDigest: string | undefined, unchanged: boolean): Promise<PullReport> => {
+    await backend.writeMeta(PULL_KEY, {
+      startedAt,
+      completedAt: new Date().toISOString(),
+      refreshed: report.refreshed.length,
+      unchanged,
+      ...(headsDigest === undefined ? {} : { headsDigest }),
+      ...(report.refused === undefined ? {} : { refused: report.refused }),
+    } satisfies PullMarker);
+    return report;
+  };
+
+  /** Apply one fetched head to the working copy under the same guards, whichever path fetched it. */
+  const apply = async (head: ReadResult): Promise<void> => {
+    const id = head.doc.id;
+    const base = await backend.readMeta<SharedBase>(baseKey(id));
+    if (base?.version === head.version) {
+      report.unchanged.push(id);
+      return;
     }
-  });
-  await backend.writeMeta(PULL_KEY, { startedAt, completedAt: new Date().toISOString(), refreshed: report.refreshed.length } satisfies PullMarker);
-  return report;
+    const expectedVersion = await localVersion(backend, id);
+    try {
+      await backend.writeJournaled(id, head.doc, {
+        expectedVersion,
+        requireSettled: true,
+        meta: ({ raw }) => [baseRow(id, { version: head.version, content: raw })],
+      });
+      report.refreshed.push(id);
+    } catch (error) {
+      // A local commit landed during the round trip: its intent holds this document now. The
+      // version check is kept for a plain local write that journals nothing.
+      if (error instanceof IntentHoldConflict || (error as { name?: unknown })?.name === "VersionConflict") {
+        report.held.push(id);
+        return;
+      }
+      throw error;
+    }
+  };
+  const fetchAndApply = (candidates: ConceptId[]): Promise<void> =>
+    forEachBatch(chunked(candidates, options.batchSize ?? DEFAULT_BATCH_SIZE), concurrency, async (batch) => {
+      for (const head of await remote.readMany(batch)) await apply(head);
+    });
+
+  const wire = await wireFor(remote, local, "heads", options);
+  if (!wire) {
+    const candidates: ConceptId[] = [];
+    for (const id of await remote.list()) {
+      if (heldTargets.has(id)) report.held.push(id);
+      else candidates.push(id);
+    }
+    await fetchAndApply(candidates);
+    return complete(undefined, false);
+  }
+
+  const answer = await wire.heads(known === undefined ? {} : { ifNoneMatch: known });
+  if (answer === null) {
+    report.unchanged = await backend.list();
+    return complete(known, true);
+  }
+  const candidates: ConceptId[] = [];
+  const listed = new Set<ConceptId>();
+  for (const head of answer.heads) {
+    listed.add(head.id);
+    if (heldTargets.has(head.id)) {
+      report.held.push(head.id);
+      continue;
+    }
+    const base = await backend.readMeta<SharedBase>(baseKey(head.id));
+    if (base?.version === head.version) report.unchanged.push(head.id);
+    else candidates.push(head.id);
+  }
+  await fetchAndApply(candidates);
+  const reconciled = await reconcileDeletions(backend, listed, answer.digest, options.acceptRefusedDeletions);
+  report.deleted = reconciled.deleted;
+  report.held.push(...reconciled.held);
+  if (reconciled.refused) {
+    report.refused = reconciled.refused;
+    return complete(undefined, false);
+  }
+  return complete(answer.digest, false);
 }
 
 // ── status and control ─────────────────────────────────────────────────────────────────────

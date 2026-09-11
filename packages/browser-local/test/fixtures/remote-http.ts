@@ -1,10 +1,11 @@
 /**
  * Serve a {@link RemoteFixture} as a real HTTP origin on 127.0.0.1 so a page in Chromium reaches
  * the disposable authority through `fetch`. Each node:http request is converted to a Fetch
- * `Request`, handed to the fixture's hosted handler, and its `Response` written back. A handler
- * that throws (the fixture's carrier-failure knobs) resets the socket instead of answering, so
- * the browser sees exactly what a dropped connection looks like: a rejected fetch with no
- * status, from which it cannot tell whether the write was applied.
+ * `Request`, handed to the fixture's hosted handler, and its `Response` written back, body
+ * streamed chunk by chunk as the reference server does, so a snapshot reaches the page as it is
+ * produced. A handler that throws (the fixture's carrier-failure knobs) resets the socket
+ * instead of answering, so the browser sees exactly what a dropped connection looks like: a
+ * rejected fetch with no status, from which it cannot tell whether the write was applied.
  *
  * The page and the authority are different origins, as a browser-local client and a hosted
  * authority would be, so the bridge answers CORS preflights and exposes the version header.
@@ -22,8 +23,8 @@ export interface ServedFixture {
   fixture: RemoteFixture;
   /** `http://127.0.0.1:<port>`, the base URL a page's RemoteBackend and transport use. */
   origin: string;
-  /** Requests whose bodies the bridge fully received, by method and path, for assertions about traffic. */
-  requests: Array<{ method: string; path: string }>;
+  /** Requests whose bodies the bridge fully received, by method and path, with the status answered once known, for assertions about traffic. */
+  requests: Array<{ method: string; path: string; status?: number }>;
   close(): Promise<void>;
 }
 
@@ -65,8 +66,10 @@ function toFetchRequest(request: IncomingMessage, body: Buffer): Request {
 async function bridge(fixture: RemoteFixture, requests: ServedFixture["requests"], request: IncomingMessage, response: ServerResponse): Promise<void> {
   const body = await readBody(request);
   // Recorded once the body is in hand, so a caller waiting on this list knows the fixture will run.
-  requests.push({ method: request.method ?? "GET", path: request.url ?? "/" });
+  const row: ServedFixture["requests"][number] = { method: request.method ?? "GET", path: request.url ?? "/" };
+  requests.push(row);
   if (request.method === "OPTIONS") {
+    row.status = 204;
     response.writeHead(204, COMMON_HEADERS);
     response.end();
     return;
@@ -85,9 +88,20 @@ async function bridge(fixture: RemoteFixture, requests: ServedFixture["requests"
   answer.headers.forEach((value, name) => {
     headers[name] = value;
   });
-  const text = await answer.text();
+  row.status = answer.status;
   response.writeHead(answer.status, headers);
-  response.end(text);
+  if (!answer.body) {
+    response.end();
+    return;
+  }
+  try {
+    for await (const chunk of answer.body) response.write(chunk);
+  } catch {
+    // The body failed part-way: the client has the bytes so far and no end, as over a cut connection.
+    response.destroy();
+    return;
+  }
+  response.end();
 }
 
 export async function serveRemoteFixture(fixture: RemoteFixture): Promise<ServedFixture> {

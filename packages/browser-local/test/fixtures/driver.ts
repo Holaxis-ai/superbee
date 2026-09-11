@@ -29,7 +29,9 @@ import {
   resume,
   syncStatus,
   UNSETTLED_STATES,
+  type BootstrapMarker,
   type LocalBundle,
+  type PullMarker,
   type SharedBase,
 } from "../../src/local-bundle.ts";
 import type { LockManagerLike } from "../../src/push-role.ts";
@@ -361,6 +363,13 @@ const driver = {
   pull: () => attempt(() => pull(bundleOrThrow(), remoteOrThrow().backend)),
 
   syncStatus: () => attempt(() => syncStatus(bundleOrThrow())),
+
+  /** The bootstrap and pull markers as the working copy holds them, for assertions about digests. */
+  markers: () =>
+    attempt(async () => {
+      const { backend } = bundleOrThrow();
+      return { bootstrap: (await backend.readMeta<BootstrapMarker>("bootstrap")) ?? null, pull: (await backend.readMeta<PullMarker>("pull")) ?? null };
+    }),
 
   isComplete: () => attempt(async () => ({ complete: await isComplete(bundleOrThrow()) })),
 
