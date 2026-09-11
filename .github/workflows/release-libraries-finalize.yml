@@ -24,11 +24,9 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22.14.0
-          registry-url: "https://registry.npmjs.org"
       - name: Prove npm serves both synchronized versions and dist-tags
         env:
           V: ${{ inputs.version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_RUNTIME_LIBRARIES_READ_TOKEN }}
         run: |
           set -euo pipefail
           case "$V" in v*|libraries/*) echo "::error::pass the bare version"; exit 1 ;; esac
@@ -49,7 +47,6 @@ jobs:
       - name: Download the exact published bytes
         env:
           V: ${{ inputs.version }}
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_RUNTIME_LIBRARIES_READ_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p out
@@ -88,7 +85,7 @@ jobs:
           assert.equal(server.version, version);
           assert.equal(server.dependencies["@superbee/core"], version);
           for (const manifest of [core, server]) {
-            assert.deepEqual(manifest.publishConfig, { access: "restricted", registry: "https://registry.npmjs.org/" });
+            assert.deepEqual(manifest.publishConfig, { access: "public", registry: "https://registry.npmjs.org/" });
             assert.equal(manifest.private, undefined);
           }
           NODE
