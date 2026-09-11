@@ -42,7 +42,7 @@ preflights, and the bridge answers preflights without the simulated latency.
 ```sh
 npm run build
 npm run measure:browser -w @superbee/browser-local
-node packages/browser-local/scripts/measurement-table.mjs packages/browser-local/measurements/latest.json
+node packages/browser-local/scripts/measurement-table.mjs < packages/browser-local/measurements/latest.json
 ```
 
 Environment knobs: `SUPERBEE_MEASURE_OUT` (report path), `SUPERBEE_MEASURE_SIZES`,

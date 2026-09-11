@@ -1,18 +1,20 @@
 #!/usr/bin/env node
 /**
  * Render a measurement report (see ../measurements/README.md) as Markdown: the conditions block,
- * then one row per cell with the cell summary's medians. Usage:
- *   node packages/browser-local/scripts/measurement-table.mjs <report.json>
+ * then one row per cell with the cell summary's medians. The report arrives on standard input,
+ * so the script opens no path of its own. Usage:
+ *   node packages/browser-local/scripts/measurement-table.mjs < packages/browser-local/measurements/latest.json
  */
 
 import { readFileSync } from "node:fs";
 
-const file = process.argv[2];
-if (!file) {
-  console.error("usage: measurement-table.mjs <report.json>");
+let report;
+try {
+  report = JSON.parse(readFileSync(0, "utf8"));
+} catch (error) {
+  console.error(`usage: measurement-table.mjs < report.json (${error instanceof Error ? error.message : String(error)})`);
   process.exit(2);
 }
-const report = JSON.parse(readFileSync(file, "utf8"));
 const { environment: env, plan } = report;
 
 const ms = (value) => (value === null || value === undefined || Number.isNaN(value) ? "n/a" : value >= 100 ? value.toFixed(0) : value >= 10 ? value.toFixed(1) : value.toFixed(2));
