@@ -19,6 +19,8 @@ export {
   type FetchOptions,
   type WireOptions,
   type BootstrapMarker,
+  type DeletionRefusal,
+  type DeletionRefusalReason,
   type SharedBase,
   type SyncControl,
   type PullMarker,

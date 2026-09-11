@@ -19,10 +19,13 @@
  *   browser-local's is its last sync, and the authority may have moved (or deleted the document)
  *   since. A document the authority deleted disappears from a browser-local working copy at
  *   its next sync (pull reconciles deletions against the authority's heads) unless a local
- *   edit holds it, in which case it reads `local-conflict` with `remote: null` and the local
- *   content retained; request-driven answers absence directly. Between syncs a deleted
- *   document still reads `shared-confirmed` at its last served version, so a presentation must
- *   not read `shared-confirmed` as proof of present existence.
+ *   edit holds it, in which case pull retains the local content and rewrites its base to an
+ *   absent shared version, and the document reads `local-pending` until push delivers the edit
+ *   and settles the authority's conflict answer (a 412 whose actual version is `null`) as a
+ *   conflict against an absent remote, from which point it reads `local-conflict` with
+ *   `remote: null`; request-driven answers absence directly. Between syncs a deleted document
+ *   still reads `shared-confirmed` at its last served version, so a presentation must not read
+ *   `shared-confirmed` as proof of present existence.
  * - `local-pending`: the working copy holds a local edit the authority has not accepted;
  *   `requestId` names the journaled intent that will deliver it and `base` the shared version
  *   the edit was made against.

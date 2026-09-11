@@ -17,7 +17,7 @@ import path from "node:path";
 import test from "node:test";
 import { IDBFactory } from "fake-indexeddb";
 
-import { FilesystemBackend, RemoteBackend, type Version } from "@superbee/core";
+import { FilesystemBackend, RemoteBackend } from "@superbee/core";
 import { readDocVersioned } from "@superbee/core/bundle-ops";
 import type { ExecutionMode, PlatformRuntime } from "@superbee/core/platform";
 import { createRemoteOperationTransport } from "@superbee/core/remote-operations";
@@ -27,6 +27,7 @@ import { bootstrap, openLocalBundle, UNSETTLED_STATES, type LocalBundle } from "
 import { createBrowserLocalRuntime, createRequestDrivenRuntime } from "../src/platform/index.ts";
 import { BASE_URL, BUNDLE, createRemoteFixture, type FixtureKnobs } from "./fixtures/remote-fixture.ts";
 import {
+  authorityHandle,
   CONTRACT_ACTOR,
   CONTRACT_NOW,
   MODES,
@@ -61,22 +62,12 @@ const harness: ContractHarness = {
     };
 
     const runtime = await runtimeOf("first");
+    const absent = new Set<string>();
     return {
       mode,
       runtime,
-      authority: {
-        read: async (id) => {
-          const { doc, version } = await fixture.authority.read(id);
-          return { version, body: doc.body };
-        },
-        write: async (id, body): Promise<Version> => {
-          const { doc, version } = await fixture.authority.read(id);
-          return fixture.authority.write(id, { ...doc, body }, { expectedVersion: version });
-        },
-        delete: async (id) => {
-          await fixture.authority.delete(id);
-        },
-      },
+      authority: authorityHandle(fixture.authority, absent),
+      expectedAbsent: () => [...absent],
       secondClient: () => runtimeOf("second"),
       setOffline: async (flag) => {
         offline.flag = flag;

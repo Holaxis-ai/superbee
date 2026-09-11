@@ -40,6 +40,7 @@ import {
   type IntentRecord,
   type JournaledBackend,
   type JournaledDeleteOptions,
+  type JournaledDeleteResult,
   type JournaledReadResult,
   type JournaledWriteOptions,
   type MetaRecord,
@@ -66,7 +67,7 @@ import type {
 // Re-exports: the journal's record, option, and error names moved to the seam module
 // (`journaled-backend.ts`); they stay reachable here so existing importers keep working.
 export { IntentHoldConflict, IntentStateConflict } from "./journaled-backend.js";
-export type { IntentPatch, IntentRecord, JournaledDeleteOptions, JournaledReadResult, JournaledWriteOptions, MetaRecord, NewIntentRecord } from "./journaled-backend.js";
+export type { IntentPatch, IntentRecord, JournaledDeleteOptions, JournaledDeleteResult, JournaledReadResult, JournaledWriteOptions, MetaRecord, NewIntentRecord } from "./journaled-backend.js";
 
 // ── the slice of the IndexedDB API this adapter needs ──────────────────────────────────────
 // Core compiles against the ES library only (no DOM lib), so the adapter names the structural
@@ -738,17 +739,19 @@ export class IndexedDbBackend implements JournaledBackend {
   /**
    * One transaction over documents, intents, and meta: the document compare-and-swap of
    * {@link delete}, plus putting and removing meta rows. With `requireSettled`, an unsettled
-   * intent on the target fails it with {@link IntentHoldConflict} before anything is touched. An
-   * absent target resolves `false` with the meta changes applied, as {@link delete} answers
-   * absence with `false` even under a compare-and-swap.
+   * intent on the target refuses it before anything is touched: a rejection with
+   * {@link IntentHoldConflict}, or with `onHeld` the `held` outcome whose meta rows are put in
+   * this same transaction, so the hold the caller acts on is the one that refused it. An absent
+   * target resolves `absent` with the meta changes applied, as {@link delete} answers absence
+   * with `false` even under a compare-and-swap.
    */
-  async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<boolean> {
+  async deleteJournaled(id: ConceptId, options: JournaledDeleteOptions = {}): Promise<JournaledDeleteResult> {
     assertSafeConceptId(id);
     const expected = options.expectedVersion;
-    const { requireSettled } = options;
+    const { requireSettled, onHeld } = options;
     const puts = options.meta ?? [];
     const removals = options.removeMeta ?? [];
-    return this.#transact<boolean>([DOCUMENTS, INTENTS, META], "readwrite", (tx, done, fail, guard) => {
+    return this.#transact<JournaledDeleteResult>([DOCUMENTS, INTENTS, META], "readwrite", (tx, done, fail, guard) => {
       const documents = tx.objectStore(DOCUMENTS);
       const intents = tx.objectStore(INTENTS);
       const metaStore = tx.objectStore(META);
@@ -756,11 +759,14 @@ export class IndexedDbBackend implements JournaledBackend {
         req.onerror = () => fail(requestError(req, `IndexedDB ${label} failed for '${id}'`));
         req.onsuccess = guard(() => next(req.result));
       };
-      const applyMeta = () => {
-        for (const row of puts) {
+      const putMeta = (rows: readonly MetaRecord[]) => {
+        for (const row of rows) {
           const put = metaStore.put(row);
           put.onerror = () => fail(requestError(put, `IndexedDB meta write failed for '${row.key}'`));
         }
+      };
+      const applyMeta = () => {
+        putMeta(puts);
         for (const key of removals) {
           const removal = metaStore.delete(key);
           removal.onerror = () => fail(requestError(removal, `IndexedDB meta delete failed for '${key}'`));
@@ -771,7 +777,7 @@ export class IndexedDbBackend implements JournaledBackend {
           const record = current as DocumentRecord | undefined;
           if (!record) {
             applyMeta();
-            done(false);
+            done({ outcome: "absent" });
             return;
           }
           if (expected !== undefined && expected !== record.version) {
@@ -781,18 +787,24 @@ export class IndexedDbBackend implements JournaledBackend {
           const removal = documents.delete(id);
           removal.onerror = () => fail(requestError(removal, `IndexedDB delete failed for '${id}'`));
           applyMeta();
-          done(true);
+          done({ outcome: "deleted" });
         });
       };
       if (!requireSettled) {
         deleteDocument();
         return;
       }
-      // The same in-transaction hold scan as `writeJournaled`: the answer holds for the deletion that follows.
+      // The same in-transaction hold scan as `writeJournaled`: the answer holds for the deletion
+      // that follows, and for the `onHeld` rows put in its place.
       request(intents.getAll(), "intent scan", (rows) => {
         const holder = (rows as IntentRecord[]).find((row) => row.target === id && row.state !== "acknowledged");
         if (holder) {
-          fail(new IntentHoldConflict(id, holder.requestId, holder.state));
+          if (!onHeld) {
+            fail(new IntentHoldConflict(id, holder.requestId, holder.state));
+            return;
+          }
+          putMeta(onHeld.meta);
+          done({ outcome: "held", requestId: holder.requestId, state: holder.state });
           return;
         }
         deleteDocument();

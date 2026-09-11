@@ -209,7 +209,7 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
     });
   });
 
-  test(`${name} journal contract: a journaled delete removes the document with its meta changes in one operation, is refused while an unsettled intent holds the target, is a compare-and-swap on the version, and answers absence with false`, async () => {
+  test(`${name} journal contract: a journaled delete removes the document with its meta changes in one operation, is refused while an unsettled intent holds the target (rejecting, or applying onHeld instead), is a compare-and-swap on the version, and answers absence`, async () => {
     await withFixture(create, async (backend) => {
       const id = "journal/deleted";
       const base = `base:${id}`;
@@ -248,17 +248,51 @@ export function registerJournaledBackendContract(options: JournaledBackendContra
         assert.deepEqual(await backend.readMeta(base), { version: "shared-1", content: null }, "the refused delete removed no meta row");
       }
 
-      // Acknowledged, the intent does not hold: the record, its base row, and the offered meta change together.
+      // With `onHeld`, the same hold is an outcome, not a rejection: its rows apply in place of
+      // the deletion and the deletion's own meta changes, and the result names the holder.
+      const lastState = (await backend.readIntent("req-hold"))!.state;
+      assert.deepEqual(
+        await backend.deleteJournaled(id, {
+          expectedVersion: held.version,
+          requireSettled: true,
+          removeMeta: [base],
+          meta: [{ key: "never", value: 2 }],
+          onHeld: { meta: [{ key: base, value: { version: null, content: "shared bytes" } }] },
+        }),
+        { outcome: "held", requestId: "req-hold", state: lastState },
+      );
+      assert.equal((await backend.read(id)).version, held.version, "the held document keeps its bytes");
+      assert.deepEqual(await backend.readMeta(base), { version: null, content: "shared bytes" }, "the onHeld row replaced the base in the refusing transaction");
+      assert.equal(await backend.readMeta("never"), undefined, "the deletion's own meta did not apply");
+      // `onHeld` is inert when nothing holds the target: a stale premise still rejects and applies nothing.
+      await assert.rejects(
+        backend.deleteJournaled(id, { expectedVersion: STALE, requireSettled: false, removeMeta: [base], onHeld: { meta: [{ key: "never", value: 3 }] } }),
+        (error: unknown) => error instanceof seam.VersionConflict,
+      );
+      assert.equal(await backend.readMeta("never"), undefined);
+      assert.deepEqual(await backend.readMeta(base), { version: null, content: "shared bytes" });
+
+      // Acknowledged, the intent does not hold: the record, its base row, and the offered meta change together, and onHeld does not apply.
       await backend.updateIntent("req-hold", "unknown", { state: "acknowledged" });
-      assert.equal(await backend.deleteJournaled(id, { expectedVersion: held.version, requireSettled: true, removeMeta: [base], meta: [{ key: "pull", value: { deleted: [id] } }] }), true);
+      assert.deepEqual(
+        await backend.deleteJournaled(id, {
+          expectedVersion: held.version,
+          requireSettled: true,
+          removeMeta: [base],
+          meta: [{ key: "pull", value: { deleted: [id] } }],
+          onHeld: { meta: [{ key: "never", value: 4 }] },
+        }),
+        { outcome: "deleted" },
+      );
       await assert.rejects(backend.read(id), (error: unknown) => (error as { code?: unknown }).code === "ENOENT");
       assert.equal(await backend.exists(id), false);
       assert.equal(await backend.readMeta(base), undefined);
+      assert.equal(await backend.readMeta("never"), undefined);
       assert.deepEqual(await backend.readMeta("pull"), { deleted: [id] });
       assert.deepEqual((await backend.listIntents()).map((row) => row.requestId), ["req-hold"], "the journal keeps its acknowledged record");
 
-      // Absence is a normal result, even under a premise: false, with the meta changes still applied.
-      assert.equal(await backend.deleteJournaled(id, { expectedVersion: held.version, requireSettled: true, meta: [{ key: "again", value: true }], removeMeta: ["pull"] }), false);
+      // Absence is a normal result, even under a premise: `absent`, with the meta changes still applied.
+      assert.deepEqual(await backend.deleteJournaled(id, { expectedVersion: held.version, requireSettled: true, meta: [{ key: "again", value: true }], removeMeta: ["pull"] }), { outcome: "absent" });
       assert.equal(await backend.readMeta("again"), true);
       assert.equal(await backend.readMeta("pull"), undefined);
     });

@@ -21,6 +21,7 @@ import { call, isDriverError, load as loadAt, ok, startDriverServer, type Driver
 import { createRemoteFixture, type RemoteFixture } from "./fixtures/remote-fixture.ts";
 import { serveRemoteFixture, type ServedFixture } from "./fixtures/remote-http.ts";
 import {
+  authorityHandle,
   MODES,
   platformContractRows,
   runRow,
@@ -51,20 +52,8 @@ async function syntheticFixture(): Promise<RemoteFixture> {
   return fixture;
 }
 
-function authorityOf(fixture: RemoteFixture): AuthorityHandle {
-  return {
-    read: async (id) => {
-      const { doc, version } = await fixture.authority.read(id);
-      return { version, body: doc.body };
-    },
-    write: async (id, body) => {
-      const { doc, version } = await fixture.authority.read(id);
-      return fixture.authority.write(id, { ...doc, body }, { expectedVersion: version });
-    },
-    delete: async (id) => {
-      await fixture.authority.delete(id);
-    },
-  };
+function authorityOf(fixture: RemoteFixture, absent: Set<string> = new Set()): AuthorityHandle {
+  return authorityHandle(fixture.authority, absent);
 }
 
 /** Rebuild the page's typed rejection in Node so the kit's rows see the same name, code, and status. */
@@ -117,10 +106,12 @@ async function openPageSession(browser: Browser, mode: ExecutionMode): Promise<C
   const name = `${mode}-kit-${sessions}`;
   const mounted = ok(await call(page, "platformMount", mode, served.origin, name), "platformMount");
   const runtime = pageRuntime(page, mounted.capabilities);
+  const absent = new Set<string>();
   return {
     mode,
     runtime,
-    authority: authorityOf(served.fixture),
+    authority: authorityOf(served.fixture, absent),
+    expectedAbsent: () => [...absent],
     secondClient: async () => {
       const other = await context.newPage();
       await loadAt(other, driver.origin);

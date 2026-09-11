@@ -27,9 +27,11 @@
  * `shared-confirmed` means the authority acknowledged or served exactly this content at this
  * runtime's last exchange with it (its last sync), not that the authority holds it now. A
  * document the authority has since deleted stays `shared-confirmed` until the next sync, whose
- * pull removes it from the working copy; if a local edit holds it, the pull retains it and the
- * push records the conflict against an absent remote, so it reads `local-conflict` with
- * `remote: null`.
+ * pull removes it from the working copy. If a local edit holds it, the pull retains it and
+ * rewrites its base to an absent shared version, and the document reads `local-pending`; the
+ * conflict is recorded by push, which delivers the edit and settles the authority's 412 with
+ * actual `null` as a conflict against an absent remote, so after a sync (push then pull) it
+ * reads `local-conflict` with `remote: null`.
  *
  * A document with no unsettled intent whose bytes its base does not name is a defect in the
  * working copy (every local write journals an intent): `read` rejects with

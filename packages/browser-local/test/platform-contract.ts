@@ -68,8 +68,33 @@ export interface AuthorityHandle {
   read(id: string): Promise<{ version: Version; body: string }>;
   /** A body edit applied directly at the authority, as another client would make it. */
   write(id: string, body: string): Promise<Version>;
-  /** A deletion applied directly at the authority, as another client would make it. */
+  /**
+   * A deletion applied directly at the authority, as another client would make it. The
+   * harness records the id: the invariant sweep accepts absence only for ids deleted this way.
+   */
   delete(id: string): Promise<void>;
+}
+
+/**
+ * The authority handle over one fixture's `MemoryBackend`, recording every id it deletes into
+ * `absent`. Both harnesses (Node, and the Chromium page session) build theirs here so the
+ * sweep's notion of expected absence is one definition.
+ */
+export function authorityHandle(authority: StorageBackend, absent: Set<string>): AuthorityHandle {
+  return {
+    read: async (id) => {
+      const { doc, version } = await authority.read(id);
+      return { version, body: doc.body };
+    },
+    write: async (id, body) => {
+      const { doc, version } = await authority.read(id);
+      return authority.write(id, { ...doc, body }, { expectedVersion: version });
+    },
+    delete: async (id) => {
+      await authority.delete(id);
+      absent.add(id);
+    },
+  };
 }
 
 export interface UnsettledIntent {
@@ -90,6 +115,8 @@ export interface ContractSession {
   setKnob(name: WriteKnob, flag: boolean): Promise<void>;
   /** Unsettled intents journaled for `id`; always empty in request-driven mode. */
   unsettled(id: string): Promise<UnsettledIntent[]>;
+  /** The ids this session deleted at the authority through its handle: the only ids the sweep accepts as absent. */
+  expectedAbsent(): readonly string[];
   /** Back online with every knob cleared; the invariant sweep runs after this. */
   restore(): Promise<void>;
   close(): Promise<void>;
@@ -553,17 +580,20 @@ export function platformContractRows(): ContractRow[] {
  * The provenance invariant over every document: `shared-confirmed` only with no unsettled
  * intent for the id; `local-pending` or `local-conflict` only with one, and naming it; and,
  * whatever state was derived, `local-conflict` exactly when a conflict intent exists for the
- * id. A document the runtime no longer holds (deleted at the authority and reconciled) has no
- * unsettled intent, since a held document is never removed. Nothing in the working copy is
- * unconfirmed.
+ * id. A document the runtime no longer holds is absent only if the row deleted it at the
+ * authority (the session records those ids), and then has no unsettled intent, since a held
+ * document is never removed; any other absence is a document the runtime lost. Nothing in the
+ * working copy is unconfirmed.
  */
 export async function assertProvenanceInvariant(session: ContractSession): Promise<void> {
+  const expectedAbsent = new Set(session.expectedAbsent());
   for (const id of SYNTHETIC_IDS) {
     let document: PlatformDocument;
     try {
       document = await session.runtime.read(id);
     } catch (error) {
       assert.equal((error as { code?: unknown }).code, "ENOENT", `${session.mode} '${id}': read rejected with something other than absence`);
+      assert.ok(expectedAbsent.has(id), `${session.mode} '${id}': absent, but the row never deleted it at the authority`);
       assert.deepEqual(await session.unsettled(id), [], `${session.mode} '${id}': absent with an unsettled intent`);
       continue;
     }

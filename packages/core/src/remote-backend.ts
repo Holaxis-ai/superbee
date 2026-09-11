@@ -43,7 +43,7 @@
 
 import { DEFAULT_BLOB_CONTENT_TYPE } from "./content-type.js";
 import { InvalidInputError } from "./errors.js";
-import { isHeadsDigest, type DocumentHead } from "./heads-digest.js";
+import { headsDigest, isHeadsDigest, type DocumentHead } from "./heads-digest.js";
 import { assertSafeBlobKey, assertSafeConceptId } from "./paths.js";
 import { isRequestIdentity, type Outcome } from "./uncertain-write.js";
 import { VersionConflict, stripETagWrapper } from "./version-transport.js";
@@ -173,9 +173,13 @@ export interface SnapshotDocument {
 /**
  * A snapshot as {@link RemoteBackend.snapshot} hands it over: the header, already parsed, and
  * the documents as they stream. Iterating `docs` to completion is the completeness signal: the
- * loop ends only after the `end` line arrived with the announced count, and it throws
- * `SNAPSHOT_TRUNCATED` otherwise, so a consumer that writes batches as they arrive has one
- * control path and never needs to inspect a terminator itself.
+ * loop ends only after the `end` line arrived with the announced count and the digest recomputed
+ * over the received `{ id, version }` rows equals the header's, and it throws
+ * `SNAPSHOT_TRUNCATED` (the body ended or failed first) or `SNAPSHOT_DIGEST_MISMATCH` (the body
+ * was whole but describes a state the header did not announce) otherwise, so a consumer that
+ * writes batches as they arrive has one control path and never needs to inspect a terminator
+ * or a digest itself. A consumer records the header digest as matched only after the loop
+ * ended normally.
  */
 export interface RemoteSnapshot {
   header: SnapshotHeader;
@@ -254,6 +258,13 @@ const RECORDED_OUTCOME_KINDS = new Set(["committed", "conflict", "refused"]);
 
 /** A snapshot body that ended, or failed, before its terminator arrived with the announced count. */
 const SNAPSHOT_TRUNCATED = "SNAPSHOT_TRUNCATED";
+/**
+ * A snapshot whose body arrived whole, with its terminator and the announced count, but whose
+ * rows digest to something other than the header announced. Not truncation: re-requesting will
+ * not necessarily repair it, since the authority contradicted itself. A consumer discards the
+ * documents' claim to the header digest either way.
+ */
+const SNAPSHOT_DIGEST_MISMATCH = "SNAPSHOT_DIGEST_MISMATCH";
 
 function isDocumentHead(value: unknown): value is DocumentHead {
   if (typeof value !== "object" || value === null) return false;
@@ -327,11 +338,16 @@ function parseSnapshotHeader(line: string): SnapshotHeader {
 
 /**
  * The document lines of a snapshot, ending normally only at an `end` line whose count equals
- * both the header's announcement and the documents actually seen. Anything else is a rejection:
- * a body that ends first is `SNAPSHOT_TRUNCATED`; a line the contract does not admit is malformed.
+ * both the header's announcement and the documents actually seen, and only when the digest
+ * recomputed over the received heads equals the header's. Anything else is a rejection: a body
+ * that ends first is `SNAPSHOT_TRUNCATED`; a whole body whose heads digest differently is
+ * `SNAPSHOT_DIGEST_MISMATCH`; a line the contract does not admit is malformed. The digest is the
+ * client's own check of the listing it is about to trust: a count and a terminator say the body
+ * is whole, only the recipe says it is the state the header named.
  */
 async function* snapshotDocuments(lines: AsyncGenerator<string>, header: SnapshotHeader, status: number): AsyncGenerator<SnapshotDocument> {
   let seen = 0;
+  const received: DocumentHead[] = [];
   for await (const line of lines) {
     const record = parseSnapshotLine(line);
     if (record.kind === "doc") {
@@ -343,6 +359,7 @@ async function* snapshotDocuments(lines: AsyncGenerator<string>, header: Snapsho
       }
       seen += 1;
       if (seen > header.count) throw malformed(`snapshot delivered more than the ${header.count} announced document(s)`);
+      received.push({ id: record.id, version: record.version });
       yield { id: record.id, version: record.version, frontmatter: record.frontmatter as Frontmatter, body: record.body };
       continue;
     }
@@ -351,6 +368,14 @@ async function* snapshotDocuments(lines: AsyncGenerator<string>, header: Snapsho
         throw new RemoteError(
           `snapshot end line counts ${String(record.count)} document(s), but ${seen} of ${header.count} announced arrived`,
           SNAPSHOT_TRUNCATED,
+          status,
+        );
+      }
+      const recomputed = headsDigest(received);
+      if (recomputed !== header.digest) {
+        throw new RemoteError(
+          `snapshot header announced digest ${header.digest}, but its ${seen} document(s) digest to ${recomputed}`,
+          SNAPSHOT_DIGEST_MISMATCH,
           status,
         );
       }
@@ -604,9 +629,12 @@ export class RemoteBackend implements StorageBackend {
    * `GET /heads`: every document id and version the authority holds, under one digest, or
    * `null` when `ifNoneMatch` named the digest it still holds (a `304`: nothing changed). A
    * `200` is diffed against the caller's own copy: an id missing from `heads` was deleted, a
-   * differing version changed. A `200` without a well-formed digest, or whose `count` and rows
-   * disagree, is rejected rather than trusted, as is a `304` to a request that sent no
-   * `ifNoneMatch`. Not part of the {@link StorageBackend} seam.
+   * differing version changed. A `200` without a well-formed digest, whose `count` and rows
+   * disagree, or whose rows digest by the documented recipe to something other than the served
+   * digest, is rejected rather than trusted, as is a `304` to a request that sent no
+   * `ifNoneMatch`. The recomputation is what stops a listing that is whole by its own count
+   * but not the state its digest names (a shortened listing under the real digest) from being
+   * diffed as a mass deletion. Not part of the {@link StorageBackend} seam.
    */
   async heads(options: HeadsOptions = {}): Promise<HeadsResult | null> {
     const headers: Record<string, string> = {};
@@ -627,7 +655,12 @@ export class RemoteBackend implements StorageBackend {
     if (payload.count !== payload.heads.length) {
       throw malformed(`wire heads count ${String(payload.count)} disagrees with its ${payload.heads.length} row(s)`);
     }
-    return { digest: payload.digest, heads: payload.heads.map(({ id, version }) => ({ id, version })) };
+    const heads = payload.heads.map(({ id, version }) => ({ id, version }));
+    const recomputed = headsDigest(heads);
+    if (recomputed !== payload.digest) {
+      throw malformed(`wire heads served digest ${payload.digest}, but its ${heads.length} row(s) digest to ${recomputed}`);
+    }
+    return { digest: payload.digest, heads };
   }
 
   /**
@@ -635,8 +668,9 @@ export class RemoteBackend implements StorageBackend {
    * resolves, so a non-2xx or a body without a header rejects here with the usual typed error;
    * the documents then stream through {@link RemoteSnapshot.docs}. Transient retry applies only
    * to obtaining the response: a body cut mid-stream is reported to the consumer as
-   * `SNAPSHOT_TRUNCATED`, and re-requesting is the consumer's decision. Reserved files are not
-   * part of a snapshot. Not part of the {@link StorageBackend} seam.
+   * `SNAPSHOT_TRUNCATED`, a whole body whose heads do not digest to the header's announcement as
+   * `SNAPSHOT_DIGEST_MISMATCH`, and re-requesting is the consumer's decision. Reserved files are
+   * not part of a snapshot. Not part of the {@link StorageBackend} seam.
    */
   async snapshot(): Promise<RemoteSnapshot> {
     const res = await this.send("/snapshot", { method: "GET" });
