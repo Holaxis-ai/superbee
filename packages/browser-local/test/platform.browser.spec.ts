@@ -151,10 +151,12 @@ for (const mode of MODES) {
     try {
       await loadAt(page, driver.origin);
       const mounted = ok(await call(page, "platformMount", mode, served.origin, `${mode}-page`), "platformMount");
-      expect(mounted.capabilities).toEqual({ mode, offlineCommits: mode === "browser-local", localPersistence: mode === "browser-local", operations: mode === "request-driven" });
+      const offlineCommits = mode === "browser-local";
+      expect(mounted.capabilities).toEqual({ mode, offlineCommits, localPersistence: offlineCommits });
 
       const root = page.locator('[data-role="presentation"]');
-      await expect(root).toHaveAttribute("data-mode", mode);
+      await expect(root).toHaveAttribute("data-offline-commits", String(offlineCommits));
+      await expect(root).toHaveAttribute("data-local-persistence", String(offlineCommits));
       const items = root.locator('[data-role="list"] li');
       await expect(items).toHaveCount(SYNTHETIC_IDS.length);
       expect(await items.evaluateAll((nodes) => nodes.map((node) => (node as HTMLElement).dataset.id))).toEqual([...SYNTHETIC_IDS]);

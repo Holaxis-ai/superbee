@@ -5,9 +5,11 @@
  * working copy, so nothing is ever pending: a commit that cannot reach the authority rejects
  * with the carrier error, and the authority is unchanged.
  *
- * `operations` is read from the authority's capabilities once, at construction, which is why
- * the factory is async: this mode has no offline capability to protect, so a construction that
- * cannot reach the authority rejects with the carrier error rather than reporting a guess.
+ * Every answer is `shared-confirmed` with `version` and `acknowledged` the same token, the
+ * authority's: this mode has one token space. The factory is async because construction reads
+ * the authority's wire capabilities once: this mode has no offline capability to protect, so a
+ * construction that cannot reach the authority rejects with the carrier error rather than
+ * handing out a runtime whose every verb would fail.
  */
 
 import type { Bundle, ConceptId, QueryFilter, RemoteBackend, ValidationWarning } from "@superbee/core";
@@ -42,8 +44,8 @@ const EMPTY_REGISTRY: KindRegistry = { kinds: new Map(), warnings: [] };
 export async function createRequestDrivenRuntime(options: RequestDrivenRuntimeOptions): Promise<PlatformRuntime> {
   const { remote, actor, now } = options;
   const bundle: Bundle = { root: remote.origin, backend: remote };
-  const wire = await remote.wireCapabilities();
-  const capabilities: PlatformCapabilities = { mode: "request-driven", offlineCommits: false, localPersistence: false, operations: wire.operations };
+  await remote.wireCapabilities();
+  const capabilities: PlatformCapabilities = { mode: "request-driven", offlineCommits: false, localPersistence: false };
   let online: boolean | null = true;
 
   /** Run one authority round trip, recording whether the authority answered. */
@@ -58,7 +60,7 @@ export async function createRequestDrivenRuntime(options: RequestDrivenRuntimeOp
     }
   };
 
-  const status = (): PlatformSyncStatus => ({ mode: "request-driven", online, pending: 0, conflicts: 0, refused: 0, paused: false, complete: true });
+  const status = (): PlatformSyncStatus => ({ mode: "request-driven", online, pending: 0, conflicts: 0, refused: 0, unconfirmed: 0, paused: false, complete: true });
 
   return {
     capabilities: () => ({ ...capabilities }),

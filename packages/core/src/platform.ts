@@ -9,16 +9,31 @@
  * Every read, query row, validation, and commit states where its answer stands with respect to
  * the shared authority:
  *
- * - `shared-confirmed`: the authority holds exactly this version. It may only be produced from
- *   an authority acknowledgement (a write the authority answered, or an intent it acknowledged
- *   under its request identity) or from an authority read (a request-driven read, or a working
- *   copy refreshed from the authority with no local edit outstanding). A local write never
- *   produces it, so no presentation can report shared confirmation without an acknowledgement.
+ * - `shared-confirmed`: the authority acknowledged or served exactly this content at the
+ *   runtime's last exchange with it. It may only be produced from an authority acknowledgement
+ *   (a write the authority answered, or an intent it acknowledged under its request identity)
+ *   or from an authority read (a request-driven read, or a working copy refreshed from the
+ *   authority with no local edit outstanding). A local write never produces it, so no
+ *   presentation can report shared confirmation without an acknowledgement. It says nothing
+ *   about what the authority holds now: request-driven's last exchange is the request itself,
+ *   browser-local's is its last sync, and the authority may have moved (or deleted the document)
+ *   since.
  * - `local-pending`: the working copy holds a local edit the authority has not accepted;
  *   `requestId` names the journaled intent that will deliver it and `base` the shared version
  *   the edit was made against.
  * - `local-conflict`: the authority's head moved under a local edit; `remote` is the version the
- *   authority holds now, and the local content is retained.
+ *   authority held when the conflict was recorded, and the local content is retained. Any
+ *   conflict intent on a document decides its provenance, even after further local edits
+ *   chained behind it.
+ *
+ * One token space per runtime. In every provenance state `version` is the runtime's own premise
+ * token: the value an application may pass back as `expectedVersion`, equal to the `version` of
+ * a query row for the same document. For browser-local that is the working copy's document
+ * version; for request-driven it is the authority's. `shared-confirmed` also carries
+ * `acknowledged`, the token the authority mints for the same content, which differs from
+ * `version` whenever the authority hashes bytes the working copy normalizes differently (a
+ * filesystem authority over hand-authored files). An application compares `acknowledged` to the
+ * authority and `version` to its own runtime, never one to the other.
  *
  * Model semantics (what a document is, how a query filters, what a kind warns about, when a
  * commit changes nothing) are identical across implementations; the contract kit in
@@ -36,7 +51,7 @@ export type ExecutionMode = "request-driven" | "browser-local";
 
 /** Where a result stands with respect to the shared authority. */
 export type Provenance =
-  | { state: "shared-confirmed"; version: Version }
+  | { state: "shared-confirmed"; version: Version; acknowledged: Version }
   | { state: "local-pending"; version: Version; base: Version | null; requestId: string }
   | { state: "local-conflict"; version: Version; base: Version | null; remote: Version | null; requestId: string };
 
@@ -50,8 +65,6 @@ export interface PlatformCapabilities {
   offlineCommits: boolean;
   /** Documents and pending edits survive a reload of the host. */
   localPersistence: boolean;
-  /** The authority records outcomes by request identity (wire `operations`). */
-  operations: boolean;
 }
 
 export interface PlatformDocument {
@@ -77,8 +90,9 @@ export interface PlatformValidation {
 export interface PlatformEdit {
   body: string;
   /**
-   * The version the edit was made against. Omitted, the runtime reads, decides and writes with
-   * its own retry. Given, the commit is a single compare-and-swap at that premise: request-driven
+   * The version the edit was made against: the `version` a read, query row, or commit of this
+   * runtime reported. Omitted, the runtime reads, decides and writes with its own retry. Given,
+   * the commit is a single compare-and-swap at that premise: request-driven
    * rejects a stale premise with `VersionConflict` at commit time; browser-local applies the edit
    * to the working copy at that local premise and surfaces a moved shared head as
    * `local-conflict` when it synchronizes.
@@ -101,6 +115,13 @@ export interface PlatformSyncStatus {
   pending: number;
   conflicts: number;
   refused: number;
+  /**
+   * Working-copy documents whose bytes neither a recorded shared base nor an intent accounts
+   * for: a defect in the working copy, since every local write journals an intent. `query`
+   * omits such a document and `read` rejects it; this count is where it surfaces. Always 0 in
+   * request-driven mode, which has no working copy.
+   */
+  unconfirmed: number;
   /** Delivery is paused (an authorization refusal); `pausedReason` says why. */
   paused: boolean;
   pausedReason?: string;
@@ -133,14 +154,18 @@ export function provenanceLabel(provenance: Provenance): ProvenanceLabel {
   }
 }
 
-/** True only when the authority is known to hold this version. */
+/** True only when the authority acknowledged or served this content at the runtime's last exchange with it. */
 export function isSharedConfirmed(provenance: Provenance): provenance is Extract<Provenance, { state: "shared-confirmed" }> {
   return provenance.state === "shared-confirmed";
 }
 
-/** A confirmation from an authority answer; callers must hold that answer, never infer it from a local write. */
-export function sharedConfirmed(version: Version): Provenance {
-  return { state: "shared-confirmed", version };
+/**
+ * A confirmation from an authority answer; callers must hold that answer, never infer it from a
+ * local write. `version` is the runtime's own premise token and `acknowledged` the authority's
+ * token for the same content; omitted, the two are the same token space.
+ */
+export function sharedConfirmed(version: Version, acknowledged: Version = version): Provenance {
+  return { state: "shared-confirmed", version, acknowledged };
 }
 
 export function localPending(version: Version, base: Version | null, requestId: string): Provenance {

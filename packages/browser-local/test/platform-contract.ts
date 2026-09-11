@@ -4,7 +4,15 @@
  * against a fresh session of each mode and, for rows whose outcome must be identical, asserts
  * the observations equal across modes. After every row the runner sweeps every document and
  * checks the provenance invariant: a result is `shared-confirmed` only when no unsettled intent
- * exists for that id, and `local-pending` or `local-conflict` only when one does and names it.
+ * exists for that id, `local-pending` or `local-conflict` only when one does and names it,
+ * `local-conflict` whenever any conflict intent exists for the id, and nothing is unconfirmed.
+ *
+ * Token spaces: `version` is each runtime's own premise token and `acknowledged` the
+ * authority's. Parity rows compare documents and `acknowledged` across modes; they also compare
+ * `version`, which is equal across modes only because the kit's harnesses seed a memory
+ * authority that mints the working copy's own token. The case where the two differ (a
+ * filesystem authority over hand-authored files) is proved by the filesystem-authority test in
+ * `platform-contract.test.ts`, not by a parity row.
  *
  * The kit is a module, not a test file: the Node proof (`platform-contract.test.ts`) runs every
  * row over fake-indexeddb and the in-process fixture; the Chromium proof
@@ -138,13 +146,16 @@ export function platformContractRows(): ContractRow[] {
       verb: "read",
       name: "reads one record",
       inputs: { id: "notes/alpha" },
-      outcome: { "request-driven": "the authority's document, shared-confirmed at its version", "browser-local": "the working copy's document, shared-confirmed at the same version" },
+      outcome: {
+        "request-driven": "the authority's document, shared-confirmed with version and acknowledged the authority's token",
+        "browser-local": "the working copy's document, shared-confirmed with acknowledged the authority's token and version the working copy's (equal here only because the memory authority mints the same token)",
+      },
       parity: true,
       scope: "model",
       async run({ runtime, authority }) {
         const result = await runtime.read("notes/alpha");
         const shared = expectState(result.provenance, "shared-confirmed", "read");
-        assert.equal(shared.version, (await authority.read("notes/alpha")).version);
+        assert.equal(shared.acknowledged, (await authority.read("notes/alpha")).version, "acknowledged is the authority's token");
         return result;
       },
     },
@@ -158,7 +169,10 @@ export function platformContractRows(): ContractRow[] {
       async run({ runtime }) {
         const rows = await runtime.query({ type: "Note" });
         assert.deepEqual(rows.map((row) => row.id), ["notes/alpha", "notes/beta"]);
-        for (const row of rows) expectState(row.provenance, "shared-confirmed", row.id);
+        for (const row of rows) {
+          expectState(row.provenance, "shared-confirmed", row.id);
+          assert.equal(row.version, row.provenance.version, `${row.id}: the row's version is the runtime's own premise token`);
+        }
         return rows;
       },
     },
@@ -235,14 +249,14 @@ export function platformContractRows(): ContractRow[] {
         const after = await runtime.read("notes/alpha");
         const shared = expectState(after.provenance, "shared-confirmed", "read after commit");
         const held = await authority.read("notes/alpha");
-        assert.equal(shared.version, held.version);
+        assert.equal(shared.acknowledged, held.version);
         assert.equal(after.doc.body, "alpha v2\n");
         assert.equal(held.body, "alpha v2\n");
 
         await second.sync();
         const observed = await second.read("notes/alpha");
         assert.equal(observed.doc.body, "alpha v2\n");
-        assert.equal(expectState(observed.provenance, "shared-confirmed", "second client").version, held.version);
+        assert.equal(expectState(observed.provenance, "shared-confirmed", "second client").acknowledged, held.version);
         return { version: held.version, body: held.body };
       },
     },
@@ -319,6 +333,50 @@ export function platformContractRows(): ContractRow[] {
     },
     {
       verb: "commit",
+      name: "commits again over a document in conflict",
+      inputs: { id: "notes/alpha", first: "alpha local edit\n", second: "alpha local edit, again\n" },
+      outcome: {
+        "request-driven": "the first commit rejects with VersionConflict at its stale premise; the second, at the premise the read reports, lands shared-confirmed; nothing is pending",
+        "browser-local": "after sync the document is local-conflict; a second commit at the version the read reports is accepted but the document stays local-conflict with the conflict intent's remote and requestId, with conflicts 1 and pending 1",
+      },
+      parity: false,
+      scope: "sync",
+      async run(session) {
+        const { runtime, authority, mode } = session;
+        const premise = (await runtime.read("notes/alpha")).provenance.version;
+        if (mode === "request-driven") {
+          await authority.write("notes/alpha", "alpha remote edit\n");
+          assert.equal((await rejection(() => runtime.commit("notes/alpha", { body: "alpha local edit\n", expectedVersion: premise }))).name, "VersionConflict");
+          const fresh = await runtime.read("notes/alpha");
+          const commit = await runtime.commit("notes/alpha", { body: "alpha local edit, again\n", expectedVersion: fresh.provenance.version });
+          assert.equal(expectState(commit.provenance, "shared-confirmed", "second commit").acknowledged, (await authority.read("notes/alpha")).version);
+          assert.equal((await runtime.syncStatus()).pending, 0);
+        } else {
+          const first = expectState((await runtime.commit("notes/alpha", { body: "alpha local edit\n", expectedVersion: premise })).provenance, "local-pending", "first commit");
+          const moved = await authority.write("notes/alpha", "alpha remote edit\n");
+          await runtime.sync();
+          const inConflict = expectState((await runtime.read("notes/alpha")).provenance, "local-conflict", "read after sync");
+          assert.equal(inConflict.requestId, first.requestId);
+          const second = await runtime.commit("notes/alpha", { body: "alpha local edit, again\n", expectedVersion: inConflict.version });
+          assert.equal(second.changed, true);
+          const conflict = expectState(second.provenance, "local-conflict", "second commit");
+          const read = await runtime.read("notes/alpha");
+          assert.equal(read.doc.body, "alpha local edit, again\n", "the second edit is in the working copy");
+          const still = expectState(read.provenance, "local-conflict", "read after second commit");
+          assert.equal(still.remote, moved, "remote is the conflict intent's shared head");
+          assert.equal(still.requestId, first.requestId, "the conflict intent, not the chained edit, names the document");
+          assert.equal(conflict.requestId, first.requestId);
+          const status = await runtime.syncStatus();
+          assert.equal(status.conflicts, 1);
+          assert.equal(status.pending, 1, "the chained edit waits behind the conflict");
+          assert.deepEqual((await session.unsettled("notes/alpha")).map((row) => row.state), ["conflict", "pending"]);
+          assert.equal((await authority.read("notes/alpha")).body, "alpha remote edit\n", "nothing overwrote the authority");
+        }
+        return null;
+      },
+    },
+    {
+      verb: "commit",
       name: "commits after access is revoked",
       inputs: { id: "tasks/two", body: "task two after revocation\n" },
       outcome: {
@@ -384,7 +442,7 @@ export function platformContractRows(): ContractRow[] {
           const held = await authority.read("notes/beta");
           assert.equal(held.body, "beta v2 (lost ack)\n");
           const read = await runtime.read("notes/beta");
-          assert.equal(expectState(read.provenance, "shared-confirmed", "read after sync").version, held.version);
+          assert.equal(expectState(read.provenance, "shared-confirmed", "read after sync").acknowledged, held.version);
           assert.deepEqual(await session.unsettled("notes/beta"), []);
         }
         return null;
@@ -448,20 +506,24 @@ export function platformContractRows(): ContractRow[] {
 
 /**
  * The provenance invariant over every document: `shared-confirmed` only with no unsettled
- * intent for the id; `local-pending` or `local-conflict` only with one, and naming it.
+ * intent for the id; `local-pending` or `local-conflict` only with one, and naming it; and,
+ * whatever state was derived, `local-conflict` exactly when a conflict intent exists for the
+ * id. Nothing in the working copy is unconfirmed.
  */
 export async function assertProvenanceInvariant(session: ContractSession): Promise<void> {
   for (const id of SYNTHETIC_IDS) {
     const { provenance } = await session.runtime.read(id);
     const unsettled = await session.unsettled(id);
+    const conflicted = unsettled.some((row) => row.state === "conflict");
+    assert.equal(provenance.state === "local-conflict", conflicted, `${session.mode} '${id}': ${provenance.state} with ${conflicted ? "a" : "no"} conflict intent`);
     if (provenance.state === "shared-confirmed") {
       assert.deepEqual(unsettled, [], `${session.mode} '${id}': shared-confirmed with an unsettled intent`);
     } else {
       assert.ok(unsettled.length > 0, `${session.mode} '${id}': ${provenance.state} with no unsettled intent`);
       assert.ok(unsettled.some((row) => row.requestId === provenance.requestId), `${session.mode} '${id}': ${provenance.state} names an intent the journal does not hold`);
-      if (provenance.state === "local-conflict") assert.ok(unsettled.some((row) => row.state === "conflict"), `${session.mode} '${id}': local-conflict without a conflict intent`);
     }
   }
+  assert.equal((await session.runtime.syncStatus()).unconfirmed, 0, `${session.mode}: unconfirmed documents in the working copy`);
 }
 
 /** Run one row against one mode: a fresh session, the row, the invariant sweep, and cleanup. */

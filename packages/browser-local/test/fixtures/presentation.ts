@@ -1,11 +1,14 @@
 /**
  * The proof presentation: one plain DOM surface over a {@link PlatformRuntime} and nothing
- * else. It imports only the platform contract's types and helpers, receives the runtime object
- * it renders, and never learns which execution mode answers it except by asking
- * `capabilities()`. What it shows is exactly what the contract returns: a document list from
- * `query`, one selected document with its body, an edit box wired to `commit`, a provenance
- * badge per document from the result's own provenance, a status line from `syncStatus`, and a
- * sync button. Deliberately unstyled; it is a proof surface, not a product.
+ * else. It imports only the platform contract's types and helpers and receives the runtime
+ * object it renders. It keys nothing on the mode name: the affordances it exposes as data
+ * attributes follow the capability booleans (`offlineCommits`, `localPersistence`), and the
+ * mode name appears only where the contract returns it as a field of `syncStatus`, printed
+ * with the rest of the status line. What it shows is exactly what the contract returns: a
+ * document list from `query`, one selected document with its body, an edit box wired to
+ * `commit`, a provenance badge per document from the result's own provenance, a status line
+ * from `syncStatus`, and a sync button. Deliberately unstyled; it is a proof surface, not a
+ * product.
  */
 
 import { provenanceLabel, type PlatformQueryRow, type PlatformRuntime, type PlatformSyncStatus, type Provenance } from "@superbee/core/platform";
@@ -34,6 +37,7 @@ function statusLine(status: PlatformSyncStatus): string {
     `pending=${status.pending}`,
     `conflicts=${status.conflicts}`,
     `refused=${status.refused}`,
+    `unconfirmed=${status.unconfirmed}`,
     `paused=${status.paused}`,
     `complete=${status.complete}`,
   ];
@@ -44,8 +48,9 @@ function statusLine(status: PlatformSyncStatus): string {
 export function mountPresentation(container: HTMLElement, runtime: PlatformRuntime): Presentation {
   const capabilities = runtime.capabilities();
   const root = element("section", "presentation");
-  root.dataset.mode = capabilities.mode;
-  const caps = element("p", "capabilities", `mode=${capabilities.mode} offlineCommits=${capabilities.offlineCommits} localPersistence=${capabilities.localPersistence} operations=${capabilities.operations}`);
+  root.dataset.offlineCommits = String(capabilities.offlineCommits);
+  root.dataset.localPersistence = String(capabilities.localPersistence);
+  const caps = element("p", "capabilities", `offlineCommits=${capabilities.offlineCommits} localPersistence=${capabilities.localPersistence}`);
   const list = element("ul", "list");
   const article = element("article", "document");
   const heading = element("h2", "heading", "(nothing selected)");

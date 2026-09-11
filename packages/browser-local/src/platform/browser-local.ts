@@ -5,25 +5,40 @@
  * the store's push role and refreshes the working copy from the authority.
  *
  * Provenance is derived from the intent journal for the document, never from the write that
- * produced it. The latest unsettled intent for the id decides: `conflict` gives
- * `local-conflict` (with the shared head the intent recorded), and `pending`, `in_flight`,
- * `unknown`, or `refused` gives `local-pending`, because in each of those states the working
- * copy holds an edit the authority has not accepted (a refusal is reported through
- * `syncStatus`, as the pause and the refused count). With no unsettled intent the document is
- * `shared-confirmed` at its recorded shared base (`base:<id>`, written only by bootstrap, pull,
- * or an acknowledgement) when that base names the document's bytes: the same version token, or
- * the same serialized content when an authority mints a different token for identical bytes.
- * A document with no unsettled intent whose bytes its base does not name is a defect in the
- * working copy (every local write journals an intent) and the read rejects rather than guess.
+ * produced it. The document, its intents, and its shared base are read in one readonly
+ * transaction (`readWithJournal`), so a pull or a commit in another realm can never show this
+ * derivation a document of one moment beside a journal of another. Over that snapshot: any
+ * `conflict` intent for the id decides, giving `local-conflict` with the shared head that intent
+ * recorded and its request identity, even when a later local edit is chained behind it (push
+ * holds the chained edit until the conflict is resolved, so the document is in conflict, not
+ * merely pending). Otherwise the latest unsettled intent in `pending`, `in_flight`, `unknown`,
+ * or `refused` gives `local-pending`, because in each of those states the working copy holds an
+ * edit the authority has not accepted (a refusal is reported through `syncStatus`, as the pause
+ * and the refused count). With no unsettled intent the document is `shared-confirmed` when its
+ * recorded shared base (`base:<id>`, written only by bootstrap, pull, or an acknowledgement)
+ * names the document's bytes: the same version token, or the same serialized content when the
+ * authority mints a different token for identical bytes.
  *
- * `operations` defaults to `false` until the authority's capabilities have been read, which
- * happens on the first `sync` that reaches it; the working copy must open without the authority.
+ * Two token spaces meet here. `version` in every provenance is the working copy's own document
+ * version, the premise a commit takes back; `acknowledged` in `shared-confirmed` is the
+ * authority's token from the base. They differ when the authority hashed bytes the working copy
+ * normalizes differently (a filesystem authority over hand-authored files).
+ *
+ * `shared-confirmed` means the authority acknowledged or served exactly this content at this
+ * runtime's last exchange with it (its last sync), not that the authority holds it now; in
+ * particular the working copy keeps a document the authority has since deleted until that is
+ * reconciled (pull does not yet remove it).
+ *
+ * A document with no unsettled intent whose bytes its base does not name is a defect in the
+ * working copy (every local write journals an intent): `read` rejects with
+ * {@link UnconfirmedWorkingCopyError} rather than guess, `query` omits the row, and
+ * `syncStatus` counts such documents as `unconfirmed`.
  */
 
-import type { ConceptId, QueryFilter, RemoteBackend, StorageBackend, Version } from "@superbee/core";
-import { queryHeads, readDocVersioned } from "@superbee/core/bundle-ops";
-import { stringifyDoc } from "@superbee/core/document-codec";
-import type { IntentRecord } from "@superbee/core/indexeddb-backend";
+import type { ConceptId, QueryFilter, RemoteBackend, StorageBackend } from "@superbee/core";
+import { queryHeads } from "@superbee/core/bundle-ops";
+import { assertReadableConceptId } from "@superbee/core/engine";
+import type { IntentRecord, JournaledReadResult } from "@superbee/core/indexeddb-backend";
 import {
   localConflict,
   localPending,
@@ -71,48 +86,64 @@ export class UnconfirmedWorkingCopyError extends Error {
   }
 }
 
+/** An ENOENT-shaped rejection, the shape every backend's read uses for an absent document. */
+function notFound(id: ConceptId): Error & { code: string } {
+  const err = new Error(`no concept document '${id}'`) as Error & { code: string };
+  err.code = "ENOENT";
+  return err;
+}
+
+const UNSETTLED = new Set(UNSETTLED_STATES);
+
+/**
+ * The provenance of one snapshot, or `null` when the snapshot is unconfirmed (no unsettled
+ * intent, and no base naming the bytes). `raw` are the stored bytes `version` names.
+ */
+function deriveProvenance(snapshot: JournaledReadResult & { document: NonNullable<JournaledReadResult["document"]>; raw: string }): Provenance | null {
+  const { version } = snapshot.document;
+  const unsettled = snapshot.intents.filter((row) => UNSETTLED.has(row.state));
+  const conflict = unsettled.find((row) => row.state === "conflict");
+  if (conflict) return localConflict(version, conflict.base, conflict.remote?.version ?? null, conflict.requestId);
+  const latest: IntentRecord | undefined = unsettled[unsettled.length - 1];
+  if (latest) return localPending(version, latest.base, latest.requestId);
+  const base = snapshot.meta.get(baseKey(snapshot.document.doc.id)) as SharedBase | undefined;
+  if (base?.version !== null && base?.version !== undefined) {
+    if (base.version === version || base.content === snapshot.raw) return sharedConfirmed(version, base.version);
+  }
+  return null;
+}
+
 export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): PlatformRuntime {
   const { local, remote, transport, actor, now } = options;
   const { bundle, backend } = local;
-  let operations: boolean | null = null;
   let online: boolean | null = null;
 
-  const capabilities = (): PlatformCapabilities => ({ mode: "browser-local", offlineCommits: true, localPersistence: true, operations: operations === true });
+  const capabilities = (): PlatformCapabilities => ({ mode: "browser-local", offlineCommits: true, localPersistence: true });
 
-  /** The latest unsettled intent per target, from one journal read. */
-  const unsettledByTarget = async (): Promise<Map<ConceptId, IntentRecord>> => {
-    const latest = new Map<ConceptId, IntentRecord>();
-    for (const row of await backend.listIntents(UNSETTLED_STATES)) latest.set(row.target, row);
-    return latest;
-  };
-
-  /**
-   * Provenance for a document at its local `version`. `raw` is the serialized document when
-   * the caller holds it; a query row does not, and reads it only when the tokens differ.
-   */
-  const provenanceFor = async (id: ConceptId, version: Version, intent: IntentRecord | undefined, raw: string | null): Promise<Provenance> => {
-    if (intent) {
-      if (intent.state === "conflict") return localConflict(version, intent.base, intent.remote?.version ?? null, intent.requestId);
-      return localPending(version, intent.base, intent.requestId);
-    }
-    const base = await backend.readMeta<SharedBase>(baseKey(id));
-    if (base?.version !== null && base?.version !== undefined) {
-      if (base.version === version) return sharedConfirmed(base.version);
-      const bytes = raw ?? (await serialized(id));
-      if (base.content === bytes) return sharedConfirmed(base.version);
-    }
-    throw new UnconfirmedWorkingCopyError(id);
-  };
-
-  const serialized = async (id: ConceptId): Promise<string> => {
-    const { doc } = await readDocVersioned(bundle, id);
-    return stringifyDoc(doc.frontmatter, doc.body ?? "");
+  /** One document with its journal and base, from one transaction; `null` when the store holds no record. */
+  const snapshotOf = async (id: ConceptId): Promise<(JournaledReadResult & { document: NonNullable<JournaledReadResult["document"]>; raw: string }) | null> => {
+    const snapshot = await backend.readWithJournal(id, { meta: [baseKey(id)] });
+    if (snapshot.document === null || snapshot.raw === null) return null;
+    return { ...snapshot, document: snapshot.document, raw: snapshot.raw };
   };
 
   const readWithProvenance = async (id: ConceptId): Promise<PlatformDocument> => {
-    const { doc, version } = await readDocVersioned(bundle, id);
-    const intent = (await unsettledByTarget()).get(id);
-    return { doc, provenance: await provenanceFor(id, version, intent, stringifyDoc(doc.frontmatter, doc.body ?? "")) };
+    assertReadableConceptId(id);
+    const snapshot = await snapshotOf(id);
+    if (!snapshot) throw notFound(id);
+    const provenance = deriveProvenance(snapshot);
+    if (!provenance) throw new UnconfirmedWorkingCopyError(id);
+    return { doc: snapshot.document.doc, provenance };
+  };
+
+  /** Documents the working copy holds that neither a base nor an intent accounts for. */
+  const countUnconfirmed = async (): Promise<number> => {
+    let count = 0;
+    for (const id of await backend.list()) {
+      const snapshot = await snapshotOf(id);
+      if (snapshot && deriveProvenance(snapshot) === null) count += 1;
+    }
+    return count;
   };
 
   const status = async (): Promise<PlatformSyncStatus> => {
@@ -123,6 +154,7 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
       pending: local.counts.pending + local.counts.in_flight + local.counts.unknown,
       conflicts: local.counts.conflict,
       refused: local.counts.refused,
+      unconfirmed: await countUnconfirmed(),
       paused: local.paused,
       ...(local.pausedReason === undefined ? {} : { pausedReason: local.pausedReason }),
       complete: local.bootstrapComplete,
@@ -136,10 +168,15 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
 
     query: async (filter: QueryFilter = {}): Promise<PlatformQueryRow[]> => {
       const heads = await queryHeads(bundle, filter);
-      const unsettled = await unsettledByTarget();
       const rows: PlatformQueryRow[] = [];
       for (const head of heads) {
-        rows.push({ id: head.id, version: head.version, frontmatter: head.frontmatter, provenance: await provenanceFor(head.id, head.version, unsettled.get(head.id), null) });
+        // The row is built from the snapshot, not the head, so its version, frontmatter, and
+        // provenance describe one moment; a document removed since the scan simply has no row.
+        const snapshot = await snapshotOf(head.id);
+        if (!snapshot) continue;
+        const provenance = deriveProvenance(snapshot);
+        if (!provenance) continue;
+        rows.push({ id: head.id, version: snapshot.document.version, frontmatter: snapshot.document.doc.frontmatter, provenance });
       }
       return rows;
     },
@@ -156,23 +193,16 @@ export function createBrowserLocalRuntime(options: BrowserLocalRuntimeOptions): 
         ...(now === undefined ? {} : { now }),
         buildCandidate: (existing) => ({ frontmatter: existing!.frontmatter, body: edit.body }),
       });
-      // A local write is pending by construction; only the journal, never this write, can say more.
-      if (result.intent) return { id, changed: true, provenance: localPending(result.version, result.intent.base, result.intent.requestId) };
-      const intent = (await unsettledByTarget()).get(id);
-      return { id, changed: false, provenance: await provenanceFor(id, result.version, intent, null) };
+      // A local write is pending by construction; only the journal, never this write, says
+      // which intent now describes the document (the one just recorded, or a conflict it chains
+      // behind), so the answer is read back from the journal like any other.
+      const { provenance } = await readWithProvenance(id);
+      return { id, changed: result.changed, provenance };
     },
 
     syncStatus: status,
 
     sync: async (): Promise<PlatformSyncStatus> => {
-      if (operations === null) {
-        try {
-          operations = (await remote.wireCapabilities()).operations;
-        } catch (error) {
-          if (isInputError(error) || isAuthorityAnswer(error)) throw error;
-          // The authority is unreachable; the push below records that the same way.
-        }
-      }
       const readSide: StorageBackend = remote;
       await pushWithRole(backend, transport, { remote: readSide, ...(options.write === undefined ? {} : { write: options.write }) }, options.locks === undefined ? {} : { locks: options.locks });
       try {
