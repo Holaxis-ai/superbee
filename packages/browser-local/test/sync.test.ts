@@ -15,7 +15,7 @@ import assert from "node:assert/strict";
 import { IDBFactory } from "fake-indexeddb";
 
 import type { OkfDocument, StorageBackend } from "@superbee/core";
-import { IntentStateConflict } from "@superbee/core/indexeddb-backend";
+import { IntentStateConflict } from "@superbee/core/journaled-backend";
 import { performUncertainWrite, type OperationTransport } from "@superbee/core/uncertain-write";
 
 import {

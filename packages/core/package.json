@@ -103,6 +103,10 @@
       "types": "./dist/indexeddb-backend.d.ts",
       "default": "./dist/indexeddb-backend.js"
     },
+    "./journaled-backend": {
+      "types": "./dist/journaled-backend.d.ts",
+      "default": "./dist/journaled-backend.js"
+    },
     "./uncertain-write": {
       "types": "./dist/uncertain-write.d.ts",
       "default": "./dist/uncertain-write.js"

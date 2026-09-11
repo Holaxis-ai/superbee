@@ -1,5 +1,5 @@
 /**
- * The one-writer-per-store coordination for the IndexedDB working copy: only the realm that
+ * The one-writer-per-store coordination for the browser-local working copy: only the realm that
  * holds the store's push role may run {@link push}. IndexedDB permits main-thread access, so a
  * page may hold the role itself, and the intent journal's compare-and-swap already prevents two
  * realms from settling one intent twice. The role is what keeps two tabs from racing that
@@ -48,9 +48,9 @@ export function hostLocks(): LockManagerLike | null {
 /** The in-process fallback: names currently held in this process. */
 const heldInProcess = new Set<string>();
 
-/** The lock name for one working copy's push role. */
-export function pushRoleName(databaseName: string): string {
-  return `superbee:push:${databaseName}`;
+/** The lock name for one working copy's push role, from the working copy's name. */
+export function pushRoleName(name: string): string {
+  return `superbee:push:${name}`;
 }
 
 /**

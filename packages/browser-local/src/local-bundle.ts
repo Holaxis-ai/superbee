@@ -1,16 +1,18 @@
 /**
- * The browser-local working copy's runtime: one {@link IndexedDbBackend} per bundle name,
- * handed to the engine as `bundle.backend` so every read, query, validation, and
- * compare-and-swap write runs against the page's own IndexedDB, plus the synchronization
- * verbs that relate that copy to a shared authority.
+ * The browser-local working copy's runtime: one {@link JournaledBackend} per bundle name (an
+ * {@link IndexedDbBackend} unless the caller supplies another adapter), handed to the engine as
+ * `bundle.backend` so every read, query, validation, and compare-and-swap write runs against
+ * the page's own store, plus the synchronization verbs that relate that copy to a shared
+ * authority. Every verb here is written against the seam, never the IndexedDB class: any
+ * adapter that passes the journal rows of the core contract kit can host the working copy.
  *
  * Ownership of meaning: the shared authority admits writes; the working copy records intent.
  * Every local document write goes through {@link commitLocal}, which journals a pending intent
- * in the same IndexedDB transaction as the record change, so no committed local edit exists
+ * in the same store transaction as the record change, so no committed local edit exists
  * without its pending-change record. {@link push} delivers intents through the core
  * uncertain-write primitive and marks one synchronized only when the authority's matching
  * outcome is known. {@link pull} refreshes documents that carry no unsettled intent and records
- * their new shared base; the "no unsettled intent" check is part of the refresh's own IndexedDB
+ * their new shared base; the "no unsettled intent" check is part of the refresh's own store
  * transaction, so a local edit committed during the network round trip is never replaced, and
  * a changed shared head is discovered by push as an explicit conflict that preserves base,
  * local, and remote.
@@ -32,15 +34,15 @@
 import type { Bundle, ConceptId, OkfDocument, StorageBackend, Version, WriteOptions } from "@superbee/core";
 import { stringifyDoc } from "@superbee/core/document-codec";
 import { mutateDocument, type DocumentMutationMode, type DocumentMutationResult, type MutateDocumentOptions } from "@superbee/core/document-mutation";
+import { IndexedDbBackend, type IdbFactoryLike } from "@superbee/core/indexeddb-backend";
 import {
-  IndexedDbBackend,
   IntentHoldConflict,
   IntentStateConflict,
-  type IdbFactoryLike,
   type IntentRecord,
+  type JournaledBackend,
   type MetaRecord,
   type NewIntentRecord,
-} from "@superbee/core/indexeddb-backend";
+} from "@superbee/core/journaled-backend";
 import type { KindRegistry } from "@superbee/core/kinds";
 import {
   AUTHORIZATION_REFUSAL_CODES,
@@ -59,13 +61,21 @@ import { pushRoleName, withPushRole, type PushRoleOptions, type PushRoleResult }
 export interface OpenLocalBundleOptions {
   /** The IndexedDB factory to open the working copy with. Defaults to the page's `indexedDB`. */
   indexedDB?: IdbFactoryLike;
+  /**
+   * The adapter holding the working copy. Omitted, an {@link IndexedDbBackend} over `name`. Any
+   * adapter that implements the journaled-backend seam serves; `close` is called by the bundle's
+   * own `close` when the adapter has one.
+   */
+  backend?: JournaledBackend & { close?(): void };
 }
 
 export interface LocalBundle {
-  /** The engine-facing bundle: a synthetic root label plus the IndexedDB backend. */
+  /** The working copy's name: the IndexedDB database name by default, and what names its push role. */
+  name: string;
+  /** The engine-facing bundle: a synthetic root label plus the working copy's backend. */
   bundle: Bundle;
-  backend: IndexedDbBackend;
-  /** Release the database handle; a later operation reopens it lazily. */
+  backend: JournaledBackend;
+  /** Release the store handle; a later operation reopens it lazily. */
   close(): void;
 }
 
@@ -74,16 +84,31 @@ export interface LocalBundle {
  * is a label, not a path: the engine routes every operation through `bundle.backend`.
  */
 export function openLocalBundle(name: string, options: OpenLocalBundleOptions = {}): LocalBundle {
-  const backend = new IndexedDbBackend({ databaseName: name, indexedDB: options.indexedDB });
-  const bundle: Bundle = { root: `indexeddb://${name}`, backend };
-  return { bundle, backend, close: () => backend.close() };
+  const backend = options.backend ?? new IndexedDbBackend({ databaseName: name, indexedDB: options.indexedDB });
+  const bundle: Bundle = { root: `${options.backend ? "local" : "indexeddb"}://${name}`, backend };
+  return { name, bundle, backend, close: () => backend.close?.() };
 }
 
 /** Every verb below accepts the opened bundle or its backend directly. */
-export type LocalTarget = LocalBundle | IndexedDbBackend;
+export type LocalTarget = LocalBundle | JournaledBackend;
 
-function backendOf(target: LocalTarget): IndexedDbBackend {
-  return target instanceof IndexedDbBackend ? target : target.backend;
+/**
+ * Structural, not `instanceof`: the seam is an interface, and an opened bundle is the shape that
+ * carries one. The discriminator is the pair no adapter has, `bundle` plus the `backend` this
+ * function dereferences; `name` and `close` are shapes an adapter may share.
+ */
+function isLocalBundle(target: LocalTarget): target is LocalBundle {
+  const candidate = target as Partial<LocalBundle>;
+  return typeof candidate.bundle === "object" && candidate.bundle !== null && typeof candidate.backend === "object" && candidate.backend !== null;
+}
+
+function backendOf(target: LocalTarget): JournaledBackend {
+  return isLocalBundle(target) ? target.backend : target;
+}
+
+/** The engine-facing bundle for a target: the opened bundle's own, or a labelled one over a bare backend. */
+function bundleOf(target: LocalTarget): Bundle {
+  return isLocalBundle(target) ? target.bundle : { root: "local://working-copy", backend: target };
 }
 
 // ── meta rows ──────────────────────────────────────────────────────────────────────────────
@@ -142,7 +167,7 @@ function chunked<T>(items: readonly T[], size: number): T[][] {
 }
 
 /** The version of the document currently stored locally, or `null` when absent. */
-async function localVersion(backend: IndexedDbBackend, id: ConceptId): Promise<Version | null> {
+async function localVersion(backend: JournaledBackend, id: ConceptId): Promise<Version | null> {
   try {
     return (await backend.read(id)).version;
   } catch (error) {
@@ -261,7 +286,7 @@ export interface CommitResult extends DocumentMutationResult {
  * once the predecessor is acknowledged, and the predecessor's acknowledgement can never clear
  * it, because it is its own record with its own identity.
  */
-async function composeIntent(backend: IndexedDbBackend, id: ConceptId, now: string): Promise<{ intent: NewIntentRecord; supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number } }> {
+async function composeIntent(backend: JournaledBackend, id: ConceptId, now: string): Promise<{ intent: NewIntentRecord; supersede?: { requestId: string; expectedState: OperationState; expectedAttempts: number } }> {
   const unsettled = (await backend.listIntents(UNSETTLED_STATES)).filter((row) => row.target === id);
   const latest = unsettled[unsettled.length - 1];
   if (!latest) {
@@ -312,7 +337,7 @@ const COMPOSE_ATTEMPTS = 3;
  * which journals the intent in the same transaction as the record. The engine keeps every
  * policy it has (kinds, clocks, no-op detection, CAS retry); only persistence is redirected.
  */
-function journalingBackend(backend: IndexedDbBackend, id: ConceptId, recorded: { intent: IntentRecord | null }): StorageBackend {
+function journalingBackend(backend: JournaledBackend, id: ConceptId, recorded: { intent: IntentRecord | null }): StorageBackend {
   const write = async (target: ConceptId, doc: OkfDocument, options: WriteOptions = {}): Promise<Version> => {
     if (target !== id) throw new Error(`commitLocal for '${id}' cannot write '${target}'`);
     for (let attempt = 0; ; attempt++) {
@@ -340,7 +365,7 @@ function journalingBackend(backend: IndexedDbBackend, id: ConceptId, recorded: {
 
 /**
  * Apply an engine mutation to the working copy and journal it as a pending intent in the same
- * IndexedDB transaction as the document write. The intent's base is the shared base the edit
+ * store transaction as the document write. The intent's base is the shared base the edit
  * was made against (see {@link composeIntent}), never the local head.
  */
 export async function commitLocal(local: LocalTarget, id: ConceptId, mutation: LocalMutation): Promise<CommitResult> {
@@ -349,7 +374,7 @@ export async function commitLocal(local: LocalTarget, id: ConceptId, mutation: L
   const { mode, registry, strict, ...rest } = mutation;
   const result = await mutateDocument({
     ...rest,
-    bundle: { root: `indexeddb://${backend.databaseName}`, backend: journalingBackend(backend, id, recorded) },
+    bundle: { root: bundleOf(local).root, backend: journalingBackend(backend, id, recorded) },
     id,
     mode: mode ?? "patch",
     registry: registry ?? EMPTY_REGISTRY,
@@ -501,19 +526,19 @@ export async function push(local: LocalTarget, transport: OperationTransport, op
 
 /**
  * {@link push} under the store's push role: the one-writer-per-store coordination for the
- * IndexedDB working copy. A realm that finds the role held elsewhere delivers nothing and
+ * browser-local working copy. A realm that finds the role held elsewhere delivers nothing and
  * leaves the journal untouched; the holder's push is the only one running over this store.
  * `role` selects the lock manager that owns the role (see {@link withPushRole}); a product
- * caller leaves it to the host.
+ * caller leaves it to the host. The role is named by the working copy, so this verb takes the
+ * opened bundle rather than a bare backend: an adapter has no identity of its own on the seam.
  */
 export async function pushWithRole(
-  local: LocalTarget,
+  local: LocalBundle,
   transport: OperationTransport,
   options: PushOptions = {},
   role: PushRoleOptions = {},
 ): Promise<PushRoleResult<PushReport>> {
-  const backend = backendOf(local);
-  return withPushRole(pushRoleName(backend.databaseName), () => push(backend, transport, options), role);
+  return withPushRole(pushRoleName(local.name), () => push(local.backend, transport, options), role);
 }
 
 // ── pull ───────────────────────────────────────────────────────────────────────────────────
