@@ -28,6 +28,7 @@ import { createRouter, createRouterForBackend, MemoryOperationOutcomeStore, serv
 import { FilesystemBackend as ServerFilesystemBackend, MemoryBackend as ServerMemoryBackend } from "@superbee/core";
 
 import { InvalidInputError } from "../src/errors.js";
+import { headsDigest, sortHeads } from "../src/heads-digest.js";
 import { stringifyDoc } from "../src/frontmatter.js";
 import { RemoteBackend, RemoteError } from "../src/remote-backend.js";
 import { createRemoteOperationTransport, openRemoteOperationTransport, OperationsUnsupportedError } from "../src/remote-operations.js";
@@ -1210,9 +1211,14 @@ test("wire: createRemoteOperationTransport rethrows a 5xx RemoteError so the pri
 const HEADS_URL = "http://wire.local/v0/bundles/test/heads";
 const SNAPSHOT_URL = "http://wire.local/v0/bundles/test/snapshot";
 
+/** The wire's id order: UTF-16 code unit order, spelled out independently of `sortHeads`. */
+function codeUnitOrder(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 /** The documented digest recipe, spelled out independently of `headsDigest` so the test pins the bytes, not the helper. */
 function documentedDigest(heads: Array<{ id: string; version: string }>): string {
-  const sorted = [...heads].sort((a, b) => a.id.localeCompare(b.id));
+  const sorted = [...heads].sort((a, b) => codeUnitOrder(a.id, b.id));
   return `sha256:${sha256HexOfUtf8(sorted.map((head) => `${head.id}\n${head.version}\n`).join(""))}`;
 }
 
@@ -1248,12 +1254,13 @@ test("wire: GET /heads lists every id and version under the documented digest; I
   assert.equal(empty.status, 200);
   assert.deepEqual(await empty.json(), { count: 0, digest: `sha256:${sha256HexOfUtf8("")}`, heads: [] });
 
-  // Insertion order differs from id order, and "B" versus "a" separates localeCompare from code-unit order.
+  // Insertion order differs from id order, and "B" versus "a" separates code-unit order (the
+  // wire's) from the localeCompare order the list route uses, which would put "B" after "b".
   await seedDocs(bundle, ["b", "B", "a/x", "c"]);
   const res = await router(new Request(HEADS_URL));
   assert.equal(res.status, 200);
   const body = (await res.json()) as { count: number; digest: string; heads: Array<{ id: string; version: string }> };
-  assert.deepEqual(body.heads.map((h) => h.id), ["a/x", "b", "B", "c"]);
+  assert.deepEqual(body.heads.map((h) => h.id), ["B", "a/x", "b", "c"]);
   assert.equal(body.count, 4);
   for (const head of body.heads) {
     assert.equal(head.version, (await serverBackend.read(head.id)).version, `version of ${head.id} equals its read`);
@@ -1282,7 +1289,7 @@ test("wire: GET /heads lists every id and version under the documented digest; I
   const afterDelete = await router(new Request(HEADS_URL, { headers: { "If-None-Match": written.digest } }));
   assert.equal(afterDelete.status, 200, "a delete invalidates the held digest");
   const deleted = (await afterDelete.json()) as { count: number; digest: string; heads: Array<{ id: string; version: string }> };
-  assert.deepEqual(deleted.heads.map((h) => h.id), ["a/x", "B", "c"], "a deleted id is missing from heads");
+  assert.deepEqual(deleted.heads.map((h) => h.id), ["B", "a/x", "c"], "a deleted id is missing from heads");
   assert.equal(deleted.count, 3);
   assert.notEqual(deleted.digest, written.digest);
   assert.equal(deleted.digest, documentedDigest(deleted.heads));
@@ -1319,7 +1326,7 @@ test("wire: GET /snapshot streams header, docs in id order, and end over 120 doc
   const router = createRouter(bundle);
   const ids = Array.from({ length: 120 }, (_, i) => `concepts/doc-${String(119 - i).padStart(3, "0")}`);
   await seedDocs(bundle, ids);
-  const expectedIds = [...ids].sort((a, b) => a.localeCompare(b));
+  const expectedIds = [...ids].sort(codeUnitOrder);
   const headsBody = (await (await router(new Request(HEADS_URL))).json()) as { digest: string };
 
   const res = await router(new Request(SNAPSHOT_URL));
@@ -1453,6 +1460,20 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
     await assert.rejects(answering(payload).heads(), (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME", label);
   }
 
+  // A 304 is only meaningful relative to a digest the client sent; to an unconditional request it is malformed.
+  const unconditional304 = new RemoteBackend({
+    baseUrl: "http://wire.local",
+    bundle: "test",
+    fetchImpl: async () => new Response(null, { status: 304, headers: { ETag: `"${first.digest}"` } }),
+    maxRetries: 0,
+  });
+  await assert.rejects(
+    unconditional304.heads(),
+    (err: unknown) => err instanceof RemoteError && err.code === "RUNTIME" && err.status === 502,
+    "a 304 to a request that sent no If-None-Match is malformed, not null",
+  );
+  assert.equal(await unconditional304.heads({ ifNoneMatch: first.digest }), null, "the same 304 to a conditional request is null");
+
   const gated = new RemoteBackend({
     baseUrl: "http://wire.local",
     bundle: "test",
@@ -1461,6 +1482,120 @@ test("wire: RemoteBackend.heads maps 304 to null and 200 to { digest, heads }; a
   });
   await assert.rejects(gated.heads(), (err: unknown) => err instanceof RemoteError && err.code === "AUTH_REQUIRED" && err.status === 401);
   await assert.rejects(gated.snapshot(), (err: unknown) => err instanceof RemoteError && err.code === "AUTH_REQUIRED" && err.status === 401);
+});
+
+test("wire: heads order is UTF-16 code unit order, independent of the host locale and of the list route's collation; the digest is the same for any input order", async () => {
+  // en_US and sv_SE collate these five ids differently under localeCompare; code unit order is fixed.
+  const ids = ["z", "ä", "a-b", "ab", "a/b"];
+  const codeUnitSorted = ["a-b", "a/b", "ab", "z", "ä"];
+  assert.deepEqual([...ids].sort(codeUnitOrder), codeUnitSorted, "the fixture is spelled in code unit order");
+  const heads = ids.map((id, index) => ({ id, version: `v${index}` }));
+  assert.deepEqual(sortHeads(heads).map((h) => h.id), codeUnitSorted);
+  assert.deepEqual(sortHeads([...heads].reverse()).map((h) => h.id), codeUnitSorted);
+  assert.equal(headsDigest(heads), headsDigest([...heads].reverse()), "the digest does not depend on input order");
+  assert.equal(headsDigest(heads), documentedDigest(heads), "the digest bytes follow the documented recipe over code unit order");
+  const expectedBytes = codeUnitSorted.map((id) => `${id}\n${heads.find((h) => h.id === id)!.version}\n`).join("");
+  assert.equal(headsDigest(heads), `sha256:${sha256HexOfUtf8(expectedBytes)}`);
+
+  // The router lists in the same order even though its backend's `list` collates with localeCompare.
+  const serverBackend = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-heads-order", backend: serverBackend };
+  const router = createRouter(bundle);
+  await seedDocs(bundle, ids);
+  assert.notDeepEqual(await serverBackend.list(), codeUnitSorted, "the fixture separates the list collation from code unit order");
+  const body = (await (await router(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
+  assert.deepEqual(body.heads.map((h) => h.id), codeUnitSorted);
+  assert.equal(body.digest, documentedDigest(body.heads));
+  const snapshotText = await (await router(new Request(SNAPSHOT_URL))).text();
+  const docLines = snapshotText.slice(0, -1).split("\n").map((line) => JSON.parse(line) as { kind: string; id?: string });
+  assert.deepEqual(docLines.filter((line) => line.kind === "doc").map((line) => line.id), codeUnitSorted, "snapshot doc lines follow the same order");
+});
+
+test("wire: a document changed between the heads listing and its snapshot batch errors the stream, so the header digest always describes the emitted lines and the client sees SNAPSHOT_TRUNCATED", async () => {
+  const inner = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-snapshot-changed", backend: inner };
+  const ids = Array.from({ length: 60 }, (_, i) => `concepts/doc-${String(i).padStart(2, "0")}`);
+  await seedDocs(bundle, ids);
+  const listed = (await (await createRouter(bundle)(new Request(HEADS_URL))).json()) as { digest: string; heads: Array<{ id: string; version: string }> };
+
+  // The listing reads every batch first, then the body reads every batch again: the second read
+  // of the first batch is the first body batch. The write lands after it, in the window between
+  // the listing (which the header digest describes) and the last batch.
+  let firstBatchReads = 0;
+  let rewrittenVersion: string | undefined;
+  const changing: StorageBackend = Object.assign(Object.create(inner) as StorageBackend, {
+    async readMany(batch: ConceptId[]) {
+      const results = await inner.readMany(batch);
+      if (batch.includes(ids[0]!)) {
+        firstBatchReads += 1;
+        if (firstBatchReads === 2) {
+          rewrittenVersion = (await writeDocVersioned(bundle, { id: ids[59]!, frontmatter: { type: "T", title: "changed", timestamp: T_DOC }, body: "changed" })).version;
+        }
+      }
+      return results;
+    },
+  });
+  const router = createRouter({ root: bundle.root, backend: changing });
+  const remote = new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: router, maxRetries: 0 });
+  const snapshot = await remote.snapshot();
+  assert.equal(snapshot.header.digest, listed.digest, "the header describes the state as listed");
+  const received: Array<{ id: string; version: string }> = [];
+  let failure: unknown;
+  try {
+    for await (const doc of snapshot.docs) received.push({ id: doc.id, version: doc.version });
+  } catch (err) {
+    failure = err;
+  }
+  assert.ok(rewrittenVersion !== undefined, "the write happened during the stream");
+  assert.notEqual(rewrittenVersion, listed.heads[59]!.version);
+  assert.ok(failure instanceof RemoteError && failure.code === "SNAPSHOT_TRUNCATED", `expected SNAPSHOT_TRUNCATED, got ${String(failure)}`);
+  assert.equal(received.length, 50, "the first batch was emitted; the batch holding the changed document was not");
+  for (const doc of received) {
+    assert.equal(doc.version, listed.heads.find((h) => h.id === doc.id)!.version, `${doc.id} was emitted at its listed version`);
+  }
+  assert.ok(!received.some((doc) => doc.id === ids[59]), "no line was emitted at a version the header digest does not describe");
+
+  // The next heads check reports the change, and a fresh snapshot completes at the new state.
+  const after = await remote.heads({ ifNoneMatch: listed.digest });
+  assert.ok(after !== null && after.digest !== listed.digest);
+  assert.equal(after.heads.find((h) => h.id === ids[59])!.version, rewrittenVersion);
+  const again = await new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: createRouter(bundle), maxRetries: 0 }).snapshot();
+  let count = 0;
+  for await (const _doc of again.docs) count += 1;
+  assert.equal(count, 60);
+});
+
+test("wire: a backend whose readMany answers a different number of results than ids fails the heads listing and errors the snapshot stream instead of pairing results by index", async () => {
+  const inner = new ServerMemoryBackend();
+  const bundle: Bundle = { root: "mem://wire-snapshot-shape", backend: inner };
+  await seedDocs(bundle, ["a", "b", "c"]);
+  let dropResults = false;
+  const short: StorageBackend = Object.assign(Object.create(inner) as StorageBackend, {
+    async readMany(batch: ConceptId[]) {
+      const results = await inner.readMany(batch);
+      return dropResults ? results.slice(1) : results;
+    },
+  });
+  const router = createRouter({ root: bundle.root, backend: short });
+
+  dropResults = true;
+  const heads = await router(new Request(HEADS_URL));
+  assert.equal(heads.status, 500, "the listing fails loudly rather than mispairing ids and versions");
+
+  // Let the listing through, then drop a result from the body batch before the stream is pulled.
+  dropResults = false;
+  const res = await router(new Request(SNAPSHOT_URL));
+  assert.equal(res.status, 200);
+  dropResults = true;
+  const snapshot = await new RemoteBackend({ baseUrl: "http://wire.local", bundle: "test", fetchImpl: async () => res, maxRetries: 0 }).snapshot();
+  assert.equal(snapshot.header.count, 3);
+  let failure: unknown;
+  try {
+    for await (const _doc of snapshot.docs) { /* the only batch never arrives */ }
+  } catch (err) {
+    failure = err;
+  }
+  assert.ok(failure instanceof RemoteError && failure.code === "SNAPSHOT_TRUNCATED", `expected SNAPSHOT_TRUNCATED, got ${String(failure)}`);
 });
 
 test("wire: serve() streams a 500-document snapshot over a real socket; the first line arrives before the last batch has been read from the backend", async () => {
@@ -1478,8 +1613,9 @@ test("wire: serve() streams a 500-document snapshot over a real socket; the firs
   });
   const bundle: Bundle = { root: "mem://wire-snapshot-socket", backend: inner };
   await seedDocs(bundle, Array.from({ length: 500 }, (_, i) => `concepts/doc-${String(i).padStart(3, "0")}`));
-  // The heads listing over a scan backend is itself one read-many, then ten body batches of 50.
-  const totalBatches = 11;
+  // The heads listing reads every document once in ten batches of 50 (keeping only versions),
+  // then the body streams in ten more batches of 50.
+  const totalBatches = 20;
 
   const handle = await serve({ bundle: { root: bundle.root, backend: delaying }, port: 0 });
   try {

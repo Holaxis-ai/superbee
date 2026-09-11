@@ -605,13 +605,19 @@ export class RemoteBackend implements StorageBackend {
    * `null` when `ifNoneMatch` named the digest it still holds (a `304`: nothing changed). A
    * `200` is diffed against the caller's own copy: an id missing from `heads` was deleted, a
    * differing version changed. A `200` without a well-formed digest, or whose `count` and rows
-   * disagree, is rejected rather than trusted. Not part of the {@link StorageBackend} seam.
+   * disagree, is rejected rather than trusted, as is a `304` to a request that sent no
+   * `ifNoneMatch`. Not part of the {@link StorageBackend} seam.
    */
   async heads(options: HeadsOptions = {}): Promise<HeadsResult | null> {
     const headers: Record<string, string> = {};
     if (options.ifNoneMatch !== undefined) headers["If-None-Match"] = etagForm(options.ifNoneMatch);
     const res = await this.send("/heads", { method: "GET", headers });
-    if (res.status === 304) return null;
+    if (res.status === 304) {
+      // Only a conditional request can be answered `304`; to an unconditional one it is a
+      // malformed answer, not "nothing changed", since there is no digest it could be relative to.
+      if (options.ifNoneMatch === undefined) throw malformed("wire heads answered 304 to a request that sent no If-None-Match");
+      return null;
+    }
     if (!res.ok) throw await this.toError(res, "heads");
     const payload = (await res.json()) as { count?: unknown; digest?: unknown; heads?: unknown } | null;
     if (!isHeadsDigest(payload?.digest)) throw malformed("wire heads answered without a well-formed digest");

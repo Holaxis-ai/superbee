@@ -4,10 +4,14 @@
  * (`docs/WIRE-PROTOCOL.md`, "Heads and snapshot").
  *
  * The recipe is fixed so any host computes the same token from the same heads: sort the heads by
- * id with `localeCompare` (the order every list route uses), concatenate `id`, `\n`, `version`,
- * `\n` for each head, hash the UTF-8 bytes with SHA-256, and prefix the lowercase hex with
- * `sha256:`. An empty bundle digests the empty byte string. The digest changes whenever a
- * document is created, updated (its version changes) or deleted (its id disappears).
+ * id in UTF-16 code unit order (plain `<` on the id strings, which no locale can change; the
+ * list route's `localeCompare` collation is host dependent and is not this order), concatenate
+ * `id`, `\n`, `version`, `\n` for each head, hash the UTF-8 bytes with SHA-256, and prefix the
+ * lowercase hex with `sha256:`. An empty bundle digests the empty byte string. The digest
+ * changes whenever a document is created, updated (its version changes) or deleted (its id
+ * disappears). Precondition: no id contains a line feed. The id rule in `paths.ts` does not
+ * reject control characters, so a host serving such an id would mint a digest that is not
+ * injective over its heads; the wire document records this as a host obligation.
  *
  * Runtime-neutral: the reference router, a Worker host and a browser working copy all mint the
  * same token through the one pure SHA-256 in `sha256.ts`.
@@ -24,9 +28,9 @@ export interface DocumentHead {
 
 const HEADS_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 
-/** Sort heads into the wire's id order without mutating the input. */
+/** Sort heads into the wire's id order (UTF-16 code unit order) without mutating the input. */
 export function sortHeads<Head extends DocumentHead>(heads: readonly Head[]): Head[] {
-  return [...heads].sort((a, b) => a.id.localeCompare(b.id));
+  return [...heads].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
 /** The digest of `heads` by the documented recipe; the input is sorted first, so order does not matter. */

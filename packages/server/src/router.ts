@@ -24,6 +24,7 @@ import {
   assertSafeConceptId,
   assertSafeReservedDir,
   headsDigest,
+  sortHeads,
   isReservedFile,
   isContentVersion,
   pathFromConceptId,
@@ -984,14 +985,53 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
 
   /**
    * Every document's id and current version, in the wire's id order. The one listing behind
-   * both `GET /heads` and `GET /snapshot`: core's `queryHeads` prefers the backend's push-down
-   * and otherwise walks `list` plus batched reads server-side, so either way the client pays one
-   * round trip. A malformed document fails the listing exactly as it fails `GET /docs`
-   * (deviation 4): there is no skip envelope on the wire.
+   * both `GET /heads` and `GET /snapshot`: `list` for the ids, then `readMany` in batches of
+   * `SNAPSHOT_BATCH_SIZE`, keeping only each result's version and dropping the bodies with the
+   * batch. Neither reference backend pushes `queryHeads` down, and the engine's scan reads every
+   * body in one `readMany`, which is why the listing is computed here rather than through it.
+   * Every document is still read once for the listing. A document deleted between `list` and
+   * its batch is simply not a head, as in the engine's scan; a malformed document fails the
+   * listing exactly as it fails `GET /docs` (deviation 4): there is no skip envelope on the wire.
    */
   async function listHeads(backend: StorageBackend): Promise<DocumentHead[]> {
-    const rows = await queryHeads(backend, {});
-    return rows.map(({ id, version }) => ({ id, version }));
+    const ids = await backend.list();
+    const heads: DocumentHead[] = [];
+    for (let offset = 0; offset < ids.length; offset += SNAPSHOT_BATCH_SIZE) {
+      const batch = ids.slice(offset, offset + SNAPSHOT_BATCH_SIZE);
+      for (const { id, version } of await readBatchExisting(backend, batch)) heads.push({ id, version });
+    }
+    return sortHeads(heads);
+  }
+
+  /**
+   * `readMany` for one batch, tolerating a document that vanished after `list` named it: on an
+   * ENOENT-shaped failure the batch is re-read one id at a time and absent ids are dropped.
+   * Any other failure (a malformed document included) propagates.
+   */
+  async function readBatchExisting(backend: StorageBackend, ids: ConceptId[]): Promise<Array<{ id: ConceptId; version: Version }>> {
+    try {
+      const results = await backend.readMany(ids);
+      assertBatchShape(results.length, ids.length);
+      return results.map((result, index) => ({ id: ids[index]!, version: result.version }));
+    } catch (err) {
+      if (!isEnoent(err)) throw err;
+    }
+    const out: Array<{ id: ConceptId; version: Version }> = [];
+    for (const id of ids) {
+      try {
+        out.push({ id, version: (await backend.read(id)).version });
+      } catch (err) {
+        if (!isEnoent(err)) throw err;
+      }
+    }
+    return out;
+  }
+
+  /** A conforming `readMany` answers one result per id, in order; anything else is a backend defect, never silently paired. */
+  function assertBatchShape(resultCount: number, idCount: number): void {
+    if (resultCount !== idCount) {
+      throw new Error(`readMany answered ${resultCount} result(s) for ${idCount} id(s); results are paired to ids by index`);
+    }
   }
 
   /** True when `If-None-Match` names `digest` in bare, quoted, or weak form, alone or in a list. */
@@ -1018,22 +1058,29 @@ function buildRouter(options: RouterOptions): (req: Request) => Promise<Response
 
   /**
    * The snapshot's NDJSON lines: the header, one chunk of document lines per backend batch, and
-   * the `end` terminator. Bodies are read in batches after the header has been produced, so a
-   * 5,000-document bundle is never held in memory at once. A document that vanishes between the
-   * heads listing and its batch makes the batch read throw, which errors the stream: the client
-   * then sees a body without its terminator and treats the snapshot as truncated. A document
-   * that changes in that window is emitted at the version actually read, so the header digest may
-   * no longer describe the emitted lines; a later `GET /heads` reconciles that.
+   * the `end` terminator. The listing holds only ids and versions; bodies are read in batches of
+   * `SNAPSHOT_BATCH_SIZE` after the header has been produced and encoded as each batch arrives,
+   * so at most one batch of bodies is held at a time. A document that vanishes between the heads
+   * listing and its batch makes the batch read throw, which errors the stream: the client then
+   * sees a body without its terminator and treats the snapshot as truncated. A document that
+   * changes in that window is caught the same way: its read version no longer matches the listed
+   * head, and the stream errors rather than emitting a line the header digest does not describe,
+   * so the digest always describes exactly the emitted lines and the client retries.
    */
   async function* snapshotLines(backend: StorageBackend, heads: DocumentHead[], digest: string): AsyncGenerator<string> {
     yield `${JSON.stringify({ kind: "snapshot", count: heads.length, digest })}\n`;
     for (let offset = 0; offset < heads.length; offset += SNAPSHOT_BATCH_SIZE) {
       const batch = heads.slice(offset, offset + SNAPSHOT_BATCH_SIZE);
       const results = await backend.readMany(batch.map((head) => head.id));
+      assertBatchShape(results.length, batch.length);
       let chunk = "";
       results.forEach((result, index) => {
         // The heads listing owns identity, as the read-many route does: never a payload id.
-        const line = { kind: "doc", id: batch[index]!.id, version: result.version, frontmatter: result.doc.frontmatter, body: result.doc.body };
+        const head = batch[index]!;
+        if (result.version !== head.version) {
+          throw new Error(`document '${head.id}' changed from version ${head.version} to ${result.version} while the snapshot streamed`);
+        }
+        const line = { kind: "doc", id: head.id, version: head.version, frontmatter: result.doc.frontmatter, body: result.doc.body };
         chunk += `${JSON.stringify(line)}\n`;
       });
       yield chunk;

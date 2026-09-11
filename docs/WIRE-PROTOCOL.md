@@ -135,22 +135,27 @@ read-only, additive, and reported by `GET /v0/capabilities` as `heads` and `snap
 ### Heads
 
 `GET /v0/bundles/{bundle}/heads` answers `200 { count, digest, heads }` where `heads` is every
-document as `{ id, version }`, sorted by id with the same `localeCompare` ordering the list route
-uses, and `count` equals the number of rows. There is no pagination and no filter: the whole
-listing is the point of the route. Reserved files are not heads.
+document as `{ id, version }`, sorted by id in UTF-16 code unit order, and `count` equals the
+number of rows. Code unit order is independent of any locale and is not the `localeCompare`
+collation the list route uses; a host must not substitute the list order. There is no pagination
+and no filter: the whole listing is the point of the route. Reserved files are not heads.
 
 The digest is `sha256:<hex>` over the UTF-8 bytes of the sorted rows concatenated as
 `id`, `\n`, `version`, `\n` for each row, in order, with no other separator; an empty bundle
-digests the empty byte string. Any host computes the same token from the same heads
-(`headsDigest` in `@superbee/core/storage` is the reference recipe). The digest changes whenever
-any document is created, updated or deleted.
+digests the empty byte string. Precondition: no id contains a line feed (U+000A). The concept
+id rule does not reject control characters, so the recipe is injective only under that
+precondition; a host must not serve a document whose id contains one through heads or snapshot.
+Any host computes the same token from the same heads (`headsDigest` in `@superbee/core/storage`
+is the reference recipe). The digest changes whenever any document is created, updated or
+deleted.
 
 The response carries the digest as a quoted `ETag`. A request whose `If-None-Match` names that
 digest, bare, quoted or weak, alone or in a comma-separated list, answers a bodyless `304` with the
 same `ETag`: nothing changed since the client obtained that digest. On a `200` the client diffs
 `heads` against its own copy: an id missing from `heads` is a deletion, a differing version is a
 change, an unknown id is a creation. `RemoteBackend.heads({ ifNoneMatch })` maps `304` to `null`
-and refuses a `200` whose digest is missing or malformed or whose `count` disagrees with its rows.
+and refuses a `200` whose digest is missing or malformed or whose `count` disagrees with its rows;
+a `304` to a request that sent no `If-None-Match` is likewise refused as malformed.
 
 ### Snapshot
 
@@ -175,13 +180,14 @@ The body streams. The reference router produces the heads listing first (so a ma
 fails the request before any byte of the response exists, exactly as it fails a list), then reads
 bodies in batches of 50 and encodes each batch as it is produced; the `node:http` bootstrap pipes
 the body to the socket. A document deleted between the listing and its batch errors the stream,
-which the client observes as truncation. A document changed in that window is emitted at the
-version actually read, so the header digest may no longer describe the emitted lines; the next
-heads check reconciles that.
+which the client observes as truncation. A document changed in that window errors the stream the
+same way: the router compares each read version to the listed head and never emits a line the
+header digest does not describe, so the client sees truncation and re-requests.
 
-A host may implement heads and snapshot over a change log or over a scan; the reference scans
-(`queryHeads` push-down when the backend offers it, otherwise `list` plus batched reads). Either
-way the client pays one round trip.
+A host may implement heads and snapshot over a change log or over a scan; the reference scans:
+`list` for the ids, then reads in batches of 50 keeping only each document's version, so the
+listing touches every document once but holds no bodies. The snapshot then reads the bodies again
+in batches of 50 as it streams. Either way the client pays one round trip.
 
 ## Identified writes and outcome lookup
 
