@@ -18,9 +18,14 @@ export interface DriverServer {
   close(): Promise<void>;
 }
 
-export async function startDriverServer(): Promise<DriverServer> {
+export interface DriverServerOptions {
+  /** The page script to bundle and serve; the proof driver by default. */
+  entry?: URL;
+}
+
+export async function startDriverServer(options: DriverServerOptions = {}): Promise<DriverServer> {
   const bundle = await build({
-    entryPoints: [new URL("./driver.ts", import.meta.url).pathname],
+    entryPoints: [(options.entry ?? new URL("./driver.ts", import.meta.url)).pathname],
     bundle: true,
     platform: "browser",
     format: "iife",
